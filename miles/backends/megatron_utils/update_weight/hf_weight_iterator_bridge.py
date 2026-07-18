@@ -1,6 +1,4 @@
 import dataclasses
-import json
-import os
 
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
 from miles.utils import megatron_bridge_utils
@@ -20,29 +18,12 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
 
         self._bridge = AutoBridge.from_hf_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
 
-        if (
-            self.quantization_config is not None
-            and self.quantization_config.get("quant_method") == "compressed-tensors"
-        ):
-            quantized_basenames = _load_quantized_param_basenames(self.args.hf_checkpoint)
-            if quantized_basenames is not None:
-                # Quantize exactly the params the checkpoint stores packed; the
-                # published ignore list of multimodal checkpoints (e.g.
-                # Kimi-K2.5 VL) omits vision_tower/mm_projector, so it cannot
-                # be trusted as the sole quantization criterion.
-                self.quantization_config = {
-                    **self.quantization_config,
-                    "_miles_quantized_basenames": quantized_basenames,
-                }
-
     def get_hf_weight_chunks(self, megatron_local_weights, weight_type: str = "base"):
         renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
             if weight_type == "lora":
-                named_weights = self._bridge.export_adapter_weights(
-                    self.model,
-                    cpu=False,
-                    show_progress=False,
+                named_weights = self._export_adapter_weights_from_cpu_backup(
+                    renamed_megatron_local_weights,
                 )
             elif weight_type == "base":
                 conversion_tasks = self._bridge.get_conversion_tasks(self.model)
@@ -69,6 +50,29 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
             units = _stream_atomic_units(named_weights, groups)
             yield from _chunk_atomic_units_by_size(units, chunk_size=self.args.update_weight_buffer_size)
 
+    def _export_adapter_weights_from_cpu_backup(self, megatron_local_weights):
+        bridge = self._bridge._model_bridge
+        original_materialize = bridge.materialize_adapter_weights
+        had_instance_override = "materialize_adapter_weights" in bridge.__dict__
+        previous_instance_override = bridge.__dict__.get("materialize_adapter_weights")
+
+        def materialize_from_cpu_backup(adapter_tasks):
+            adapter_tasks = _process_adapter_conversion_tasks(adapter_tasks, megatron_local_weights)
+            return original_materialize(adapter_tasks)
+
+        bridge.materialize_adapter_weights = materialize_from_cpu_backup
+        try:
+            yield from self._bridge.export_adapter_weights(
+                self.model,
+                cpu=False,
+                show_progress=False,
+            )
+        finally:
+            if had_instance_override:
+                bridge.materialize_adapter_weights = previous_instance_override
+            else:
+                del bridge.materialize_adapter_weights
+
     def _postprocess_and_quantize(self, named_weights, weight_type: str):
         for hf_param_name, weight, megatron_param_name in named_weights:
             hf_name = hf_param_name.replace(".base_layer.", ".")
@@ -88,16 +92,6 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     yield q_hf_name, q_weight, megatron_param_name
             else:
                 yield hf_name, weight, megatron_param_name
-
-
-def _load_quantized_param_basenames(hf_checkpoint):
-    """Base names of params stored packed (`<base>.weight_packed`) in the checkpoint, or None if unknown."""
-    index_path = os.path.join(hf_checkpoint, "model.safetensors.index.json")
-    if not os.path.exists(index_path):
-        return None
-    with open(index_path) as f:
-        names = json.load(f)["weight_map"]
-    return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
 
 
 def _stream_atomic_units(items, atomic_update_groups):
@@ -161,6 +155,28 @@ def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
         return dataclasses.replace(task, param_weight=new_param_weight)
 
     return _MapWithLen(_handle_one, vanilla_conversion_tasks)
+
+
+def _process_adapter_conversion_tasks(adapter_tasks, new_weight_dict):
+    def _replace_weight(task):
+        if task.param_weight is None:
+            return task
+
+        weight_dict_key = f"vp_stages.{task.vp_stage}.{task.param_name}"
+        assert weight_dict_key in new_weight_dict, (
+            f"Missing LoRA CPU backup for Bridge conversion task {weight_dict_key!r}. "
+            "Adapter export cannot read the model parameter while TorchMemorySaver has it paused."
+        )
+        return dataclasses.replace(task, param_weight=new_weight_dict[weight_dict_key].cuda())
+
+    return [
+        dataclasses.replace(
+            adapter_task,
+            linear_in_task=_replace_weight(adapter_task.linear_in_task),
+            linear_out_task=_replace_weight(adapter_task.linear_out_task),
+        )
+        for adapter_task in adapter_tasks
+    ]
 
 
 class _MapWithLen:

@@ -82,6 +82,7 @@ def make_args(**overrides: Any) -> Namespace:
         rollout_external_engine_addrs=None,
         # offload / fault tolerance
         offload_rollout=False,
+        reload_rollout_weights_from_disk=False,
         use_fault_tolerance=False,
         rollout_health_check_interval=10.0,
         rollout_health_check_timeout=30.0,

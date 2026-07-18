@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_dataclass_group
 
@@ -123,3 +125,20 @@ class TestRolloutServerNodesPerEngineHeterogeneity:
         srv = RolloutServer(server_groups=[a, b])
         with pytest.raises(ValueError, match="Heterogeneous nodes_per_engine"):
             _ = srv.nodes_per_engine
+
+
+@pytest.mark.asyncio
+async def test_onload_weights_from_disk_resumes_storage_before_reload():
+    events = []
+
+    async def record(event):
+        events.append(event)
+
+    group = SimpleNamespace(
+        onload=lambda tags: [record(("resume", tags))],
+        onload_weights_from_disk=lambda: [record(("reload", "/nvme/model"))],
+    )
+
+    await RolloutServer(server_groups=[group]).onload_weights_from_disk()
+
+    assert events == [("resume", ["weights"]), ("reload", "/nvme/model")]

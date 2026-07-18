@@ -45,8 +45,9 @@ async def train(args):
     await actor_model.update_weights()
 
     if args.check_weight_update_equal:
+        compare_action = "compare" if args.check_weight_update_allow_quant_error else "compare_checksum"
         await rollout_manager.check_weights.remote(
-            action="compare",
+            action=compare_action,
             allow_quant_error=args.check_weight_update_allow_quant_error,
             selector=args.check_weight_update_selector,
             skip_list=args.check_weight_update_skip_list,

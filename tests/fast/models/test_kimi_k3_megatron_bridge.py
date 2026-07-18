@@ -7,11 +7,11 @@ from megatron.bridge.models.conversion.param_mapping import (
     ReplicatedMapping,
     RowParallelMapping,
 )
+from scripts.run_kimi_k3_lora import _DEFAULT_TARGET_MODULES
 
 from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf
 from miles_plugins.megatron_bridge.kimi_k3 import KimiK3ALogMapping, KimiK3MegatronBridge
 from miles_plugins.models.kimi_k3.ops import situ_and_mul
-from scripts.run_kimi_k3_lora import _DEFAULT_TARGET_MODULES
 
 
 def _bridge():
@@ -32,12 +32,8 @@ def test_situ_activation_is_registered():
 def test_lora_mapping_registry_covers_safe_targets():
     registry = _bridge().mapping_registry()
     expected = {
-        "decoder.layers.0.self_attention.o_proj.weight": (
-            "language_model.model.layers.0.self_attn.o_proj.weight"
-        ),
-        "decoder.layers.3.self_attention.q_a_proj.weight": (
-            "language_model.model.layers.3.self_attn.q_a_proj.weight"
-        ),
+        "decoder.layers.0.self_attention.o_proj.weight": ("language_model.model.layers.0.self_attn.o_proj.weight"),
+        "decoder.layers.3.self_attention.q_a_proj.weight": ("language_model.model.layers.3.self_attn.q_a_proj.weight"),
         "decoder.layers.3.self_attention.kv_a_proj_with_mqa.weight": (
             "language_model.model.layers.3.self_attn.kv_a_proj_with_mqa.weight"
         ),

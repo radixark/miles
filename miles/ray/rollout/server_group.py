@@ -251,9 +251,10 @@ class ServerGroup:
         ]
 
     def onload_weights_from_disk(self):
-        """Reload weights from ``model_path`` for non-updatable groups."""
-        if not self.needs_offload or not self.model_path:
+        """Reload weights from ``model_path`` after their storage is resumed."""
+        if not self.needs_offload:
             return []
+        assert self.model_path, "Disk weight reload requires a model_path"
         return [
             engine.actor_handle.update_weights_from_disk.remote(self.model_path)
             for engine in self.engines

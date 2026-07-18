@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from megatron.bridge.models.conversion.mapping_registry import MegatronMappingRegistry
 from megatron.bridge.models.conversion.model_bridge import MegatronModelBridge
@@ -16,8 +16,13 @@ from megatron.bridge.models.hf_pretrained.causal_lm import PreTrainedCausalLM
 from megatron.bridge.models.mla_provider import MLAModelProvider
 from megatron.core.models.gpt.gpt_model import GPTModel
 
-from miles_plugins.models.kimi_k3.model import build_kimi_k3_spec
 from miles_plugins.models.kimi_k3.ops import situ_and_mul
+
+
+def build_kimi_k3_spec(config, vp_stage=None):
+    from miles_plugins.models.kimi_k3.model import build_kimi_k3_spec as build_spec
+
+    return build_spec(config, vp_stage=vp_stage)
 
 
 @dataclass
@@ -44,48 +49,22 @@ _AUTO_MAPPINGS = {
 }
 
 _COLUMN_PARALLEL_MAPPINGS = {
-    "decoder.layers.*.self_attention.q_proj.weight": (
-        "language_model.model.layers.*.self_attn.q_proj.weight"
-    ),
-    "decoder.layers.*.self_attention.k_proj.weight": (
-        "language_model.model.layers.*.self_attn.k_proj.weight"
-    ),
-    "decoder.layers.*.self_attention.v_proj.weight": (
-        "language_model.model.layers.*.self_attn.v_proj.weight"
-    ),
-    "decoder.layers.*.self_attention.q_conv1d.weight": (
-        "language_model.model.layers.*.self_attn.q_conv1d.weight"
-    ),
-    "decoder.layers.*.self_attention.k_conv1d.weight": (
-        "language_model.model.layers.*.self_attn.k_conv1d.weight"
-    ),
-    "decoder.layers.*.self_attention.v_conv1d.weight": (
-        "language_model.model.layers.*.self_attn.v_conv1d.weight"
-    ),
-    "decoder.layers.*.self_attention.dt_bias": (
-        "language_model.model.layers.*.self_attn.dt_bias"
-    ),
-    "decoder.layers.*.self_attention.f_b_proj.weight": (
-        "language_model.model.layers.*.self_attn.f_b_proj.weight"
-    ),
-    "decoder.layers.*.self_attention.b_proj.weight": (
-        "language_model.model.layers.*.self_attn.b_proj.weight"
-    ),
-    "decoder.layers.*.self_attention.g_proj.weight": (
-        "language_model.model.layers.*.self_attn.g_proj.weight"
-    ),
-    "decoder.layers.*.self_attention.q_b_proj.weight": (
-        "language_model.model.layers.*.self_attn.q_b_proj.weight"
-    ),
-    "decoder.layers.*.self_attention.kv_b_proj.weight": (
-        "language_model.model.layers.*.self_attn.kv_b_proj.weight"
-    ),
+    "decoder.layers.*.self_attention.q_proj.weight": ("language_model.model.layers.*.self_attn.q_proj.weight"),
+    "decoder.layers.*.self_attention.k_proj.weight": ("language_model.model.layers.*.self_attn.k_proj.weight"),
+    "decoder.layers.*.self_attention.v_proj.weight": ("language_model.model.layers.*.self_attn.v_proj.weight"),
+    "decoder.layers.*.self_attention.q_conv1d.weight": ("language_model.model.layers.*.self_attn.q_conv1d.weight"),
+    "decoder.layers.*.self_attention.k_conv1d.weight": ("language_model.model.layers.*.self_attn.k_conv1d.weight"),
+    "decoder.layers.*.self_attention.v_conv1d.weight": ("language_model.model.layers.*.self_attn.v_conv1d.weight"),
+    "decoder.layers.*.self_attention.dt_bias": ("language_model.model.layers.*.self_attn.dt_bias"),
+    "decoder.layers.*.self_attention.f_b_proj.weight": ("language_model.model.layers.*.self_attn.f_b_proj.weight"),
+    "decoder.layers.*.self_attention.b_proj.weight": ("language_model.model.layers.*.self_attn.b_proj.weight"),
+    "decoder.layers.*.self_attention.g_proj.weight": ("language_model.model.layers.*.self_attn.g_proj.weight"),
+    "decoder.layers.*.self_attention.q_b_proj.weight": ("language_model.model.layers.*.self_attn.q_b_proj.weight"),
+    "decoder.layers.*.self_attention.kv_b_proj.weight": ("language_model.model.layers.*.self_attn.kv_b_proj.weight"),
 }
 
 _ROW_PARALLEL_MAPPINGS = {
-    "decoder.layers.*.self_attention.o_proj.weight": (
-        "language_model.model.layers.*.self_attn.o_proj.weight"
-    ),
+    "decoder.layers.*.self_attention.o_proj.weight": ("language_model.model.layers.*.self_attn.o_proj.weight"),
     "decoder.layers.*.mlp.linear_fc2.weight": "language_model.model.layers.*.mlp.down_proj.weight",
     "decoder.layers.*.mlp.shared_experts.linear_fc2.weight": (
         "language_model.model.layers.*.block_sparse_moe.shared_experts.down_proj.weight"
@@ -95,18 +74,10 @@ _ROW_PARALLEL_MAPPINGS = {
 _REPLICATED_MAPPINGS = {
     "decoder.final_layernorm.weight": "language_model.model.norm.weight",
     "decoder.layers.*.input_layernorm.weight": "language_model.model.layers.*.input_layernorm.weight",
-    "decoder.layers.*.pre_mlp_layernorm.weight": (
-        "language_model.model.layers.*.post_attention_layernorm.weight"
-    ),
-    "decoder.layers.*.self_attention.f_a_proj.weight": (
-        "language_model.model.layers.*.self_attn.f_a_proj.weight"
-    ),
-    "decoder.layers.*.self_attention.o_norm.weight": (
-        "language_model.model.layers.*.self_attn.o_norm.weight"
-    ),
-    "decoder.layers.*.self_attention.q_a_proj.weight": (
-        "language_model.model.layers.*.self_attn.q_a_proj.weight"
-    ),
+    "decoder.layers.*.pre_mlp_layernorm.weight": ("language_model.model.layers.*.post_attention_layernorm.weight"),
+    "decoder.layers.*.self_attention.f_a_proj.weight": ("language_model.model.layers.*.self_attn.f_a_proj.weight"),
+    "decoder.layers.*.self_attention.o_norm.weight": ("language_model.model.layers.*.self_attn.o_norm.weight"),
+    "decoder.layers.*.self_attention.q_a_proj.weight": ("language_model.model.layers.*.self_attn.q_a_proj.weight"),
     "decoder.layers.*.self_attention.q_a_layernorm.weight": (
         "language_model.model.layers.*.self_attn.q_a_layernorm.weight"
     ),
@@ -124,9 +95,7 @@ _REPLICATED_MAPPINGS = {
     ),
     "decoder.layers.*.mlp_res_norm.weight": "language_model.model.layers.*.mlp_res_norm.weight",
     "decoder.layers.*.mlp_res_proj.weight": "language_model.model.layers.*.mlp_res_proj.weight",
-    "decoder.layers.*.mlp.router.weight": (
-        "language_model.model.layers.*.block_sparse_moe.gate.weight"
-    ),
+    "decoder.layers.*.mlp.router.weight": ("language_model.model.layers.*.block_sparse_moe.gate.weight"),
     "decoder.layers.*.mlp.router.expert_bias": (
         "language_model.model.layers.*.block_sparse_moe.gate.e_score_correction_bias"
     ),
@@ -218,10 +187,7 @@ class KimiK3MegatronBridge(MegatronModelBridge):
         provider.moe_latent_size = text_config.routed_expert_hidden_size
         provider.moe_latent_use_norm = text_config.latent_moe_use_norm
         provider.moe_layer_freq = [
-            int(
-                layer_idx >= text_config.first_k_dense_replace
-                and layer_idx % text_config.moe_layer_freq == 0
-            )
+            int(layer_idx >= text_config.first_k_dense_replace and layer_idx % text_config.moe_layer_freq == 0)
             for layer_idx in range(text_config.num_hidden_layers)
         ]
 
@@ -267,12 +233,8 @@ class KimiK3MegatronBridge(MegatronModelBridge):
                 ),
                 GatedMLPMapping(
                     megatron_param="decoder.layers.*.mlp.shared_experts.linear_fc1.weight",
-                    gate=(
-                        "language_model.model.layers.*.block_sparse_moe.shared_experts.gate_proj.weight"
-                    ),
-                    up=(
-                        "language_model.model.layers.*.block_sparse_moe.shared_experts.up_proj.weight"
-                    ),
+                    gate=("language_model.model.layers.*.block_sparse_moe.shared_experts.gate_proj.weight"),
+                    up=("language_model.model.layers.*.block_sparse_moe.shared_experts.up_proj.weight"),
                 ),
                 GatedMLPMapping(
                     megatron_param="decoder.layers.*.mlp.experts.linear_fc1.weight*",

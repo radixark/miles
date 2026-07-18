@@ -9,7 +9,7 @@ from miles.utils.async_utils import eager_create_task
 from miles.utils.environ import enable_experimental_ft_trainer
 
 from ..utils.ray_utils import compute_ray_pin_head_options
-from .rollout.rollout_manager import RolloutManager
+from .rollout.rollout_manager import RolloutManager, get_rollout_offload_tags
 
 logger = logging.getLogger(__name__)
 
@@ -202,12 +202,21 @@ def create_rollout_manager(args, pg):
         assert args.num_rollout > 0
 
     if args.check_weight_update_equal:
-        ray.get(rollout_manager.check_weights.remote(action="snapshot", skip_list=args.check_weight_update_skip_list))
+        snapshot_action = "snapshot" if args.check_weight_update_allow_quant_error else "snapshot_checksum"
+        ray.get(
+            rollout_manager.check_weights.remote(
+                action=snapshot_action,
+                skip_list=args.check_weight_update_skip_list,
+            )
+        )
         ray.get(
             rollout_manager.check_weights.remote(action="reset_tensors", skip_list=args.check_weight_update_skip_list)
         )
 
+    if args.check_rollout_weight_reload_equal:
+        ray.get(rollout_manager.check_weights.remote(action="snapshot_checksum"))
+
     if args.offload_rollout:
-        ray.get(rollout_manager.offload.remote())
+        ray.get(rollout_manager.offload.remote(tags=get_rollout_offload_tags(args)))
 
     return rollout_manager, num_rollout_per_epoch

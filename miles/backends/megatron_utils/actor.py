@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 import socket
 from argparse import Namespace
@@ -23,7 +24,12 @@ from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
-from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
+from miles.utils.reloadable_process_group import (
+    destroy_process_groups,
+    monkey_patch_torch_dist,
+    reload_process_groups,
+    warm_up_process_group,
+)
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.timer import Timer, inverse_timer, timer
@@ -44,6 +50,7 @@ from ..training_utils.loss import (
 from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
+from .checkpoint_cache import prepare_rank_local_checkpoint
 from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
@@ -81,6 +88,29 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+
+        if cache_root := os.environ.get("MILES_MEGATRON_LOCAL_CHECKPOINT_CACHE"):
+            source_load = args.load
+            cache_error = None
+            local_load = None
+            try:
+                if source_load is None:
+                    raise ValueError("args.load must be set when MILES_MEGATRON_LOCAL_CHECKPOINT_CACHE is enabled")
+                local_load = prepare_rank_local_checkpoint(source_load, cache_root, dist.get_rank())
+            except Exception as error:
+                cache_error = f"rank {dist.get_rank()}: {type(error).__name__}: {error}"
+
+            cache_errors = [None] * dist.get_world_size()
+            dist.all_gather_object(cache_errors, cache_error, group=get_gloo_group())
+            cache_errors = [error for error in cache_errors if error is not None]
+            if cache_errors:
+                raise RuntimeError("Failed to prepare local Megatron checkpoint cache:\n" + "\n".join(cache_errors))
+
+            assert local_load is not None
+            args.load = local_load
+            if args.ref_load == source_load:
+                args.ref_load = local_load
+            logger.info("Using rank-local Megatron checkpoint cache: %s", local_load)
 
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
@@ -264,8 +294,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
         destroy_process_groups()
 
-        tag = "default" if is_lora_enabled(self.args) else None
-        torch_memory_saver.pause(tag=tag)
+        if is_lora_enabled(self.args):
+            torch_memory_saver.pause(tag="grad_buffer")
+            torch_memory_saver.pause(tag="default")
+        else:
+            torch_memory_saver.pause(tag=None)
 
         print_memory("after offload model")
 
@@ -278,11 +311,19 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self.args.offload_train
         print_memory("before wake_up model")
 
-        tag = "default" if is_lora_enabled(self.args) else None
-        torch_memory_saver.resume(tag=tag)
+        if is_lora_enabled(self.args):
+            torch_memory_saver.resume(tag="default")
+            torch_memory_saver.resume(tag="grad_buffer")
+        else:
+            torch_memory_saver.resume(tag=None)
 
         clear_memory()
         reload_process_groups()
+        ep = get_parallel_state().ep
+        if ep.size > 1:
+            with timer("warm_up_ep_group"):
+                elapsed = warm_up_process_group(ep.group)
+            logger.info("Warmed up EP process group (size=%d) in %.3fs", ep.size, elapsed)
         print_memory("after wake_up model")
 
     @property
@@ -578,6 +619,8 @@ class MegatronTrainRayActor(TrainRayActor):
         engine_gpu_offsets = info.engine_gpu_offsets
         del info
 
+        keep_process_groups = self.args.offload_train and is_lora_enabled(self.args)
+
         if self.args.offload_train:
             reload_process_groups()
 
@@ -595,7 +638,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
                 logger.warning("Skipping actor-to-rollout weight update because " "--debug-skip-weight-update is set.")
-            if self.args.offload_train:
+            if self.args.offload_train and not keep_process_groups:
                 destroy_process_groups()
             return
 
@@ -623,7 +666,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 else:
                     self.weights_backuper.backup("old_actor")
 
-        if self.args.offload_train:
+        # LoRA updates need the training process groups again at the next train
+        # wake-up. Keep this reload alive until sleep() owns the next teardown.
+        if self.args.offload_train and not keep_process_groups:
             destroy_process_groups()
 
     @with_logs

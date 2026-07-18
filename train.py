@@ -1,9 +1,8 @@
 import asyncio
 import logging
 
-from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
-
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.ray.rollout.rollout_manager import get_rollout_offload_tags
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -44,12 +43,17 @@ async def train(args):
     if args.offload_rollout:
         await rollout_manager.onload_weights.remote()
 
+    if args.check_rollout_weight_reload_equal:
+        await rollout_manager.check_weights.remote(action="compare_checksum")
+        await rollout_manager.check_weights.remote(action="clear_snapshot")
+
     # always update weight first so that sglang has the loaded weights from training.
     await actor_model.update_weights()
 
     if args.check_weight_update_equal:
+        compare_action = "compare" if args.check_weight_update_allow_quant_error else "compare_checksum"
         await rollout_manager.check_weights.remote(
-            action="compare",
+            action=compare_action,
             allow_quant_error=args.check_weight_update_allow_quant_error,
             selector=args.check_weight_update_selector,
             skip_list=args.check_weight_update_skip_list,
@@ -96,12 +100,7 @@ async def train(args):
         rollout_data_ref = await rollout_manager.generate.remote(rollout_id)
 
         if args.offload_rollout:
-            offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
-            if "kv_cache" in args.offload_rollout_level:
-                offload_tags.append(GPU_MEMORY_TYPE_KV_CACHE)
-            if "weight" in args.offload_rollout_level:
-                offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
-            await rollout_manager.offload.remote(tags=offload_tags)
+            await rollout_manager.offload.remote(tags=get_rollout_offload_tags(args))
 
         if args.use_critic:
             critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_ref))

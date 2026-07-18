@@ -158,6 +158,15 @@ def test_custom_megatron_post_save_hook_path_is_parsed():
     assert args.custom_megatron_post_save_hook_path == "pkg.module.hook"
 
 
+def test_check_rollout_weight_reload_equal_flag_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--check-rollout-weight-reload-equal"] + REQUIRED_ARGS)
+
+    assert args.check_rollout_weight_reload_equal is True
+
+
 def test_custom_megatron_post_save_hook_path_requires_save():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)

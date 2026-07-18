@@ -4,7 +4,9 @@ Validates that _send_hf_params correctly separates LoRA vs base weights
 and that UpdateWeightFromTensor initialises _lora_config only when LoRA is active.
 """
 
+import sys
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import torch
@@ -50,6 +52,22 @@ class TestLoraWeightSeparation:
         for name, _ in base:
             assert ".lora_A." not in name
             assert ".lora_B." not in name
+
+
+def test_cpu_backup_is_zero_copy(monkeypatch):
+    from miles.backends.megatron_utils.update_weight import common
+
+    tensor = torch.randn(4)
+    backup = torch.randn(4)
+    get_cpu_backup = MagicMock(return_value=backup)
+    monkeypatch.setitem(
+        sys.modules,
+        "torch_memory_saver",
+        SimpleNamespace(torch_memory_saver=SimpleNamespace(get_cpu_backup=get_cpu_backup)),
+    )
+
+    assert common._maybe_get_cpu_backup(tensor) is backup
+    get_cpu_backup.assert_called_once_with(tensor, zero_copy=True)
 
 
 # ---------------------------------------------------------------------------

@@ -123,6 +123,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Example: --offload-rollout-level kv_cache weight"
                 ),
             )
+            parser.add_argument(
+                "--reload-rollout-weights-from-disk",
+                action="store_true",
+                help=(
+                    "After offloading rollout weights, allocate their GPU storage and reload the base model "
+                    "from each engine's model path instead of restoring a CPU backup."
+                ),
+            )
 
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
@@ -188,6 +196,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=1024**3,
                 help="Add margin for train memory allocation. By default we will reserve 1GB as margin.",
+            )
+            parser.add_argument(
+                "--drop-checkpoint-page-cache-after-load",
+                action="store_true",
+                help=(
+                    "Evict clean checkpoint file pages after all Megatron ranks finish loading. "
+                    "Use this when colocated model offload needs the host memory otherwise occupied by the checkpoint cache."
+                ),
             )
             parser.add_argument(
                 "--debug-skip-weight-update",
@@ -1383,6 +1399,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--check-lora-weight-equal",
+                action="store_true",
+                default=False,
+                help=(
+                    "Verify Megatron-to-SGLang LoRA tensor sync with a per-tensor "
+                    "SHA256 manifest on every adapter update."
+                ),
+            )
+            parser.add_argument(
                 "--experts-shared-outer-loras",
                 action="store_true",
                 default=False,
@@ -1683,6 +1708,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="torch",
             )
             parser.add_argument("--check-weight-update-equal", action="store_true")
+            parser.add_argument(
+                "--check-rollout-weight-reload-equal",
+                action="store_true",
+                help="Compare every rollout-model tensor checksum before weight offload and after the first disk reload.",
+            )
             parser.add_argument(
                 "--check-weight-update-selector",
                 type=str,
@@ -2652,6 +2682,19 @@ def miles_validate_args(args):
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+
+    if args.reload_rollout_weights_from_disk:
+        assert args.offload_rollout, "--reload-rollout-weights-from-disk requires --offload-rollout"
+        assert (
+            "weight" in args.offload_rollout_level
+        ), "--reload-rollout-weights-from-disk requires 'weight' in --offload-rollout-level"
+        assert (
+            not args.lora_base_cpu_backup
+        ), "--reload-rollout-weights-from-disk and --lora-base-cpu-backup are mutually exclusive"
+    if args.check_rollout_weight_reload_equal:
+        assert (
+            args.reload_rollout_weights_from_disk
+        ), "--check-rollout-weight-reload-equal requires --reload-rollout-weights-from-disk"
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True

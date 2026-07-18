@@ -263,10 +263,38 @@ def pack_layer(weight, group_size, sym=True):
     return packed_weight, scale, packed_zp
 
 
+def quantize_mxfp4(weight, group_size):
+    assert weight.shape[-1] % group_size == 0
+    assert weight.shape[-1] % 2 == 0
+
+    blocks = weight.reshape(-1, group_size)
+    amax = blocks.abs().amax(dim=-1, keepdim=True).float()
+    scale_exp = torch.ceil(torch.log2(amax / 6.0)).clamp_(-127, 127)
+    normalized = blocks.float() * torch.exp2(-scale_exp)
+
+    magnitude = torch.zeros_like(normalized, dtype=torch.uint8)
+    for bound in (0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0):
+        magnitude.add_(normalized.abs() > bound)
+    encoded = magnitude | (torch.signbit(normalized).to(torch.uint8) << 3)
+
+    packed = encoded[:, 0::2] | (encoded[:, 1::2] << 4)
+    packed = packed.reshape(*weight.shape[:-1], weight.shape[-1] // 2).contiguous()
+    scale = (scale_exp + 127).to(torch.uint8)
+    scale = scale.reshape(*weight.shape[:-1], weight.shape[-1] // group_size).contiguous()
+    return packed, scale
+
+
 def quantize_params_compressed_tensors(converted_named_params, quantization_config):
+    quant_format = quantization_config["format"]
     w_cfg = quantization_config["config_groups"]["group_0"]["weights"]
     group_size = w_cfg["group_size"]
     is_symmetric = w_cfg["symmetric"]
+    is_mxfp4 = quant_format == "mxfp4-pack-quantized"
+    if is_mxfp4:
+        assert w_cfg["type"] == "float"
+        assert w_cfg["num_bits"] == 4
+        assert w_cfg["scale_dtype"] == "torch.uint8"
+        assert is_symmetric
     ignore_rules = quantization_config.get("ignore", [])
     # Base names of params the checkpoint actually stores packed (see
     # HfWeightIteratorBridge). The published ignore list of multimodal
@@ -290,16 +318,21 @@ def quantize_params_compressed_tensors(converted_named_params, quantization_conf
             results.append((name, param))
             continue
 
-        qw, s, zp = pack_layer(param, group_size, is_symmetric)
         qweight_name = name.replace(".weight", ".weight_packed")
         scale_name = name.replace(".weight", ".weight_scale")
-        weight_shape = torch.tensor(param.shape, dtype=torch.int32, device="cuda")
-        weight_shape_name = name.replace(".weight", ".weight_shape")
-        if zp is not None:
-            zp_name = name.replace(".weight", ".weight_zero_point")
-            results.append((zp_name, zp))
-        results.append((qweight_name, qw))
-        results.append((scale_name, s))
-        results.append((weight_shape_name, weight_shape))
+        if is_mxfp4:
+            qw, s = quantize_mxfp4(param, group_size)
+            results.append((qweight_name, qw))
+            results.append((scale_name, s))
+        else:
+            qw, s, zp = pack_layer(param, group_size, is_symmetric)
+            weight_shape = torch.tensor(param.shape, dtype=torch.int32, device="cuda")
+            weight_shape_name = name.replace(".weight", ".weight_shape")
+            if zp is not None:
+                zp_name = name.replace(".weight", ".weight_zero_point")
+                results.append((zp_name, zp))
+            results.append((qweight_name, qw))
+            results.append((scale_name, s))
+            results.append((weight_shape_name, weight_shape))
 
     return results

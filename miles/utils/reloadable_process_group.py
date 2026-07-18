@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from contextlib import contextmanager
 
 import torch
@@ -269,6 +270,35 @@ def destroy_process_groups():
 def reload_process_groups():
     """Reload all reloadable process groups."""
     ReloadableProcessGroup.reload_process_groups()
+
+
+def warm_up_process_group(group, device=None) -> float:
+    """Initialize collective and peer-to-peer channels and validate group membership."""
+    world_size = dist.get_world_size(group)
+    if world_size == 1:
+        return 0.0
+
+    group_rank = dist.get_rank(group)
+    device = torch.device(device) if device is not None else torch.device("cuda", torch.cuda.current_device())
+    start = time.perf_counter()
+
+    marker = torch.ones(1, dtype=torch.float32, device=device)
+    dist.all_reduce(marker, group=group)
+    if marker.item() != world_size:
+        raise RuntimeError(f"Process-group all-reduce warmup returned {marker.item()}, expected {world_size}")
+
+    send = torch.full((world_size,), group_rank, dtype=torch.float32, device=device)
+    received = torch.empty_like(send)
+    dist.all_to_all_single(received, send, group=group)
+    expected = torch.arange(world_size, dtype=torch.float32, device=device)
+    if not torch.equal(received, expected):
+        raise RuntimeError(
+            f"Process-group all-to-all warmup mismatch on group rank {group_rank}: "
+            f"received={received.tolist()}, expected={expected.tolist()}"
+        )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    return time.perf_counter() - start
 
 
 @contextmanager

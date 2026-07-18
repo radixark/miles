@@ -41,6 +41,15 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+def get_rollout_offload_tags(args) -> list[str]:
+    tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+    if "kv_cache" in args.offload_rollout_level:
+        tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+    if "weight" in args.offload_rollout_level:
+        tags.append(GPU_MEMORY_TYPE_WEIGHTS)
+    return tags
+
+
 @ray.remote
 class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
@@ -201,7 +210,12 @@ class RolloutManager:
             await srv.onload(tags)
 
     async def onload_weights(self):
-        await self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+        if self.args.reload_rollout_weights_from_disk:
+            logger.info("Reloading rollout weights from engine-local model paths")
+            for srv in self.servers.values():
+                await srv.onload_weights_from_disk()
+        else:
+            await self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     async def onload_kv(self):
         await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])

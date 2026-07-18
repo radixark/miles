@@ -3,6 +3,7 @@ import dataclasses
 import logging
 
 import ray
+from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.ray.rollout.addr_allocator import PortCursors
@@ -209,6 +210,13 @@ class RolloutServer:
         handles = []
         for g in self.server_groups:
             handles.extend(g.onload(tags))
+        return await asyncio.gather(*handles)
+
+    async def onload_weights_from_disk(self):
+        await self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+        handles = []
+        for g in self.server_groups:
+            handles.extend(g.onload_weights_from_disk())
         return await asyncio.gather(*handles)
 
     async def check_weights(

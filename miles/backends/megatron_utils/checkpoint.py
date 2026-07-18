@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
@@ -99,6 +100,22 @@ logger = logging.getLogger(__name__)
 __all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
 
 
+def _drop_checkpoint_page_cache(load_path: str | Path) -> tuple[int, int]:
+    file_count = 0
+    total_bytes = 0
+    for path in Path(load_path).rglob("*"):
+        if not path.is_file():
+            continue
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+        file_count += 1
+        total_bytes += path.stat().st_size
+    return file_count, total_bytes
+
+
 @contextmanager
 def _exclude_adapter_params_from_sharded_state_dict(models):
     originals = []
@@ -124,6 +141,9 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     args = get_args()
 
     load_path = args.load
+    load_started = time.perf_counter()
+    if dist.get_rank() == 0:
+        logger.info("Starting checkpoint load from %s", load_path)
 
     has_local_checkpoint_manager = "local_checkpoint_manager" in (checkpointing_context or {})
     if has_local_checkpoint_manager:
@@ -153,6 +173,18 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
             load_path=load_path,
         )
 
+    if args.drop_checkpoint_page_cache_after_load:
+        if has_local_checkpoint_manager:
+            raise ValueError("--drop-checkpoint-page-cache-after-load requires a disk checkpoint")
+        dist.barrier()
+        file_count, total_bytes = _drop_checkpoint_page_cache(load_path)
+        if dist.get_rank() == 0:
+            logger.info(
+                "Dropped checkpoint page cache for %d files (%.2f GiB logical size)",
+                file_count,
+                total_bytes / 1024**3,
+            )
+
     # Load LoRA adapter weights if available
     if is_lora_enabled(args):
         adapter_path = getattr(args, "lora_adapter_path", None)
@@ -174,6 +206,8 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                     f"Training will start with freshly initialized adapter weights."
                 )
 
+    if dist.get_rank() == 0:
+        logger.info("Checkpoint load from %s completed in %.2f seconds", load_path, time.perf_counter() - load_started)
     return result
 
 

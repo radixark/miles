@@ -13,12 +13,13 @@ from miles.backends.megatron_utils.lora_utils import (
     build_lora_sync_config,
     is_lora_weight_name,
     lora_base_cpu_backup_enabled,
+    lora_rollout_base_retained,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 
-from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
+from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer, monkey_patch_torch_reductions
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update
 from .hf_weight_iterator_base import HfWeightIteratorBase
 from .update_weight_from_distributed.broadcast import (
@@ -38,6 +39,75 @@ def _should_skip_lora_base_sync(
     lora_base_synced: bool,
 ) -> bool:
     return is_lora and retains_rollout_base and (not check_weight_update_equal or lora_base_synced)
+
+
+def _validate_zero_lora_delta(hf_named_tensors: Sequence[tuple[str, torch.Tensor]]) -> None:
+    lora_b_tensors = [(name, tensor) for name, tensor in hf_named_tensors if ".lora_B." in name]
+    if not lora_b_tensors:
+        raise RuntimeError("Initial Kimi K3 LoRA chunk contains no lora_B tensors")
+
+    for name, tensor in lora_b_tensors:
+        nonzero = torch.count_nonzero(tensor).item()
+        if nonzero:
+            raise RuntimeError(
+                f"Initial Kimi K3 LoRA delta is not zero: {name} has {nonzero} "
+                f"nonzero values (max_abs={tensor.abs().max().item():.9g})"
+            )
+
+
+class _LoraVersionChangeValidator:
+    def __init__(self) -> None:
+        self._baseline: dict[str, str] = {}
+        self._seen: set[str] = set()
+        self._changed = 0
+
+    def validate(
+        self,
+        weight_version: int,
+        checksums: Mapping[str, str],
+        *,
+        is_first_chunk: bool,
+        is_last_chunk: bool,
+    ) -> None:
+        if is_first_chunk:
+            self._seen = set()
+            self._changed = 0
+
+        duplicate = self._seen & checksums.keys()
+        if duplicate:
+            raise RuntimeError(f"LoRA version {weight_version} contains duplicate tensors: {sorted(duplicate)[:5]}")
+        self._seen.update(checksums)
+
+        if weight_version == 1:
+            self._baseline.update(checksums)
+        else:
+            unexpected = checksums.keys() - self._baseline.keys()
+            if unexpected:
+                raise RuntimeError(
+                    f"LoRA version {weight_version} contains unexpected tensors: {sorted(unexpected)[:5]}"
+                )
+            self._changed += sum(self._baseline[name] != checksum for name, checksum in checksums.items())
+
+        if not is_last_chunk:
+            return
+
+        if weight_version == 1:
+            if not self._baseline:
+                raise RuntimeError("Initial LoRA version contains no tensors")
+            logger.info("Recorded initial LoRA checksum baseline: %d tensors", len(self._baseline))
+            return
+
+        missing = self._baseline.keys() - self._seen
+        if missing:
+            raise RuntimeError(f"LoRA version {weight_version} is missing tensors: {sorted(missing)[:5]}")
+        if self._changed == 0:
+            raise RuntimeError(f"LoRA version {weight_version} did not change any exported tensor")
+        logger.info(
+            "LoRA version %d update verified: %d/%d exported tensors changed",
+            weight_version,
+            self._changed,
+            len(self._baseline),
+        )
 
 
 class UpdateWeightFromTensor:
@@ -79,10 +149,16 @@ class UpdateWeightFromTensor:
             self._lora_config = build_lora_sync_config(args)
             self._lora_loaded = False
             self._lora_base_synced = False
+            self._lora_version_change_validator = _LoraVersionChangeValidator()
 
-        # Create IPC gather groups within megatron.
-        for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
-            end_rank = start_rank + self.args.rollout_num_gpus_per_engine
+        # Create IPC gather groups for complete colocated engines. A partial tail
+        # of trainer ranks can be reserved as placeholder GPU slots.
+        self._ipc_gather_group = None
+        self._ipc_gather_src = None
+        world_size = dist.get_world_size()
+        engine_size = self.args.rollout_num_gpus_per_engine
+        for start_rank in range(0, world_size - engine_size + 1, engine_size):
+            end_rank = start_rank + engine_size
             group_ranks = list(range(start_rank, end_rank))
             new_group = dist.new_group(ranks=group_ranks, backend="gloo")
             if dist.get_rank() in group_ranks:
@@ -214,7 +290,9 @@ class UpdateWeightFromTensor:
         # calls that would otherwise prep / re-quantize fresh base bytes.
         skip_base_sync = _should_skip_lora_base_sync(
             is_lora=self.is_lora,
-            retains_rollout_base=self.use_distribute or lora_base_cpu_backup_enabled(self.args),
+            retains_rollout_base=(
+                self.use_distribute or lora_base_cpu_backup_enabled(self.args) or lora_rollout_base_retained(self.args)
+            ),
             check_weight_update_equal=getattr(self.args, "check_weight_update_equal", False),
             lora_base_synced=self._lora_base_synced if self.is_lora else False,
         )
@@ -238,27 +316,56 @@ class UpdateWeightFromTensor:
                 _check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors
 
+            # SGLang restores packed base weights for the duration of a base
+            # update. Close that session before Bridge starts its TP/EP LoRA
+            # gathers; keeping both live exceeds colocated full-model memory.
+            if rank == 0:
+                end_weight_update(self.rollout_engines)
+            dist.barrier(group=get_gloo_group())
+            if self.is_lora:
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+
         if self.is_lora:
-            # SGLang's load_lora_adapter_from_tensors expects the full adapter in
-            # one call; drain the bridge's chunker so --update-weight-buffer-size
-            # only bounds the base path.
-            accumulated_named_tensors: list = []
-            for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
-                megatron_local_weights, weight_type="lora"
-            ):
-                accumulated_named_tensors.extend(hf_named_tensors)
-
-            if not accumulated_named_tensors:
+            chunks = iter(self._hf_weight_iterator.get_hf_weight_chunks(megatron_local_weights, weight_type="lora"))
+            try:
+                hf_named_tensors = next(chunks)
+            except StopIteration:
                 raise RuntimeError(
-                    "LoRA weight sync failed: the weight iterator produced zero chunks. "
-                    "No adapter weights were sent to the rollout engine. This usually means "
-                    "the Megatron-Bridge or SGLang version is incompatible."
-                )
+                    "LoRA weight sync failed: the weight iterator produced zero chunks. No adapter weights were sent to the rollout engine. This usually means the Megatron-Bridge or SGLang version is incompatible."
+                ) from None
 
-            refs, long_lived_tensors = self._send_lora_params(accumulated_named_tensors)
+            is_first_chunk = True
+            sent_chunks = 0
+            for next_hf_named_tensors in chunks:
+                refs, long_lived_tensors = self._send_lora_params(
+                    hf_named_tensors,
+                    is_first_chunk=is_first_chunk,
+                    is_last_chunk=False,
+                )
+                results = ray.get(refs)
+                _check_weight_sync_results(results, is_lora=True)
+                del long_lived_tensors
+                sent_chunks += 1
+                hf_named_tensors = next_hf_named_tensors
+                is_first_chunk = False
+
+            refs, long_lived_tensors = self._send_lora_params(
+                hf_named_tensors,
+                is_first_chunk=is_first_chunk,
+                is_last_chunk=True,
+            )
             results = ray.get(refs)
             _check_weight_sync_results(results, is_lora=True)
             del long_lived_tensors
+            sent_chunks += 1
+
+            if rank == 0:
+                logger.info(
+                    "LoRA weight version %d sent in %d chunks",
+                    self.weight_version,
+                    sent_chunks,
+                )
 
             if not self._lora_base_synced:
                 self._lora_base_synced = True
@@ -266,9 +373,6 @@ class UpdateWeightFromTensor:
         dist.barrier(group=get_gloo_group())
 
         if rank == 0:
-            # Skip when no fresh base bytes landed (skip_base_sync).
-            if not skip_base_sync:
-                end_weight_update(self.rollout_engines)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
@@ -292,25 +396,43 @@ class UpdateWeightFromTensor:
                 refs = (refs or []) + refs_distributed
         return refs or [], long_lived_tensors
 
-    def _send_lora_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+    def _send_lora_params(
+        self,
+        hf_named_tensors,
+        *,
+        is_first_chunk: bool = True,
+        is_last_chunk: bool = True,
+    ) -> tuple[list[ObjectRef], Any]:
         if not any(is_lora_weight_name(n) for n, _ in hf_named_tensors):
             raise RuntimeError(
-                "LoRA weight sync failed: chunk contains no LoRA weights "
-                "(no lora_A/lora_B names found). Check weight iterator configuration."
+                "LoRA weight sync failed: chunk contains no LoRA weights (no lora_A/lora_B names found). Check weight iterator configuration."
             )
         if self.use_distribute and self._is_distributed_src_rank:
             raise NotImplementedError("LoRA weight sync is not yet supported for distributed (non-colocated) engines")
         else:
+            if (
+                self.weight_version == 1
+                and "kimi_k3" in self.model_name.lower()
+                and getattr(self.args, "lora_adapter_path", None) is None
+                and getattr(self.args, "check_lora_weight_equal", False)
+            ):
+                _validate_zero_lora_delta(hf_named_tensors)
             refs, long_lived_tensors = _send_to_colocated_engine(
                 hf_named_tensors=hf_named_tensors,
                 ipc_engine=self._ipc_engine,
                 ipc_gather_src=self._ipc_gather_src,
                 ipc_gather_group=self._ipc_gather_group,
+                weight_version=self.weight_version,
                 lora_config=self._lora_config,
                 lora_name=LORA_ADAPTER_NAME,
                 lora_loaded=self._lora_loaded,
+                lora_is_first_chunk=is_first_chunk,
+                lora_is_last_chunk=is_last_chunk,
+                check_lora_weight_equal=getattr(self.args, "check_lora_weight_equal", False),
+                lora_version_validator=self._lora_version_change_validator.validate,
             )
-            self._lora_loaded = True
+            if is_last_chunk:
+                self._lora_loaded = True
             return refs or [], long_lived_tensors
 
 
@@ -324,6 +446,10 @@ def _send_to_colocated_engine(
     lora_config: dict | None = None,
     lora_name: str | None = None,
     lora_loaded: bool = False,
+    lora_is_first_chunk: bool = True,
+    lora_is_last_chunk: bool = True,
+    check_lora_weight_equal: bool = False,
+    lora_version_validator: Callable[..., None] | None = None,
 ) -> tuple[list[ObjectRef], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
@@ -333,8 +459,20 @@ def _send_to_colocated_engine(
     is_lora = lora_config is not None
     is_gather_src = dist.get_rank() == ipc_gather_src
     long_live_tensors = []
+    monkey_patch_torch_reductions()
 
-    if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
+    if is_lora:
+        assert weight_version is not None, "LoRA tensor sync requires a weight version"
+        # Every bridge rank has the complete adapter after its internal TP/EP
+        # collectives. Keep one CUDA-IPC payload per rank so a multi-node
+        # SGLang engine can open handles from its node-local trainer process.
+        # Do not flatten here: K3's full adapter is about 24 GB, and torch.cat
+        # would temporarily duplicate it on every GPU.
+        tensor_dict = dict(hf_named_tensors)
+        assert len(tensor_dict) == len(hf_named_tensors), "LoRA adapter contains duplicate HF tensor names"
+        long_live_tensors.append(tensor_dict)
+        serialized_tensors = [MultiprocessingSerializer.serialize(tensor_dict, output_str=True)]
+    elif getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
         converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors}
     else:
         converted_named_tensors_by_dtypes = {}
@@ -344,15 +482,16 @@ def _send_to_colocated_engine(
                 converted_named_tensors_by_dtypes[dtype] = []
             converted_named_tensors_by_dtypes[dtype].append((name, tensor))
 
-    serialized_tensors: list = []
-    for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
-        flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
-        flattened_tensor_data = {
-            "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
-            "metadata": flattened_tensor_bucket.get_metadata(),
-        }
-        long_live_tensors.append(flattened_tensor_data)
-        serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
+    if not is_lora:
+        serialized_tensors = []
+        for _dtype, named_tensors in converted_named_tensors_by_dtypes.items():
+            flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
+            flattened_tensor_data = {
+                "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
+                "metadata": flattened_tensor_bucket.get_metadata(),
+            }
+            long_live_tensors.append(flattened_tensor_data)
+            serialized_tensors.append(MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True))
 
     serialized_named_tensors = [None] * dist.get_world_size(ipc_gather_group) if is_gather_src else None
     dist.gather_object(
@@ -365,7 +504,7 @@ def _send_to_colocated_engine(
     refs = []
     if is_gather_src:
         if is_lora:
-            if lora_loaded:
+            if lora_is_first_chunk and lora_loaded:
                 ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
 
             # (Yusheng) to-do-1: update lora weights from tensors should support multiple dtypes (bf16, fp8, fp16, fp32)
@@ -373,16 +512,54 @@ def _send_to_colocated_engine(
             # Thus, we need to apply the same way as `ipc_engine.update_weights_from_tensor` in future
             # (Yusheng) to-do-2: need to add ci test acc here - now it will pass but fail to update lora weights
 
-            source_payloads = serialized_named_tensors[0]
-            assert len(source_payloads) == 1, "LoRA tensor sync requires a single adapter dtype"
+            assert all(
+                len(rank_payloads) == 1 for rank_payloads in serialized_named_tensors
+            ), "LoRA tensor sync requires one payload per engine rank"
+
+            expected_checksums = None
+            if check_lora_weight_equal:
+                import hashlib
+
+                expected_checksums = {
+                    name: hashlib.sha256(
+                        tensor.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()
+                    ).hexdigest()
+                    for name, tensor in hf_named_tensors
+                }
+                if lora_version_validator is not None:
+                    lora_version_validator(
+                        weight_version,
+                        expected_checksums,
+                        is_first_chunk=lora_is_first_chunk,
+                        is_last_chunk=lora_is_last_chunk,
+                    )
 
             refs.append(
                 ipc_engine.load_lora_adapter_from_tensors.remote(
                     lora_name=lora_name,
                     config_dict=lora_config,
-                    serialized_tensors=source_payloads[0],
-                    load_format="flattened_bucket",
+                    serialized_tensors=[rank_payloads[0] for rank_payloads in serialized_named_tensors],
+                    is_first_chunk=lora_is_first_chunk,
+                    is_last_chunk=lora_is_last_chunk,
+                    expected_checksums=expected_checksums,
                 )
+            )
+            if lora_is_last_chunk:
+                refs.append(ipc_engine.update_weight_version.remote(weight_version=str(weight_version)))
+
+            probe_name, probe_tensor = next(
+                ((name, tensor) for name, tensor in hf_named_tensors if ".lora_B." in name),
+                hf_named_tensors[0],
+            )
+            probe = probe_tensor.reshape(-1)[:4096].float()
+            logger.info(
+                "LoRA sync version=%s source_rank=%s first=%s last=%s probe_tensor=%s probe_l2=%.9g",
+                weight_version,
+                dist.get_rank(),
+                lora_is_first_chunk,
+                lora_is_last_chunk,
+                probe_name,
+                torch.linalg.vector_norm(probe).item(),
             )
 
         else:

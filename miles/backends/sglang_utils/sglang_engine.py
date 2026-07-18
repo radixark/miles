@@ -337,22 +337,29 @@ class SGLangEngine(RayActor):
         self,
         lora_name: str,
         config_dict: dict,
-        serialized_tensors: str,
+        serialized_tensors: str | list[str],
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        is_first_chunk: bool = True,
+        is_last_chunk: bool = True,
+        expected_checksums: dict[str, str] | None = None,
     ):
-        """Load a complete LoRA adapter; SGLang applies TP slicing internally."""
+        """Load a LoRA adapter chunk; SGLang applies TP/EP slicing internally."""
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
             "serialized_tensors": serialized_tensors,
             "pinned": pinned,
+            "is_first_chunk": is_first_chunk,
+            "is_last_chunk": is_last_chunk,
         }
         if load_format is not None:
             payload["load_format"] = load_format
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
+        if expected_checksums is not None:
+            payload["expected_checksums"] = expected_checksums
 
         return self._make_request(
             "load_lora_adapter_from_tensors",
@@ -514,7 +521,7 @@ class SGLangEngine(RayActor):
         weights are restored from disk instead of CPU cache), and by disk-delta weight sync
         to reload the patched host-local checkpoint.
         """
-        payload = {"model_path": model_path}
+        payload = {"model_path": model_path, "torch_empty_cache": True}
         if load_format is not None:
             payload["load_format"] = load_format
         if weight_version is not None:

@@ -16,6 +16,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--files", nargs="+")
+    parser.add_argument("--shard-rank", type=int)
+    parser.add_argument("--num-shards", type=int)
+    parser.add_argument("--finalize-only", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -115,10 +118,26 @@ def main() -> None:
     args = parse_args()
     assert args.model_dir.is_dir(), args.model_dir
     assert args.output_dir != args.model_dir
+    assert (args.shard_rank is None) == (args.num_shards is None)
+    if args.num_shards is not None:
+        assert args.num_shards > 0
+        assert 0 <= args.shard_rank < args.num_shards
+        assert args.files is None, "--files cannot be combined with sharded conversion"
+
     group_size = load_group_size(args.model_dir)
-    copy_metadata(args.model_dir, args.output_dir)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.finalize_only:
+        copy_metadata(args.model_dir, args.output_dir)
+        build_index(args.output_dir)
+        return
+
+    if args.shard_rank in (None, 0):
+        copy_metadata(args.model_dir, args.output_dir)
 
     filenames = args.files or [path.name for path in sorted(args.model_dir.glob("*.safetensors"))]
+    if args.num_shards is not None:
+        filenames = filenames[args.shard_rank :: args.num_shards]
     assert filenames, "No safetensors files found"
     for filename in filenames:
         source_path = args.model_dir / filename
@@ -130,7 +149,8 @@ def main() -> None:
         print(f"Converting {source_path} -> {output_path}", flush=True)
         convert_file(source_path, output_path, group_size, args.device)
 
-    build_index(args.output_dir)
+    if args.num_shards is None:
+        build_index(args.output_dir)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from miles.utils.ft_utils.process_group_utils import (
     _RawPGUtil,
     collective_bool_and,
 )
+from miles.utils.reloadable_process_group import warm_up_process_group
 
 
 def _make_mesh():
@@ -154,6 +155,19 @@ def _worker_pg_util_ops(rank: int, world_size: int, port: int) -> None:
 
 def test_pg_util_ops() -> None:
     run_multiprocess(_worker_pg_util_ops, world_size=4)
+
+
+def _worker_warm_up_process_group(rank: int, world_size: int, port: int) -> None:
+    init_gloo(rank, world_size, port=port)
+    try:
+        group = dist.new_group(ranks=list(range(world_size)), backend="gloo")
+        assert warm_up_process_group(group, device="cpu") >= 0
+    finally:
+        dist.destroy_process_group()
+
+
+def test_warm_up_process_group() -> None:
+    run_multiprocess(_worker_warm_up_process_group, world_size=4)
 
 
 def _worker_gather_object(rank: int, world_size: int, port: int) -> None:

@@ -334,12 +334,12 @@ rather than only same-value assignment.
 
 ### LoRA training
 
-`scripts/run_kimi_k3_lora.py` is the verified LoRA launcher. It uses Megatron
-Bridge to construct the K3 model, apply the adapters, load the base DCP
-checkpoint without requiring adapter entries in that checkpoint, and export
-both native Megatron and HF PEFT adapter checkpoints. Parameters such as KDA
-`A_log` and `dt_bias` that are marked for fp32 recurrence are restored to fp32
-after Bridge applies the adapters.
+`scripts/run_kimi_k3_lora.py` is the verified LoRA launcher. K3 uses
+`--megatron-to-hf-mode raw`: the native K3 model provider inserts adapters
+before Megatron wraps the model in DDP, freezes every base parameter, and then
+loads the base DCP checkpoint without requiring adapter entries in that
+checkpoint. Megatron Bridge is not in the online model, forward, backward, or
+weight-update path. MBridge remains the offline HF-to-DCP conversion tool.
 
 The initial target set covers the modules whose Megatron and SGLang LoRA
 contracts agree without changing a fused K3 operator:
@@ -365,28 +365,163 @@ therefore size routed `gate_up_proj_moe` and `down_proj_moe` buffers from
 `routed_expert_hidden_size`, not `hidden_size`, and must initialize the A and B
 per-expert dictionaries independently when only one factor is shared.
 
-For colocated rollout, `--lora-base-cpu-backup` retains the immutable base
-weights while SGLang sleeps. With `--check-weight-update-equal`, the first
-update transfers the full base and performs the strict randomized-snapshot
-comparison; subsequent updates unload and reload only the complete adapter.
-Without the checker, all LoRA updates skip the base transfer. The current
-generic Miles checker validates the base mapping exactly; adapter validation is
-provided by successful SGLang loading and versioned rollout execution rather
-than a separate tensor-by-tensor adapter checker.
+Several adapter factors consume a TP- or EP-partial activation. Those
+parameters are marked with their required reduction domain, and Miles sums
+their gradients over that domain before normal Megatron gradient finalization.
+This keeps the implementation in the native K3 modules while preserving the
+same replicated-factor semantics that a parallel LoRA implementation requires.
+MLA's duplicated `q_a_proj` and `kv_a_proj_with_mqa` deltas are added directly
+to the duplicated projection output. Their latent slices feed TE
+column-parallel q/kv expansion, whose backward already sums input gradients
+across TP; the key-extra slice passes through the attention implementation's
+copy-to-TP mapping. Adding another copy-to-TP around the adapter delta would
+double-reduce its gradient.
+
+The raw exporter gathers TP- and EP-sharded factors into one HF-named chunk per
+adapter module. A MoE layer has separate attention, routed-expert, and
+shared-expert chunks. In colocate mode it materializes each parameter from the
+torch memory-saver CPU backup, transfers only that adapter, and releases it
+before the next one. SGLang accumulates the chunks and normalizes the adapter
+only after the final chunk. A full 896-expert adapter is therefore not
+duplicated as one long-lived GPU or CPU object per trainer rank.
+
+The immutable rollout base is either retained or reloaded from node-local NVMe,
+so adapter updates do not resend it. `--check-lora-weight-equal` compares every
+rank's full pre-slice adapter payload with SHA-256 before SGLang performs TP/EP
+slicing. A newly initialized K3 adapter also requires every exported `lora_B`
+tensor to be exactly zero. The separate base reload checker verifies that the
+native checkpoint reload restores all language-model tensors before rollout.
 
 The verified topology is TP8, EP8, sequence parallel, and PP1 on one 8-H200
-node. This is already the parallel Megatron/TE implementation rather than a
-single-rank reference path, so a second TP-specific implementation is not
-needed. PP greater than one remains unsupported by the underlying K3 backend.
+node. The base projections remain Megatron/TE modules; the adapter deltas use
+PyTorch linear/grouped-matrix operations plus the explicit TP/EP reductions
+described above. This is already a parallel implementation rather than a
+single-rank reference path, so a second TP-specific backend is not needed. PP
+greater than one remains unsupported by the underlying K3 backend.
 
 The final four-layer LoRA smoke completed two rollouts and two valid training
 steps. The deterministic-random raw rewards were `0.4375` and `0.5625`, and the
 gradient norms were `0.4762578444` and `0.4851193323`. The generated text was
 nonsensical, as expected from a four-layer prefix; the rewards only force
 nonzero gradients and are not quality measurements. Each TP rank saved 28
-native adapter tensors and rank 0 exported 8091 HF PEFT tensors. Between the
-two TP0 checkpoints, 15 of the 28 native adapter tensors changed, with an L2
-delta of `1.7596e-7` at the smoke learning rate. Across the three rollout
-updates, the log contains three adapter loads but only one base transaction
-(89 base chunks), proving that the second and final updates were adapter-only.
-The second update took 2.27 seconds and the final update took 2.3 seconds.
+native adapter tensors. Between the two TP0 checkpoints, 15 of those tensors
+changed, with an L2 delta of `1.7596e-7` at the smoke learning rate. Across the
+three rollout updates, the log contains three adapter loads but only one base
+transaction (89 base chunks), proving that the second and final updates were
+adapter-only. The second update took 2.27 seconds and the final update took 2.3
+seconds.
+
+### Full-model GB300 validation status
+
+The full-model development topology is fixed at 16 four-GPU GB300 nodes. The
+Megatron actor uses TP32, EP64, ETP1, PP1, and CP1 across all 64 GPUs. The
+colocated SGLang engine uses TP48 and EP16 on the first 48 GPUs; the remaining
+16 slots are placeholders during rollout. This is time sharing, not 112
+simultaneously resident model ranks. An eight-node run cannot preserve either
+EP64 or TP48 and is not a full-training configuration.
+
+Megatron loads a 5.56 TB TP32/EP32 distributed checkpoint from shared storage
+and lets DCP reshard it to TP32/EP64. SGLang reloads the immutable native HF
+checkpoint from node-local NVMe before rollout. The smoke uses rank-32,
+alpha-64 LoRA, zero dropout, SGD without momentum, eight prompts with two
+samples each, a 64-token response limit, and deterministic-random reward. The
+reward exists only to exercise policy gradients and is not a quality metric.
+
+Full-model run 1139 completed the initial adapter transfer and all 16 rollout
+responses, then entered Megatron log-probability evaluation. No rank completed
+that phase because the first EP64 all-to-all did not make progress. Standalone
+jobs 1143, 1144, and 1146 proved that EP64 all-to-all works after every rank
+warms the recreated process group with an all-reduce followed by a tiny
+all-to-all. The actor now performs that warmup after wake-up.
+
+Run 1147 stopped at the base reload equality check because the language-only
+rollout engine was compared against `vision_tower` and `mm_projector`
+parameters. After restricting the check to parameters owned by the language
+engine, run 1152 passed the base reload check, initialized all 64 trainer ranks,
+and reported 447,167,488 trainable LoRA parameters per rank (0.888427%). It
+transferred 186 adapter chunks as weight version 1 (93 attention, one dense
+MLP, and 92 routed-expert chunks) and completed 16 rollout responses in 75.66
+seconds. The responses became corrupted after an initially coherent prefix,
+so completion of the rollout RPCs is not an accuracy result.
+
+All ranks in run 1152 eventually completed the EP64 wake-up warmup and entered
+`compute_log_prob`. Slurm terminated the job seven seconds after the last rank
+entered that phase. Ray reported `ActorUnavailableError: Socket closed` only
+after the Slurm termination, so that exception is a consequence of external
+job cancellation rather than evidence of a model or Ray failure. There was no
+completed log-probability phase, backward pass, optimizer step, gradient norm,
+or weight version 2.
+
+The full launcher currently enables `--check-lora-weight-equal` and
+`--check-rollout-weight-reload-equal`; it does not enable the generic
+`--check-weight-update-equal`. Adapter payload checks compare every TP rank's
+full pre-slice tensor dictionary against trainer rank 0 with SHA-256. For a new
+K3 adapter, version 1 additionally requires every exported `lora_B` tensor to
+be exactly zero before the payload is sent. This distinguishes a nonzero
+exported delta from a serving-side TP48/EP16 problem.
+
+Standalone SGLang jobs 1155, 1156, and 1157 used eight nodes with TP32/EP32.
+They showed coherent output for the base model, an enabled LoRA backend without
+an active adapter, and an active adapter with both A and B zero. They did not
+exercise the full TP48/EP16 topology or the real initialization in which A is
+random and B is zero, so they do not replace the 16-node validation.
+
+Job 1158 ran only unit tests in the production container and did not load a
+checkpoint or start training. Miles passed 36 targeted LoRA synchronization
+tests. SGLang passed seven tests, including a regression that models TP48/EP16
+as MoE TP3 plus EP-local expert remapping and verifies that random A with zero B
+leaves every runtime B buffer exactly zero. Full CUDA forward correctness,
+backward, gradient norm, optimizer update, and weight version 2 remain pending
+the next 16-node run.
+
+Job 1159 used the same one-GPU unit-test configuration during the MLA backward
+audit. Its helper-level q/kv tests were later superseded by the distributed TE
+gradient comparison below; it did not load a checkpoint or start training.
+
+The subsequent LoRA module audit found that the native K3 path wrapped routed
+experts but not each MoE layer's shared expert. The shared expert now uses the
+same sequence-parallel/TP-aware dense-MLP adapter as the first dense layer and
+exports under `block_sparse_moe.shared_experts`. The versioned adapter sender
+also records the complete version-1 tensor-name/checksum set; version 2 must
+contain exactly the same names and at least one exported BF16 tensor must have
+changed. This is a LoRA-specific update check and does not trigger a redundant
+full-base-model synchronization.
+
+The old `447,167,488` trainable count decomposes exactly into attention, the
+layer-zero dense MLP, and 92 routed-expert adapters. Shared experts add
+`43,900,928` parameters per TP32/EP64 rank, so the corrected full-model run
+must report `491,068,416` trainable parameters per rank before rollout begins.
+The corrected exporter must send 278 chunks per version: the original 186 plus
+one shared-expert chunk for each of the 92 MoE layers. SGLang strict LoRA
+loading is enabled so an unmatched name aborts the run instead of being
+silently skipped.
+
+Job 1160 ran the production-container unit suite for those changes. Miles
+passed 47 tests, including shared-expert injection/export shape checks and the
+version-1-to-version-2 change validator; SGLang passed seven tests. Job 1163
+then extended the SGLang regression to consume the raw K3 routed and shared
+expert names together. It models TP48/EP16 rank slicing and verifies that the
+routed weights populate the MoE buffers, shared-expert weights populate the
+standard TP buffers, both A paths are nonzero, and every B buffer remains
+exactly zero. Job 1163 completed with the same 47 Miles and seven SGLang tests
+passing. Neither unit job loaded a checkpoint or started training.
+
+Job 1165 compared a two-rank TE column-parallel graph against a full-weight
+reference. The direct duplicated delta matched the reference A/B gradients to
+`1.53e-5`; wrapping that delta in another copy-to-TP produced gradients exactly
+two times too large. The native attention adapter therefore relies on the
+existing downstream TE/copy mappings and does not add its own TP reduction.
+Job 1166 reran the production-container suite after that correction; all 45
+remaining Miles tests and all seven SGLang tests passed.
+
+Job 1170 extended the TP48/EP16 SGLang layout regression to the MLA attention
+path. It normalizes separate raw `q_a_proj` and `kv_a_proj_with_mqa` adapters
+into the replicated fused projection, slices `o_proj` A on outer TP rank 47,
+and checks those buffers together with routed and shared experts. Every loaded
+A path is nonzero and every B buffer remains exactly zero. The native exporter
+now derives the expected adapter `(kind, HF prefix)` multiset from the actual
+transformer layers and rejects a missing attention, dense, routed, or shared
+adapter before sending any chunk; the 93-layer model therefore requires all
+278 adapter chunks by construction. Job 1170 used no GPU and loaded no
+checkpoint; 46 Miles tests and seven SGLang tests passed in the production
+container.
