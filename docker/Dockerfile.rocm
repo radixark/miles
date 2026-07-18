@@ -81,21 +81,23 @@ RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/ro
     rm -rf /tmp/rocm-systems
 
 # ====================================== Python dependencies ====================================
-# Install Transformer Engine from the requested branch. NVTE_FUSED_ATTN=0 is scoped to
-# this build step only (skip the extra fused-attn kernel matrix rebuild), not the runtime env.
-RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true
-RUN rm -rf /root/TransformerEngine && \
-    git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
-    cd /root/TransformerEngine && \
-    NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v
-
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-# Prebuilt wheels from the miles-wheels-rocm release; flash-attn installs here, gateway below.
+# Prebuilt wheels from the miles-wheels-rocm release (Transformer Engine, flash-attn; gateway below).
 RUN mkdir -p /tmp/wheels && \
     curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; [subprocess.run(['curl','-fsSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) for a in json.load(sys.stdin).get('assets',[]) if a['name'].endswith(('.whl','.tar.gz'))]" && \
     ls -lh /tmp/wheels/
+# Transformer Engine: prebuilt fp8 wheel
+ARG TE_USE_WHEEL=0
+RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true; \
+    if [ "${TE_USE_WHEEL}" = "1" ]; then \
+      pip install /tmp/wheels/transformer_engine-*.whl; \
+    else \
+      rm -rf /root/TransformerEngine && \
+      git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
+      cd /root/TransformerEngine && NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v; \
+    fi
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
 RUN pip install flash-linear-attention==0.4.2

@@ -80,6 +80,7 @@ VARIANTS = {
             "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
             "SGLANG_IMAGE_TAG": "v0.5.14-rocm720-mi35x-20260627",
             "APPLY_ROCR_VMMFIX": "1",
+            "TE_USE_WHEEL": "1",
         },
     },
 }
