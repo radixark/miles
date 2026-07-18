@@ -205,6 +205,8 @@ RUN rm -rf /tmp/wheels
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
 ENV HIP_FORCE_DEV_KERNARG=1
+# ROCm 7.2 switched IPC to dma-buf, which leaks exported VRAM in colocate; force legacy IPC to avoid it.
+ENV HSA_ENABLE_IPC_MODE_LEGACY=1
 ENV HSA_NO_SCRATCH_RECLAIM=1
 ENV SGLANG_USE_AITER=1
 ENV SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
