@@ -26,13 +26,13 @@ where generation dominates the iteration.
 
 ## Enable it
 
-Switch the entrypoint from `train.py` to `train_async.py` and provide a rollout
-function that owns the background worker:
+Switch the entrypoint from `train.py` to `train_async.py`, enable the class-based
+rollout API, and select the rollout function that owns the background worker:
 
 ```diff
 - python3 train.py ...
-+ python3 train_async.py ...
-+   --rollout-function-path miles.rollout.fully_async_rollout.generate_rollout_fully_async
++ MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 python3 train_async.py ...
++   --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
 ```
 
 Everything else belongs in the same [argument groups](/user-guide/argument-groups) as a
@@ -75,20 +75,25 @@ generation. If it is empty, rollout is still the bottleneck and async cannot hid
 | `--num-steps-per-rollout` | Number of optimizer steps per queue drain cycle |
 | `--max-weight-staleness` | When the rollout engine's weight version lags the trainer's by more than this, the worker recycles the stale group instead of feeding it to the loss |
 
-The reference worker caps its output queue at 1000 groups, so if training is slower
-than rollout the producer eventually blocks rather than growing the queue without
+The worker caps its output queue at 1000 groups, so if training is slower than
+rollout the producer eventually blocks rather than growing the queue without
 bound. If the queue stays at zero, rollout is the bottleneck — scale rollout capacity
 or lower per-sample generation cost.
 
 ## What to monitor
 
-The reference worker logs progress to stdout, not wandb. Useful lines to grep for:
+The worker reports per-step metrics to wandb/dashboard alongside the standard rollout
+metrics:
 
 ```text
-Global worker queue size: <N>
-Staleness stats: recycled=<N>, avg_staleness=<f>, max_staleness=<N>
-Warning: No progress for <N>s. Queue size: <N>, Collected: <N>/<N>
+rollout/fully_async/queue_size
+rollout/fully_async/aborted_groups_recycled
+rollout/fully_async/stale_groups_recycled
+rollout/fully_async/avg_staleness, rollout/fully_async/max_staleness
 ```
+
+A `No completed rollout groups for <N>s` warning in the logs means the drain is
+starved — rollout is the bottleneck.
 
 Treat large staleness windows as a training-quality signal, not just a performance
 signal. Fast [P2P weight transfer](/advanced/p2p-weight-transfer) keeps the

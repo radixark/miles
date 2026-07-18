@@ -61,7 +61,7 @@ def execute(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--rollout-function-path miles.rollout.fully_async_rollout.generate_rollout_fully_async "
+        "--rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn "
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
@@ -158,6 +158,7 @@ def execute(args: ScriptArgs):
         megatron_path=args.megatron_path,
         extra_env_vars={
             "FLASHINFER_DISABLE_VERSION_CHECK": "1",
+            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             "PYTHONPATH": args.megatron_path,
         },
     )
