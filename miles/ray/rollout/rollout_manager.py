@@ -61,7 +61,12 @@ class RolloutManager:
         if self.use_experimental_refactor:
             input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
             self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
-            self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
+            if self.args.eval_function_path == self.args.rollout_function_path:
+                # Reuse the instance so train and eval share one state (and stateful
+                # rollout fns like FullyAsyncRolloutFn are not constructed twice).
+                self.eval_generate_rollout = self.generate_rollout
+            else:
+                self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
