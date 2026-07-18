@@ -649,6 +649,84 @@ class TestRollback:
         assert len(session.records) == 1
         assert session.records[0].timestamp == 1.0
 
+    def test_rollback_to_zero_assistants_on_timeout_desync(self, registry: SessionRegistry):
+        """#955: a retry that is a strict prefix of stored history resets to zero.
+
+        After a router timeout the engine commits an assistant reply the client
+        never received; the client retries with its shorter (strict-prefix)
+        message list. The rollback should reset the whole trajectory to zero
+        assistant checkpoints and re-render from scratch, instead of raising a
+        non-recoverable MessageValidationError.
+        """
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+
+        # Turn 1: [sys, user] -> asst1 (committed by the engine after the timeout).
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
+        session.append_record(
+            SessionRecord(
+                timestamp=1.0, method="POST", path="/v1/chat/completions", status_code=200, request={}, response={}
+            )
+        )
+        assert session.num_assistant == 1
+
+        # Client retries with only [sys, user] - a strict prefix of stored history.
+        result = session.prepare_pretokenized([SYS_MSG, USER_MSG], tito_tokenizer=registry.tito_tokenizer)
+
+        # Rolled back to zero checkpoints and re-rendered from scratch. The mock
+        # renders a first turn as _MOCK_FIRST_TURN_TOKENS; had we wrongly fallen
+        # through to merge_tokens with an empty prefix, the result would be [].
+        assert result == _MOCK_FIRST_TURN_TOKENS
+        assert session.num_assistant == 0
+        assert session.trajectory_token_ids == []
+        assert session.records == []
+        assert session.token_ids == []
+        assert session.messages == [SYS_MSG, USER_MSG]
+
+    def test_rollback_to_zero_then_continue(self, registry: SessionRegistry):
+        """After a reset to zero, a fresh completion rebuilds consistent state."""
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
+
+        # Strict-prefix retry resets to zero.
+        session.prepare_pretokenized([SYS_MSG, USER_MSG], tito_tokenizer=registry.tito_tokenizer)
+        assert session.num_assistant == 0
+
+        # Regenerate the first turn from the rolled-back state.
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_2, [3, 4], [20], max_trim_tokens=0)
+
+        assert session.num_assistant == 1
+        assert len(session.trajectory_token_ids) == 1
+        assert session.token_ids == [3, 4, 20]
+        assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_2]
+
+    def test_rollback_to_zero_exceeding_max_steps_raises(self, registry: SessionRegistry):
+        """A strict-prefix retry that would discard two assistants is still rejected."""
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+
+        # Two completed turns -> two assistant checkpoints.
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2], [10], max_trim_tokens=0)
+        t2 = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        session.prepare_pretokenized(t2, tito_tokenizer=registry.tito_tokenizer)
+        session.update_pretokenized_state(t2, ASSISTANT_MSG_2, [1, 2, 10, 20], [30], max_trim_tokens=0)
+        assert session.num_assistant == 2
+
+        prev_messages = list(session.messages)
+        prev_token_ids = list(session.trajectory_token_ids)
+        prev_num_assistant = session.num_assistant
+
+        # Strict prefix [sys, user] would discard 2 assistants > MAX_ASSISTANT_ROLLBACK_STEPS.
+        with pytest.raises(MessageValidationError, match="exceeds max_assistant_rollback_steps"):
+            session.prepare_pretokenized([SYS_MSG, USER_MSG], tito_tokenizer=registry.tito_tokenizer)
+
+        # State must be unchanged.
+        assert session.messages == prev_messages
+        assert session.trajectory_token_ids == prev_token_ids
+        assert session.num_assistant == prev_num_assistant
+
 
 class TestUpdatePretokenizedStateMissingSession:
     """update_pretokenized_state raises SessionNotFoundError for unknown session."""
