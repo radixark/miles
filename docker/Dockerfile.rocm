@@ -8,7 +8,7 @@
 #    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
 #
 # 3. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X)
-#    build-arg:SGLANG_IMAGE_TAG=v0.5.10-rocm720-mi35x
+#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.14-rocm720-mi35x-20260627
 
 ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
 ARG SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
@@ -28,12 +28,13 @@ ARG MILES_COMMIT=main
 ARG GPU_ARCH=gfx950
 # 1 on ROCm 7.2 to bake the ROCr VMM-pause fix; ROCm 7.0 has no such regression, leave 0.
 ARG APPLY_ROCR_VMMFIX=0
+ARG SGLANG_USE_ROCM700A=0
 ARG WHEELS_REPO=XinyuJiangCMU/miles-wheels-rocm
 ARG WHEELS_TAG_ROCM=rocm720-gfx950-v0.5.14
 ARG MAX_JOBS=128
 
 ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
-ARG RCCL_TESTS_BRANCH=develop
+ARG RCCL_TESTS_COMMIT=746c7b3c9e78b094389e19499919fdd43a0b6a90
 ARG RCCL_TESTS_PATH=projects/rccl-tests
 
 ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
@@ -72,30 +73,32 @@ RUN apt update
 RUN apt install -y build-essential cmake dnsutils ethtool git nvtop patch rsync
 
 # Build rccl-tests diagnostics binaries.
-RUN git clone --depth 1 --branch ${RCCL_TESTS_BRANCH} ${RCCL_TESTS_REPO} /tmp/rocm-systems && \
-    make -C /tmp/rocm-systems/${RCCL_TESTS_PATH} -j$(nproc) \
-      HIP_HOME=/opt/rocm \
-      NCCL_HOME=/opt/rocm \
-      GPU_TARGETS=${GPU_ARCH} && \
-    cp /tmp/rocm-systems/${RCCL_TESTS_PATH}/build/*_perf /usr/local/bin/ && \
+RUN mkdir -p /tmp/rocm-systems && cd /tmp/rocm-systems && git init -q && \
+    git remote add origin ${RCCL_TESTS_REPO} && \
+    git fetch --depth 1 origin ${RCCL_TESTS_COMMIT} && git checkout -q FETCH_HEAD && \
+    make -C ${RCCL_TESTS_PATH} -j$(nproc) \
+      HIP_HOME=/opt/rocm NCCL_HOME=/opt/rocm GPU_TARGETS=${GPU_ARCH} && \
+    cp ${RCCL_TESTS_PATH}/build/*_perf /usr/local/bin/ && \
     rm -rf /tmp/rocm-systems
 
 # ====================================== Python dependencies ====================================
-# Install Transformer Engine from the requested branch. NVTE_FUSED_ATTN=0 is scoped to
-# this build step only (skip the extra fused-attn kernel matrix rebuild), not the runtime env.
-RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true
-RUN rm -rf /root/TransformerEngine && \
-    git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
-    cd /root/TransformerEngine && \
-    NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v
-
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
-# Prebuilt wheels from the miles-wheels-rocm release; flash-attn installs here, gateway below.
+# Prebuilt wheels from the miles-wheels-rocm release (Transformer Engine, flash-attn; gateway below).
 RUN mkdir -p /tmp/wheels && \
     curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; [subprocess.run(['curl','-fsSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) for a in json.load(sys.stdin).get('assets',[]) if a['name'].endswith(('.whl','.tar.gz'))]" && \
     ls -lh /tmp/wheels/
+# Transformer Engine: prebuilt fp8 wheel
+ARG TE_USE_WHEEL=0
+RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true; \
+    if [ "${TE_USE_WHEEL}" = "1" ]; then \
+      pip install /tmp/wheels/transformer_engine-*.whl; \
+    else \
+      rm -rf /root/TransformerEngine && \
+      git clone --recursive --branch ${TRANSFORMER_ENGINE_BRANCH} ${TRANSFORMER_ENGINE_REPO} /root/TransformerEngine && \
+      cd /root/TransformerEngine && NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v; \
+    fi
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
 RUN pip install flash-linear-attention==0.4.2
@@ -154,6 +157,7 @@ RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install "setuptools==79.0.1"
 
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
+    sed -i '/nvidia-resiliency-ext/d' /tmp/requirements.txt && \
     pip install -r /tmp/requirements.txt
 
 # Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
@@ -203,13 +207,15 @@ RUN rm -rf /tmp/wheels
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
 ENV HIP_FORCE_DEV_KERNARG=1
+# ROCm 7.2 switched IPC to dma-buf, which leaks exported VRAM in colocate; force legacy IPC to avoid it.
+ENV HSA_ENABLE_IPC_MODE_LEGACY=1
 ENV HSA_NO_SCRATCH_RECLAIM=1
 ENV SGLANG_USE_AITER=1
 ENV SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
 ENV SGLANG_MOE_PADDING=1
 ENV SGLANG_SET_CPU_AFFINITY=1
 ENV SGLANG_ROCM_FUSED_DECODE_MLA=1
-ENV SGLANG_USE_ROCM700A=1
+ENV SGLANG_USE_ROCM700A=${SGLANG_USE_ROCM700A}
 ENV NCCL_MIN_NCHANNELS=112
 ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
 ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
