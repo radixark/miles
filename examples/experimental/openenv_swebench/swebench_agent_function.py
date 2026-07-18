@@ -40,6 +40,10 @@ Env vars:
   MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for off-cluster agents
   OPENENV_TASK_WORKDIR  force a fixed container dir for every agent command
                      (default: empty -> auto-detect the repo root per task).
+  OPENENV_CONDA_ENV  conda env to activate for every agent command so the agent's
+                     dev/test loop matches the grader (default: "testbed", the env
+                     SWE-bench images install the repo + pytest into). Set to ""
+                     to disable; probe is a no-op on images without such an env.
   OPENENV_SWEBENCH_TESTS_SRC  where the upstream env stages the task's tests inside
                      the container (default: /task/tests); copied to /tests for test.sh.
   OPENENV_EVAL_CMD   override the whole grading command (must still print
@@ -99,6 +103,28 @@ _DETECT_REPO_ROOT = (
     f'echo "$R" > {_REPO_ROOT_CACHE}; fi; '
 )
 
+# --- Conda env: run agent commands in the graded environment ------------------
+# SWE-bench images install the repo (editable) plus pytest and every runtime dep
+# into a conda env (default name "testbed"), NOT the base env. tests/test.sh
+# activates it before grading, but the base env the container boots into lacks
+# pytest and cannot even import the target package. Without activating it here,
+# the agent runs blind -- `pytest` is not found and `import <pkg>` raises
+# ModuleNotFoundError -- so it gets no test feedback and its edits are never the
+# thing that gets graded. We activate the env (mirroring test.sh) for every agent
+# command so the agent's dev/test loop matches the grader. The probe is a no-op
+# on donor images that have no such env, so it stays safe for non-SWE-bench pools.
+# Set OPENENV_CONDA_ENV="" to disable, or to another name to override "testbed".
+_CONDA_ENV = os.getenv("OPENENV_CONDA_ENV", "testbed")
+_ACTIVATE_ENV = (
+    (
+        'for _p in /opt/miniconda3 /opt/conda "$HOME/miniconda3" "$HOME/anaconda3"; do '
+        f'if [ -f "$_p/bin/activate" ] && [ -d "$_p/envs/{_CONDA_ENV}" ]; then '
+        f'. "$_p/bin/activate" {_CONDA_ENV} 2>/dev/null || true; break; fi; done; '
+    )
+    if _CONDA_ENV
+    else ""
+)
+
 # --- Scoring: SWE-Rebench-V2 donor verifier ----------------------------------
 # The donor verifier (tests/test.sh) self-locates the repo, applies the variant's
 # test_patch, runs test_command from tests/config.json, writes output.json, and
@@ -129,8 +155,8 @@ _CANONICAL_EVAL_CMD = os.getenv("OPENENV_EVAL_CMD") or (
 def _apply_workdir(command: str) -> str:
     """Prefix an agent command so it runs in the task's repo root."""
     if _TASK_WORKDIR:
-        return f"cd {_TASK_WORKDIR} && {command}"
-    return f'{_DETECT_REPO_ROOT}cd "$R" && {command}'
+        return f"{_ACTIVATE_ENV}cd {_TASK_WORKDIR} && {command}"
+    return f'{_DETECT_REPO_ROOT}{_ACTIVATE_ENV}cd "$R" && {command}'
 
 
 def _parse_reward_marker(output: str) -> float | None:
