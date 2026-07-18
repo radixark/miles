@@ -157,6 +157,7 @@ RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install "setuptools==79.0.1"
 
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
+    sed -i '/nvidia-resiliency-ext/d' /tmp/requirements.txt && \
     pip install -r /tmp/requirements.txt
 
 # Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
