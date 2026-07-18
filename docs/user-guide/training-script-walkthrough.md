@@ -292,7 +292,7 @@ Enable it with two changes to the launch script:
 ```diff
 - python3 train.py ...
 + python3 train_async.py ...
-+   --rollout-function-path miles.rollout.fully_async_rollout.generate_rollout_fully_async
++   --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
 ```
 
 | Mode | Per-iteration latency | Throughput | When to use |

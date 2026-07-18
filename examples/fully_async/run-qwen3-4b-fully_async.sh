@@ -38,7 +38,7 @@ CKPT_ARGS=(
 PROMPT_SET=/path/to/dapo-math-17k.jsonl
 
 ROLLOUT_ARGS=(
-   --rollout-function-path miles.rollout.fully_async_rollout.generate_rollout_fully_async
+   --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
    --prompt-data ${PROMPT_SET}
    --input-key prompt
    --label-key label
@@ -121,6 +121,7 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-s
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"/root/Megatron-LM/\",
+    \"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR\": \"1\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
   }
