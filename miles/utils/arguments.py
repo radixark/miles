@@ -133,7 +133,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--train-backend",
                 type=str,
-                choices=["megatron", "fsdp"],
+                choices=["megatron", "fsdp", "torchtitan"],
                 default="megatron",
                 help="The backend for training.",
             )
@@ -2154,6 +2154,15 @@ def parse_args(add_custom_arguments=None):
         args.rank = 0
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
+    elif backend == "torchtitan":
+        from miles.backends.experimental.torchtitan.arguments import load_torchtitan_args
+
+        args = load_torchtitan_args(extra_args_provider=add_miles_arguments)
+        args.rank = 0
+        args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
+        assert args.context_parallel_size == 1, "CP not yet supported for the torchtitan backend."
+        if not args.ci_test:
+            raise ValueError("The torchtitan backend is experimental; pass --ci-test to enable it.")
     else:
         from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args
 
