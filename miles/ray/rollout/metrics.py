@@ -28,13 +28,14 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
     for key in data.keys():
         rewards = data[key]["rewards"]
         num_none = sum(1 for r in rewards if r is None)
+        log_dict[f"eval/{key}-none_reward_ratio"] = num_none / len(rewards) if len(rewards) > 0 else 0.0
         if num_none:
             logger.warning(
                 f"eval/{key}: {num_none}/{len(rewards)} samples have reward=None "
                 "(likely errored/aborted trials); treating as 0.0 for metrics."
             )
             rewards = [0.0 if r is None else r for r in rewards]
-        log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if rewards else 0.0
+        log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
         if (samples := data[key].get("samples")) is not None:
             log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), f"eval/{key}/")
         if "truncated" in data[key]:
