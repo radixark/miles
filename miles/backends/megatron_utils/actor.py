@@ -713,7 +713,11 @@ class MegatronTrainRayActor(TrainRayActor):
             self.weight_updater.multi_lora_adapters = {
                 name: self.loaded_adapters[name] for name in sorted(push_names)
             }
-            version_update_names = sorted(push_names)
+            # Version bumps drive the staleness filter, so only adapters whose
+            # weights actually changed get one: a new-engine full resync pushes
+            # every loaded adapter, but re-sending unchanged weights must not
+            # age the unchanged adapters' buffered groups toward the drop limit.
+            version_update_names = sorted(pending)
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
