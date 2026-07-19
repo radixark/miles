@@ -57,25 +57,27 @@ class UpdateWeight(abc.ABC):
             ray.get([engine.begin_weight_update.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
+        from miles.backends.experimental.fsdp_utils.adaptations.weight_bridge import get_param_transform
+        _mtype = getattr(getattr(self.model, "config", None), "model_type", "")
         bucket = []
         bucket_size = 0
         for name, param in self.model.state_dict().items():
-            param_size = param.numel() * param.element_size()
-            if bucket and bucket_size + param_size >= self.args.update_weight_buffer_size:
-                self.wait_and_update_bucket_weights(bucket)
-                del bucket
-                bucket = []
-                bucket_size = 0
-
+            if name.startswith(("model.visual", "visual", "mtp.")) or ".visual." in name:
+                continue  # text-only RL: skip vision + multi-token-prediction heads (like megatron)
             param = param.cuda()
             if isinstance(param, DTensor):
-                # async version of param.full_tensor
-                param = param.redistribute(
-                    placements=[Replicate()] * param.device_mesh.ndim,
-                    async_op=True,
-                ).to_local()
-            bucket.append((name, param))
-            bucket_size += param_size
+                param = param.redistribute(placements=[Replicate()] * param.device_mesh.ndim).to_local()
+            expand = get_param_transform(name, param, _mtype)
+            pairs = list(expand(name, param)) if expand is not None else [(name, param)]
+            for pname, ptensor in pairs:
+                psize = ptensor.numel() * ptensor.element_size()
+                if bucket and bucket_size + psize >= self.args.update_weight_buffer_size:
+                    self.wait_and_update_bucket_weights(bucket)
+                    del bucket
+                    bucket = []
+                    bucket_size = 0
+                bucket.append((pname, ptensor))
+                bucket_size += psize
 
         if bucket:
             self.wait_and_update_bucket_weights(bucket)

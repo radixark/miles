@@ -116,6 +116,12 @@ class TorchTitanTrainRayActor(TrainRayActor):
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
+        # GDN/Mamba + generic HF-compat class patches + config-lifetime packing (before model construction)
+        from miles.backends.experimental.fsdp_utils.adaptations.class_patches import apply_class_patches
+        from miles.backends.experimental.fsdp_utils.adaptations.packing import apply_packing as _tt_apply_packing
+        apply_class_patches(self.hf_config, self.args)
+        _tt_apply_packing(None, self.hf_config, "config")
+
         init_context = self._get_init_weight_context_manager()
 
         with init_context():
@@ -138,6 +144,7 @@ class TorchTitanTrainRayActor(TrainRayActor):
         )
 
         self.model = model
+        _tt_apply_packing(self.model, self.hf_config, "post_load")
 
         if args.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
