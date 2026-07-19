@@ -224,6 +224,14 @@ class TestMultiLoRAValidation:
         with pytest.raises(AssertionError, match="requires --optimizer adam"):
             miles_validate_args(args)
 
+    def test_rejects_experimental_ft_trainer(self, monkeypatch):
+        # The v2 train group has no reconcile_adapters.
+        monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+        args = self._parse([])
+
+        with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
+            miles_validate_args(args)
+
 
 class TestResolveFtComponents:
     def test_disabled_with_no_components_returns_empty_without_warning(self, caplog) -> None:

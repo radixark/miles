@@ -2623,6 +2623,12 @@ def miles_validate_args(args):
             "(build_multi_lora_optimizer, slot retirement state cleanup) only implements "
             f"Adam semantics; got --optimizer {args.optimizer}"
         )
+        from miles.utils.environ import enable_experimental_ft_trainer
+
+        assert not enable_experimental_ft_trainer(), (
+            "Multi-LoRA is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: the v2 "
+            "train group has no reconcile_adapters and does not return train outcomes"
+        )
         # --global-batch-size may legitimately be unset (Megatron derives it later);
         # leave the adapter cap unset too rather than multiplying None.
         if args.multi_lora_max_adapter_global_batch_size is None and getattr(args, "global_batch_size", None) is not None:
