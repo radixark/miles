@@ -61,9 +61,6 @@ async def main(args):
 
     rollout_id = 0
     while True:
-        if args.num_rollout is not None and rollout_id >= args.num_rollout:
-            logger.info(f"Reached --num-rollout {args.num_rollout}; exiting.")
-            break
         snapshot = await get_multi_lora_controller().snapshot.remote()
 
         # handle dynamic metrics in tracking backend
