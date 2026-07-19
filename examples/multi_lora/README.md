@@ -16,15 +16,16 @@ provision.sh                         # one-time: download model + datasets
 run_job.sh                           # entrypoint: bounded run, exits when done
 run_service.sh                       # service mode: idles for registrations (port 8068)
 service_smoke.py                     # register/deregister smoke test against the API
-train_multi_lora_async.py            # trainer (entry point)
 adapters/
   gsm8k.yaml
   dapo_math.yaml
 ```
 
-Controller code lives in the library: `miles/utils/multi_lora.py` (registry +
-backend + HTTP API, torch-free) and `miles/ray/multi_lora_controller.py` (named
-Ray actor, pinned to the head node).
+The implementation lives in the library: the driver is `train_multi_lora_async.py`
+at the repo root (next to `train.py`/`train_async.py`), the rollout fn and data
+source are `miles/rollout/multi_lora/`, and the controller is
+`miles/ray/multi_lora/` (registry + backend + HTTP API, plus the named Ray
+actor pinned to the head node).
 
 ## Design (decoupled per-adapter optimizers)
 

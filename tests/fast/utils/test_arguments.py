@@ -206,6 +206,25 @@ class TestMultiLoRAValidation:
 
         assert args.multi_lora is True
 
+    def test_defaults_rollout_fn_and_data_source_to_multi_lora(self):
+        args = self._parse([])
+
+        miles_validate_args(args)
+
+        assert args.rollout_function_path == "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
+        assert args.data_source_path == "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
+        assert args.rollout_global_dataset is True
+
+    def test_keeps_user_supplied_rollout_fn_and_data_source(self):
+        args = self._parse(
+            ["--rollout-function-path", "my.custom.rollout_fn", "--data-source-path", "my.custom.DataSource"]
+        )
+
+        miles_validate_args(args)
+
+        assert args.rollout_function_path == "my.custom.rollout_fn"
+        assert args.data_source_path == "my.custom.DataSource"
+
     def test_empty_wait_is_a_registered_argument(self):
         assert self._parse([]).multi_lora_max_empty_wait_s == 30.0
         assert self._parse(["--multi-lora-max-empty-wait-s", "5"]).multi_lora_max_empty_wait_s == 5.0

@@ -17,9 +17,6 @@ from miles.utils.tracking_utils.tracking import init_tracking
 
 logger = logging.getLogger(__name__)
 
-ROLLOUT_FUNCTION_PATH = "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
-DATA_SOURCE_PATH = "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
-
 
 def _is_empty_batch_timeout(task_error: ray.exceptions.RayTaskError) -> bool:
     cause = getattr(task_error, "cause", None)
@@ -34,10 +31,8 @@ async def main(args):
     ), "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
     configure_logger(args, source=MainProcessIdentity())
 
-    args.rollout_function_path = ROLLOUT_FUNCTION_PATH
-    args.data_source_path = DATA_SOURCE_PATH
-    args.rollout_global_dataset = True
-
+    # The multi-LoRA rollout fn / data source / global dataset flags are
+    # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
     pgs = create_placement_groups(args)
     init_tracking(args)
     rollout_manager, _num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])

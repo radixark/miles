@@ -19,7 +19,7 @@ ray job submit --address="http://127.0.0.1:8265" \
         "CUDA_DEVICE_MAX_CONNECTIONS": "1"
      }
    }' \
-   -- python3 examples/multi_lora/train_multi_lora_async.py \
+   -- python3 train_multi_lora_async.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 4 \
    --rollout-num-gpus 4 \

@@ -2583,6 +2583,21 @@ def miles_validate_args(args):
     # Multi-LoRA flag — adapter configs are loaded later by the controller
     args.multi_lora = getattr(args, "multi_lora_n_adapters", 0) > 0
     if args.multi_lora:
+        # Multi-LoRA ships its own rollout fn and data source (per-adapter
+        # buffers, controller-driven sampling); the standard defaults don't
+        # understand adapters. Swap them in unless the user pointed the flag
+        # at something else (e.g. a subclass).
+        standard_rollout_fns = (
+            "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn",
+            "miles.rollout.sglang_rollout.generate_rollout",
+        )
+        if args.rollout_function_path in standard_rollout_fns:
+            args.rollout_function_path = "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
+        if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
+            args.data_source_path = "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
+        # The per-adapter data source is inherently global (the controller owns
+        # what is sampleable); rollout workers must not shard it.
+        args.rollout_global_dataset = True
         assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
         assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
         assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
