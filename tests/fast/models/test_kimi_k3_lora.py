@@ -192,17 +192,18 @@ def test_native_lora_rejects_target_drift():
         _validate_targets(args)
 
 
-def test_full_rollout_reserves_non_serving_trainer_gpus():
+def test_full_rollout_uses_two_official_tp8_engines():
     config = SglangConfig.from_yaml(_FULL_SGLANG_CONFIG)
 
     assert config.total_num_gpus == 64
+    assert config.models[0].num_gpus_per_engine == 8
     assert [(group.worker_type, group.num_gpus) for group in config.models[0].server_groups] == [
-        ("regular", 48),
-        ("placeholder", 16),
+        ("regular", 16),
+        ("placeholder", 48),
     ]
 
 
-def test_full_rollout_drops_nvme_checkpoint_cache(monkeypatch, tmp_path):
+def test_full_rollout_matches_official_sglang_runtime(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.setattr("scripts.run_kimi_k3_lora.U.execute_train", lambda **kwargs: captured.update(kwargs))
     monkeypatch.setattr("scripts.run_kimi_k3_lora.U.get_default_wandb_args", lambda *args, **kwargs: "")
@@ -227,10 +228,33 @@ def test_full_rollout_drops_nvme_checkpoint_cache(monkeypatch, tmp_path):
         megatron_model_type="kimi-k3",
         sglang_path=str(sglang_path),
         data_dir=str(data_dir),
-        sglang_attn_res_mode="torch",
     )
     _execute_train(args)
 
-    assert "--sglang-lora-strict-loading" in captured["train_args"]
-    assert "--sglang-weight-loader-drop-cache-after-load" in captured["train_args"]
-    assert captured["extra_env_vars"]["SGLANG_K3_ATTN_RES_MODE"] == "torch"
+    train_args = captured["train_args"]
+    for expected in (
+        "--rollout-num-gpus-per-engine 8",
+        "--sglang-tp-size 8",
+        "--sglang-ep-size 1",
+        "--sglang-moe-runner-backend marlin",
+        "--sglang-decode-attention-backend trtllm_mla",
+        "--sglang-mamba-radix-cache-strategy extra_buffer",
+        "--sglang-cuda-graph-bs-decode 1",
+        "--sglang-cuda-graph-backend-prefill disabled",
+        "--sglang-lora-backend triton",
+        "--sglang-lora-strict-loading",
+    ):
+        assert expected in train_args
+
+    for unsupported in (
+        "--sglang-dtype",
+        "--sglang-quantization",
+        "--sglang-mem-fraction-static",
+        "--sglang-disable-shared-experts-fusion",
+        "--sglang-weight-loader-drop-cache-after-load",
+    ):
+        assert unsupported not in train_args
+
+    assert captured["extra_env_vars"]["SGLANG_JIT_ROUTE_RADIX"] == "1"
+    assert "SGLANG_K3_ATTN_RES_MODE" not in captured["extra_env_vars"]
+    assert "SGLANG_K3_FUSE_MOE_FRONT" not in captured["extra_env_vars"]

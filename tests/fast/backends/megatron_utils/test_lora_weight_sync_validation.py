@@ -169,6 +169,50 @@ def test_ipc_group_ignores_partial_trainer_tail(mock_iter_base, mock_dist):
     assert updater._ipc_gather_src is None
 
 
+@pytest.mark.parametrize(
+    ("rank", "expected_engine", "expected_src"),
+    [(0, 0, 0), (8, 1, 8), (16, None, None)],
+)
+@patch(f"{_UW_MODULE}.dist")
+@patch(f"{_UW_MODULE}.HfWeightIteratorBase")
+def test_two_tp8_engines_map_trainer_ranks_and_placeholders(
+    mock_iter_base, mock_dist, rank, expected_engine, expected_src
+):
+    mock_dist.get_world_size.return_value = 64
+    mock_dist.get_rank.return_value = rank
+    mock_dist.new_group.side_effect = lambda **kwargs: tuple(kwargs["ranks"])
+    mock_iter_base.create.return_value = MagicMock()
+
+    updater = UpdateWeightFromTensor(
+        args=_make_args(
+            rollout_num_gpus_per_engine=8,
+            actor_num_nodes=16,
+            actor_num_gpus_per_node=4,
+        ),
+        model=[MagicMock()],
+        weights_getter=lambda: {},
+        model_name="kimi_k3",
+        quantization_config=None,
+        is_lora=True,
+    )
+    engines = [MagicMock(name="engine_0"), MagicMock(name="engine_1")]
+
+    updater.connect_rollout_engines(
+        engines,
+        MagicMock(),
+        engine_gpu_counts=[8, 8],
+        engine_gpu_offsets=[0, 8],
+    )
+
+    assert updater.use_distribute is False
+    if expected_engine is None:
+        assert updater._ipc_engine is None
+        assert updater._ipc_gather_group is None
+    else:
+        assert updater._ipc_engine is engines[expected_engine]
+        assert updater._ipc_gather_src == expected_src
+
+
 # ---------------------------------------------------------------------------
 # _check_weight_sync_results
 # ---------------------------------------------------------------------------

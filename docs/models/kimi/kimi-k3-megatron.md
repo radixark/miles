@@ -349,13 +349,13 @@ contracts agree without changing a fused K3 operator:
   `kv_a_proj_with_mqa`)
 - dense MLP gate/up and down projections
 - latent routed-expert gate/up and down projections
+- shared-expert gate/up and down projections
 
 KDA's q/k/v, convolution, decay, and gate projections are intentionally not
 targeted because SGLang packs them into K3-specific fused serving modules.
-Shared-expert projections are also excluded from this first target set because
-the serving path may fuse the shared expert into the routed MoE. The launcher
-disables shared-expert fusion and `SGLANG_K3_FUSE_MOE_FRONT` so the supported
-module boundaries stay explicit.
+The serving path keeps the official shared-expert fusion setting. Shared-expert
+LoRA is applied through the supported fused-MoE adapter boundary rather than by
+forcing a separate serving module.
 
 Routed experts use Megatron's shared-outer adapter layout: gate/up A and down B
 are shared across experts, while gate/up B and down A remain per expert. K3's
@@ -415,113 +415,69 @@ seconds.
 
 The full-model development topology is fixed at 16 four-GPU GB300 nodes. The
 Megatron actor uses TP32, EP64, ETP1, PP1, and CP1 across all 64 GPUs. The
-colocated SGLang engine uses TP48 and EP16 on the first 48 GPUs; the remaining
-16 slots are placeholders during rollout. This is time sharing, not 112
-simultaneously resident model ranks. An eight-node run cannot preserve either
-EP64 or TP48 and is not a full-training configuration.
+colocated rollout uses two independent TP8/EP1 engines on the first 16 GPUs;
+the remaining 48 slots are placeholders during rollout. Each engine spans two
+GB300 nodes and exactly matches the official K3 SGLang topology. This is time
+sharing with the 64 trainer ranks, not an additional 16 permanently allocated
+GPUs.
+
+Each rollout engine uses the native packed MXFP4 checkpoint, Marlin MoE,
+`trtllm_mla` decode attention, the `extra_buffer` KDA cache strategy, decode
+CUDA graph batch size 1, and disabled prefill CUDA graphs. The launcher does
+not override parameter dtype or quantization, does not force a memory fraction,
+and does not disable shared-expert fusion. Training remains BF16; only adapter
+weights are transferred from Megatron to SGLang.
 
 Megatron loads a 5.56 TB TP32/EP32 distributed checkpoint from shared storage
 and lets DCP reshard it to TP32/EP64. SGLang reloads the immutable native HF
-checkpoint from node-local NVMe before rollout. The smoke uses rank-32,
-alpha-64 LoRA, zero dropout, SGD without momentum, eight prompts with two
-samples each, a 64-token response limit, and deterministic-random reward. The
-reward exists only to exercise policy gradients and is not a quality metric.
-
-Full-model run 1139 completed the initial adapter transfer and all 16 rollout
-responses, then entered Megatron log-probability evaluation. No rank completed
-that phase because the first EP64 all-to-all did not make progress. Standalone
-jobs 1143, 1144, and 1146 proved that EP64 all-to-all works after every rank
-warms the recreated process group with an all-reduce followed by a tiny
-all-to-all. The actor now performs that warmup after wake-up.
-
-Run 1147 stopped at the base reload equality check because the language-only
-rollout engine was compared against `vision_tower` and `mm_projector`
-parameters. After restricting the check to parameters owned by the language
-engine, run 1152 passed the base reload check, initialized all 64 trainer ranks,
-and reported 447,167,488 trainable LoRA parameters per rank (0.888427%). It
-transferred 186 adapter chunks as weight version 1 (93 attention, one dense
-MLP, and 92 routed-expert chunks) and completed 16 rollout responses in 75.66
-seconds. The responses became corrupted after an initially coherent prefix,
-so completion of the rollout RPCs is not an accuracy result.
-
-All ranks in run 1152 eventually completed the EP64 wake-up warmup and entered
-`compute_log_prob`. Slurm terminated the job seven seconds after the last rank
-entered that phase. Ray reported `ActorUnavailableError: Socket closed` only
-after the Slurm termination, so that exception is a consequence of external
-job cancellation rather than evidence of a model or Ray failure. There was no
-completed log-probability phase, backward pass, optimizer step, gradient norm,
-or weight version 2.
+checkpoint from node-local NVMe before rollout. All 18 GB300 nodes have a
+verified 236-file native checkpoint cache. The smoke retains the established
+rank-32, alpha-64, zero-dropout LoRA, zero-momentum SGD, eight prompts with two
+samples each, a 64-token response limit, and shared-checkpoint load. Its
+deterministic-random reward is an infrastructure signal only and is not a model
+quality metric.
 
 The full launcher currently enables `--check-lora-weight-equal` and
 `--check-rollout-weight-reload-equal`; it does not enable the generic
 `--check-weight-update-equal`. Adapter payload checks compare every TP rank's
-full pre-slice tensor dictionary against trainer rank 0 with SHA-256. For a new
-K3 adapter, version 1 additionally requires every exported `lora_B` tensor to
-be exactly zero before the payload is sent. This distinguishes a nonzero
-exported delta from a serving-side TP48/EP16 problem.
+full pre-slice tensor dictionary with SHA-256. For a new K3 adapter, version 1
+additionally requires every exported `lora_B` tensor to be exactly zero before
+the payload is sent. Version 2 must contain exactly the same tensor names and
+at least one exported BF16 tensor must change. Both TP8 engines receive the same
+version through separate trainer-rank IPC groups: ranks 0-7 update engine 0,
+ranks 8-15 update engine 1, and ranks 16-63 are excluded from rollout IPC.
 
-Standalone SGLang jobs 1155, 1156, and 1157 used eight nodes with TP32/EP32.
-They showed coherent output for the base model, an enabled LoRA backend without
-an active adapter, and an active adapter with both A and B zero. They did not
-exercise the full TP48/EP16 topology or the real initialization in which A is
-random and B is zero, so they do not replace the 16-node validation.
+The old full-model runs 1139 through 1152 used a custom TP48/EP16 Triton rollout
+configuration. They found and fixed EP64 wake-up warmup, language-only base
+reload comparison, shared-expert adapter coverage, chunked adapter export, and
+TP reduction issues, but they are not correctness evidence for the current
+official TP8/EP1 Marlin rollout. In particular, run 1152 did not complete
+log-probability evaluation, backward, an optimizer step, a gradient norm, or
+weight version 2.
 
-Job 1158 ran only unit tests in the production container and did not load a
-checkpoint or start training. Miles passed 36 targeted LoRA synchronization
-tests. SGLang passed seven tests, including a regression that models TP48/EP16
-as MoE TP3 plus EP-local expert remapping and verifies that random A with zero B
-leaves every runtime B buffer exactly zero. Full CUDA forward correctness,
-backward, gradient norm, optimizer update, and weight version 2 remain pending
-the next 16-node run.
+Standalone job 1179 is the current serving baseline. It loaded the full native
+MXFP4 checkpoint and a BF16 rank-16 synthetic adapter on two GB300 nodes. Base
+and two adapter requests all generated the correct answer, each returned 140
+tokens with finite log probabilities, and the maximum base-versus-adapter token
+log-probability difference was `0.13494879`. The base mean log probability was
+`-0.05745778`; the two adapter means were `-0.05399670` and `-0.05503491`.
+This proves one official TP8 Marlin engine can execute K3 MoE LoRA without
+changing base precision. It does not test training-side adapter transfer.
 
-Job 1159 used the same one-GPU unit-test configuration during the MLA backward
-audit. Its helper-level q/kv tests were later superseded by the distributed TE
-gradient comparison below; it did not load a checkpoint or start training.
+That serving validation exposed two SGLang integration bugs before passing:
+CUDA graph LoRA buffers incorrectly assumed Triton quantization-info fields,
+and the MoE LoRA gate/up sharder inferred interleaving from `gemm1_alpha`
+instead of the explicit `gate_up_interleaved` runner setting. Both now use the
+logical MoE runner configuration. Production-container unit job 1180 then
+passed 62 Miles tests and seven SGLang tests, including the two-TP8 engine
+offset and placeholder mapping.
 
-The subsequent LoRA module audit found that the native K3 path wrapped routed
-experts but not each MoE layer's shared expert. The shared expert now uses the
-same sequence-parallel/TP-aware dense-MLP adapter as the first dense layer and
-exports under `block_sparse_moe.shared_experts`. The versioned adapter sender
-also records the complete version-1 tensor-name/checksum set; version 2 must
-contain exactly the same names and at least one exported BF16 tensor must have
-changed. This is a LoRA-specific update check and does not trigger a redundant
-full-base-model synchronization.
-
-The old `447,167,488` trainable count decomposes exactly into attention, the
-layer-zero dense MLP, and 92 routed-expert adapters. Shared experts add
-`43,900,928` parameters per TP32/EP64 rank, so the corrected full-model run
-must report `491,068,416` trainable parameters per rank before rollout begins.
-The corrected exporter must send 278 chunks per version: the original 186 plus
-one shared-expert chunk for each of the 92 MoE layers. SGLang strict LoRA
-loading is enabled so an unmatched name aborts the run instead of being
-silently skipped.
-
-Job 1160 ran the production-container unit suite for those changes. Miles
-passed 47 tests, including shared-expert injection/export shape checks and the
-version-1-to-version-2 change validator; SGLang passed seven tests. Job 1163
-then extended the SGLang regression to consume the raw K3 routed and shared
-expert names together. It models TP48/EP16 rank slicing and verifies that the
-routed weights populate the MoE buffers, shared-expert weights populate the
-standard TP buffers, both A paths are nonzero, and every B buffer remains
-exactly zero. Job 1163 completed with the same 47 Miles and seven SGLang tests
-passing. Neither unit job loaded a checkpoint or started training.
-
-Job 1165 compared a two-rank TE column-parallel graph against a full-weight
-reference. The direct duplicated delta matched the reference A/B gradients to
-`1.53e-5`; wrapping that delta in another copy-to-TP produced gradients exactly
-two times too large. The native attention adapter therefore relies on the
-existing downstream TE/copy mappings and does not add its own TP reduction.
-Job 1166 reran the production-container suite after that correction; all 45
-remaining Miles tests and all seven SGLang tests passed.
-
-Job 1170 extended the TP48/EP16 SGLang layout regression to the MLA attention
-path. It normalizes separate raw `q_a_proj` and `kv_a_proj_with_mqa` adapters
-into the replicated fused projection, slices `o_proj` A on outer TP rank 47,
-and checks those buffers together with routed and shared experts. Every loaded
-A path is nonzero and every B buffer remains exactly zero. The native exporter
-now derives the expected adapter `(kind, HF prefix)` multiset from the actual
-transformer layers and rejects a missing attention, dense, routed, or shared
-adapter before sending any chunk; the 93-layer model therefore requires all
-278 adapter chunks by construction. Job 1170 used no GPU and loaded no
-checkpoint; 46 Miles tests and seven SGLang tests passed in the production
-container.
+The remaining acceptance test is one unchanged 16-node training smoke. It must
+show two real TP8 engines loading, shared-DCP Megatron initialization, identical
+version-1 adapter loads on both engines, finite full-model rollout log
+probabilities, nonzero finite gradient norm, a completed optimizer step, and a
+changed version-2 adapter accepted by both engines. Only after that succeeds
+will the same run be repeated with GPU and CPU memory profiling to determine
+the minimum resource count. At the time of job 1180, 14 nodes were idle and
+four nodes were occupied by user `syang` job 1167, so the 16-node smoke had not
+yet been submitted.

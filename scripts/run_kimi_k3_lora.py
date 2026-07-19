@@ -53,7 +53,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lora_base_cpu_backup: bool = False
     check_lora_weight_equal: bool = False
     check_rollout_weight_reload_equal: bool = False
-    sglang_attn_res_mode: Literal["fused", "torch", "jit", "legacy"] = "fused"
 
     reward_model: Literal["deterministic_random", "deepscaler"] | None = None
     num_rollout: int | None = None
@@ -61,7 +60,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     n_samples_per_prompt: int | None = None
     rollout_max_response_len: int | None = None
     global_batch_size: int | None = None
-    sglang_mem_fraction_static: float = 0.7
 
     check_weight_update_equal: bool = False
     update_weight_buffer_size: int | None = None
@@ -98,11 +96,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     @property
     def rollout_num_gpus_per_engine(self) -> int:
-        return 8 if self.model_variant == "4layer" else 48
+        return 8
 
     @property
     def rollout_expert_parallel_size(self) -> int:
-        return 8 if self.model_variant == "4layer" else 16
+        return 8 if self.model_variant == "4layer" else 1
 
 
 def _validate_paths(args: ScriptArgs) -> None:
@@ -218,8 +216,8 @@ def _execute_train(args: ScriptArgs) -> None:
     update_weight_buffer_size = args.update_weight_buffer_size
     if update_weight_buffer_size is None:
         update_weight_buffer_size = 256 * 1024**2 if args.model_variant == "full" else 2 * 1024**3
-    # Full-model rollout uses one TP48 request at a time. K3's radix extra-buffer
-    # strategy needs five KDA cache slots per running request.
+    # Each full-model TP8 engine serves one request at a time. K3's radix
+    # extra-buffer strategy needs five KDA cache slots per running request.
     sglang_request_capacity = 1 if args.model_variant == "full" else 16
     sglang_mamba_capacity = 5 if args.model_variant == "full" else 16
 
@@ -227,20 +225,30 @@ def _execute_train(args: ScriptArgs) -> None:
         f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
         f"--sglang-tp-size {args.rollout_num_gpus_per_engine} "
         f"--sglang-ep-size {args.rollout_expert_parallel_size} "
-        f"--sglang-cuda-graph-bs {'1 2 4 8 16' if args.model_variant == '4layer' else '1'} "
-        f"--sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
         "--sglang-server-concurrency 16 "
         f"--sglang-max-running-requests {sglang_request_capacity} "
         f"--sglang-max-mamba-cache-size {sglang_mamba_capacity} "
-        "--sglang-moe-runner-backend triton "
-        "--sglang-disable-shared-experts-fusion "
         "--sglang-lora-backend triton "
         "--sglang-lora-strict-loading "
         f"--sglang-max-lora-rank {args.lora_rank} "
         "--use-miles-router "
     )
     if args.model_variant == "full":
-        sglang_args += f"--sglang-config {_FULL_SGLANG_CONFIG} " "--sglang-weight-loader-drop-cache-after-load "
+        sglang_args += (
+            f"--sglang-config {_FULL_SGLANG_CONFIG} "
+            "--sglang-moe-runner-backend marlin "
+            "--sglang-decode-attention-backend trtllm_mla "
+            "--sglang-mamba-radix-cache-strategy extra_buffer "
+            "--sglang-cuda-graph-bs-decode 1 "
+            "--sglang-cuda-graph-backend-prefill disabled "
+        )
+    else:
+        sglang_args += (
+            "--sglang-cuda-graph-bs 1 2 4 8 16 "
+            "--sglang-mem-fraction-static 0.7 "
+            "--sglang-moe-runner-backend triton "
+            "--sglang-disable-shared-experts-fusion "
+        )
     if is_debug:
         sglang_args += "--sglang-context-length 8192 "
 
@@ -284,8 +292,7 @@ def _execute_train(args: ScriptArgs) -> None:
     extra_env_vars = {
         "NCCL_TIMEOUT": "3600",
         "PYTHONPATH": os.pathsep.join((str(Path(__file__).resolve().parents[1]), args.sglang_path)),
-        "SGLANG_K3_ATTN_RES_MODE": args.sglang_attn_res_mode,
-        "SGLANG_K3_FUSE_MOE_FRONT": "0",
+        "SGLANG_JIT_ROUTE_RADIX": "1",
     }
     if args.checkpoint_load_mode == "rank_local_cache" and args.local_checkpoint_cache_root is not None:
         extra_env_vars["MILES_MEGATRON_LOCAL_CHECKPOINT_CACHE"] = args.local_checkpoint_cache_root
