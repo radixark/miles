@@ -139,7 +139,14 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         # Per-slot LayerWise optimizers: plain DDP all-reduce keeps full grads on
         # every rank (whole-param sharding + retained-gradient idempotency).
         use_distributed_optimizer = False
-    ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=use_distributed_optimizer)
+    ddp_config = DistributedDataParallelConfig(
+        use_distributed_optimizer=use_distributed_optimizer,
+        # Honor --accumulate-allreduce-grads-in-fp32 on this path too. It
+        # matters doubly for multi-LoRA: gradients are RETAINED in this buffer
+        # across train batches (per-adapter accumulation), so a bf16 buffer
+        # compounds rounding error with every accumulated batch and re-reduce.
+        grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
+    )
     ddp_config.finalize()
 
     if args.offload_train:
