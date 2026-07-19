@@ -206,6 +206,19 @@ class TestMultiLoRAValidation:
 
         assert args.multi_lora is True
 
+    def test_num_rollout_is_not_required(self):
+        # Multi-LoRA runs are bounded per adapter (num_step / num_epoch in the
+        # adapter config); the unused global rollout budget may stay unset.
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            ["--multi-lora-n-adapters", "2", "--lora-rank", "8", "--target-modules", "linear_qkv"] + REQUIRED_ARGS
+        )
+
+        miles_validate_args(args)
+
+        assert args.num_rollout is None
+
     def test_empty_wait_is_a_registered_argument(self):
         assert self._parse([]).multi_lora_max_empty_wait_s == 30.0
         assert self._parse(["--multi-lora-max-empty-wait-s", "5"]).multi_lora_max_empty_wait_s == 5.0
@@ -269,3 +282,13 @@ class TestResolveFtComponents:
 
         assert result == ["train", "rollout"]
         assert result is not components
+
+
+def test_single_model_still_requires_num_rollout_or_num_epoch():
+    # The multi-LoRA exemption must not leak into ordinary runs.
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(REQUIRED_ARGS)
+
+    with pytest.raises(AssertionError, match="please set --num-rollout or --num-epoch"):
+        miles_validate_args(args)
