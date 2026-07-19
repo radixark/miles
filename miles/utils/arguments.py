@@ -2609,7 +2609,9 @@ def miles_validate_args(args):
             "depend on batch contents. Drop --calculate-per-token-loss."
         )
         assert args.multi_lora_max_coalesce_wait_s >= 0, "--multi-lora-max-coalesce-wait-s must be non-negative"
-        if args.multi_lora_max_adapter_global_batch_size is None and hasattr(args, "global_batch_size"):
+        # --global-batch-size may legitimately be unset (Megatron derives it later);
+        # leave the adapter cap unset too rather than multiplying None.
+        if args.multi_lora_max_adapter_global_batch_size is None and getattr(args, "global_batch_size", None) is not None:
             args.multi_lora_max_adapter_global_batch_size = 4 * args.global_batch_size
         if args.multi_lora_max_adapter_global_batch_size is not None:
             assert (
