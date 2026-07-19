@@ -207,8 +207,12 @@ def save_multi_lora_checkpoints(
                     cpu=True,
                     show_progress=False,
                 ):
-                    # Safetensors format can't save aliased tensors, so need clone()
-                    hf_state[hf_name] = weight.clone()
+                    # The model allocates every slot at --lora-rank; slice the
+                    # export down to this adapter's real rank so the tensors
+                    # match the r written to adapter_config.json (PEFT refuses
+                    # the checkpoint otherwise). The weight-sync push path does
+                    # the same. clone(): safetensors can't save aliased views.
+                    hf_state[hf_name] = slice_lora_to_rank(hf_name, weight, config.rank).clone()
 
         if is_global_writer:
             save_safetensors(
