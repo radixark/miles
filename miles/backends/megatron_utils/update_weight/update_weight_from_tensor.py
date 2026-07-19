@@ -337,6 +337,7 @@ class UpdateWeightFromTensor:
 
             is_first_chunk = True
             sent_chunks = 0
+            next_hf_named_tensors = None
             for next_hf_named_tensors in chunks:
                 refs, long_lived_tensors = self._send_lora_params(
                     hf_named_tensors,
@@ -359,6 +360,10 @@ class UpdateWeightFromTensor:
             _check_weight_sync_results(results, is_lora=True)
             del long_lived_tensors
             sent_chunks += 1
+
+            del chunks, hf_named_tensors, next_hf_named_tensors
+            torch.cuda.ipc_collect()
+            torch.cuda.empty_cache()
 
             if rank == 0:
                 logger.info(

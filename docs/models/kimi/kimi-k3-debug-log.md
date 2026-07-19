@@ -49,4 +49,11 @@ Keep entries short. Record the symptom, proven root cause, fix, and verification
 - Symptom: job `1239` passed full reload checksum and initial LoRA sync, then `onload_kv` failed in `torch_memory_saver.resume` with `CUDA_ERROR_OUT_OF_MEMORY`.
 - Root cause: retained update-only process groups raised sleeping trainer usage from `3.27 GB` to `7.32 GB`; after that leak was fixed, job `1240` exposed a race where SGLang resumed before all 64 ranks completed cleanup.
 - Fix: destroy update-only process groups, wait for every actor update to return, then resume generation from the group coordinator; `wake_up()` recreates and warms the groups before training.
-- Verification: job `1240` confirmed cleanup reaches `3.28-3.65 GB/GPU`; resume-order verification is pending.
+- Verification: job `1241` completed all 64 updates before both engines resumed and generated 16 full-model samples without KV OOM.
+
+## LoRA CUDA IPC cleanup
+
+- Symptom: job `1241` generated successfully, then ranks 4-7 and 12-15 aborted during the first training CUDA allocation with `could not unlink the shared memory file /torch_*`.
+- Root cause: the chunked K3 LoRA path omitted the upstream producer `torch.cuda.ipc_collect()`; 278 chunks of CUDA IPC state remained until trainer wake-up.
+- Fix: release the final chunk references, collect producer IPC state, and empty the allocator cache before process-group teardown.
+- Verification: pending full-model rerun.

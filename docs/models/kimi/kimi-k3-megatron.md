@@ -482,9 +482,17 @@ memory because update-only trainer process groups remained allocated. Job
 exposed a second ordering bug: SGLang resumed one second before all 64 cleanup
 calls completed and again failed in `torch_memory_saver.resume`.
 
-The next acceptance run keeps every setting unchanged and only moves
-`continue_generation` after the group has observed all trainer actors return.
-It must still show finite full-model rollout log probabilities, a nonzero finite
-gradient norm, a completed optimizer step, and a changed version-2 adapter
-accepted by both engines. Only after that succeeds will the same run be repeated
-with GPU and CPU memory profiling to determine the minimum resource count.
+Job `1241` kept the same setting and verified the ordering fix: all 64 trainer
+updates returned before both engines resumed, and both engines generated 16
+version-1 samples without KV OOM. Trainer wake-up then failed on ranks 4-7 and
+12-15 during the first CUDA allocation with `could not unlink the shared memory
+file /torch_*`. The chunked K3 path had omitted the producer
+`torch.cuda.ipc_collect()` used by the upstream LoRA implementation, leaving 278
+chunks of IPC state for the first training allocation to reclaim.
+
+The next acceptance run keeps every setting unchanged and only restores that IPC
+cleanup after the final chunk. It must show finite full-model rollout log
+probabilities, a nonzero finite gradient norm, a completed optimizer step, and a
+changed version-2 adapter accepted by both engines. Only after that succeeds will
+the same run be repeated with GPU and CPU memory profiling to determine the
+minimum resource count.

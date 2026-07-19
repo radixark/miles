@@ -382,6 +382,7 @@ class TestUpdateWeightsZeroChunks:
 
 
 class TestUpdateWeightsSessionOrdering:
+    @patch(f"{_UW_MODULE}.torch.cuda.ipc_collect")
     @patch(f"{_UW_MODULE}.torch.cuda.empty_cache")
     @patch(f"{_UW_MODULE}.torch.cuda.synchronize")
     @patch(f"{_UW_MODULE}._check_weight_sync_results")
@@ -402,6 +403,7 @@ class TestUpdateWeightsSessionOrdering:
         _mock_check,
         mock_synchronize,
         mock_empty_cache,
+        mock_ipc_collect,
     ):
         mock_dist.get_world_size.return_value = 1
         mock_dist.get_rank.return_value = 0
@@ -423,6 +425,7 @@ class TestUpdateWeightsSessionOrdering:
         mock_end.side_effect = lambda _engines: events.append("end_base")
         mock_synchronize.side_effect = lambda: events.append("synchronize")
         mock_empty_cache.side_effect = lambda: events.append("empty_cache")
+        mock_ipc_collect.side_effect = lambda: events.append("ipc_collect")
 
         args = _make_args(
             offload_rollout=True,
@@ -443,7 +446,15 @@ class TestUpdateWeightsSessionOrdering:
 
         updater.update_weights()
 
-        assert events == ["base", "end_base", "synchronize", "empty_cache", "lora"]
+        assert events == [
+            "base",
+            "end_base",
+            "synchronize",
+            "empty_cache",
+            "lora",
+            "ipc_collect",
+            "empty_cache",
+        ]
         mock_begin.assert_called_once_with(updater.rollout_engines)
         mock_end.assert_called_once_with(updater.rollout_engines)
 
