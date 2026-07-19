@@ -191,6 +191,118 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
                 gradient.copy_(reduced)
 
 
+def validate_lora_gradients(model: Sequence[torch.nn.Module]) -> tuple[str, torch.nn.Parameter, torch.Tensor]:
+    """Validate finalized LoRA gradients and retain one B-factor update probe."""
+    param_count = 0
+    grad_count = 0
+    b_param_count = 0
+    grad_max_values = []
+    grad_l2_squared_values = []
+    b_candidates = []
+
+    for model_chunk in model:
+        for name, parameter in model_chunk.named_parameters():
+            if not parameter.requires_grad or not _is_adapter_param_name(name):
+                continue
+            is_b_factor = "lora_B" in name
+            param_count += 1
+            b_param_count += int(is_b_factor)
+            gradient = getattr(parameter, "main_grad", None)
+            if gradient is None:
+                gradient = parameter.grad
+            if gradient is None:
+                continue
+            grad_count += 1
+            grad_max_abs = gradient.detach().abs().max().double()
+            grad_norm = torch.linalg.vector_norm(gradient.detach()).double()
+            grad_max_values.append(grad_max_abs)
+            grad_l2_squared_values.append(grad_norm.square())
+            if is_b_factor:
+                b_candidates.append((name, parameter, grad_max_abs))
+
+    device = next(model[0].parameters()).device
+    grad_max_values_tensor = (
+        torch.stack(grad_max_values) if grad_max_values else torch.zeros(1, dtype=torch.float64, device=device)
+    )
+    b_max_values_tensor = (
+        torch.stack([candidate[2] for candidate in b_candidates])
+        if b_candidates
+        else torch.zeros(1, dtype=torch.float64, device=device)
+    )
+    local_counts = torch.stack(
+        [
+            torch.tensor(param_count, dtype=torch.float64, device=device),
+            torch.tensor(grad_count, dtype=torch.float64, device=device),
+            (grad_max_values_tensor > 0).sum().double(),
+            torch.tensor(b_param_count, dtype=torch.float64, device=device),
+            (b_max_values_tensor > 0).sum().double(),
+        ]
+    )
+    local_l2_squared = (
+        torch.stack(grad_l2_squared_values).sum()
+        if grad_l2_squared_values
+        else torch.zeros(1, dtype=torch.float64, device=device)
+    ).reshape(1)
+    local_max_abs = grad_max_values_tensor.max().reshape(1)
+    local_nonfinite = (
+        torch.stack(
+            [
+                (~torch.isfinite(grad_max_values_tensor)).any(),
+                (~torch.isfinite(local_l2_squared)).any(),
+            ]
+        )
+        .any()
+        .to(torch.int32)
+    )
+
+    probe = None
+    if b_candidates:
+        probe_idx = b_max_values_tensor.argmax().item()
+        probe_name, probe_parameter, _ = b_candidates[probe_idx]
+        probe = (probe_name, probe_parameter, probe_parameter.detach().clone())
+
+    torch.distributed.all_reduce(local_counts, op=torch.distributed.ReduceOp.SUM)
+    torch.distributed.all_reduce(local_l2_squared, op=torch.distributed.ReduceOp.SUM)
+    torch.distributed.all_reduce(local_max_abs, op=torch.distributed.ReduceOp.MAX)
+    torch.distributed.all_reduce(local_nonfinite, op=torch.distributed.ReduceOp.MAX)
+    if torch.distributed.get_rank() == 0:
+        logger.info(
+            "LoRA gradient check: params=%d with_grad=%d nonzero=%d " "b_params=%d nonzero_b=%d l2=%.8g max_abs=%.8g",
+            *(int(value.item()) for value in local_counts),
+            local_l2_squared.sqrt().item(),
+            local_max_abs.item(),
+        )
+    if local_nonfinite.item():
+        raise RuntimeError("LoRA gradient check found a non-finite gradient after backward")
+    if local_counts[0].item() == 0:
+        raise RuntimeError("LoRA gradient check found no trainable adapter parameters")
+    if local_counts[2].item() == 0:
+        raise RuntimeError("LoRA gradient check found no nonzero gradient after backward")
+    if local_counts[4].item() == 0:
+        raise RuntimeError("LoRA gradient check found no nonzero B-factor gradient after backward")
+    assert probe is not None
+    return probe
+
+
+def validate_lora_optimizer_update(probe: tuple[str, torch.nn.Parameter, torch.Tensor]) -> None:
+    """Verify that a nonzero-gradient B-factor changed in the optimizer step."""
+    probe_name, parameter, before = probe
+    local_max_delta = (parameter.detach() - before).abs().max().double().reshape(1)
+    local_changed = (local_max_delta > 0).to(torch.int64)
+
+    torch.distributed.all_reduce(local_changed, op=torch.distributed.ReduceOp.SUM)
+    torch.distributed.all_reduce(local_max_delta, op=torch.distributed.ReduceOp.MAX)
+    if torch.distributed.get_rank() == 0:
+        logger.info(
+            "LoRA optimizer update check: changed_ranks=%d max_abs_delta=%.8g rank0_probe=%s",
+            local_changed.item(),
+            local_max_delta.item(),
+            probe_name,
+        )
+    if local_changed.item() == 0:
+        raise RuntimeError("LoRA optimizer update check found no changed B-factor after optimizer step")
+
+
 def _is_adapter_param_name(name: str) -> bool:
     """Check if a parameter name belongs to a LoRA adapter (Megatron internal naming)."""
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))

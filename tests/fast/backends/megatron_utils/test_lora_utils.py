@@ -8,6 +8,8 @@ from argparse import Namespace
 from unittest.mock import MagicMock
 
 import pytest
+import torch
+import torch.nn as nn
 
 from miles.backends.megatron_utils.lora_utils import (
     _configure_lora_buffer_cpu_backup,
@@ -20,6 +22,8 @@ from miles.backends.megatron_utils.lora_utils import (
     is_lora_weight_name,
     lora_rollout_base_retained,
     parse_exclude_modules,
+    validate_lora_gradients,
+    validate_lora_optimizer_update,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -304,6 +308,34 @@ def test_configure_lora_buffer_cpu_backup_preserves_param_setting(disable_param_
 
     assert kwargs["disable_param_buffers_cpu_backup"] is disable_param_backup
     assert kwargs["disable_grad_buffers_cpu_backup"] is True
+
+
+def _lora_gradient_test_model(b_grad: float) -> nn.Module:
+    model = nn.Module()
+    model.register_parameter("lora_A", nn.Parameter(torch.ones(2, 2)))
+    model.register_parameter("lora_B", nn.Parameter(torch.zeros(2, 2)))
+    model.lora_A.main_grad = torch.zeros_like(model.lora_A)
+    model.lora_B.main_grad = torch.full_like(model.lora_B, b_grad)
+    return model
+
+
+def test_lora_gradient_and_optimizer_update_checks(monkeypatch):
+    monkeypatch.setattr(torch.distributed, "all_reduce", lambda *args, **kwargs: None)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
+    model = _lora_gradient_test_model(b_grad=1.0)
+
+    probe = validate_lora_gradients([model])
+    with torch.no_grad():
+        model.lora_B.add_(0.25)
+    validate_lora_optimizer_update(probe)
+
+
+def test_lora_gradient_check_rejects_zero_gradients(monkeypatch):
+    monkeypatch.setattr(torch.distributed, "all_reduce", lambda *args, **kwargs: None)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
+
+    with pytest.raises(RuntimeError, match="no nonzero gradient"):
+        validate_lora_gradients([_lora_gradient_test_model(b_grad=0.0)])
 
 
 # ---------------------------------------------------------------------------

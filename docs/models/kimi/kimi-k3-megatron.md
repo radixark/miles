@@ -497,12 +497,16 @@ IPC tensors. The upstream convention is paired cleanup: receiver release and
 collection after consumption, producer collection between buckets, and a final
 producer collection after the updater frame returns.
 
-The next acceptance run keeps every setting unchanged and only adds that paired
-IPC cleanup. It must show finite full-model rollout log probabilities, a nonzero
-finite gradient norm, a completed optimizer step, and a changed version-2 adapter
-accepted by both engines. Only after that succeeds will the same run be repeated
-with GPU and CPU memory profiling to determine the minimum resource count.
+One-GPU diagnostic job `1244` passed both the Miles two-chunk cleanup-ordering
+test and the SGLang GPU-source LoRA load/reap test in the production container.
+Full-model job `1245` then kept every setting unchanged and verified the paired
+cleanup through rollout, trainer wake-up, log-probability evaluation, backward,
+save, sleep, and a second 278-chunk adapter transfer without an IPC unlink error.
 
-Before that run, one-GPU diagnostic job `1244` passed both the Miles two-chunk
-cleanup-ordering test and the SGLang GPU-source LoRA load/reap test in the
-production container.
+Job `1245` exposed the next blocker. The rollout log-probability mean was
+`-0.48844`, the Megatron mean was `-0.49296`, and the reported absolute training
+difference was `0.03294`. The optimizer step reported `NORMAL`, but `loss` and
+`grad_norm` were both zero. The version-2 validator then proved that none of the
+1,392 exported LoRA tensors changed. Root-cause analysis is in progress; memory
+profiling remains blocked until a finite nonzero gradient and a changed adapter
+are verified with the same run setting.

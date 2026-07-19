@@ -509,6 +509,24 @@ class MegatronTrainRayActor(TrainRayActor):
                 compute_advantages_and_returns(self.args, rollout_data)
                 log_train_advantage_computation_event(rollout_data)
 
+                if self.args.check_lora_weight_equal and get_parallel_state().tp.rank == 0:
+                    advantage_max_abs = max(
+                        (advantage.detach().abs().max().item() for advantage in rollout_data["advantages"]),
+                        default=0.0,
+                    )
+                    nonzero_advantages = sum(
+                        int(advantage.detach().abs().max().item() > 0) for advantage in rollout_data["advantages"]
+                    )
+                    logger.info(
+                        "LoRA train signal: effective_dp_rank=%d rewards=%s active_tokens=%d "
+                        "nonzero_advantages=%d advantage_max_abs=%.8g",
+                        get_parallel_state().effective_dp.rank,
+                        rollout_data["rewards"],
+                        sum(mask.sum().item() for mask in rollout_data["loss_masks"]),
+                        nonzero_advantages,
+                        advantage_max_abs,
+                    )
+
             if self.rollout_data_postprocess is not None:
                 self.rollout_data_postprocess(self.args)
 

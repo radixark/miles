@@ -512,6 +512,12 @@ def train_one_step(
         forward_only=False,
     )
 
+    lora_update_probe = None
+    if args.check_lora_weight_equal and is_lora_model(model):
+        from .lora_utils import validate_lora_gradients
+
+        lora_update_probe = validate_lora_gradients(model)
+
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
     valid_step = True
@@ -557,6 +563,11 @@ def train_one_step(
     if not disable_optimizer and valid_step:
         # Update parameters.
         update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+
+        if lora_update_probe is not None:
+            from .lora_utils import validate_lora_optimizer_update
+
+            validate_lora_optimizer_update(lora_update_probe)
 
         # Update learning rate.
         assert update_successful

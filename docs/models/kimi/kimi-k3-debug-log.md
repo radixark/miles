@@ -56,4 +56,9 @@ Keep entries short. Record the symptom, proven root cause, fix, and verification
 - Symptom: jobs `1241` and `1243` generated successfully, then trainer ranks aborted on a later CUDA allocation with `could not unlink the shared memory file /torch_*`.
 - Root cause: the chunked LoRA path lacked the paired SGLang receiver cleanup; producer-only collection in `1243` ran before all receiver IPC references were reaped.
 - Fix: release and collect receiver tensors after every chunk, collect completed producer chunks, and collect once more after the updater frame returns.
-- Verification: job `1244` passed the Miles two-chunk ordering test and the SGLang GPU-source LoRA load/reap test; full-model rerun pending.
+- Verification: job `1244` passed the focused producer/receiver tests. Full-model job `1245` completed rollout, trainer wake-up, log-probability evaluation, backward, save, sleep, and a second 278-chunk adapter transfer without an IPC unlink error.
+
+## Full-model LoRA update is zero
+
+- Symptom: job `1245` reported `loss=0`, `grad_norm=0`, and no change in any of 1,392 exported LoRA tensors after the first optimizer step.
+- Verification: the version-2 checksum validator failed with `LoRA version 2 did not change any exported tensor`; root cause and fix are pending.
