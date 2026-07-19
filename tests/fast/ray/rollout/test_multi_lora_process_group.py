@@ -18,8 +18,9 @@ class FakeDataSource:
 
 
 class FakeAdapterView:
-    def __init__(self, version: int) -> None:
+    def __init__(self, version: int, registration_id: str = "reg-1") -> None:
         self.version = version
+        self.registration_id = registration_id
 
 
 class FakeAdaptersCache:
@@ -52,3 +53,4 @@ async def test_process_group_stamps_submission_version(monkeypatch):
 
     assert result is g
     assert g[0].metadata["slot_version"] == 5
+    assert g[0].metadata["registration_id"] == "reg-1"

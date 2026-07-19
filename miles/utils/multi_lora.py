@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 import uuid
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -134,6 +134,9 @@ class AdapterRecord:
     # Only advanced by mark_batch_trained (after a successful train call).
     accumulated_groups: int = 0
     state: AdapterState = AdapterState.PENDING
+    # Unique per registration: a re-registered name is a new tenant, and
+    # rollout-side state stamped by the previous tenant must not carry over.
+    registration_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 MAX_BATCH_RECORDS = 16
@@ -315,6 +318,7 @@ class AdapterRegistry:
             version=self.slot_versions[record.slot],
             step=record.step,
             accumulated_groups=record.accumulated_groups,
+            registration_id=record.registration_id,
         )
 
     def active_adapters(self) -> dict[str, AdapterRun]:

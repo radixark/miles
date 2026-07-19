@@ -43,6 +43,7 @@ def make_worker(args=None) -> AsyncMultiLoRAWorker:
     worker.rotation = deque()
     worker.dynamic_filter = None
     worker.metrics = MultiLoRAWorkerMetrics()
+    worker.registrations = {}
     return worker
 
 
@@ -53,6 +54,7 @@ def adapter_run(
     n_samples_per_prompt: int = 4,
     accumulated_groups: int = 0,
     version: int = 1,
+    registration_id: str = "",
 ) -> AdapterRun:
     config = AdapterRunConfig(
         data="/d",
@@ -62,23 +64,35 @@ def adapter_run(
         n_samples_per_prompt=n_samples_per_prompt,
     )
     return AdapterRun(
-        name=name, config=config, slot=slot, version=version, step=0, accumulated_groups=accumulated_groups
+        name=name,
+        config=config,
+        slot=slot,
+        version=version,
+        step=0,
+        accumulated_groups=accumulated_groups,
+        registration_id=registration_id,
     )
 
 
-def make_group(adapter: AdapterRun, slot_version: int | None = None) -> list[Sample]:
+def make_group(
+    adapter: AdapterRun, slot_version: int | None = None, registration_id: str | None = None
+) -> list[Sample]:
     samples = []
     for _ in range(adapter.config.n_samples_per_prompt):
         sample = Sample(prompt="p", adapter=AdapterRef(adapter.name, adapter.slot))
         if slot_version is not None:
             sample.metadata["slot_version"] = slot_version
+        if registration_id is not None:
+            sample.metadata["registration_id"] = registration_id
         samples.append(sample)
     return samples
 
 
-def buffer_groups(worker, adapter: AdapterRun, count: int, slot_version: int | None = None):
+def buffer_groups(
+    worker, adapter: AdapterRun, count: int, slot_version: int | None = None, registration_id: str | None = None
+):
     for _ in range(count):
-        worker.buffers[adapter.name].put(make_group(adapter, slot_version))
+        worker.buffers[adapter.name].put(make_group(adapter, slot_version, registration_id))
 
 
 def snapshot_of(*adapters: AdapterRun, retiring: tuple[AdapterRun, ...] = ()) -> dict:
@@ -226,3 +240,37 @@ def test_empty_collection_times_out_instead_of_spinning_forever():
     a = adapter_run("A", 0, rollout_batch_size=4)
     with pytest.raises(RuntimeError, match="No poppable groups collected before empty timeout"):
         collect(worker, snapshot_of(a))
+
+
+def test_re_registered_name_drops_previous_tenant_buffer_and_metrics():
+    # A retires while its buffer still holds groups; the driver idles (no
+    # generate), then the operator re-registers the same name. The new
+    # tenant's first get_groups must not ship the old tenant's groups nor
+    # inherit its partial step statistics.
+    worker = make_worker()
+    old = adapter_run("A", 0, registration_id="reg-old")
+    buffer_groups(worker, old, count=2, registration_id="reg-old")
+    worker.get_groups(snapshot_of(old), 0, {})  # worker has seen the old tenant
+    worker.metrics.step_rewards["A"].append(1.0)  # old tenant's partial step stats
+
+    new = adapter_run("A", 0, registration_id="reg-new")
+    groups, counts = worker.get_groups(snapshot_of(new), 16, {})
+
+    assert (groups, counts) == ([], {})
+    assert len(worker.buffers["A"]) == 0
+    assert "A" not in worker.metrics.step_rewards
+
+
+def test_straggler_group_of_previous_registration_is_dropped():
+    # An in-flight generation of the old tenant lands in the buffer after the
+    # re-registration sweep already reset it; only the new tenant's groups ship.
+    worker = make_worker()
+    new = adapter_run("A", 0, registration_id="reg-new")
+    worker.get_groups(snapshot_of(new), 0, {})  # sweep records the new registration
+    buffer_groups(worker, new, count=1, registration_id="reg-old")  # straggler
+    buffer_groups(worker, new, count=1, registration_id="reg-new")
+
+    groups, counts = worker.get_groups(snapshot_of(new), 16, {})
+
+    assert counts == {"A": 1}
+    assert [s.metadata["registration_id"] for g in groups for s in g] == ["reg-new"] * 4

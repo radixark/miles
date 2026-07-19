@@ -61,6 +61,9 @@ class AdapterRun:
     step: int = 0
     # Committed prompt groups accumulated toward the current optimizer step.
     accumulated_groups: int = 0
+    # Unique per registration (see AdapterRecord.registration_id): lets the
+    # rollout worker tell a re-registered name apart from the previous tenant.
+    registration_id: str = ""
 
 
 def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:
