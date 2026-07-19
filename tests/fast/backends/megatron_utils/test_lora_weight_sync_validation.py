@@ -418,6 +418,7 @@ class TestUpdateWeightsSessionOrdering:
             else:
                 events.append("lora")
                 yield SAMPLE_LORA_WEIGHTS
+                yield SAMPLE_LORA_WEIGHTS
 
         iterator = MagicMock()
         iterator.get_hf_weight_chunks.side_effect = chunks
@@ -452,6 +453,7 @@ class TestUpdateWeightsSessionOrdering:
             "synchronize",
             "empty_cache",
             "lora",
+            "ipc_collect",
             "ipc_collect",
             "empty_cache",
         ]

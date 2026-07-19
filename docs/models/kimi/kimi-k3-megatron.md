@@ -486,13 +486,19 @@ Job `1241` kept the same setting and verified the ordering fix: all 64 trainer
 updates returned before both engines resumed, and both engines generated 16
 version-1 samples without KV OOM. Trainer wake-up then failed on ranks 4-7 and
 12-15 during the first CUDA allocation with `could not unlink the shared memory
-file /torch_*`. The chunked K3 path had omitted the producer
-`torch.cuda.ipc_collect()` used by the upstream LoRA implementation, leaving 278
-chunks of IPC state for the first training allocation to reclaim.
+file /torch_*`.
 
-The next acceptance run keeps every setting unchanged and only restores that IPC
-cleanup after the final chunk. It must show finite full-model rollout log
-probabilities, a nonzero finite gradient norm, a completed optimizer step, and a
-changed version-2 adapter accepted by both engines. Only after that succeeds will
-the same run be repeated with GPU and CPU memory profiling to determine the
-minimum resource count.
+Job `1243` added producer cleanup after the final adapter chunk without changing
+the run setting. It again passed strict base reload checksums, transferred all
+1,392 adapter tensors, and generated 16 version-1 samples. At the first training
+allocation after wake-up, at least ten ranks hit the same unlink failure. The
+producer-only cleanup ran before SGLang had forcibly reaped its deserialized CUDA
+IPC tensors. The upstream convention is paired cleanup: receiver release and
+collection after consumption, producer collection between buckets, and a final
+producer collection after the updater frame returns.
+
+The next acceptance run keeps every setting unchanged and only adds that paired
+IPC cleanup. It must show finite full-model rollout log probabilities, a nonzero
+finite gradient norm, a completed optimizer step, and a changed version-2 adapter
+accepted by both engines. Only after that succeeds will the same run be repeated
+with GPU and CPU memory profiling to determine the minimum resource count.

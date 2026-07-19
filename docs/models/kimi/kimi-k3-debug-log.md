@@ -53,7 +53,7 @@ Keep entries short. Record the symptom, proven root cause, fix, and verification
 
 ## LoRA CUDA IPC cleanup
 
-- Symptom: job `1241` generated successfully, then ranks 4-7 and 12-15 aborted during the first training CUDA allocation with `could not unlink the shared memory file /torch_*`.
-- Root cause: the chunked K3 LoRA path omitted the upstream producer `torch.cuda.ipc_collect()`; 278 chunks of CUDA IPC state remained until trainer wake-up.
-- Fix: release the final chunk references, collect producer IPC state, and empty the allocator cache before process-group teardown.
-- Verification: pending full-model rerun.
+- Symptom: jobs `1241` and `1243` generated successfully, then trainer ranks aborted on a later CUDA allocation with `could not unlink the shared memory file /torch_*`.
+- Root cause: the chunked LoRA path lacked the paired SGLang receiver cleanup; producer-only collection in `1243` ran before all receiver IPC references were reaped.
+- Fix: release and collect receiver tensors after every chunk, collect completed producer chunks, and collect once more after the updater frame returns.
+- Verification: job `1243` proved producer-only cleanup was insufficient; paired-cleanup rerun pending.

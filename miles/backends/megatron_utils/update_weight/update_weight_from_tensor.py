@@ -349,6 +349,7 @@ class UpdateWeightFromTensor:
                 del long_lived_tensors
                 sent_chunks += 1
                 hf_named_tensors = next_hf_named_tensors
+                torch.cuda.ipc_collect()
                 is_first_chunk = False
 
             refs, long_lived_tensors = self._send_lora_params(
