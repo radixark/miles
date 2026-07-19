@@ -2618,6 +2618,11 @@ def miles_validate_args(args):
             "depend on batch contents. Drop --calculate-per-token-loss."
         )
         assert args.multi_lora_max_coalesce_wait_s >= 0, "--multi-lora-max-coalesce-wait-s must be non-negative"
+        assert (getattr(args, "optimizer", "adam") or "adam").lower() == "adam", (
+            "Multi-LoRA requires --optimizer adam: the per-slot optimizer isolation "
+            "(build_multi_lora_optimizer, slot retirement state cleanup) only implements "
+            f"Adam semantics; got --optimizer {args.optimizer}"
+        )
         # --global-batch-size may legitimately be unset (Megatron derives it later);
         # leave the adapter cap unset too rather than multiplying None.
         if args.multi_lora_max_adapter_global_batch_size is None and getattr(args, "global_batch_size", None) is not None:

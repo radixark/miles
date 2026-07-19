@@ -96,6 +96,10 @@ def build_multi_lora_optimizer(
         "sharding replaces byte-level ZeRO"
     )
     assert not config.fp16, "multi-LoRA per-slot optimizers require bf16 (no dynamic loss scaler)"
+    assert (config.optimizer or "").lower() == "adam", (
+        "multi-LoRA per-slot optimizers only implement Adam semantics (state init, "
+        f"slot retirement cleanup, step clocks); got optimizer={config.optimizer!r}"
+    )
 
     pg_collection = ProcessGroupCollection.use_mpu_process_groups()
 
