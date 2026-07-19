@@ -327,6 +327,9 @@ class AsyncMultiLoRAWorker:
         # Last seen registration id per adapter name; a change means the name
         # was re-registered and inherited buffer/metric state must be dropped.
         self.registrations: dict[str, str] = {}
+        # Set when run_loop dies; collect_batch surfaces it instead of letting
+        # the batch collection time out with a misleading empty-batch error.
+        self.failure: Exception | None = None
 
     @classmethod
     def get_or_create(cls, args, data_source, generate_fn: GenerateFn, concurrency: int = None):
@@ -376,6 +379,11 @@ class AsyncMultiLoRAWorker:
                     active.add(asyncio.create_task(self.process_and_enqueue(samples[0])))
 
                 await asyncio.sleep(0.01)
+        except Exception as e:
+            # Typically the data source: this stops production for EVERY
+            # adapter, so record the cause for collect_batch to surface.
+            self.failure = e
+            logger.exception("multi-LoRA producer failed; generation is stopped")
         finally:
             for task in active:
                 task.cancel()
@@ -510,6 +518,10 @@ async def collect_batch(args, worker: AsyncMultiLoRAWorker, snapshot: dict) -> T
     last_warning = time.time()
 
     while total_samples < target_samples:
+        if worker.failure is not None:
+            raise RuntimeError(
+                "multi-LoRA producer thread died; generation is stalled for every adapter"
+            ) from worker.failure
         groups, group_counts = worker.get_groups(snapshot, target_samples - total_samples, group_counts)
         if groups:
             collected.extend(groups)

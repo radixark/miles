@@ -403,6 +403,26 @@ class MultiLoRABackend:
         if config.num_step is not None and config.num_epoch is not None:
             logger.warning(f"Adapter '{name}' sets both num_step and num_epoch; num_step takes precedence")
 
+        # A bad data path or unresolvable reward config does not fail at this
+        # API otherwise: the data path kills the shared rollout producer thread
+        # and an empty reward config burns every generated sample, either way
+        # stalling ALL adapters behind a misleading empty-batch timeout.
+        if not Path(config.data).expanduser().exists():
+            raise ValueError(
+                f"Adapter '{name}' data path '{config.data}' does not exist "
+                "(checked from the controller process, which runs on the head node with the rollout data source)"
+            )
+        if (
+            config.custom_rm_path is None
+            and not (config.rm_type or "").strip()
+            and getattr(self.args, "custom_rm_path", None) is None
+            and not (getattr(self.args, "rm_type", None) or "").strip()
+        ):
+            raise ValueError(
+                f"Adapter '{name}' has no reward config: set rm_type or custom_rm_path in the adapter "
+                "config, or launch with --rm-type / --custom-rm-path"
+            )
+
         adapter_global_batch_size = rollout_batch_size * n_samples_per_prompt
         if (max_batch := getattr(self.args, "multi_lora_max_adapter_global_batch_size", None)) is not None:
             if adapter_global_batch_size > max_batch:

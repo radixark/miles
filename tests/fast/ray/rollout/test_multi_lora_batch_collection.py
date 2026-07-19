@@ -44,6 +44,7 @@ def make_worker(args=None) -> AsyncMultiLoRAWorker:
     worker.dynamic_filter = None
     worker.metrics = MultiLoRAWorkerMetrics()
     worker.registrations = {}
+    worker.failure = None
     return worker
 
 
@@ -274,3 +275,17 @@ def test_straggler_group_of_previous_registration_is_dropped():
 
     assert counts == {"A": 1}
     assert [s.metadata["registration_id"] for g in groups for s in g] == ["reg-new"] * 4
+
+
+def test_dead_producer_surfaces_its_cause_instead_of_timing_out():
+    # A producer-thread failure (e.g. an adapter whose dataset vanished) stops
+    # generation for every adapter; collect_batch must raise the recorded cause
+    # immediately, not wait out the empty-batch timeout.
+    worker = make_worker(make_args(multi_lora_max_empty_wait_s=30.0))
+    worker.failure = RuntimeError("dataset gone")
+    a = adapter_run("A", 0)
+    start = time.monotonic()
+    with pytest.raises(RuntimeError, match="producer thread died") as excinfo:
+        collect(worker, snapshot_of(a))
+    assert time.monotonic() - start < 1.0  # no timeout wait
+    assert "dataset gone" in repr(excinfo.value.__cause__)
