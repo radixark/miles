@@ -1459,6 +1459,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "--global-batch-size before training starts on what is ready (default: 0.5)."
                 ),
             )
+            parser.add_argument(
+                "--multi-lora-max-empty-wait-s",
+                type=float,
+                default=30.0,
+                help=(
+                    "How long a generate call waits for the first poppable group before "
+                    "failing with an empty-batch timeout (default: 30)."
+                ),
+            )
             return parser
 
         def add_router_arguments(parser):

@@ -206,6 +206,10 @@ class TestMultiLoRAValidation:
 
         assert args.multi_lora is True
 
+    def test_empty_wait_is_a_registered_argument(self):
+        assert self._parse([]).multi_lora_max_empty_wait_s == 30.0
+        assert self._parse(["--multi-lora-max-empty-wait-s", "5"]).multi_lora_max_empty_wait_s == 5.0
+
 
 class TestResolveFtComponents:
     def test_disabled_with_no_components_returns_empty_without_warning(self, caplog) -> None:
