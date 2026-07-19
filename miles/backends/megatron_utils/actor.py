@@ -619,8 +619,6 @@ class MegatronTrainRayActor(TrainRayActor):
         engine_gpu_offsets = info.engine_gpu_offsets
         del info
 
-        keep_process_groups = self.args.offload_train and is_lora_enabled(self.args)
-
         if self.args.offload_train:
             reload_process_groups()
 
@@ -638,7 +636,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
                 logger.warning("Skipping actor-to-rollout weight update because " "--debug-skip-weight-update is set.")
-            if self.args.offload_train and not keep_process_groups:
+            if self.args.offload_train:
                 destroy_process_groups()
             return
 
@@ -666,10 +664,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 else:
                     self.weights_backuper.backup("old_actor")
 
-        # LoRA updates need the training process groups again at the next train
-        # wake-up. Keep this reload alive until sleep() owns the next teardown.
-        if self.args.offload_train and not keep_process_groups:
+        if self.args.offload_train:
             destroy_process_groups()
+            print_memory("after update_weights process-group cleanup")
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
