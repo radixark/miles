@@ -2629,6 +2629,13 @@ def miles_validate_args(args):
             "Multi-LoRA is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: the v2 "
             "train group has no reconcile_adapters and does not return train outcomes"
         )
+        if (getattr(args, "lr_decay_style", "constant") or "constant") != "constant":
+            logger.warning(
+                "Multi-LoRA shares one LR schedule budget across every adapter: with "
+                f"--lr-decay-style {args.lr_decay_style}, adapters registered later in a "
+                "service-mode run train at an already-decayed LR (down to --min-lr). "
+                "Consider --lr-decay-style constant."
+            )
         # --global-batch-size may legitimately be unset (Megatron derives it later);
         # leave the adapter cap unset too rather than multiplying None.
         if args.multi_lora_max_adapter_global_batch_size is None and getattr(args, "global_batch_size", None) is not None:
