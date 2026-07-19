@@ -17,8 +17,8 @@ from miles.utils.tracking_utils.tracking import init_tracking
 
 logger = logging.getLogger(__name__)
 
-ROLLOUT_FUNCTION_PATH = "examples.multi_lora.multi_lora_async_rollout.generate_rollout_multi_lora"
-DATA_SOURCE_PATH = "examples.multi_lora.multi_lora_data_source_async.MultiLoRAAsyncDataSource"
+ROLLOUT_FUNCTION_PATH = "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
+DATA_SOURCE_PATH = "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
 
 
 def _is_empty_batch_timeout(task_error: ray.exceptions.RayTaskError) -> bool:

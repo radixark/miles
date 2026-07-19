@@ -11,14 +11,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from examples.multi_lora.multi_lora_async_rollout import (
+from miles.rollout.multi_lora.async_rollout import (
     AsyncMultiLoRAWorker,
     GroupBuffer,
     MultiLoRAWorkerMetrics,
     collect_batch,
     group_adapter_name,
 )
-
 from miles.utils.adapter_config import AdapterRun, AdapterRunConfig
 from miles.utils.types import AdapterRef, Sample
 

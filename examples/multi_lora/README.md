@@ -17,8 +17,6 @@ run_job.sh                           # entrypoint: bounded run, exits when done
 run_service.sh                       # service mode: idles for registrations (port 8068)
 service_smoke.py                     # register/deregister smoke test against the API
 train_multi_lora_async.py            # trainer (entry point)
-multi_lora_async_rollout.py          # fully-async rollout function
-multi_lora_data_source_async.py      # data source (reads controller)
 adapters/
   gsm8k.yaml
   dapo_math.yaml

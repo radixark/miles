@@ -132,6 +132,6 @@ class MultiLoRAAsyncDataSource(DataSource):
             source.load(rollout_id)
 
     def close(self) -> None:
-        from examples.multi_lora.multi_lora_async_rollout import AsyncMultiLoRAWorker
+        from miles.rollout.multi_lora.async_rollout import AsyncMultiLoRAWorker
 
         AsyncMultiLoRAWorker.stop_global()
