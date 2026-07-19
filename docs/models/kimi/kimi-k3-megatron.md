@@ -502,3 +502,7 @@ IPC cleanup. It must show finite full-model rollout log probabilities, a nonzero
 finite gradient norm, a completed optimizer step, and a changed version-2 adapter
 accepted by both engines. Only after that succeeds will the same run be repeated
 with GPU and CPU memory profiling to determine the minimum resource count.
+
+Before that run, one-GPU diagnostic job `1244` passed both the Miles two-chunk
+cleanup-ordering test and the SGLang GPU-source LoRA load/reap test in the
+production container.
