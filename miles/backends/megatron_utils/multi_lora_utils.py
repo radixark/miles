@@ -362,3 +362,98 @@ def cleanup_adapters(args, model, optimizer, adapters) -> int:
         for adapter in adapters:
             ray.get(get_multi_lora_controller().free_slot.remote(adapter.name))
     return len(adapters)
+
+
+def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id: int, step_id: int) -> float:
+    """Optimizer-step the slots whose adapter batch completes with this train
+    batch, and advance their per-adapter LR/WD schedules. Returns the max grad
+    norm across stepped slots (0.0 when none stepped).
+
+    The shared opt_param_scheduler is never stepped under multi-LoRA: schedule
+    parameters inherit the args, only the position is per adapter.
+    """
+    from miles.backends.megatron_utils.multi_lora_optimizer import step_adapter_slots
+    from miles.backends.megatron_utils.multi_lora_scheduler import step_slot_schedulers
+    from miles.utils.tracking_utils.structured_log import log_structured
+
+    # slot -> adapter_global_batch_size for adapter batches completing now.
+    step_batch_sizes = dict(rollout_data.get("step_adapter_batch_sizes", {}))
+    grad_norms_by_slot = step_adapter_slots(
+        optimizer,
+        model,
+        step_batch_sizes,
+        clip_grad=args.clip_grad,
+    )
+
+    if lr_by_slot := step_slot_schedulers(optimizer, step_batch_sizes):
+        log_structured(
+            logger.info,
+            op="adapter_lr",
+            rollout=rollout_id,
+            step=step_id,
+            **{f"slot_{slot}": lr for slot, lr in lr_by_slot.items()},
+        )
+    return max(grad_norms_by_slot.values(), default=0.0)
+
+
+def commit_trained_batch(rollout_data, rollout_id: int, pending_push: set) -> None:
+    """A train call landed: schedule the stepped adapters' engine push and
+    commit the batch on the controller (main rank only). The stepped set ships
+    with the train data, identical on all ranks."""
+    from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
+
+    pending_push.update(rollout_data.get("step_adapter_names", []))
+    if is_first_replica_megatron_main_rank():
+        ray.get(get_multi_lora_controller().mark_batch_trained.remote(rollout_id))
+
+
+def save_due_adapter_checkpoints(args, model) -> bool:
+    """Save per-adapter checkpoints for adapters at a save-interval multiple
+    without a checkpoint on disk. Rank 0 picks and broadcasts, so the
+    collective export lines up. Returns False when nothing is due."""
+    from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
+    from miles.utils.distributed_utils import get_gloo_group
+
+    due_buffer = [None]
+    if is_first_replica_megatron_main_rank() and args.save_interval is not None:
+        snapshot = ray.get(get_multi_lora_controller().snapshot.remote())
+        adapters = {**snapshot["active"], **snapshot["retiring"]}
+        due_buffer[0] = {
+            name: adapter
+            for name, adapter in adapters.items()
+            if adapter.step > 0
+            and adapter.step % args.save_interval == 0
+            and adapter.config.save is not None
+            and not (Path(adapter.config.save) / "checkpoints" / f"step_{adapter.step}").exists()
+        }
+    if dist.is_initialized():
+        dist.broadcast_object_list(due_buffer, src=0, group=get_gloo_group())
+    due_adapters = due_buffer[0]
+    if not due_adapters:
+        return False
+    adapter_steps = {name: adapter.step for name, adapter in due_adapters.items()}
+    save_multi_lora_checkpoints(args, model, adapter_steps, due_adapters)
+    return True
+
+
+def select_adapters_to_push(loaded_adapters: dict, pending_push: set, has_new_engines: bool) -> tuple[dict, list]:
+    """Pick the adapters whose engine-side weights are stale: newly loaded +
+    stepped since the last push (tracked identically on every rank, so
+    per-adapter TP collectives line up). New engines need every loaded adapter.
+
+    Returns (adapters to push keyed by name, names getting a version bump).
+    Version bumps drive the staleness filter, so only adapters whose weights
+    actually changed get one: a new-engine full resync pushes every loaded
+    adapter, but re-sending unchanged weights must not age the unchanged
+    adapters' buffered groups toward the drop limit.
+    """
+    pending = pending_push & set(loaded_adapters)
+    push_names = set(loaded_adapters) if has_new_engines else pending
+    return {name: loaded_adapters[name] for name in sorted(push_names)}, sorted(pending)
+
+
+def commit_weight_push(version_update_names: list, is_main_rank: bool) -> None:
+    """A weight push landed: bump the pushed adapters' slot versions on the
+    controller (promotes PENDING adapters to ACTIVE)."""
+    if version_update_names and is_main_rank:
+        ray.get(get_multi_lora_controller().record_weight_update.remote(version_update_names))

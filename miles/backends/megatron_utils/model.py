@@ -371,6 +371,13 @@ def forward_only(
     return rollout_data
 
 
+def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disable_optimizer: bool) -> None:
+    for model_chunk in model:
+        model_chunk.zero_grad_buffer()
+    if not disable_optimizer:
+        optimizer.zero_grad()
+
+
 def train_one_step(
     args: Namespace,
     rollout_id: int,
@@ -419,11 +426,7 @@ def train_one_step(
         # DDP bookkeeping. Slot grads are zeroed selectively at step time.
         reset_grad_metadata_keep_grads(model)
     else:
-        # Set grad to zero.
-        for model_chunk in model:
-            model_chunk.zero_grad_buffer()
-        if not disable_optimizer:
-            optimizer.zero_grad()
+        _zero_grads(model, optimizer, disable_optimizer)
 
     if args.custom_megatron_before_train_step_hook_path:
         from miles.utils.misc import load_function
@@ -581,32 +584,11 @@ def train_one_step(
 
     if not disable_optimizer and valid_step:
         if multi_lora:
-            from miles.backends.megatron_utils.multi_lora_optimizer import step_adapter_slots
+            from miles.backends.megatron_utils.multi_lora_utils import step_stepped_adapter_slots
 
-            rollout_data = data_iterator[0].rollout_data
-            # slot -> adapter_global_batch_size for adapter batches completing now.
-            step_batch_sizes = dict(rollout_data.get("step_adapter_batch_sizes", {}))
-            grad_norms_by_slot = step_adapter_slots(
-                optimizer,
-                model,
-                step_batch_sizes,
-                clip_grad=args.clip_grad,
+            grad_norm = step_stepped_adapter_slots(
+                args, model, optimizer, data_iterator[0].rollout_data, rollout_id, step_id
             )
-            grad_norm = max(grad_norms_by_slot.values(), default=0.0)
-
-            # Advance each stepped adapter's own schedule by its batch samples
-            # (parameters inherit the args; only the position is per adapter).
-            # The shared opt_param_scheduler is never stepped under multi-LoRA.
-            from miles.backends.megatron_utils.multi_lora_scheduler import step_slot_schedulers
-
-            if lr_by_slot := step_slot_schedulers(optimizer, step_batch_sizes):
-                log_structured(
-                    logger.info,
-                    op="adapter_lr",
-                    rollout=rollout_id,
-                    step=step_id,
-                    **{f"slot_{slot}": lr for slot, lr in lr_by_slot.items()},
-                )
         else:
             # Update parameters.
             update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
@@ -618,10 +600,7 @@ def train_one_step(
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)
     if not multi_lora:
-        for model_chunk in model:
-            model_chunk.zero_grad_buffer()
-        if not disable_optimizer:
-            optimizer.zero_grad()
+        _zero_grads(model, optimizer, disable_optimizer)
 
     log_structured(
         logger.info,
