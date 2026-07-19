@@ -112,7 +112,7 @@ class MultiLoRAController:
         return self.server.actual_api_port
 
 
-def create_controller(args, router_url: str, host: str = "0.0.0.0"):
+def create_multilora_controller(args, router_url: str, host: str = "0.0.0.0"):
     # Pinned to the head node so the API sits at a port-forwardable address.
     return MultiLoRAController.options(
         name=CONTROLLER_NAME,

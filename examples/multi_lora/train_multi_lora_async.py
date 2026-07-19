@@ -6,7 +6,7 @@ from pathlib import Path
 
 import ray
 
-from miles.ray.multi_lora_controller import create_controller, get_multi_lora_controller
+from miles.ray.multi_lora_controller import create_multilora_controller, get_multi_lora_controller
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
@@ -45,7 +45,7 @@ async def main(args):
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
     router_ip, router_port = await rollout_manager.get_router_address.remote()
     args.sglang_router_ip, args.sglang_router_port = router_ip, router_port
-    controller = create_controller(args, f"http://{router_ip}:{router_port}")
+    controller = create_multilora_controller(args, f"http://{router_ip}:{router_port}")
     await controller.start.remote()
     host = await controller.http_host.remote()
     api_port = await controller.api_port.remote()
