@@ -41,6 +41,8 @@ async def train(args):
 
     maybe_start_mini_ft_controller(args)
 
+    # engine starts memory-saver-paused; resume weights unconditionally so the first update_weights
+    # copies into a mapped buffer (only the per-step LOOP onload is tag-gated, mirroring the loop offload).
     if args.offload_rollout:
         await rollout_manager.onload_weights.remote()
 
@@ -114,10 +116,10 @@ async def train(args):
             await save(rollout_id)
 
         await offload_train()
-        if args.offload_rollout:
+        if args.offload_rollout and "weight" in args.offload_rollout_level:
             await rollout_manager.onload_weights.remote()
         await actor_model.update_weights(rollout_id=rollout_id)
-        if args.offload_rollout:
+        if args.offload_rollout and "kv_cache" in args.offload_rollout_level:
             await rollout_manager.onload_kv.remote()
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
