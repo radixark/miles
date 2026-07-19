@@ -594,11 +594,19 @@ def train_one_step(
             )
             grad_norm = max(grad_norms_by_slot.values(), default=0.0)
 
-            # Advance the shared LR schedule by the samples actually consumed
-            # by the optimizer steps that fired (v1: one shared schedule).
-            stepped_samples = sum(step_batch_sizes.values())
-            if stepped_samples:
-                opt_param_scheduler.step(increment=stepped_samples)
+            # Advance each stepped adapter's own schedule by its batch samples
+            # (parameters inherit the args; only the position is per adapter).
+            # The shared opt_param_scheduler is never stepped under multi-LoRA.
+            from miles.backends.megatron_utils.multi_lora_scheduler import step_slot_schedulers
+
+            if lr_by_slot := step_slot_schedulers(optimizer, step_batch_sizes):
+                log_structured(
+                    logger.info,
+                    op="adapter_lr",
+                    rollout=rollout_id,
+                    step=step_id,
+                    **{f"slot_{slot}": lr for slot, lr in lr_by_slot.items()},
+                )
         else:
             # Update parameters.
             update_successful, grad_norm, num_zeros_in_grad = optimizer.step()

@@ -310,8 +310,11 @@ def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
     # previous tenant's partially accumulated gradients.
     from miles.backends.megatron_utils.multi_lora_optimizer import zero_adapter_slot_grads
 
+    from miles.backends.megatron_utils.multi_lora_scheduler import drop_slot_scheduler
+
     zero_optimizer_state_for_adapter(optimizer, model, slot)
     zero_adapter_slot_grads(model, slot)
+    drop_slot_scheduler(optimizer, slot)
     optimizer.reload_model_params()
     logger.info(f"{log_prefix} cleared optimizer state and retained grads for slot {slot}")
 
@@ -325,9 +328,13 @@ def load_adapters(args, model, optimizer, adapters) -> int:
         dist.barrier(group=get_gloo_group())
     if not adapters:
         return 0
+    from miles.backends.megatron_utils.multi_lora_scheduler import install_slot_scheduler
+
     resume_steps: dict[str, int] = {}
     for adapter in adapters:
         resume_steps[adapter.name] = _register_adapter(adapter, model)
+        # Per-adapter LR/WD schedule, positioned at the resumed step count.
+        install_slot_scheduler(args, optimizer, adapter, resume_steps[adapter.name])
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
     optimizer.reload_model_params()
