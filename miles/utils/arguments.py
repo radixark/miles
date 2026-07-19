@@ -2862,11 +2862,8 @@ def miles_validate_args(args):
                 "please remove --disable-rollout-global-dataset to use num_epoch"
             )
     else:
-        # if num_epoch is not set, we should set num_rollout. Multi-LoRA runs
-        # are bounded per adapter instead (num_step / num_epoch in each adapter
-        # config, defaulting to one epoch), so the global rollout budget may
-        # stay unset there.
-        assert args.num_rollout is not None or args.multi_lora, (
+        # if num_epoch is not set, we should set num_rollout
+        assert args.num_rollout is not None, (
             "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
         )
 

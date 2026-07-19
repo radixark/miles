@@ -75,16 +75,7 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
         OptimizerParamScheduler: Initialized scheduler bound to ``optimizer``.
     """
     # Iteration-based training.
-    if args.num_rollout is None:
-        # Multi-LoRA without a global rollout budget: each adapter bounds its
-        # own run (num_step), so there is no meaningful global horizon for the
-        # shared schedule. Park it far away; multi-LoRA already warns at launch
-        # when a decaying --lr-decay-style is combined with the shared budget.
-        args.train_iters = 1_000_000
-    else:
-        args.train_iters = (
-            args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
-        )
+    args.train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
     if args.lr_decay_iters is None:
         args.lr_decay_iters = args.train_iters
     lr_decay_steps = args.lr_decay_iters * args.global_batch_size
