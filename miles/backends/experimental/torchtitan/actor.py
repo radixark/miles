@@ -116,10 +116,10 @@ class TorchTitanTrainRayActor(TrainRayActor):
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
-        # GDN/Mamba + generic HF-compat class patches + config-lifetime packing (before model construction)
-        from miles.backends.experimental.fsdp_utils.adaptations.class_patches import apply_class_patches
+        # Config-lifetime packing patch (GDN/Mamba packed-doc reset), before model construction.
+        # NOTE: MoE class-patch is applied by _enable_true_on_policy_optimizations above; do NOT also
+        # run apply_class_patches here or qwen3_moe gets double-patched (router returns a tuple).
         from miles.backends.experimental.fsdp_utils.adaptations.packing import apply_packing as _tt_apply_packing
-        apply_class_patches(self.hf_config, self.args)
         _tt_apply_packing(None, self.hf_config, "config")
 
         init_context = self._get_init_weight_context_manager()
