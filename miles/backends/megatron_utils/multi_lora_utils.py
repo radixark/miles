@@ -92,6 +92,16 @@ def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
         inner = getattr(chained_optimizer, "optimizer", chained_optimizer)
         if inner is None:
             continue
+        # TE/apex FusedAdam keeps the Adam clock per param GROUP, not per
+        # param: reset the retired slot's groups so the next tenant gets
+        # fresh bias correction (the per-param reset below only covers
+        # torch's AdamW fallback, whose clock lives in state["step"]).
+        for group in inner.param_groups:
+            if group.get("miles_multi_lora_slot") == idx and "step" in group:
+                if isinstance(group["step"], torch.Tensor):
+                    group["step"].zero_()
+                else:
+                    group["step"] = 0
         for param, state in inner.state.items():
             if id(param) not in target_main_params:
                 continue
