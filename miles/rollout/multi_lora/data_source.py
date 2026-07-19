@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import ray
 
-from miles.ray.multi_lora_controller import get_multi_lora_controller
+from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.rollout.data_source import DataSource, RolloutDataSource
 from miles.utils.adapter_config import AdapterRun
 from miles.utils.types import AdapterRef, RewardSpec, Sample

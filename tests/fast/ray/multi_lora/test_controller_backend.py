@@ -9,15 +9,10 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 import pytest
 
+from miles.ray.multi_lora.backend import MultiLoRABackend
+from miles.ray.multi_lora.registry import AdapterRegistry, AdapterState
 from miles.utils.adapter_config import AdapterRunConfig
-from miles.utils.multi_lora import (
-    AdapterRegistry,
-    AdapterState,
-    MultiLoRABackend,
-    min_groups_per_dp_split,
-    make_rid,
-    parse_adapter,
-)
+from miles.utils.multi_lora import make_rid, min_groups_per_dp_split, parse_adapter
 
 
 # Registration validates that the data path exists; the test file itself is a

@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from miles.ray.multi_lora_controller import AdaptersCache, get_multi_lora_controller
+from miles.ray.multi_lora.controller import AdaptersCache, get_multi_lora_controller
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill

@@ -174,7 +174,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         payload["top_logprobs_num"] = opd_top_k
 
     if sample.adapter is not None:
-        from miles.ray.multi_lora_controller import AdaptersCache
+        from miles.ray.multi_lora.controller import AdaptersCache
 
         if (adapter := await AdaptersCache().get(sample.adapter.name)) is None:
             # Adapter no longer sampleable (deregistered / cleaned up). Don't

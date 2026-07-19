@@ -530,7 +530,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self._multi_lora_pending_push.update(rollout_data.get("step_adapter_names", []))
 
             if is_first_replica_megatron_main_rank():
-                from miles.ray.multi_lora_controller import get_multi_lora_controller
+                from miles.ray.multi_lora.controller import get_multi_lora_controller
 
                 ray.get(get_multi_lora_controller().mark_batch_trained.remote(rollout_id))
 
@@ -553,7 +553,7 @@ class MegatronTrainRayActor(TrainRayActor):
             return
         from miles.backends.megatron_utils.multi_lora_utils import cleanup_adapters as _cleanup_adapters
         from miles.backends.megatron_utils.multi_lora_utils import load_adapters as _load_adapters
-        from miles.ray.multi_lora_controller import get_multi_lora_controller
+        from miles.ray.multi_lora.controller import get_multi_lora_controller
 
         broadcast_buffer = [None]
         if is_first_replica_megatron_main_rank():
@@ -612,7 +612,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if is_multi_lora_enabled(self.args):
             from miles.backends.megatron_utils.multi_lora_utils import save_multi_lora_checkpoints
-            from miles.ray.multi_lora_controller import get_multi_lora_controller
+            from miles.ray.multi_lora.controller import get_multi_lora_controller
 
             # Rank 0 picks adapters at a save-interval multiple without a ckpt
             # on disk, and broadcasts so the collective export lines up.
@@ -727,7 +727,7 @@ class MegatronTrainRayActor(TrainRayActor):
             if is_multi_lora_enabled(self.args):
                 self._multi_lora_pending_push.clear()
                 if version_update_names and self._is_first_replica_megatron_main_rank:
-                    from miles.ray.multi_lora_controller import get_multi_lora_controller
+                    from miles.ray.multi_lora.controller import get_multi_lora_controller
 
                     ray.get(get_multi_lora_controller().record_weight_update.remote(version_update_names))
 
