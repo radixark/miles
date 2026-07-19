@@ -47,6 +47,6 @@ Keep entries short. Record the symptom, proven root cause, fix, and verification
 ## Full-model KV resume OOM
 
 - Symptom: job `1239` passed full reload checksum and initial LoRA sync, then `onload_kv` failed in `torch_memory_saver.resume` with `CUDA_ERROR_OUT_OF_MEMORY`.
-- Root cause: LoRA update reloaded and retained Megatron NCCL process groups, increasing sleeping trainer usage from `3.27 GB` to `7.32 GB` per GPU and exhausting colocated KV/CUDA-graph resume headroom.
-- Fix: destroy update-only process groups after LoRA sync; `wake_up()` recreates and warms them before training.
-- Verification: pending the same-setting 16-node rerun.
+- Root cause: retained update-only process groups raised sleeping trainer usage from `3.27 GB` to `7.32 GB`; after that leak was fixed, job `1240` exposed a race where SGLang resumed before all 64 ranks completed cleanup.
+- Fix: destroy update-only process groups, wait for every actor update to return, then resume generation from the group coordinator; `wake_up()` recreates and warms the groups before training.
+- Verification: job `1240` confirmed cleanup reaches `3.28-3.65 GB/GPU`; resume-order verification is pending.

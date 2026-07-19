@@ -472,12 +472,19 @@ logical MoE runner configuration. Production-container unit job 1180 then
 passed 62 Miles tests and seven SGLang tests, including the two-TP8 engine
 offset and placeholder mapping.
 
-The remaining acceptance test is one unchanged 16-node training smoke. It must
-show two real TP8 engines loading, shared-DCP Megatron initialization, identical
-version-1 adapter loads on both engines, finite full-model rollout log
-probabilities, nonzero finite gradient norm, a completed optimizer step, and a
-changed version-2 adapter accepted by both engines. Only after that succeeds
-will the same run be repeated with GPU and CPU memory profiling to determine
-the minimum resource count. At the time of job 1180, 14 nodes were idle and
-four nodes were occupied by user `syang` job 1167, so the 16-node smoke had not
-yet been submitted.
+Jobs `1239` and `1240` used the unchanged 16-node setting above: two official
+TP8/EP1 native-MXFP4 rollout engines, a BF16 TP32/EP64 trainer, shared DCP load,
+node-local HF reload, rank-32 LoRA, and the reload and adapter equality checks.
+Both passed native base reload checksums and transferred the initial 1,392
+adapter tensors in 278 chunks. Job `1239` then failed while resuming rollout KV
+memory because update-only trainer process groups remained allocated. Job
+`1240` confirmed their cleanup reduced trainer usage to `3.28-3.65 GB/GPU`, but
+exposed a second ordering bug: SGLang resumed one second before all 64 cleanup
+calls completed and again failed in `torch_memory_saver.resume`.
+
+The next acceptance run keeps every setting unchanged and only moves
+`continue_generation` after the group has observed all trainer actors return.
+It must still show finite full-model rollout log probabilities, a nonzero finite
+gradient norm, a completed optimizer step, and a changed version-2 adapter
+accepted by both engines. Only after that succeeds will the same run be repeated
+with GPU and CPU memory profiling to determine the minimum resource count.

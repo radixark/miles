@@ -135,3 +135,35 @@ class TestUpdateWeightFromTensorLoraConfig:
             is_lora=False,
         )
         assert not hasattr(updater, "_lora_config")
+
+
+@patch(f"{_UW_MODULE}.end_weight_update")
+@patch(f"{_UW_MODULE}.begin_weight_update")
+@patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
+@patch(f"{_UW_MODULE}.ray.get")
+@patch(f"{_UW_MODULE}.dist")
+def test_update_weights_can_defer_generation_resume(
+    mock_dist,
+    _mock_ray_get,
+    _mock_get_gloo_group,
+    _mock_begin_weight_update,
+    _mock_end_weight_update,
+):
+    from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+
+    engine = MagicMock()
+    updater = object.__new__(UpdateWeightFromTensor)
+    updater.args = Namespace(pause_generation_mode="retract")
+    updater.is_lora = False
+    updater.use_distribute = True
+    updater.weight_version = 0
+    updater.rollout_engines = [engine]
+    updater.weights_getter = MagicMock(return_value={})
+    updater._hf_weight_iterator = MagicMock()
+    updater._hf_weight_iterator.get_hf_weight_chunks.return_value = []
+    mock_dist.get_rank.return_value = 0
+
+    updater.update_weights(resume_generation=False)
+
+    engine.pause_generation.remote.assert_called_once_with(mode="retract")
+    engine.continue_generation.remote.assert_not_called()

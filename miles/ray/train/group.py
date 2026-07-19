@@ -265,6 +265,8 @@ class RayTrainGroup:
             lambda _: self._execute_first_alive("update_weights", info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
+        if self.args.colocate and self.args.offload_train and not self.args.debug_skip_weight_update:
+            await asyncio.gather(*(engine.continue_generation.remote() for engine in info.rollout_engines))
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
 

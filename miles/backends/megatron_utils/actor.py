@@ -642,7 +642,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
+            if self.args.colocate:
+                self.weight_updater.update_weights(resume_generation=not self.args.offload_train)
+            else:
+                self.weight_updater.update_weights()
             print_memory("after update_weights")
 
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):

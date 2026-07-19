@@ -275,7 +275,7 @@ class UpdateWeightFromTensor:
         return out
 
     @torch.no_grad()
-    def update_weights(self) -> None:
+    def update_weights(self, *, resume_generation: bool = True) -> None:
         """
         version++, flush caches, process buckets. Progress on rank 0.
         """
@@ -372,9 +372,10 @@ class UpdateWeightFromTensor:
 
         dist.barrier(group=get_gloo_group())
 
-        if rank == 0:
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
-        dist.barrier(group=get_gloo_group())
+        if resume_generation:
+            if rank == 0:
+                ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            dist.barrier(group=get_gloo_group())
 
     def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
         refs, long_lived_tensors = _send_to_colocated_engine(
