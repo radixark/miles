@@ -42,6 +42,7 @@ async def main(args):
     init_tracking(args)
     rollout_manager, _num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
 
+    # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
     router_ip, router_port = await rollout_manager.get_router_address.remote()
     args.sglang_router_ip, args.sglang_router_port = router_ip, router_port
     controller = create_controller(args, f"http://{router_ip}:{router_port}")
