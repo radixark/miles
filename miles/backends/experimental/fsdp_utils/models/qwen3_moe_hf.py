@@ -10,6 +10,8 @@ def apply_fsdp_moe_patch():
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
         router_logits = self.gate(hidden_states)
+        if isinstance(router_logits, tuple):  # transformers>=5.12 gate returns (logits, ...)
+            router_logits = router_logits[0]
 
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
