@@ -2595,7 +2595,15 @@ def miles_validate_args(args):
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
 
-    if args.ci_test and not args.debug_rollout_only and not args.debug_train_only:
+    if (
+        args.ci_test
+        and not args.debug_rollout_only
+        and not args.debug_train_only
+        and getattr(args, "train_backend", None) != "torchtitan"
+    ):
+        # torchtitan may skip vision/MTP heads (text-only RL on VL checkpoints); the reset+compare
+        # equality checker would then flag those un-rewritten tensors. Sync correctness is covered
+        # by train_rollout_logprob_abs_diff instead.
         args.check_weight_update_equal = True
 
     # always true on offload for colocate at the moment.
