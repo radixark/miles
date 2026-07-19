@@ -160,8 +160,11 @@ def save_multi_lora_checkpoints(
     parallel_state = get_parallel_state()
     tp_rank = parallel_state.tp.rank
     pp_rank = parallel_state.pp.rank
-    is_dp_rank_0 = parallel_state.intra_dp.rank == 0
-    is_global_writer = is_dp_rank_0 and tp_rank == 0 and pp_rank == 0
+    # One writer per (tp, pp) shard: LoRA params are replicated across DP AND
+    # CP, so gate on the combined dp×cp group. Gating on intra_dp alone left
+    # every CP rank writing the same shard file and racing the os.replace.
+    is_dp_cp_rank_0 = parallel_state.intra_dp_cp.rank == 0
+    is_global_writer = is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0
 
     target_modules_hf = (
         convert_target_modules_to_hf(list(args.target_modules))
@@ -182,14 +185,14 @@ def save_multi_lora_checkpoints(
 
         final_dir = config.save / "checkpoints" / f"step_{iteration}"
         tmp_dir = config.save / "checkpoints" / f"_tmp_step_{iteration}"
-        if is_dp_rank_0:
+        if is_dp_cp_rank_0:
             tmp_dir.mkdir(parents=True, exist_ok=True)
         if dist.is_initialized():
             dist.barrier()
 
         with expose_adapter_slot(model, adapter.slot):
             # Megatron checkpoints
-            if is_dp_rank_0:
+            if is_dp_cp_rank_0:
                 shard: dict[str, torch.Tensor] = {
                     name: param.data.cpu()
                     for batch in model
