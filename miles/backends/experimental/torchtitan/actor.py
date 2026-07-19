@@ -217,9 +217,15 @@ class TorchTitanTrainRayActor(TrainRayActor):
 
             apply_true_on_policy_patch_for_qwen3_moe()
         else:
-            from .models.qwen3_moe_hf import apply_fsdp_moe_patch
+            # transformers>=5.12 Qwen3Moe uses batched experts + an FSDP2-compatible native forward;
+            # the legacy per-expert patch (self.top_k / self.experts[i]) is obsolete on this version.
+            import transformers
+            from packaging.version import parse as _vparse
 
-            apply_fsdp_moe_patch()
+            if _vparse(transformers.__version__) < _vparse("5.12"):
+                from .models.qwen3_moe_hf import apply_fsdp_moe_patch
+
+                apply_fsdp_moe_patch()
 
     def _get_init_weight_context_manager(self):
         """Get context manager for model initialization.
