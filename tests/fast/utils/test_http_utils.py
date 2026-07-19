@@ -27,9 +27,10 @@ import threading
 import time
 from unittest.mock import patch
 
+import httpx
 import pytest
 
-from miles.utils.http_utils import wait_for_server_ready
+from miles.utils.http_utils import _post, wait_for_server_ready
 
 
 def _find_free_port() -> int:
@@ -194,3 +195,84 @@ class TestWaitForServerReadySimulatedDelays:
 
         # The fake clock should have advanced past the timeout
         assert fake_time[0] >= timeout
+
+
+# ---------------------------------------------------------------------------
+# _post idempotency tests (regression for #1334: double-generate on retry).
+#
+# _post() retries up to max_retries on failure. For non-idempotent calls such
+# as /generate, retrying *after* the request reached the server can re-issue
+# generation. The idempotent=False path must therefore retry ONLY pre-send
+# connection-setup errors and re-raise everything else immediately, while the
+# idempotent=True path keeps retrying any error.
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    """Minimal stand-in for an httpx.Response that always succeeds."""
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"ok": True}
+
+
+class _FakeClient:
+    """Async httpx-like client whose POST raises a configured error N times.
+
+    Counts every POST attempt so tests can assert how many times _post retried.
+    """
+
+    def __init__(self, error, fail_times):
+        self._error = error
+        self._fail_times = fail_times
+        self.calls = 0
+
+    async def post(self, url, json=None, headers=None):
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            raise self._error
+        return _FakeResponse()
+
+
+@pytest.mark.asyncio
+async def test_non_idempotent_does_not_retry_post_send_error():
+    """A post-send error on a non-idempotent call must NOT retry (no double-generate)."""
+    # ReadTimeout is raised after the request was sent (server may be generating).
+    client = _FakeClient(httpx.ReadTimeout("server still generating"), fail_times=99)
+    with patch("miles.utils.http_utils.asyncio.sleep"):
+        with pytest.raises(httpx.ReadTimeout):
+            await _post(client, "http://x/generate", {"input_ids": [1]}, max_retries=60, idempotent=False)
+    assert client.calls == 1, "non-idempotent /generate must not re-send after a post-send error"
+
+
+@pytest.mark.asyncio
+async def test_non_idempotent_still_retries_connect_error():
+    """A pre-send connection error is safe to retry even for non-idempotent calls."""
+    # ConnectError happens before any request bytes reach the server.
+    client = _FakeClient(httpx.ConnectError("connection refused"), fail_times=3)
+    with patch("miles.utils.http_utils.asyncio.sleep"):
+        out = await _post(client, "http://x/generate", {"input_ids": [1]}, max_retries=60, idempotent=False)
+    assert out == {"ok": True}
+    assert client.calls == 4, "should retry the 3 connect failures then succeed"
+
+
+@pytest.mark.asyncio
+async def test_idempotent_retries_post_send_error():
+    """Idempotent calls keep the original behaviour: retry any error."""
+    client = _FakeClient(httpx.ReadTimeout("transient"), fail_times=2)
+    with patch("miles.utils.http_utils.asyncio.sleep"):
+        out = await _post(client, "http://x/health", {}, max_retries=60, idempotent=True)
+    assert out == {"ok": True}
+    assert client.calls == 3, "idempotent path should retry the 2 failures then succeed"
+
+
+@pytest.mark.asyncio
+async def test_programming_error_is_not_retried():
+    """Non-HTTP errors (e.g. a bug) must fail fast, not retry max_retries times."""
+    client = _FakeClient(ValueError("bug"), fail_times=99)
+    with patch("miles.utils.http_utils.asyncio.sleep"):
+        with pytest.raises(ValueError):
+            await _post(client, "http://x/health", {}, max_retries=60, idempotent=True)
+    assert client.calls == 1, "a programming error must not be retried"

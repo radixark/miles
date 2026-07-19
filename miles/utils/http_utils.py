@@ -189,7 +189,21 @@ def _next_actor():
     return actor
 
 
-async def _post(client, url, payload, max_retries=60, action="post", headers=None):
+# Errors raised while *establishing* the TCP/TLS connection, i.e. strictly
+# before any request bytes reach the server. These are the only failures that
+# are always safe to retry for a non-idempotent request: the server never saw
+# the request, so retrying cannot duplicate side effects.
+_CONNECT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout)
+
+
+async def _post(client, url, payload, max_retries=60, action="post", headers=None, idempotent=True):
+    """POST/GET/DELETE with retries.
+
+    When ``idempotent`` is False (e.g. ``/generate``), retry only pre-send
+    connection-setup errors. Any failure after the request has been sent is
+    re-raised immediately: the server may already be processing it, and a blind
+    retry would re-issue the work (double-generate).
+    """
     retry_count = 0
     while retry_count < max_retries:
         try:
@@ -204,12 +218,23 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
             except json.JSONDecodeError:
                 output = response.text
         except Exception as e:
+            # Only retry HTTP/network errors; programming errors (AssertionError,
+            # AttributeError, ...) should fail immediately rather than retry max_retries times.
+            if not isinstance(e, httpx.HTTPError):
+                raise
             retry_count += 1
 
             if isinstance(e, httpx.HTTPStatusError):
                 response_text = e.response.text
             else:
                 response_text = None
+
+            # Non-idempotent calls must not retry once the request may have been
+            # sent; only connection-setup failures (request never left us) are
+            # safe to retry.
+            if not idempotent and not isinstance(e, _CONNECT_ERRORS):
+                logger.info(f"Error: {e}, not retrying non-idempotent request (url={url}, response={response_text})")
+                raise e
 
             logger.info(
                 f"Error: {e}, retrying... (attempt {retry_count}/{max_retries}, url={url}, response={response_text})"
@@ -271,8 +296,10 @@ def _init_ray_distributed_post(args):
                 timeout=httpx.Timeout(None),
             )
 
-        async def do_post(self, url, payload, max_retries=60, action="post", headers=None):
-            return await _post(self._client, url, payload, max_retries, action=action, headers=headers)
+        async def do_post(self, url, payload, max_retries=60, action="post", headers=None, idempotent=True):
+            return await _post(
+                self._client, url, payload, max_retries, action=action, headers=headers, idempotent=idempotent
+            )
 
     # Create actors per node
     created = []
@@ -297,18 +324,20 @@ def _init_ray_distributed_post(args):
 
 
 # TODO may generalize the name since it now contains http DELETE/GET etc (with retries and remote-execution)
-async def post(url, payload, max_retries=60, action="post", headers=None):
+async def post(url, payload, max_retries=60, action="post", headers=None, idempotent=True):
     # If distributed mode is enabled and actors exist, dispatch via Ray.
     if _distributed_post_enabled and _post_actors:
         try:
             actor = _next_actor()
             if actor is not None:
-                return await actor.do_post.remote(url, payload, max_retries, action=action, headers=headers)
+                return await actor.do_post.remote(
+                    url, payload, max_retries, action=action, headers=headers, idempotent=idempotent
+                )
         except Exception as e:
             logger.info(f"[http_utils] Distributed POST failed, falling back to local: {e} (url={url})")
             # fall through to local
 
-    return await _post(_http_client, url, payload, max_retries, action=action, headers=headers)
+    return await _post(_http_client, url, payload, max_retries, action=action, headers=headers, idempotent=idempotent)
 
 
 # TODO unify w/ `post` to add retries and remote-execution
