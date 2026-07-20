@@ -62,4 +62,5 @@ Keep entries short. Record the symptom, proven root cause, fix, and verification
 
 - Symptom: job `1245` reported `loss=0`, `grad_norm=0`, and no change in any of 1,392 exported LoRA tensors after the first optimizer step.
 - Isolation: job `1253` loaded the shared DCP in `297.83s`, started both TP8 rollout engines, produced 512 active tokens and three nonzero advantages per effective DP rank, and kept the rollout/Megatron mean log-probability difference at `0.00774`. Backward then found all 77,184 aggregated LoRA `main_grad` tensors exactly zero.
-- Next check: compare logits gradients, raw B-factor autograd hooks, and pre-finalize `main_grad` against the finalized gradients. Root cause and fix are pending.
+- Root cause: job `1261` proved the training logits had no autograd graph. Native LoRA freezes the embedding, so full reentrant activation recompute received no grad-enabled tensor input and detached every adapter computation inside the checkpoint.
+- Fix: require gradients on the frozen embedding output during K3 LoRA training when full recompute is enabled. Validation of raw/finalized gradients and the optimizer update is pending.

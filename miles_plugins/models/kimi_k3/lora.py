@@ -116,6 +116,20 @@ def _validate_targets(args) -> None:
         raise NotImplementedError("Kimi K3 native LoRA currently requires --experts-shared-outer-loras")
 
 
+def _enable_full_recompute_input_grads(model) -> None:
+    if model.config.recompute_granularity != "full" or not model.pre_process:
+        return
+
+    def enable_grad(module, _inputs, output):
+        if module.training:
+            if not isinstance(output, torch.Tensor):
+                raise TypeError(f"Kimi K3 embedding returned {type(output)}, expected torch.Tensor")
+            output.requires_grad_(True)
+        return output
+
+    model.embedding.register_forward_hook(enable_grad)
+
+
 def _apply_attention_lora(attention, args, layer_idx: int, scale: float, dropout: float, a_init: str) -> None:
     from megatron.core.tensor_parallel.mappings import reduce_from_tensor_model_parallel_region
 
@@ -402,6 +416,7 @@ def apply_kimi_k3_lora(model, args):
 
     for parameter in model.parameters():
         parameter.requires_grad = False
+    _enable_full_recompute_input_grads(model)
 
     for layer in model.decoder.layers:
         layer_idx = layer.layer_number - 1

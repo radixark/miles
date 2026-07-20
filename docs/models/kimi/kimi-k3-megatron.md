@@ -518,3 +518,13 @@ three nonzero advantages. The rollout and Megatron mean log probabilities were
 `-0.49365` and `-0.50140`. All 77,184 aggregated LoRA `main_grad` tensors were
 still exactly zero after backward, which excludes the optimizer and SGLang
 weight-update path from the current failure boundary.
+
+Job `1261` kept the same settings and exposed the root cause before backward.
+The shared checkpoint load took `327.43s`, generation was coherent, Megatron
+log-probability evaluation took `194.2s`, and each effective DP rank had 512
+active tokens and four nonzero advantages. The training logits did not require
+grad: native LoRA had frozen the embedding, leaving full reentrant activation
+recompute without any grad-enabled tensor input. The custom checkpoint therefore
+detached adapter computations captured by its closure. The K3 native path now
+marks the frozen embedding output as requiring grad only during training with
+full recompute; full-model gradient and optimizer-update validation is pending.

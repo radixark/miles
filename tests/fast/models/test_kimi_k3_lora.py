@@ -4,10 +4,12 @@ import pytest
 import torch
 import torch.nn as nn
 from scripts.run_kimi_k3_lora import _FULL_SGLANG_CONFIG, ScriptArgs, _execute_train
+from torch.utils.checkpoint import checkpoint
 
 from miles.backends.sglang_utils.sglang_config import SglangConfig
 from miles_plugins.models.kimi_k3.lora import (
     KimiK3LoRAAdapter,
+    _enable_full_recompute_input_grads,
     _grouped_linear,
     _validate_targets,
     export_kimi_k3_lora_hf_chunks,
@@ -190,6 +192,28 @@ def test_native_lora_rejects_target_drift():
 
     with pytest.raises(NotImplementedError, match="missing="):
         _validate_targets(args)
+
+
+def test_full_recompute_keeps_native_lora_in_autograd_graph():
+    model = nn.Module()
+    model.embedding = nn.Embedding.from_pretrained(torch.ones(8, 4), freeze=True)
+    model.adapter = nn.Parameter(torch.ones(4, 4))
+    model.config = SimpleNamespace(recompute_granularity="full")
+    model.pre_process = True
+    model.embedding.requires_grad_(False)
+    _enable_full_recompute_input_grads(model)
+
+    model.train()
+    hidden_states = model.embedding(torch.tensor([[1, 2]]))
+    output = checkpoint(lambda inputs: inputs @ model.adapter, hidden_states, use_reentrant=True)
+    output.sum().backward()
+
+    assert hidden_states.requires_grad
+    assert model.embedding.weight.grad is None
+    torch.testing.assert_close(model.adapter.grad, torch.full_like(model.adapter, 2.0))
+
+    model.eval()
+    assert not model.embedding(torch.tensor([[1, 2]])).requires_grad
 
 
 def test_full_rollout_uses_two_official_tp8_engines():
