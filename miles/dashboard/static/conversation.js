@@ -11,7 +11,7 @@ export function renderConversation(row) {
     chips.push(el("span", { class: "chip" }, [`reward ${fmtNum(row.reward)}`]));
   }
   return el("div", { class: "panel" }, [
-    el("h3", {}, ["conversation"]),
+    el("h3", {}, ["Conversation"]),
     el("div", { class: "controls" }, chips),
     ...row.messages.map(messageCard),
   ]);

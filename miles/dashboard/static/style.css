@@ -48,7 +48,7 @@ a:hover { color: var(--accent-light); }
 #view { padding: 16px 18px 60px; max-width: 1400px; margin: 0 auto; }
 
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 14px; }
-.panel h3 { margin: 0 0 8px; font-family: var(--font-heading); font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.panel h3 { margin: 0 0 8px; font-family: var(--font-heading); font-size: 13px; font-weight: 600; color: var(--muted); }
 .row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-start; }
 .row > .panel { flex: 1; min-width: 380px; }
 

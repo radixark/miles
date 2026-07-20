@@ -40,9 +40,9 @@ async function groupNavPanel(rolloutId, sampleIndex, evaluation) {
   const position = siblings.indexOf(sampleIndex);
   const goto = (idx) => (location.hash = `#/rollout/${rolloutId}/sample/${idx}${evaluation ? "?eval=1" : ""}`);
   return el("div", { class: "controls" }, [
-    el("button", { onclick: () => position > 0 && goto(siblings[position - 1]) }, ["◀ prev in group"]),
-    el("span", {}, [`group ${groupIndex} · sample ${position + 1}/${siblings.length}`]),
-    el("button", { onclick: () => position < siblings.length - 1 && goto(siblings[position + 1]) }, ["next in group ▶"]),
+    el("button", { onclick: () => position > 0 && goto(siblings[position - 1]) }, ["◀ Prev in group"]),
+    el("span", {}, [`Group ${groupIndex} · sample ${position + 1}/${siblings.length}`]),
+    el("button", { onclick: () => position < siblings.length - 1 && goto(siblings[position + 1]) }, ["Next in group ▶"]),
   ]);
 }
 
@@ -110,7 +110,9 @@ export async function renderTokens(view, meta, route) {
   const select = (name) => {
     tabs.replaceChildren(
       ...["conversation", "tokens"].map((tab) =>
-        el("button", { class: tab === name ? "active" : "", onclick: () => select(tab) }, [tab]),
+        el("button", { class: tab === name ? "active" : "", onclick: () => select(tab) }, [
+          tab[0].toUpperCase() + tab.slice(1),
+        ]),
       ),
     );
     body.replaceChildren(name === "conversation" ? conversationPane : tokensPane);
@@ -161,7 +163,7 @@ async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
       ),
     );
     chartPanel.replaceChildren(
-      el("h3", {}, ["per-token metrics"]),
+      el("h3", {}, ["Per-token metrics"]),
       el("div", { class: "controls" }, [
         ...chips,
         el("span", { class: "muted" }, ["drag = zoom to token range · double-click = reset"]),
@@ -256,7 +258,7 @@ async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
       return span;
     });
     strip.replaceChildren(
-      el("h3", {}, [`tokens — colored by ${stat}${payload.token_text ? "" : " (no tokenizer: ids shown)"}`]),
+      el("h3", {}, [`Tokens — colored by ${stat}${payload.token_text ? "" : " (no tokenizer: ids shown)"}`]),
       el("div", { class: "tokens" }, spans),
     );
 

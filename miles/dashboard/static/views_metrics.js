@@ -135,7 +135,7 @@ export async function renderMetrics(view, meta) {
   };
   const renderLegend = () => {
     legendPanel.replaceChildren(
-      el("h3", {}, ["engines"]),
+      el("h3", {}, ["Engines"]),
       ...engines.map((addr, i) =>
         el(
           "label",
@@ -252,7 +252,7 @@ export async function renderMetrics(view, meta) {
   view.replaceChildren(
     el("div", { class: "row" }, [
       el("div", { class: "panel", style: "flex: 0 0 200px; min-width: 200px" }, [
-        el("h3", {}, ["metrics"]),
+        el("h3", {}, ["Metrics"]),
         el("div", { class: "controls" }, [filterInput]),
         catList,
       ]),

@@ -98,17 +98,17 @@ export async function renderRollout(view, meta, route) {
     },
   });
   const controls = el("div", { class: "controls" }, [
-    el("button", { onclick: () => position > 0 && goto(ids[position - 1], evaluation) }, ["◀ prev"]),
-    el("span", {}, [`${evaluation ? "eval" : "train"} step`]),
+    el("button", { onclick: () => position > 0 && goto(ids[position - 1], evaluation) }, ["◀ Prev"]),
+    el("span", {}, [`${evaluation ? "Eval" : "Train"} step`]),
     jumpInput,
     el("span", {}, [`(${position + 1}/${ids.length})`]),
-    el("button", { onclick: () => position < ids.length - 1 && goto(ids[position + 1], evaluation) }, ["next ▶"]),
+    el("button", { onclick: () => position < ids.length - 1 && goto(ids[position + 1], evaluation) }, ["Next ▶"]),
   ]);
   if (!evaluation && meta.rollout_ids.eval.includes(rolloutId)) {
-    controls.append(el("button", { onclick: () => goto(rolloutId, true) }, ["eval view"]));
+    controls.append(el("button", { onclick: () => goto(rolloutId, true) }, ["Eval view"]));
   }
   if (evaluation && meta.rollout_ids.train.includes(rolloutId)) {
-    controls.append(el("button", { onclick: () => goto(rolloutId, false) }, ["train view"]));
+    controls.append(el("button", { onclick: () => goto(rolloutId, false) }, ["Train view"]));
   }
 
   // -------- headline stats --------
@@ -187,7 +187,7 @@ export async function renderRollout(view, meta, route) {
       ...panels,
       el("div", { class: "panel" }, [el("h3", {}, [`${rewardKey} vs response length (red = truncated)`]), scatter]),
       el("div", { class: "panel" }, [
-        el("h3", {}, ["samples — click a row for the token view"]),
+        el("h3", {}, ["Samples — click a row for the token view"]),
         el("div", { class: "controls" }, [el("label", {}, [allColumns, " all columns"])]),
         tableHolder,
       ]),
@@ -211,7 +211,9 @@ export async function renderRollout(view, meta, route) {
     tabBody.replaceChildren(...tabs[name]());
     tabButtons.replaceChildren(
       ...Object.keys(tabs).map((t) =>
-        el("button", { class: t === name ? "active" : "", onclick: () => selectTab(t) }, [t]),
+        el("button", { class: t === name ? "active" : "", onclick: () => selectTab(t) }, [
+          t[0].toUpperCase() + t.slice(1),
+        ]),
       ),
     );
   };

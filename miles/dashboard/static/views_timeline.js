@@ -261,7 +261,7 @@ export async function renderTimeline(view, meta, route) {
       ["abs time"],
     );
     toolbar.replaceChildren(
-      el("span", { class: "muted" }, ["overlay"]),
+      el("span", { class: "muted" }, ["Overlay"]),
       ...(meta.capabilities.has_engine_series ? chips : [el("span", { class: "muted" }, ["(no engine series)"])]),
       memBtn,
       absBtn,
@@ -275,7 +275,7 @@ export async function renderTimeline(view, meta, route) {
       ...(meta.data_buffer_length != null
         ? [el("span", { class: "muted" }, [`databuffer: ${meta.data_buffer_length} groups`])]
         : []),
-      el("span", { class: "muted" }, [`wheel = zoom · drag = pan · window ≤ ${Math.round(MAXW / 3600)}h`]),
+      el("span", { class: "muted" }, [`Wheel = zoom · drag = pan · window ≤ ${Math.round(MAXW / 3600)}h`]),
     );
   };
 
@@ -311,7 +311,7 @@ export async function renderTimeline(view, meta, route) {
       }
     };
     selRow.replaceChildren(
-      el("span", { class: "muted" }, ["lanes"]),
+      el("span", { class: "muted" }, ["Lanes"]),
       ...selTerms().map((term) =>
         el("span", { class: "chip" }, [
           term,
@@ -336,7 +336,7 @@ export async function renderTimeline(view, meta, route) {
           [label],
         ),
       ),
-      ...(selection ? [el("button", { onclick: () => setSelection(null) }, ["clear"])] : []),
+      ...(selection ? [el("button", { onclick: () => setSelection(null) }, ["Clear"])] : []),
       ...(capped
         ? [el("span", { class: "warn" }, [`${capped + lanes.length} lanes; showing first ${lanes.length}`])]
         : []),
@@ -379,7 +379,7 @@ export async function renderTimeline(view, meta, route) {
       return;
     }
     const worst = Math.max(...bubbles.map((b) => b.wait_ratio ?? 0), 0.01);
-    bubbleStrip.replaceChildren(el("span", { class: "muted" }, ["wait ratio / step: "]));
+    bubbleStrip.replaceChildren(el("span", { class: "muted" }, ["Wait ratio / step: "]));
     for (const b of bubbles) {
       const cell = el("span", { class: "bubble" }, [String(b.step)]);
       const ratio = b.wait_ratio ?? 0;
@@ -653,7 +653,7 @@ export async function renderTimeline(view, meta, route) {
     const present = new Set();
     for (const items of phasesByLane.values()) for (const p of items) present.add(p.name);
     legendPanel.replaceChildren(
-      el("h3", {}, ["legend"]),
+      el("h3", {}, ["Legend"]),
       el("div", { class: "legend" }, [
         ...[...present].sort().map((name) => {
           const swatch = el("span", {
@@ -677,7 +677,7 @@ export async function renderTimeline(view, meta, route) {
     }
     advisoryPanel.replaceChildren(
       el("div", { class: "panel" }, [
-        el("h3", {}, ["config advisory"]),
+        el("h3", {}, ["Config advisory"]),
         ...advisories.map((a) => el("p", { class: a.level === "warning" ? "error" : "muted" }, [a.message])),
       ]),
     );

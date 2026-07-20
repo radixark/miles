@@ -51,7 +51,7 @@ def compute_advisories(store: MetricStore, *, t0: float | None = None, t1: float
             Advisory(
                 level="info",
                 message=(
-                    f"peak concurrency ({peak_running:.0f}) stayed under {LOW_CONCURRENCY_RATIO:.0%} of "
+                    f"Peak concurrency ({peak_running:.0f}) stayed under {LOW_CONCURRENCY_RATIO:.0%} of "
                     f"--sglang-max-running-requests ({max_running:g}); consider lowering it"
                     + (" to free memory for training (colocate)" if colocate else "")
                 ),
@@ -64,7 +64,7 @@ def compute_advisories(store: MetricStore, *, t0: float | None = None, t1: float
             Advisory(
                 level="info",
                 message=(
-                    f"prefix cache hit rate is low ({cache_hit:.1%})"
+                    f"Prefix cache hit rate is low ({cache_hit:.1%})"
                     + (
                         f"; consider raising --sglang-mem-fraction-static (currently {mem_fraction:g}) for a bigger KV cache"
                         if mem_fraction is not None

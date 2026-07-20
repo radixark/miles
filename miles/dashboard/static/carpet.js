@@ -48,7 +48,7 @@ export function createCarpet(opts) {
 
   const renderChips = () => {
     chipsRow.replaceChildren(
-      el("span", { class: "muted" }, ["carpet"]),
+      el("span", { class: "muted" }, ["Carpet"]),
       ...METRICS.map((m) =>
         el(
           "button",
@@ -64,7 +64,7 @@ export function createCarpet(opts) {
         ),
       ),
       scaleLabel,
-      el("span", { class: "muted" }, ["click gpu = add/remove · drag = brush"]),
+      el("span", { class: "muted" }, ["Click gpu = add/remove · drag = brush"]),
     );
   };
 
