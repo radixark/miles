@@ -15,7 +15,7 @@ import torch.distributed as dist
 
 from miles.backends.experimental.torchtitan_utils import compat  # noqa: F401  (shim first)
 from miles.backends.experimental.torchtitan_utils import models
-from miles.backends.experimental.torchtitan_utils.model import build_and_load_model
+from miles.backends.experimental.torchtitan_utils.model import _load_hf_checkpoint, build_and_load_model
 
 
 class _Args:
@@ -69,6 +69,7 @@ def run(hf_dir: str) -> int:
     model, adapter = build_and_load_model(
         spec, hf_dir, parallel_dims=parallel_dims, seq_len=seq_len, args=args, device=device
     )
+    _load_hf_checkpoint(model, adapter, hf_dir)
     model.eval()
 
     from transformers import AutoTokenizer

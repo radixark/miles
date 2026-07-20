@@ -48,10 +48,9 @@ def run(hf_dir: str) -> int:
     from torchtitan.tools.utils import set_default_dtype
     import miles.backends.experimental.torchtitan_utils.model as model_mod
 
-    model_mod._resize_rope_cache(spec.model, seq_len)
-    model_mod._apply_qwen3_sharding_config(spec.model, tp_size=1, ep_size=1)
     parallelism = ParallelismConfig(data_parallel_shard_degree=parallel_dims.dp_shard, tensor_parallel_degree=1)
     training = TrainingConfig(seq_len=seq_len, dtype="float32", mixed_precision_param="float32", mixed_precision_reduce="float32")
+    model_mod._apply_update_from_config(spec.model, parallelism=parallelism, seq_len=seq_len)
     with torch.device("meta"):
         with set_default_dtype(torch.float32):
             model = spec.model.build()

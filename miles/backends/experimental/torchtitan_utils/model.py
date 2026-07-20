@@ -1,13 +1,17 @@
-"""Build, shard, load, and optimize a torchtitan model — the training-side core.
+"""Build, shard, and optimize a torchtitan model — the training-side core.
 
-Deliberately bypasses ``Decoder.Config.update_from_config``: it does
-``from torchtitan.trainer import Trainer`` at call time, which drags in
-``components.checkpoint`` -> ``components.dataloader`` -> ``torchdata`` and
-``components.validate`` -> ``datasets``/``tensorboard``/``tokenizers``/``tyro`` — none
-of which this backend needs (checkpointing and the RL data path are miles', not
-torchtitan's). Instead we call the per-arch ``set_*_sharding_config`` function directly
-(what ``update_from_config`` calls internally once its own PP/CP/TP validation checks
-pass) after our own RoPE-cache resize.
+Calls ``model_spec.model.update_from_config`` directly, the same call torchtitan's own
+RL ``PolicyTrainer._build_model`` makes (experiments/rl/actors/trainer.py) — passing a
+duck-typed config object (only ``.parallelism`` is required; see
+``models/common/decoder.py``'s ``Decoder.Config.update_from_config``, which does
+``isinstance(config, Trainer.Config)`` to decide whether to also run the
+Trainer-specific RoPE/debug-flag propagation, and skips that branch for any other
+config-like object). We are not a ``Trainer.Config``, so — exactly like the RL
+trainer — we redo the RoPE bounds-check-and-resize ourselves right after the call.
+This gets the model-family sharding config (``set_qwen3_sharding_config`` etc.) AND
+every other assertion ``update_from_config`` performs (TP-divides-heads, weight-tying
+vs PP, MoE-requires-EP, ``maybe_update_minimal_async_ep_config``) for free, instead of
+re-deriving a subset of them by hand.
 
 fp32 master weights + bf16 mixed-precision forward: the trainer's forward runs in the
 same bf16 the rollout engine serves — torchtitan's own generator-parity recipe.
@@ -15,27 +19,33 @@ same bf16 the rollout engine serves — torchtitan's own generator-parity recipe
 
 import dataclasses
 import logging
+from types import SimpleNamespace
 
 import torch
 
 logger = logging.getLogger(__name__)
 
 
-def _resize_rope_cache(spec_model_config, seq_len: int) -> None:
+def _apply_update_from_config(spec_model_config, *, parallelism, seq_len: int) -> None:
+    from torchtitan.models.common.attention import FlexAttention, VarlenAttention
+
+    spec_model_config.update_from_config(config=SimpleNamespace(parallelism=parallelism))
+
+    assert isinstance(
+        spec_model_config.layers[0].attention.inner_attention,
+        (VarlenAttention.Config, FlexAttention.Config),
+    ), "Only varlen and flex attention backends are allowed (matches titan RL trainer's own assert)."
+
+    max_seq_len = spec_model_config.max_seq_len
+    if seq_len > max_seq_len:
+        raise ValueError(
+            f"Training sequence length {seq_len} exceeds attention RoPE maximum "
+            f"supported sequence length {max_seq_len}."
+        )
     for layer_cfg in spec_model_config.layers:
         attn = getattr(layer_cfg, "attention", None)
-        if attn is not None and attn.rope is not None:
-            attn.rope = dataclasses.replace(attn.rope, max_seq_len=max(attn.rope.max_seq_len, seq_len))
-
-
-def _apply_qwen3_sharding_config(spec_model_config, *, tp_size: int, ep_size: int) -> None:
-    from torchtitan.models.qwen3.sharding import set_qwen3_sharding_config
-
-    set_qwen3_sharding_config(
-        spec_model_config,
-        enable_sp=tp_size > 1,
-        enable_ep=ep_size > 1,
-    )
+        if attn is not None:
+            attn.rope = dataclasses.replace(attn.rope, max_seq_len=seq_len)
 
 
 def build_and_load_model(
@@ -47,18 +57,16 @@ def build_and_load_model(
     args,
     device: str = "cuda",
 ):
-    """torchtitan build sequence (mirrors its own RL PolicyTrainer._build_model), minus
-    the update_from_config Trainer-import chain: sharding-config -> meta-build ->
-    parallelize_fn -> to_empty -> init_weights -> streaming HF load.
+    """torchtitan build sequence, matching its own RL PolicyTrainer._build_model
+    exactly: update_from_config -> meta-build -> parallelize_fn -> to_empty ->
+    init_weights. HF-checkpoint loading is done separately by checkpoint.py's
+    CheckpointManager wrapper (torchtitan's own checkpoint stack), not here.
     """
     from torchtitan.config import TORCH_DTYPE_MAP, CompileConfig, ParallelismConfig, TrainingConfig
     from torchtitan.tools.utils import set_default_dtype
 
     tp_size = args.tt_tensor_parallel_size
     ep_size = args.tt_expert_parallel_size
-
-    _resize_rope_cache(spec.model, seq_len)
-    _apply_qwen3_sharding_config(spec.model, tp_size=tp_size, ep_size=ep_size)
 
     parallelism = ParallelismConfig(
         data_parallel_shard_degree=parallel_dims.dp_shard,
@@ -71,6 +79,8 @@ def build_and_load_model(
         mixed_precision_param="bfloat16",  # bf16 forward, matches sglang's serving dtype
         mixed_precision_reduce="float32",
     )
+
+    _apply_update_from_config(spec.model, parallelism=parallelism, seq_len=seq_len)
 
     with torch.device("meta"):
         with set_default_dtype(TORCH_DTYPE_MAP[training.dtype]):
@@ -90,8 +100,6 @@ def build_and_load_model(
         model.init_weights(buffer_device=None)
 
     adapter = spec.state_dict_adapter(spec.model, hf_checkpoint)
-    _load_hf_checkpoint(model, adapter, hf_checkpoint)
-
     return model, adapter
 
 

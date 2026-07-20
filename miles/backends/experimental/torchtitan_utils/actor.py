@@ -128,7 +128,8 @@ class TorchTitanTrainRayActor(TrainRayActor):
         self.global_step = 0
         self.micro_step = 0
 
-        checkpoint_payload = checkpoint.load(self)
+        self.checkpointer = checkpoint.build(self)
+        checkpoint.load(self)  # HF load (fresh run) or native DCP resume; restores global_step/start_rollout_id
 
         self.ref_model = None
         if with_ref:
@@ -139,8 +140,6 @@ class TorchTitanTrainRayActor(TrainRayActor):
             if self.args.colocate
             else UpdateWeightFromDistributed(self.args, self.model, self.adapter)
         )
-
-        checkpoint.finalize_load(self, checkpoint_payload)
 
         self.max_tokens_per_gpu = args.max_tokens_per_gpu
 
