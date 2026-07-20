@@ -20,12 +20,14 @@ from __future__ import annotations
 import json
 import math
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from miles.dashboard.advisory import compute_advisories
 from miles.dashboard.dump_reader import STEP_AGGREGATE_METRICS, DumpReader, DumpStillWriting
 from miles.dashboard.store import MetricStore, Stream
 
@@ -162,6 +164,14 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
         with _translate_errors():
             _check_window(t0, t1)
             return dict(processes=store.gpu_processes(t0=t0, t1=t1, lanes=store.resolve_lanes(lanes)))
+
+    @app.get("/api/advisory")
+    def advisory(t0: float | None = None, t1: float | None = None):
+        """Heuristic sglang config-tuning suggestions (design doc's config
+        tuning advisory ask) — computed lazily on request, not persisted."""
+        with _translate_errors():
+            _check_window(t0, t1)
+            return dict(advisories=[asdict(a) for a in compute_advisories(store, t0=t0, t1=t1)])
 
     @app.get("/api/timeline/heatmap")
     def timeline_heatmap(

@@ -75,6 +75,7 @@ export async function renderTimeline(view, meta, route) {
   let windows = [];
   let phasesByLane = new Map();
   let processesByLane = new Map();
+  let advisories = [];
   let bubbles = [];
   let gpu = {};
   let engineSeries = [];
@@ -176,6 +177,17 @@ export async function renderTimeline(view, meta, route) {
     for (const p of phasesRes.phases) phasesByLane.get(`${p.node}:${p.gpu}`)?.push(p);
     processesByLane = new Map(lanes.map((l) => [laneKey(l), []]));
     for (const p of processesRes.processes) processesByLane.get(`${p.node}:${p.gpu}`)?.push(p);
+  }
+
+  // whole-run heuristic suggestions (design §config-tuning-advisory): cheap
+  // to recompute but not viewport-scoped, so it refreshes on follow-mode
+  // ticks rather than on every pan/zoom like loadData()
+  async function loadAdvisories() {
+    try {
+      advisories = (await api("/api/advisory")).advisories;
+    } catch {
+      /* transient fetch failure: keep the last-known list */
+    }
   }
 
   // pan/zoom past the fetched bounds: debounced windowed reload
@@ -545,6 +557,7 @@ export async function renderTimeline(view, meta, route) {
     renderSelection();
     renderBubbles();
     renderLegend();
+    renderAdvisories();
     draw();
   }
 
@@ -650,10 +663,33 @@ export async function renderTimeline(view, meta, route) {
     );
   };
 
-  view.replaceChildren(toolbar, selRow, carpet.root, bubbleStrip, el("div", { class: "panel" }, [canvas]), legendPanel);
+  // ------------------------------ config advisory ----------------------------
+  const advisoryPanel = el("div", {});
+  const renderAdvisories = () => {
+    if (!advisories.length) {
+      advisoryPanel.replaceChildren();
+      return;
+    }
+    advisoryPanel.replaceChildren(
+      el("div", { class: "panel" }, [
+        el("h3", {}, ["config advisory"]),
+        ...advisories.map((a) => el("p", { class: a.level === "warning" ? "error" : "muted" }, [a.message])),
+      ]),
+    );
+  };
+
+  view.replaceChildren(
+    toolbar,
+    selRow,
+    advisoryPanel,
+    carpet.root,
+    bubbleStrip,
+    el("div", { class: "panel" }, [canvas]),
+    legendPanel,
+  );
   renderToolbar();
   applyRange(meta.time_range);
-  await Promise.all([loadData(), carpet.refresh(carpetRange())]);
+  await Promise.all([loadData(), carpet.refresh(carpetRange()), loadAdvisories()]);
   renderAll();
   carpet.redraw(); // selection markers need the loaded lane list
   const onResize = () => {
@@ -672,7 +708,7 @@ export async function renderTimeline(view, meta, route) {
       try {
         // fresh global range (cheap edge-stamp read); getMeta() is cached
         applyRange((await api("/api/meta")).time_range);
-        await loadData();
+        await Promise.all([loadData(), loadAdvisories()]);
         renderAll();
         await carpet.refresh(carpetRange());
       } catch {

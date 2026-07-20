@@ -25,6 +25,8 @@ _SNAPSHOT_KEYS = (
     "rollout_batch_size",
     "n_samples_per_prompt",
     "hf_checkpoint",
+    "sglang_max_running_requests",
+    "sglang_mem_fraction_static",
 )
 
 

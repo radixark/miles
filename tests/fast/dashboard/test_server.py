@@ -57,6 +57,13 @@ def test_meta_reports_latest_data_buffer_length(dump_dir):
     assert client.get("/api/meta").json()["data_buffer_length"] == 6
 
 
+def test_advisory_endpoint(client):
+    resp = client.get("/api/advisory")
+    assert resp.status_code == 200
+    assert resp.json()["advisories"] == []  # dump_dir fixture has no engine series
+    assert client.get("/api/advisory", params={"t0": 5, "t1": 1}).status_code == 400
+
+
 def test_wandb_url():
     full = dict(wandb_team="radixark", wandb_project="miles", wandb_run_id="abc123")
     assert _wandb_url(full) == "https://wandb.ai/radixark/miles/runs/abc123"
