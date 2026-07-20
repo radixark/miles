@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 # curated subset of args persisted into meta.json for the dashboard header
 _SNAPSHOT_KEYS = (
     "wandb_group",
+    "wandb_team",
+    "wandb_project",
+    "wandb_run_id",
+    "wandb_host",
     "colocate",
     "num_gpus_per_node",
     "actor_num_nodes",

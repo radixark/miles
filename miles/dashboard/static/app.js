@@ -93,8 +93,11 @@ async function render() {
   try {
     const meta = await getMeta();
     crumbs(route, meta);
-    document.getElementById("runinfo").textContent =
-      `${meta.run_name ?? "unnamed run"} · ${meta.mode}` + (meta.capabilities.has_metrics ? "" : " · dump-derived metrics");
+    const runinfo = [
+      `${meta.run_name ?? "unnamed run"} · ${meta.mode}` + (meta.capabilities.has_metrics ? "" : " · dump-derived metrics"),
+    ];
+    if (meta.wandb_url) runinfo.push(" · ", el("a", { href: meta.wandb_url, target: "_blank" }, ["wandb ↗"]));
+    document.getElementById("runinfo").replaceChildren(...runinfo);
     if (route.view === "metrics") await renderMetrics(view, meta);
     else if (route.view === "timeline") await renderTimeline(view, meta, route);
     else if (route.view === "rollout") await renderRollout(view, meta, route);

@@ -61,6 +61,16 @@ def _table(df) -> dict:
     return dict(columns=df.columns, rows=[_json_safe(row) for row in df.to_dicts()])
 
 
+def _wandb_url(args: dict) -> str | None:
+    """Direct link to the run's wandb page, or None if any piece is missing
+    (e.g. wandb disabled, or the run predates the snapshot fields)."""
+    team, project, run_id = args.get("wandb_team"), args.get("wandb_project"), args.get("wandb_run_id")
+    if not (team and project and run_id):
+        return None
+    host = (args.get("wandb_host") or "https://wandb.ai").rstrip("/")
+    return f"{host}/{team}/{project}/runs/{run_id}"
+
+
 def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) -> FastAPI:
     app = FastAPI(title="miles dashboard", docs_url=None, redoc_url=None)
 
@@ -77,6 +87,7 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
             mode="follow" if follow else "static",
             run_name=store.meta.run_name if store.meta else None,
             start_ts=store.meta.start_ts if store.meta else None,
+            wandb_url=_wandb_url(store.meta.args) if store.meta else None,
             time_range=store.time_range(),
             rollout_ids=dict(train=ids.train, eval=ids.eval),
             metric_keys=store.metric_keys() + dump_keys,

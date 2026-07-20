@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from tests.fast.dashboard.dummy_dump import dump_dummy_run
 
 from miles.dashboard.dump_reader import DumpReader
-from miles.dashboard.server import make_app
+from miles.dashboard.server import _wandb_url, make_app
 from miles.dashboard.store import Meta, MetricsRecord, MetricStore
 
 
@@ -41,6 +41,15 @@ def test_meta(client):
     assert meta["capabilities"]["has_metrics"] is True
     assert meta["capabilities"]["has_tokenizer"] is True
     assert meta["capabilities"]["has_timeline"] is False
+    assert meta["wandb_url"] is None  # empty args snapshot in this fixture
+
+
+def test_wandb_url():
+    full = dict(wandb_team="radixark", wandb_project="miles", wandb_run_id="abc123")
+    assert _wandb_url(full) == "https://wandb.ai/radixark/miles/runs/abc123"
+    assert _wandb_url({**full, "wandb_host": "https://wandb.internal/"}) == "https://wandb.internal/radixark/miles/runs/abc123"
+    for missing in ("wandb_team", "wandb_project", "wandb_run_id"):
+        assert _wandb_url({k: v for k, v in full.items() if k != missing}) is None
 
 
 def test_metrics_from_store(client):
