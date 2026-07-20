@@ -83,29 +83,34 @@ def run(hf_dir: str) -> int:
             special_tokens=special_tokens,
         ).float()
 
-    if rank == 0:
-        max_abs_diff_per_doc = []
-        offset = 0
-        for doc_ids in ids_per_doc:
-            n = doc_ids.numel()
-            separate_tokens = doc_ids.unsqueeze(0).to(device)
-            separate_positions = torch.arange(n).unsqueeze(0).to(device)
-            with torch.no_grad():
-                separate_logits = model(
-                    tokens=separate_tokens,
-                    positions=separate_positions,
-                    attention_masks=model.get_attention_masks(separate_positions),
-                    special_tokens=special_tokens,
-                ).float()
+    # model(...) runs the FSDP2-sharded forward, a collective op every rank must join —
+    # so every "separate" forward below runs on ALL ranks (not gated on rank==0, which
+    # would make rank 0 enqueue collectives the other 7 ranks never join -> NCCL hang).
+    # Only the diffing/printing is rank-0-only.
+    max_abs_diff_per_doc = []
+    offset = 0
+    for doc_ids in ids_per_doc:
+        n = doc_ids.numel()
+        separate_tokens = doc_ids.unsqueeze(0).to(device)
+        separate_positions = torch.arange(n).unsqueeze(0).to(device)
+        with torch.no_grad():
+            separate_logits = model(
+                tokens=separate_tokens,
+                positions=separate_positions,
+                attention_masks=model.get_attention_masks(separate_positions),
+                special_tokens=special_tokens,
+            ).float()
 
+        if rank == 0:
             packed_lp = torch.log_softmax(packed_logits[0, offset : offset + n], dim=-1)
             separate_lp = torch.log_softmax(separate_logits[0], dim=-1)
             diff = (packed_lp - separate_lp).abs()
             per_pos_max = diff.max(dim=-1).values
             print(f"doc[offset={offset}, len={n}]: max_abs_diff={per_pos_max.max().item():.6f}  per-position={per_pos_max.tolist()}")
             max_abs_diff_per_doc.append(per_pos_max.max().item())
-            offset += n
+        offset += n
 
+    if rank == 0:
         overall = max(max_abs_diff_per_doc)
         print(f"M6 PACKED-VS-SEPARATE overall max_abs_diff={overall:.6f} (bar: <1e-2 bf16, same bar as test_m1_build_load_forward)")
         print("M6 GDN PACKING PARITY:", "PASS" if overall < 1e-2 else "FAIL")
