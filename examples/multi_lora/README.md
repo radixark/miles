@@ -12,9 +12,7 @@ This example trains two adapters on Qwen3-4B:
 ## Layout
 
 ```
-provision.sh                         # one-time: download model + datasets
-run_job.sh                           # entrypoint: bounded run, exits when done
-run_service.sh                       # service mode: idles for registrations (port 8068)
+run_multi_lora.py                    # launcher: prepare / train / full-train / serve
 service_smoke.py                     # register/deregister smoke test against the API
 adapters/
   gsm8k.yaml
@@ -82,19 +80,34 @@ actor pinned to the head node).
 ## Provision (once)
 
 ```bash
-bash examples/multi_lora/provision.sh
+python examples/multi_lora/run_multi_lora.py prepare
 ```
 
-Downloads `Qwen/Qwen3-4B`, `zhuzilin/dapo-math-17k`, and `zhuzilin/gsm8k`.
+Downloads `Qwen/Qwen3-4B` (to `/root/models`), `zhuzilin/dapo-math-17k`, and
+`zhuzilin/gsm8k` (to `/root/datasets`).
 
 ## Run
 
 ```bash
-bash examples/multi_lora/run_job.sh
+python examples/multi_lora/run_multi_lora.py train        # or: full-train (prepare + train)
 ```
 
-Registers the two adapters from CLI flags and trains until each hits its `num_step`
-(or `--num-rollout`), then exits.
+Registers the two adapters from CLI flags and trains until each hits its `num_step`,
+then exits.
+
+## Service mode
+
+```bash
+python examples/multi_lora/run_multi_lora.py serve
+```
+
+Starts with no adapters and idles; register/deregister at runtime through the
+control-plane API (port 8068):
+
+```bash
+python examples/multi_lora/service_smoke.py --api-url http://127.0.0.1:8068 \
+    --data /root/datasets/gsm8k/train.parquet --input-key messages --label-key label --rm-type math
+```
 
 ## Multi-LoRA CLI flags
 
@@ -112,7 +125,7 @@ rank: 16
 alpha: 16
 rollout_batch_size: 32      # prompt groups per optimizer step (defaults to --rollout-batch-size)
 n_samples_per_prompt: 4     # group shape (defaults to --n-samples-per-prompt)
-data: /root/gsm8k/train.parquet
+data: /root/datasets/gsm8k/train.parquet
 input_key: messages
 label_key: label
 rm_type: math

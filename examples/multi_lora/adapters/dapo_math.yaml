@@ -2,7 +2,7 @@ rank: 32
 alpha: 32
 rollout_batch_size: 8       # prompt groups per optimizer step
 n_samples_per_prompt: 8     # -> 64 samples per step
-data: /root/dapo-math-17k/dapo-math-17k.jsonl
+data: /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
 input_key: prompt
 label_key: label
 rm_type: deepscaler

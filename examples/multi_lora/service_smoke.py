@@ -2,7 +2,7 @@
 trainer, using step counts as the race-free progress signal.
 
 Usage: python examples/multi_lora/service_smoke.py --api-url http://HOST:8068 \\
-    --data /root/gsm8k/train.parquet --input-key messages --label-key label --rm-type math
+    --data /root/datasets/gsm8k/train.parquet --input-key messages --label-key label --rm-type math
 """
 
 import argparse
