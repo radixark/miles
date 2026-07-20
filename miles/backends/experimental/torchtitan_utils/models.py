@@ -120,6 +120,10 @@ def _qwen3_5_spec_from_hf(hf: dict, *, attn_backend: str):
     (caught by test_m6_qwen35_keymap.py: EXTRA key, not just a cosmetic mismatch — dcp.load
     would request a key the storage reader can't find).
     """
+    from . import qwen3_5_packing
+
+    qwen3_5_packing.apply()
+
     import torchtitan.models.qwen3_5 as q35
     from torchtitan.protocols.model_spec import ModelSpec
 
