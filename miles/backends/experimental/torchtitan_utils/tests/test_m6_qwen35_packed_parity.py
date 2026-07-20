@@ -67,13 +67,15 @@ def run(hf_dir: str) -> int:
     tokenizer = AutoTokenizer.from_pretrained(hf_dir)
     ids_per_doc = [tokenizer(d, return_tensors="pt")["input_ids"][0] for d in DOCS]
 
-    # Packed: concatenate tokens, positions reset to 0 at each doc start, pad to seq_len.
+    # Packed: concatenate tokens, positions reset to 0 at each doc start. Deliberately NOT
+    # padded to seq_len: padding with position=0 would make every pad token look like a new
+    # 1-token "document" to the position-reset boundary detector, corrupting the GDN cu_seqlens
+    # derivation for reasons unrelated to the actual packing correctness under test.
     tokens_flat = torch.cat(ids_per_doc)
     positions_flat = torch.cat([torch.arange(len(ids)) for ids in ids_per_doc])
-    pad = seq_len - tokens_flat.numel()
-    assert pad >= 0
-    tokens_packed = torch.cat([tokens_flat, torch.zeros(pad, dtype=tokens_flat.dtype)]).unsqueeze(0).to(device)
-    positions_packed = torch.cat([positions_flat, torch.zeros(pad, dtype=positions_flat.dtype)]).unsqueeze(0).to(device)
+    assert tokens_flat.numel() <= seq_len
+    tokens_packed = tokens_flat.unsqueeze(0).to(device)
+    positions_packed = positions_flat.unsqueeze(0).to(device)
 
     with torch.no_grad():
         packed_logits = model(
