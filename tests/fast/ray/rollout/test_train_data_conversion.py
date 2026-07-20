@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 import ray
+import torch
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
@@ -10,6 +13,7 @@ from miles.ray.rollout.train_data_conversion import (
     _post_process_rewards,
     convert_samples_to_train_data,
     split_train_data_by_dp,
+    split_train_data_by_dp_raw,
 )
 from miles.utils.types import Sample
 
@@ -472,3 +476,66 @@ class TestSplitTrainDataByDp:
         parts = [ray.get(r.inner) for r in refs]
         all_indices = sorted(i for p in parts for i in p["partition"])
         assert all_indices == list(range(n))
+
+
+class TestSplitTrainDataRaw:
+    def test_witness_ids_split_across_dp(self) -> None:
+        tokens = [[1, 2, 3], [4, 5], [6, 7, 8, 9], [10, 11]]
+        witness_ids = [
+            torch.tensor([0, 0, 0]),
+            torch.tensor([1, 1]),
+            torch.tensor([2, 2, 2, 2]),
+            torch.tensor([3, 3]),
+        ]
+
+        data = {
+            "tokens": tokens,
+            "seq_witness_ids": witness_ids,
+            "response_lengths": [1, 1, 1, 1],
+            "loss_masks": [[0, 0, 1], [0, 1], [0, 0, 0, 1], [0, 1]],
+        }
+
+        args = MagicMock()
+        args.balance_data = False
+
+        result = split_train_data_by_dp_raw(args, data, dp_size=2)
+
+        assert len(result) == 2
+        assert "seq_witness_ids" in result[0]
+        assert "seq_witness_ids" in result[1]
+        assert len(result[0]["seq_witness_ids"]) == 2
+        assert len(result[1]["seq_witness_ids"]) == 2
+
+    def test_indexer_topk_and_opd_reverse_kl_split_across_dp(self) -> None:
+        """Keys from the rollout-side split (rollout_indexer_topk, opd_reverse_kl) partition per sample."""
+        data = {
+            "tokens": [[1, 2], [3, 4], [5, 6], [7, 8]],
+            "response_lengths": [1, 1, 1, 1],
+            "loss_masks": [[0, 1], [0, 1], [0, 1], [0, 1]],
+            "rollout_indexer_topk": [torch.tensor([i]) for i in range(4)],
+            "opd_reverse_kl": [[float(i)] for i in range(4)],
+        }
+
+        args = MagicMock()
+        args.balance_data = False
+
+        result = split_train_data_by_dp_raw(args, data, dp_size=2)
+
+        assert len(result) == 2
+        for part in result:
+            assert len(part["rollout_indexer_topk"]) == 2
+            assert len(part["opd_reverse_kl"]) == 2
+
+    def test_no_witness_ids_when_absent(self) -> None:
+        tokens = [[1, 2], [3, 4]]
+        data = {
+            "tokens": tokens,
+            "response_lengths": [1, 1],
+            "loss_masks": [[0, 1], [0, 1]],
+        }
+
+        args = MagicMock()
+        args.balance_data = False
+
+        result = split_train_data_by_dp_raw(args, data, dp_size=1)
+        assert "seq_witness_ids" not in result[0]

@@ -92,3 +92,34 @@ async def run(
         "eval_report": response.get("eval_report", {}),
         "agent_metrics": response.get("agent_metrics", {}),
     }
+
+
+async def abort(args) -> None:
+    """Teardown hook for oversampling abort (called by sglang_rollout.abort).
+
+    When Miles has enough samples and aborts SGLang, the in-flight Harbor trials
+    keep looping and hitting SGLang until they hit their own max_seq_len/timeout.
+    Flush the agent server so it cancels those ``/run`` tasks and releases their
+    containers. No-op unless AGENT_SERVER_URL and session_server_instance_id are
+    available.
+    """
+    agent_server_url = os.getenv("AGENT_SERVER_URL", os.getenv("SWE_AGENT_URL"))
+    instance_id = getattr(args, "session_server_instance_id", None)
+    if not agent_server_url or not instance_id:
+        return
+
+    headers = None
+    admin_secret = os.getenv("HARBOR_ADMIN_SECRET")
+    if admin_secret:
+        headers = {"Authorization": f"Bearer {admin_secret}"}
+
+    try:
+        result = await post(
+            f"{agent_server_url.rstrip('/')}/flush",
+            {"session_server_instance_id": instance_id},
+            max_retries=3,
+            headers=headers,
+        )
+        logger.info(f"Flushed agent server {agent_server_url}: {result}")
+    except Exception as e:
+        logger.warning(f"Failed to flush agent server {agent_server_url}: {e}")

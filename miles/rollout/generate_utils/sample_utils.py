@@ -6,6 +6,9 @@ from miles.utils.types import Sample
 _OPD_STUDENT_TOP_LOGPROBS_KEY = "opd_student_top_logprobs"
 
 
+_REPLAY_FIELDS = ("rollout_routed_experts", "rollout_indexer_topk")
+
+
 def merge_samples(samples: list[Sample], tokenizer) -> Sample:
     acc = samples[0]
     for sample in samples[1:]:
@@ -14,8 +17,18 @@ def merge_samples(samples: list[Sample], tokenizer) -> Sample:
         # TODO (shi.dong): figure out how in-turn truncation should be handled.
         if acc.status != Sample.Status.COMPLETED:
             break
+        # An aborted/truncated turn omits the routing-replay payloads
+        # (routed_experts / indexer_topk). Replay requires every training sample
+        # to carry these end-to-end, so stop at the last fully-captured turn
+        # instead of extending into a turn with a routing gap.
+        if _introduces_replay_gap(acc, sample):
+            break
         acc = _merge_sample_pair(acc, sample, tokenizer=tokenizer)
     return acc
+
+
+def _introduces_replay_gap(a: Sample, b: Sample) -> bool:
+    return any(getattr(a, field) is not None and getattr(b, field) is None for field in _REPLAY_FIELDS)
 
 
 def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
@@ -98,8 +111,10 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         assert _startswith(short=a.tokens, long=b.tokens), "b.tokens must start with a.tokens"
         assert obs_len > 0, f"obs_len must be > 0, got {obs_len}"
         if a.rollout_routed_experts is not None:
+            assert b.rollout_routed_experts is not None, "cannot merge: a has rollout_routed_experts but b does not"
             assert a.rollout_routed_experts.shape[0] <= b.rollout_routed_experts.shape[0]
         if a.rollout_indexer_topk is not None:
+            assert b.rollout_indexer_topk is not None, "cannot merge: a has rollout_indexer_topk but b does not"
             assert a.rollout_indexer_topk.shape[0] <= b.rollout_indexer_topk.shape[0]
         assert a.status == Sample.Status.COMPLETED, f"a.status must be COMPLETED, got {a.status}"
 
@@ -127,7 +142,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             metadata=_merge_metadata(),
             generate_function_path=_merge_equal_value("generate_function_path"),
             train_metadata=_merge_equal_value("train_metadata"),
-            session_id=_merge_equal_value("session_id"),
+            routing_key=_merge_equal_value("routing_key"),
             non_generation_time=_merge_equal_value("non_generation_time"),
             spec_info=_merge_spec_info(a.spec_info, b.spec_info),
             prefix_cache_info=_merge_prefix_cache_info(a.prefix_cache_info, b.prefix_cache_info),

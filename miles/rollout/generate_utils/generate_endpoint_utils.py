@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pybase64
 
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
 
@@ -35,6 +36,21 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
         return state.tokenizer.encode(prompt, add_special_tokens=False)
 
 
+def policy_uses_routing_key(args) -> bool:
+    return args.sglang_router_policy in ("consistent_hashing", "manual")
+
+
+def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
+    if policy_uses_routing_key(args) and not sample.routing_key:
+        raise ValueError(
+            f"router policy {args.sglang_router_policy} routes by X-SMG-Routing-Key, "
+            f"but sample (index={sample.index}) has no routing_key set"
+        )
+    if sample.routing_key:
+        return {"X-SMG-Routing-Key": sample.routing_key}
+    return None
+
+
 def compute_request_payload(
     args,
     input_ids: list[int],
@@ -55,6 +71,8 @@ def compute_request_payload(
         "return_routed_experts": args.use_rollout_routing_replay,
         "return_indexer_topk": args.use_rollout_indexer_replay,
     }
+    if is_lora_enabled(args):
+        payload["lora_path"] = LORA_ADAPTER_NAME
     if image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 

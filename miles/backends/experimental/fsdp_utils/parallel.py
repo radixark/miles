@@ -6,7 +6,9 @@ from torch.distributed.device_mesh import init_device_mesh
 
 from miles.utils.distributed_utils import get_gloo_group
 
-from ...training_utils.parallel import GroupInfo, ParallelState
+from miles.utils.ft_utils.process_group_utils import GroupInfo
+
+from ...training_utils.parallel import ParallelState
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,11 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
         pp=GroupInfo(rank=0, size=1, group=None),
         ep=GroupInfo(rank=0, size=1, group=None),
         etp=GroupInfo(rank=0, size=1, group=None),
+        indep_dp=GroupInfo(
+            rank=0,
+            size=1,
+            group=None,
+        ),
     )
 
     parallel_state.dp_mesh = mesh["dp"]

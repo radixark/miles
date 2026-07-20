@@ -11,9 +11,10 @@ Adding a new label:
    The workflow does not need editing -- the generic stage job filters tests
    by labels at runtime.
 
-The meta-labels `run-ci-image` / `run-ci-all` are intentionally NOT listed
-here: they bypass the per-test labels filter and run the full suite via the
-`--match-all-labels` flag (handled in run_suite.py).
+The workflow-only scope labels (`run-ci-all`, `run-ci-image`, `nightly`) are
+intentionally NOT listed here: they select a broad scope or cadence, which
+`tests/ci/ci_policy.py` `resolve_policy` maps to an include-label set drawn
+from the registry below.
 """
 
 KNOWN_LABELS: dict[str, str] = {
@@ -26,6 +27,8 @@ KNOWN_LABELS: dict[str, str] = {
     "ckpt": "Checkpoint save / load tests",
     "lora": "LoRA training tests",
     "precision": "Numerical precision parity tests",
+    "ft-short": "Fault-tolerance trainer comparison tests (no_failure / deterministic / with_failure)",
+    "ft-long": "Fault-tolerance trainer soak tests (random-crash survival, realistic-gsm8k convergence)",
     "weight-update": "Weight update tests",
     "replay": "Routing / indexer replay tests",
     "qwen35": "Qwen3.5-35B-A3B MTP / spec-v2 e2e tests",

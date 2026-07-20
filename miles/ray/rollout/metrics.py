@@ -3,7 +3,6 @@ from typing import Any
 
 import numpy as np
 
-from miles.utils import tracking_utils
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
     compute_pass_rate,
@@ -13,8 +12,8 @@ from miles.utils.metric_utils import (
     has_repetition,
 )
 from miles.utils.misc import load_function
+from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
-
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,15 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
     log_dict = extra_metrics or {}
     for key in data.keys():
         rewards = data[key]["rewards"]
-        log_dict[f"eval/{key}"] = sum(rewards) / len(rewards)
+        num_none = sum(1 for r in rewards if r is None)
+        log_dict[f"eval/{key}-none_reward_ratio"] = num_none / len(rewards) if len(rewards) > 0 else 0.0
+        if num_none:
+            logger.warning(
+                f"eval/{key}: {num_none}/{len(rewards)} samples have reward=None "
+                "(likely errored/aborted trials); treating as 0.0 for metrics."
+            )
+            rewards = [0.0 if r is None else r for r in rewards]
+        log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
         if (samples := data[key].get("samples")) is not None:
             log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), f"eval/{key}/")
         if "truncated" in data[key]:
@@ -47,7 +54,7 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
 
     step = compute_rollout_step(args, rollout_id)
     log_dict["eval/step"] = step
-    tracking_utils.log(args, log_dict, step_key="eval/step")
+    tracking.log(args, log_dict, step_key="eval/step")
 
     return log_dict
 
@@ -67,7 +74,7 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
     logger.info(f"perf {rollout_id}: {log_dict}")
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step
-    tracking_utils.log(args, log_dict, step_key="rollout/step")
+    tracking.log(args, log_dict, step_key="rollout/step")
 
 
 def _compute_metrics_from_samples(args, samples):

@@ -4,6 +4,7 @@ Utilities for the OpenAI endpoint
 
 import asyncio
 import logging
+import random
 from argparse import Namespace
 from copy import deepcopy
 
@@ -11,7 +12,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     get_indexer_topk_from_response,
     get_routed_experts_from_response,
 )
-from miles.rollout.session.session_types import GetSessionResponse, SessionRecord
+from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
@@ -27,25 +28,26 @@ class OpenAIEndpointTracer:
         self.base_url = f"{router_url}/sessions/{session_id}"
         self.session_server_instance_id = session_server_instance_id
 
+    @property
+    def session_server_id(self) -> str:
+        """``ip:port`` of the instance owning this session, as recorded in sample metadata."""
+        return self.router_url.removeprefix("http://")
+
     @staticmethod
     async def create(args: Namespace):
         session_ip = getattr(args, "session_server_ip", None)
-        session_port = getattr(args, "session_server_port", None)
-        if not session_ip or not session_port:
+        session_ports = getattr(args, "session_server_ports", None)
+        if not session_ip or not session_ports:
             raise RuntimeError(
-                "session_server_ip/session_server_port are not set. "
+                "session_server_ip/session_server_ports are not set. "
                 "Pass --use-session-server to start the session server."
             )
+        # The only routing decision in the system: pick the owning instance once
+        # per session; every later touch of the session reuses this URL.
+        session_port = random.choice(session_ports)
         session_url = f"http://{session_ip}:{session_port}"
-        session_server_instance_id = None
-        try:
-            health = await post(f"{session_url}/health", {}, action="get")
-            if isinstance(health, dict):
-                session_server_instance_id = health.get("session_server_instance_id")
-                if session_server_instance_id is not None:
-                    args.session_server_instance_id = session_server_instance_id
-        except Exception as e:
-            logger.warning("Failed to get session server health from %s: %s", session_url, e)
+        instance_ids = getattr(args, "session_server_instance_ids", None) or {}
+        session_server_instance_id = instance_ids.get(session_port)
         response = await post(f"{session_url}/sessions", {}, action="post")
         session_id = response["session_id"]
         return OpenAIEndpointTracer(
