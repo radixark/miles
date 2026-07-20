@@ -383,9 +383,12 @@ def save_lora_checkpoint(
     from miles.utils import megatron_bridge_utils
 
     save_path = Path(save_dir)
-    is_dp_rank_0 = get_parallel_state().effective_dp.rank == 0
-    tp_rank = get_parallel_state().tp.rank
-    pp_rank = get_parallel_state().pp.rank
+    # Adapter weights are replicated across CP ranks, so the writer gate must
+    # include CP: on DP alone, every CP rank writes the same file concurrently.
+    parallel_state = get_parallel_state()
+    is_dp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0
+    tp_rank = parallel_state.tp.rank
+    pp_rank = parallel_state.pp.rank
 
     # Create directory on dp_rank=0, then synchronize
     if is_dp_rank_0:
