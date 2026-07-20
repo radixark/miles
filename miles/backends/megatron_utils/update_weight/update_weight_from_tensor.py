@@ -299,6 +299,7 @@ class UpdateWeightFromTensor:
                 lora_config=self._lora_config,
                 lora_name=LORA_ADAPTER_NAME,
                 lora_loaded=self._lora_loaded,
+                check_equal=getattr(self.args, "check_lora_weight_equal", False),
             )
             self._lora_loaded = True
             return refs or [], long_lived_tensors
@@ -314,6 +315,7 @@ def _send_to_colocated_engine(
     lora_config: dict | None = None,
     lora_name: str | None = None,
     lora_loaded: bool = False,
+    check_equal: bool = False,
 ) -> tuple[list[ObjectRef], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
@@ -363,6 +365,17 @@ def _send_to_colocated_engine(
             # Thus, we need to apply the same way as `ipc_engine.update_weights_from_tensor` in future
             # (Yusheng) to-do-2: need to add ci test acc here - now it will pass but fail to update lora weights
 
+            expected_checksums = None
+            if check_equal:
+                import hashlib
+
+                expected_checksums = {
+                    n: hashlib.sha256(
+                        t.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()
+                    ).hexdigest()
+                    for n, t in hf_named_tensors
+                }
+
             refs.append(
                 ipc_engine.load_lora_adapter_from_tensors.remote(
                     lora_name=lora_name,
@@ -371,6 +384,7 @@ def _send_to_colocated_engine(
                         per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
                     ],
                     load_format="flattened_bucket",
+                    expected_checksums=expected_checksums,
                 )
             )
 

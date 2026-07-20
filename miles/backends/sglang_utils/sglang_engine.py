@@ -341,8 +341,14 @@ class SGLangEngine(RayActor):
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        expected_checksums: dict | None = None,
     ):
-        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
+        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N.
+
+        ``expected_checksums`` (set when ``--check-lora-weight-equal`` is on) is a
+        per-tensor-name sha256 manifest of the adapter as sent; each engine hashes
+        the tensors it received after deserializing and asserts they match.
+        """
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
@@ -353,6 +359,8 @@ class SGLangEngine(RayActor):
             payload["load_format"] = load_format
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
+        if expected_checksums is not None:
+            payload["expected_checksums"] = expected_checksums
 
         return self._make_request(
             "load_lora_adapter_from_tensors",
