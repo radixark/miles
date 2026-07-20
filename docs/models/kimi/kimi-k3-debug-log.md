@@ -78,3 +78,16 @@ Keep entries short. Record the symptom, proven root cause, fix, and verification
 - Observation: job `1265` changed `696/1392` exported tensors after step 0 and `714/1392` relative to initialization after step 1.
 - Explanation: standard zero-B initialization makes the first A gradient zero. At step 1 all A gradients were nonzero, but most `1e-6` SGD updates to randomly initialized A values remained below one BF16 rounding interval; 18 A tensors and all 696 B tensors changed exported bytes.
 - Verification: the validator hashes each exported BF16 tensor against version 1; both SGLang engines accepted and checksum-verified adapter versions 2 and 3.
+
+## High-cardinality LoRA CUDA IPC
+
+- Symptom: full GSM8K job `1283` transferred version 1 and completed a 64-sample rollout, then trainer IPC producer ranks aborted during the first log-probability allocation with `could not unlink the shared memory file /torch_*`.
+- Root cause: the sender exported 2,828 tensors as separate CUDA IPC allocations. PyTorch reported more than 1,000 outstanding producer blocks; delayed allocator collection after the 10-minute EP warm-up hit the stale refcounter file.
+- Fix: flatten each existing LoRA chunk into one `FlattenedTensorBucket` payload. Tensor values, BF16 precision, checksums, chunk boundaries, and SGLang TP/EP slicing are unchanged; IPC allocation count falls from 2,828 to 278.
+- Verification: job `1285` passed all 42 Miles sync tests and the SGLang CUDA-source load test. Job `1286` passed 278 flattened chunks plus 300 subsequent CUDA allocations without a limbo warning or unlink failure. Full-model verification is pending.
+
+## GSM8K response-256 baseline
+
+- Job `1283` used the approved 16-node TP32/EP64 BF16 trainer, two official TP8/EP1 native-MXFP4 rollout engines, GSM8K math reward, eight prompts with eight samples each, and a 256-token response limit.
+- The first rollout completed 64 samples with raw reward `0.828125` (53/64), mean response length `179.45`, and six truncated responses. Two of eight prompt groups had nonzero reward variance, so GRPO advantages were nonzero.
+- The job failed before Megatron log probabilities, backward, gradient norm, or optimizer update; it is generation evidence, not a training-quality result.

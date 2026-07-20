@@ -471,15 +471,18 @@ def _send_to_colocated_engine(
 
     if is_lora:
         assert weight_version is not None, "LoRA tensor sync requires a weight version"
-        # Every bridge rank has the complete adapter after its internal TP/EP
-        # collectives. Keep one CUDA-IPC payload per rank so a multi-node
-        # SGLang engine can open handles from its node-local trainer process.
-        # Do not flatten here: K3's full adapter is about 24 GB, and torch.cat
-        # would temporarily duplicate it on every GPU.
-        tensor_dict = dict(hf_named_tensors)
-        assert len(tensor_dict) == len(hf_named_tensors), "LoRA adapter contains duplicate HF tensor names"
-        long_live_tensors.append(tensor_dict)
-        serialized_tensors = [MultiprocessingSerializer.serialize(tensor_dict, output_str=True)]
+        names = [name for name, _ in hf_named_tensors]
+        assert len(set(names)) == len(names), "LoRA adapter contains duplicate HF tensor names"
+        # Use one CUDA IPC allocation per existing chunk. K3 exports thousands
+        # of tensors; serializing them individually overflows PyTorch's CUDA IPC
+        # limbo before the receiver-side references are reaped.
+        flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=hf_named_tensors)
+        flattened_tensor_data = {
+            "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
+            "metadata": flattened_tensor_bucket.get_metadata(),
+        }
+        long_live_tensors.append(flattened_tensor_data)
+        serialized_tensors = [MultiprocessingSerializer.serialize(flattened_tensor_data, output_str=True)]
     elif getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
         converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors}
     else:
@@ -547,6 +550,7 @@ def _send_to_colocated_engine(
                     lora_name=lora_name,
                     config_dict=lora_config,
                     serialized_tensors=[rank_payloads[0] for rank_payloads in serialized_named_tensors],
+                    load_format="flattened_bucket",
                     is_first_chunk=lora_is_first_chunk,
                     is_last_chunk=lora_is_last_chunk,
                     expected_checksums=expected_checksums,

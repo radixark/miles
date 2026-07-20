@@ -631,7 +631,7 @@ def test_colocated_lora_sync_sends_one_local_ipc_payload_per_engine_rank():
         for name, tensor in SAMPLE_LORA_WEIGHTS
     }
     assert "serialized_named_tensors" not in kwargs
-    assert "load_format" not in kwargs
+    assert kwargs["load_format"] == "flattened_bucket"
     assert engine.update_weight_version.calls == [{"weight_version": "7"}]
     version_validator.assert_called_once_with(
         7,
@@ -698,8 +698,8 @@ def test_colocated_lora_sync_non_source_contributes_local_ipc_payload():
 
     assert refs == []
     assert len(long_lived_tensors) == 1
-    assert set(long_lived_tensors[0]) == {name for name, _ in SAMPLE_LORA_WEIGHTS}
-    bucket_mock.assert_not_called()
+    assert set(long_lived_tensors[0]) == {"flattened_tensor", "metadata"}
+    bucket_mock.assert_called_once_with(named_tensors=SAMPLE_LORA_WEIGHTS)
     serialize_mock.assert_called_once()
     dist_mock.gather_object.assert_called_once()
 
