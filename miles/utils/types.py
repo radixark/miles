@@ -49,6 +49,7 @@ class Sample:
 
     metadata: dict = field(default_factory=dict)
     generate_function_path: str | None = None
+    custom_rm_path: str | None = None
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 

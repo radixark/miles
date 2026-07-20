@@ -4,7 +4,21 @@ import pytest
 
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import run
+from miles.utils.misc import function_registry
 from miles.utils.types import Sample
+
+PER_SAMPLE_RM_PATH = "test.per_sample.rm"
+GLOBAL_RM_PATH = "test.global.rm"
+
+
+async def _per_sample_rm(args, sample, **kwargs):
+    return 111
+
+
+async def _global_rm(args, sample, **kwargs):
+    if isinstance(sample, list):
+        return [999] * len(sample)
+    return 999
 
 
 @pytest.fixture
@@ -95,8 +109,36 @@ class TestAsyncRm:
         with pytest.raises(NotImplementedError, match=match):
             run(async_rm(mock_args, sample))
 
+    def test_per_sample_custom_rm_takes_priority(self, mock_args):
+        mock_args.custom_rm_path = GLOBAL_RM_PATH
+        sample = Sample(prompt="", response="", label="", custom_rm_path=PER_SAMPLE_RM_PATH)
+        with function_registry.temporary(PER_SAMPLE_RM_PATH, _per_sample_rm), function_registry.temporary(
+            GLOBAL_RM_PATH, _global_rm
+        ):
+            reward = run(async_rm(mock_args, sample))
+        assert reward == 111
+
+    def test_falls_back_to_global_custom_rm(self, mock_args):
+        mock_args.custom_rm_path = GLOBAL_RM_PATH
+        sample = Sample(prompt="", response="", label="")
+        with function_registry.temporary(GLOBAL_RM_PATH, _global_rm):
+            reward = run(async_rm(mock_args, sample))
+        assert reward == 999
+
 
 class TestBatchedAsyncRm:
+    def test_per_sample_custom_rm_takes_priority(self, mock_args):
+        mock_args.custom_rm_path = GLOBAL_RM_PATH
+        samples = [
+            Sample(prompt="", response="", label="", custom_rm_path=PER_SAMPLE_RM_PATH),
+            Sample(prompt="", response="", label=""),
+        ]
+        with function_registry.temporary(PER_SAMPLE_RM_PATH, _per_sample_rm), function_registry.temporary(
+            GLOBAL_RM_PATH, _global_rm
+        ):
+            rewards = run(batched_async_rm(mock_args, samples))
+        assert rewards == [111, 999]
+
     @pytest.mark.parametrize(
         "rm_type,samples_data,expected",
         [

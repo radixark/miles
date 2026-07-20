@@ -141,6 +141,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             status=b.status,
             metadata=_merge_metadata(),
             generate_function_path=_merge_equal_value("generate_function_path"),
+            custom_rm_path=_merge_equal_value("custom_rm_path"),
             train_metadata=_merge_equal_value("train_metadata"),
             session_id=_merge_equal_value("session_id"),
             non_generation_time=_merge_equal_value("non_generation_time"),
