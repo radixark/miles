@@ -64,11 +64,17 @@ Keep entries short. Record the symptom, proven root cause, fix, and verification
 - Isolation: job `1253` loaded the shared DCP in `297.83s`, started both TP8 rollout engines, produced 512 active tokens and three nonzero advantages per effective DP rank, and kept the rollout/Megatron mean log-probability difference at `0.00774`. Backward then found all 77,184 aggregated LoRA `main_grad` tensors exactly zero.
 - Root cause: job `1261` proved the training logits had no autograd graph. Native LoRA freezes the embedding, so full reentrant activation recompute received no grad-enabled tensor input and detached every adapter computation inside the checkpoint.
 - Fix: require gradients on the frozen embedding output during K3 LoRA training when full recompute is enabled.
-- Verification: job `1263` produced nonzero gradients for all 38,592 LoRA B parameters after finalize, `grad_norm=0.247237`, and optimizer updates on all 64 ranks. The rollout/training log-probability mean absolute difference was `0.035834`.
+- Verification: job `1265` completed two full-model steps. Step 0 updated all LoRA B tensors with `grad_norm=0.340486`; step 1 had nonzero A and B gradients with `grad_norm=0.664772`. Both steps updated all 64 ranks, and rollout/training log-probability mean absolute differences were `0.034334` and `0.028430`.
 
 ## LoRA checkpoint barrier after offload
 
 - Symptom: job `1263` wrote all 64 adapter and optimizer shards, then all `save_model` RPCs remained in the final checkpoint barrier.
 - Root cause: the CPU/shared-disk LoRA checkpoint path used the reloadable default NCCL group for coordination after colocated training offload.
 - Fix: use the persistent Gloo group for both LoRA checkpoint barriers.
-- Verification: pending same-setting full-model rerun.
+- Verification: job `1265` completed both 64-rank saves, then sent adapter versions 2 and 3 to both TP8 rollout engines. The job completed with exit code 0.
+
+## LoRA A update visibility
+
+- Observation: job `1265` changed `696/1392` exported tensors after step 0 and `714/1392` relative to initialization after step 1.
+- Explanation: standard zero-B initialization makes the first A gradient zero. At step 1 all A gradients were nonzero, but most `1e-6` SGD updates to randomly initialized A values remained below one BF16 rounding interval; 18 A tensors and all 696 B tensors changed exported bytes.
+- Verification: the validator hashes each exported BF16 tensor against version 1; both SGLang engines accepted and checksum-verified adapter versions 2 and 3.

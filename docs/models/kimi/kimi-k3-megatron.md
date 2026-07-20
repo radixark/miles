@@ -527,4 +527,12 @@ grad: native LoRA had frozen the embedding, leaving full reentrant activation
 recompute without any grad-enabled tensor input. The custom checkpoint therefore
 detached adapter computations captured by its closure. The K3 native path now
 marks the frozen embedding output as requiring grad only during training with
-full recompute; full-model gradient and optimizer-update validation is pending.
+full recompute.
+
+Job `1265` completed two full-model training steps with the same topology and
+settings. The two gradient norms were `0.340486` and `0.664772`; all 64 trainer
+ranks updated on both steps. Rollout/training mean absolute log-probability
+differences were `0.034334` and `0.028430`. Both 64-rank LoRA checkpoint saves
+completed through the persistent Gloo barriers, and adapter versions 2 and 3
+were checksum-verified and loaded by both TP8 rollout engines. The top-level
+SLURM job completed with exit code 0.
