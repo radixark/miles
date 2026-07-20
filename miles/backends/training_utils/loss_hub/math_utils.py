@@ -273,6 +273,48 @@ def compute_policy_loss(
     return pg_losses, clipfrac
 
 
+@torch.compile(dynamic=True)
+def compute_cispo_loss(
+    ppo_kl: torch.Tensor,
+    advantages: torch.Tensor,
+    log_probs: torch.Tensor,
+    eps_clip: float,
+    eps_clip_high: float,
+):
+    """CISPO surrogate from MiniMax-M1 (https://arxiv.org/abs/2506.13585).
+
+    Unlike PPO's ``min`` of two ratio-weighted terms, CISPO is an *additive*
+    REINFORCE-style surrogate whose importance-sampling weight is clipped and
+    then stop-gradiented, so gradient flows ONLY through the current-policy
+    ``log_probs`` (no token is ever fully zeroed out by clipping):
+
+        L = -clip(ratio, 1-eps_clip, 1+eps_clip_high).detach() * A * log_probs
+
+    where ``ratio = exp(-ppo_kl) = pi_theta / pi_old``. Returns the same
+    ``(per_token_loss, clipfrac)`` shape as :func:`compute_policy_loss` so the
+    caller's reduction / metric plumbing is reused unchanged.
+
+    Args:
+        ppo_kl: Per-token ``log pi_old - log pi_theta`` (so ``ratio = exp(-ppo_kl)``).
+        advantages: Per-token advantages.
+        log_probs: Current-policy per-token log-probs; the only grad-carrying input.
+        eps_clip: Lower clip range on the IS weight.
+        eps_clip_high: Upper clip range on the IS weight.
+
+    Returns:
+        ``(pg_losses, clipfrac)`` — per-token loss tensor and a per-token float
+        mask marking tokens whose IS weight was clipped.
+    """
+    ratio = (-ppo_kl).exp()
+    clipped = ratio.clamp(1 - eps_clip, 1 + eps_clip_high).detach()
+    pg_losses = -clipped * advantages * log_probs
+    # clipfrac is ratio-band-based (any token whose raw IS weight left the band),
+    # unlike compute_policy_loss's loss-change-based clipfrac, so the two
+    # pg_clipfrac metrics are not numerically comparable across estimators.
+    clipfrac = ((ratio < 1 - eps_clip) | (ratio > 1 + eps_clip_high)).float()
+    return pg_losses, clipfrac
+
+
 def compute_log_probs(
     logits: torch.Tensor,
     tokens: torch.Tensor,
