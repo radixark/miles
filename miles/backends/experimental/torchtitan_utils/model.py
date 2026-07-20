@@ -161,12 +161,37 @@ def build_optimizer_and_lr_scheduler(model, spec, args, parallel_dims, *, traini
     elif spec.post_optimizer_build_fn is register_moe_load_balancing_hook:
         register_moe_load_balancing_hook(optimizers, [model], parallel_dims)
 
+    decay_type, decay_ratio = _map_lr_decay_style(args.lr_decay_style)
     lr_config = LRSchedulersContainer.Config(
         warmup_steps=args.lr_warmup_iters,
         total_steps=training_steps,
+        decay_type=decay_type,
+        decay_ratio=decay_ratio,
     )
     lr_schedulers = lr_config.build(optimizers=optimizers, training_steps=training_steps)
     return optimizers, lr_schedulers
+
+
+def _map_lr_decay_style(lr_decay_style: str) -> tuple[str, float | None]:
+    """miles' --lr-decay-style -> torchtitan LRSchedulersContainer's (decay_type, decay_ratio).
+
+    torchtitan has no "constant" decay_type at all (Literal["linear","sqrt","cosine"]) and
+    decays over the WHOLE post-warmup range by default (decay_ratio=None) — silently leaving
+    decay_ratio unset for "constant" produces full-range linear decay instead, exactly the kind
+    of divergence-from-requested-settings the M4 run would have shipped with unnoticed.
+    decay_ratio=0.0 means "decay over 0% of steps" i.e. stays flat after warmup (WSD schedule
+    with an empty decay phase) — the correct way to express "constant" in this API.
+    """
+    if lr_decay_style == "constant":
+        return "linear", 0.0
+    if lr_decay_style in ("linear", "cosine"):
+        return lr_decay_style, None
+    if lr_decay_style == "sqrt":
+        return "sqrt", None
+    raise NotImplementedError(
+        f"--lr-decay-style {lr_decay_style!r} has no torchtitan LRSchedulersContainer mapping yet "
+        "(supported: constant, linear, cosine, sqrt)."
+    )
 
 
 def clip_grad_norm(model, max_norm: float, parallel_dims) -> torch.Tensor:
