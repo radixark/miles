@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 
 from miles.utils import dumper_utils
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -160,6 +161,58 @@ class TestDumperMegatronUtilConfigure:
         self._configure(args, phase=DumperPhase.FWD_ONLY, rollout_id=0)
 
         assert other_phase_file.exists()
+
+
+@pytest.mark.parametrize("cleanup_previous", [False, True])
+def test_finalize_preserves_activations_and_pins_model_dumps_to_step_zero(
+    tmp_path: Path, cleanup_previous: bool
+) -> None:
+    args = _make_args(tmp_path)
+    args.dumper_fwd_bwd = [
+        "enable_model_value=true",
+        "enable_model_grad=true",
+        f"cleanup_previous={str(cleanup_previous).lower()}",
+    ]
+    model = torch.nn.Linear(2, 1, bias=False)
+    model.weight.grad = torch.ones_like(model.weight)
+    state = SimpleNamespace(
+        effective_dp=SimpleNamespace(rank=0),
+        indep_dp=SimpleNamespace(rank=0, group=None),
+    )
+
+    with (
+        patch("miles.utils.dumper_utils.get_parallel_state", return_value=state),
+        patch("miles.utils.dumper_utils.dist") as mock_dist,
+    ):
+        mock_dist.is_initialized.return_value = False
+        util = DumperMegatronUtil(args, [model], DumperPhase.FWD_BWD, rollout_id=3)
+        dumper_utils.dumper.dump("activation", torch.ones(1))
+        dump_dir = tmp_path / "fwd_bwd" / "rollout_3"
+        assert len(list(dump_dir.glob("*___name=activation___*.pt"))) == 1
+        assert dumper_utils.dumper.get_state()["config"]["cleanup_previous"] is cleanup_previous
+        dumper_utils.dumper.step()
+        try:
+            util.finalize([model])
+            dumper_state = dumper_utils.dumper.get_state()
+            assert dumper_state["step"] == 1
+            assert dumper_state["config"]["enable"] is False
+            assert dumper_state["config"]["cleanup_previous"] is False
+        finally:
+            dumper_utils.dumper.reset()
+            dumper_utils.dumper.configure(enable=False)
+
+    dump_files = sorted(dump_dir.glob("*.pt"))
+    assert len(dump_files) == 3
+    model_dump_files = [
+        dump_file
+        for dump_file in dump_files
+        if torch.load(dump_file, weights_only=False)["meta"]["name"] != "activation"
+    ]
+    assert len(model_dump_files) == 2
+    for dump_file in model_dump_files:
+        step_tags = [tag for tag in dump_file.stem.split("___") if tag.startswith("step=")]
+        assert step_tags == ["step=0"]
+        assert torch.load(dump_file, weights_only=False)["meta"]["step"] == 0
 
 
 class TestBarrierAfterDumpDirCleanup:
