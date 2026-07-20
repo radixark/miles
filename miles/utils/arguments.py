@@ -2171,8 +2171,13 @@ def parse_args(add_custom_arguments=None):
             # check_weights snapshot/reset_tensors calls) rather than inside the actor's own
             # init() — actors run in separate Ray processes and mutating self.args there
             # never reaches the driver's copy.
+            # Both prefix spellings: our own adapter/coverage check uses the raw HF
+            # checkpoint convention ("model.visual.*"), but sglang's internal weight-
+            # checker names tensors without the "model." prefix ("visual.*") — confirmed
+            # from its own error output (name=visual.blocks.23...). "mtp." has no "model."
+            # prefix in either convention already.
             existing = list(args.check_weight_update_skip_list or [])
-            for prefix in ("model.visual.", "mtp."):
+            for prefix in ("model.visual.", "visual.", "mtp."):
                 if prefix not in existing:
                     existing.append(prefix)
             args.check_weight_update_skip_list = existing
