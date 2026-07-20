@@ -14,7 +14,7 @@ import torch.distributed as dist
 
 from miles.backends.experimental.torchtitan_utils import checkpoint, compat  # noqa: F401
 from miles.backends.experimental.torchtitan_utils import models
-from miles.backends.experimental.torchtitan_utils.model import build_and_load_model, build_optimizer_and_lr_scheduler
+from miles.backends.experimental.torchtitan_utils.model import build_optimizer_and_lr_scheduler
 
 
 class _Args:
@@ -63,7 +63,28 @@ def run(hf_dir: str) -> int:
     spec, hf = models.spec_from_hf(hf_dir)
     args = _Args()
     seq_len = 64
-    model, adapter = build_and_load_model(spec, hf_dir, parallel_dims=parallel_dims, seq_len=seq_len, args=args, device=device)
+
+    # Force fp32 end-to-end (same as test_m1_fp32_check.py) so this test isolates
+    # loading-correctness from the already-characterized bf16 flex-vs-sdpa numerics gap.
+    from torchtitan.config import TORCH_DTYPE_MAP, CompileConfig, ParallelismConfig, TrainingConfig
+    from torchtitan.tools.utils import set_default_dtype
+    import miles.backends.experimental.torchtitan_utils.model as model_mod
+
+    parallelism = ParallelismConfig(data_parallel_shard_degree=parallel_dims.dp_shard, tensor_parallel_degree=1)
+    training = TrainingConfig(seq_len=seq_len, dtype="float32", mixed_precision_param="float32", mixed_precision_reduce="float32")
+    model_mod._apply_update_from_config(spec.model, parallelism=parallelism, seq_len=seq_len)
+    with torch.device("meta"):
+        with set_default_dtype(torch.float32):
+            model = spec.model.build()
+    model = spec.parallelize_fn(
+        model, parallel_dims=parallel_dims, training=training, parallelism=parallelism,
+        compile_config=CompileConfig(enable=False), ac_config=None, dump_folder="/tmp/titan_dump",
+    )
+    model.to_empty(device=device)
+    with torch.no_grad():
+        model.init_weights(buffer_device=None)
+    adapter = spec.state_dict_adapter(spec.model, hf_dir)
+
     optimizer, lr_scheduler = build_optimizer_and_lr_scheduler(model, spec, args, parallel_dims, training_steps=100)
 
     actor = _FakeActor(args, model, adapter, optimizer, lr_scheduler)
