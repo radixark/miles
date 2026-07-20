@@ -217,6 +217,8 @@ class TorchTitanTrainRayActor(TrainRayActor):
     ) -> None:
         assert witness_info is None, "torchtitan backend v1 does not support witness-based fault tolerance"
         assert attempt == 0
+        if self.args.offload_train:
+            self.wake_up()
         if self.args.debug_rollout_only:
             return
 
