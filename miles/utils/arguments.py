@@ -2164,6 +2164,19 @@ def parse_args(add_custom_arguments=None):
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for torchtitan backend."
 
+        if args.hf_checkpoint and load_hf_config(args.hf_checkpoint).model_type == "qwen3_5":
+            # torchtitan_utils prunes vision_encoder and never builds MTP layers (see
+            # DESIGN.md's qwen3_5 plan), so those HF keys can never be pushed during weight
+            # sync. Must be set here (on the driver, before create_rollout_manager's
+            # check_weights snapshot/reset_tensors calls) rather than inside the actor's own
+            # init() — actors run in separate Ray processes and mutating self.args there
+            # never reaches the driver's copy.
+            existing = list(args.check_weight_update_skip_list or [])
+            for prefix in ("model.visual.", "mtp."):
+                if prefix not in existing:
+                    existing.append(prefix)
+            args.check_weight_update_skip_list = existing
+
         logger.warning("The torchtitan backend is experimental and under active development.")
     else:
         from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args
