@@ -510,3 +510,11 @@ difference was `0.03294`. The optimizer step reported `NORMAL`, but `loss` and
 1,392 exported LoRA tensors changed. Root-cause analysis is in progress; memory
 profiling remains blocked until a finite nonzero gradient and a changed adapter
 are verified with the same run setting.
+
+Job `1253` kept the same topology and settings and added stage diagnostics. Both
+TP8 rollout engines started, the shared TP32/EP32 DCP load and TP32/EP64 reshard
+completed in `297.83s`, and each effective DP rank had 512 active tokens and
+three nonzero advantages. The rollout and Megatron mean log probabilities were
+`-0.49365` and `-0.50140`. All 77,184 aggregated LoRA `main_grad` tensors were
+still exactly zero after backward, which excludes the optimizer and SGLang
+weight-update path from the current failure boundary.

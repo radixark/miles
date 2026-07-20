@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 
 from miles.backends.megatron_utils.lora_utils import (
+    LoRABackwardDiagnostics,
     _configure_lora_buffer_cpu_backup,
     _get_lora_class_name,
     _is_adapter_param_name,
@@ -336,6 +337,29 @@ def test_lora_gradient_check_rejects_zero_gradients(monkeypatch):
 
     with pytest.raises(RuntimeError, match="no nonzero gradient"):
         validate_lora_gradients([_lora_gradient_test_model(b_grad=0.0)])
+
+
+def test_lora_backward_diagnostics_observes_logits_and_b_factor(monkeypatch):
+    monkeypatch.setattr(torch.distributed, "all_reduce", lambda *args, **kwargs: None)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
+    model = nn.Module()
+    model.register_parameter("o_lora_A", nn.Parameter(torch.ones(2, 2)))
+    model.register_parameter("o_lora_B", nn.Parameter(torch.zeros(2, 2)))
+    diagnostics = LoRABackwardDiagnostics([model])
+
+    inputs = torch.ones(1, 2)
+    logits = torch.nn.functional.linear(torch.nn.functional.linear(inputs, model.o_lora_A), model.o_lora_B)
+    diagnostics.register_logits(logits)
+    logits.sum().backward()
+    summary = diagnostics.report()
+    diagnostics.close()
+
+    assert summary["logits"][0:3] == (1, 1, 1.0)
+    assert summary["o_lora_B"][0] == 1
+    assert summary["o_lora_B"][1] == 1
+    assert summary["o_lora_B"][2] > 0
+    assert summary["o_lora_B"][3] == 0
+    assert summary["o_lora_B"][4] == 1
 
 
 # ---------------------------------------------------------------------------

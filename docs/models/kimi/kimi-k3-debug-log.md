@@ -61,4 +61,5 @@ Keep entries short. Record the symptom, proven root cause, fix, and verification
 ## Full-model LoRA update is zero
 
 - Symptom: job `1245` reported `loss=0`, `grad_norm=0`, and no change in any of 1,392 exported LoRA tensors after the first optimizer step.
-- Verification: the version-2 checksum validator failed with `LoRA version 2 did not change any exported tensor`; root cause and fix are pending.
+- Isolation: job `1253` loaded the shared DCP in `297.83s`, started both TP8 rollout engines, produced 512 active tokens and three nonzero advantages per effective DP rank, and kept the rollout/Megatron mean log-probability difference at `0.00774`. Backward then found all 77,184 aggregated LoRA `main_grad` tensors exactly zero.
+- Next check: compare logits gradients, raw B-factor autograd hooks, and pre-finalize `main_grad` against the finalized gradients. Root cause and fix are pending.

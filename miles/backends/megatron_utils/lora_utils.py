@@ -191,7 +191,12 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
                 gradient.copy_(reduced)
 
 
-def validate_lora_gradients(model: Sequence[torch.nn.Module]) -> tuple[str, torch.nn.Parameter, torch.Tensor]:
+def validate_lora_gradients(
+    model: Sequence[torch.nn.Module],
+    *,
+    stage: str = "finalized",
+    require_nonzero: bool = True,
+) -> tuple[str, torch.nn.Parameter, torch.Tensor] | None:
     """Validate finalized LoRA gradients and retain one B-factor update probe."""
     param_count = 0
     grad_count = 0
@@ -267,7 +272,9 @@ def validate_lora_gradients(model: Sequence[torch.nn.Module]) -> tuple[str, torc
     torch.distributed.all_reduce(local_nonfinite, op=torch.distributed.ReduceOp.MAX)
     if torch.distributed.get_rank() == 0:
         logger.info(
-            "LoRA gradient check: params=%d with_grad=%d nonzero=%d " "b_params=%d nonzero_b=%d l2=%.8g max_abs=%.8g",
+            "LoRA gradient check stage=%s: params=%d with_grad=%d nonzero=%d "
+            "b_params=%d nonzero_b=%d l2=%.8g max_abs=%.8g",
+            stage,
             *(int(value.item()) for value in local_counts),
             local_l2_squared.sqrt().item(),
             local_max_abs.item(),
@@ -276,6 +283,8 @@ def validate_lora_gradients(model: Sequence[torch.nn.Module]) -> tuple[str, torc
         raise RuntimeError("LoRA gradient check found a non-finite gradient after backward")
     if local_counts[0].item() == 0:
         raise RuntimeError("LoRA gradient check found no trainable adapter parameters")
+    if not require_nonzero:
+        return None
     if local_counts[2].item() == 0:
         raise RuntimeError("LoRA gradient check found no nonzero gradient after backward")
     if local_counts[4].item() == 0:
@@ -306,6 +315,137 @@ def validate_lora_optimizer_update(probe: tuple[str, torch.nn.Parameter, torch.T
 def _is_adapter_param_name(name: str) -> bool:
     """Check if a parameter name belongs to a LoRA adapter (Megatron internal naming)."""
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))
+
+
+class LoRABackwardDiagnostics:
+    _PROBE_SUFFIXES = (
+        "o_lora_B",
+        "q_a_lora_B",
+        "kv_a_lora_B",
+        "fc1_lora_B",
+        "fc2_lora_B",
+        "w1_lora_B",
+        "w2_lora_B",
+        "w3_lora_B",
+    )
+
+    def __init__(self, model: Sequence[torch.nn.Module]) -> None:
+        named_parameters = {
+            name: parameter for model_chunk in model for name, parameter in model_chunk.named_parameters()
+        }
+        candidates: dict[str, tuple[str, torch.nn.Parameter]] = {}
+        for name, parameter in named_parameters.items():
+            if not parameter.requires_grad or not _is_adapter_param_name(name):
+                continue
+            for suffix in self._PROBE_SUFFIXES:
+                if name.endswith(suffix) and (suffix not in candidates or name > candidates[suffix][0]):
+                    candidates[suffix] = (name, parameter)
+
+        if not candidates:
+            raise RuntimeError("LoRA backward diagnostics found no native B-factor parameters")
+
+        self._device = next(iter(candidates.values()))[1].device
+        self._probe_names: dict[str, str] = {}
+        self._initial_b_max: dict[str, torch.Tensor] = {}
+        self._initial_a_max: dict[str, torch.Tensor] = {}
+        self._grad_max_values: dict[str, list[torch.Tensor]] = {"logits": []}
+        self._handles: list[torch.utils.hooks.RemovableHandle] = []
+        for suffix, (name, parameter) in candidates.items():
+            self._probe_names[suffix] = name
+            self._initial_b_max[suffix] = parameter.detach().abs().max().double()
+            a_name = name.removesuffix("_B") + "_A"
+            if a_name not in named_parameters:
+                raise RuntimeError(f"LoRA backward diagnostics found no A factor for {name}")
+            self._initial_a_max[suffix] = named_parameters[a_name].detach().abs().max().double()
+            self._grad_max_values[suffix] = []
+
+            def capture(gradient: torch.Tensor, *, key: str = suffix) -> torch.Tensor:
+                self._grad_max_values[key].append(gradient.detach().abs().max().double())
+                return gradient
+
+            self._handles.append(parameter.register_hook(capture))
+
+    def register_logits(self, logits: torch.Tensor) -> None:
+        if not logits.requires_grad:
+            raise RuntimeError("LoRA backward diagnostics found logits without an autograd graph")
+
+        def capture(gradient: torch.Tensor) -> torch.Tensor:
+            self._grad_max_values["logits"].append(gradient.detach().abs().max().double())
+            return gradient
+
+        self._handles.append(logits.register_hook(capture))
+
+    def report(self) -> dict[str, tuple[int, int, float, float, float]]:
+        keys = ["logits", *self._probe_names]
+        counts = torch.tensor(
+            [
+                value
+                for key in keys
+                for value in (
+                    len(self._grad_max_values[key]),
+                    sum(gradient.item() > 0 for gradient in self._grad_max_values[key]),
+                )
+            ],
+            dtype=torch.int64,
+            device=self._device,
+        )
+        max_values = torch.stack(
+            [
+                (
+                    torch.stack(self._grad_max_values[key]).max()
+                    if self._grad_max_values[key]
+                    else torch.zeros((), dtype=torch.float64, device=self._device)
+                )
+                for key in keys
+            ]
+        )
+        initial_b_values = torch.stack(
+            [
+                (
+                    torch.zeros((), dtype=torch.float64, device=self._device)
+                    if key == "logits"
+                    else self._initial_b_max[key]
+                )
+                for key in keys
+            ]
+        )
+        initial_a_values = torch.stack(
+            [
+                (
+                    torch.zeros((), dtype=torch.float64, device=self._device)
+                    if key == "logits"
+                    else self._initial_a_max[key]
+                )
+                for key in keys
+            ]
+        )
+        dist.all_reduce(counts, op=dist.ReduceOp.SUM)
+        dist.all_reduce(max_values, op=dist.ReduceOp.MAX)
+        dist.all_reduce(initial_b_values, op=dist.ReduceOp.MAX)
+        dist.all_reduce(initial_a_values, op=dist.ReduceOp.MAX)
+
+        summary = {
+            key: (
+                counts[2 * index].item(),
+                counts[2 * index + 1].item(),
+                max_values[index].item(),
+                initial_b_values[index].item(),
+                initial_a_values[index].item(),
+            )
+            for index, key in enumerate(keys)
+        }
+        if dist.get_rank() == 0:
+            logger.info(
+                "LoRA raw backward diagnostics "
+                "(hook_calls, nonzero_hook_calls, raw_grad_max_abs, initial_B_max_abs, initial_A_max_abs): %s",
+                summary,
+            )
+            logger.info("LoRA raw backward probe names: %s", self._probe_names)
+        return summary
+
+    def close(self) -> None:
+        for handle in self._handles:
+            handle.remove()
 
 
 _param_grad_buffer_patched = False

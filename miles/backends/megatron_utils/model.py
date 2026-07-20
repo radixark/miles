@@ -416,6 +416,12 @@ def train_one_step(
         custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
         custom_before_train_step_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
 
+    lora_backward_diagnostics = None
+    if args.check_lora_weight_equal and is_lora_model(model):
+        from .lora_utils import LoRABackwardDiagnostics
+
+        lora_backward_diagnostics = LoRABackwardDiagnostics(model)
+
     @dumper_phase_util.wrap_forward_step
     def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[
         torch.Tensor,
@@ -494,6 +500,11 @@ def train_one_step(
 
             output_tensor = model(**forward_kwargs)
 
+        if lora_backward_diagnostics is not None:
+            if not isinstance(output_tensor, torch.Tensor):
+                raise TypeError(f"LoRA backward diagnostics expected tensor logits, got {type(output_tensor)}")
+            lora_backward_diagnostics.register_logits(output_tensor)
+
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
 
@@ -511,6 +522,10 @@ def train_one_step(
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False,
     )
+
+    if lora_backward_diagnostics is not None:
+        lora_backward_diagnostics.report()
+        lora_backward_diagnostics.close()
 
     lora_update_probe = None
     if args.check_lora_weight_equal and is_lora_model(model):
@@ -609,7 +624,10 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
-    from .lora_utils import reduce_marked_lora_grads
+    from .lora_utils import is_lora_model, reduce_marked_lora_grads, validate_lora_gradients
+
+    if get_args().check_lora_weight_equal and is_lora_model(args[0]):
+        validate_lora_gradients(args[0], stage="pre_finalize", require_nonzero=False)
 
     reduce_marked_lora_grads(args[0])
     return finalize_model_grads(*args, **kwargs)
