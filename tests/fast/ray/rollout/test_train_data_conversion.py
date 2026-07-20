@@ -10,6 +10,7 @@ from hypothesis import strategies as st
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
 from miles.ray.rollout.train_data_conversion import (
+    LENGTH_REWARD_METADATA_KEYS,
     _post_process_rewards,
     convert_samples_to_train_data,
     split_train_data_by_dp,
@@ -142,6 +143,23 @@ class TestConvertSamplesToTrainData:
             custom_reward_post_process_func=None,
         )
         assert out["raw_reward"][0] == 9.0
+
+    def test_length_reward_metadata_passed_through(self):
+        args = make_args(rewards_normalization=False)
+        samples = [make_sample(index=0), make_sample(index=1)]
+        for sample in samples:
+            sample.metadata = {key: float(sample.index + 1) for key in LENGTH_REWARD_METADATA_KEYS}
+
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        for key in LENGTH_REWARD_METADATA_KEYS:
+            assert out[key] == [1.0, 2.0]
 
     def test_custom_convert_func_short_circuits(self):
         args = make_args()
@@ -440,6 +458,26 @@ class TestSplitTrainDataByDp:
         parts = [ray.get(r.inner) for r in refs]
         assert "rollout_log_probs" in parts[0]
         assert "round_number" in parts[0]
+
+    def test_length_reward_metadata_split_by_dp(self):
+        args = make_args(balance_data=False)
+        data = {
+            "tokens": [[1], [2], [3], [4]],
+            "response_lengths": [1, 1, 1, 1],
+            "rewards": [0, 0, 0, 0],
+            "truncated": [0, 0, 0, 0],
+            "loss_masks": [[1]] * 4,
+            "sample_indices": [0, 1, 2, 3],
+        }
+        for key in LENGTH_REWARD_METADATA_KEYS:
+            data[key] = [10, 20, 30, 40]
+
+        refs = split_train_data_by_dp(args, data, dp_size=2)
+        parts = [ray.get(r.inner) for r in refs]
+
+        for key in LENGTH_REWARD_METADATA_KEYS:
+            assert parts[0][key] == [10, 30]
+            assert parts[1][key] == [20, 40]
 
     def test_shared_keys_not_split(self):
         """raw_reward, total_lengths, dynamic_global_batch_size are shared, not split."""

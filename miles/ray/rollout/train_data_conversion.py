@@ -8,6 +8,18 @@ from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import Sample
 
 
+LENGTH_REWARD_METADATA_KEYS = [
+    "length_penalty",
+    "length_penalty_applied",
+    "length_base_reward",
+    "length_shaped_reward",
+    "length_reward_delta",
+    "length_effective_response_length",
+    "length_success",
+    "length_group_eligible",
+]
+
+
 def convert_samples_to_train_data(
     args,
     samples: list[Sample] | list[list[Sample]],
@@ -62,6 +74,10 @@ def convert_samples_to_train_data(
     # For rollout buffer
     if samples[0].metadata and "round_number" in samples[0].metadata:
         train_data["round_number"] = [sample.metadata["round_number"] for sample in samples]
+
+    for key in LENGTH_REWARD_METADATA_KEYS:
+        if samples[0].metadata and key in samples[0].metadata:
+            train_data[key] = [sample.metadata[key] for sample in samples]
 
     # Add rollout log probabilities for off-policy correction
     if samples[0].rollout_log_probs is not None:
@@ -160,6 +176,7 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
             "opd_reverse_kl",
             "seq_witness_ids",
             "weight_versions",
+            *LENGTH_REWARD_METADATA_KEYS,
         ]:
             if key not in data:
                 continue
