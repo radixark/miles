@@ -28,8 +28,9 @@ Env vars:
 
 Per-task Daytona sandbox backend (alternative to OPENENV_ENV_URL): every episode
 gets its OWN cloud sandbox built from the task's OFFICIAL image plus an env
-server layer, deleted when the episode ends. The sandbox recipe lives in
-``tb2_task_sandbox`` (sibling module); it bakes the installed ``tbench2_env``
+server layer, deleted when the episode ends. The image recipe lives in
+``tb2_task_recipe`` and its Daytona materialization in ``tb2_task_sandbox``
+(sibling modules); the recipe bakes the installed ``tbench2_env``
 package -- OpenEnv's Terminal-Bench-2 environment package -- into the image,
 so this backend needs the pinned tbench2_env install from the README (canonical
 test.sh scoring and verifier-asset withholding built into the server). Full
@@ -248,7 +249,8 @@ _DEFAULT_ENV_URL = "http://localhost:8003"
 
 # --- Per-task Daytona sandboxes (one per episode) -----------------------------
 # The per-task image recipe (official task image + env server layer) lives in
-# the sibling tb2_task_sandbox module. Each episode materializes it
+# the sibling tb2_task_recipe module; its Daytona materialization in
+# tb2_task_sandbox. Each episode materializes it
 # declaratively from the Image definition, read off the local TB2 checkout
 # (OPENENV_TB2_TASKS_DIR); repeat creates hit Daytona's build cache, and no
 # named snapshot is involved.

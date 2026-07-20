@@ -60,8 +60,9 @@ Docker socket, no shared server to size or babysit, no cross-episode state), at
 the cost of per-episode sandbox creation (~1 min warm; the first episode of each
 task builds its image in ~10 min, cached after that by definition hash).
 
-The sandbox recipe lives in [`tb2_task_sandbox.py`](tb2_task_sandbox.py) (this
-directory). It bakes the **installed** `tbench2_env` package — OpenEnv's
+The image recipe lives in [`tb2_task_recipe.py`](tb2_task_recipe.py), its Daytona
+materialization in [`tb2_task_sandbox.py`](tb2_task_sandbox.py) (this
+directory). The recipe bakes the **installed** `tbench2_env` package — OpenEnv's
 Terminal-Bench-2 environment package, the same one step 2's shared server
 runs — into each task image, and on this backend the adapter scores via the
 standard `evaluate` action, so the install must carry the server-side fixes
