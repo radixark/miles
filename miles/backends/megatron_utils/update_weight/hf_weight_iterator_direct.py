@@ -91,7 +91,7 @@ def _get_megatron_full_params(
     if ep_size > 1:
         handles = []
         for info, param in zip(megatron_local_param_infos, params, strict=False):
-            if ".experts." in info.name:
+            if ".experts." in info.name and ".shared_experts." not in info.name:
                 src_rank = (
                     info.src_rank
                     if info.src_rank in dist.get_process_group_ranks(get_parallel_state().ep.group)
