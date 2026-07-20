@@ -122,14 +122,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         if pbar:
             pbar.update(1)
 
-    def _update_lora_weight_implementation(
-        self,
-        named_tensors: list[tuple[str, torch.Tensor]],
-        *,
-        lora_name: str = LORA_ADAPTER_NAME,
-        lora_config: dict | None = None,
-        upsert: bool = False,
-    ) -> None:
+    def _update_lora_weight_implementation(self, named_tensors: list[tuple[str, torch.Tensor]]) -> None:
         """Send adapter metadata over Ray, then broadcast the tensors (src=0).
 
         Reuses the base broadcast group (``self._model_update_groups`` /
@@ -137,16 +130,48 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         sharing the NCCL communicator is safe. No CUDA IPC, so it works across
         nodes: the engine allocates buffers from the metadata and broadcast-receives
         in order.
-
-        ``lora_name`` / ``lora_config`` default to the single-adapter values; the
-        multi-LoRA path passes the per-adapter name and config (carrying that
-        adapter's own ``r`` / ``lora_alpha``). ``upsert`` switches the
-        engine RPC to an in-place weight overwrite of an already-loaded adapter
-        (no unload/register); this is the update path for the fixed multi-LoRA
-        pool, where every adapter is loaded once and then refreshed in place.
         """
-        if lora_config is None:
-            lora_config = self._lora_config
+        names = [name for name, _ in named_tensors]
+        dtypes = [param.dtype for _, param in named_tensors]
+        shapes = [list(param.shape) for _, param in named_tensors]
+
+        refs = [
+            engine.load_lora_adapter_from_distributed.remote(
+                lora_name=LORA_ADAPTER_NAME,
+                config_dict=self._lora_config,
+                names=names,
+                dtypes=dtypes,
+                shapes=shapes,
+                group_name=self._group_name,
+            )
+            for engine in self.rollout_engines
+        ]
+        handles = [
+            dist.broadcast(param.data, 0, group=self._model_update_groups, async_op=True) for _, param in named_tensors
+        ]
+        for handle in handles:
+            handle.wait()
+
+        _check_weight_sync_results(ray.get(refs), is_lora=True)
+
+    def _update_multi_lora_weight_implementation(
+        self,
+        named_tensors: list[tuple[str, torch.Tensor]],
+        *,
+        lora_name: str,
+        lora_config: dict,
+        upsert: bool = True,
+    ) -> None:
+        """Multi-LoRA variant of ``_update_lora_weight_implementation`` (kept
+        separate so the single-adapter path stays untouched; the transport is
+        the same metadata-over-Ray + NCCL broadcast sequence).
+
+        Differences from the single-adapter path: ``lora_name`` is the
+        adapter's slot name (``__miles_slot_{N}``), ``lora_config`` carries the
+        adapter's own ``r`` / ``lora_alpha``, and ``upsert`` overwrites the
+        already-loaded adapter's weights in place (no unload/register) — the
+        update path for the fixed multi-LoRA pool.
+        """
         names = [name for name, _ in named_tensors]
         dtypes = [param.dtype for _, param in named_tensors]
         shapes = [list(param.shape) for _, param in named_tensors]

@@ -50,13 +50,14 @@ class DistBucketedWeightUpdateMixin:
         self._update_weight_implementation(converted_named_tensors, pbar) -> None
             Transfer a bucket of HF-format ``(name, tensor)`` pairs to rollout
             engines (via NCCL broadcast, p2p write, etc.).
-        self._update_lora_weight_implementation(named_tensors, *, lora_name, lora_config) -> None
-            Transfer one LoRA adapter (HF-format ``(name, tensor)`` pairs) to
+        self._update_lora_weight_implementation(named_tensors) -> None
+            Transfer the full LoRA adapter (HF-format ``(name, tensor)`` pairs) to
             rollout engines. Only required when ``is_lora``; the
-            unload-before-reload is handled by ``_update_lora_weights`` /
-            ``_send_one_multi_lora_adapter``. ``lora_name`` / ``lora_config``
-            default to the single-adapter values and are overridden per adapter
-            in the multi-LoRA path.
+            unload-before-reload is handled by ``_update_lora_weights``.
+        self._update_multi_lora_weight_implementation(named_tensors, *, lora_name, lora_config, upsert) -> None
+            Multi-LoRA variant: transfers one adapter under its per-slot engine
+            name with the adapter's own config, upserting in place. Only
+            required when multi-LoRA is enabled.
     """
 
     def _init_lora(
@@ -304,7 +305,7 @@ class DistBucketedWeightUpdateMixin:
 
         from miles.utils.multi_lora import slot_lora_name
 
-        self._update_lora_weight_implementation(
+        self._update_multi_lora_weight_implementation(
             accumulated_named_tensors,
             lora_name=slot_lora_name(adapter.slot),
             lora_config=lora_config,
