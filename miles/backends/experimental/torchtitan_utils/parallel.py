@@ -35,7 +35,9 @@ def create_torchtitan_parallel_state(args: Namespace):
         world_size=world_size,
     )
     parallel_dims.build_mesh()
-    dp_mesh = parallel_dims.get_mesh("dp")
+    # torchtitan names the flattened dp_replicate x dp_shard dim "batch" (parallel_dims.py:390),
+    # not "dp" — "fsdp" alone would be wrong once dp_replicate>1 lands.
+    dp_mesh = parallel_dims.get_mesh("batch")
 
     tp_size = args.tt_tensor_parallel_size
     tp_group = parallel_dims.get_mesh("tp").get_group() if tp_size > 1 else dist.new_group([rank])
