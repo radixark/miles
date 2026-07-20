@@ -160,7 +160,6 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         *,
         lora_name: str,
         lora_config: dict,
-        upsert: bool = True,
     ) -> None:
         """Multi-LoRA variant of ``_update_lora_weight_implementation`` (kept
         separate so the single-adapter path stays untouched; the transport is
@@ -168,15 +167,14 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
 
         Differences from the single-adapter path: ``lora_name`` is the
         adapter's slot name (``__miles_slot_{N}``), ``lora_config`` carries the
-        adapter's own ``r`` / ``lora_alpha``, and ``upsert`` overwrites the
-        already-loaded adapter's weights in place (no unload/register) — the
-        update path for the fixed multi-LoRA pool.
+        adapter's own ``r`` / ``lora_alpha``, and the RPC always upserts —
+        insert-or-overwrite in place, no unload/register — which is both the
+        first load and the refresh path for the fixed multi-LoRA pool.
         """
         names = [name for name, _ in named_tensors]
         dtypes = [param.dtype for _, param in named_tensors]
         shapes = [list(param.shape) for _, param in named_tensors]
 
-        extra_kwargs = {"upsert": True} if upsert else {}
         refs = [
             engine.load_lora_adapter_from_distributed.remote(
                 lora_name=lora_name,
@@ -185,7 +183,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                 dtypes=dtypes,
                 shapes=shapes,
                 group_name=self._group_name,
-                **extra_kwargs,
+                upsert=True,
             )
             for engine in self.rollout_engines
         ]
