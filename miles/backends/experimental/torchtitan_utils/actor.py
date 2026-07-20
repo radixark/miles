@@ -119,6 +119,13 @@ class TorchTitanTrainRayActor(TrainRayActor):
             args=self.args,
         )
         self.spec = spec
+        # Qwen35Model.forward dereferences special_tokens["image_id"/"video_id"] unconditionally
+        # in _prepare_multimodal_embeds, even for text-only forwards with no pixel_values.
+        self.special_tokens = (
+            {"image_id": hf.get("image_token_id", -1), "video_id": hf.get("video_token_id", -1)}
+            if spec.name == "qwen3_5"
+            else None
+        )
         self.model.train()
 
         self.optimizer, self.lr_scheduler = build_optimizer_and_lr_scheduler(
@@ -172,11 +179,14 @@ class TorchTitanTrainRayActor(TrainRayActor):
         checkpoint.save(self, rollout_id)
 
     def _get_model_inputs_args(self, batch: dict) -> dict:
-        return {
+        model_args = {
             "tokens": batch["tokens"],
             "positions": batch["position_ids"],
             "attention_masks": self.model.get_attention_masks(batch["position_ids"]),
         }
+        if self.special_tokens is not None:
+            model_args["special_tokens"] = self.special_tokens
+        return model_args
 
     def _compute_log_prob(self, model_tag, data_iterator, num_microbatches, store_prefix: str = ""):
         forward_data_store = []

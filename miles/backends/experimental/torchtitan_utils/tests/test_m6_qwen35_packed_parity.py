@@ -60,6 +60,7 @@ def run(hf_dir: str) -> int:
     model, adapter = build_and_load_model(spec, hf_dir, parallel_dims=parallel_dims, seq_len=seq_len, args=args, device=device)
     _load_hf_checkpoint(model, adapter, hf_dir)
     model.eval()
+    special_tokens = {"image_id": hf.get("image_token_id", -1), "video_id": hf.get("video_token_id", -1)}
 
     from transformers import AutoTokenizer
 
@@ -76,7 +77,10 @@ def run(hf_dir: str) -> int:
 
     with torch.no_grad():
         packed_logits = model(
-            tokens=tokens_packed, positions=positions_packed, attention_masks=model.get_attention_masks(positions_packed)
+            tokens=tokens_packed,
+            positions=positions_packed,
+            attention_masks=model.get_attention_masks(positions_packed),
+            special_tokens=special_tokens,
         ).float()
 
     if rank == 0:
@@ -91,6 +95,7 @@ def run(hf_dir: str) -> int:
                     tokens=separate_tokens,
                     positions=separate_positions,
                     attention_masks=model.get_attention_masks(separate_positions),
+                    special_tokens=special_tokens,
                 ).float()
 
             packed_lp = torch.log_softmax(packed_logits[0, offset : offset + n], dim=-1)

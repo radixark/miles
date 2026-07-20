@@ -44,6 +44,8 @@ def run(hf_dir: str) -> int:
     model, adapter = build_and_load_model(spec, hf_dir, parallel_dims=parallel_dims, seq_len=seq_len, args=args, device=device)
     _load_hf_checkpoint(model, adapter, hf_dir)
     model.eval()
+    # Qwen35Model.forward dereferences special_tokens["image_id"/"video_id"] unconditionally.
+    special_tokens = {"image_id": hf.get("image_token_id", -1), "video_id": hf.get("video_token_id", -1)}
 
     from transformers import AutoTokenizer
 
@@ -54,7 +56,9 @@ def run(hf_dir: str) -> int:
     positions = torch.arange(n).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        logits = model(tokens=tokens, positions=positions, attention_masks=model.get_attention_masks(positions)).float()
+        logits = model(
+            tokens=tokens, positions=positions, attention_masks=model.get_attention_masks(positions), special_tokens=special_tokens
+        ).float()
 
     if rank == 0:
         from transformers import AutoModelForCausalLM
