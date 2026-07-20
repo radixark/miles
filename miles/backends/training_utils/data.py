@@ -146,6 +146,10 @@ def get_batch(
     parallel_state = get_parallel_state()
 
     assert "tokens" in keys
+    # get_batch consumes adapter_slots itself (per-adapter token counts below);
+    # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
+    if "adapter_slots" not in keys:
+        keys = [*keys, "adapter_slots"]
     batch = data_iterator.get_next(keys)
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
