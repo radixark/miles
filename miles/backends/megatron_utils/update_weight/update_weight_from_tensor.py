@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
@@ -367,8 +368,6 @@ def _send_to_colocated_engine(
 
             expected_checksums = None
             if check_equal:
-                import hashlib
-
                 expected_checksums = {
                     n: hashlib.sha256(
                         t.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()
