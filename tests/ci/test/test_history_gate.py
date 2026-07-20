@@ -107,7 +107,7 @@ def test_non_finite_at_gated_coordinate_errors_and_untrusts(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="train/grad_norm",
-                         steps="last", constraint={"rel": 0.20})
+                         steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     # Capture-side marker for a NaN at the last (gated) step: ERROR, not a
@@ -130,7 +130,7 @@ def test_cold_start_vacuously_trusted(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="train/grad_norm",
-                         steps="last", constraint={"rel": 0.20})
+                         steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     record = _write_record(tmp_path, {"train/grad_norm": [[0, 0.9]]})
@@ -157,7 +157,7 @@ def test_historical_failure(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="last", constraint={"rel": 0.20})
+                         steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     # Seed a trusted baseline around 0.80 under the `last` coordinate.
@@ -166,7 +166,7 @@ def test_historical_failure(tmp_path, store):
         test_file,
         metric_key="rollout/raw_reward",
         steps_key=LAST_KEY,
-        constraint_key=_key({"rel": 0.20}),
+        constraint_key=_key({"rel_up": 0.20, "rel_down": 0.20}),
         step=-1,
         values=[0.80, 0.82, 0.78],
     )
@@ -186,7 +186,7 @@ def test_historical_pass_within_tolerance(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="last", constraint={"rel": 0.20})
+                         steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     _seed_baseline(
@@ -194,7 +194,7 @@ def test_historical_pass_within_tolerance(tmp_path, store):
         test_file,
         metric_key="rollout/raw_reward",
         steps_key=LAST_KEY,
-        constraint_key=_key({"rel": 0.20}),
+        constraint_key=_key({"rel_up": 0.20, "rel_down": 0.20}),
         step=-1,
         values=[0.80, 0.82, 0.78],
     )
@@ -211,7 +211,7 @@ def test_drift_beyond_historical_band_not_trusted(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="train/grad_norm",
-                         steps="last", constraint={"rel": 0.50})
+                         steps="last", constraint={"rel_up": 0.50, "rel_down": 0.50})
         """,
     )
     _seed_baseline(
@@ -219,7 +219,7 @@ def test_drift_beyond_historical_band_not_trusted(tmp_path, store):
         test_file,
         metric_key="train/grad_norm",
         steps_key=LAST_KEY,
-        constraint_key=_key({"rel": 0.50}),
+        constraint_key=_key({"rel_up": 0.50, "rel_down": 0.50}),
         step=-1,
         values=[1.0, 1.0, 1.0],
     )
@@ -241,7 +241,7 @@ def test_all_fans_out_one_result_per_step(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="train/grad_norm",
-                         steps="all", constraint={"rel": 0.50})
+                         steps="all", constraint={"rel_up": 0.50, "rel_down": 0.50})
         """,
     )
     record = _write_record(tmp_path, {"train/grad_norm": [[0, 0.9], [1, 1.1]]})
@@ -261,10 +261,10 @@ def test_all_reads_per_step_baselines(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="train/ppo_kl",
-                         steps="all", constraint={"rel": 0.90})
+                         steps="all", constraint={"rel_up": 0.90, "rel_down": 0.90})
         """,
     )
-    kl_rule = _key({"rel": 0.90})
+    kl_rule = _key({"rel_up": 0.90, "rel_down": 0.90})
     _seed_baseline(
         store,
         test_file,
@@ -299,7 +299,7 @@ def test_all_one_bad_step_untrusts_run(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="train/grad_norm",
-                         steps="all", constraint={"rel": 0.20})
+                         steps="all", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     _seed_baseline(
@@ -307,7 +307,7 @@ def test_all_one_bad_step_untrusts_run(tmp_path, store):
         test_file,
         metric_key="train/grad_norm",
         steps_key=_key("all"),
-        constraint_key=_key({"rel": 0.20}),
+        constraint_key=_key({"rel_up": 0.20, "rel_down": 0.20}),
         step=0,
         values=[1.0, 1.0],
     )
@@ -316,7 +316,7 @@ def test_all_one_bad_step_untrusts_run(tmp_path, store):
         test_file,
         metric_key="train/grad_norm",
         steps_key=_key("all"),
-        constraint_key=_key({"rel": 0.20}),
+        constraint_key=_key({"rel_up": 0.20, "rel_down": 0.20}),
         step=1,
         values=[1.0, 1.0],
     )
@@ -335,9 +335,9 @@ def test_all_and_explicit_steps_have_separate_coordinates(tmp_path, store):
     # a steps=[0] gate both judge step 0's value, but each owns its own series.
     gate_lines = """
         register_ci_gate(metric_key="train/ppo_kl",
-                         steps="all", constraint={"rel": 0.50})
+                         steps="all", constraint={"rel_up": 0.50, "rel_down": 0.50})
         register_ci_gate(metric_key="train/ppo_kl",
-                         steps=[0], constraint={"rel": 0.50})
+                         steps=[0], constraint={"rel_up": 0.50, "rel_down": 0.50})
     """
     test_file = _write_test_file(tmp_path, gate_lines)
     _seed_baseline(
@@ -345,7 +345,7 @@ def test_all_and_explicit_steps_have_separate_coordinates(tmp_path, store):
         test_file,
         metric_key="train/ppo_kl",
         steps_key=_key("all"),
-        constraint_key=_key({"rel": 0.50}),
+        constraint_key=_key({"rel_up": 0.50, "rel_down": 0.50}),
         step=0,
         values=[0.1, 0.1],
     )
@@ -364,9 +364,9 @@ def test_rule_is_part_of_coordinate(tmp_path, store):
     # so each judges against its own baseline series.
     gate_lines = """
         register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="last", constraint={"rel": 0.50})
+                         steps="last", constraint={"rel_up": 0.50, "rel_down": 0.50})
         register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="last", constraint={"rel": 0.01})
+                         steps="last", constraint={"rel_up": 0.01, "rel_down": 0.01})
     """
     test_file = _write_test_file(tmp_path, gate_lines)
     _seed_baseline(
@@ -374,7 +374,7 @@ def test_rule_is_part_of_coordinate(tmp_path, store):
         test_file,
         metric_key="rollout/raw_reward",
         steps_key=LAST_KEY,
-        constraint_key=_key({"rel": 0.50}),
+        constraint_key=_key({"rel_up": 0.50, "rel_down": 0.50}),
         step=-1,
         values=[1.0, 1.0, 1.0],
     )
@@ -401,7 +401,7 @@ def test_near_zero_not_flagged_on_relative_pct(tmp_path, store):
         """
         register_ci_gate(metric_key="train/ppo_kl",
                          steps=[0],
-                         constraint={"abs_floor": 1e-6, "rel": 0.20})
+                         constraint={"rel_up": 0.20, "abs_floor_up": 1e-6, "rel_down": 0.20, "abs_floor_down": 1e-6})
         """,
     )
     # Seed a near-zero baseline; current also near-zero but 100x in relative terms.
@@ -410,7 +410,7 @@ def test_near_zero_not_flagged_on_relative_pct(tmp_path, store):
         test_file,
         metric_key="train/ppo_kl",
         steps_key=_key([0]),
-        constraint_key=_key({"abs_floor": 1e-6, "rel": 0.20}),
+        constraint_key=_key({"rel_up": 0.20, "abs_floor_up": 1e-6, "rel_down": 0.20, "abs_floor_down": 1e-6}),
         step=0,
         values=[1e-9, 2e-9, 1e-9],
     )
@@ -432,7 +432,7 @@ def test_near_zero_real_jump_is_flagged(tmp_path, store):
         """
         register_ci_gate(metric_key="train/ppo_kl",
                          steps=[0],
-                         constraint={"abs_floor": 1e-6, "rel": 0.20})
+                         constraint={"rel_up": 0.20, "abs_floor_up": 1e-6, "rel_down": 0.20, "abs_floor_down": 1e-6})
         """,
     )
     _seed_baseline(
@@ -440,7 +440,7 @@ def test_near_zero_real_jump_is_flagged(tmp_path, store):
         test_file,
         metric_key="train/ppo_kl",
         steps_key=_key([0]),
-        constraint_key=_key({"abs_floor": 1e-6, "rel": 0.20}),
+        constraint_key=_key({"rel_up": 0.20, "abs_floor_up": 1e-6, "rel_down": 0.20, "abs_floor_down": 1e-6}),
         step=0,
         values=[1e-9, 2e-9, 1e-9],
     )
@@ -458,7 +458,7 @@ def test_missing_required_series_verdict_not_crash(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="last", constraint={"rel": 0.20})
+                         steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     # Record carries a different metric only.
@@ -477,7 +477,7 @@ def test_empty_required_series_verdict(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="last", constraint={"rel": 0.20})
+                         steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     record = _write_record(tmp_path, {"rollout/raw_reward": []})
@@ -495,7 +495,7 @@ def test_all_null_step_is_error_verdict(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="train/grad_norm",
-                         steps="all", constraint={"rel": 0.20})
+                         steps="all", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     record = _write_record(tmp_path, {"train/grad_norm": [[0, 1.0], [None, 1.1]]})
@@ -506,16 +506,16 @@ def test_all_null_step_is_error_verdict(tmp_path, store):
     assert result.trusted is False
 
 
-# --- one-sided directions ------------------------------------------------------
+# --- asymmetric corridor ------------------------------------------------------
 
 
-def test_higher_is_worse_drop_passes_increase_fails(tmp_path, store):
+def test_asymmetric_corridor_tight_up_loose_down(tmp_path, store):
     test_file = _write_test_file(
         tmp_path,
         """
         register_ci_gate(metric_key="train/grad_norm",
                          steps="last",
-                         constraint={"rel": 0.10, "direction": "higher_is_worse"})
+                         constraint={"rel_up": 0.10, "rel_down": 0.80})
         """,
     )
     _seed_baseline(
@@ -523,27 +523,34 @@ def test_higher_is_worse_drop_passes_increase_fails(tmp_path, store):
         test_file,
         metric_key="train/grad_norm",
         steps_key=LAST_KEY,
-        constraint_key=_key({"rel": 0.10, "direction": "higher_is_worse"}),
+        constraint_key=_key({"rel_up": 0.10, "rel_down": 0.80}),
         step=-1,
         values=[2.0, 2.0],
     )
-    # A drop well below the baseline mean must pass (one-sided).
-    low = _write_record(tmp_path, {"train/grad_norm": [[0, 0.1]]}, name="low.jsonl")
+    # Corridor [2.0 - 1.6, 2.0 + 0.2] = [0.4, 2.2]. A drop within the loose
+    # lower band passes.
+    low = _write_record(tmp_path, {"train/grad_norm": [[0, 0.5]]}, name="low.jsonl")
     assert evaluate_gate(test_file, low, store).metrics[0].historical_status == GateStatus.PASS
 
-    # A rise beyond band = 0.10*2.0 = 0.2 must fail.
+    # A rise beyond the tight upper band fails.
     high = _write_record(tmp_path, {"train/grad_norm": [[0, 3.0]]}, name="high.jsonl")
     assert evaluate_gate(test_file, high, store).metrics[0].historical_status == GateStatus.FAIL
 
+    # A collapse past the lower band fails too: a "too good" value is suspect
+    # and must not enter the baseline.
+    collapse = _write_record(tmp_path, {"train/grad_norm": [[0, 0.1]]}, name="collapse.jsonl")
+    assert evaluate_gate(test_file, collapse, store).metrics[0].historical_status == GateStatus.FAIL
 
-def test_lower_is_worse_rise_passes_drop_fails(tmp_path, store):
-    # raw_reward regressing means DROPPING: a rise passes, a drop beyond band fails.
+
+def test_reward_corridor_flags_drop_and_suspicious_jump(tmp_path, store):
+    # raw_reward regressing means DROPPING (tight lower band); a jump far
+    # above baseline smells of a broken env / reward hack (loose upper band).
     test_file = _write_test_file(
         tmp_path,
         """
         register_ci_gate(metric_key="rollout/raw_reward",
                          steps="last",
-                         constraint={"rel": 0.10, "direction": "lower_is_worse"})
+                         constraint={"rel_up": 0.50, "rel_down": 0.10})
         """,
     )
     _seed_baseline(
@@ -551,16 +558,19 @@ def test_lower_is_worse_rise_passes_drop_fails(tmp_path, store):
         test_file,
         metric_key="rollout/raw_reward",
         steps_key=LAST_KEY,
-        constraint_key=_key({"rel": 0.10, "direction": "lower_is_worse"}),
+        constraint_key=_key({"rel_up": 0.50, "rel_down": 0.10}),
         step=-1,
-        values=[0.80, 0.80],
+        values=[0.60, 0.60],
     )
-    high = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.95]]}, name="high.jsonl")
-    assert evaluate_gate(test_file, high, store).metrics[0].historical_status == GateStatus.PASS
+    # Corridor [0.54, 0.90]: a genuine improvement passes.
+    ok = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.85]]}, name="ok.jsonl")
+    assert evaluate_gate(test_file, ok, store).metrics[0].historical_status == GateStatus.PASS
 
-    # Drop beyond band = 0.10*0.80 = 0.08 -> 0.70 fails.
-    low = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.70]]}, name="low.jsonl")
+    low = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.50]]}, name="low.jsonl")
     assert evaluate_gate(test_file, low, store).metrics[0].historical_status == GateStatus.FAIL
+
+    jump = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.95]]}, name="jump.jsonl")
+    assert evaluate_gate(test_file, jump, store).metrics[0].historical_status == GateStatus.FAIL
 
 
 # --- multiple specs, no specs ------------------------------------------------
@@ -588,7 +598,7 @@ def test_gate_writes_no_rows(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="all", constraint={"rel": 0.20})
+                         steps="all", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.31]]})
@@ -629,7 +639,7 @@ def test_dual_register_with_gate_uses_supplied_registry(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="last", constraint={"rel": 0.20})
+                         steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.31]]})
@@ -680,7 +690,7 @@ def test_single_register_gate_registry_none_still_reparses(tmp_path, store):
         tmp_path,
         """
         register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="last", constraint={"rel": 0.20})
+                         steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.31]]})

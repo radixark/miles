@@ -48,7 +48,7 @@ PROVENANCE = RunProvenance(
 
 # Canonical-JSON declaration keys, as the parser derives them.
 LAST_STEPS_KEY = '"last"'
-REL_CONSTRAINT_KEY = '{"rel":0.2}'
+REL_CONSTRAINT_KEY = '{"rel_down":0.2,"rel_up":0.2}'
 
 
 def _sample(metric_key, value, *, steps_key=LAST_STEPS_KEY, constraint_key=REL_CONSTRAINT_KEY, step=-1):

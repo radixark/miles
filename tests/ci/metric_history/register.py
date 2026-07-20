@@ -7,8 +7,9 @@
 * A gate composes `steps` (which value(s) to pull from a metric's series:
   `"last"` | `"all"` | a non-empty list of step indices) and a `constraint`
   (the pass/fail rule).
-* `constraint` is a literal dict of band params (`rel` / `abs_floor` /
-  `direction`), validated against the schema in :mod:`constraints`.
+* `constraint` is a literal dict of the two-sided band params (`rel_up` /
+  `abs_floor_up` / `rel_down` / `abs_floor_down`), validated against the
+  schema in :mod:`constraints`.
 * For the captured standard metrics, :data:`GATE_DEFAULTS` supplies `steps`
   and `constraint`: each field a declaration omits is filled from the table at
   parse time, through the same validation, so
@@ -34,7 +35,7 @@ import json
 import math
 from dataclasses import dataclass
 
-from tests.ci.metric_history.constraints import CONSTRAINT_SCHEMA, DIRECTIONS
+from tests.ci.metric_history.constraints import CONSTRAINT_SCHEMA
 
 
 def register_ci_gate(
@@ -52,9 +53,9 @@ def register_ci_gate(
     metric. `steps` picks the
     comparison value(s): `"last"` (the series' last point), `"all"` (every
     step present, fanned out), or a non-empty list of step indices.
-    `constraint` is a literal dict of band params -- see
-    :data:`constraints.CONSTRAINT_SCHEMA`; at least one of `rel` / `abs_floor`
-    must be written. An omitted `steps` / `constraint` is filled from
+    `constraint` is a literal dict of the two-sided band params -- see
+    :data:`constraints.CONSTRAINT_SCHEMA`; each side needs at least one of its
+    `rel` / `abs_floor` written. An omitted `steps` / `constraint` is filled from
     :data:`GATE_DEFAULTS` when `metric_key` has an entry there; the Python
     defaults of None exist only so a one-liner call runs as a no-op -- the
     parser, not this signature, decides validity. `enforce` and
@@ -89,23 +90,23 @@ _FIELDS: dict[str, tuple[bool, object]] = {
 GATE_DEFAULTS: dict[str, dict] = {
     "train/grad_norm": {
         "steps": "last",
-        "constraint": {"rel": 0.5, "abs_floor": 0.1, "direction": "higher_is_worse"},
+        "constraint": {"rel_up": 0.5, "abs_floor_up": 0.1, "rel_down": 0.8, "abs_floor_down": 0.1},
     },
     "train/ppo_kl": {
         "steps": "last",
-        "constraint": {"rel": 0.5, "abs_floor": 0.02, "direction": "higher_is_worse"},
+        "constraint": {"rel_up": 0.5, "abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02},
     },
     "train/train_rollout_logprob_abs_diff": {
         "steps": "last",
-        "constraint": {"rel": 0.5, "abs_floor": 0.02, "direction": "higher_is_worse"},
+        "constraint": {"rel_up": 0.5, "abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02},
     },
     "train/train_rollout_kl": {
         "steps": "last",
-        "constraint": {"rel": 0.5, "abs_floor": 0.02, "direction": "higher_is_worse"},
+        "constraint": {"rel_up": 0.5, "abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02},
     },
     "rollout/raw_reward": {
         "steps": "last",
-        "constraint": {"rel": 0.2, "abs_floor": 0.05, "direction": "lower_is_worse"},
+        "constraint": {"rel_up": 0.5, "abs_floor_up": 0.05, "rel_down": 0.2, "abs_floor_down": 0.05},
     },
 }
 
@@ -181,10 +182,6 @@ def _validate_param(validator: str, value: object) -> object:
         if not math.isfinite(value) or value < 0:
             raise _ParseError("must be a finite number >= 0")
         return float(value)
-    if validator == "direction":
-        if value not in DIRECTIONS:
-            raise _ParseError(f"must be one of {list(DIRECTIONS)}")
-        return value
     if validator == "step_list":
         if not isinstance(value, list) or not value:
             raise _ParseError("must be a non-empty list of step indices")
@@ -203,16 +200,18 @@ def _validate_param(validator: str, value: object) -> object:
 
 def _normalize_constraint(raw: object) -> dict:
     """Validate the constraint literal against `CONSTRAINT_SCHEMA` and return
-    a normalized dict (validated params + filled defaults). At least one band
-    param (`rel` / `abs_floor`) must be written -- an all-default band is 0
-    and would fail on any deviation."""
+    a normalized dict (validated params + filled defaults). Each side needs at
+    least one written band param -- an all-default side has band 0 and would
+    fail on any deviation."""
     if not isinstance(raw, dict):
         raise _ParseError("constraint must be a dict")
     for key in raw:
         if key not in CONSTRAINT_SCHEMA:
             raise _ParseError(f"unknown key {key!r} for constraint; valid: {sorted(CONSTRAINT_SCHEMA)}")
-    if "rel" not in raw and "abs_floor" not in raw:
-        raise _ParseError("constraint requires at least one band param ('rel' or 'abs_floor')")
+    if "rel_up" not in raw and "abs_floor_up" not in raw:
+        raise _ParseError("constraint requires at least one upper band param ('rel_up' or 'abs_floor_up')")
+    if "rel_down" not in raw and "abs_floor_down" not in raw:
+        raise _ParseError("constraint requires at least one lower band param ('rel_down' or 'abs_floor_down')")
     normalized: dict = {}
     for param, (validator, required, default) in CONSTRAINT_SCHEMA.items():
         if param in raw:

@@ -212,7 +212,7 @@ def _evaluate_spec(
             if not hist.ok:
                 reasons.append(
                     f"historical: cur={ex.value:.6g} vs mean={baseline_mean:.6g} "
-                    f"(n={len(trusted_values)}) exceeds band={hist.band:.6g}"
+                    f"(n={len(trusted_values)}) outside [{hist.lo:.6g}, {hist.hi:.6g}]"
                 )
 
         if historical_status in (GateStatus.PASS, GateStatus.INACTIVE):

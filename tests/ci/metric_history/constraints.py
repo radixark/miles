@@ -4,15 +4,17 @@
 * A constraint decides whether one extracted scalar `cur` passes against a
   reference `ref` -- the mean of the trusted baseline for the historical
   gate.
-* One symmetric band family, no name dispatch:
-  `band = max(rel * |cur|, rel * |ref|, abs_floor)`. `rel` is a relative
-  percentage; scaling from both magnitudes makes operand order irrelevant,
-  while `abs_floor` keeps metrics near zero from flagging on a meaningless
-  relative percentage.
-* `direction` narrows what counts as a failure: `two_sided` -- any
-  deviation beyond the band fails; `higher_is_worse` -- only an increase
-  beyond the band fails (a drop passes); `lower_is_worse` -- only a decrease
-  beyond the band fails (a rise passes).
+* Every constraint is two-sided: `cur` must land in the corridor
+  `[ref - band_down, ref + band_up]`. There is no unbounded side -- a value
+  far from baseline in the "improving" direction is usually a broken metric,
+  and a passing run's values become future baselines, so admitting it would
+  drag the mean. A side meant to be lenient gets a wide band, not no band.
+* Each side's band scales from the reference only:
+  `band = max(rel * |ref|, abs_floor)`, so `rel_up = 0.5` reads as "at most
+  50% above the baseline mean". Scaling from `cur` would let a deviating
+  value widen its own tolerance (at rel 0.5 the effective ceiling is 2x ref,
+  not 1.5x). `abs_floor` keeps metrics near zero from flagging on a
+  meaningless relative percentage.
 * The declaration literal is validated against :data:`CONSTRAINT_SCHEMA` at
   parse time; `evaluate_constraint` expects the normalized dict (defaults
   filled). The literal as written is the spec's `constraint_key`, part of the
@@ -23,37 +25,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-DIRECTIONS = ("two_sided", "higher_is_worse", "lower_is_worse")
-
 
 @dataclass(frozen=True)
 class ConstraintOutcome:
-    """Whether `cur` passed, and the tolerance band that was applied."""
+    """Whether `cur` passed, and the corridor `[lo, hi]` it was judged against."""
 
     ok: bool
-    band: float
-
-
-def _within(cur: float, ref: float, band: float, direction: str) -> bool:
-    if direction == "higher_is_worse":
-        return (cur - ref) <= band
-    if direction == "lower_is_worse":
-        return (ref - cur) <= band
-    return abs(cur - ref) <= band
+    lo: float
+    hi: float
 
 
 # Parse-time param schema, consumed by register.py. Each entry:
 # param -> (validator_key, required, default). A declaration must write at
-# least one band param (`rel` / `abs_floor`) -- the parser enforces it, since
-# an all-default band of 0 fails on any deviation.
+# least one band param per side -- the parser enforces it, since an
+# all-default side has band 0 and fails on any deviation.
 CONSTRAINT_SCHEMA: dict[str, tuple[str, bool, object]] = {
-    "rel": ("float_nonneg", False, 0.0),
-    "abs_floor": ("float_nonneg", False, 0.0),
-    "direction": ("direction", False, "two_sided"),
+    "rel_up": ("float_nonneg", False, 0.0),
+    "abs_floor_up": ("float_nonneg", False, 0.0),
+    "rel_down": ("float_nonneg", False, 0.0),
+    "abs_floor_down": ("float_nonneg", False, 0.0),
 }
 
 
 def evaluate_constraint(constraint: dict, cur: float, ref: float) -> ConstraintOutcome:
     """Apply a normalized constraint dict to `cur` vs `ref`."""
-    band = max(constraint["rel"] * abs(cur), constraint["rel"] * abs(ref), constraint["abs_floor"])
-    return ConstraintOutcome(_within(cur, ref, band, constraint["direction"]), band)
+    hi = ref + max(constraint["rel_up"] * abs(ref), constraint["abs_floor_up"])
+    lo = ref - max(constraint["rel_down"] * abs(ref), constraint["abs_floor_down"])
+    return ConstraintOutcome(lo <= cur <= hi, lo, hi)

@@ -32,7 +32,7 @@ register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 # Canonical declaration keys for the `last` + rel-0.20 fixtures below.
 LAST_KEY = json.dumps("last", sort_keys=True, separators=(",", ":"))
-REL20_KEY = json.dumps({"rel": 0.20}, sort_keys=True, separators=(",", ":"))
+REL20_KEY = json.dumps({"rel_up": 0.20, "rel_down": 0.20}, sort_keys=True, separators=(",", ":"))
 
 _GITHUB_ENV_VARS = (
     "GITHUB_EVENT_NAME",
@@ -189,7 +189,7 @@ class TestPassingAttemptSelection:
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
             """,
         )
         registry = _registry(test_file)
@@ -225,7 +225,7 @@ class TestNightlyWrite:
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
             """,
         )
         registry = _registry(test_file)
@@ -279,7 +279,7 @@ class TestNightlyWrite:
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
             """,
         )
         registry = _registry(test_file)
@@ -347,9 +347,9 @@ class TestNightlyWrite:
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel": 0.20},
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20},
                              enforce=True)
             """,
         )
@@ -384,7 +384,7 @@ class TestPrShadow:
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
             """,
         )
         registry = _registry(test_file)
@@ -424,7 +424,7 @@ class TestNeverBlocks:
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
             """,
         )
         registry = _registry(test_file)
@@ -458,7 +458,7 @@ class TestNeverBlocks:
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
             """,
         )
         registry = _registry(test_file)
@@ -486,7 +486,7 @@ class TestNeverBlocks:
             tmp_path,
             """
             register_ci_gate(metric_key="rollout/raw_reward",
-                             steps="last", constraint={"rel": 0.20})
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
             """,
         )
         registry = _registry(test_file)
@@ -524,7 +524,7 @@ def test_hook_signature_matches_metric_sample_contract(tmp_path, store, monkeypa
         tmp_path,
         """
         register_ci_gate(metric_key="rollout/raw_reward",
-                         steps="last", constraint={"rel": 0.20})
+                         steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
         """,
     )
     registry = _registry(test_file)

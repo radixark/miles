@@ -96,45 +96,45 @@ def test_steps_missing_named_step_errors():
 # --- constraints --------------------------------------------------------------
 
 
-def test_rel_two_sided():
-    c = {"rel": 0.20, "abs_floor": 0.0, "direction": "two_sided"}
+def test_symmetric_corridor():
+    c = {"rel_up": 0.20, "abs_floor_up": 0.0, "rel_down": 0.20, "abs_floor_down": 0.0}
     assert evaluate_constraint(c, 1.1, 1.0).ok
     assert not evaluate_constraint(c, 1.3, 1.0).ok
     assert not evaluate_constraint(c, 0.7, 1.0).ok
 
 
-def test_rel_band_is_symmetric_across_both_operands():
-    c = {"rel": 0.20, "abs_floor": 0.0, "direction": "two_sided"}
-    forward = evaluate_constraint(c, 1.21, 1.0)
-    reverse = evaluate_constraint(c, 1.0, 1.21)
-    assert forward.ok and reverse.ok
-    assert forward.band == pytest.approx(0.242)
-    assert reverse.band == pytest.approx(forward.band)
+def test_band_scales_from_ref_only():
+    # The tolerance is fixed by history: a deviating cur must not widen its
+    # own band (a max over both magnitudes would pass 0.99 here, an effective
+    # ceiling of 2x ref instead of the declared 1.5x).
+    c = {"rel_up": 0.50, "abs_floor_up": 0.0, "rel_down": 0.50, "abs_floor_down": 0.0}
+    assert evaluate_constraint(c, 0.74, 0.5).ok
+    assert not evaluate_constraint(c, 0.76, 0.5).ok
+    assert not evaluate_constraint(c, 0.99, 0.5).ok
 
 
 def test_abs_floor_covers_near_zero():
-    # Both values near zero make the relative band vanish; the floor remains.
-    c = {"abs_floor": 1e-6, "rel": 0.20, "direction": "two_sided"}
+    # A reference near zero makes the relative band vanish; the floor remains.
+    c = {"rel_up": 0.20, "abs_floor_up": 1e-6, "rel_down": 0.20, "abs_floor_down": 1e-6}
     assert evaluate_constraint(c, 1e-7, 0.0).ok
     assert not evaluate_constraint(c, 0.5, 0.0).ok
 
 
-def test_abs_band_is_max_of_rel_and_floor():
-    c = {"abs_floor": 0.1, "rel": 0.20, "direction": "two_sided"}
-    assert evaluate_constraint(c, 0.55, 0.5).band == pytest.approx(0.11)
-    assert evaluate_constraint(c, 0.4, 0.5).band == pytest.approx(0.1)
+def test_each_side_band_is_max_of_rel_and_floor():
+    c = {"rel_up": 0.30, "abs_floor_up": 0.1, "rel_down": 0.10, "abs_floor_down": 0.1}
+    out = evaluate_constraint(c, 0.5, 0.5)
+    assert out.hi == pytest.approx(0.65)  # rel side wins: 0.3*0.5 > 0.1
+    assert out.lo == pytest.approx(0.4)  # floor wins: 0.1*0.5 < 0.1
 
 
-def test_higher_is_worse_one_sided():
-    c = {"rel": 0.10, "abs_floor": 0.0, "direction": "higher_is_worse"}
-    assert evaluate_constraint(c, 0.1, 2.0).ok  # any drop passes
-    assert not evaluate_constraint(c, 2.3, 2.0).ok  # rise beyond band fails
-
-
-def test_lower_is_worse_one_sided():
-    c = {"rel": 0.10, "abs_floor": 0.0, "direction": "lower_is_worse"}
-    assert evaluate_constraint(c, 3.0, 2.0).ok  # any rise passes
-    assert not evaluate_constraint(c, 1.7, 2.0).ok  # drop beyond band fails
+def test_asymmetric_sides():
+    # Tight upper band, loose-but-finite lower band: a moderate drop passes,
+    # a rise beyond band and a collapse far below both fail.
+    c = {"rel_up": 0.10, "abs_floor_up": 0.0, "rel_down": 0.80, "abs_floor_down": 0.0}
+    assert evaluate_constraint(c, 2.1, 2.0).ok
+    assert not evaluate_constraint(c, 2.3, 2.0).ok
+    assert evaluate_constraint(c, 0.5, 2.0).ok
+    assert not evaluate_constraint(c, 0.3, 2.0).ok
 
 
 # --- register_ci_gate parsing -----------------------------------------------
@@ -155,7 +155,7 @@ def test_parse_single_spec_with_defaults(tmp_path):
         register_ci_gate(
             metric_key="train/grad_norm",
             steps="all",
-            constraint={"rel": 0.20},
+            constraint={"rel_up": 0.20, "rel_down": 0.20},
         )
         """,
         tmp_path,
@@ -165,8 +165,7 @@ def test_parse_single_spec_with_defaults(tmp_path):
     s = specs[0]
     assert s.metric_key == "train/grad_norm"
     assert s.steps == "all"
-    # direction defaults to two_sided.
-    assert s.constraint == {"rel": 0.20, "abs_floor": 0.0, "direction": "two_sided"}
+    assert s.constraint == {"rel_up": 0.20, "abs_floor_up": 0.0, "rel_down": 0.20, "abs_floor_down": 0.0}
     assert s.enforce is False
     assert s.allowlist_reason is None
     assert s.filename == path
@@ -179,7 +178,7 @@ def test_parse_all_fields(tmp_path):
         register_ci_gate(
             metric_key="train/ppo_kl",
             steps=[0, 1],
-            constraint={"abs_floor": 1e-6, "rel": 0.5, "direction": "higher_is_worse"},
+            constraint={"abs_floor_up": 1e-6, "rel_up": 0.5, "rel_down": 0.8},
             enforce=True,
             allowlist_reason="known noisy",
         )
@@ -188,7 +187,7 @@ def test_parse_all_fields(tmp_path):
     )
     s = parse_ci_gate_specs(path)[0]
     assert s.steps == [0, 1]
-    assert s.constraint == {"abs_floor": 1e-6, "rel": 0.5, "direction": "higher_is_worse"}
+    assert s.constraint == {"rel_up": 0.5, "abs_floor_up": 1e-6, "rel_down": 0.8, "abs_floor_down": 0.0}
     assert s.enforce is True
     assert s.allowlist_reason == "known noisy"
 
@@ -201,34 +200,34 @@ def test_declaration_keys_are_canonical_json(tmp_path):
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/ppo_kl",
                          steps=[0,  1],
-                         constraint={"abs_floor": 0.02})
+                         constraint={"abs_floor_up": 0.02, "abs_floor_down": 0.02})
         register_ci_gate(metric_key="train/x", steps="last",
-                         constraint={"rel": 0.2})
+                         constraint={"rel_up": 0.2, "rel_down": 0.2})
         """,
         tmp_path,
     )
     fanned, reduced = parse_ci_gate_specs(path)
     assert fanned.steps_key == "[0,1]"
-    assert fanned.constraint_key == '{"abs_floor":0.02}'
+    assert fanned.constraint_key == '{"abs_floor_down":0.02,"abs_floor_up":0.02}'
     assert reduced.steps_key == '"last"'
 
 
 def test_declaration_keys_use_raw_literal_not_normalized(tmp_path):
-    # The normalized constraint fills defaults (rel, direction) from code; the
-    # key must come from the literal as written, so a code-side default change
+    # The normalized constraint fills the omitted params from code; the key
+    # must come from the literal as written, so a code-side default change
     # can never silently rewrite keys and reset every series.
     path = _make_fixture(
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
-                         steps="last", constraint={"rel": 0.2})
+                         steps="last", constraint={"rel_up": 0.2, "rel_down": 0.2})
         """,
         tmp_path,
     )
     s = parse_ci_gate_specs(path)[0]
-    assert s.constraint == {"rel": 0.2, "abs_floor": 0.0, "direction": "two_sided"}
-    assert s.constraint_key == '{"rel":0.2}'
-    assert "direction" not in s.constraint_key
+    assert s.constraint == {"rel_up": 0.2, "abs_floor_up": 0.0, "rel_down": 0.2, "abs_floor_down": 0.0}
+    assert s.constraint_key == '{"rel_down":0.2,"rel_up":0.2}'
+    assert "abs_floor" not in s.constraint_key
 
 
 def test_abs_optional_rel_defaults_to_zero(tmp_path):
@@ -238,13 +237,13 @@ def test_abs_optional_rel_defaults_to_zero(tmp_path):
         register_ci_gate(
             metric_key="train/ppo_kl",
             steps="last",
-            constraint={"abs_floor": 1e-6},
+            constraint={"abs_floor_up": 1e-6, "abs_floor_down": 1e-6},
         )
         """,
         tmp_path,
     )
     s = parse_ci_gate_specs(path)[0]
-    assert s.constraint == {"abs_floor": 1e-6, "rel": 0.0, "direction": "two_sided"}
+    assert s.constraint == {"rel_up": 0.0, "abs_floor_up": 1e-6, "rel_down": 0.0, "abs_floor_down": 1e-6}
 
 
 def test_parse_multiple_specs(tmp_path):
@@ -252,10 +251,10 @@ def test_parse_multiple_specs(tmp_path):
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/grad_norm",
-                         steps="all", constraint={"rel": 0.2})
+                         steps="all", constraint={"rel_up": 0.2, "rel_down": 0.2})
         register_ci_gate(metric_key="rollout/raw_reward",
                          steps="last",
-                         constraint={"rel": 0.2, "direction": "lower_is_worse"})
+                         constraint={"rel_up": 0.5, "rel_down": 0.2})
         """,
         tmp_path,
     )
@@ -268,7 +267,7 @@ def test_unknown_kwarg_rejected(tmp_path):
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
-                         steps="last", constraint={"rel": 0.2}, bogus=3)
+                         steps="last", constraint={"rel_up": 0.2, "rel_down": 0.2}, bogus=3)
         """,
         tmp_path,
     )
@@ -282,7 +281,7 @@ def test_non_literal_arg_rejected(tmp_path):
         from tests.ci.metric_history import register_ci_gate
         X = "last"
         register_ci_gate(metric_key="train/x", steps=X,
-                         constraint={"rel": 0.2})
+                         constraint={"rel_up": 0.2, "rel_down": 0.2})
         """,
         tmp_path,
     )
@@ -296,7 +295,7 @@ def test_non_literal_inside_dict_rejected(tmp_path):
         from tests.ci.metric_history import register_ci_gate
         X = 0.2
         register_ci_gate(metric_key="train/x",
-                         steps="last", constraint={"rel": X})
+                         steps="last", constraint={"rel_up": X, "rel_down": 0.2})
         """,
         tmp_path,
     )
@@ -309,7 +308,7 @@ def test_missing_required_field_rejected(tmp_path, missing):
     fields = {
         "metric_key": 'metric_key="train/x"',
         "steps": 'steps="last"',
-        "constraint": 'constraint={"rel": 0.2}',
+        "constraint": 'constraint={"rel_up": 0.2, "rel_down": 0.2}',
     }
     del fields[missing]
     call = f"register_ci_gate({', '.join(fields.values())})"
@@ -337,9 +336,9 @@ def test_one_liner_fills_from_gate_defaults(tmp_path):
     )
     s = parse_ci_gate_specs(path)[0]
     assert s.steps == "last"
-    assert s.constraint == {"rel": 0.5, "abs_floor": 0.02, "direction": "higher_is_worse"}
+    assert s.constraint == {"rel_up": 0.5, "abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02}
     assert s.steps_key == '"last"'
-    assert s.constraint_key == '{"abs_floor":0.02,"direction":"higher_is_worse","rel":0.5}'
+    assert s.constraint_key == '{"abs_floor_down":0.02,"abs_floor_up":0.02,"rel_down":0.8,"rel_up":0.5}'
 
 
 def test_partial_default_written_literal_wins(tmp_path):
@@ -349,13 +348,13 @@ def test_partial_default_written_literal_wins(tmp_path):
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="rollout/raw_reward",
-                         constraint={"rel": 0.1})
+                         constraint={"rel_up": 0.1, "rel_down": 0.1})
         """,
         tmp_path,
     )
     s = parse_ci_gate_specs(path)[0]
     assert s.steps == "last"  # from GATE_DEFAULTS
-    assert s.constraint_key == '{"rel":0.1}'  # written literal, not the table's
+    assert s.constraint_key == '{"rel_down":0.1,"rel_up":0.1}'  # written literal, not the table's
 
 
 def test_one_liner_without_table_entry_rejected(tmp_path):
@@ -413,7 +412,7 @@ def test_unknown_steps_keyword_rejected(tmp_path):
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
-                         steps="mean_last_9000", constraint={"rel": 0.2})
+                         steps="mean_last_9000", constraint={"rel_up": 0.2, "rel_down": 0.2})
         """,
         tmp_path,
     )
@@ -428,7 +427,7 @@ def test_constraint_name_key_is_gone(tmp_path):
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
-                         steps="last", constraint={"name": "rel", "rel": 0.2})
+                         steps="last", constraint={"name": "band", "rel_up": 0.2, "rel_down": 0.2})
         """,
         tmp_path,
     )
@@ -436,18 +435,26 @@ def test_constraint_name_key_is_gone(tmp_path):
         parse_ci_gate_specs(path)
 
 
-def test_constraint_without_band_param_rejected(tmp_path):
-    # An all-default band is 0 and fails on any deviation; the parser demands
-    # an explicit rel or abs_floor.
+@pytest.mark.parametrize(
+    "literal,match",
+    [
+        ('{"rel_down": 0.2}', "upper band param"),
+        ('{"rel_up": 0.2}', "lower band param"),
+    ],
+    ids=["missing-up", "missing-down"],
+)
+def test_constraint_missing_side_rejected(tmp_path, literal, match):
+    # An all-default side has band 0 and fails on any deviation; the parser
+    # demands at least one written band param per side.
     path = _make_fixture(
-        """
+        f"""
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
-                         steps="last", constraint={"direction": "two_sided"})
+                         steps="last", constraint={literal})
         """,
         tmp_path,
     )
-    with pytest.raises(ValueError, match="at least one band param"):
+    with pytest.raises(ValueError, match=match):
         parse_ci_gate_specs(path)
 
 
@@ -456,7 +463,7 @@ def test_non_string_non_list_steps_rejected(tmp_path):
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
-                         steps=0, constraint={"rel": 0.2})
+                         steps=0, constraint={"rel_up": 0.2, "rel_down": 0.2})
         """,
         tmp_path,
     )
@@ -475,7 +482,7 @@ def test_bad_steps_list_rejected(tmp_path, steps_literal):
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
                          steps={steps_literal},
-                         constraint={{"rel": 0.2}})
+                         constraint={{"rel_up": 0.2, "rel_down": 0.2}})
         """,
         tmp_path,
     )
@@ -483,17 +490,20 @@ def test_bad_steps_list_rejected(tmp_path, steps_literal):
         parse_ci_gate_specs(path)
 
 
-def test_bad_direction_rejected(tmp_path):
+def test_direction_key_is_gone(tmp_path):
+    # The one-sided direction abstraction was removed: every constraint is
+    # two-sided, a lenient side gets a wide band. A stale declaration must
+    # fail loud, not silently drop its direction.
     path = _make_fixture(
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
                          steps="last",
-                         constraint={"rel": 0.2, "direction": "up_only"})
+                         constraint={"rel_up": 0.2, "rel_down": 0.8, "direction": "higher_is_worse"})
         """,
         tmp_path,
     )
-    with pytest.raises(ValueError, match="param 'direction'"):
+    with pytest.raises(ValueError, match="unknown key 'direction'"):
         parse_ci_gate_specs(path)
 
 
@@ -502,11 +512,11 @@ def test_negative_rel_rejected(tmp_path):
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
-                         steps="last", constraint={"rel": -0.2})
+                         steps="last", constraint={"rel_up": -0.2, "rel_down": 0.2})
         """,
         tmp_path,
     )
-    with pytest.raises(ValueError, match="param 'rel'"):
+    with pytest.raises(ValueError, match="param 'rel_up'"):
         parse_ci_gate_specs(path)
 
 
@@ -517,11 +527,11 @@ def test_duplicate_dict_key_rejected(tmp_path):
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
                          steps="last",
-                         constraint={"rel": 0.2, "rel": 0.3})
+                         constraint={"rel_up": 0.2, "rel_up": 0.3, "rel_down": 0.2})
         """,
         tmp_path,
     )
-    with pytest.raises(ValueError, match="duplicate key 'rel'"):
+    with pytest.raises(ValueError, match="duplicate key 'rel_up'"):
         parse_ci_gate_specs(path)
 
 
@@ -532,7 +542,7 @@ def test_sub_label_argument_is_gone(tmp_path):
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
-                         steps="last", constraint={"rel": 0.2},
+                         steps="last", constraint={"rel_up": 0.2, "rel_down": 0.2},
                          sub_label="shard-0")
         """,
         tmp_path,
@@ -546,7 +556,7 @@ def test_non_bool_enforce_rejected(tmp_path):
         """
         from tests.ci.metric_history import register_ci_gate
         register_ci_gate(metric_key="train/x",
-                         steps="last", constraint={"rel": 0.2}, enforce=1)
+                         steps="last", constraint={"rel_up": 0.2, "rel_down": 0.2}, enforce=1)
         """,
         tmp_path,
     )
@@ -563,7 +573,7 @@ def test_register_ci_gate_does_not_disturb_suite_parsing(tmp_path):
         from tests.ci.metric_history import register_ci_gate
         register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"])
         register_ci_gate(metric_key="train/grad_norm",
-                         steps="all", constraint={"rel": 0.2})
+                         steps="all", constraint={"rel_up": 0.2, "rel_down": 0.2})
         """,
         tmp_path,
     )
@@ -581,7 +591,7 @@ def test_register_ci_gate_runtime_is_noop():
         register_ci_gate(
             metric_key="train/grad_norm",
             steps="all",
-            constraint={"rel": 0.2},
+            constraint={"rel_up": 0.2, "rel_down": 0.2},
         )
         is None
     )
