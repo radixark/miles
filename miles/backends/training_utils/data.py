@@ -121,6 +121,7 @@ def get_batch(
     qkv_format: str = "thd",
     get_position_ids: bool = False,
     allgather_cp: bool = False,
+    pad_to_ep_max: bool = False,
 ) -> dict[str, torch.Tensor | list[torch.Tensor] | None]:
     """
     Generate a CP-ready micro-batch with packed sequence parameters.
@@ -135,6 +136,8 @@ def get_batch(
         data_iterator: Iterator providing micro-batch data.
         keys: List of keys to fetch from the iterator.
         pad_multiplier: Multiplier for padding size calculation (default: 128).
+        pad_to_ep_max: Pad THD token rows to the largest aligned row count in
+            the expert-parallel group. Required by HybridEP for variable batches.
 
     Returns a dict including:
     - "tokens": torch.LongTensor of shape [1, T_padded] on the current CUDA device
@@ -209,8 +212,23 @@ def get_batch(
 
             tokens = torch.cat(tokens)
 
-            # Always pad to reduce memory fragmentation and maybe make the computation faster
-            pad = (pad_size - tokens.size(0) % pad_size) % pad_size
+            # HybridEP assumes every rank contributes the same number of token rows
+            # to metadata all-gather. Dynamic batches violate that assumption unless
+            # the local packed stream is padded to an EP-wide maximum.
+            local_target = (tokens.size(0) + pad_size - 1) // pad_size * pad_size
+            if pad_to_ep_max:
+                assert parallel_state.ep.group is not None
+                target = torch.tensor(
+                    [local_target],
+                    dtype=torch.int64,
+                    device=tokens.device,
+                )
+                dist.all_reduce(target, op=dist.ReduceOp.MAX, group=parallel_state.ep.group)
+                target_num_tokens = int(target.item())
+            else:
+                target_num_tokens = local_target
+
+            pad = target_num_tokens - tokens.size(0)
             if pad != 0:
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
                 cu_seqlens.append(cu_seqlens[-1] + pad)
