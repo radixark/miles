@@ -28,8 +28,8 @@ run from the miles repo root) and pass e.g.
 ``--custom-rm-path examples.on_policy_distillation.qwen3_5_35b_selfdistill.rm.reward_func``.
 """
 
-from miles.rollout.rm_hub.math_utils import grade_answer_verl
 from miles.rollout.rm_hub.math_dapo_utils import compute_score as _dapo_score
+from miles.rollout.rm_hub.math_utils import grade_answer_verl
 
 
 def _is_eval_sample(sample) -> bool:
