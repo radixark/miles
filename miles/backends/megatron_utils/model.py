@@ -709,6 +709,21 @@ def train(
                 config.param_sync_func = param_sync_func
                 pre_hook_enabled = True
 
+        if train_step_outcome == TrainStepOutcome.NORMAL and args.custom_megatron_after_train_step_hook_path:
+            from miles.utils.misc import load_function
+
+            custom_after_train_step_hook = load_function(args.custom_megatron_after_train_step_hook_path)
+            custom_after_train_step_hook(
+                args,
+                rollout_id,
+                step_id,
+                model,
+                optimizer,
+                opt_param_scheduler,
+                loss_dict,
+                num_microbatches[step_id],
+            )
+
         if args.enable_mtp_training:
             from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
 
