@@ -62,6 +62,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_max_response_len: int | None = None
     sglang_max_total_tokens: int | None = None
     global_batch_size: int | None = None
+    distributed_timeout_minutes: int = 10
     save_debug_rollout_data: str | None = None
     enable_wandb: bool = False
 
@@ -74,6 +75,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError(f"LoRA rank must be positive, got {self.lora_rank}")
         if self.sglang_max_total_tokens is not None and self.sglang_max_total_tokens <= 0:
             raise ValueError("SGLang max total tokens must be positive")
+        if self.distributed_timeout_minutes <= 0:
+            raise ValueError("Distributed timeout must be positive")
         if self.model_variant == "4layer":
             if self.num_nodes != 1 or self.num_gpus_per_node != 8:
                 raise NotImplementedError("The verified four-layer Kimi K3 LoRA configuration is one 8-GPU node")
@@ -207,6 +210,7 @@ def _execute_train(args: ScriptArgs) -> None:
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {512 if args.model_variant == '4layer' else 1024} "
         "--log-probs-chunk-size 512 "
+        f"--distributed-timeout-minutes {args.distributed_timeout_minutes} "
     )
 
     optimizer_args = (
