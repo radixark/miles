@@ -126,6 +126,15 @@ class TorchTitanTrainRayActor(TrainRayActor):
             if spec.name == "qwen3_5"
             else None
         )
+        if spec.name == "qwen3_5":
+            # We prune vision_encoder (model.py) and never build MTP layers, so their HF keys
+            # can never appear in pushed_names — the post-update coverage check needs to know
+            # these are intentional omissions, not a bug (per DESIGN.md's qwen3_5 plan).
+            existing = list(getattr(self.args, "check_weight_update_skip_list", None) or [])
+            for prefix in ("model.visual.", "mtp."):
+                if prefix not in existing:
+                    existing.append(prefix)
+            self.args.check_weight_update_skip_list = existing
         self.model.train()
 
         self.optimizer, self.lr_scheduler = build_optimizer_and_lr_scheduler(
