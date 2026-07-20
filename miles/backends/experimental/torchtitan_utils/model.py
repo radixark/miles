@@ -31,8 +31,11 @@ def _apply_update_from_config(spec_model_config, *, parallelism, seq_len: int) -
 
     spec_model_config.update_from_config(config=SimpleNamespace(parallelism=parallelism))
 
-    assert isinstance(
-        spec_model_config.layers[0].attention.inner_attention,
+    # first_attention skips GDN-only layers (e.g. qwen3_5's non-full layers have
+    # attention=None) to find the first layer that actually carries an attention config.
+    first_attention = spec_model_config.first_attention
+    assert first_attention is not None and isinstance(
+        first_attention.inner_attention,
         (VarlenAttention.Config, FlexAttention.Config),
     ), "Only varlen and flex attention backends are allowed (matches titan RL trainer's own assert)."
 
@@ -85,6 +88,14 @@ def build_and_load_model(
     with torch.device("meta"):
         with set_default_dtype(TORCH_DTYPE_MAP[training.dtype]):
             model = spec.model.build()
+
+    if getattr(model, "vision_encoder", None) is not None:
+        # Text-only RL training (qwen3_5): prune before to_empty/init_weights so the
+        # vision tower is never materialized. torchtitan's own parallelize/pipeline
+        # code already null-guards `model.vision_encoder is not None` everywhere
+        # (the sanctioned "PP-prune" pattern), and the state_dict_adapter only emits
+        # vision_encoder.* keys for tensors actually present in model.state_dict().
+        model.vision_encoder = None
 
     model = spec.parallelize_fn(
         model,
