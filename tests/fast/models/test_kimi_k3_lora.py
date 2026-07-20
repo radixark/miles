@@ -312,6 +312,7 @@ def test_full_gsm8k_uses_math_reward_and_messages(monkeypatch, tmp_path):
         megatron_model_type="kimi-k3",
         sglang_path=str(sglang_path),
         data_dir=str(data_dir),
+        sglang_max_total_tokens=8192,
         save_debug_rollout_data="/tmp/rollout-{rollout_id}.pt",
         enable_wandb=True,
     )
@@ -324,6 +325,7 @@ def test_full_gsm8k_uses_math_reward_and_messages(monkeypatch, tmp_path):
         "--label-key label",
         "--rm-type math",
         "--rollout-max-response-len 256",
+        "--sglang-max-total-tokens 8192",
         "--save-debug-rollout-data /tmp/rollout-{rollout_id}.pt",
         "--use-wandb",
         "--wandb-project miles-run_kimi_k3_lora",

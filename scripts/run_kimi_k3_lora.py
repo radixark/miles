@@ -60,6 +60,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_batch_size: int | None = None
     n_samples_per_prompt: int | None = None
     rollout_max_response_len: int | None = None
+    sglang_max_total_tokens: int | None = None
     global_batch_size: int | None = None
     save_debug_rollout_data: str | None = None
     enable_wandb: bool = False
@@ -71,6 +72,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         if self.lora_rank <= 0:
             raise ValueError(f"LoRA rank must be positive, got {self.lora_rank}")
+        if self.sglang_max_total_tokens is not None and self.sglang_max_total_tokens <= 0:
+            raise ValueError("SGLang max total tokens must be positive")
         if self.model_variant == "4layer":
             if self.num_nodes != 1 or self.num_gpus_per_node != 8:
                 raise NotImplementedError("The verified four-layer Kimi K3 LoRA configuration is one 8-GPU node")
@@ -264,6 +267,8 @@ def _execute_train(args: ScriptArgs) -> None:
             "--sglang-moe-runner-backend triton "
             "--sglang-disable-shared-experts-fusion "
         )
+    if args.sglang_max_total_tokens is not None:
+        sglang_args += f"--sglang-max-total-tokens {args.sglang_max_total_tokens} "
     if is_debug:
         sglang_args += "--sglang-context-length 8192 "
 
