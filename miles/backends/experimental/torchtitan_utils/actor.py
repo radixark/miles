@@ -179,21 +179,34 @@ class TorchTitanTrainRayActor(TrainRayActor):
         }
 
     def _compute_log_prob(self, model_tag, data_iterator, num_microbatches, store_prefix: str = ""):
-        results = []
-        for batch in data_iterator:
-            model_args = self._get_model_inputs_args(batch)
-            with torch.no_grad():
-                logits = self.model(**model_args).float()
-            log_probs = get_log_probs_and_entropy(
-                logits,
-                args=self.args,
-                unconcat_tokens=batch["unconcat_tokens"],
-                total_lengths=batch["total_lengths"],
-                response_lengths=batch["response_lengths"],
-                with_entropy=False,
-            )
-            results.append(log_probs)
-        return aggregate_forward_results(results, store_prefix=store_prefix)
+        forward_data_store = []
+        data_iterator.reset()
+        with torch.no_grad():
+            for step_id in range(len(num_microbatches)):
+                for _ in range(num_microbatches[step_id]):
+                    batch = get_batch(
+                        data_iterator,
+                        ["tokens", "loss_masks", "multimodal_train_inputs", "total_lengths", "response_lengths", "max_seq_lens"],
+                        self.args.data_pad_size_multiplier,
+                        self.args.qkv_format,
+                        get_position_ids=True,
+                    )
+                    model_args = self._get_model_inputs_args(batch)
+                    logits = self.model(**model_args).float()
+                    result = get_log_probs_and_entropy(
+                        logits=logits,
+                        args=self.args,
+                        unconcat_tokens=batch["unconcat_tokens"],
+                        total_lengths=batch["total_lengths"],
+                        response_lengths=batch["response_lengths"],
+                        with_entropy=(store_prefix == ""),
+                        max_seq_lens=batch.get("max_seq_lens", None),
+                    )
+                    batch_result = {f"{store_prefix}log_probs": result["log_probs"]}
+                    if store_prefix == "" and "entropy" in result:
+                        batch_result["entropy"] = result["entropy"]
+                    forward_data_store.append(batch_result)
+        return aggregate_forward_results(forward_data_store, data_iterator, self.args, store_prefix)
 
     def train(
         self,
@@ -208,8 +221,6 @@ class TorchTitanTrainRayActor(TrainRayActor):
             return
 
         rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info)
-        log_rollout_data(self.args, rollout_id, rollout_data)
-        compute_advantages_and_returns(self.args, rollout_data)
         self._train_core(rollout_id, rollout_data)
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
@@ -217,25 +228,60 @@ class TorchTitanTrainRayActor(TrainRayActor):
         data_iterator = data_iterators[0]
         assert len(num_microbatches) > 0
 
-        train_losses = []
-        for step_id, n_mb in enumerate(num_microbatches):
-            train_losses.append(self._train_step(data_iterator, step_id, n_mb))
+        actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
+        rollout_data.update(actor_results)
+        compute_advantages_and_returns(self.args, rollout_data)
+        log_rollout_data(rollout_id, self.args, rollout_data)
+
+        data_iterator.reset()
+        num_steps_per_rollout = len(num_microbatches)
+        for step_id in range(num_steps_per_rollout):
+            self.optimizer.zero_grad()
+            losses_reduced = []
+            for _ in range(num_microbatches[step_id]):
+                batch = get_batch(
+                    data_iterator,
+                    [
+                        "tokens", "loss_masks", "multimodal_train_inputs", "total_lengths", "response_lengths",
+                        "max_seq_lens", "log_probs", "advantages", "returns", "ref_log_probs", "rollout_log_probs",
+                    ],
+                    self.args.data_pad_size_multiplier,
+                    self.args.qkv_format,
+                    get_position_ids=True,
+                )
+                losses_reduced.append(self._train_step(batch, step_id, num_microbatches[step_id]))
+                self.micro_step += 1
+
+            grad_norm = clip_grad_norm(self.model, self.args.clip_grad, get_parallel_state().parallel_dims)
+            grad_norm = grad_norm.full_tensor().item() if hasattr(grad_norm, "full_tensor") else float(grad_norm)
+            self.optimizer.step()
+            self.lr_scheduler.step()
             self.global_step += 1
 
-        grad_norm = clip_grad_norm(self.model, self.args.clip_grad, get_parallel_state().parallel_dims)
-        grad_norm = grad_norm.full_tensor().item() if hasattr(grad_norm, "full_tensor") else float(grad_norm)
+            if self.args.ci_test:
+                check_grad_norm(
+                    args=self.args,
+                    grad_norm=grad_norm,
+                    rollout_id=rollout_id,
+                    step_id=step_id,
+                    role="actor",
+                    rank=get_parallel_state().intra_dp_cp.rank,
+                )
 
-        self.optimizer.step()
-        self.lr_scheduler.step()
-        self.optimizer.zero_grad()
+            loss_dict = aggregate_train_losses(losses_reduced)
+            extra_metrics = {"lr-pg_0": float(self.lr_scheduler.schedulers[0].get_last_lr()[0])}
+            log_train_step(
+                args=self.args,
+                loss_dict=loss_dict,
+                grad_norm=grad_norm,
+                rollout_id=rollout_id,
+                step_id=step_id,
+                num_steps_per_rollout=num_steps_per_rollout,
+                role="actor",
+                extra_metrics=extra_metrics,
+            )
 
-        if self.args.ci_test:
-            check_grad_norm(self.args, grad_norm, rollout_id, self.global_step)
-
-        log_train_step(self.args, rollout_id, aggregate_train_losses(train_losses), grad_norm=grad_norm)
-
-    def _train_step(self, data_iterator, step_id, num_microbatches):
-        batch = next(data_iterator)
+    def _train_step(self, batch, step_id, num_microbatches):
         model_args = self._get_model_inputs_args(batch)
         logits = self.model(**model_args).float()
 
@@ -247,7 +293,6 @@ class TorchTitanTrainRayActor(TrainRayActor):
             apply_megatron_loss_scaling=False,
         )
         (loss / normalizer).backward()
-        self.micro_step += 1
         return log_dict
 
     @timer
