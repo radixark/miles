@@ -41,8 +41,8 @@ def policy_uses_routing_key(args) -> bool:
 
 
 def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
-    if policy_uses_routing_key(args):
-        assert sample.routing_key, (
+    if policy_uses_routing_key(args) and not sample.routing_key:
+        raise ValueError(
             f"router policy {args.sglang_router_policy} routes by X-SMG-Routing-Key, "
             f"but sample (index={sample.index}) has no routing_key set"
         )
