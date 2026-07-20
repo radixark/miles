@@ -1,11 +1,20 @@
 """torch-2.11 compat for torchtitan (pip-installed, pinned). Import before any torchtitan module.
 
-torchtitan main tracks torch nightly. On torch 2.11 the only import-time gap is a
-missing ``DataParallelMeshDims`` symbol that ``torchtitan.distributed.fsdp`` (and,
-transitively, every model's ``parallelize`` module) imports. A placeholder unblocks the
-whole chain and is never instantiated on the paths we use (it only reaches
-``fully_shard`` when ``dp_mesh_dims``/``edp_mesh_dims`` are explicitly set — the
-"full_dtensor" spmd backend, which we never enable).
+torchtitan main tracks torch nightly. On torch 2.11 there are two gaps found so far,
+both shimmed here:
+
+1. Import-time: a missing ``DataParallelMeshDims`` symbol that
+   ``torchtitan.distributed.fsdp`` (and, transitively, every model's ``parallelize``
+   module) imports. A placeholder unblocks the whole chain and is never instantiated on
+   the paths we use (it only reaches ``fully_shard`` when ``dp_mesh_dims``/
+   ``edp_mesh_dims`` are explicitly set — the "full_dtensor" spmd backend, unused here).
+
+2. Runtime, on the packed-document flex-attention mask path (the one RL training
+   actually needs): ``Decoder._create_flex_attention_mask`` passes nightly-only
+   ``separate_full_blocks=`` to ``create_block_mask``, which 2.11 doesn't accept
+   (``TypeError``). It's a pure kernel-block-iteration-order perf knob — torchtitan's
+   own comment says it's disabled under batch-invariant mode anyway — so dropping it on
+   2.11 changes performance, not correctness. Shimmed by wrapping ``create_block_mask``.
 
 Also asserts the pinned commit (main tracks nightly; any bump can silently break 2.11)
 and guards against ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments`` (set as an import
@@ -46,6 +55,26 @@ def _shim_data_parallel_mesh_dims() -> None:
     _fsdp.DataParallelMeshDims = DataParallelMeshDims
 
 
+def _shim_create_block_mask_kwargs() -> None:
+    import inspect
+
+    from torch.nn.attention import flex_attention
+
+    accepted = inspect.signature(flex_attention.create_block_mask).parameters
+    if "separate_full_blocks" in accepted:
+        return
+
+    _orig = flex_attention.create_block_mask
+
+    def create_block_mask(*args, separate_full_blocks=None, **kwargs):
+        return _orig(*args, **kwargs)
+
+    flex_attention.create_block_mask = create_block_mask
+    # torchtitan's decoder module does `from torch.nn.attention.flex_attention import
+    # create_block_mask` at call time (inside the method), so patching the flex_attention
+    # module attribute above is sufficient — no separate re-patch needed there.
+
+
 def _check_pinned_commit() -> None:
     """Best-effort pin check. A git-URL pip install exposes the commit via
     importlib.metadata's direct_url.json; source installs (e.g. -e .) don't, so this
@@ -76,6 +105,7 @@ def _probe_fla() -> bool:
 
 _assert_no_expandable_segments()
 _shim_data_parallel_mesh_dims()
+_shim_create_block_mask_kwargs()
 _check_pinned_commit()
 
 HAS_FLA = _probe_fla()
