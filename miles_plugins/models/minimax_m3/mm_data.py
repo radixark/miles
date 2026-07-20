@@ -58,6 +58,10 @@ def expand_media_tokens(
     """
     if grids is None or len(grids) == 0:
         return tokens, loss_mask
+    # A single image/video can arrive as a 1-D (t, h, w) grid instead of [n, 3];
+    # normalize so grids[i] is always one (t, h, w) triple.
+    if getattr(grids, "ndim", None) == 1:
+        grids = grids.unsqueeze(0)
 
     device = tokens.device
     is_media = (tokens == image_token_id) | (tokens == video_token_id)
@@ -98,16 +102,19 @@ def expand_multimodal_in_place(rollout_data: dict) -> None:
     if tokens is None or mm is None:
         return
     new_tokens, new_masks, new_lens = [], [], []
-    for i, (tk, mk, mmi) in enumerate(zip(tokens, masks, mm)):
+    for tk, mk, mmi in zip(tokens, masks, mm, strict=False):
         grid = _get_grid(mmi)
         if grid is None:
-            new_tokens.append(tk); new_masks.append(mk)
+            new_tokens.append(tk)
+            new_masks.append(mk)
             new_lens.append(len(tk) if hasattr(tk, "__len__") else tk.numel())
             continue
         tk = tk if torch.is_tensor(tk) else torch.tensor(tk, dtype=torch.long)
         mk = mk if torch.is_tensor(mk) else torch.tensor(mk)
         et, em = expand_media_tokens(tk, mk, grid)
-        new_tokens.append(et); new_masks.append(em); new_lens.append(et.numel())
+        new_tokens.append(et)
+        new_masks.append(em)
+        new_lens.append(et.numel())
     rollout_data["tokens"] = new_tokens
     rollout_data["loss_masks"] = new_masks
     if "total_lengths" in rollout_data:

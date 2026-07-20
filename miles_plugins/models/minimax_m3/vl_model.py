@@ -62,7 +62,7 @@ def merge_vision_into_text(
         return text_embeds
 
     t, b, h = text_embeds.shape
-    # work in [b, t, h] for masked_scatter, then transpose back
+    # work in [b, t, h] for the masked assignment, then transpose back
     e = text_embeds.transpose(0, 1).contiguous()  # [b, t, h]
     mask = (input_ids == image_token_index) | (input_ids == video_token_index)  # [b, t]
     # KNOWN BUG (not SP-correct yet): under --sequence-parallel the LM embedding
@@ -83,7 +83,11 @@ def merge_vision_into_text(
             f"vision/token mismatch: {n_slots} placeholder tokens but "
             f"{vision_embeds.shape[0]} vision embeddings. Did mm_data expansion run?"
         )
-    e = e.masked_scatter(mask.unsqueeze(-1), vision_embeds.to(e.dtype))
+    # Advanced indexing: mask is [b, t] bool, e is [b, t, h] -> e[mask] selects the
+    # placeholder rows in row-major order, same as the old masked_scatter but without
+    # broadcasting the mask to [b, t, h]. Autograd-safe (e is a fresh .contiguous()
+    # tensor, so the in-place index_put_ routes grads to both text and vision).
+    e[mask] = vision_embeds.to(e.dtype)
     return e.transpose(0, 1).contiguous()  # [t, b, h]
 
 
@@ -298,7 +302,8 @@ def _load_vision_only(ckpt_dir, hf_cfg, dtype):
     wanted = ("vision_tower.", "multi_modal_projector.", "patch_merge_mlp.")
     idx_path = os.path.join(ckpt_dir, "model.safetensors.index.json")
     if os.path.exists(idx_path):
-        weight_map = json.load(open(idx_path))["weight_map"]
+        with open(idx_path) as f:
+            weight_map = json.load(f)["weight_map"]
         shard_of = {}
         for k, f in weight_map.items():
             if k.startswith(wanted):

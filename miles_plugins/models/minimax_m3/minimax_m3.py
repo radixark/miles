@@ -32,8 +32,6 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 
-import torch
-from megatron.core import parallel_state
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
 from megatron.core.transformer.attention import SelfAttention, SelfAttentionSubmodules
 from megatron.core.transformer.enums import AttnMaskType
@@ -332,8 +330,12 @@ def get_minimax_m3_spec(args, config, vp_stage):
 
     # Compute the global layer id range owned by this PP/VPP stage so the
     # dense/sparse decision matches the absolute layer index, not the local one.
-    pp_rank = parallel_state.get_pipeline_model_parallel_rank()
-    offset = pp_rank * num_layers  # uniform layout assumption; refine if interleaved
+    # Megatron's helper handles interleaved (virtual) pipeline stages *and* uneven
+    # PP splits (--decoder-first-pipeline-num-layers); a plain pp_rank * num_layers
+    # would silently mark the wrong layers dense/sparse in both cases.
+    from megatron.core.transformer.transformer_block import get_transformer_layer_offset
+
+    offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
     for local_id in range(num_layers):
         global_id = offset + local_id
         layer_spec = copy.deepcopy(block_spec.layer_specs[local_id])

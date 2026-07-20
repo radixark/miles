@@ -27,13 +27,15 @@ def main():
     ap.add_argument("--out-shard", default="model-vision-00000-of-00001.safetensors")
     args = ap.parse_args()
 
-    oidx = json.load(open(os.path.join(args.origin_hf_dir, "model.safetensors.index.json")))
+    with open(os.path.join(args.origin_hf_dir, "model.safetensors.index.json")) as f:
+        oidx = json.load(f)
     owm = oidx["weight_map"]
     vis_keys = [k for k in owm if not k.startswith("language_model.")]
     print(f"vision/non-LM keys to merge: {len(vis_keys)}")
 
     eidx_path = os.path.join(args.exported_hf_dir, "model.safetensors.index.json")
-    eidx = json.load(open(eidx_path))
+    with open(eidx_path) as f:
+        eidx = json.load(f)
     ewm = eidx["weight_map"]
     overlap = [k for k in vis_keys if k in ewm]
     assert not overlap, f"exported dir already has {len(overlap)} vision keys, e.g. {overlap[:3]}"
@@ -60,7 +62,8 @@ def main():
         ewm[k] = args.out_shard
     eidx.setdefault("metadata", {})
     eidx["metadata"]["total_size"] = int(eidx["metadata"].get("total_size", 0)) + total_bytes
-    json.dump(eidx, open(eidx_path, "w"), indent=2)
+    with open(eidx_path, "w") as f:
+        json.dump(eidx, f, indent=2)
     print(f"updated index -> {len(ewm)} total keys ({len(vis_keys)} vision added)")
 
 

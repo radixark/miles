@@ -23,7 +23,6 @@ NOTE: structurally complete and key-verified, but the offline 428B conversion ru
 is the validation step (mbridge mixed dense/MoE handling + the indexer params).
 """
 
-import torch
 
 from mbridge.core import register_model
 from mbridge.models import Qwen3MoEBridge
@@ -115,14 +114,20 @@ class MiniMaxM3Bridge(Qwen3MoEBridge):
     def _build_config(self):
         tc = self._get_text_config()
         sac = getattr(tc, "sparse_attention_config", {}) or {}
-        sg = (lambda k, d=None: sac.get(k, d) if isinstance(sac, dict) else getattr(sac, k, d))
+
+        def sg(k, d=None):
+            return sac.get(k, d) if isinstance(sac, dict) else getattr(sac, k, d)
+
         cfg = self._build_base_config(
             use_cpu_initialization=False,
             # MoE — DeepSeek-V3-style sigmoid routing + expert bias correction
             moe_ffn_hidden_size=tc.intermediate_size,            # expert FFN (3072)
             moe_router_topk=tc.num_experts_per_tok,
             num_moe_experts=tc.num_local_experts,
-            moe_shared_expert_intermediate_size=tc.n_shared_experts * tc.intermediate_size,
+            # n_shared_experts may be absent on some M3 config revisions -> treat as 0
+            # (no shared expert) rather than raising AttributeError.
+            moe_shared_expert_intermediate_size=(getattr(tc, "n_shared_experts", 0) or 0)
+            * tc.intermediate_size,
             moe_router_score_function="sigmoid",
             moe_router_enable_expert_bias=True,
             moe_router_pre_softmax=False,
