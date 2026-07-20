@@ -63,4 +63,12 @@ Keep entries short. Record the symptom, proven root cause, fix, and verification
 - Symptom: job `1245` reported `loss=0`, `grad_norm=0`, and no change in any of 1,392 exported LoRA tensors after the first optimizer step.
 - Isolation: job `1253` loaded the shared DCP in `297.83s`, started both TP8 rollout engines, produced 512 active tokens and three nonzero advantages per effective DP rank, and kept the rollout/Megatron mean log-probability difference at `0.00774`. Backward then found all 77,184 aggregated LoRA `main_grad` tensors exactly zero.
 - Root cause: job `1261` proved the training logits had no autograd graph. Native LoRA freezes the embedding, so full reentrant activation recompute received no grad-enabled tensor input and detached every adapter computation inside the checkpoint.
-- Fix: require gradients on the frozen embedding output during K3 LoRA training when full recompute is enabled. Validation of raw/finalized gradients and the optimizer update is pending.
+- Fix: require gradients on the frozen embedding output during K3 LoRA training when full recompute is enabled.
+- Verification: job `1263` produced nonzero gradients for all 38,592 LoRA B parameters after finalize, `grad_norm=0.247237`, and optimizer updates on all 64 ranks. The rollout/training log-probability mean absolute difference was `0.035834`.
+
+## LoRA checkpoint barrier after offload
+
+- Symptom: job `1263` wrote all 64 adapter and optimizer shards, then all `save_model` RPCs remained in the final checkpoint barrier.
+- Root cause: the CPU/shared-disk LoRA checkpoint path used the reloadable default NCCL group for coordination after colocated training offload.
+- Fix: use the persistent Gloo group for both LoRA checkpoint barriers.
+- Verification: pending same-setting full-model rerun.

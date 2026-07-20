@@ -15,6 +15,7 @@ from miles.backends.megatron_utils.checkpoint import (
     _is_megatron_checkpoint,
     save_checkpoint_with_lora,
 )
+from miles.backends.megatron_utils.lora_utils import save_lora_checkpoint
 
 # ---------------------------------------------------------------------------
 # _is_megatron_checkpoint
@@ -96,6 +97,36 @@ class TestSaveCheckpointWithLoRA:
         save_checkpoint_with_lora(42, model, MagicMock(), MagicMock())
 
         mock_save_ckpt.assert_called_once()
+
+
+class TestSaveLoRACheckpoint:
+    @patch("miles.backends.megatron_utils.lora_utils.torch.save")
+    @patch("miles.backends.megatron_utils.lora_utils.get_gloo_group")
+    @patch("miles.backends.megatron_utils.lora_utils.get_parallel_state")
+    @patch("miles.backends.megatron_utils.lora_utils.dist")
+    def test_uses_gloo_for_checkpoint_barriers(
+        self, mock_dist, mock_parallel_state, mock_get_gloo_group, mock_torch_save, tmp_path
+    ):
+        mock_dist.is_initialized.return_value = True
+        mock_dist.get_rank.return_value = 1
+        mock_parallel_state.return_value.effective_dp.rank = 1
+        mock_parallel_state.return_value.tp.rank = 0
+        mock_parallel_state.return_value.pp.rank = 0
+        gloo_group = object()
+        mock_get_gloo_group.return_value = gloo_group
+        model = MagicMock()
+        model.named_parameters.return_value = []
+
+        save_lora_checkpoint(
+            [model],
+            Namespace(megatron_to_hf_mode="raw", model_name="kimi_k3"),
+            str(tmp_path / "adapter"),
+        )
+
+        assert mock_dist.barrier.call_count == 2
+        for barrier_call in mock_dist.barrier.call_args_list:
+            assert barrier_call.kwargs == {"group": gloo_group}
+        mock_torch_save.assert_called_once()
 
 
 class TestExcludeAdapterParamsFromShardedStateDict:
