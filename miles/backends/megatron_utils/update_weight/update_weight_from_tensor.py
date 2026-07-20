@@ -31,6 +31,13 @@ from .update_weight_from_distributed.broadcast import (
 logger = logging.getLogger(__name__)
 
 
+def _wait_for_colocated_transfer(refs: Sequence[ObjectRef], ipc_gather_group, *, is_lora: bool) -> None:
+    results = ray.get(refs)
+    _check_weight_sync_results(results, is_lora=is_lora)
+    if ipc_gather_group is not None:
+        dist.barrier(group=ipc_gather_group)
+
+
 def _should_skip_lora_base_sync(
     *,
     is_lora: bool,
@@ -312,8 +319,7 @@ class UpdateWeightFromTensor:
                 megatron_local_weights, weight_type="base"
             ):
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
-                results = ray.get(refs)
-                _check_weight_sync_results(results, is_lora=False)
+                _wait_for_colocated_transfer(refs, self._ipc_gather_group, is_lora=False)
                 del long_lived_tensors
 
             # SGLang restores packed base weights for the duration of a base
@@ -344,8 +350,7 @@ class UpdateWeightFromTensor:
                     is_first_chunk=is_first_chunk,
                     is_last_chunk=False,
                 )
-                results = ray.get(refs)
-                _check_weight_sync_results(results, is_lora=True)
+                _wait_for_colocated_transfer(refs, self._ipc_gather_group, is_lora=True)
                 del long_lived_tensors
                 sent_chunks += 1
                 hf_named_tensors = next_hf_named_tensors
@@ -356,8 +361,7 @@ class UpdateWeightFromTensor:
                 is_first_chunk=is_first_chunk,
                 is_last_chunk=True,
             )
-            results = ray.get(refs)
-            _check_weight_sync_results(results, is_lora=True)
+            _wait_for_colocated_transfer(refs, self._ipc_gather_group, is_lora=True)
             del long_lived_tensors
             sent_chunks += 1
 

@@ -31,6 +31,7 @@ from miles.backends.megatron_utils.update_weight.update_weight_from_tensor impor
     _send_to_colocated_engine,
     _should_skip_lora_base_sync,
     _validate_zero_lora_delta,
+    _wait_for_colocated_transfer,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -122,6 +123,25 @@ def test_validate_zero_lora_delta_rejects_nonzero_b():
 def test_validate_zero_lora_delta_requires_b_tensor():
     with pytest.raises(RuntimeError, match="contains no lora_B tensors"):
         _validate_zero_lora_delta([("model.layers.0.o_proj.lora_A.weight", torch.zeros(4, 8))])
+
+
+def test_colocated_transfer_keeps_producers_alive_until_receiver_finishes():
+    events = []
+    group = MagicMock()
+
+    with (
+        patch(f"{_UW_MODULE}.ray.get", side_effect=lambda _refs: events.append("receiver_done") or []),
+        patch(
+            f"{_UW_MODULE}._check_weight_sync_results", side_effect=lambda *_args, **_kwargs: events.append("checked")
+        ),
+        patch(
+            f"{_UW_MODULE}.dist.barrier", side_effect=lambda **_kwargs: events.append("producer_barrier")
+        ) as barrier,
+    ):
+        _wait_for_colocated_transfer([], group, is_lora=True)
+
+    assert events == ["receiver_done", "checked", "producer_barrier"]
+    barrier.assert_called_once_with(group=group)
 
 
 def test_lora_version_change_validator_accepts_a_complete_changed_update():

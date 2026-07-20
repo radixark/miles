@@ -84,10 +84,29 @@ Keep entries short. Record the symptom, proven root cause, fix, and verification
 - Symptom: full GSM8K job `1283` transferred version 1 and completed a 64-sample rollout, then trainer IPC producer ranks aborted during the first log-probability allocation with `could not unlink the shared memory file /torch_*`.
 - Root cause: the sender exported 2,828 tensors as separate CUDA IPC allocations. PyTorch reported more than 1,000 outstanding producer blocks; delayed allocator collection after the 10-minute EP warm-up hit the stale refcounter file.
 - Fix: flatten each existing LoRA chunk into one `FlattenedTensorBucket` payload. Tensor values, BF16 precision, checksums, chunk boundaries, and SGLang TP/EP slicing are unchanged; IPC allocation count falls from 2,828 to 278.
-- Verification: job `1285` passed all 42 Miles sync tests and the SGLang CUDA-source load test. Job `1286` passed 278 flattened chunks plus 300 subsequent CUDA allocations without a limbo warning or unlink failure. Full-model verification is pending.
+- Verification: job `1285` passed all 42 Miles sync tests and the SGLang CUDA-source load test. Job `1286` passed 278 flattened chunks plus 300 subsequent CUDA allocations without a limbo warning or unlink failure. Job `1289` completed the initial full-model transfer and one optimizer step, then exposed the cross-rank ownership issue below during version 2.
 
 ## GSM8K response-256 baseline
 
 - Job `1283` used the approved 16-node TP32/EP64 BF16 trainer, two official TP8/EP1 native-MXFP4 rollout engines, GSM8K math reward, eight prompts with eight samples each, and a 256-token response limit.
 - The first rollout completed 64 samples with raw reward `0.828125` (53/64), mean response length `179.45`, and six truncated responses. Two of eight prompt groups had nonzero reward variance, so GRPO advantages were nonzero.
 - The job failed before Megatron log probabilities, backward, gradient norm, or optimizer update; it is generation evidence, not a training-quality result.
+
+## GSM8K full training step
+
+- Job `1289` kept the 16-node GSM8K/256 setting and completed the first full training step: reward `0.890625` (57/64), mean response length `168.95`, `grad_norm=0.106369`, and rollout/training log-probability mean absolute difference `0.024036`.
+- All 77,184 LoRA parameters had gradients, all 38,592 B tensors had nonzero gradients, and the optimizer changed every training rank with maximum BF16 delta `1.001358e-05`.
+- The 64-rank adapter checkpoint wrote about `59 GB`; local writes finished quickly, but final save synchronization made `save_model` take `762s`. This is a performance issue, not a step-correctness failure.
+
+## Full-model memory profile
+
+- Job `1289` measured `223.63 GiB/GPU` peak for native-MXFP4 rollout, `154.83 GiB/GPU` during trainer initialization, `137.78 GiB/GPU` during ordinary trainer compute, and `157.15 GiB/GPU` for trainer compute on colocated rollout nodes.
+- Peak CPU cgroup usage was `898.44 GiB` on rollout nodes; ordinary trainer nodes used about `466 GiB`. The initialization spike was below the steady rollout peak, so it does not determine the current GPU minimum.
+- The architectural lower bound is 32 GPUs because the verified BF16 trainer uses TP32. Combining the measured rollout footprint with an EP32 trainer shard gives a preliminary `236-240 GiB/GPU` estimate, below GB300's `276.62 GiB`; eight nodes are therefore the minimum feasible estimate, not yet a validated topology. Four nodes cannot hold the BF16 trainer without changing topology or precision.
+
+## Cross-rank CUDA IPC ownership
+
+- Symptom: after job `1289` completed step 0, version-2 adapter buckets began passing SGLang SHA checks, then non-source producer ranks aborted in allocator collection with `could not unlink the shared memory file /torch_*`. Source ranks 0 and 8 were waiting for SGLang and did not hit the failure.
+- Root cause: each engine group's source rank waited for the Ray/SGLang receiver, but the other seven producer ranks deleted their CUDA IPC backing tensors immediately after `gather_object`. Those storages entered PyTorch's IPC limbo while the receiver still owned the transfer.
+- Fix: retain every producer backing tensor until the source observes receiver completion and all eight producer ranks cross an engine-group barrier; release and collect only after that barrier.
+- Verification: job `1290` passed 43 Miles tests and the SGLang CUDA-source test. Job `1291` passed two consecutive 278-bucket transfers plus 300 later CUDA allocations; both final collections left zero `/torch_*` files. Full-model job `1292` is running with unchanged training settings.
