@@ -129,7 +129,10 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size, provider.sequence_parallel))
 
     use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
-    ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=use_distributed_optimizer)
+    ddp_config = DistributedDataParallelConfig(
+        use_distributed_optimizer=use_distributed_optimizer,
+        grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
+    )
     ddp_config.finalize()
 
     if args.offload_train:
