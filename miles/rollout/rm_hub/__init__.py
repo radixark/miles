@@ -37,10 +37,7 @@ def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
     custom_rm_path = (spec.custom_rm_path if spec is not None else None) or getattr(args, "custom_rm_path", None)
     rm_type = (
-        (spec.rm_type if spec is not None else None)
-        or metadata.get("rm_type")
-        or getattr(args, "rm_type", None)
-        or ""
+        (spec.rm_type if spec is not None else None) or metadata.get("rm_type") or getattr(args, "rm_type", None) or ""
     ).strip()
     return custom_rm_path, rm_type
 

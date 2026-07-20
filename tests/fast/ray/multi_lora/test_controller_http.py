@@ -205,7 +205,8 @@ async def test_state_endpoint_reports_lifecycle_and_completed():
 
         # Re-registration reclaims the name; the completed record is dropped.
         status, _ = await ctl.api_post(
-            "/adapter_runs", {"name": "A", "config": {"data": DATA_FILE, "rm_type": "math", "save": "/tmp/adapters/A2"}}
+            "/adapter_runs",
+            {"name": "A", "config": {"data": DATA_FILE, "rm_type": "math", "save": "/tmp/adapters/A2"}},
         )
         assert status == 200
         assert await state_of("A") == "PENDING"

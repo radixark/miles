@@ -91,9 +91,9 @@ def validate_multi_lora_args(args: Any) -> None:
         "Multi-LoRA requires disaggregated rollout engines: weight sync is only "
         "implemented for the distributed path, not the colocated tensor path."
     )
-    assert not getattr(args, "indep_dp", False) and "train" not in args.ft_components, (
-        "Multi-LoRA does not support independent-DP training; remove 'train' from --ft-components"
-    )
+    assert (
+        not getattr(args, "indep_dp", False) and "train" not in args.ft_components
+    ), "Multi-LoRA does not support independent-DP training; remove 'train' from --ft-components"
     assert not args.offload_train, (
         "Multi-LoRA retains per-adapter gradient accumulation in GPU buffers between "
         "train calls; --offload-train would destroy it. Disable offload for multi-LoRA."
@@ -140,14 +140,19 @@ def validate_multi_lora_args(args: Any) -> None:
     # harnesses that validate miles args without the megatron arg set.
     if all(
         hasattr(args, name)
-        for name in ("world_size", "tensor_model_parallel_size", "pipeline_model_parallel_size", "context_parallel_size")
+        for name in (
+            "world_size",
+            "tensor_model_parallel_size",
+            "pipeline_model_parallel_size",
+            "context_parallel_size",
+        )
     ):
         from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 
         model_parallel = compute_megatron_world_size_except_dp(args)
-        assert args.world_size % model_parallel == 0, (
-            f"actor world size {args.world_size} is not divisible by tp*pp*cp {model_parallel}"
-        )
+        assert (
+            args.world_size % model_parallel == 0
+        ), f"actor world size {args.world_size} is not divisible by tp*pp*cp {model_parallel}"
         args.multi_lora_dp_size = args.world_size // model_parallel
     else:
         args.multi_lora_dp_size = None

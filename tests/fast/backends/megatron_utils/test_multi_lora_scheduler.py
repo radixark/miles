@@ -7,10 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.backends.megatron_utils.multi_lora_scheduler import (
-    install_slot_scheduler,
-    step_slot_schedulers,
-)
+from miles.backends.megatron_utils.multi_lora_scheduler import install_slot_scheduler, step_slot_schedulers
 
 LR = 2e-5
 

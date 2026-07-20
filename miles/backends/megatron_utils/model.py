@@ -554,11 +554,7 @@ def train_one_step(
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
             valid_step = False
 
-    if (
-        (not disable_optimizer)
-        and (not multi_lora)
-        and (not getattr(args, "check_for_nan_in_loss_and_grad", True))
-    ):
+    if (not disable_optimizer) and (not multi_lora) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
         found_inf_flag = optimizer.prepare_grads()
         if found_inf_flag:
             valid_step = False

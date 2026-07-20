@@ -594,9 +594,7 @@ async def generate_rollout_multi_lora_async(
         head.metadata["step_slots"] = list(batch.step_slots)
         head.metadata["step_adapter_names"] = list(batch.step_names)
 
-    await get_multi_lora_controller().record_batch_adapters.remote(
-        rollout_id, batch.group_counts, batch.step_names
-    )
+    await get_multi_lora_controller().record_batch_adapters.remote(rollout_id, batch.group_counts, batch.step_names)
 
     if (x := args.rollout_sample_filter_path) is not None:
         load_function(x)(args, data)
