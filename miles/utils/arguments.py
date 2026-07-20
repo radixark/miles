@@ -1012,6 +1012,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--save-trigger-sentinel",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a sentinel file for externally-triggered checkpoint saving. If the file "
+                    "exists at an iteration's save point, a checkpoint is saved and the file is removed."
+                ),
+            )
+            parser.add_argument(
                 "--custom-megatron-post-save-hook-path",
                 type=str,
                 default=None,
@@ -2471,6 +2480,9 @@ def miles_validate_args(args):
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
+
+    if args.save_trigger_sentinel is not None:
+        assert args.save is not None, "'--save' is required when save_trigger_sentinel is set."
 
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."
