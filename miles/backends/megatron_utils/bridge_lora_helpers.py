@@ -131,8 +131,6 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
     ddp_config = DistributedDataParallelConfig(
         use_distributed_optimizer=use_distributed_optimizer,
-        # This path builds its own DDP config, so the flag has to be wired
-        # through explicitly; leaving it out silently reduces grads in bf16.
         grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
     )
     ddp_config.finalize()
