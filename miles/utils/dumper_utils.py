@@ -121,8 +121,11 @@ class DumperMegatronUtil:
                 get_grad = _build_full_grad_getter(extracted_model)
 
         # Weights/grads are a once-per-rollout end-state, so pin them to step 0 instead of
-        # the running per-microbatch step.
-        dumper.dump_model(extracted_model, get_grad=get_grad, step=0)
+        # the running per-microbatch step. _configure already cleaned the scoped paths;
+        # disable lazy cleanup after reset to preserve activations from this rollout.
+        dumper.reset()
+        dumper.configure(cleanup_previous=False)
+        dumper.dump_model(extracted_model, get_grad=get_grad)
         dumper.step()
         dumper.configure(enable=False)
 
