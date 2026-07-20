@@ -143,10 +143,6 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         use_distributed_optimizer = False
     ddp_config = DistributedDataParallelConfig(
         use_distributed_optimizer=use_distributed_optimizer,
-        # Honor --accumulate-allreduce-grads-in-fp32 on this path too. It
-        # matters doubly for multi-LoRA: gradients are RETAINED in this buffer
-        # across train batches (per-adapter accumulation), so a bf16 buffer
-        # compounds rounding error with every accumulated batch and re-reduce.
         grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
     )
     ddp_config.finalize()

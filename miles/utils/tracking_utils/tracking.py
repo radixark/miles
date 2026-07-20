@@ -5,10 +5,23 @@ import torch
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 
-from .base import TrackingManager
+from .base import MlflowBackend, PrometheusBackend, TensorboardBackend, TrackingBackend, TrackingManager, WandbBackend
+from .ci_history import CiHistoryBackend
+
+# The full registry lives here, not base.py: base must never import a backend
+# module (ci_history imports TrackingBackend from base -> circular). This
+# module is the tracking entry point and the one place that imports every
+# backend, so it owns the registry.
+BACKEND_REGISTRY: dict[str, tuple[type[TrackingBackend], str]] = {
+    "wandb": (WandbBackend, "use_wandb"),
+    "tensorboard": (TensorboardBackend, "use_tensorboard"),
+    "mlflow": (MlflowBackend, "use_mlflow"),
+    "prometheus": (PrometheusBackend, "use_prometheus"),
+    "ci_history": (CiHistoryBackend, "ci_enable_metrics_capture"),
+}
 
 logger = logging.getLogger(__name__)
-_manager = TrackingManager()
+_manager = TrackingManager(BACKEND_REGISTRY)
 
 
 def init_tracking(args, primary: bool = True, **kwargs):

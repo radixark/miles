@@ -7,7 +7,8 @@ calls to every active backend.
 To add a new backend:
 --------------------
 1. Subclass :class:`TrackingBackend`.
-2. Register it in :data:`BACKEND_REGISTRY`.
+2. Add it to ``BACKEND_REGISTRY`` in ``tracking.py`` (not base --
+   importing a backend module into base would be circular).
 3. Add a corresponding ``--use-<name>`` CLI flag in ``arguments.py``.
 """
 
@@ -142,24 +143,15 @@ class PrometheusBackend(TrackingBackend):
         return
 
 
-# Registry that maps backend name → (class, args-flag attribute)
-
-BACKEND_REGISTRY: dict[str, tuple[type[TrackingBackend], str]] = {
-    "wandb": (WandbBackend, "use_wandb"),
-    "tensorboard": (TensorboardBackend, "use_tensorboard"),
-    "mlflow": (MlflowBackend, "use_mlflow"),
-    "prometheus": (PrometheusBackend, "use_prometheus"),
-}
-
-
 class TrackingManager:
     # Initializes and logs to every enabled backend; used internally by ``tracking_utils``.
 
-    def __init__(self) -> None:
+    def __init__(self, registry: dict[str, tuple[type[TrackingBackend], str]]) -> None:
         self._backends: list[TrackingBackend] = []
+        self._registry = registry
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
-        for name, (cls, flag) in BACKEND_REGISTRY.items():
+        for name, (cls, flag) in self._registry.items():
             if getattr(args, flag, False):
                 logger.info("Initialising tracking backend: %s", name)
                 backend = cls()
