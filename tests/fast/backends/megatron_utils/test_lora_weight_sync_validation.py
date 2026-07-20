@@ -454,7 +454,6 @@ class TestUpdateWeightsSessionOrdering:
             "empty_cache",
             "lora",
             "ipc_collect",
-            "ipc_collect",
             "empty_cache",
         ]
         mock_begin.assert_called_once_with(updater.rollout_engines)
