@@ -244,6 +244,7 @@ def test_full_rollout_matches_official_sglang_runtime(monkeypatch, tmp_path):
 
     args = ScriptArgs(
         model_variant="full",
+        task="dapo-math",
         num_nodes=16,
         num_gpus_per_node=4,
         checkpoint_load_mode="shared",
@@ -282,3 +283,49 @@ def test_full_rollout_matches_official_sglang_runtime(monkeypatch, tmp_path):
     assert captured["extra_env_vars"]["SGLANG_JIT_ROUTE_RADIX"] == "1"
     assert "SGLANG_K3_ATTN_RES_MODE" not in captured["extra_env_vars"]
     assert "SGLANG_K3_FUSE_MOE_FRONT" not in captured["extra_env_vars"]
+
+
+def test_full_gsm8k_uses_math_reward_and_messages(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr("scripts.run_kimi_k3_lora.U.execute_train", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setattr("scripts.run_kimi_k3_lora.U.get_default_wandb_args", lambda *args, **kwargs: "")
+    hf_checkpoint = tmp_path / "hf"
+    ref_load = tmp_path / "dcp"
+    sglang_path = tmp_path / "sglang" / "python"
+    data_dir = tmp_path / "data"
+    dataset = data_dir / "gsm8k" / "train.parquet"
+    hf_checkpoint.mkdir()
+    ref_load.mkdir()
+    (sglang_path / "sglang").mkdir(parents=True)
+    dataset.parent.mkdir(parents=True)
+    dataset.touch()
+
+    args = ScriptArgs(
+        model_variant="full",
+        task="gsm8k",
+        mode="normal",
+        num_nodes=16,
+        num_gpus_per_node=4,
+        checkpoint_load_mode="shared",
+        hf_checkpoint=str(hf_checkpoint),
+        ref_load=str(ref_load),
+        megatron_model_type="kimi-k3",
+        sglang_path=str(sglang_path),
+        data_dir=str(data_dir),
+        save_debug_rollout_data="/tmp/rollout-{rollout_id}.pt",
+        enable_wandb=True,
+    )
+    _execute_train(args)
+
+    train_args = captured["train_args"]
+    for expected in (
+        f"--prompt-data {dataset}",
+        "--input-key messages",
+        "--label-key label",
+        "--rm-type math",
+        "--rollout-max-response-len 256",
+        "--save-debug-rollout-data /tmp/rollout-{rollout_id}.pt",
+        "--use-wandb",
+        "--wandb-project miles-run_kimi_k3_lora",
+    ):
+        assert expected in train_args

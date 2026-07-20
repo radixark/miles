@@ -34,6 +34,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
     run_id: str = U.create_run_id()
     model_variant: Literal["4layer", "full"] = "4layer"
+    task: Literal["gsm8k", "dapo-math"] = "gsm8k"
     hf_checkpoint: str = _FOUR_LAYER_HF
     ref_load: str = _FOUR_LAYER_DCP
     megatron_model_type: str = "kimi-k3-4layer"
@@ -54,12 +55,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     check_lora_weight_equal: bool = False
     check_rollout_weight_reload_equal: bool = False
 
-    reward_model: Literal["deterministic_random", "deepscaler"] | None = None
+    reward_model: Literal["deterministic_random", "deepscaler", "math"] | None = None
     num_rollout: int | None = None
     rollout_batch_size: int | None = None
     n_samples_per_prompt: int | None = None
     rollout_max_response_len: int | None = None
     global_batch_size: int | None = None
+    save_debug_rollout_data: str | None = None
+    enable_wandb: bool = False
 
     check_weight_update_equal: bool = False
     update_weight_buffer_size: int | None = None
@@ -115,12 +118,18 @@ def _validate_paths(args: ScriptArgs) -> None:
 @U.dataclass_cli
 def prepare_data(args: ScriptArgs) -> None:
     Path(args.data_dir).mkdir(parents=True, exist_ok=True)
-    U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+    dataset = "zhuzilin/gsm8k" if args.task == "gsm8k" else "zhuzilin/dapo-math-17k"
+    U.hf_download_dataset(dataset, data_dir=args.data_dir)
 
 
 def _execute_train(args: ScriptArgs) -> None:
     _validate_paths(args)
-    dataset = Path(args.data_dir) / "dapo-math-17k" / "dapo-math-17k.jsonl"
+    if args.task == "gsm8k":
+        dataset = Path(args.data_dir) / "gsm8k" / "train.parquet"
+        input_key = "messages"
+    else:
+        dataset = Path(args.data_dir) / "dapo-math-17k" / "dapo-math-17k.jsonl"
+        input_key = "prompt"
     if not dataset.is_file():
         raise FileNotFoundError(f"Dataset does not exist: {dataset}; run prepare-data first")
 
@@ -148,20 +157,24 @@ def _execute_train(args: ScriptArgs) -> None:
         lora_args += "--check-rollout-weight-reload-equal "
 
     is_debug = args.mode == "debug_minimal"
-    reward_model = args.reward_model or ("deterministic_random" if is_debug else "deepscaler")
+    reward_model = args.reward_model or (
+        "math" if args.task == "gsm8k" else ("deterministic_random" if is_debug else "deepscaler")
+    )
     num_rollout = args.num_rollout if args.num_rollout is not None else (2 if is_debug else 3000)
     rollout_batch_size = args.rollout_batch_size if args.rollout_batch_size is not None else (8 if is_debug else 32)
     n_samples_per_prompt = (
         args.n_samples_per_prompt if args.n_samples_per_prompt is not None else (2 if is_debug else 8)
     )
     rollout_max_response_len = (
-        args.rollout_max_response_len if args.rollout_max_response_len is not None else (32 if is_debug else 16384)
+        args.rollout_max_response_len
+        if args.rollout_max_response_len is not None
+        else (256 if args.task == "gsm8k" else (32 if is_debug else 16384))
     )
     global_batch_size = args.global_batch_size if args.global_batch_size is not None else (16 if is_debug else 256)
 
     rollout_args = (
         f"--prompt-data {dataset} "
-        "--input-key prompt "
+        f"--input-key {input_key} "
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
@@ -175,6 +188,8 @@ def _execute_train(args: ScriptArgs) -> None:
         f"--global-batch-size {global_batch_size} "
         "--use-dynamic-global-batch-size "
     )
+    if args.save_debug_rollout_data is not None:
+        rollout_args += f"--save-debug-rollout-data {args.save_debug_rollout_data} "
 
     perf_args = (
         f"--tensor-model-parallel-size {args.tensor_parallel_size} "
@@ -276,13 +291,23 @@ def _execute_train(args: ScriptArgs) -> None:
     if args.check_weight_update_equal:
         misc_args += "--check-weight-update-equal " "--check-weight-update-skip-list vision_tower. mm_projector. "
 
+    if args.enable_wandb:
+        wandb_args = (
+            "--use-wandb "
+            "--wandb-project miles-run_kimi_k3_lora "
+            f"--wandb-group {args.run_id} "
+            "--disable-wandb-random-suffix "
+        )
+    else:
+        wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id)
+
     train_args = (
         f"{ckpt_args} "
         f"{lora_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{wandb_args} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{misc_args} "
