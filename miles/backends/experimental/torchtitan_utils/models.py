@@ -111,11 +111,14 @@ def _qwen3_5_spec_from_hf(hf: dict, *, attn_backend: str):
     No fuse_qkv concern here (unlike qwen3): Qwen35Attention.Config always uses
     separate wq/wk/wv, no fused-QKV variant exists to accidentally reach.
 
-    enable_weight_tying is deliberately left unset (False): torchtitan's qwen3_5
-    doesn't implement real weight tying yet (see upstream _4b()'s docstring) even
-    though this checkpoint has tie_word_embeddings=true — Qwen35StateDictAdapter.
-    from_hf already copies the embedding into a separate lm_head.weight when the
-    checkpoint omits it, so loading is correct without a truly aliased tensor.
+    enable_weight_tying=tie: upstream's _4b() leaves this unset ("torchtitan doesn't
+    support tied embeddings yet") but the real checkpoint genuinely has no lm_head.weight
+    key at all (confirmed against model.safetensors.index.json) — tying IS real,
+    working code here (Decoder.__init__ aliases the tensors; Qwen35Model.init_states
+    explicitly re-ties on meta device before init, for exactly this load path). Leaving
+    it unset made to_hf() emit an lm_head.weight key the on-disk checkpoint doesn't have
+    (caught by test_m6_qwen35_keymap.py: EXTRA key, not just a cosmetic mismatch — dcp.load
+    would request a key the storage reader can't find).
     """
     import torchtitan.models.qwen3_5 as q35
     from torchtitan.protocols.model_spec import ModelSpec
@@ -124,6 +127,8 @@ def _qwen3_5_spec_from_hf(hf: dict, *, attn_backend: str):
     eps = float(text.get("rms_norm_eps", 1e-6))
     if abs(eps - q35._EPS) > 1e-12:
         raise NotImplementedError(f"rms_norm_eps={eps} != titan qwen3_5 _EPS={q35._EPS}")
+
+    tie = bool(text.get("tie_word_embeddings", hf.get("tie_word_embeddings", False)))
 
     dim = text["hidden_size"]
     n_layers = text["num_hidden_layers"]
@@ -189,6 +194,7 @@ def _qwen3_5_spec_from_hf(hf: dict, *, attn_backend: str):
         ),
         layers=layers,
         vision_encoder=vision_encoder_config,
+        enable_weight_tying=tie,
     )
     return ModelSpec(
         name="qwen3_5",

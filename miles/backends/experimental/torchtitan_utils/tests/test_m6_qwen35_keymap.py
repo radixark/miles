@@ -58,11 +58,12 @@ def run(hf_dir: str) -> int:
     if fused_leak:
         print(f"  FUSED-QKV LEAK: {fused_leak[:5]}")
 
-    n_full = sum(1 for layer_cfg in model.layers if getattr(layer_cfg, "attention", None) is not None)
-    n_gdn = sum(1 for layer_cfg in model.layers if getattr(layer_cfg, "delta_net", None) is not None)
-    print(f"  layers: {len(model.layers)} total, {n_full} full-attention, {n_gdn} GDN")
+    layer_configs = spec.model.layers
+    n_full = sum(1 for layer_cfg in layer_configs if getattr(layer_cfg, "attention", None) is not None)
+    n_gdn = sum(1 for layer_cfg in layer_configs if getattr(layer_cfg, "delta_net", None) is not None)
+    print(f"  layers: {len(layer_configs)} total, {n_full} full-attention, {n_gdn} GDN")
 
-    ok = not unexpected_missing and not extra and not fused_leak and (n_full + n_gdn == len(model.layers))
+    ok = not unexpected_missing and not extra and not fused_leak and (n_full + n_gdn == len(layer_configs))
     print("M6 QWEN3_5 KEYMAP:", "PASS (exact match modulo vision/mtp)" if ok else "FAIL")
     return 0 if ok else 1
 
