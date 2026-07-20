@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import tb2_task_sandbox as recipe  # noqa: E402
+import tb2_task_recipe as recipe  # noqa: E402
 
 
 def _make_tasks_repo(root: Path, task_name: str = "some-task") -> Path:
