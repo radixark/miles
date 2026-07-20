@@ -67,7 +67,10 @@ def test_advisory_endpoint(client):
 def test_wandb_url():
     full = dict(wandb_team="radixark", wandb_project="miles", wandb_run_id="abc123")
     assert _wandb_url(full) == "https://wandb.ai/radixark/miles/runs/abc123"
-    assert _wandb_url({**full, "wandb_host": "https://wandb.internal/"}) == "https://wandb.internal/radixark/miles/runs/abc123"
+    assert (
+        _wandb_url({**full, "wandb_host": "https://wandb.internal/"})
+        == "https://wandb.internal/radixark/miles/runs/abc123"
+    )
     for missing in ("wandb_team", "wandb_project", "wandb_run_id"):
         assert _wandb_url({k: v for k, v in full.items() if k != missing}) is None
 

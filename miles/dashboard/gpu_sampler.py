@@ -148,7 +148,12 @@ class GpuSampler:
                 with self._buffer_lock:
                     self._process_buffer.append(
                         GpuProcessSample(
-                            ts=ts, node=self.node, gpu=gpu, pid=proc.pid, name=self._process_name(proc.pid), mem_mb=mem_mb
+                            ts=ts,
+                            node=self.node,
+                            gpu=gpu,
+                            pid=proc.pid,
+                            name=self._process_name(proc.pid),
+                            mem_mb=mem_mb,
                         )
                     )
                 count += 1

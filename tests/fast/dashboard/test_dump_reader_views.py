@@ -214,6 +214,8 @@ def test_summary_and_tokens_survive_dump_without_log_probs(tmp_path):
     assert df["mean_imp_ratio"].is_null().all()
     assert df["reward"].null_count() < df.height  # the rest of the summary is intact
     assert reader.step_aggregates().height >= 1  # the metrics page path
+
+
 def test_staleness_and_agentic_columns(reader):
     import polars as pl
 
