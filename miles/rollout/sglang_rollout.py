@@ -23,6 +23,7 @@ from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
+from miles.utils.multi_lora import make_rid, slot_lora_name
 from miles.utils.processing_utils import (
     call_processor,
     encode_image_for_rollout_engine,
@@ -176,7 +177,22 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         payload["top_logprobs_num"] = opd_top_k
 
-    if is_lora_enabled(args):
+    if sample.adapter is not None:
+        from miles.ray.multi_lora.controller import AdaptersCache
+
+        if (adapter := await AdaptersCache().get(sample.adapter.name)) is None:
+            # Adapter deregistered: don't POST, or an orphan the abort round can't see
+            # would keep decoding under the slot's next tenant and pollute its group.
+            logger.warning(
+                f"Dropping generation for adapter '{sample.adapter.name}' (slot {sample.adapter.slot}): "
+                "adapter is no longer sampleable"
+            )
+            sample.status = Sample.Status.ABORTED
+            return sample
+        payload["lora_path"] = slot_lora_name(sample.adapter.slot)
+        payload["rid"] = make_rid(sample.adapter.name)
+        payload["extra_key"] = f"{sample.adapter.name}:v{adapter.version}"
+    elif is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:
