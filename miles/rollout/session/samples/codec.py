@@ -1,7 +1,8 @@
-"""Wire codec for the `POST /sessions/{id}/samples` reply.
+"""Black-box sample packing for the `POST /sessions/{id}/samples` reply; only the
+input/output contract matters, the wire format is an implementation detail.
 
 - Server: `encode_samples_reply(samples, session_metadata, empty_reason)` — assembled
-  `Sample`s in, one safetensors payload (`bytes`) out.
+  `Sample`s in, one opaque payload (`bytes`) out.
 - Driver: `decode_samples_reply(payload, input_sample)` — that payload in, `SamplesReply`
   out, each `Sample` rebuilt by overlaying the wire's computed fields onto a deepcopy of
   the driver's `input_sample`.
