@@ -244,9 +244,10 @@ async def eval_snapshot(args: Namespace, state, cache: dict, rollout_id: int, sn
         {"model_path": str(snapshot), "weight_version": weight_version},
     )
     info = await get(f"{url}/model_info")
-    assert (
-        str(info.get("weight_version")) == weight_version
-    ), f"weight_version pin failed: engine reports {info.get('weight_version')}, expected {weight_version}"
+    if str(info.get("weight_version")) != weight_version:
+        raise RuntimeError(
+            f"weight_version pin failed: engine reports {info.get('weight_version')}, expected {weight_version}"
+        )
 
     results = await run_eval_datasets(state, cache)
     extra = {"eval/duration_seconds": time.time() - start}
@@ -260,8 +261,8 @@ def init_service_tracking(args: Namespace) -> None:
     from miles.utils.tracking_utils.tracking import init_tracking
 
     args.use_wandb = True
-    if args.wandb_mode == "shared":
-        assert args.wandb_run_id, "--wandb-mode shared requires --wandb-run-id of the training run"
+    if args.wandb_mode == "shared" and not args.wandb_run_id:
+        raise ValueError("--wandb-mode shared requires --wandb-run-id of the training run")
     init_tracking(args, primary=args.wandb_mode == "separate")
 
 
@@ -269,7 +270,8 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     service_args = parse_service_args()
     watch_dir = Path(service_args.watch_dir)
-    assert watch_dir.is_dir(), f"--watch-dir {watch_dir} does not exist"
+    if not watch_dir.is_dir():
+        raise FileNotFoundError(f"--watch-dir {watch_dir} does not exist")
 
     proc, server_ip, server_port = launch_server(service_args)
     try:

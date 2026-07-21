@@ -863,9 +863,7 @@ def export_hf_model_direct(
     if is_writer:
         path.mkdir(parents=True, exist_ok=True)
 
-    iterator = HfWeightIteratorDirect(
-        args, model, model_name=model_name, quantization_config=quantization_config
-    )
+    iterator = HfWeightIteratorDirect(args, model, model_name=model_name, quantization_config=quantization_config)
 
     weight_map: dict[str, str] = {}
     total_size = 0
@@ -885,11 +883,17 @@ def export_hf_model_direct(
 
     if is_writer:
         assert weight_map, f"HF export to {path} produced no weights"
-        for meta_file in Path(args.hf_checkpoint).iterdir():
-            # Copy tokenizer/config metadata only — never base weight files or the
-            # base checkpoint's safetensors index (ours is written below).
-            if meta_file.is_file() and not any(s in meta_file.name for s in HF_METADATA_SKIP_SUFFIXES):
-                shutil.copy2(meta_file, path / meta_file.name)
+        base_checkpoint = Path(args.hf_checkpoint)
+        if base_checkpoint.is_dir():
+            for meta_file in base_checkpoint.iterdir():
+                # Copy tokenizer/config metadata only — never base weight files or the
+                # base checkpoint's safetensors index (ours is written below).
+                if meta_file.is_file() and not any(s in meta_file.name for s in HF_METADATA_SKIP_SUFFIXES):
+                    shutil.copy2(meta_file, path / meta_file.name)
+        else:
+            # hf_checkpoint can be a hub model id; the snapshot then lacks
+            # tokenizer/config metadata and consumers must point at the base.
+            logger.warning(f"hf_checkpoint {args.hf_checkpoint} is not a local dir; metadata not copied to {path}")
         index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
         (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
 
