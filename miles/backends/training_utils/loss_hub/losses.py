@@ -17,6 +17,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_gspo_kl,
     compute_opsm_mask,
     compute_policy_loss,
+    compute_reinforce_loss,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.misc import load_function
@@ -177,7 +178,17 @@ def policy_loss_function(
         advantages.new_zeros(()),
     )
 
-    pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
+    if args.advantage_estimator == "reinforce":
+        # log_probs enters the loss raw here (ppo_kl was sanitized above); guard a
+        # masked-token inf that would become 0 * inf = NaN in the reduction.
+        reinforce_log_probs = torch.where(
+            active_tokens,
+            torch.nan_to_num(log_probs, nan=0.0, posinf=0.0, neginf=0.0),
+            log_probs.new_zeros(()),
+        )
+        pg_loss, pg_clipfrac = compute_reinforce_loss(advantages, reinforce_log_probs)
+    else:
+        pg_loss, pg_clipfrac = compute_policy_loss(ppo_kl, advantages, args.eps_clip, args.eps_clip_high)
 
     if getattr(args, "dump_details", None) is not None:
         from miles.backends.training_utils.debug_dump import maybe_dump_policy_loss_debug
