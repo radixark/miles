@@ -144,7 +144,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Node-local directory for train disk-offload files when "
                     "--offload-train-target=disk. Should be fast local NVMe (e.g. /scratch). "
                     "Files are per-process and overwritten in place every step (bounded size); "
-                    "defaults to $SCRATCH/miles_train_offload."
+                    "defaults to $SCRATCH/miles_train_offload_<uid>."
                 ),
             )
             parser.add_argument(
@@ -2716,8 +2716,12 @@ def miles_validate_args(args):
             "--disable-weights-backuper): disk-offloaded weights are read from GPU after resume, "
             "not from a CPU backup."
         )
+        assert args.offload_train_disk_chunk_mb > 0, "--offload-train-disk-chunk-mb must be positive"
         if args.offload_train_disk_dir is None:
-            args.offload_train_disk_dir = os.path.join(os.environ.get("SCRATCH", "/scratch"), "miles_train_offload")
+            uid = os.getuid() if hasattr(os, "getuid") else 0
+            args.offload_train_disk_dir = os.path.join(
+                os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}"
+            )
         logger.info(
             f"Train offload target=disk, dir={args.offload_train_disk_dir}, "
             f"chunk={args.offload_train_disk_chunk_mb}MB"

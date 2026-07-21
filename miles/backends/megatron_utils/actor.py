@@ -69,6 +69,18 @@ logging.getLogger("megatron").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # PermissionError (owned by another user) or anything else ambiguous:
+        # treat as alive so we never delete a file we can't prove is orphaned.
+        return True
+
+
 def _setup_disk_offload_reclaim(disk_dir: str) -> None:
     """Reclaim train disk-offload files for --offload-train-target=disk.
 
@@ -82,6 +94,12 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
         return
     os.makedirs(disk_dir, exist_ok=True)
     for f in glob.glob(os.path.join(disk_dir, "tms_*.bin")):
+        # Other actors on this node share disk_dir; only reclaim files whose
+        # owning pid is no longer alive, since a restarting actor must not
+        # delete a sibling actor's still-active backup files.
+        parts = os.path.basename(f).split("_")
+        if len(parts) >= 2 and parts[1].isdigit() and _pid_is_alive(int(parts[1])):
+            continue
         try:
             os.remove(f)
         except OSError:
