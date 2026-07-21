@@ -14,6 +14,22 @@ import subprocess
 import time
 from typing import Protocol
 
+# Agent-side overrides that swebench_agent_function reads straight from os.getenv
+# but that base_env_vars does not derive from a launcher flag. They must be
+# forwarded explicitly: with MILES_SCRIPT_EXTERNAL_RAY=1 the rollout runs on a
+# remote Ray cluster that does NOT inherit the submission shell's environment, so
+# an override set only in the shell would silently revert to its default on the
+# workers. Forward each one that is actually set (membership, not truthiness, so
+# an intentional empty value like OPENENV_CONDA_ENV="" still propagates).
+_AGENT_PASSTHROUGH_ENV_VARS = (
+    "OPENENV_TASK_WORKDIR",
+    "OPENENV_CONDA_ENV",
+    "OPENENV_MESSAGE_TIMEOUT_S",
+    "OPENENV_SWEBENCH_TESTS_SRC",
+    "OPENENV_SWEBENCH_TESTS_SNAPSHOT",
+    "OPENENV_EVAL_CMD",
+)
+
 
 class LaunchArgs(Protocol):
     """The config fields the shared helpers read (satisfied by each launcher's ScriptArgs)."""
@@ -150,7 +166,7 @@ def prometheus_args(args: LaunchArgs) -> str:
 
 
 def base_env_vars(args: LaunchArgs, script_dir: str, megatron_path: str, miles_root: str) -> dict[str, str]:
-    return {
+    env = {
         "PYTHONPATH": f"{megatron_path}:{script_dir}:{miles_root}",
         "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "OPENENV_ENV_URL": args.openenv_env_url,
@@ -158,6 +174,12 @@ def base_env_vars(args: LaunchArgs, script_dir: str, megatron_path: str, miles_r
         "OPENENV_MAX_ROLLOUT_TIME_SECONDS": str(args.openenv_max_rollout_time_seconds),
         "AGENT_MODEL_NAME": args.agent_model_name,
     }
+    # Forward advertised agent-side overrides so they survive to a remote Ray
+    # cluster (MILES_SCRIPT_EXTERNAL_RAY=1); see _AGENT_PASSTHROUGH_ENV_VARS.
+    for name in _AGENT_PASSTHROUGH_ENV_VARS:
+        if name in os.environ:
+            env[name] = os.environ[name]
+    return env
 
 
 def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
