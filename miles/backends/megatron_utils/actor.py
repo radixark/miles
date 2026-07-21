@@ -118,8 +118,8 @@ class MegatronTrainRayActor(TrainRayActor):
         self.prof = TrainProfiler(args)
 
         # read config and tokenizer serialized to prevent concurrent writing bug.
-        for i in range(dist.get_world_size()):
-            if i == dist.get_rank():
+        for i in range(args.num_gpus_per_node):
+            if i == dist.get_rank() % args.num_gpus_per_node:
                 self.hf_config = load_hf_config(args.hf_checkpoint)
                 self.tokenizer = load_tokenizer(
                     self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
