@@ -30,7 +30,7 @@ cd harbor
 git checkout harbor-miles-v0.13.1
 uv sync
 
-uv run python miles_agent_server.py \
+HARBOR_TASKS_DIR=/path/to/harbor_tasks uv run python miles_agent_server.py \
     --host 0.0.0.0 \
     --port 30000 \
     --dashboard-port 0 \
@@ -39,9 +39,10 @@ uv run python miles_agent_server.py \
     --trials-dir /path/to/trials
 ```
 
-The agent-server machine must have Docker and enough capacity for the requested
-number of concurrent sandboxes. Verify `http://<agent-server>:30000/health`
-before launching Miles.
+`HARBOR_TASKS_DIR` must contain one Harbor task directory for every
+`metadata.instance_id` in the training data. The agent-server machine must have
+Docker and enough capacity for the requested number of concurrent sandboxes.
+Verify `http://<agent-server>:30000/health` before launching Miles.
 
 ## 2. Prepare Terminal-Bench data
 
