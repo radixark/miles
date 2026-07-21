@@ -17,6 +17,7 @@ from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.misc import load_function
+from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
 
@@ -1011,6 +1012,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--save-trigger-sentinel",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a sentinel file for externally-triggered checkpoint saving. If the file "
+                    "exists at an iteration's save point, a checkpoint is saved and the file is removed."
+                ),
+            )
+            parser.add_argument(
                 "--custom-megatron-post-save-hook-path",
                 type=str,
                 default=None,
@@ -1786,6 +1796,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "by up to 1 ULP of the quantized dtype per side (compared in dequantized space).",
             )
             parser.add_argument(
+                "--check-lora-weight-equal",
+                action="store_true",
+                default=False,
+                help=(
+                    "Verify the megatron->sglang LoRA adapter weight-sync on the colocated "
+                    "(from_tensors) path: on every sync the trainer ships a per-tensor sha256 "
+                    "manifest of the adapter it sends, and each rollout engine hashes the "
+                    "tensors it received and fails the load on any mismatch/missing/extra "
+                    "name. The LoRA analogue of --check-weight-update-equal, which only "
+                    "covers base weights."
+                ),
+            )
+            parser.add_argument(
                 "--save-local-weight-checksum",
                 action="store_true",
                 help="Save per-rank local weight checksum per-step.",
@@ -2249,6 +2272,10 @@ def parse_args(add_custom_arguments=None):
                 "Contributions are welcome if you are interested in improving it."
             )
 
+    # On iff the CI harness injected MILES_CI_GATE_RECORD_DIR (the same env var
+    # locates the per-test record). No CLI flag: non-CI runs always stay False.
+    args.ci_enable_metrics_capture = bool(os.environ.get(RECORD_DIR_ENV))
+
     miles_validate_args(args)
 
     if backend == "megatron":
@@ -2532,6 +2559,9 @@ def miles_validate_args(args):
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
+
+    if args.save_trigger_sentinel is not None:
+        assert args.save is not None, "'--save' is required when save_trigger_sentinel is set."
 
     if args.custom_megatron_post_save_hook_path is not None:
         assert args.save is not None, "'--save' is required when custom_megatron_post_save_hook_path is set."

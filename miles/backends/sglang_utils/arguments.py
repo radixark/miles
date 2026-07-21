@@ -147,12 +147,10 @@ def validate_args(args):
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
 
-    if args.sglang_router_policy:
-        from miles.utils.environ import enable_experimental_rollout_refactor
-
-        assert (
-            not enable_experimental_rollout_refactor()
-        ), "--sglang-router-policy is not supported with MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1"
+    if args.sglang_router_policy is None and args.use_session_server:
+        args.sglang_router_policy = "manual"
+        if args.router_assignment_mode == "random":
+            args.router_assignment_mode = "min_load"
 
     if getattr(args, "sglang_router_ip", None):
         args.sglang_router_ip = _wrap_ipv6(args.sglang_router_ip)

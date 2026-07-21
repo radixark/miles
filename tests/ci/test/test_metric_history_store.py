@@ -41,8 +41,8 @@ PROVENANCE = RunProvenance(
 # test file's literal steps / constraint values.
 LAST_STEPS_KEY = '"last"'
 STEP_LIST_KEY = "[0,1]"
-REL_CONSTRAINT_KEY = '{"rel":0.2}'
-ABS_CONSTRAINT_KEY = '{"abs_floor":0.02}'
+REL_CONSTRAINT_KEY = '{"rel_down":0.2,"rel_up":0.2}'
+ABS_CONSTRAINT_KEY = '{"abs_floor_down":0.02,"abs_floor_up":0.02}'
 
 
 def _sample(metric_key, value, *, steps_key=LAST_STEPS_KEY, constraint_key=REL_CONSTRAINT_KEY, step=-1):
@@ -244,6 +244,12 @@ def test_baseline_sql_matches_authoritative_shape():
         assert fragment in sql, f"baseline query missing: {fragment!r}"
 
 
-def test_neon_store_is_deferred():
-    with pytest.raises(NotImplementedError):
+def test_neon_store_requires_dsn(monkeypatch):
+    # No DSN passed and the env var unset: construction fails with a clear error
+    # (not NotImplementedError -- the backend is implemented now). It must not
+    # attempt a connection, so the failure is purely about the missing DSN.
+    from tests.ci.metric_history import NEON_DATABASE_URL_ENV
+
+    monkeypatch.delenv(NEON_DATABASE_URL_ENV, raising=False)
+    with pytest.raises(RuntimeError, match=NEON_DATABASE_URL_ENV):
         NeonMetricHistoryStore()
