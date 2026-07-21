@@ -72,6 +72,7 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         loss_masks=loss_masks,
         total_lengths=total_lengths,
         response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
         values=values,
     )
 
