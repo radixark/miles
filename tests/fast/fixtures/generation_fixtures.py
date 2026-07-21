@@ -157,6 +157,8 @@ def make_args(
     generate_execute_tool_function_path: str = "miles.utils.test_utils.mock_tools.execute_tool_call",
     rollout_max_context_len: int | None = None,
     chat_template_path: str | None = None,
+    num_layers: int | None = None,
+    moe_router_topk: int | None = None,
 ) -> Namespace:
     argv = [
         "pytest",
@@ -212,6 +214,14 @@ def make_args(
     with patch("sys.argv", argv):
         args = parse_args()
 
+    # R3 decode shape overrides — not CLI flags (derived from the model config
+    # in production). Applied here, before with_session_server copies args into
+    # the worker namespace, because sample assembly runs inside the worker.
+    if num_layers is not None:
+        args.num_layers = num_layers
+    if moe_router_topk is not None:
+        args.moe_router_topk = moe_router_topk
+
     init_http_client(args)
     return args
 
@@ -240,6 +250,12 @@ def with_session_server(
         tito_model=args.tito_model,
         tito_allowed_append_roles=args.tito_allowed_append_roles,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
+        # Sample assembly runs inside the server, so the R3 decode shape args
+        # must reach the server namespace (set them via args_kwargs BEFORE the
+        # server starts; assigning to the driver args afterwards has no effect).
+        num_layers=getattr(args, "num_layers", None),
+        moe_router_topk=getattr(args, "moe_router_topk", None),
+        save_debug_trajectory_data=getattr(args, "save_debug_trajectory_data", None),
         session_server_instance_id=instance_id,
     )
     session_server = SessionServer(server_args, backend_url=backend_url)

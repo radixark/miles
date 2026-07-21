@@ -7,8 +7,9 @@ import logging
 import random
 from argparse import Namespace
 
-from miles.rollout.session.types import GetSessionResponse, SessionRecord
-from miles.utils.http_utils import post
+from miles.rollout.session.samples.codec import SamplesReply, decode_samples_reply
+from miles.utils.http_utils import post, post_bytes_no_retry
+from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
@@ -50,39 +51,33 @@ class OpenAIEndpointTracer:
             session_server_instance_id=session_server_instance_id,
         )
 
-    async def collect_records(self) -> tuple[list[SessionRecord], dict]:
+    async def collect_samples(
+        self, input_sample: Sample, *, multi_samples: bool, max_seq_len: int | None
+    ) -> SamplesReply:
+        """Fetch the server-assembled training samples for this session.
+
+        Single direct POST, no retries: a 5xx means the owning instance died and
+        the session's records died with it, and a 422 is a deterministic
+        assembly failure whose assertion text is
+        the body — both must raise loudly, immediately. A timeout raises too
+        (assembly is seconds server-side; the old records path silently ABORTed
+        the sample on timeout and lost data). The session DELETE is attempted
+        on every path, success or failure, matching the old cleanup semantics;
+        a DELETE failure is only a warning.
+        """
         try:
-            response = await asyncio.wait_for(
-                post(self.base_url, {}, action="get"),
+            payload = await post_bytes_no_retry(
+                f"{self.base_url}/samples",
+                {"multi_samples": multi_samples, "max_seq_len": max_seq_len},
                 timeout=_SESSION_REQUEST_TIMEOUT,
             )
-        except asyncio.TimeoutError:
-            logger.error(
-                f"Timed out waiting for session {self.session_id} records after {_SESSION_REQUEST_TIMEOUT}s "
-                f"(likely stale HTTP keepalive connection). Returning empty records."
-            )
-            # Still attempt to clean up the session.
+        finally:
             try:
                 await asyncio.wait_for(
                     post(self.base_url, {}, action="delete"),
                     timeout=_SESSION_REQUEST_TIMEOUT,
                 )
-            except Exception:
-                logger.warning(f"Failed to delete session {self.session_id} after timeout")
-            return [], {}
-        except Exception as e:
-            logger.warning(f"Failed to get session {self.session_id} records: {e}")
-            raise
-        response = GetSessionResponse.model_validate(response)
-        records = response.records
-        metadata = response.metadata
+            except Exception as e:
+                logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
 
-        try:
-            await asyncio.wait_for(
-                post(self.base_url, {}, action="delete"),
-                timeout=_SESSION_REQUEST_TIMEOUT,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to delete session {self.session_id} after collecting records: {e}")
-
-        return (records or []), metadata
+        return decode_samples_reply(payload, input_sample)
