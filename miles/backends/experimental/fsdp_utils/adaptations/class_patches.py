@@ -120,7 +120,27 @@ def _has_config(hf_config) -> bool:
     return hf_config is not None
 
 
+def _has_attention_sink(hf_config) -> bool:
+    return hf_config is not None and getattr(hf_config, "model_type", "") == "gpt_oss"
+
+
+def require_flash_for_attention_sink(hf_config, args) -> None:
+    """Sink models (gpt-oss) only get the sink applied on the flash path, matching SGLang's fa3; force flash."""
+    if args is None:
+        return
+    impl = getattr(args, "attn_implementation", None)
+    if impl and not str(impl).startswith("flash"):
+        logger.warning(
+            "[fsdp class_patches] attention-sink model needs flash attention to match the SGLang rollout; "
+            "overriding attn_implementation %r -> flash_attention_3 (eager/sdpa drop the sink)." % impl
+        )
+        args.attn_implementation = "flash_attention_3"
+
+
 register_model_patch(ModelPatchHook("flash_attn_saux_guard", _always, lambda cfg, args: apply_flash_attn_saux_guard()))
+register_model_patch(
+    ModelPatchHook("attn_sink_requires_flash", _has_attention_sink, require_flash_for_attention_sink)
+)
 register_model_patch(ModelPatchHook("fp8_checkpoint_guard", _has_config, lambda cfg, args: check_fp8_checkpoint(cfg)))
 register_model_patch(
     ModelPatchHook("dsa_train_infer_warn", _has_config, lambda cfg, args: check_train_infer_consistency(cfg))

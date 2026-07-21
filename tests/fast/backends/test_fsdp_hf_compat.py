@@ -151,9 +151,10 @@ def test_model_patch_registry_gating():
     from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
 
     by_name = {h.name: h for h in _MODEL_PATCH_HOOKS}
-    # the three expected hooks are registered, in order (GDN packing no longer a ModelPatchHook)
-    assert [h.name for h in _MODEL_PATCH_HOOKS][:3] == [
+    # the expected hooks are registered, in order (GDN packing no longer a ModelPatchHook)
+    assert [h.name for h in _MODEL_PATCH_HOOKS][:4] == [
         "flash_attn_saux_guard",
+        "attn_sink_requires_flash",
         "fp8_checkpoint_guard",
         "dsa_train_infer_warn",
     ]
@@ -161,6 +162,12 @@ def test_model_patch_registry_gating():
     # s_aux guard runs even without a config; the others don't
     assert by_name["flash_attn_saux_guard"].applies_to(None)
     assert not by_name["fp8_checkpoint_guard"].applies_to(None)
+    # attn_sink_requires_flash gates on the sink model_type, needs a config
+    from types import SimpleNamespace as _NS
+
+    assert not by_name["attn_sink_requires_flash"].applies_to(None)
+    assert by_name["attn_sink_requires_flash"].applies_to(_NS(model_type="gpt_oss"))
+    assert not by_name["attn_sink_requires_flash"].applies_to(_NS(model_type="qwen3_moe"))
     # the qwen3_moe MoE-block patch is a hook now (moved out of _enable_true_on_policy_optimizations),
     # gated on model_type; the backend-level enable_batch_invariant_mode stays in the actor.
     from types import SimpleNamespace
