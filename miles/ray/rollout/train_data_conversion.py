@@ -1,8 +1,8 @@
 from typing import Any
 
 import ray
-import torch
 
+from miles.backends.training_utils.loss_hub.math_utils import group_relative_advantages
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import Sample
@@ -102,21 +102,24 @@ def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], cust
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
-        # group norm
-        rewards = torch.tensor(raw_rewards, dtype=torch.float)
-        if rewards.shape[-1] == args.n_samples_per_prompt * args.rollout_batch_size:
-            rewards = rewards.reshape(-1, args.n_samples_per_prompt)
-        else:
-            # when samples count are not equal in each group
-            rewards = rewards.view(-1, rewards.shape[-1])
-        mean = rewards.mean(dim=-1, keepdim=True)
-        rewards = rewards - mean
-
-        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization:
-            std = rewards.std(dim=-1, keepdim=True)
-            rewards = rewards / (std + 1e-6)
-
-        return raw_rewards, rewards.flatten().tolist()
+        # Sample.index defaults to None, so the helper raises on a None id rather than letting
+        # the dedup silently merge every unset sample into one rollout (advantage 0 everywhere).
+        rollout_ids = [sample.index for sample in samples]
+        # The data source sets group_index on every real path; custom rollouts that skip it
+        # fall back to positional grouping inside the helper.
+        prompt_ids = [sample.group_index for sample in samples]
+        if any(pid is None for pid in prompt_ids):
+            prompt_ids = None
+        std_normalization = args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization
+        rewards = group_relative_advantages(
+            raw_rewards,
+            rollout_ids,
+            prompt_ids,
+            n_samples_per_prompt=args.n_samples_per_prompt,
+            rollout_batch_size=args.rollout_batch_size,
+            std_normalization=std_normalization,
+        )
+        return raw_rewards, rewards
 
     return raw_rewards, raw_rewards
 
