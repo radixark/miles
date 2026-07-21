@@ -195,7 +195,7 @@ def execute(args: ScriptArgs):
 
     trace_args = ""
     if args.save_traces_dir:
-        trace_args = f"--save-traces-dir {args.save_traces_dir} "
+        trace_args = f"--dump-details {args.save_traces_dir} "
 
     wandb_args = ""
     if args.wandb_key:
