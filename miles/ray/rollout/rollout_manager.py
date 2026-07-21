@@ -182,6 +182,7 @@ class RolloutManager:
         async with self._eval_lock:
             srv = self.servers["eval"]
             try:
+                await self._mark_unreachable_eval_engines(srv)
                 await srv.recover()
                 await srv.wait_all_engines_alive()
             except Exception as e:
@@ -242,6 +243,27 @@ class RolloutManager:
                 self._metric_checker.on_eval(metrics)
 
             self._gc_eval_snapshots(hf_dir)
+
+    async def _mark_unreachable_eval_engines(self, srv) -> None:
+        """Probe eval engines and mark unreachable ones stopped so recover() revives them.
+
+        Without fault tolerance nothing records an engine death (recover() only
+        restarts engines already marked stopped), so a dead or zombie eval engine
+        would otherwise fail every future eval instead of self-healing.
+        """
+        for group in srv.server_groups:
+            for engine in group.all_engines:
+                if not engine.is_allocated:
+                    continue
+                try:
+                    await asyncio.wait_for(engine.actor_handle.get_weight_version.remote(), timeout=60)
+                except Exception as e:
+                    logger.warning(f"Eval engine unreachable ({e!r}); marking stopped for recovery")
+                    try:
+                        ray.kill(engine.actor_handle)
+                    except Exception:
+                        pass
+                    engine.mark_stopped()
 
     def report_eval_skip(self, rollout_id: int, reason: str) -> None:
         """Log a skipped eval point at ``rollout_id`` (called by the driver, e.g. on export failure)."""

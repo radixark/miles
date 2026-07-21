@@ -100,10 +100,30 @@ class FakeEngine:
         raise AttributeError(name)
 
 
+class FakeServerEngineWrapper:
+    def __init__(self, actor):
+        self._actor = actor
+        self.is_allocated = True
+        self.stopped = False
+
+    @property
+    def actor_handle(self):
+        return self._actor
+
+    def mark_stopped(self):
+        self.stopped = True
+        self.is_allocated = False
+
+
 class FakeEvalServer:
     def __init__(self, engines):
         self._engines = engines
+        self.wrappers = [FakeServerEngineWrapper(e) for e in engines]
         self.recover_calls = 0
+
+    @property
+    def server_groups(self):
+        return [SimpleNamespace(all_engines=self.wrappers)]
 
     @property
     def engines(self):
@@ -254,6 +274,31 @@ async def test_controller_zombie_engine_times_out_to_skip(controller_env, tmp_pa
 
     assert controller_env.logged["skip"] == (5, "pin_violation")
     assert not mgr._eval_lock.locked()
+
+
+async def test_controller_marks_dead_engine_for_recovery(controller_env, tmp_path):
+    """A dead engine actor must be marked stopped so recover() revives it; the
+    eval itself degrades to a skipped point (the fake recover cannot really
+    replace the actor), never a raise out of the controller."""
+    snapshot = tmp_path / "step_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    engine = FakeEngine(controller_env.log)
+
+    def dead(*args, **kwargs):
+        raise RuntimeError("actor died")
+
+    engine.responses["get_weight_version"] = dead
+    args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
+    mgr = make_manager(args, [engine])
+
+    await mgr._eval_on_dedicated_fleet(5, str(snapshot), export_time_seconds=None)
+
+    srv = mgr.servers["eval"]
+    assert srv.wrappers[0].stopped  # probed, found unreachable, marked for revival
+    assert srv.recover_calls == 1
+    assert controller_env.logged["skip"] == (5, "pin_violation")
 
 
 async def test_controller_gc_keeps_ring(controller_env, tmp_path):
