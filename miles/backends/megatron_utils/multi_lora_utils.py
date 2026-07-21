@@ -92,10 +92,8 @@ def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
         inner = getattr(chained_optimizer, "optimizer", chained_optimizer)
         if inner is None:
             continue
-        # TE/apex FusedAdam keeps the Adam clock per param GROUP, not per
-        # param: reset the retired slot's groups so the next tenant gets
-        # fresh bias correction (the per-param reset below only covers
-        # torch's AdamW fallback, whose clock lives in state["step"]).
+        # TE/apex FusedAdam tracks the Adam step per param GROUP, not per param;
+        # reset the retired slot's groups so the next tenant restarts bias correction.
         for group in inner.param_groups:
             if group.get("miles_multi_lora_slot") == idx and "step" in group:
                 if isinstance(group["step"], torch.Tensor):
@@ -210,11 +208,8 @@ def save_multi_lora_checkpoints(
                     cpu=True,
                     show_progress=False,
                 ):
-                    # The model allocates every slot at --lora-rank; slice the
-                    # export down to this adapter's real rank so the tensors
-                    # match the r written to adapter_config.json (PEFT refuses
-                    # the checkpoint otherwise). The weight-sync push path does
-                    # the same. clone(): safetensors can't save aliased views.
+                    # Slice from the shared --lora-rank down to this adapter's real rank to
+                    # match adapter_config's r; clone() since safetensors rejects aliased views.
                     hf_state[hf_name] = slice_lora_to_rank(hf_name, weight, config.rank).clone()
 
         if is_global_writer:
@@ -365,13 +360,8 @@ def cleanup_adapters(args, model, optimizer, adapters) -> int:
 
 
 def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id: int, step_id: int) -> float:
-    """Optimizer-step the slots whose adapter batch completes with this train
-    batch, and advance their per-adapter LR/WD schedules. Returns the max grad
-    norm across stepped slots (0.0 when none stepped).
-
-    The shared opt_param_scheduler is never stepped under multi-LoRA: schedule
-    parameters inherit the args, only the position is per adapter.
-    """
+    """Optimizer-step the slots whose adapter batch completes with this train batch and advance
+    their per-adapter LR/WD schedules. Returns the max grad norm across stepped slots (0.0 if none)."""
     from miles.backends.megatron_utils.multi_lora_optimizer import step_adapter_slots
     from miles.backends.megatron_utils.multi_lora_scheduler import step_slot_schedulers
     from miles.utils.tracking_utils.structured_log import log_structured
@@ -437,16 +427,8 @@ def save_due_adapter_checkpoints(args, model) -> bool:
 
 
 def select_adapters_to_push(loaded_adapters: dict, pending_push: set, has_new_engines: bool) -> tuple[dict, list]:
-    """Pick the adapters whose engine-side weights are stale: newly loaded +
-    stepped since the last push (tracked identically on every rank, so
-    per-adapter TP collectives line up). New engines need every loaded adapter.
-
-    Returns (adapters to push keyed by name, names getting a version bump).
-    Version bumps drive the staleness filter, so only adapters whose weights
-    actually changed get one: a new-engine full resync pushes every loaded
-    adapter, but re-sending unchanged weights must not age the unchanged
-    adapters' buffered groups toward the drop limit.
-    """
+    """Pick the stale adapters to push (all loaded adapters when engines are new). Returns
+    (adapters to push keyed by name, names to version-bump — only those whose weights changed)."""
     pending = pending_push & set(loaded_adapters)
     push_names = set(loaded_adapters) if has_new_engines else pending
     return {name: loaded_adapters[name] for name in sorted(push_names)}, sorted(pending)

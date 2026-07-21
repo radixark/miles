@@ -1,7 +1,5 @@
-"""slice_lora_to_rank trims max-rank-padded LoRA tensors to an adapter's real
-rank. Both consumers depend on it: the weight-sync push and the HF PEFT
-checkpoint export (whose adapter_config.json declares the real rank — padded
-tensors would make PEFT refuse the checkpoint)."""
+"""slice_lora_to_rank trims max-rank-padded LoRA tensors to the adapter's real rank;
+used by weight-sync and HF PEFT export (PEFT rejects tensors padded past the declared rank)."""
 
 import pytest
 import torch

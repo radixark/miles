@@ -1,21 +1,4 @@
-"""CP=2 correctness for get_batch's multi-LoRA per-adapter token counts.
-
-get_batch's CP paths previously had zero coverage, which let two silent
-regressions ship (a ``chunk``->``batch`` method typo on the allgather path and
-a double ``slice_with_cp`` on the bshd path). These tests pin the normal-CP
-(zigzag) contract:
-
-- per-rank ``adapter_token_counts`` equals the post-slice per-sample lengths
-  summed per slot, with the rank-local stream padding attributed to the last
-  slot, and sums to the rank-local padded token count;
-- zigzag slicing gives every CP rank the same per-sample lengths, so counts
-  must be identical across ranks;
-- unsorted ``adapter_slots`` in a micro-batch is rejected;
-- (strict xfail) bshd tokens must match a single zigzag slice — data.py
-  currently slices bshd tokens twice under CP>1.
-
-CUDA is stubbed out so the tests run on CPU-only workers.
-"""
+"""CP=2 tests for get_batch's multi-LoRA per-adapter token counts; CUDA is stubbed to run on CPU."""
 
 from types import SimpleNamespace
 
@@ -130,10 +113,7 @@ def test_unsorted_adapter_slots_rejected(monkeypatch):
 
 
 def test_bshd_cp2_tokens_are_single_sliced(monkeypatch):
-    # Regression test: the bshd path used to slice tokens twice under CP>1
-    # (pre-slice at the top of the branch, then again in the non-allgather
-    # arm), silently replacing the back half of each rank's tokens with pad
-    # zeros while keeping the shape unchanged.
+    # Regression: the bshd path used to slice tokens twice under CP>1, zeroing the back half of each rank's tokens.
     max_seqlen = 16  # divisible by 2 * cp_size
     state = _parallel_state(cp_rank=0, cp_size=2)
     _patch_state(monkeypatch, state)

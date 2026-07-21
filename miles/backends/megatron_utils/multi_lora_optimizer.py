@@ -1,20 +1,5 @@
-"""Per-slot decoupled optimizers for multi-LoRA training.
-
-One base Adam per adapter slot, assembled under Megatron's
-``LayerWiseDistributedOptimizer`` (whole-parameter ZeRO-1):
-
-- each slot is an independent chained child with its own Adam state, step
-  count, and gradient clipping;
-- optimizer state is sharded across DP ranks at whole-parameter granularity;
-- gradients flow through plain DDP all-reduce (``use_distributed_optimizer``
-  must be OFF), which is also what makes cross-batch gradient retention
-  idempotent: the retained, already-reduced portion of the buffer is identical
-  on every rank, so re-reducing it is a no-op.
-
-Selective stepping (``step_adapter_slots``) steps only the slots whose
-adapter batch completed, zeroes only their gradients, and leaves every
-other slot's accumulated gradients and optimizer state untouched.
-"""
+"""Per-slot decoupled Adam optimizers for multi-LoRA, chained under Megatron's LayerWiseDistributedOptimizer;
+requires plain DDP all-reduce (use_distributed_optimizer OFF) so cross-batch gradient retention stays idempotent."""
 
 import logging
 from argparse import Namespace
@@ -82,14 +67,8 @@ def build_multi_lora_optimizer(
     config: OptimizerConfig,
     model_chunks: Sequence,
 ) -> MegatronOptimizer:
-    """Build one Adam per adapter slot under a LayerWiseDistributedOptimizer.
-
-    The returned optimizer is a ``ChainedOptimizer`` whose ``chained_optimizers``
-    hold one Float16-wrapped Adam per slot, in slot order; each child's param
-    groups are tagged with ``miles_multi_lora_slot``. Param groups are narrowed
-    to this rank's whole-parameter shard by LayerWise, so Adam state exists only
-    for owned params.
-    """
+    """Build one Float16-wrapped Adam per adapter slot under a LayerWiseDistributedOptimizer (ChainedOptimizer);
+    each child's param groups are tagged with ``miles_multi_lora_slot`` and narrowed to this rank's shard."""
     assert not config.use_distributed_optimizer, (
         "multi-LoRA per-slot optimizers require use_distributed_optimizer=False: "
         "gradient retention relies on all-reduce idempotency, and LayerWise "
@@ -103,9 +82,7 @@ def build_multi_lora_optimizer(
 
     pg_collection = ProcessGroupCollection.use_mpu_process_groups()
 
-    # Delay master-weight creation into LayerWise (post-sharding), so fp32
-    # masters exist only for owned params. LayerWise unwraps FP32Optimizer
-    # children and re-wraps with Float16OptimizerWithFloat16Params itself.
+    # Defer bf16 master-weight creation into LayerWise (post-sharding) so fp32 masters exist only for owned params.
     reset_bf16 = config.bf16
     config.bf16 = False
 
@@ -139,9 +116,7 @@ def build_multi_lora_optimizer(
 
     optimizer = LayerWiseDistributedOptimizer(base_optimizers, config, pg_collection, init_state_fn_list=init_fns)
 
-    # LayerWise aggregates grad stats globally (params are scattered across DP
-    # ranks at whole-parameter granularity), so per-child norm/clip reductions
-    # must span the world too, not just the model-parallel group.
+    # Params are scattered whole across DP ranks, so per-child norm/clip reductions must span the world.
     for child in optimizer.chained_optimizers:
         child.grad_stats_parallel_group = None
 
@@ -158,13 +133,8 @@ def _slot_children(optimizer, slot: int):
 
 
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
-    """Between-batch replacement for ``DistributedDataParallel.zero_grad_buffer``.
-
-    Resets the per-iteration bookkeeping (``grad_added_to_main_grad`` flags and
-    bucket-group sync metadata) WITHOUT zeroing the grad buffers, so per-adapter
-    gradient accumulation survives across train batches. Slot gradients are
-    zeroed selectively at step time instead.
-    """
+    """Reset DDP per-iteration grad bookkeeping WITHOUT zeroing grad buffers, so per-adapter accumulation
+    survives across train batches (replaces ``DistributedDataParallel.zero_grad_buffer``)."""
     for model_chunk in model_chunks:
         if getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine":
             for param in model_chunk.params_with_grad:
@@ -174,9 +144,8 @@ def reset_grad_metadata_keep_grads(model_chunks) -> None:
 
 
 def zero_adapter_slot_grads(model, slot: int) -> None:
-    """Zero one slot's gradients everywhere they live: the DDP ``main_grad``
-    buffer views (every rank holds the full buffer under plain DDP) and any
-    lingering ``grad``/``main_param.grad`` references."""
+    """Zero one slot's gradients everywhere they live: the DDP ``main_grad`` buffer views
+    and any lingering ``grad``/``main_param.grad`` references."""
     for param in adapter_slot_parameters(model, slot):
         if (main_grad := getattr(param, "main_grad", None)) is not None:
             main_grad.zero_()
@@ -191,42 +160,20 @@ def step_adapter_slots(
     step_batch_sizes: dict[int, int],
     clip_grad: float,
 ) -> dict[int, float]:
-    """Step exactly the given slots; retain everyone else's gradients.
-
-    ``step_batch_sizes`` maps slot -> adapter_global_batch_size. Samples enter
-    the buffers with weight 1, so the accumulated gradient is a sum over the
-    adapter batch; scaling the fresh master-grad copy by 1/batch_size at step
-    time yields the adapter-batch mean (the constant is known in advance, and
-    the copy is remade by ``prepare_grads`` each step, so the scale applies
-    exactly once).
-
-    Per slot: copy accumulated ``main_grad`` into the owned masters' ``grad``,
-    scale by 1/batch_size, clip per slot, run Adam on the owned shard, copy
-    masters back to model params, and zero the slot's gradient state. One param
-    all-gather at the end propagates updated weights (unchanged slots gather
-    identical bytes).
-
-    Returns the grad norm per stepped slot. Non-finite gradients get the same
-    treatment as baseline bf16 training: they poison that adapter's weights
-    (visible as a NaN grad norm in the logs) — co-tenants are unaffected since
-    slots' params, gradients, and clipping are disjoint.
-    """
+    """Step exactly the slots in ``step_batch_sizes`` (slot -> batch size), retaining all other slots' gradients;
+    scales each slot's accumulated grad sum by 1/batch_size and returns the grad norm per stepped slot."""
     grad_norms: dict[int, float] = {}
 
     for slot, batch_size in step_batch_sizes.items():
         children = _slot_children(optimizer, slot)
-        # Copy model main_grads -> owned masters' grads (bf16 has no loss
-        # scaler, so prepare_grads performs no found-inf handling here), then
-        # normalize the accumulated sum into the adapter-batch mean.
+        # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the adapter-batch mean.
         for child in children:
             child.prepare_grads()
             for main_param in child.get_parameters():
                 if main_param.grad is not None:
                     main_param.grad.mul_(1.0 / batch_size)
 
-        # Per-slot norm over the union of the slot's children, reduced across
-        # the world (params are scattered whole across DP ranks; every param is
-        # counted exactly once on its owner rank).
+        # Per-slot grad norm over the slot's children, reduced across the whole world (whole-param DP scatter).
         grads_for_norm = []
         slot_params = []
         for child in children:

@@ -238,11 +238,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
         # Adapters currently loaded into Megatron slots on this rank.
         self.loaded_adapters: dict[str, object] = {}
-        # Adapters whose engine-side weights are stale: newly loaded at
-        # reconcile, or stepped by the last train call. Consumed (pushed) by
-        # the next update_weights. Derivable identically on every rank because
-        # the loaded set only mutates at reconcile and the stepped set ships
-        # with the train data.
+        # Adapters with stale engine-side weights (newly loaded or just trained);
+        # consumed by the next update_weights. Identical on every rank.
         self._multi_lora_pending_push: set[str] = set()
 
         # empty cache after initialization
@@ -536,13 +533,7 @@ class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     @timer
     def reconcile_adapters(self) -> None:
-        """Load what the controller wants served, tear down what it retired.
-        The snapshot is read once on the main rank and broadcast.
-
-        Deregistered (RETIRING) adapters are retired here, at the sync point
-        before the next generate — their untrained tail (buffered groups and
-        any partially accumulated gradients) is discarded.
-        """
+        """Load adapters the controller wants served; retire deregistered ones, dropping their untrained tail."""
         if not is_multi_lora_enabled(self.args):
             return
         from miles.backends.megatron_utils.multi_lora_utils import cleanup_adapters as _cleanup_adapters

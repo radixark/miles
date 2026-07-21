@@ -1,8 +1,5 @@
-"""zero_optimizer_state_for_adapter must reset the retired slot's Adam state
-on both clock layouts: TE/apex FusedAdam keeps the step per param GROUP, while
-torch's AdamW fallback keeps it per param in state["step"]. Either way the
-slot's next tenant must start from zero moments and a fresh bias-correction
-clock, and co-tenant slots must be untouched."""
+"""zero_optimizer_state_for_adapter must reset a retired slot's Adam moments and step clock
+(group-level FusedAdam or per-param torch AdamW) while leaving co-tenant slots untouched."""
 
 import sys
 import types
@@ -31,9 +28,7 @@ class FakeMultiLoRALinear:
 
 @pytest.fixture()
 def rig(monkeypatch):
-    # zero_optimizer_state_for_adapter imports the bridge module lazily; stub
-    # it in sys.modules so the test does not depend on a bridge build that
-    # ships multi-LoRA (and can shape the module graph freely).
+    # Stub the lazily imported bridge module so the test needs no bridge build that ships multi-LoRA.
     p0 = torch.nn.Parameter(torch.ones(4))
     p1 = torch.nn.Parameter(torch.ones(4))
     module = FakeMultiLoRALinear({0: FakeAdapter([p0]), 1: FakeAdapter([p1])})

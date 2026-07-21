@@ -12,12 +12,7 @@ from miles.utils.types import Sample
 
 
 def _lora_path_for_sample(args: Any, sample: Sample) -> str | None:
-    """The adapter name this sample's scoring request must be served with.
-
-    Multi-LoRA samples carry an adapter ref and must score under their own
-    slot's adapter — the engines only know ``__miles_slot_{N}`` names there.
-    Single-adapter LoRA uses the fixed name; base models use none.
-    """
+    """Adapter name to score under: the sample slot's __miles_slot_{N} name, the fixed single-LoRA name, or None."""
     if sample.adapter is not None:
         return slot_lora_name(sample.adapter.slot)
     if is_lora_enabled(args):
@@ -80,9 +75,7 @@ def _build_batch_prefill_scoring_payload(
 
     lora_paths = {payload.get("lora_path") for payload in payloads}
     if len(lora_paths) > 1:
-        # A batch payload carries a single lora_path; scoring a mixed-adapter
-        # batch under one adapter would silently corrupt the other samples'
-        # logprobs. Callers must group by adapter first.
+        # A batch payload carries a single lora_path; callers must group samples by adapter first.
         raise ValueError("Batched SGLang prefill scoring requires a shared lora_path")
 
     batch_payload: dict[str, Any] = {
@@ -159,9 +152,7 @@ async def recompute_samples_rollout_logprobs_via_prefill(
     flush_url = url.rsplit("/", 1)[0] + "/flush_cache"
 
     if _can_batch_prefill_score(args, samples_to_score):
-        # A batch shares one logprob_start_len and one lora_path, so group by
-        # both: mixed-adapter batches (multi-LoRA) must not score every sample
-        # under whichever adapter came first.
+        # A batch must share one logprob_start_len and one lora_path, so group by both.
         samples_by_batch_key: dict[tuple[int, str | None], list[Sample]] = defaultdict(list)
         for sample in samples_to_score:
             prompt_len = len(sample.tokens) - sample.response_length

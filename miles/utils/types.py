@@ -8,11 +8,7 @@ import torch
 
 @dataclass(frozen=True)
 class AdapterRef:
-    """Per-sample handle identifying which LoRA adapter this sample is bound to.
-
-    Set by the multi-LoRA data source and consumed at training (slot routing)
-    and inference (per-request lora_path) sites. ``None`` means no adapter.
-    """
+    """Which LoRA adapter a sample is bound to (training slot routing, inference lora_path); ``None`` = no adapter."""
 
     name: str
     slot: int
@@ -20,11 +16,7 @@ class AdapterRef:
 
 @dataclass(frozen=True)
 class RewardSpec:
-    """Per-sample handle describing how this sample's response is scored.
-
-    Decoupled from ``AdapterRef`` because reward dispatch is a separate concern
-    from adapter routing — single-adapter or non-LoRA flows can use this too.
-    """
+    """Per-sample spec of how the response is scored; intentionally decoupled from adapter routing."""
 
     rm_type: str | None = None
     custom_rm_path: str | None = None

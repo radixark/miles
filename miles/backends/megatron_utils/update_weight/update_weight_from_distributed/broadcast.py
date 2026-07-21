@@ -164,16 +164,8 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         lora_name: str,
         lora_config: dict,
     ) -> None:
-        """Multi-LoRA variant of ``_update_lora_weight_implementation`` (kept
-        separate so the single-adapter path stays untouched; the transport is
-        the same metadata-over-Ray + NCCL broadcast sequence).
-
-        Differences from the single-adapter path: ``lora_name`` is the
-        adapter's slot name (``__miles_slot_{N}``), ``lora_config`` carries the
-        adapter's own ``r`` / ``lora_alpha``, and the RPC always upserts —
-        insert-or-overwrite in place, no unload/register — which is both the
-        first load and the refresh path for the fixed multi-LoRA pool.
-        """
+        """Multi-LoRA variant of ``_update_lora_weight_implementation``: same transport, but with a
+        per-adapter slot name/config and an upsert RPC (in-place insert-or-overwrite, no unload/register)."""
         names = [name for name, _ in named_tensors]
         dtypes = [param.dtype for _, param in named_tensors]
         shapes = [list(param.shape) for _, param in named_tensors]
@@ -190,10 +182,8 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             )
             for engine in self.rollout_engines
         ]
-        # NCCL broadcast requires contiguous buffers, but slice_lora_to_rank yields
-        # a strided (non-contiguous) view for lora_B (column slice). Materialize
-        # contiguous copies (no-op when already contiguous) and hold the list so
-        # the buffers stay alive until the async broadcasts complete.
+        # NCCL needs contiguous buffers (lora_B slices are strided); the list keeps them alive
+        # until the async broadcasts complete.
         broadcast_tensors = [param.data.contiguous() for _, param in named_tensors]
         handles = [
             dist.broadcast(tensor, 0, group=self._model_update_groups, async_op=True) for tensor in broadcast_tensors

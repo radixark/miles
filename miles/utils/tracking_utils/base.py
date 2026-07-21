@@ -34,10 +34,8 @@ class TrackingBackend(ABC):
     def finish(self) -> None: ...
 
     def define_step_key_metric_group(self, prefix: str, step_key: str) -> None:
-        """Declare a runtime metric group (``{prefix}/*``) plotted against its
-        own step key. Only meaningful for backends where the chart axis is
-        configuration rather than per-call data; the default is a no-op —
-        tensorboard/mlflow take the step numerically on every log call."""
+        """Declare that ``{prefix}/*`` metrics plot against ``step_key``; no-op for
+        backends that take the step numerically on every log call."""
         return
 
 
@@ -62,9 +60,7 @@ class WandbBackend(TrackingBackend):
         wandb.log(metrics)
 
     def define_step_key_metric_group(self, prefix: str, step_key: str) -> None:
-        # Runtime analog of the static groups in _init_wandb_common. Call from
-        # the primary tracking process: definitions asserted by secondary
-        # shared-mode writers are lost nondeterministically.
+        # Call from the primary tracking process: definitions from secondary shared-mode writers are lost.
         if (prefix, step_key) in self._defined_step_key_groups:
             return
         import wandb

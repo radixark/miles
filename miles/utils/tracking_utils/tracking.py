@@ -29,14 +29,8 @@ def init_tracking(args, primary: bool = True, **kwargs):
 
 
 def define_step_key_metric_group(prefix: str, step_key: str) -> None:
-    """Declare a runtime metric group plotted against its own step key
-    (e.g. a multi-LoRA adapter's ``{name}/*`` against ``{name}/step``).
-
-    Fans out to the active backends; only wandb does anything (chart axes are
-    configuration there), and it deduplicates internally. Must be called from
-    the primary tracking process (the driver): definitions asserted by
-    secondary shared-mode writers are lost nondeterministically.
-    """
+    """Declare a metric group plotted against its own step key (e.g. ``{name}/*`` vs ``{name}/step``).
+    Only wandb acts on this; must be called from the primary tracking process or definitions may be lost."""
     _manager.define_step_key_metric_group(prefix, step_key)
 
 

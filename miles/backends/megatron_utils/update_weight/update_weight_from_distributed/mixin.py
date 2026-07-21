@@ -264,10 +264,7 @@ class DistBucketedWeightUpdateMixin:
         self._lora_loaded = True
 
     def _update_multi_lora_weights(self) -> None:
-        """Push the selected adapters (upsert, never unload). The push set is
-        chosen by the actor before each call and is identical on every rank, so
-        per-adapter TP collectives line up. Version bumps are recorded by the
-        actor after the push succeeds."""
+        """Upsert the actor-selected adapters; the push set is identical on every rank so TP collectives align."""
         adapters = self.multi_lora_adapters
         assert adapters is not None, "actor must set multi_lora_adapters before update_weights"
         for name in sorted(adapters):
@@ -297,9 +294,8 @@ class DistBucketedWeightUpdateMixin:
 
         if not accumulated_named_tensors:
             raise RuntimeError(
-                f"Multi-LoRA weight sync failed for adapter {adapter.name!r}: the weight iterator "
-                "produced no LoRA weights (no lora_A/lora_B names found). This usually means the "
-                "Megatron-Bridge or SGLang version is incompatible."
+                f"Multi-LoRA weight sync for adapter {adapter.name!r} yielded no lora_A/lora_B weights; "
+                "likely an incompatible Megatron-Bridge or SGLang version."
             )
 
         self._update_multi_lora_weight_implementation(
@@ -360,14 +356,8 @@ class DistBucketedWeightUpdateMixin:
             is_lora = getattr(self, "is_lora", False)
             is_multi_lora = is_lora and is_multi_lora_enabled(self.args)
 
-            # Base weight sync:
-            #   Full-param RL: base weights change every step -> always sync.
-            #   LoRA RL: the base is frozen and the (remote) rollout engines already
-            #     hold it (they load ``hf_checkpoint`` at init), so there is nothing
-            #     new to push. Skip it -- this mirrors UpdateWeightFromTensor's
-            #     ``skip_base_sync`` for the distributed case, and avoids routing frozen
-            #     base weights (e.g. a VLM vision tower, unsupported by the direct
-            #     convert_to_hf) through the base path.
+            # LoRA: base weights are frozen and already loaded by the rollout engines
+            # from ``hf_checkpoint``, so only full-param runs sync the base.
             if not is_lora:
                 pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 

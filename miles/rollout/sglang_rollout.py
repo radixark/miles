@@ -177,10 +177,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         from miles.ray.multi_lora.controller import AdaptersCache
 
         if (adapter := await AdaptersCache().get(sample.adapter.name)) is None:
-            # Adapter no longer sampleable (deregistered / cleaned up). Don't
-            # POST a request the retire-time abort round can no longer see:
-            # once the slot is reused, such an orphan would keep decoding under
-            # the next tenant's weights and silently pollute its group.
+            # Adapter deregistered: don't POST, or an orphan the abort round can't see
+            # would keep decoding under the slot's next tenant and pollute its group.
             logger.warning(
                 f"Dropping generation for adapter '{sample.adapter.name}' (slot {sample.adapter.slot}): "
                 "adapter is no longer sampleable"

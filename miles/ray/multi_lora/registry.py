@@ -159,12 +159,8 @@ class AdapterRegistry:
             self.batch_records.pop(next(iter(self.batch_records)))
 
     def mark_batch_trained(self, rollout_id: int) -> list[str]:
-        """A train call over this batch succeeded: bank each adapter's groups, fire steps.
-
-        This is the only place accumulation/step state advances, so a failed or
-        retried train call leaves the registry untouched. Returns the adapters
-        that stepped.
-        """
+        """Bank the batch's trained groups and fire steps; returns adapters that stepped. Only place
+        accumulation/step state advances, so a failed/retried train call leaves the registry untouched."""
         record_entry = self.batch_records.pop(rollout_id, None)
         if record_entry is None:
             return []

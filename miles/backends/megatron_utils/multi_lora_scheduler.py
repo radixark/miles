@@ -1,17 +1,5 @@
-"""Per-adapter LR/WD schedules for multi-LoRA.
-
-One ``OptimizerParamScheduler`` per adapter slot, wrapping only that slot's
-param groups. Schedule parameters inherit the global args; only the POSITION
-is per adapter, advancing with the adapter's own trained samples. This gives
-every adapter its own warmup and decay trajectory (a late-registered adapter
-no longer starts on an already-decayed shared schedule), and resume is
-deterministic: the position is rebuilt from the adapter's committed step
-count, with no stored or replayed scheduler state.
-
-Adapters without a known ``num_step`` at load time (indefinite service-mode
-runs, or num_epoch-derived stopping that resolves later on the rollout side)
-have no horizon to decay over: they warm up, then hold ``--lr`` constant.
-"""
+"""Per-adapter LR/WD schedules for multi-LoRA: one ``OptimizerParamScheduler`` per adapter slot, positioned by
+the adapter's own trained samples. Adapters without a known ``num_step`` warm up, then hold ``--lr`` constant."""
 
 import logging
 from argparse import Namespace

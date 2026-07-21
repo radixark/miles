@@ -91,11 +91,8 @@ def convert_samples_to_train_data(
     if any(sample.adapter is not None for sample in samples):
         assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
         train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
-        # Adapters whose adapter batch completes with this batch (the
-        # collection loop's step decision, lifted from sample metadata in postprocess),
-        # with their adapter batch sizes: the trainer scales each stepping slot's
-        # accumulated gradient by 1/adapter batch and advances the LR schedule by the
-        # summed adapter batches.
+        # Slots whose adapter batch completes with this batch: the trainer scales their
+        # accumulated gradients by 1/adapter-batch-size and advances the LR schedule.
         step_slots = sorted(metadata.get("step_slots", []))
         train_data["step_slots"] = step_slots
         train_data["step_adapter_names"] = sorted(metadata.get("step_adapter_names", []))

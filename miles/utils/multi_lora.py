@@ -36,20 +36,8 @@ def is_multi_lora_enabled(args: Any) -> bool:
 
 
 def define_new_adapter_metrics(snapshot: dict) -> None:
-    """Declare metric axes for adapters not seen before ({name}/* ->
-    {name}/step, {name}/perf/* -> rollout/step); already-declared adapters
-    are skipped internally, so calling this every snapshot is free.
-
-    Glob expansion only reaches one path segment, so {name}/perf/* keys are
-    out of {name}/*'s reach despite the shared prefix — each key group must
-    stay exactly one segment under its glob.
-
-    Must run in the the primary tracking writer, whose wandb
-    definitions are the only ones that reliably persist — and before the
-    adapter's first metrics, which is guaranteed at snapshot time: an adapter
-    can't ship step metrics until it has been promoted and trained a full
-    adapter batch.
-    """
+    """Declare metric axes for new adapters ({name}/* -> {name}/step, {name}/perf/* -> rollout/step); must run
+    in the primary tracking writer. Already-declared adapters are skipped, so calling every snapshot is free."""
     # lazy import tracking deps
     from miles.utils.tracking_utils.tracking import define_step_key_metric_group
 
@@ -65,10 +53,7 @@ def validate_multi_lora_args(args: Any) -> None:
     if not args.multi_lora:
         return
 
-    # Multi-LoRA ships its own rollout fn and data source (per-adapter
-    # buffers, controller-driven sampling); the standard defaults don't
-    # understand adapters. Swap them in unless the user pointed the flag
-    # at something else (e.g. a subclass).
+    # Swap in the multi-LoRA rollout fn and data source unless the user pointed these flags elsewhere.
     standard_rollout_fns = (
         "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn",
         "miles.rollout.sglang_rollout.generate_rollout",
@@ -135,9 +120,7 @@ def validate_multi_lora_args(args: Any) -> None:
             args.multi_lora_max_adapter_global_batch_size > 0
         ), "--multi-lora-max-adapter-global-batch-size must be positive"
 
-    # Effective data-parallel size of the trainer; adapter batch shapes are
-    # validated against it at registration (min_groups_per_dp_split). Guarded for
-    # harnesses that validate miles args without the megatron arg set.
+    # Trainer DP size, used to validate adapter batch shapes; guarded for harnesses without megatron args set.
     if all(
         hasattr(args, name)
         for name in (

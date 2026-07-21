@@ -30,9 +30,7 @@ async def remote_rm(args, sample: Sample):
 
 
 def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
-    # Spec fields win when set; unset fields fall through to the sample
-    # metadata and the process-wide args. A reward_spec with empty fields (an
-    # adapter config without its own rm_type) must not disable the fallbacks.
+    # Spec fields win when set; unset/empty fields fall back to sample metadata and process-wide args.
     spec = sample.reward_spec
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
     custom_rm_path = (spec.custom_rm_path if spec is not None else None) or getattr(args, "custom_rm_path", None)

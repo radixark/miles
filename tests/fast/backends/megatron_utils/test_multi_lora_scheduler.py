@@ -1,7 +1,5 @@
-"""Per-adapter LR schedules: parameters inherit the global args, position is
-per adapter. Pins the two defects this replaces: a late/loaded adapter no
-longer inherits the shared schedule's decayed position, and resume rebuilds
-the position deterministically from the adapter's committed step count."""
+"""Per-adapter LR schedules: parameters come from the global args, position is per adapter.
+Pins two fixes: late loads don't inherit the decayed position; resume rebuilds position from committed steps."""
 
 from types import SimpleNamespace
 

@@ -344,12 +344,8 @@ class SGLangEngine(RayActor):
         added_tokens_config: dict | None = None,
         upsert: bool = False,
     ):
-        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N.
-
-        When ``upsert`` is set, the adapter named ``lora_name`` must already be
-        loaded and is overwritten in place (no unload/register); used by the
-        multi-LoRA in-place update path.
-        """
+        """Load a LoRA adapter; ``serialized_named_tensors[tp_rank]`` is bytes for that TP rank.
+        With ``upsert``, the already-loaded ``lora_name`` is overwritten in place (no unload/register)."""
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
@@ -380,18 +376,8 @@ class SGLangEngine(RayActor):
         added_tokens_config: dict | None = None,
         upsert: bool = False,
     ):
-        """Load a LoRA adapter whose weights are broadcast over ``group_name``.
-
-        Mirrors ``update_weights_from_distributed``: only metadata is sent here;
-        the tensors arrive via NCCL broadcast (src=0), so no CUDA IPC is used and
-        this works across nodes. ``init_weights_update_group`` must have created
-        ``group_name`` already.
-
-        When ``upsert`` is set, the adapter named ``lora_name`` must
-        already be loaded on the engines; its weights are overwritten in place
-        (no unload, no register, no wait_for_unload). This is the in-place update
-        path for the fixed multi-LoRA pool.
-        """
+        """Load a LoRA adapter: only metadata is sent; weights arrive via NCCL broadcast over ``group_name``.
+        With ``upsert``, the already-loaded ``lora_name`` is overwritten in place (no unload/register)."""
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,

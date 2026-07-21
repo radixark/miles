@@ -1,15 +1,5 @@
-"""Fully-async multi-LoRA rollout with per-adapter gradient accumulation.
-
-A background producer generates continuously into per-adapter buffers. Each
-train batch is collected by popping groups from the buffers round-robin, in
-multiples of the adapter's ``min_groups_per_dp_split`` capped at its remaining
-batch, so:
-
-- any batch splits evenly across data-parallel ranks;
-- an adapter's batch (``rollout_batch_size`` prompt groups, i.e.
-  ``adapter_global_batch_size`` samples) is never overshot;
-- adapters whose batch completes here are stamped as stepping.
-"""
+"""Fully-async multi-LoRA rollout: a background producer fills per-adapter buffers; batches are collected
+round-robin in ``min_groups_per_dp_split`` multiples without overshooting any adapter's remaining batch."""
 
 import asyncio
 import itertools
@@ -65,9 +55,7 @@ EMPTY_BATCH_TIMEOUT_S = 30.0
 
 
 class GroupBuffer:
-    """One adapter's completed prompt groups: a FIFO queue you can also
-    len(), and sweep for staleness. Bounded; the oldest group is dropped
-    when a put exceeds the cap."""
+    """One adapter's FIFO of completed prompt groups; bounded — the oldest group is dropped when full."""
 
     def __init__(self) -> None:
         self._groups: deque[Group] = deque(maxlen=MAX_BUFFERED_GROUPS)
@@ -174,26 +162,19 @@ async def process_group(
 
 
 class MultiLoRAWorkerMetrics:
-    """The worker's cross-batch metric state, kept out of its buffer
-    machinery. Two cadences: dynamic-filter drops and staleness drops drain
-    every batch, per-adapter sample stats flush when the adapter's optimizer
-    step completes. Has its own lock — the producer thread records drops
-    while the trainer thread drains."""
+    """Cross-batch metric state; locked because the producer thread records while the trainer thread drains."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.dynamic_filter_drop_counts: dict[str, int] = defaultdict(int)
         # Staleness of dropped groups per adapter, drained every batch.
         self.staleness_values: dict[str, list[int]] = defaultdict(list)
-        # Shipped-sample values, accumulated per adapter across train batches
-        # and flushed as step statistics when the adapter steps. Bounded by
-        # adapter_global_batch_size values per adapter.
+        # Per-adapter shipped-sample values, flushed as step statistics when the adapter steps.
         self.step_rewards: dict[str, list[float]] = defaultdict(list)
         self.step_response_lens: dict[str, list[float]] = defaultdict(list)
         # Per-sample mean engine log prob (rough per-adapter entropy trend).
         self.step_log_prob_means: dict[str, list[float]] = defaultdict(list)
-        # Group outcomes for zero-std rates: total groups shipped, and the
-        # common reward of each uniform-reward (zero advantage) group.
+        # Group outcomes for zero-std rates: shipped group counts and each uniform-reward group's reward.
         self.step_group_counts: dict[str, int] = defaultdict(int)
         self.step_zero_std_rewards: dict[str, list[float]] = defaultdict(list)
 
@@ -215,15 +196,8 @@ class MultiLoRAWorkerMetrics:
     def record_shipped_samples(
         self, args, data: list[Group], step_names: list[str], adapters: dict
     ) -> dict[str, dict[str, float]]:
-        """Accumulate the shipped batch's rewards and response lengths per
-        adapter; for adapters stepping with this batch, flush statistics over
-        their whole adapter batch (accumulated across shipped batches, so the
-        stats cover all ``adapter_global_batch_size`` samples of the step, not
-        just this batch's slice). Returns {adapter name: flushed metrics}.
-
-        Counted at ship time, not train commit: a failed train call aborts the
-        run anyway, so the distinction has no practical effect.
-        """
+        """Accumulate shipped rewards/response lengths per adapter; flush whole-adapter-batch statistics
+        for adapters stepping with this batch. Returns {adapter name: flushed metrics}."""
         with self.lock:
             for group in data:
                 name = group_adapter_name(group)
@@ -258,12 +232,7 @@ class MultiLoRAWorkerMetrics:
                         f"Adapter '{name}' stepped with {len(rewards)} shipped samples, expected "
                         f"adapter_global_batch_size={expected}; batch accounting drifted"
                     )
-                # Keys are single-segment ("raw_reward_mean", not
-                # "rollout/raw_reward/mean") so that, prefixed with
-                # "{name}/", they sit one level under the "{name}/*" glob —
-                # the same shape as "train/loss" under "train/*". Deeper keys
-                # never get their axis: glob expansion only matches one
-                # segment on the server.
+                # Single-segment keys so "{name}/<key>" matches the "{name}/*" glob (server globs one segment).
                 flushed[name] = {
                     **dict_add_prefix(compute_statistics(rewards), "raw_reward_"),
                     **dict_add_prefix(compute_statistics(response_lens), "response_len_"),
@@ -315,20 +284,15 @@ class AsyncMultiLoRAWorker:
         self.dynamic_filter = (
             load_function(args.dynamic_sampling_filter_path) if args.dynamic_sampling_filter_path else None
         )
-        # Guards the buffers: the producer thread puts completed groups while
-        # get_groups (trainer side) pops them.
+        # Guards the buffers: the producer thread puts while get_groups (trainer side) pops.
         self.buffer_lock = threading.Lock()
         self.buffers: dict[str, GroupBuffer] = defaultdict(GroupBuffer)
-        # Fairness cursor: the adapter whose buffer get_groups visits first.
-        # Advances past every visited adapter, persisting across calls and
-        # batches, so adapters are served round-robin.
+        # Round-robin cursor over adapters, persisting across get_groups calls and batches.
         self.rotation: deque[str] = deque()
         self.metrics = MultiLoRAWorkerMetrics()
-        # Last seen registration id per adapter name; a change means the name
-        # was re-registered and inherited buffer/metric state must be dropped.
+        # Last seen registration id per adapter name; a change means re-registration -> drop inherited state.
         self.registrations: dict[str, str] = {}
-        # Set when run_loop dies; collect_batch surfaces it instead of letting
-        # the batch collection time out with a misleading empty-batch error.
+        # Set when run_loop dies; collect_batch surfaces it instead of a misleading empty-batch timeout.
         self.failure: Exception | None = None
 
     @classmethod
@@ -419,18 +383,8 @@ class AsyncMultiLoRAWorker:
     def get_groups(
         self, snapshot: dict, num_samples: int, group_counts: dict[str, int]
     ) -> tuple[list[Group], dict[str, int]]:
-        """Pop groups for the batch being collected. Returns the popped groups
-        ([] when nothing is poppable right now) and an updated copy of
-        ``group_counts`` (adapter name -> groups in the batch); passing the
-        counts back on each fetch is what keeps a batch from overshooting an
-        adapter's remaining groups.
-
-        Pops round-robin from the cursor, one ``min_groups_per_dp_split`` at a
-        time, until ``num_samples`` is covered (the final multiple may overshoot
-        it) or no adapter can contribute. An adapter can't contribute when its
-        buffer holds less than a whole multiple, or the batch already holds all
-        its remaining groups.
-        """
+        """Pop groups round-robin in ``min_groups_per_dp_split`` multiples until ``num_samples`` is covered or
+        nothing is poppable; returns them with an updated ``group_counts`` copy (prevents adapter overshoot)."""
         adapters = {**snapshot["active"], **snapshot["retiring"]}
         dp_size = self.args.multi_lora_dp_size
         max_staleness = getattr(self.args, "max_weight_staleness", None)
@@ -439,19 +393,15 @@ class AsyncMultiLoRAWorker:
         popped_samples = 0
 
         with self.buffer_lock:
-            # Adapters retired at the last reconcile sync point: their buffered
-            # tail is discarded (base deregistration semantics), along with any
-            # partially accumulated reward stats.
+            # Retired adapters: discard their buffered tail and partial reward stats.
             for name in list(self.buffers):
                 if name not in adapters:
                     self.buffers.pop(name)
                     self.metrics.discard_adapter(name)
                     self.registrations.pop(name, None)
 
-            # A re-registered name is a new tenant. The sweep above never ran
-            # when no generate happened between retirement and re-registration
-            # (e.g. the last adapter retired and the driver idled), so drop any
-            # buffered groups and partial stats inherited from the old tenant.
+            # A re-registered name is a new tenant: drop buffered groups and
+            # partial stats inherited from the old tenant.
             for name, adapter in adapters.items():
                 previous = self.registrations.get(name)
                 if previous is not None and previous != adapter.registration_id:
@@ -495,17 +445,8 @@ class AsyncMultiLoRAWorker:
 
 
 async def collect_batch(args, worker: AsyncMultiLoRAWorker, snapshot: dict) -> TrainBatch:
-    """Collect one train batch from the worker's buffers (same loop shape as
-    fully_async's generate_rollout_async): keep popping group multiples until
-    the batch reaches ``--global-batch-size`` samples, or it is non-empty and
-    made no progress for ``--multi-lora-max-coalesce-wait-s`` (the target can
-    be permanently unreachable when the live adapters' remaining batches are
-    smaller than the target, so ship what there is).
-
-    The remaining-groups math relies on the sequential trainer loop: the
-    previous batch's ``mark_batch_trained`` has landed before this generate
-    call, so the snapshot's ``accumulated_groups`` is current.
-    """
+    """Pop group multiples until the batch reaches ``--global-batch-size`` samples, or it is non-empty and
+    stalls for ``--multi-lora-max-coalesce-wait-s`` (the target can be unreachable; ship what there is)."""
     adapters = {**snapshot["active"], **snapshot["retiring"]}
     target_samples = args.global_batch_size
     wait_s = getattr(args, "multi_lora_max_coalesce_wait_s", 0.5)
@@ -566,9 +507,7 @@ async def generate_rollout_multi_lora_async(
     start_time = time.time()
     queue_sizes = worker.queue_sizes()
 
-    # Driver contract: generate is only called with live adapters, and the
-    # sequential loop retires adapters and commits accumulated_groups only
-    # between generate calls — so one snapshot serves the whole collection.
+    # Driver contract: adapter state only changes between generate calls, so one snapshot serves the collection.
     snapshot = await get_multi_lora_controller().snapshot.remote()
     assert snapshot["active"] or snapshot["retiring"], "generate called with no live adapters"
 
@@ -606,10 +545,7 @@ async def generate_rollout_multi_lora_async(
         sampling_params=state.sampling_params,
     )
 
-    # Adapter metrics live on the adapter's own optimizer-step axis
-    # ({name}/step), not rollout/step: one point per completed step, means
-    # over exactly the samples that step trained on. adapters[name].step is
-    # the committed count at snapshot time; this batch completes step + 1.
+    # Adapter metrics ride the adapter's own optimizer-step axis ({name}/step); this batch completes step + 1.
     for name, step_metrics in worker.metrics.record_shipped_samples(args, data, batch.step_names, adapters).items():
         step_key = f"{name}/step"
         log_dict = {step_key: adapters[name].step + 1}
@@ -622,9 +558,7 @@ async def generate_rollout_multi_lora_async(
         **worker.metrics.pop_metrics(),
         "perf/fully_async/queue_length": sum(queue_sizes.values()),
         "perf/fully_async/stale_dropped": len(all_staleness),
-        # Per-adapter cycle metrics: {name}/perf/* rides rollout/step. Two
-        # segments under {name}/ keeps these off the step axis (glob expansion
-        # only reaches one segment); the {name}/perf/* glob catches them.
+        # {name}/perf/* rides rollout/step; two segments under {name}/ keep these off the step axis.
         **{f"{name}/perf/queue_length": size for name, size in queue_sizes.items()},
         **{f"{name}/perf/stale_dropped": len(stale_drops.get(name, [])) for name in adapters},
         "perf/fully_async/batch_wait_time": time.time() - start_time,
