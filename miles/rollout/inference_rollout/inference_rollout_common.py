@@ -174,6 +174,7 @@ class InferenceRolloutFn:
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
         self.eval_prompt_dataset_cache = {}
+        self._eval_state: GenerateState | None = None
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -190,13 +191,16 @@ class InferenceRolloutFn:
         return output
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
-        from miles.rollout.inference_rollout.inference_rollout_eval import eval_rollout_single_dataset
+        from miles.rollout.checkpoint_eval import make_eval_generate_state
+        from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 
-        assert not self.state.args.group_rm, "Group RM is not supported for eval rollout"
-
-        coros = []
-        for dataset_cfg in getattr(self.state.args, "eval_datasets", []) or []:
-            coros.append(eval_rollout_single_dataset(self.state, dataset_cfg, self.eval_prompt_dataset_cache))
-        results_list = await asyncio.gather(*coros)
-        results = {k: v for r in results_list for k, v in r.items()}
+        if getattr(self.state.args, "eval_num_gpus", 0) > 0:
+            # A dedicated eval fleet exists: run eval against its router with a
+            # state sized for it, instead of contending with train generation.
+            if self._eval_state is None:
+                self._eval_state = make_eval_generate_state(self.state.args)
+            state = self._eval_state
+        else:
+            state = self.state
+        results = await run_eval_datasets(state, self.eval_prompt_dataset_cache)
         return RolloutFnEvalOutput(data=results)

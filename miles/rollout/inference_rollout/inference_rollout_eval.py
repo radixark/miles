@@ -19,6 +19,21 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 
+async def run_eval_datasets(
+    state: GenerateState,
+    prompt_dataset_cache: dict[Any, Dataset],
+) -> dict[str, dict[str, Any]]:
+    """Run every configured eval dataset against the engines behind ``state.args``'s router."""
+    args = state.args
+    assert not args.group_rm, "Group RM is not supported for eval rollout"
+
+    coros = []
+    for dataset_cfg in getattr(args, "eval_datasets", []) or []:
+        coros.append(eval_rollout_single_dataset(state, dataset_cfg, prompt_dataset_cache))
+    results_list = await asyncio.gather(*coros)
+    return {k: v for r in results_list for k, v in r.items()}
+
+
 async def eval_rollout_single_dataset(
     state: GenerateState,
     dataset_cfg: EvalDatasetConfig,
@@ -104,11 +119,20 @@ async def eval_rollout_single_dataset(
 
     data.sort(key=lambda sample: sample.index)
 
+    # A sample can come back ABORTED or reward-less if an engine died mid-eval;
+    # drop it and report the count instead of corrupting the dataset metrics.
+    kept = [s for s in data if s.status != Sample.Status.ABORTED and s.reward is not None]
+    num_failed = len(data) - len(kept)
+    if num_failed:
+        logger.warning(f"Eval {dataset_cfg.name}: dropping {num_failed} aborted/reward-less samples")
+        data = kept
+
     reward_key = args.eval_reward_key or args.reward_key
     return {
         dataset_cfg.name: {
             "rewards": [sample.reward if not reward_key else sample.reward[reward_key] for sample in data],
             "truncated": [sample.status == Sample.Status.TRUNCATED for sample in data],
             "samples": data,
+            "failed_samples": num_failed,
         }
     }
