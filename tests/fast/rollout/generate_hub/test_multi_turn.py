@@ -22,7 +22,7 @@ _ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
 
 
 def is_agentic_variant(variant: str) -> bool:
-    return variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples")
+    return variant == "agentic_tool_call"
 
 
 # ------------------------------------ fixtures and consts ----------------------------------------
@@ -33,14 +33,7 @@ DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 TOKENIZER = load_tokenizer(MODEL_NAME, trust_remote_code=True)
 
 
-@pytest.fixture(
-    params=[
-        "multi_turn_single_sample",
-        "multi_turn_multi_samples",
-        "agentic_tool_call_single_sample",
-        "agentic_tool_call_multi_samples",
-    ]
-)
+@pytest.fixture(params=["multi_turn", "agentic_tool_call"])
 def variant(request):
     return request.param
 
@@ -233,41 +226,21 @@ class TestBasicMultiTurn:
                 expected_request(S.FIRST_PROMPT_TOKEN_IDS),
                 expected_request(S.SECOND_PROMPT_TOKEN_IDS),
             ]
-        if variant in ("multi_turn_single_sample", "agentic_tool_call_single_sample"):
-            full_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE + S.SECOND_RESPONSE
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[
-                        expected_chunk(S.FIRST_RESPONSE, 1),
-                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
-                        expected_chunk(S.SECOND_RESPONSE, 1),
-                    ],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=full_response,
-                        response_length=token_len(full_response),
-                    ),
+        full_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE + S.SECOND_RESPONSE
+        expected = [
+            ExpectedSampleInfo(
+                chunks=[
+                    expected_chunk(S.FIRST_RESPONSE, 1),
+                    expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                    expected_chunk(S.SECOND_RESPONSE, 1),
+                ],
+                partial_sample=expected_partial_sample(
+                    prompt=S.PROMPT,
+                    response=full_response,
+                    response_length=token_len(full_response),
                 ),
-            ]
-        else:
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.FIRST_RESPONSE,
-                        response_length=token_len(S.FIRST_RESPONSE),
-                    ),
-                ),
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.SECOND_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.SECOND_RESPONSE,
-                        response_length=token_len(S.SECOND_RESPONSE),
-                    ),
-                ),
-            ]
+            ),
+        ]
         verify_samples(result.sample, expected)
 
 
@@ -367,7 +340,7 @@ class TestExitConditions:
             assert _strip_pretokenized(result.requests) == [expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN)]
         else:
             assert result.requests == [expected_request(S.FIRST_PROMPT_TOKEN_IDS)]
-        if variant == "multi_turn_single_sample":
+        if variant == "multi_turn":
             expected = [
                 ExpectedSampleInfo(
                     chunks=[
@@ -404,17 +377,14 @@ class TestRespectMaxContextLen:
             pytest.skip("TODO: implement")
         result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
         assert result.requests == []
-        if variant == "multi_turn_single_sample":
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[],
-                    partial_sample=expected_partial_sample(
-                        prompt=SINGLE_TURN_PROMPT, response="", response_length=0, status=Sample.Status.TRUNCATED
-                    ),
-                )
-            ]
-        else:
-            expected = []
+        expected = [
+            ExpectedSampleInfo(
+                chunks=[],
+                partial_sample=expected_partial_sample(
+                    prompt=SINGLE_TURN_PROMPT, response="", response_length=0, status=Sample.Status.TRUNCATED
+                ),
+            )
+        ]
         verify_samples(result.sample, expected)
 
     @pytest.mark.parametrize(
@@ -439,34 +409,21 @@ class TestRespectMaxContextLen:
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
 
         assert result.requests == [expected_request(S.FIRST_PROMPT_TOKEN_IDS)]
-        if variant == "multi_turn_single_sample":
-            partial_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[
-                        expected_chunk(S.FIRST_RESPONSE, 1),
-                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
-                    ],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=partial_response,
-                        response_length=token_len(partial_response),
-                        status=Sample.Status.TRUNCATED,
-                    ),
+        partial_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE
+        expected = [
+            ExpectedSampleInfo(
+                chunks=[
+                    expected_chunk(S.FIRST_RESPONSE, 1),
+                    expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                ],
+                partial_sample=expected_partial_sample(
+                    prompt=S.PROMPT,
+                    response=partial_response,
+                    response_length=token_len(partial_response),
+                    status=Sample.Status.TRUNCATED,
                 ),
-            ]
-        else:
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.FIRST_RESPONSE,
-                        response_length=token_len(S.FIRST_RESPONSE),
-                        status=Sample.Status.TRUNCATED,
-                    ),
-                ),
-            ]
+            ),
+        ]
         verify_samples(result.sample, expected)
 
     @pytest.mark.parametrize(
@@ -517,57 +474,25 @@ class TestThreeTurn:
                 expected_request(S.SECOND_PROMPT_TOKEN_IDS),
                 expected_request(S.THIRD_PROMPT_TOKEN_IDS),
             ]
-        if variant in ("multi_turn_single_sample", "agentic_tool_call_single_sample"):
-            full_response = (
-                S.FIRST_RESPONSE
-                + S.FIRST_TOOL_RESPONSE
-                + S.SECOND_RESPONSE
-                + S.SECOND_TOOL_RESPONSE
-                + S.THIRD_RESPONSE
-            )
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[
-                        expected_chunk(S.FIRST_RESPONSE, 1),
-                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
-                        expected_chunk(S.SECOND_RESPONSE, 1),
-                        expected_chunk(S.SECOND_TOOL_RESPONSE, 0),
-                        expected_chunk(S.THIRD_RESPONSE, 1),
-                    ],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=full_response,
-                        response_length=token_len(full_response),
-                    ),
+        full_response = (
+            S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE + S.SECOND_RESPONSE + S.SECOND_TOOL_RESPONSE + S.THIRD_RESPONSE
+        )
+        expected = [
+            ExpectedSampleInfo(
+                chunks=[
+                    expected_chunk(S.FIRST_RESPONSE, 1),
+                    expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                    expected_chunk(S.SECOND_RESPONSE, 1),
+                    expected_chunk(S.SECOND_TOOL_RESPONSE, 0),
+                    expected_chunk(S.THIRD_RESPONSE, 1),
+                ],
+                partial_sample=expected_partial_sample(
+                    prompt=S.PROMPT,
+                    response=full_response,
+                    response_length=token_len(full_response),
                 ),
-            ]
-        else:
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.FIRST_RESPONSE,
-                        response_length=token_len(S.FIRST_RESPONSE),
-                    ),
-                ),
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.SECOND_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.SECOND_RESPONSE,
-                        response_length=token_len(S.SECOND_RESPONSE),
-                    ),
-                ),
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.THIRD_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.THIRD_RESPONSE,
-                        response_length=token_len(S.THIRD_RESPONSE),
-                    ),
-                ),
-            ]
+            ),
+        ]
         verify_samples(result.sample, expected)
 
 
@@ -667,7 +592,7 @@ class TestRoutedExpertsMultiTurn:
         assert len(sample.tokens) - 1 == second_routed_experts.shape[0]
 
 
-_AGENTIC_VARIANTS = ["agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"]
+_AGENTIC_VARIANTS = ["agentic_tool_call"]
 _AGENT_METADATA = {"reward": 1.0, "exit_status": "Submitted", "eval_report": {"passed": True}}
 
 

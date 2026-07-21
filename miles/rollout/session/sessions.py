@@ -81,11 +81,7 @@ def setup_session_routes(app, backend, args):
         # a malformed body is a protocol violation (500), not an assembly failure.
         body = await request.body()
         params = json.loads(body) if body else {}
-        return await core.collect_samples(
-            session_id,
-            multi_samples=bool(params.get("multi_samples", False)),
-            max_seq_len=params.get("max_seq_len"),
-        )
+        return await core.collect_samples(session_id, max_seq_len=params.get("max_seq_len"))
 
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def session_proxy(request: Request, session_id: str, path: str):

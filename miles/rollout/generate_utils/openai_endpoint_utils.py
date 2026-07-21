@@ -51,9 +51,7 @@ class OpenAIEndpointTracer:
             session_server_instance_id=session_server_instance_id,
         )
 
-    async def collect_samples(
-        self, input_sample: Sample, *, multi_samples: bool, max_seq_len: int | None
-    ) -> SamplesReply:
+    async def collect_samples(self, input_sample: Sample, *, max_seq_len: int | None) -> SamplesReply:
         """Fetch the server-assembled training samples for this session.
 
         Single direct POST, no retries: a 5xx means the owning instance died and
@@ -68,7 +66,7 @@ class OpenAIEndpointTracer:
         try:
             payload = await post_bytes_no_retry(
                 f"{self.base_url}/samples",
-                {"multi_samples": multi_samples, "max_seq_len": max_seq_len},
+                {"max_seq_len": max_seq_len},
                 timeout=_SESSION_REQUEST_TIMEOUT,
             )
         finally:
