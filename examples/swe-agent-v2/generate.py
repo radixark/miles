@@ -1,5 +1,5 @@
 """
-Agent V2: reward, metrics, and rollout class.
+SWE-Agent V2: reward, metrics, and rollout class.
 
 The generate function is provided by:
     miles.rollout.generate_hub.agentic_tool_call.generate

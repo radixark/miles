@@ -1,5 +1,5 @@
 """
-Custom agent function for agentic_tool_call.generate.
+Custom agent function for ``agentic_tool_call.generate``.
 
 Dispatches to a Harbor-based agent server and returns env metadata
 as a plain dict. The generate layer merges this into sample.metadata so

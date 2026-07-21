@@ -1,8 +1,8 @@
 # Agent V2 — Qwen3 / Qwen3-Coder on ROCm/AMD
 
-ROCm/AMD-oriented variant of [`../swe-agent-v2`](../swe-agent-v2). It is **self-contained** —
+ROCm/AMD-oriented variant of [`../../swe-agent-v2`](../../swe-agent-v2). It is **self-contained** —
 it carries its own copies of `run.py`, `generate.py`, and `swe_agent_function.py` so it runs
-without modifying the shared example. See [`../swe-agent-v2/README.md`](../swe-agent-v2/README.md)
+without modifying the shared example. See [`../../swe-agent-v2/README.md`](../../swe-agent-v2/README.md)
 for the full pipeline/architecture; this doc covers only the Qwen3 launcher and the ROCm notes.
 
 ## Qwen3 / Qwen3-Coder

@@ -1,8 +1,8 @@
-"""Agent V2 launcher (GLM-4.7-Flash): Miles <-> Harbor agent orchestration.
+"""SWE-Agent V2 launcher (GLM-4.7-Flash): Miles <-> Harbor orchestration.
 
 Supports any task type (SWE-bench, Terminal-Bench, custom) via Harbor.
 
-Python equivalent of run.sh. Usage:
+Usage:
     python run.py
     python run.py --mode normal
     python run.py --base-dir /my/models --prompt-data /my/data.jsonl
