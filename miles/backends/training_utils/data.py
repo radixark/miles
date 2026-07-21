@@ -59,6 +59,10 @@ def get_rollout_data(
             for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
         ]
 
+    if "prompt_mask_sums" in rollout_data:
+        rollout_data["prompt_mask_sums"] = list(
+            torch.tensor(rollout_data["prompt_mask_sums"], dtype=torch.float32, device=torch.cuda.current_device())
+        )
     if "multimodal_train_inputs" in rollout_data:
         # Move multimodal training tensors to GPU in advance
         rollout_data["multimodal_train_inputs"] = [

@@ -30,7 +30,13 @@ from ...training_utils.log_utils import (
     log_rollout_data,
     log_train_step,
 )
-from ...training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
+from ...training_utils.loss import (
+    compute_advantages_and_returns,
+    get_log_probs_and_entropy,
+    get_token_counts_by_step,
+    loss_function,
+    scale_data_parallel_token_mean_loss,
+)
 from ...training_utils.parallel import get_parallel_state, set_parallel_state
 from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
@@ -42,6 +48,16 @@ if TYPE_CHECKING:
     from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
+
+
+def _global_token_counts_by_step(loss_masks: list[torch.Tensor], num_steps: int) -> list[torch.Tensor]:
+    counts = get_token_counts_by_step(loss_masks, num_steps)
+    data_parallel = get_parallel_state().effective_dp
+    if data_parallel.size > 1:
+        dist.all_reduce(counts, op=dist.ReduceOp.SUM, group=data_parallel.group)
+    if torch.any(counts <= 0):
+        raise ValueError(f"token_mean requires at least one active token per optimizer step, got {counts.tolist()}.")
+    return list(counts)
 
 
 class FSDPTrainRayActor(TrainRayActor):
@@ -471,6 +487,11 @@ class FSDPTrainRayActor(TrainRayActor):
         with timer("actor_train"):
             data_iterator.reset()
             num_steps_per_rollout = len(num_microbatches)
+            token_counts = (
+                _global_token_counts_by_step(rollout_data["loss_masks"], num_steps_per_rollout)
+                if self.args.calculate_per_token_loss
+                else None
+            )
 
             for step_id in range(num_steps_per_rollout):
                 self.optimizer.zero_grad(set_to_none=True)
@@ -493,6 +514,7 @@ class FSDPTrainRayActor(TrainRayActor):
                             "returns",
                             "ref_log_probs",
                             "rollout_log_probs",
+                            "prompt_mask_sums",
                         ],
                         self.args.data_pad_size_multiplier,
                         self.args.qkv_format,
@@ -503,6 +525,7 @@ class FSDPTrainRayActor(TrainRayActor):
                         batch=batch,
                         step_id=step_id,
                         num_microbatches=num_microbatches[step_id],
+                        global_num_tokens=token_counts[step_id] if token_counts is not None else None,
                     )
                     losses_reduced.append(log_dict)
 
@@ -557,12 +580,12 @@ class FSDPTrainRayActor(TrainRayActor):
             self.ref_model.load_state_dict(actor_state)
             self.ref_model.cpu()
 
-    def _train_step(self, batch, step_id, num_microbatches):
+    def _train_step(self, batch, step_id, num_microbatches, global_num_tokens):
         # Prepare model inputs
         model_args = self._get_model_inputs_args(batch)
         logits = self.model(**model_args).logits.float()
 
-        loss, normalizer, log_dict = loss_function(
+        loss, _, log_dict = loss_function(
             args=self.args,
             batch=batch,
             num_microbatches=num_microbatches,
@@ -570,6 +593,12 @@ class FSDPTrainRayActor(TrainRayActor):
             apply_megatron_loss_scaling=False,
         )
 
+        if global_num_tokens is not None:
+            loss = scale_data_parallel_token_mean_loss(
+                loss,
+                global_num_tokens=global_num_tokens,
+                data_parallel_size=get_parallel_state().effective_dp.size,
+            )
         loss.backward()
 
         return log_dict

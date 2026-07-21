@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 from typing import Any
 
@@ -20,6 +21,8 @@ from miles.utils.misc import load_function
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
+
+_LOSS_AGGREGATION_MODES = ("sample_mean", "prompt_mean", "token_mean", "constant")
 
 
 def reset_arg(parser, name, **kwargs):
@@ -1223,6 +1226,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/Dr.GRPO/custom_reducer.py:get_pg_loss_reducer).",
             )
+            parser.add_argument(
+                "--loss-aggregation",
+                type=str,
+                default="sample_mean",
+                choices=_LOSS_AGGREGATION_MODES,
+                help=(
+                    "How to aggregate pg_loss: per sample, per prompt group, per active token, or with a "
+                    "fixed divisor. --custom-pg-loss-reducer-function-path takes precedence."
+                ),
+            )
+            parser.add_argument(
+                "--loss-aggregation-divisor",
+                type=float,
+                default=None,
+                help=(
+                    "Positive finite divisor for --loss-aggregation constant. Required in constant mode "
+                    "and rejected for every other mode."
+                ),
+            )
 
             parser.add_argument(
                 "--use-routing-replay",
@@ -2289,6 +2311,105 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
     return list(args.ft_components)
 
 
+def _validate_loss_aggregation_args(args):
+    """Reconcile --loss-aggregation with its legacy alias --calculate-per-token-loss and validate the mode."""
+    if not isinstance(args.loss_aggregation, str):
+        raise ValueError(f"--loss-aggregation must be a string, got {args.loss_aggregation!r}.")
+    if not isinstance(args.calculate_per_token_loss, bool):
+        raise ValueError("--calculate-per-token-loss must be a boolean, got " f"{args.calculate_per_token_loss!r}.")
+    if args.loss_aggregation not in _LOSS_AGGREGATION_MODES:
+        choices = ", ".join(sorted(_LOSS_AGGREGATION_MODES))
+        raise ValueError(f"Unknown --loss-aggregation mode {args.loss_aggregation!r}; expected one of: {choices}.")
+
+    if args.loss_aggregation == "constant":
+        divisor = args.loss_aggregation_divisor
+        if (
+            isinstance(divisor, bool)
+            or not isinstance(divisor, (int, float))
+            or not math.isfinite(divisor)
+            or divisor <= 0
+        ):
+            raise ValueError(
+                "--loss-aggregation constant requires --loss-aggregation-divisor <positive finite number> "
+                "(the model's max generation/context length, e.g. 40960), got "
+                f"{divisor!r}."
+            )
+    elif args.loss_aggregation_divisor is not None:
+        raise ValueError(
+            "--loss-aggregation-divisor is only used with --loss-aggregation constant, "
+            f"but --loss-aggregation={args.loss_aggregation!r}."
+        )
+
+    if args.loss_aggregation == "token_mean":
+        args.calculate_per_token_loss = True
+    elif args.calculate_per_token_loss:
+        if args.loss_aggregation == "sample_mean":
+            args.loss_aggregation = "token_mean"
+        else:
+            raise ValueError(
+                f"--loss-aggregation {args.loss_aggregation} is incompatible with --calculate-per-token-loss "
+                "(use --loss-aggregation token_mean for the per-token global mean)."
+            )
+
+    custom_tis_path = args.custom_tis_function_path
+    if (
+        args.loss_type == "policy_loss"
+        and custom_tis_path is not None
+        and args.loss_aggregation in {"prompt_mean", "token_mean"}
+    ):
+        raise ValueError(
+            f"--loss-aggregation {args.loss_aggregation} cannot be combined with --custom-tis-function-path. "
+            "A custom TIS/RS function may change the active loss mask after microbatching, but this mode's "
+            "normalizer is defined over the full optimizer step. Use sample_mean or constant, or omit the "
+            "custom TIS function."
+        )
+
+    if args.calculate_per_token_loss and args.indep_dp:
+        raise ValueError("token_mean is not supported with independent-DP training.")
+
+    # token_mean makes pg_loss token-normalized while entropy/KL auxiliary loss
+    # terms stay sample-normalized; reject the mix instead of training with an
+    # inconsistent objective.
+    if args.loss_type == "policy_loss" and args.loss_aggregation == "token_mean":
+        mixed_terms = []
+        if args.entropy_coef != 0:
+            mixed_terms.append("--entropy-coef")
+        if args.use_kl_loss and args.kl_loss_coef != 0:
+            mixed_terms.append("--kl-loss-coef")
+        if mixed_terms:
+            raise ValueError(
+                "--loss-aggregation token_mean cannot be combined with "
+                f"{', '.join(mixed_terms)} because the policy-gradient term is token-normalized "
+                "while auxiliary policy-loss terms are sample-normalized. Use sample_mean, "
+                "set the auxiliary coefficient to 0, or add explicit per-term loss normalizers."
+            )
+
+    if (
+        args.loss_aggregation == "prompt_mean"
+        and args.global_batch_size is not None
+        and args.global_batch_size % args.n_samples_per_prompt != 0
+    ):
+        raise ValueError(
+            "--loss-aggregation prompt_mean requires global_batch_size to be a multiple of "
+            "n_samples_per_prompt so each prompt group stays within one training step "
+            f"(got global_batch_size={args.global_batch_size}, n_samples_per_prompt={args.n_samples_per_prompt})."
+        )
+
+
+def _derive_global_batch_size_from_rollout(args, *, require_existing_match: bool = True) -> None:
+    if args.num_steps_per_rollout is None:
+        return
+    global_batch_size = args.rollout_batch_size * args.n_samples_per_prompt // args.num_steps_per_rollout
+    if require_existing_match and args.global_batch_size is not None:
+        if args.global_batch_size != global_batch_size:
+            raise ValueError(
+                f"global_batch_size {args.global_batch_size} is not equal to "
+                f"rollout_batch_size {args.rollout_batch_size} * n_samples_per_prompt {args.n_samples_per_prompt} "
+                f"// num_steps_per_rollout {args.num_steps_per_rollout}"
+            )
+    args.global_batch_size = global_batch_size
+
+
 def miles_validate_args(args):
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
@@ -2690,15 +2811,7 @@ def miles_validate_args(args):
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
 
-    if args.num_steps_per_rollout is not None:
-        global_batch_size = args.rollout_batch_size * args.n_samples_per_prompt // args.num_steps_per_rollout
-        if args.global_batch_size is not None:
-            assert args.global_batch_size == global_batch_size, (
-                f"global_batch_size {args.global_batch_size} is not equal to "
-                f"rollout_batch_size {args.rollout_batch_size} * n_samples_per_prompt {args.n_samples_per_prompt} "
-                f"// num_steps_per_rollout {args.num_steps_per_rollout}"
-            )
-        args.global_batch_size = global_batch_size
+    _derive_global_batch_size_from_rollout(args)
 
     if args.n_samples_per_prompt == 1:
         args.grpo_std_normalization = False
@@ -2739,6 +2852,28 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+        # The legacy flag and the new mode are one logical setting. If a custom
+        # config overrides only one spelling, it replaces the CLI value from
+        # the other spelling as well.
+        if "loss_aggregation" in data and "calculate_per_token_loss" not in data:
+            args.calculate_per_token_loss = False
+        elif "calculate_per_token_loss" in data and "loss_aggregation" not in data:
+            args.loss_aggregation = "sample_mean"
+        elif "loss_aggregation" in data and "calculate_per_token_loss" in data:
+            if (
+                isinstance(args.loss_aggregation, str)
+                and isinstance(args.calculate_per_token_loss, bool)
+                and args.calculate_per_token_loss != (args.loss_aggregation == "token_mean")
+            ):
+                raise ValueError(
+                    "custom config gives conflicting values for loss_aggregation and " "calculate_per_token_loss."
+                )
+        _derive_global_batch_size_from_rollout(args, require_existing_match="global_batch_size" in data)
+
+    # Validate once on the merged config (CLI, then --custom-config-path
+    # overrides): reconciling the --calculate-per-token-loss alias mutates args,
+    # so an earlier pass would leak derived state into the override's view.
+    _validate_loss_aggregation_args(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True

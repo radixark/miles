@@ -6,13 +6,82 @@ from torch.utils.checkpoint import checkpoint
 from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
-from miles.backends.training_utils.loss_hub.losses import get_loss_function
+from miles.backends.training_utils.loss_hub.losses import TOKEN_NORMALIZED_TRAIN_KEYS, get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import TrainAdvantageComputationEvent
 from miles.utils.types import RolloutBatch
+
+
+def get_active_token_count(loss_masks: list[torch.Tensor]) -> torch.Tensor:
+    """Count active tokens without inventing weight for fully masked samples."""
+    if not loss_masks:
+        raise ValueError("Cannot normalize a loss over an empty batch.")
+    return torch.stack([loss_mask.sum() for loss_mask in loss_masks]).sum()
+
+
+def get_token_counts_by_step(loss_masks: list[torch.Tensor], num_steps: int) -> torch.Tensor:
+    if num_steps <= 0 or len(loss_masks) < num_steps or len(loss_masks) % num_steps != 0:
+        raise ValueError(f"Cannot split {len(loss_masks)} loss masks across {num_steps} optimizer steps.")
+    samples_per_step = len(loss_masks) // num_steps
+    return torch.stack(
+        [
+            get_active_token_count(loss_masks[start : start + samples_per_step])
+            for start in range(0, len(loss_masks), samples_per_step)
+        ]
+    )
+
+
+def scale_data_parallel_token_mean_loss(
+    loss: torch.Tensor,
+    *,
+    global_num_tokens: torch.Tensor,
+    data_parallel_size: int,
+) -> torch.Tensor:
+    """Scale a local token numerator before FSDP averages gradients across DP."""
+    if global_num_tokens.numel() != 1:
+        raise ValueError(f"Expected one token normalizer, got shape {tuple(global_num_tokens.shape)}.")
+    return loss * data_parallel_size / global_num_tokens.to(device=loss.device)
+
+
+def _as_scalar_tensor(value, *, device: torch.device) -> torch.Tensor:
+    if isinstance(value, torch.Tensor):
+        return value.to(device=device).reshape(())
+    return torch.tensor(value, device=device)
+
+
+def _build_train_log_dict(
+    log: dict[str, torch.Tensor],
+    *,
+    num_samples: int,
+    num_tokens: torch.Tensor,
+    device: torch.device,
+    calculate_per_token_loss: bool,
+    metrics_token_reduced: bool,
+) -> dict[str, list[str] | torch.Tensor]:
+    keys = list(log.keys())
+    values = torch.stack([_as_scalar_tensor(value, device=device) for value in log.values()])
+    if not calculate_per_token_loss:
+        return {
+            "keys": keys,
+            "values": torch.cat([torch.tensor([num_samples], device=device), values]),
+        }
+
+    num_tokens_scalar = num_tokens.to(device=device).reshape(())
+    num_samples_scalar = torch.tensor(num_samples, device=device)
+    normalizers = torch.stack(
+        [
+            num_tokens_scalar if metrics_token_reduced or key in TOKEN_NORMALIZED_TRAIN_KEYS else num_samples_scalar
+            for key in keys
+        ]
+    )
+    return {
+        "keys": keys,
+        "values": values,
+        "normalizers": normalizers,
+    }
 
 
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
@@ -119,19 +188,26 @@ def loss_function(
         - `normalizer` is `num_tokens` (scalar tensor) if
           `args.calculate_per_token_loss` is True, else `1` (int).
         - `logging_dict` has keys "keys" (list of str metric names) and
-          "values" (1D tensor: [count, metric1, metric2, ...]).
+          "values". Without `calculate_per_token_loss`, "values" is a 1D
+          tensor `[num_samples, metric1, metric2, ...]`; with it, "values"
+          holds only the metrics and a "normalizers" tensor carries each
+          metric's denominator (`num_tokens` or `num_samples`).
     """
     parallel_state = get_parallel_state()
-    num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
+    num_tokens = get_active_token_count(batch["loss_masks"])
     num_samples = len(batch["response_lengths"])
 
+    # Policy loss selects pg_loss aggregation separately; this shared reducer is
+    # for metrics and auxiliary terms. Non-policy losses use the legacy reducer
+    # axis directly.
+    reducer_per_token_loss = args.calculate_per_token_loss and args.loss_type != "policy_loss"
     sum_of_sample_mean = get_sum_of_sample_mean(
         batch["total_lengths"],
         batch["response_lengths"],
         batch["loss_masks"],
-        args.calculate_per_token_loss,
-        args.qkv_format,
-        batch.get("max_seq_lens", None),
+        calculate_per_token_loss=reducer_per_token_loss,
+        qkv_format=args.qkv_format,
+        max_seq_lens=batch.get("max_seq_lens", None),
     )
 
     func = get_loss_function(args)
@@ -168,19 +244,23 @@ def loss_function(
         if apply_megatron_loss_scaling:
             loss = loss * parallel_state.cp.size
 
+    log_dict = _build_train_log_dict(
+        log,
+        num_samples=num_samples,
+        num_tokens=num_tokens,
+        device=logits.device,
+        calculate_per_token_loss=args.calculate_per_token_loss,
+        metrics_token_reduced=reducer_per_token_loss,
+    )
+
     return (
         loss,
-        torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
-        {
-            "keys": list(log.keys()),
-            "values": torch.tensor(
-                [
-                    num_samples if not args.calculate_per_token_loss else num_tokens,
-                ]
-                + list(log.values()),
-                device=logits.device,
-            ),
-        },
+        (
+            num_tokens.to(device=logits.device)
+            if args.calculate_per_token_loss
+            else torch.tensor(1, device=logits.device)
+        ),
+        log_dict,
     )
 
 

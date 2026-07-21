@@ -45,6 +45,7 @@ def make_args(**overrides: Any) -> Namespace:
         disable_rollout_trim_samples=False,
         balance_data=False,
         delay_split_train_data_by_dp=False,
+        loss_aggregation="sample_mean",
         # advantage / reward
         advantage_estimator="grpo",
         rewards_normalization=True,

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 import ray
 import torch
@@ -495,8 +493,7 @@ class TestSplitTrainDataRaw:
             "loss_masks": [[0, 0, 1], [0, 1], [0, 0, 0, 1], [0, 1]],
         }
 
-        args = MagicMock()
-        args.balance_data = False
+        args = make_args(balance_data=False)
 
         result = split_train_data_by_dp_raw(args, data, dp_size=2)
 
@@ -516,8 +513,7 @@ class TestSplitTrainDataRaw:
             "opd_reverse_kl": [[float(i)] for i in range(4)],
         }
 
-        args = MagicMock()
-        args.balance_data = False
+        args = make_args(balance_data=False)
 
         result = split_train_data_by_dp_raw(args, data, dp_size=2)
 
@@ -534,8 +530,7 @@ class TestSplitTrainDataRaw:
             "loss_masks": [[0, 1], [0, 1]],
         }
 
-        args = MagicMock()
-        args.balance_data = False
+        args = make_args(balance_data=False)
 
         result = split_train_data_by_dp_raw(args, data, dp_size=1)
         assert "seq_witness_ids" not in result[0]

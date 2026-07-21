@@ -98,6 +98,8 @@ _ARGS_DEFAULTS = dict(
     use_opsm=False,
     opsm_delta=0.1,
     calculate_per_token_loss=False,
+    loss_aggregation="sample_mean",
+    loss_aggregation_divisor=None,
     # value_loss_function
     value_clip=0.2,
     # loss_function dispatcher
