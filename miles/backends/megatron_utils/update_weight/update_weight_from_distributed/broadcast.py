@@ -41,6 +41,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.model = model
         self.model_name = model_name
         self.quantization_config = quantization_config
+        self.weights_getter = weights_getter
         self.weight_version = 0
         self._model_update_groups = None
         self.rollout_engines: Sequence[ActorHandle] | None = None

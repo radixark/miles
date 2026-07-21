@@ -83,12 +83,19 @@ class DistBucketedWeightUpdateMixin:
             self._lora_config = build_lora_sync_config(args)
             self._lora_loaded = False
             self._lora_base_synced = False
+
+        # Bridge iterator: TP/EP-aware HF export used for BOTH base and LoRA weight
+        # sync. In bridge mode the base sync routes through it too (mirrors the
+        # colocate path), instead of the raw convert_to_hf + all_gather_param path
+        # that scrambles the GatedDeltaNet combined in_proj at TP>1.
+        self._hf_weight_iterator = None
+        if args.megatron_to_hf_mode == "bridge":
             self._hf_weight_iterator = HfWeightIteratorBase.create(
                 args=args,
                 model=model,
                 model_name=model_name,
                 quantization_config=quantization_config,
-                is_lora=True,
+                is_lora=is_lora,
             )
 
     def _gather_and_update_non_expert_weights(
@@ -263,6 +270,24 @@ class DistBucketedWeightUpdateMixin:
         self._update_lora_weight_implementation(accumulated_named_tensors)
         self._lora_loaded = True
 
+    def _sync_base_via_bridge(self, pbar: tqdm | None = None) -> None:
+        """Base-weight sync through the megatron.bridge exporter (bridge mode).
+
+        Uses ``export_hf_weights`` (TP/EP-aware, with the correct Qwen3.5
+        GatedDeltaNet in_proj/conv1d/A_log/out_norm mapping) instead of the raw
+        ``convert_to_hf`` + ``all_gather_param`` path, which reassembles the GDN
+        combined ``in_proj.weight`` rank-major and scrambles it at TP>1. This
+        mirrors the colocate path (``update_weight_from_tensor``): all ranks drive
+        the iterator so the internal TP/EP collectives complete, but only the
+        source rank transmits the gathered HF tensors to the rollout engines.
+        """
+        megatron_local_weights = self.weights_getter()
+        for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
+            megatron_local_weights, weight_type="base"
+        ):
+            if self._is_source:
+                self._update_weight_implementation(hf_named_tensors, pbar)
+
     def _pause_and_prepare_engines(self) -> None:
         """Pause rollout engines, flush cache, and open the weight-update session."""
         if dist.get_rank() == 0:
@@ -309,23 +334,34 @@ class DistBucketedWeightUpdateMixin:
         dist.barrier(group=get_gloo_group())
 
         with timer("update_weights_implementation"):
-            # Base weight sync model:
+            # Base weight sync:
             #   full-param RL: base weights change every step -> always sync.
-            #   LoRA RL: base is frozen -> only sync once, on the first iteration.
-            if not (self.is_lora and self._lora_base_synced):
+            #   LoRA RL: base is frozen -> sync once. SGLang does not necessarily
+            #     already hold the correct base (e.g. --ref-load SFT base or
+            #     --sglang-load-format dummy), so a one-time base sync is required
+            #     for correctness.
+            if (not self.is_lora) or (not self._lora_base_synced):
                 pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-                self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
-                dist.barrier(group=get_gloo_group())
-                self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
-                dist.barrier(group=get_gloo_group())
+                if self._hf_weight_iterator is not None:
+                    # Bridge mode: route the base sync through the megatron.bridge
+                    # exporter (TP/EP-aware, correct GatedDeltaNet in_proj/conv1d/A_log
+                    # mapping), mirroring the colocate path. This replaces the raw
+                    # convert_to_hf + all_gather_param path, which scrambles the GDN
+                    # combined in_proj at TP>1 and corrupts the synced base weights.
+                    self._sync_base_via_bridge(pbar)
+                    dist.barrier(group=get_gloo_group())
+                else:
+                    self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+                    dist.barrier(group=get_gloo_group())
+                    self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+                    dist.barrier(group=get_gloo_group())
 
             # LoRA adapter weights: every iteration.
             if self.is_lora:
                 self._update_lora_weights()
                 dist.barrier(group=get_gloo_group())
-                if not self._lora_base_synced:
-                    self._lora_base_synced = True
+                self._lora_base_synced = True
 
         with timer("finalize_and_resume_engines"):
             self._finalize_and_resume_engines()
