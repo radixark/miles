@@ -35,7 +35,7 @@ from argparse import Namespace
 from pathlib import Path
 
 from miles.rollout.checkpoint_eval import retarget_args
-from miles.utils.hf_export import is_complete_hf_export, looks_like_hf_checkpoint
+from miles.utils.hf_config import is_complete_hf_export, looks_like_hf_checkpoint
 from miles.utils.http_utils import init_http_client, post
 
 logger = logging.getLogger("checkpoint_eval_service")
