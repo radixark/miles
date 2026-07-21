@@ -195,8 +195,7 @@ class InferenceRolloutFn:
         from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 
         if getattr(self.state.args, "eval_num_gpus", 0) > 0:
-            # A dedicated eval fleet exists: run eval against its router with a
-            # state sized for it, instead of contending with train generation.
+            # Run against the dedicated eval fleet instead of the train engines.
             if self._eval_state is None:
                 self._eval_state = make_eval_generate_state(self.state.args)
             state = self._eval_state

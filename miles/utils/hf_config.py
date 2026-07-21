@@ -110,19 +110,16 @@ def is_dsa(hf_config) -> bool:
     return getattr(hf_config, "model_type", None) in ("deepseek_v32", "glm_moe_dsa")
 
 
-# Marker written by HF checkpoint exports (save_hf_model / export_hf) once every rank
-# has finished writing, so consumers (the eval snapshot verification, the external
-# checkpoint eval service) can distinguish finished exports from partial ones.
+# Written by HF exports after all ranks finish, so consumers can tell finished from partial.
 HF_EXPORT_COMPLETE_MARKER = ".complete"
 
 
 def is_complete_hf_export(path: str | Path) -> bool:
-    """Whether ``path`` holds a finished HF export (the completeness marker exists)."""
     return (Path(path) / HF_EXPORT_COMPLETE_MARKER).exists()
 
 
 def looks_like_hf_checkpoint(path: str | Path) -> bool:
-    """Marker-less fallback heuristic for checkpoints written before the marker existed."""
+    """Fallback for checkpoints written before the marker existed."""
     path = Path(path)
     if not (path / "config.json").exists():
         return False

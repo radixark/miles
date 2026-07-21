@@ -10,9 +10,8 @@ Requires the class-based rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``)
 
     --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
 
-Evaluation requires a dedicated eval fleet (``--eval-num-gpus``): the rollout fleet
-never has a quiet window, so eval runs on separate engines pinned per-eval to an HF
-checkpoint snapshot (see ``miles/rollout/checkpoint_eval.py``).
+Evaluation requires a dedicated eval fleet (``--eval-num-gpus``); see
+``miles/rollout/checkpoint_eval.py``.
 """
 
 import asyncio
@@ -118,8 +117,6 @@ class FullyAsyncRolloutFn:
                 "fully-async eval requires a dedicated eval fleet: set --eval-num-gpus > 0 "
                 "(or run tools/checkpoint_eval_service.py against --save-hf checkpoints)"
             )
-        # The eval fleet has its own router and engines, so eval coroutines coexist
-        # with the producer task on the shared loop without contending for capacity.
         if self._eval_state is None:
             self._eval_state = make_eval_generate_state(self.args)
         results = await run_eval_datasets(self._eval_state, self._eval_prompt_dataset_cache)

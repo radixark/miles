@@ -22,7 +22,6 @@ async def run_eval_datasets(
     state: GenerateState,
     prompt_dataset_cache: dict[Any, Dataset],
 ) -> dict[str, dict[str, Any]]:
-    """Run every configured eval dataset against the engines behind ``state.args``'s router."""
     args = state.args
     assert not args.group_rm, "Group RM is not supported for eval rollout"
 
@@ -103,8 +102,7 @@ async def eval_rollout_single_dataset(
         try:
             sample = await future
         except Exception as e:
-            # One failed request (engine crash mid-eval, transient router error)
-            # costs one sample, not the whole eval point.
+            # One failed request costs one sample, not the whole eval point.
             logger.warning(f"Eval {dataset_cfg.name}: sample generation raised {e!r}")
             num_raised += 1
             pbar.update(1)
@@ -131,8 +129,7 @@ async def eval_rollout_single_dataset(
 
     data.sort(key=lambda sample: sample.index)
 
-    # A sample can come back ABORTED or reward-less if an engine died mid-eval;
-    # drop it and report the count instead of corrupting the dataset metrics.
+    # Drop ABORTED/reward-less samples (engine died mid-eval) and report the count.
     kept = [s for s in data if s.status != Sample.Status.ABORTED and s.reward is not None]
     num_failed = len(data) - len(kept)
     if num_failed:

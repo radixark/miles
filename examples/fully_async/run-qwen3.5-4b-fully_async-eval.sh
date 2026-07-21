@@ -1,11 +1,7 @@
 #!/bin/bash
 # Fully-async training with a dedicated eval fleet (Qwen3.5-4B, one 8-GPU node).
-#
-# GPU split: 4 actor (TP=2) + 3 rollout engines (TP=1) + 1 eval engine. Carving one
-# GPU out of rollout costs ~25% rollout throughput vs the 4-GPU baseline; in exchange
-# eval runs continuously without ever pausing training. Eval weights are pinned
-# per-eval to an HF snapshot exported to tmpfs (--eval-hf-dir on /dev/shm), so eval is
-# never blocked by disk and every point measures exactly one weight version.
+# GPU split: 4 actor (TP=2) + 3 rollout engines (TP=1) + 1 eval engine; eval weights
+# are pinned per-eval to an HF snapshot on tmpfs, so eval never pauses training.
 
 # for rerun the task
 pkill -9 sglang

@@ -66,8 +66,6 @@ async def test_run_eval_datasets_merges_datasets(monkeypatch):
 
 
 class FakeRemoteMethod:
-    """Mimics a Ray actor method: .remote(...) returns an awaitable."""
-
     def __init__(self, engine, name):
         self.engine = engine
         self.name = name
@@ -249,9 +247,8 @@ async def test_controller_pin_violation_skips_after_retry(controller_env, tmp_pa
 
 
 async def test_controller_zombie_engine_times_out_to_skip(controller_env, tmp_path, monkeypatch):
-    """An engine whose backend died accepts the call but never answers; the load
-    timeout must convert that into a skipped point instead of holding the eval
-    lock forever (which would eventually stall the driver via backpressure)."""
+    """A zombie engine never answers; the load timeout must skip the point
+    instead of holding the eval lock forever."""
     snapshot = tmp_path / "step_5"
     snapshot.mkdir()
     (snapshot / ".complete").touch()
@@ -284,9 +281,7 @@ async def test_controller_zombie_engine_times_out_to_skip(controller_env, tmp_pa
 
 
 async def test_controller_marks_dead_engine_for_recovery(controller_env, tmp_path):
-    """A dead engine actor must be marked stopped so recover() revives it; the
-    eval itself degrades to a skipped point (the fake recover cannot really
-    replace the actor), never a raise out of the controller."""
+    """A dead actor is marked stopped for revival; the eval degrades to a skip."""
     snapshot = tmp_path / "step_5"
     snapshot.mkdir()
     (snapshot / ".complete").touch()

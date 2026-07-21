@@ -21,14 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 class EvalDispatcher:
-    """Dispatch evals against the dedicated eval fleet without stalling training.
-
-    With ``--eval-num-gpus 0`` this degrades to today's blocking ``eval.remote`` call.
-    Otherwise each due eval gets an HF snapshot (exported to ``--eval-hf-dir``, or the
-    ``--save-hf`` checkpoint in reuse mode) and is fired fire-and-forget; the pending
-    set is bounded by ``--eval-max-in-flight`` via the ``--eval-overflow-policy``.
-    Failures degrade to a skipped point logged at that rollout_id, never a crash.
-    """
+    """Fire-and-forget evals against the dedicated eval fleet; blocking legacy call
+    when ``--eval-num-gpus`` is 0. Failures degrade to a skipped point, never a crash."""
 
     def __init__(self, args, actor_model, rollout_manager):
         self.args = args
@@ -65,15 +59,13 @@ class EvalDispatcher:
             self.pending.append((rollout_id, ref))
 
     async def drain(self) -> None:
-        """Await every pending eval (before dispose, so the last points always land)."""
         while self.pending:
             rollout_id, ref = self.pending.popleft()
             await self._await_ref(rollout_id, ref)
 
     async def _ensure_snapshot(self, rollout_id: int) -> tuple[str, float | None]:
         if self.args.eval_hf_dir is None:
-            # Reuse mode: the --save-hf checkpoint for this step was just written
-            # (eval_interval is validated to be a multiple of save_interval).
+            # Reuse mode: the --save-hf checkpoint for this step was just written.
             return self.args.save_hf.format(rollout_id=rollout_id), None
         hf_dir = os.path.join(self.args.eval_hf_dir, f"step_{rollout_id}")
         start = time.time()

@@ -1,14 +1,7 @@
-"""Eval against a dedicated eval fleet pinned to checkpoint snapshots.
+"""Eval against a dedicated eval fleet pinned to HF checkpoint snapshots.
 
-The eval fleet is a second model entry (``name="eval"``, ``update_weights=False``)
-behind its own router; it never joins the training weight-update group and is never
-paused or aborted by training. Weights reach it exclusively through
-``update_weights_from_disk`` on an HF snapshot exported for a specific rollout_id,
-so every eval point measures one well-defined weight version.
-
-The helpers here retarget an args namespace at the eval fleet so the existing
-generate machinery (which reads ``args.sglang_router_ip/port`` and sizes its
-concurrency semaphore off ``args.rollout_num_gpus``) works against it unchanged.
+The eval fleet never joins training weight updates; weights reach it only through
+``update_weights_from_disk`` on a snapshot exported for a specific rollout_id.
 """
 
 import copy
@@ -24,9 +17,8 @@ def retarget_args(args: Namespace, router_ip, router_port, num_gpus: int, num_gp
     """Shallow-copy ``args`` with the router address and GPU sizing swapped for eval.
 
     Generate functions read the router from ``args`` and ``GenerateState`` sizes its
-    semaphore off the GPU counts, so a retargeted copy is all that is needed to run
-    the standard eval path against a different set of engines. The original ``args``
-    is not modified.
+    semaphore off the GPU counts, so a retargeted copy runs the standard eval path
+    against a different set of engines unchanged.
     """
     eval_args = copy.copy(args)
     eval_args.sglang_router_ip = router_ip
@@ -37,7 +29,6 @@ def retarget_args(args: Namespace, router_ip, router_port, num_gpus: int, num_gp
 
 
 def make_eval_args(args: Namespace) -> Namespace:
-    """Retarget ``args`` at the in-job eval fleet's router (requires servers started)."""
     router_ip, router_port = args.sglang_model_routers["eval"]
     return retarget_args(args, router_ip, router_port, args.eval_num_gpus, args.eval_num_gpus_per_engine)
 
@@ -47,11 +38,7 @@ def make_eval_generate_state(args: Namespace) -> GenerateState:
 
 
 class CheckpointEvalRolloutFn:
-    """Eval-only rollout function running against the dedicated eval fleet.
-
-    Addressable via ``--eval-function-path`` when the train rollout function should
-    not serve eval itself.
-    """
+    """Eval-only rollout function for the dedicated eval fleet (via --eval-function-path)."""
 
     def __init__(self, input: RolloutFnConstructorInput):
         self.args = input.args

@@ -1,26 +1,12 @@
-"""Standalone checkpoint eval service.
-
-Watches a directory of HF checkpoint exports (``--save-hf`` output), and for each new
-complete snapshot: pins an sglang server to it via ``/update_weights_from_disk``
-(stamping ``weight_version=str(rollout_id)``), runs the standard miles eval datasets
-against it, and logs the metrics at the snapshot's ``rollout_id`` — hours-late points
-land at the right x because the step travels inside the payload (``eval/step``).
-
-Runs anywhere with sglang + miles importable — another node, spot capacity, or after
-the training run. No Ray, no training-job membership. A ledger file next to the watch
-dir makes restarts idempotent and backfills missed snapshots.
+"""Standalone checkpoint eval service: watch --save-hf output, pin an sglang server
+to each complete snapshot, run the miles eval datasets, log at the snapshot's step.
+No Ray; restarts resume from a ledger file next to the watch dir.
 
 Example::
 
     python tools/checkpoint_eval_service.py \\
         --watch-dir /ckpt/exp/hf --hf-checkpoint /models/Qwen3.5-4B --tp 1 \\
-        --eval-prompt-data aime /data/aime-2024.jsonl --rm-type dapo --reward-key score \\
-        --wandb-mode separate
-
-The watch dir is scanned for subdirectories whose name contains the rollout id
-(``step_{id}`` or any ``{rollout_id}``-formatted layout); a snapshot is consumed once
-it has the ``.complete`` marker (or, for checkpoints written before the marker
-existed, once it looks like a finished HF export and has been quiescent).
+        --eval-prompt-data aime /data/aime-2024.jsonl --rm-type dapo --reward-key score
 """
 
 import argparse
@@ -42,9 +28,7 @@ logger = logging.getLogger("checkpoint_eval_service")
 
 QUIESCENCE_SECS = 120.0
 
-# Fields the eval path consumes that are not exposed as service flags; values match
-# the miles argument defaults. tests/fast/rollout/test_checkpoint_eval_service.py pins
-# this table against the eval path's consumption.
+# Fields the eval path consumes that are not service flags; values match miles defaults.
 EVAL_ARG_DEFAULTS = dict(
     chat_template_path=None,
     custom_generate_function_path=None,
@@ -141,7 +125,6 @@ def parse_service_args() -> Namespace:
 
 
 def build_eval_namespace(service_args: Namespace, server_ip: str, server_port: int) -> Namespace:
-    """Compose the namespace the miles eval path consumes."""
     from miles.utils.arguments import _resolve_eval_datasets
 
     args = Namespace(**EVAL_ARG_DEFAULTS)
@@ -152,8 +135,6 @@ def build_eval_namespace(service_args: Namespace, server_ip: str, server_port: i
 
 
 class SnapshotLedger:
-    """Persistent record of consumed snapshots, next to the watch dir."""
-
     def __init__(self, watch_dir: Path):
         self.path = watch_dir / ".eval_service_state.json"
         self.consumed: set[int] = set()
@@ -166,7 +147,6 @@ class SnapshotLedger:
 
 
 def find_ready_snapshots(watch_dir: Path, min_rollout_id: int, consumed: set[int]) -> list[tuple[int, Path]]:
-    """Unconsumed snapshot dirs ready for eval, ordered by rollout_id."""
     ready = []
     for child in watch_dir.iterdir():
         if not child.is_dir():

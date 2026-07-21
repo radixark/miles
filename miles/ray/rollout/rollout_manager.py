@@ -43,9 +43,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# Bounds each eval-fleet weight load (per attempt). Generous enough for large
-# checkpoints from network storage; small enough that a zombie engine costs a
-# skipped point, not a wedged eval pipeline.
+# Per-attempt bound on eval-fleet weight loads; a zombie engine costs a skipped point.
 EVAL_WEIGHT_LOAD_TIMEOUT_SECS = 600.0
 
 
@@ -170,15 +168,12 @@ class RolloutManager:
             self._metric_checker.on_eval(metrics)
 
     async def _eval_on_dedicated_fleet(self, rollout_id: int, hf_dir: str, export_time_seconds: float | None):
-        """Pin the eval fleet's weights to the snapshot for ``rollout_id``, then run eval.
+        """Pin the eval fleet to the snapshot for ``rollout_id``, then run eval.
 
-        Every failure mode degrades to a skipped point logged at ``rollout_id`` with a
-        reason counter — never wrong data, never a training stall.
+        Every failure mode degrades to a skipped point logged at ``rollout_id``.
         """
         start_time = time.time()
-        # Serializes load -> verify -> generate per fleet: no snapshot load can start
-        # while an eval is generating, and nothing dispatches before the version is
-        # confirmed on every engine. This is the version-pinning enforcement.
+        # The lock holds across load -> verify -> generate; this is the pinning enforcement.
         async with self._eval_lock:
             srv = self.servers["eval"]
             try:
@@ -199,10 +194,8 @@ class RolloutManager:
             weight_version = str(rollout_id)
             for _attempt in range(2):
                 try:
-                    # The timeout bounds the zombie-engine case: an actor whose sglang
-                    # backend died accepts the call but never answers (the shared http
-                    # client has no timeout), which would otherwise hold the eval lock
-                    # forever and eventually stall the driver via backpressure.
+                    # A zombie engine (backend dead, actor alive) accepts the call and
+                    # never answers; unbounded, it would hold the eval lock forever.
                     await asyncio.wait_for(
                         asyncio.gather(
                             *[
@@ -252,12 +245,8 @@ class RolloutManager:
             self._gc_eval_snapshots(hf_dir)
 
     async def _wait_eval_router_ready(self, srv, timeout: float = 180.0) -> None:
-        """Probe end-to-end generation through the eval router before dispatching.
-
-        After an engine revival the router needs a health-check cycle to evict the
-        dead worker and pick up the new one; a generate dispatched inside that window
-        gets 503s. A one-token probe (retried) proves the route is actually usable.
-        """
+        """After a revival the router 503s until its health cycle evicts the dead
+        worker; a retried one-token probe proves the route is usable before dispatch."""
         import httpx
 
         url = f"http://{srv.router_ip}:{srv.router_port}/generate"
@@ -277,12 +266,8 @@ class RolloutManager:
                 await asyncio.sleep(5)
 
     async def _mark_unreachable_eval_engines(self, srv) -> None:
-        """Probe eval engines and mark unreachable ones stopped so recover() revives them.
-
-        Without fault tolerance nothing records an engine death (recover() only
-        restarts engines already marked stopped), so a dead or zombie eval engine
-        would otherwise fail every future eval instead of self-healing.
-        """
+        """Without fault tolerance nothing records an engine death (recover() only
+        restarts engines already marked stopped), so the controller probes itself."""
         for group in srv.server_groups:
             for engine in group.all_engines:
                 if not engine.is_allocated:
@@ -298,19 +283,14 @@ class RolloutManager:
                     engine.mark_stopped()
 
     def report_eval_skip(self, rollout_id: int, reason: str) -> None:
-        """Log a skipped eval point at ``rollout_id`` (called by the driver, e.g. on export failure)."""
         self._log_eval_skip(rollout_id, reason)
 
     def _log_eval_skip(self, rollout_id: int, reason: str) -> None:
         log_eval_skip(rollout_id, self.args, reason)
 
     def _gc_eval_snapshots(self, consumed_dir: str) -> None:
-        """Delete consumed staging snapshots beyond the keep ring.
-
-        Only dirs under --eval-hf-dir are ever deleted; --save-hf checkpoints and the
-        base checkpoint are never touched. Pending evals reference unconsumed dirs,
-        which are never GC candidates.
-        """
+        """Delete consumed --eval-hf-dir snapshots beyond the keep ring; nothing else
+        is ever deleted (pending evals reference unconsumed dirs)."""
         staging = getattr(self.args, "eval_hf_dir", None)
         if staging is None:
             return

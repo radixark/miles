@@ -840,15 +840,9 @@ def export_hf_model_direct(
 ) -> None:
     """Export current weights as an HF checkpoint via miles' own megatron->HF converters.
 
-    This is the same conversion machinery the weight updater uses, so it covers exactly
-    the model families weight sync supports — unlike the bridge-based ``save_hf_model``,
-    which silently exports zero weights for specs it has no mapping for (e.g. the
-    qwen3.5 attention-output-gate layout).
-
-    Collective — all ranks must call it (the iterator gathers PP/EP/TP shards
-    internally and every rank materializes the full tensors); global rank 0 writes
-    safetensors shards streamingly plus the index, copies tokenizer/config metadata
-    from the base checkpoint, and stamps the completeness marker.
+    Same conversion machinery as the weight updater, so export coverage matches
+    weight-sync coverage (the bridge silently exports zero weights for specs it has
+    no mapping for, e.g. qwen3.5). Collective — all ranks must call it; rank 0 writes.
     """
     import json
     import shutil
@@ -884,19 +878,16 @@ def export_hf_model_direct(
         assert weight_map, f"HF export to {path} produced no weights"
         base_checkpoint = Path(args.hf_checkpoint)
         if base_checkpoint.is_dir():
+            # Tokenizer/config metadata only — the skip list also excludes the base
+            # checkpoint's safetensors index, which would clobber ours below.
             for meta_file in base_checkpoint.iterdir():
-                # Copy tokenizer/config metadata only — never base weight files or the
-                # base checkpoint's safetensors index (ours is written below).
                 if meta_file.is_file() and not any(s in meta_file.name for s in HF_METADATA_SKIP_SUFFIXES):
                     shutil.copy2(meta_file, path / meta_file.name)
         else:
-            # hf_checkpoint can be a hub model id; the snapshot then lacks
-            # tokenizer/config metadata and consumers must point at the base.
             logger.warning(f"hf_checkpoint {args.hf_checkpoint} is not a local dir; metadata not copied to {path}")
         index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
         (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
 
-    # Everyone waits for the writer before the marker claims the snapshot complete.
     torch.distributed.barrier()
     if is_writer:
         (path / HF_EXPORT_COMPLETE_MARKER).touch()
@@ -929,16 +920,14 @@ def save_hf_model(
       so it can be loaded with ``PeftModel.from_pretrained``.
 
     This function is collective — all ranks must call it. On success, global rank 0
-    writes a ``.complete`` marker file so consumers (eval snapshot verification, the
-    external eval service) can distinguish finished exports from partial ones.
+    writes a ``.complete`` marker file.
 
     Args:
         args: Runtime arguments.
         model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
         rollout_id (int): Rollout ID for path formatting.
         path: Destination directory; defaults to ``args.save_hf.format(rollout_id)``.
-        raise_on_error: Re-raise export failures instead of logging them (used by the
-            on-demand eval snapshot path, where the caller wants to skip that eval).
+        raise_on_error: Re-raise export failures instead of logging them.
     """
     should_log = get_parallel_state().effective_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
     path = Path(path if path is not None else args.save_hf.format(rollout_id=rollout_id))
@@ -948,9 +937,7 @@ def save_hf_model(
             logger.info(f"Saving model in HuggingFace format to {path}")
 
         if args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
-            # miles' own converters cover exactly what weight sync covers; the
-            # bridge silently exports zero weights for specs it has no mapping for
-            # (e.g. qwen3.5). LoRA keeps the bridge (adapter merging).
+            # LoRA keeps the bridge (adapter merging).
             from .update_weight.common import named_params_and_buffers
 
             hf_config = load_hf_config(args.hf_checkpoint)
@@ -972,12 +959,10 @@ def save_hf_model(
                 # adapter weights into base weights for a standalone HF model.
                 bridge.save_hf_pretrained(model, path=path)
 
-            # save_hf_pretrained is collective; make sure every rank is done writing
-            # before checking the result and claiming the snapshot complete.
             torch.distributed.barrier()
             if torch.distributed.get_rank() == 0:
-                # The bridge silently exports zero weights for specs it has no mapping
-                # for; a marked-but-weightless snapshot must never exist.
+                # The bridge exports zero weights for specs it has no mapping for;
+                # a marked-but-weightless snapshot must never exist.
                 if not any(path.glob("*.safetensors")) and not any(path.glob("*.bin")):
                     raise RuntimeError(
                         f"HF export to {path} produced no weight files — the megatron "
