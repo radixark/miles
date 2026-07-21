@@ -221,6 +221,41 @@ async def test_controller_pin_violation_skips_after_retry(controller_env, tmp_pa
     assert ("generate", 5) not in controller_env.log
 
 
+async def test_controller_zombie_engine_times_out_to_skip(controller_env, tmp_path, monkeypatch):
+    """An engine whose backend died accepts the call but never answers; the load
+    timeout must convert that into a skipped point instead of holding the eval
+    lock forever (which would eventually stall the driver via backpressure)."""
+    snapshot = tmp_path / "step_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    engine = FakeEngine(controller_env.log)
+
+    class _NeverResolves:
+        def remote(self, *args, **kwargs):
+            return asyncio.get_event_loop().create_future()  # never resolved
+
+    engine.update_weights_from_disk_override = _NeverResolves()
+    monkeypatch.setattr(
+        type(engine),
+        "__getattr__",
+        lambda self, name: (
+            self.update_weights_from_disk_override
+            if name == "update_weights_from_disk"
+            else FakeRemoteMethod(self, name)
+        ),
+    )
+    monkeypatch.setattr(rollout_manager_mod, "EVAL_WEIGHT_LOAD_TIMEOUT_SECS", 0.05)
+
+    args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
+    mgr = make_manager(args, [engine])
+
+    await asyncio.wait_for(mgr._eval_on_dedicated_fleet(5, str(snapshot), export_time_seconds=None), timeout=5)
+
+    assert controller_env.logged["skip"] == (5, "pin_violation")
+    assert not mgr._eval_lock.locked()
+
+
 async def test_controller_gc_keeps_ring(controller_env, tmp_path):
     engines = [FakeEngine(controller_env.log)]
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)

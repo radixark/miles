@@ -43,6 +43,11 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+# Bounds each eval-fleet weight load (per attempt). Generous enough for large
+# checkpoints from network storage; small enough that a zombie engine costs a
+# skipped point, not a wedged eval pipeline.
+EVAL_WEIGHT_LOAD_TIMEOUT_SECS = 600.0
+
 
 @ray.remote
 class RolloutManager:
@@ -193,10 +198,23 @@ class RolloutManager:
             weight_version = str(rollout_id)
             for _attempt in range(2):
                 try:
-                    await asyncio.gather(
-                        *[e.update_weights_from_disk.remote(hf_dir, weight_version=weight_version) for e in engines]
+                    # The timeout bounds the zombie-engine case: an actor whose sglang
+                    # backend died accepts the call but never answers (the shared http
+                    # client has no timeout), which would otherwise hold the eval lock
+                    # forever and eventually stall the driver via backpressure.
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *[
+                                e.update_weights_from_disk.remote(hf_dir, weight_version=weight_version)
+                                for e in engines
+                            ]
+                        ),
+                        timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
                     )
-                    versions = await asyncio.gather(*[e.get_weight_version.remote() for e in engines])
+                    versions = await asyncio.wait_for(
+                        asyncio.gather(*[e.get_weight_version.remote() for e in engines]),
+                        timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
+                    )
                 except Exception as e:
                     logger.warning(f"Eval fleet weight load from {hf_dir} failed: {e}")
                     versions = []
