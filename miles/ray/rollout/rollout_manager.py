@@ -1,14 +1,16 @@
 import asyncio
 import logging
+import shutil
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
-from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
+from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
@@ -27,6 +29,7 @@ from miles.utils.audit_utils.event_logger import checkpoint as event_logger_chec
 from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdentity
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.health_monitor import RolloutHealthMonitor
+from miles.utils.hf_export import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
@@ -87,6 +90,8 @@ class RolloutManager:
             start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
+        self._eval_lock = asyncio.Lock()
+        self._eval_consumed_snapshots: list[str] = []
 
         self._metric_checker = MetricChecker.maybe_create(args)
 
@@ -135,11 +140,15 @@ class RolloutManager:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
         return dict(sample_indices=sample_indices, data_ref=data_ref)
 
-    async def eval(self, rollout_id):
+    async def eval(self, rollout_id, hf_dir: str | None = None, export_time_seconds: float | None = None):
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
         self._health_monitoring_resume()
+
+        if getattr(self.args, "eval_num_gpus", 0) > 0:
+            assert hf_dir is not None, "eval with a dedicated fleet requires an HF snapshot dir"
+            return await self._eval_on_dedicated_fleet(rollout_id, hf_dir, export_time_seconds)
 
         if self.use_experimental_refactor:
             result = await asyncio.to_thread(
@@ -154,6 +163,93 @@ class RolloutManager:
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
+
+    async def _eval_on_dedicated_fleet(self, rollout_id: int, hf_dir: str, export_time_seconds: float | None):
+        """Pin the eval fleet's weights to the snapshot for ``rollout_id``, then run eval.
+
+        Every failure mode degrades to a skipped point logged at ``rollout_id`` with a
+        reason counter — never wrong data, never a training stall.
+        """
+        start_time = time.time()
+        # Serializes load -> verify -> generate per fleet: no snapshot load can start
+        # while an eval is generating, and nothing dispatches before the version is
+        # confirmed on every engine. This is the version-pinning enforcement.
+        async with self._eval_lock:
+            srv = self.servers["eval"]
+            try:
+                await srv.recover()
+                await srv.wait_all_engines_alive()
+            except Exception as e:
+                logger.warning(f"Eval fleet unhealthy at rollout {rollout_id}, skipping eval: {e}")
+                self._log_eval_skip(rollout_id, "unhealthy")
+                return
+
+            if hf_dir != self.args.hf_checkpoint and not is_complete_hf_export(hf_dir):
+                logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
+                self._log_eval_skip(rollout_id, "ckpt_missing")
+                return
+
+            engines = [e.actor_handle for e in srv.engines]
+            weight_version = str(rollout_id)
+            for _attempt in range(2):
+                await asyncio.gather(
+                    *[e.update_weights_from_disk.remote(hf_dir, weight_version=weight_version) for e in engines]
+                )
+                versions = await asyncio.gather(*[e.get_weight_version.remote() for e in engines])
+                if all(str(v) == weight_version for v in versions):
+                    break
+            else:
+                logger.warning(
+                    f"Eval fleet failed to pin weight_version={weight_version} (got {versions}), skipping eval"
+                )
+                self._log_eval_skip(rollout_id, "pin_violation")
+                return
+
+            result = await asyncio.to_thread(
+                call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
+            )
+            data = result.data
+            save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
+            extra_metrics = dict(result.metrics or {})
+            extra_metrics["eval/lag_steps"] = max(self.rollout_id - rollout_id, 0)
+            extra_metrics["eval/duration_seconds"] = time.time() - start_time
+            if export_time_seconds is not None:
+                extra_metrics["eval/export_time_seconds"] = export_time_seconds
+            metrics = log_eval_rollout_data(rollout_id, self.args, data, extra_metrics)
+            if self._metric_checker is not None:
+                self._metric_checker.on_eval(metrics)
+
+            self._gc_eval_snapshots(hf_dir)
+
+    def report_eval_skip(self, rollout_id: int, reason: str) -> None:
+        """Log a skipped eval point at ``rollout_id`` (called by the driver, e.g. on export failure)."""
+        self._log_eval_skip(rollout_id, reason)
+
+    def _log_eval_skip(self, rollout_id: int, reason: str) -> None:
+        log_eval_skip(rollout_id, self.args, reason)
+
+    def _gc_eval_snapshots(self, consumed_dir: str) -> None:
+        """Delete consumed staging snapshots beyond the keep ring.
+
+        Only dirs under --eval-hf-dir are ever deleted; --save-hf checkpoints and the
+        base checkpoint are never touched. Pending evals reference unconsumed dirs,
+        which are never GC candidates.
+        """
+        staging = getattr(self.args, "eval_hf_dir", None)
+        if staging is None:
+            return
+        staging_root = Path(staging).resolve()
+        consumed = Path(consumed_dir).resolve()
+        if staging_root not in consumed.parents:
+            return
+        consumed = str(consumed)
+        if consumed in self._eval_consumed_snapshots:
+            self._eval_consumed_snapshots.remove(consumed)
+        self._eval_consumed_snapshots.append(consumed)
+        while len(self._eval_consumed_snapshots) > self.args.eval_keep_snapshots:
+            victim = self._eval_consumed_snapshots.pop(0)
+            shutil.rmtree(victim, ignore_errors=True)
+            logger.info(f"GC'd consumed eval snapshot {victim}")
 
     async def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:
