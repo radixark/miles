@@ -538,7 +538,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=512 * 1024**2,
                 help=(
                     "buffer size for update weight, in bytes. "
-                    "This is used for updating weights by chunk and should be useful for MoE models."
+                    "This is used for updating weights by batch and should be useful for MoE models."
                 ),
             )
             parser.add_argument(
@@ -1399,6 +1399,84 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Enable shared-outer grouped-expert LoRA (gate_up lora_A and "
                 "down lora_B shared across experts, expert_dim=1). Matches SGLang "
                 "PR #21466's experts_shared_outer_loras=True serving contract.",
+            )
+            parser.add_argument(
+                "--multi-lora-n-adapters",
+                type=int,
+                default=0,
+                help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
+            )
+            parser.add_argument(
+                "--multi-lora-adapter",
+                nargs=2,
+                action="append",
+                type=str,
+                dest="multi_lora_adapters",
+                default=[],
+            )
+            parser.add_argument(
+                "--multi-lora-idle-poll-s",
+                type=float,
+                default=5.0,
+                help="When no adapter is RUNNING, the trainer polls for new registrations every this many seconds (default: 5.0)",
+            )
+            parser.add_argument(
+                "--multi-lora-http-server-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted path to a MultiLoRAHTTPServer subclass to use for the multi-LoRA "
+                    "controller's HTTP server (default: MultiLoRAHTTPServer)"
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-backend-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted path to a MultiLoRABackend subclass for the multi-LoRA controller, "
+                    "e.g. to add custom adapter validation via validate_adapter (default: MultiLoRABackend)"
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-api-port",
+                type=int,
+                default=8068,
+                help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
+            )
+            parser.add_argument(
+                "--multi-lora-disable-service-mode",
+                action="store_false",
+                dest="multi_lora_service_mode",
+                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
+            )
+            parser.add_argument(
+                "--multi-lora-max-adapter-global-batch-size",
+                type=int,
+                default=None,
+                help=(
+                    "Registration-time upper bound on an adapter's samples per optimizer "
+                    "step (rollout_batch_size x n_samples_per_prompt). Defaults to 4x "
+                    "--global-batch-size."
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-max-coalesce-wait-s",
+                type=float,
+                default=0.5,
+                help=(
+                    "Maximum time ready groups wait for the batch to fill toward "
+                    "--global-batch-size before training starts on what is ready (default: 0.5)."
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-max-empty-wait-s",
+                type=float,
+                default=30.0,
+                help=(
+                    "How long a generate call waits for the first poppable group before "
+                    "failing with an empty-batch timeout (default: 30)."
+                ),
             )
             return parser
 
@@ -2532,6 +2610,12 @@ def miles_validate_args(args):
                 "shared-outer" if args.experts_shared_outer_loras else "per-expert",
             )
 
+    # Sets args.multi_lora, then validates/defaults the multi-LoRA arg surface
+    # (adapter configs themselves are loaded later by the controller).
+    from miles.utils.multi_lora import validate_multi_lora_args
+
+    validate_multi_lora_args(args)
+
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
     if args.advantage_estimator in ["reinforce_plus_plus", "reinforce_plus_plus_baseline"]:
@@ -2700,7 +2784,9 @@ def miles_validate_args(args):
             )
         args.global_batch_size = global_batch_size
 
-    if args.n_samples_per_prompt == 1:
+    # Multi-LoRA adapters carry their own n_samples_per_prompt; the per-group
+    # normalization path already skips std for singleton groups.
+    if args.n_samples_per_prompt == 1 and not args.multi_lora:
         args.grpo_std_normalization = False
         logger.info("n_samples_per_prompt is set to 1, grpo_std_normalization will be set to False.")
 

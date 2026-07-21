@@ -28,6 +28,12 @@ def init_tracking(args, primary: bool = True, **kwargs):
     _manager.init(args, primary=primary, **kwargs)
 
 
+def define_step_key_metric_group(prefix: str, step_key: str) -> None:
+    """Declare a metric group plotted against its own step key (e.g. ``{name}/*`` vs ``{name}/step``).
+    Only wandb acts on this; must be called from the primary tracking process or definitions may be lost."""
+    _manager.define_step_key_metric_group(prefix, step_key)
+
+
 def log(args, metrics, step_key: str):
     step = metrics.get(step_key)
     _manager.log(metrics, step=step, step_key=step_key)
