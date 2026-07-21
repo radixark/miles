@@ -406,15 +406,17 @@ class FakeActorModel:
 
 @pytest.fixture
 def dispatcher_env(monkeypatch):
-    import train_async
+    import miles.ray.rollout.eval_dispatch as eval_dispatch
 
     # ray.wait/ray.get over asyncio futures: done iff the future is resolved.
-    monkeypatch.setattr(train_async.ray, "wait", lambda refs, timeout=0: (refs, []) if refs[0].done() else ([], refs))
-    monkeypatch.setattr(train_async.ray, "get", lambda ref: ref.result())
-    return train_async
+    monkeypatch.setattr(
+        eval_dispatch.ray, "wait", lambda refs, timeout=0: (refs, []) if refs[0].done() else ([], refs)
+    )
+    monkeypatch.setattr(eval_dispatch.ray, "get", lambda ref: ref.result())
+    return eval_dispatch
 
 
-def make_dispatcher(train_async, manager, actor_model, **arg_overrides):
+def make_dispatcher(eval_dispatch, manager, actor_model, **arg_overrides):
     dispatcher_defaults = dict(
         eval_hf_dir="/dev/shm/eval_hf",
         eval_dispatch="async",
@@ -423,7 +425,7 @@ def make_dispatcher(train_async, manager, actor_model, **arg_overrides):
     )
     dispatcher_defaults.update(arg_overrides)
     args = make_args(**dispatcher_defaults)
-    return train_async.EvalDispatcher(args, actor_model, manager), args
+    return eval_dispatch.EvalDispatcher(args, actor_model, manager), args
 
 
 async def test_dispatcher_exports_and_fires(dispatcher_env):
