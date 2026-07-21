@@ -104,24 +104,54 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
 def _resolve_sglang_config(args) -> SglangConfig:
     """Build a SglangConfig from args, choosing the right source."""
+    eval_num_gpus = getattr(args, "eval_num_gpus", 0)
+
     if getattr(args, "sglang_config", None) is not None:
         config = SglangConfig.from_yaml(args.sglang_config)
-        expected = args.rollout_num_gpus
+        expected = args.rollout_num_gpus + eval_num_gpus
         actual = config.total_num_gpus
-        assert actual == expected, f"sglang_config total GPUs ({actual}) != rollout_num_gpus ({expected})"
+        assert (
+            actual == expected
+        ), f"sglang_config total GPUs ({actual}) != rollout_num_gpus + eval_num_gpus ({expected})"
+        if eval_num_gpus > 0:
+            eval_models = [m for m in config.models if m.name == "eval"]
+            assert len(eval_models) == 1 and eval_models[0].total_num_gpus == eval_num_gpus, (
+                f"--eval-num-gpus {eval_num_gpus} requires the sglang_config YAML to contain "
+                f"exactly one model named 'eval' with that many GPUs."
+            )
         return config
 
     if args.prefill_num_servers is not None:
-        return SglangConfig.from_prefill_num_servers(args)
+        config = SglangConfig.from_prefill_num_servers(args)
+    else:
+        config = SglangConfig(
+            models=[
+                ModelConfig(
+                    name="default",
+                    server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
+                )
+            ]
+        )
 
-    return SglangConfig(
-        models=[
+    if eval_num_gpus > 0:
+        # Dedicated eval fleet: own router, never receives training weight updates
+        # (weights are pinned per-eval via update_weights_from_disk). update_weights
+        # must be explicit — resolve() would infer True from the matching model_path.
+        config.models.append(
             ModelConfig(
-                name="default",
-                server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
+                name="eval",
+                model_path=args.eval_model_path,
+                update_weights=False,
+                server_groups=[
+                    ServerGroupConfig(
+                        worker_type="regular",
+                        num_gpus=eval_num_gpus,
+                        num_gpus_per_engine=args.eval_num_gpus_per_engine,
+                    )
+                ],
             )
-        ]
-    )
+        )
+    return config
 
 
 def _compute_rollout_offset(args) -> int:
