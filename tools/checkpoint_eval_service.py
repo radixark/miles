@@ -60,8 +60,11 @@ EVAL_ARG_DEFAULTS = dict(
     rollout_stop=None,
     rollout_stop_token_ids=None,
     rollout_skip_special_tokens=True,
+    rollout_max_context_len=None,
     rollout_seed=42,
+    rm_url=None,
     sglang_enable_deterministic_inference=False,
+    sglang_speculative_algorithm=None,
     sglang_server_concurrency=512,
     use_distributed_post=False,
     use_rollout_routing_replay=False,
@@ -70,6 +73,9 @@ EVAL_ARG_DEFAULTS = dict(
     lora_rank=0,
     lora_adapter_path=None,
     log_passrate=False,
+    log_reward_category=None,
+    advantage_estimator="grpo",
+    load_debug_rollout_data=None,
     wandb_always_use_train_step=False,
     eval_num_gpus=0,  # the service talks to its own server; no in-job fleet
     ci_test=False,
@@ -209,14 +215,18 @@ def launch_server(service_args: Namespace) -> tuple[subprocess.Popen | None, str
 
 
 async def wait_server_healthy(ip: str, port: int, timeout: float = 1800.0) -> None:
-    from miles.utils.http_utils import get
+    import httpx
 
     deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            await get(f"http://{ip}:{port}/health_generate", max_retries=1)
-            return
-        except Exception:
+    async with httpx.AsyncClient() as client:
+        while time.time() < deadline:
+            try:
+                # /health_generate runs a tiny generation; 200 body is not JSON.
+                response = await client.get(f"http://{ip}:{port}/health_generate", timeout=60)
+                if response.status_code == 200:
+                    return
+            except httpx.HTTPError:
+                pass
             await asyncio.sleep(5)
     raise TimeoutError(f"sglang server at {ip}:{port} not healthy after {timeout}s")
 
@@ -263,10 +273,9 @@ async def main() -> None:
 
     proc, server_ip, server_port = launch_server(service_args)
     try:
-        await wait_server_healthy(server_ip, server_port)
-
         args = build_eval_namespace(service_args, server_ip, server_port)
         init_http_client(args)
+        await wait_server_healthy(server_ip, server_port)
         init_service_tracking(args)
 
         from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
