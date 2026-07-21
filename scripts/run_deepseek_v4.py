@@ -573,9 +573,9 @@ def _train(args: ScriptArgs):
 
     if args.fp8_training:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
-        # On Blackwell, TE emulates the blockwise recipe with MXFP8, which requires pow2 scales.
-        fp32_scales = "0" if _is_blackwell(args) else "1"
-        misc_args += f"""--train-env-vars '{{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"{fp32_scales}"}}' """
+        # NVTE_FP8_BLOCK_SCALING_FP32_SCALES defaults by hardware (see
+        # miles/utils/environ.py): FP32 scales on Hopper, power-of-two scales
+        # on Blackwell (MXFP8 emulation).
         # Keep the DSA indexer weights_proj (a TELinear) in BF16 on the trainer: blockwise
         # fp8 on weights_proj is numerically unstable, so override it back to BF16 via TE.
         if "--te-precision-config-file" not in args.extra_args:
