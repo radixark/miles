@@ -56,7 +56,7 @@ def execute():
 
     perf_args = (
         "--tensor-model-parallel-size 1 "
-        "--pipeline-model-parallel-size 1 "
+        "--pipeline-model-parallel-size 2 "
         "--context-parallel-size 2 "
         "--recompute-granularity full "
         "--recompute-method uniform "
