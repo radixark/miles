@@ -558,6 +558,10 @@ class TestRoutedExpertsMultiTurn:
             {
                 "args_kwargs": {
                     "use_rollout_routing_replay": True,
+                    # Must be in args BEFORE the session server starts: the R3
+                    # decode now runs inside the worker during sample assembly.
+                    "num_layers": 2,
+                    "moe_router_topk": 4,
                 }
             }
         ],
@@ -565,9 +569,7 @@ class TestRoutedExpertsMultiTurn:
     )
     def test_two_turns_routed_experts(self, variant, generation_env):
         S = TwoTurnStub
-        num_layers, moe_router_topk = 2, 4
-        generation_env.args.num_layers = num_layers
-        generation_env.args.moe_router_topk = moe_router_topk
+        num_layers, moe_router_topk = generation_env.args.num_layers, generation_env.args.moe_router_topk
         if is_agentic_variant(variant):
             tito = get_tito_tokenizer(
                 TOKENIZER,
