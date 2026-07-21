@@ -6,6 +6,22 @@ import numpy
 import torch
 
 
+@dataclass(frozen=True)
+class AdapterRef:
+    """Which LoRA adapter a sample is bound to (training slot routing, inference lora_path); ``None`` = no adapter."""
+
+    name: str
+    slot: int
+
+
+@dataclass(frozen=True)
+class RewardSpec:
+    """Per-sample spec of how the response is scored; intentionally decoupled from adapter routing."""
+
+    rm_type: str | None = None
+    custom_rm_path: str | None = None
+
+
 @dataclass
 class Sample:
     """The sample generated"""
@@ -51,6 +67,11 @@ class Sample:
     generate_function_path: str | None = None
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
+
+    # MultiLoRA: which adapter this sample trains/infers with
+    adapter: AdapterRef | None = None
+    # Per-sample reward dispatch override (e.g., per-adapter RM in multi-LoRA)
+    reward_spec: RewardSpec | None = None
 
     # Per-sample routing key for the router's consistent_hashing policy (sent as X-SMG-Routing-Key)
     routing_key: str | None = None
