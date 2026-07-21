@@ -155,6 +155,8 @@ class DumpReader:
         self.cache_dir = Path(cache_dir) if cache_dir is not None else self.dump_dir / "dashboard" / "cache"
         self.tensor_lru = tensor_lru
         self._joined_cache: OrderedDict[tuple[int, bool], JoinedRollout] = OrderedDict()
+        # token-view point reads: mmap'd train shards + {sample -> (shard, row)}
+        self._shard_cache: OrderedDict[int, tuple[list[dict], dict[int, tuple[int, int]]]] = OrderedDict()
         self._trajectory_cache: OrderedDict[tuple[int, bool], dict[int, dict]] = OrderedDict()
         self._tokenizer = None
         self._tokenizer_loaded = False
@@ -316,6 +318,56 @@ class DumpReader:
             raise KeyError(f"sample {sample_index} has no recorded conversation in rollout {rollout_id}")
         return rows[sample_index]
 
+    # -------------------------- token-view point reads ----------------------
+
+    # rollout-side per-token columns; the parquet mirror is written by
+    # save_dashboard_columns at dump time and lazily rebuilt here for runs
+    # that predate it (a schema mismatch also triggers the rebuild)
+    ROLLOUT_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "sample_index",
+        "response_length",
+        "total_length",
+        "tokens",
+        "loss_mask",
+        "rollout_log_probs",
+    )
+
+    def _rollout_columns(self, rollout_id: int, sample_index: int, *, evaluation: bool) -> dict:
+        stem = ("eval_" if evaluation else "") + str(rollout_id)
+        path = self.dump_dir / "dashboard_columns" / f"rollout_{stem}.parquet"
+        if not path.exists() or set(pl.read_parquet_schema(path)) != set(self.ROLLOUT_COLUMNS):
+            from miles.ray.rollout.debug_data import save_dashboard_columns
+
+            name = f"eval_{rollout_id}.pt" if evaluation else f"{rollout_id}.pt"
+            pack = self._torch_load(self.rollout_dir / name)
+            save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)
+        frame = pl.scan_parquet(path).filter(pl.col("sample_index") == sample_index).collect()
+        if not len(frame):
+            raise KeyError(f"unknown sample_index {sample_index} in rollout {rollout_id}")
+        return frame.row(0, named=True)
+
+    def _train_row_lazy(self, rollout_id: int, sample_index: int) -> TrainRow | None:
+        """One sample's train columns via mmap'd shards: opening a shard reads
+        only its pickle graph; slicing a row faults in ~contiguous KBs."""
+        if rollout_id not in self._shard_cache:
+            handles: list[dict] = []
+            index: dict[int, tuple[int, int]] = {}
+            for shard_no, path in enumerate(self._train_paths(rollout_id)):
+                columns = self._torch_load(path, mmap=True)["rollout_data"]
+                for row_no, si in enumerate(columns["sample_indices"]):
+                    index[int(si)] = (shard_no, row_no)
+                handles.append(columns)
+            self._shard_cache[rollout_id] = (handles, index)
+            while len(self._shard_cache) > 4:
+                self._shard_cache.popitem(last=False)
+        self._shard_cache.move_to_end(rollout_id)
+        handles, index = self._shard_cache[rollout_id]
+        location = index.get(sample_index)
+        if location is None:
+            return None
+        shard_no, row_no = location
+        return TrainRow.from_columns(handles[shard_no], row_no, rank=shard_no, raw_reward=None)
+
     # ------------------------------- L2 view --------------------------------
 
     def tokens(
@@ -328,14 +380,11 @@ class DumpReader:
         token position ``prompt_len + a + i``). ``response_offset`` is the
         index within the returned token slice where the response begins.
         """
-        joined = self.joined(rollout_id, evaluation=evaluation)
-        sample = next((s for s in joined.samples if s.index == sample_index), None)
-        if sample is None:
-            raise KeyError(f"unknown sample_index {sample_index} in rollout {rollout_id}")
-        row = joined.train_rows.get(sample_index)
+        columns = self._rollout_columns(rollout_id, sample_index, evaluation=evaluation)
+        row = None if evaluation else self._train_row_lazy(rollout_id, sample_index)
 
-        total = len(sample.tokens)
-        prompt_len = total - sample.response_length
+        total = columns["total_length"]
+        prompt_len = total - columns["response_length"]
         start = max(0, start)
         end = total if end is None else min(end, total)
         if start >= end:
@@ -346,7 +395,7 @@ class DumpReader:
         def response_slice(values) -> list[float] | None:
             return None if values is None else [float(v) for v in values[a:b]]
 
-        token_ids = [int(t) for t in sample.tokens[start:end]]
+        token_ids = [int(t) for t in columns["tokens"][start:end]]
         lp_diff = (
             row.log_probs - row.rollout_log_probs
             if row is not None and row.log_probs is not None and row.rollout_log_probs is not None
@@ -364,8 +413,8 @@ class DumpReader:
             token_ids=token_ids,
             token_text=self._decode_tokens(token_ids),
             rollout_log_probs=(
-                response_slice(sample.rollout_log_probs)
-                if sample.rollout_log_probs is not None
+                response_slice(columns["rollout_log_probs"])
+                if columns["rollout_log_probs"] is not None
                 else response_slice(row.rollout_log_probs) if row is not None else None
             ),
             loss_mask=None if row is None else [int(v) for v in row.loss_mask[a:b]],
@@ -466,9 +515,9 @@ class DumpReader:
             return True
         return not evaluation and (self.train_dir / f"{rollout_id}_0.pt").exists()
 
-    def _torch_load(self, path: Path):
+    def _torch_load(self, path: Path, *, mmap: bool = False):
         try:
-            return torch.load(path, weights_only=False, map_location="cpu")
+            return torch.load(path, weights_only=False, map_location="cpu", mmap=mmap)
         except FileNotFoundError:
             raise
         except Exception as e:
