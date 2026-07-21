@@ -972,6 +972,80 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--eval-min-new-tokens", type=int, default=None)
             parser.add_argument("--eval-max-context-len", type=int, default=None)
 
+            # Dedicated eval fleet (checkpoint-interfaced eval; required for fully-async eval).
+            parser.add_argument(
+                "--eval-num-gpus",
+                type=int,
+                default=0,
+                help=(
+                    "Number of GPUs for a dedicated eval engine fleet. When > 0, eval runs on "
+                    "its own engines behind its own router, synced by loading HF checkpoint "
+                    "snapshots (never by joining training weight updates). 0 disables the "
+                    "fleet and keeps today's shared-engine eval behavior."
+                ),
+            )
+            parser.add_argument(
+                "--eval-num-gpus-per-engine",
+                type=int,
+                default=1,
+                help="GPUs per eval engine (TP size), independent of --rollout-num-gpus-per-engine.",
+            )
+            parser.add_argument(
+                "--eval-hf-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Staging directory for per-eval HF snapshots (written to "
+                    "`{eval_hf_dir}/step_{rollout_id}`). Point at tmpfs (e.g. /dev/shm/...) to "
+                    "avoid disk. When unset and --save-hf is set, eval reuses the --save-hf "
+                    "checkpoints instead of exporting its own snapshots."
+                ),
+            )
+            parser.add_argument(
+                "--eval-model-path",
+                type=str,
+                default=None,
+                help="Boot checkpoint for eval engines. Defaults to --hf-checkpoint.",
+            )
+            parser.add_argument(
+                "--eval-dispatch",
+                type=str,
+                choices=["async", "blocking"],
+                default="async",
+                help=(
+                    "With a dedicated eval fleet, whether the training loop fires eval "
+                    "fire-and-forget (async) or awaits it inline (blocking). Ignored when "
+                    "--eval-num-gpus is 0."
+                ),
+            )
+            parser.add_argument(
+                "--eval-max-in-flight",
+                type=int,
+                default=2,
+                help="Maximum number of concurrently pending async evals.",
+            )
+            parser.add_argument(
+                "--eval-overflow-policy",
+                type=str,
+                choices=["backpressure", "skip"],
+                default="backpressure",
+                help=(
+                    "What to do when an eval is due but --eval-max-in-flight evals are pending: "
+                    "'backpressure' awaits the oldest pending eval (deterministic curve, bounded "
+                    "stall); 'skip' drops the new eval point and logs eval/skipped_busy at that "
+                    "step (training cadence is never stalled)."
+                ),
+            )
+            parser.add_argument(
+                "--eval-keep-snapshots",
+                type=int,
+                default=2,
+                help=(
+                    "How many snapshot dirs to keep under --eval-hf-dir (consumed snapshots "
+                    "beyond this are deleted). --save-hf checkpoints are never deleted."
+                ),
+            )
+
             return parser
 
         def add_algo_arguments(parser):
@@ -2451,6 +2525,40 @@ def miles_validate_args(args):
 
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
+
+    if args.eval_num_gpus > 0:
+        assert (
+            enable_experimental_rollout_refactor()
+        ), "--eval-num-gpus requires the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
+        assert args.eval_interval is not None, "--eval-num-gpus requires --eval-interval."
+        assert args.eval_hf_dir is not None or args.save_hf is not None, (
+            "--eval-num-gpus requires a snapshot source: set --eval-hf-dir (staging exports) "
+            "or --save-hf (reuse periodic HF checkpoints)."
+        )
+        assert not args.colocate, (
+            "--eval-num-gpus is not supported with --colocate; "
+            "use tools/checkpoint_eval_service.py against --save-hf checkpoints instead."
+        )
+        assert (
+            not args.debug_train_only and not args.debug_rollout_only
+        ), "--eval-num-gpus is not supported with debug_train_only/debug_rollout_only."
+        assert args.eval_num_gpus % args.eval_num_gpus_per_engine == 0, (
+            f"eval_num_gpus ({args.eval_num_gpus}) must be divisible by "
+            f"eval_num_gpus_per_engine ({args.eval_num_gpus_per_engine})."
+        )
+        assert args.eval_keep_snapshots >= args.eval_max_in_flight, (
+            f"--eval-keep-snapshots ({args.eval_keep_snapshots}) must be >= --eval-max-in-flight "
+            f"({args.eval_max_in_flight}), otherwise a pending eval's snapshot could be GC'd."
+        )
+        if args.eval_hf_dir is None:
+            # Reuse mode: every eval-due step must coincide with a save-due step.
+            assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
+                "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
+                f"multiple of save_interval (got eval_interval={args.eval_interval}, "
+                f"save_interval={args.save_interval}). Set --eval-hf-dir for independent snapshots."
+            )
+        if args.eval_model_path is None:
+            args.eval_model_path = args.hf_checkpoint
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
