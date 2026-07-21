@@ -161,7 +161,6 @@ def test_atomic_group_specs_raise_explicit_errors(direct_module, monkeypatch):
 
     invalid_groups = [
         ([AtomicUpdateGroup("empty", ())], "Atomic update group empty has no suffixes"),
-        ([AtomicUpdateGroup("missing", (".c",))], "Atomic update group missing references no params"),
         (
             [AtomicUpdateGroup("left", (".a",)), AtomicUpdateGroup("right", (".a",))],
             "Param layer.a matches multiple atomic update groups",
@@ -175,6 +174,13 @@ def test_atomic_group_specs_raise_explicit_errors(direct_module, monkeypatch):
     for groups, error in invalid_groups:
         with pytest.raises(AssertionError, match=error):
             direct_module.get_named_update_units([param.name for param in params], groups)
+
+    # A group with no matching params is skipped, not an error (e.g. a PP rank
+    # holding no layer needing it); the params are still returned as ungrouped units.
+    units = direct_module.get_named_update_units(
+        [param.name for param in params], [AtomicUpdateGroup("missing", (".c",))]
+    )
+    assert {unit.names for unit in units} == {(param.name,) for param in params}
 
 
 def _tensor(size: int) -> torch.Tensor:
