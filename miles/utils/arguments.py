@@ -1722,11 +1722,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Verify the megatron->sglang LoRA adapter weight-sync: on every sync the "
-                    "trainer ships a per-tensor sha256 manifest of the adapter it sends, and "
-                    "each rollout engine hashes the tensors it received and asserts they match "
-                    "(raising on any mismatch/missing name). The LoRA analogue of "
-                    "--check-weight-update-equal, which only covers base weights."
+                    "Verify the megatron->sglang LoRA adapter weight-sync on the colocated "
+                    "(from_tensors) path: on every sync the trainer ships a per-tensor sha256 "
+                    "manifest of the adapter it sends, and each rollout engine hashes the "
+                    "tensors it received and fails the load on any mismatch/missing/extra "
+                    "name. Requires sglang-miles with sgl-project/sglang#31831. The LoRA "
+                    "analogue of --check-weight-update-equal, which only covers base weights."
                 ),
             )
             parser.add_argument(
