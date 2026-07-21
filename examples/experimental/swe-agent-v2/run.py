@@ -56,7 +56,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
-    miles_host_ip: str = os.environ.get("MILES_HOST_IP", socket.gethostname())  # cluster/pod IP
+    miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
 
     # W&B settings
     wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
@@ -240,8 +240,9 @@ def execute(args: ScriptArgs):
         "AGENT_MODEL_NAME": args.agent_model_name,
         "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
-        "MILES_HOST_IP": args.miles_host_ip,
     }
+    if args.miles_host_ip:
+        extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 
     U.execute_train(
         train_args=train_args,
