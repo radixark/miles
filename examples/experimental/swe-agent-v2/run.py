@@ -41,10 +41,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     prompt_data: str = "/root/swe_train.jsonl"
 
     # Training settings
-    max_seq_len: int = 16384
+    max_seq_len: int = 65536
+    num_rollout: int = 3000
     rollout_batch_size: int = 2
     n_samples_per_prompt: int = 4
     global_batch_size: int = 8
+    save_interval: int = 100
+    save_traces_dir: str = ""
 
     # Agent settings
     agent_server_url: str = os.environ.get(
@@ -100,7 +103,7 @@ def execute(args: ScriptArgs):
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
         f"--save {args.save_dir} "
-        "--save-interval 100 "
+        f"--save-interval {args.save_interval} "
     )
 
     rollout_args = (
@@ -108,7 +111,7 @@ def execute(args: ScriptArgs):
         "--input-key prompt "
         "--metadata-key metadata "
         "--rollout-shuffle "
-        "--num-rollout 3000 "
+        f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
@@ -159,7 +162,6 @@ def execute(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
-        "--use-miles-router "
         "--sglang-router-port 31000 "
         # TODO: speculative decoding has issue, need to fix later
     )
@@ -191,6 +193,10 @@ def execute(args: ScriptArgs):
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
 
+    trace_args = ""
+    if args.save_traces_dir:
+        trace_args = f"--save-traces-dir {args.save_traces_dir} "
+
     wandb_args = ""
     if args.wandb_key:
         wandb_args = (
@@ -217,6 +223,7 @@ def execute(args: ScriptArgs):
         f"{grpo_args}"
         f"{wandb_args}"
         f"{prometheus_args}"
+        f"{trace_args}"
         f"{perf_args}"
         f"{sglang_args}"
         f"{agent_args}"
