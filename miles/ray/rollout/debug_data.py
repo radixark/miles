@@ -30,6 +30,48 @@ def trajectory_rows(samples: list[Sample]) -> list[dict]:
     return rows
 
 
+_warned_no_polars = False
+
+
+def save_dashboard_columns(samples: list[Sample], path: Path) -> None:
+    """Point-read mirror of the per-token rollout columns (parquet, one row
+    per sample) so the dashboard token view never full-loads the .pt."""
+    global _warned_no_polars
+    try:
+        import polars as pl
+    except ImportError:
+        if not _warned_no_polars:
+            logger.warning("polars not installed; skipping dashboard_columns dump (pip install miles[dashboard])")
+            _warned_no_polars = True
+        return
+    schema = dict(
+        sample_index=pl.Int32,
+        response_length=pl.Int32,
+        total_length=pl.Int32,
+        tokens=pl.List(pl.Int32),
+        loss_mask=pl.List(pl.Int8),
+        rollout_log_probs=pl.List(pl.Float32),
+    )
+    frame = pl.DataFrame(
+        [
+            dict(
+                sample_index=sample.index,
+                response_length=sample.response_length,
+                total_length=len(sample.tokens),
+                tokens=list(sample.tokens),
+                loss_mask=sample.loss_mask,
+                rollout_log_probs=sample.rollout_log_probs,
+            )
+            for sample in samples
+        ],
+        schema=schema,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    frame.write_parquet(tmp, row_group_size=8)
+    tmp.replace(path)
+
+
 def save_debug_trajectory_data(args, samples: list[Sample], rollout_id, evaluation: bool):
     if (path_template := args.save_debug_trajectory_data) is None:
         return
@@ -67,6 +109,8 @@ def save_debug_rollout_data(args, data, rollout_id, evaluation: bool, metadata: 
 
         samples = [sample for info in data.values() for sample in info["samples"]] if evaluation else list(data)
         save_debug_trajectory_data(args, samples, rollout_id, evaluation)
+        stem = ("eval_" if evaluation else "") + str(rollout_id)
+        save_dashboard_columns(samples, path.parent.parent / "dashboard_columns" / f"rollout_{stem}.parquet")
 
         # TODO may improve the format
         dump_data = dict(samples=[sample.to_dict() for sample in samples])
