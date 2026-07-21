@@ -169,6 +169,7 @@
        "user-guide/monitoring",
        "user-guide/customization",
        "user-guide/rollout-endpoints",
+       "user-guide/verifiers",
        "user-guide/fully-async",
        "user-guide/agentic-chat-template",
        "user-guide/cli-reference"

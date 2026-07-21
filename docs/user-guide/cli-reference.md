@@ -191,6 +191,15 @@ Sections mirror the launch-script argument groups.
 | `--rollout-stop` | str+ | – | Stop strings. |
 | `--rollout-stop-token-ids` | int+ | – | Stop token IDs. |
 
+### Rollout: Verifiers
+
+| Flag | Type | Default | Notes |
+|---|---|---|---|
+| `--verifiers-config` | path | – | Use the built-in Verifiers rollout with this EnvConfig TOML file. |
+
+See [Verifiers](/user-guide/verifiers) for installation, configuration, and supported
+environment behavior.
+
 ### Eval
 
 | Flag | Type | Default | Notes |
