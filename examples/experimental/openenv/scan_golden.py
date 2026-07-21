@@ -98,12 +98,13 @@ async def golden_one(task_id: str, capture_logs: bool = False) -> tuple[str, flo
                     "eval_s": round(time.monotonic() - t, 1),
                 }
                 if capture_logs and m["reward"] < 1.0:
-                    for key, cmd in (
-                        ("solve_log_tail", "tail -c 1200 /tmp/solve.log 2>&1"),
-                        ("test_log_tail", "tail -c 800 /tmp/tb2_testsh.log 2>&1"),
-                    ):
-                        res = await env.step(action(action_type="exec", command=cmd))
-                        m[key] = oaf._obs_field(res, "output")
+                    # The patched server's evaluate output carries the test.sh
+                    # log tail itself; the on-disk copy lives under
+                    # /logs/verifier only for the verify window (no more
+                    # /tmp/tb2_testsh.log to read back).
+                    m["test_log_tail"] = (oaf._obs_field(res, "output") or "")[-800:]
+                    res = await env.step(action(action_type="exec", command="tail -c 1200 /tmp/solve.log 2>&1"))
+                    m["solve_log_tail"] = oaf._obs_field(res, "output")
                 return m
 
         m = await asyncio.wait_for(run(), timeout=CAP_S)

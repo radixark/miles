@@ -68,12 +68,13 @@ runs — into each task image, and on this backend the adapter scores via the
 standard `evaluate` action, so the install must carry the server-side fixes
 this leg relies on (canonical `tests/test.sh` scoring built into `evaluate`,
 per-task WORKDIR resolved server-side, `TB2_WITHHOLD_TESTS` verifier-asset
-withholding — not yet in upstream main). Install the pinned checkout
-(editable: the recipe embeds the package source, which needs `pyproject.toml`
-present next to the package):
+withholding — all upstream since huggingface/OpenEnv#965 + #972; the launcher
+preflights the installed source and fails fast on an older install). Install
+from upstream main (editable: the recipe embeds the package source, which
+needs `pyproject.toml` present next to the package):
 
 ```bash
-git clone https://github.com/nblintao/OpenEnv.git && git -C OpenEnv checkout d2b7a245
+git clone https://github.com/huggingface/OpenEnv.git   # >= the #965/#972 merge (39c91bfd); pin that sha if you need frozen reward semantics across a long run
 pip install -e OpenEnv/envs/tbench2_env
 ```
 
