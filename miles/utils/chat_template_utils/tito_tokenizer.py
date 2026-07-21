@@ -30,8 +30,8 @@ except ImportError:
 from pathlib import Path
 from typing import Any
 
-from miles.utils.chat_template_utils import deepseek
-from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only_with_allowed_role
+from miles.utils.chat_template_utils import deepseek, template
+from miles.utils.chat_template_utils.template import assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 logger = logging.getLogger(__name__)
@@ -128,7 +128,7 @@ class TITOTokenizer:
             trim_trailing_ids=self.trailing_token_ids or None,
         )
 
-    def render_messages(
+    def apply_chat_template(
         self,
         messages: list[dict[str, Any]],
         *,
@@ -136,7 +136,7 @@ class TITOTokenizer:
         tools: list[dict[str, Any]] | None = None,
         tokenize: bool = False,
     ) -> str | list[int]:
-        return apply_chat_template(
+        return template.apply_chat_template(
             messages,
             tokenizer=self.tokenizer,
             tokenize=tokenize,
@@ -184,8 +184,8 @@ class TITOTokenizer:
         When *add_generation_prompt* is True and *appended_messages* is empty,
         this computes the generation-prompt suffix (the assistant opener tokens).
         """
-        text_without = self.render_messages(base_messages, add_generation_prompt=False, tools=tools)
-        text_with = self.render_messages(
+        text_without = self.apply_chat_template(base_messages, add_generation_prompt=False, tools=tools)
+        text_with = self.apply_chat_template(
             base_messages + appended_messages,
             add_generation_prompt=add_generation_prompt,
             tools=tools,
@@ -841,8 +841,8 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     ) -> list[int]:
         """Diff real-history renders because V4 folds adjacent ``tool``/``user`` turns."""
         assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
-        text_old = self.render_messages(old_messages, add_generation_prompt=False, tools=tools)
-        text_new = self.render_messages(new_messages, add_generation_prompt=True, tools=tools)
+        text_old = self.apply_chat_template(old_messages, add_generation_prompt=False, tools=tools)
+        text_new = self.apply_chat_template(new_messages, add_generation_prompt=True, tools=tools)
         if not text_new.startswith(text_old):
             raise ValueError(
                 "deepseek_v4 render is not append-only for the appended messages "
@@ -915,7 +915,7 @@ def get_tito_tokenizer(
         tokenizer: HuggingFace tokenizer object.
         tokenizer_type: Explicit type (string or enum).  Corresponds to the
             ``--tito-model`` CLI argument.
-        chat_template_kwargs: Extra kwargs forwarded to ``apply_chat_template``.
+        chat_template_kwargs: Extra kwargs forwarded to ``template.apply_chat_template``.
         assistant_start_str: Decoded text prefix identifying assistant content
             segments (e.g. ``"<|im_start|>assistant"``).  Auto-detected from
             the chat template by default; pass explicitly to override.
@@ -953,7 +953,7 @@ def resolve_fixed_chat_template(
       when the matched row registers HF-native (kwargs-only fix) or when no
       row matches at all.
     - ``extra_kwargs``: kwargs the caller should merge into
-      ``apply_chat_template`` (caller's explicit user kwargs win on conflict).
+      ``template.apply_chat_template`` (caller's explicit user kwargs win on conflict).
       Empty when no row matches or the matched row needs none.
 
     Raises ``ValueError`` on equally-minimal supersets — register a stricter

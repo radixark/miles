@@ -575,13 +575,13 @@ class TestRoutedExpertsMultiTurn:
                 tokenizer_type=TITOTokenizerType.QWEN3,
                 allowed_append_roles=["tool"],
             )
-            first_prompt_token_ids = tito.render_messages(
+            first_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_FIRST_TURN,
                 tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
                 tokenize=True,
             )
-            second_prompt_token_ids = tito.render_messages(
+            second_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT,
                 tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,

@@ -154,8 +154,8 @@ def _completion_token_ids(
     assistant_message: dict[str, Any],
     tools: list[dict[str, Any]] | None,
 ):
-    prompt_text = tito_tokenizer.render_messages(messages, add_generation_prompt=True, tokenize=False, tools=tools)
-    full_text = tito_tokenizer.render_messages(
+    prompt_text = tito_tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, tools=tools)
+    full_text = tito_tokenizer.apply_chat_template(
         messages + [assistant_message],
         add_generation_prompt=False,
         tokenize=False,
@@ -237,7 +237,7 @@ def _build_turn_specs(
         request_messages = [dict(message) for message in history] + [input_message]
         tools = [BENCH_TOOL] if tool_appends else None
 
-        prompt_token_ids = tito_tokenizer.render_messages(
+        prompt_token_ids = tito_tokenizer.apply_chat_template(
             request_messages,
             add_generation_prompt=True,
             tokenize=True,
