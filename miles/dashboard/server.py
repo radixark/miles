@@ -73,7 +73,9 @@ def _wandb_url(args: dict) -> str | None:
     return f"{host}/{team}/{project}/runs/{run_id}"
 
 
-def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) -> FastAPI:
+def make_app(
+    store: MetricStore, reader: DumpReader, *, follow: bool = False, use_utilization_overview: bool = False
+) -> FastAPI:
     app = FastAPI(title="miles dashboard", docs_url=None, redoc_url=None)
 
     @app.get("/api/meta")
@@ -102,6 +104,7 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
                 has_timeline=store.has_stream(Stream.PHASES) or store.has_stream(Stream.GPU_UTIL),
                 has_engine_series=store.has_stream(Stream.ENGINE_SERIES),
                 max_window_s=MetricStore.MAX_WINDOW_S,
+                use_utilization_overview=use_utilization_overview,
             ),
         )
 
@@ -194,6 +197,14 @@ def make_app(store: MetricStore, reader: DumpReader, *, follow: bool = False) ->
                 content=len(header).to_bytes(4, "little") + header + values,
                 media_type="application/octet-stream",
             )
+
+    @app.get("/api/timeline/fleet")
+    def timeline_fleet(t0: float | None = None, t1: float | None = None, x_buckets: int = 600):
+        with _translate_errors():
+            _check_window(t0, t1)
+            if not 2 <= x_buckets <= 4000:
+                raise ValueError(f"{x_buckets=} out of range [2, 4000]")
+            return _json_safe(store.fleet(t0=t0, t1=t1, x_buckets=x_buckets))
 
     @app.get("/api/timeline/outliers")
     def timeline_outliers(criterion: str, t0: float | None = None, t1: float | None = None, top_k: int = 16):

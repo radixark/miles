@@ -50,6 +50,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--tensor-lru", type=int, default=2, help="rollout steps kept resident in tensor memory")
     parser.add_argument("--cache-dir", default=None, help="summary cache dir (default: <dump>/dashboard/cache)")
     parser.add_argument("--demo", action="store_true", help="serve generated demo data (needs a repo checkout)")
+    parser.add_argument(
+        "--use-utilization-overview",
+        action="store_true",
+        default=False,
+        help="always show the fleet utilization overview instead of the per-rank carpet "
+        "(auto-enabled above 64 lanes)",
+    )
     args = parser.parse_args(argv)
 
     if args.demo:
@@ -63,7 +70,7 @@ def main(argv: list[str] | None = None) -> None:
 
     store = MetricStore.load(dump_dir / "dashboard")
     reader = DumpReader(dump_dir, cache_dir=args.cache_dir, tensor_lru=args.tensor_lru)
-    app = make_app(store, reader, follow=args.follow)
+    app = make_app(store, reader, follow=args.follow, use_utilization_overview=args.use_utilization_overview)
 
     if args.follow:
         # Append-only streams + GIL-atomic list appends make concurrent reads

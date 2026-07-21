@@ -135,6 +135,32 @@ def test_bubbles(loaded):
     assert bubbles[0]["step_time"] == pytest.approx(95.0)
 
 
+def test_fleet_overview(loaded):
+    store, truth = loaded
+    fleet = store.fleet(x_buckets=32)
+    assert fleet["lanes"] == truth.gpus
+    # every bucket's phase fractions (incl. "none") sum to 1 across the palette
+    for x in range(32):
+        total = sum(fractions[x] for fractions in fleet["composition"].values())
+        assert abs(total - 1.0) < 1e-6, f"bucket {x} sums to {total}"
+    assert any(name for name in fleet["composition"] if name != "none")
+    band = fleet["band"]
+    sampled = [x for x in range(32) if band["p50"][x] is not None]
+    assert sampled, "expected util samples in the window"
+    for x in sampled:
+        assert 0 <= band["min"][x] <= band["p10"][x] <= band["p50"][x] <= band["p90"][x] <= 100
+
+
+def test_fleet_endpoint(tmp_path):
+    dump_dummy_telemetry(tmp_path)
+    client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
+    meta = client.get("/api/meta").json()
+    assert meta["capabilities"]["use_utilization_overview"] is False
+    fleet = client.get("/api/timeline/fleet", params={"x_buckets": 16}).json()
+    assert fleet["x_buckets"] == 16 and fleet["lanes"] > 0
+    assert client.get("/api/timeline/fleet", params={"x_buckets": 1}).status_code == 400
+
+
 def test_timeline_endpoints(tmp_path):
     truth = dump_dummy_telemetry(tmp_path)
     client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))

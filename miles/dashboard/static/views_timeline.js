@@ -1,6 +1,7 @@
 import { api } from "./api.js";
 import { el, fmtNum, setViewCleanup } from "./app.js";
 import { createCarpet } from "./carpet.js";
+import { createFleet } from "./fleet.js";
 import { hideTooltip, showTooltip } from "./charts.js";
 
 // idle states share a light neutral family (train_wait also gets a hatch
@@ -296,13 +297,13 @@ export async function renderTimeline(view, meta, route) {
       return;
     }
     renderAll();
-    carpet.redraw(); // selection markers
+    if (!manyLanes()) carpet.redraw(); // selection markers
   }
 
   function renderSelection() {
     const input = el("input", {
       type: "text",
-      placeholder: "add: g:0-31 · rank:0-7 · node:<ip> · gpu:<node>:<i> · engine:<addr> · role:train",
+      placeholder: "add: g:0-31 · rank:0-7 · node:<ip> · gpu:<node>:<i> · engine:<addr> · role:train · every:128",
       style: "flex: 1; min-width: 280px",
     });
     input.onkeydown = (ev) => {
@@ -362,13 +363,25 @@ export async function renderTimeline(view, meta, route) {
       }
     },
   });
-  // the carpet tracks the lane view's zoom window; before any data exists it
-  // asks for the (empty) server default
+  const fleet = createFleet({ phaseColors: PHASE_COLORS, runStart: () => T0 });
+
+  // above this many lanes the per-rank carpet stops scaling (payload and
+  // pixels are both O(lanes)); serve --dashboard-use-utilization-overview forces it
+  const CARPET_MAX_LANES = 64;
+
+  // the overview (carpet or fleet panels) tracks the lane view's zoom window;
+  // before any data exists it asks for the (empty) server default
   const carpetRange = () => (haveData ? { t0: v0, t1: v1 } : {});
+  const manyLanes = () => meta.capabilities.use_utilization_overview || allLanes.length > CARPET_MAX_LANES;
+  async function refreshOverview() {
+    carpet.root.style.display = manyLanes() ? "none" : "";
+    fleet.root.style.display = manyLanes() ? "" : "none";
+    await (manyLanes() ? fleet.refresh(carpetRange()) : carpet.refresh(carpetRange()));
+  }
   let carpetTimer = null;
   const syncCarpet = () => {
     clearTimeout(carpetTimer);
-    carpetTimer = setTimeout(() => carpet.refresh(carpetRange()).catch(() => {}), 250);
+    carpetTimer = setTimeout(() => refreshOverview().catch(() => {}), 250);
   };
 
   // ----------------------------- bubble strip -------------------------------
@@ -688,18 +701,20 @@ export async function renderTimeline(view, meta, route) {
     selRow,
     advisoryPanel,
     carpet.root,
+    fleet.root,
     bubbleStrip,
     el("div", { class: "panel" }, [canvas]),
     legendPanel,
   );
   renderToolbar();
   applyRange(meta.time_range);
-  await Promise.all([loadData(), carpet.refresh(carpetRange()), loadAdvisories()]);
+  await Promise.all([loadData(), loadAdvisories()]);
+  await refreshOverview(); // topology decides carpet vs fleet panels
   renderAll();
-  carpet.redraw(); // selection markers need the loaded lane list
+  if (!manyLanes()) carpet.redraw(); // selection markers need the loaded lane list
   const onResize = () => {
     draw();
-    carpet.redraw();
+    manyLanes() ? fleet.redraw() : carpet.redraw();
   };
   window.addEventListener("resize", onResize);
 

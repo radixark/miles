@@ -38,11 +38,12 @@ def test_resolve_lanes_grammar(loaded):
     assert store.resolve_lanes("rank:0, engine:15000") == {(GPU_NODE, 0), (GPU_NODE, 1)}
     # dummy telemetry is colocate-shaped: every lane carries both roles
     assert store.resolve_lanes("role:train") == store.resolve_lanes("role:rollout")
+    assert store.resolve_lanes("every:2") == {(GPU_NODE, g) for g in range(0, truth.gpus, 2)}
 
 
 def test_resolve_lanes_rejects_bad_grammar(loaded):
     store, _ = loaded
-    for bad in ("bananas", "rank", "role:banana", "gpu:3", "g:x"):
+    for bad in ("bananas", "rank", "role:banana", "gpu:3", "g:x", "every:0"):
         with pytest.raises(ValueError):
             store.resolve_lanes(bad)
 

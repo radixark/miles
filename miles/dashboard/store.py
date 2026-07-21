@@ -1127,7 +1127,8 @@ class MetricStore:
         Comma-separated selectors: ``rank:5`` / ``rank:0-7`` (train ranks),
         ``g:5`` / ``g:0-31`` (global lane numbers), ``node:<ip>``,
         ``gpu:<node>:<index>``, ``engine:<addr substring>``,
-        ``role:train`` / ``role:rollout``, or ``all``. Unknown selector syntax
+        ``role:train`` / ``role:rollout``, ``every:<stride>`` (equidistant
+        global-index sampling), or ``all``. Unknown selector syntax
         raises; a valid selector matching nothing selects nothing.
         """
         if grammar is None or grammar.strip() in ("", "all"):
@@ -1159,6 +1160,11 @@ class MetricStore:
                 selected.add((node, int(gpu)))
             elif kind == "engine":
                 selected |= {(e["node"], e["gpu"]) for e in index if any(value in a for a in e["engine_addrs"])}
+            elif kind == "every":
+                stride = int(value)
+                if stride <= 0:
+                    raise ValueError(f"bad lane selector {token!r}: stride must be positive")
+                selected |= {(e["node"], e["gpu"]) for e in index if e["index"] % stride == 0}
             elif kind == "role":
                 if value not in ("train", "rollout"):
                     raise ValueError(f"bad lane selector {token!r}: role must be train or rollout")
@@ -1294,6 +1300,49 @@ class MetricStore:
             values=matrix.tobytes(),
             scale=None,
             palette=list(self.LIFECYCLE_PALETTE),
+        )
+
+    def fleet(self, *, t0: float | None = None, t1: float | None = None, x_buckets: int = 600) -> dict:
+        """Scale-invariant fleet overview: per-bucket phase composition
+        (fraction of lanes in each phase) and the util distribution band
+        across all lanes. Payload size is O(x_buckets), never O(lanes)."""
+        phase = self.heatmap("phase", t0=t0, t1=t1, x_buckets=x_buckets)
+        palette = phase["palette"] or []
+        n_rows = len(phase["rows"])
+        composition = {}
+        if n_rows and palette:
+            matrix = np.frombuffer(phase["values"], dtype=np.uint8).reshape(n_rows, x_buckets)
+            for pid, name in enumerate(palette):
+                fractions = (matrix == pid).sum(axis=0) / n_rows
+                composition[name or "none"] = [round(float(v), 4) for v in fractions]
+
+        band = dict(p10=[None] * x_buckets, p50=[None] * x_buckets, p90=[None] * x_buckets, min=[None] * x_buckets)
+        rt0, rt1 = phase["t0"], phase["t1"]
+        frame = self._window(self._readers[Stream.GPU_UTIL].window(rt0, rt1), rt0, rt1)
+        if len(frame) and rt1 > rt0:
+            # exact percentiles from the raw stream: carpet cells cannot
+            # distinguish "no sample" from 0% util
+            span = rt1 - rt0
+            per_bucket = (
+                frame.with_columns(
+                    bucket=((pl.col("ts") - rt0) / span * x_buckets).floor().clip(0, x_buckets - 1).cast(pl.Int32)
+                )
+                .group_by("bucket", "node", "gpu")
+                .agg(pl.col("util").max().alias("u"))
+                .group_by("bucket")
+                .agg(
+                    p10=pl.col("u").quantile(0.1),
+                    p50=pl.col("u").quantile(0.5),
+                    p90=pl.col("u").quantile(0.9),
+                    min=pl.col("u").min(),
+                )
+            )
+            for row in per_bucket.iter_rows(named=True):
+                for key in ("p10", "p50", "p90", "min"):
+                    band[key][row["bucket"]] = float(row[key])
+
+        return dict(
+            t0=rt0, t1=rt1, x_buckets=x_buckets, lanes=n_rows, palette=palette, composition=composition, band=band
         )
 
     def outliers(
