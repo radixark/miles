@@ -140,7 +140,7 @@ class SessionCore:
             content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
         )
 
-    async def collect_samples(self, session_id: str, *, multi_samples: bool, max_seq_len: int | None) -> Response:
+    async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
         """Assemble training Samples from this session's records, on the server.
 
         Runs synchronously on the server loop — no await between reading the
@@ -173,8 +173,12 @@ class SessionCore:
                 samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
             if not samples:
                 return _samples_response(encode_samples_reply([], metadata, empty_reason="all_truncated"))
-            if not multi_samples:
-                samples = [merge_samples(samples, tokenizer)]
+            # Sample boundaries are a property of the trajectory, not a caller
+            # choice: consecutive linear turns fold into one TITO sample. The
+            # registry rejects non-linear appends today, so this is always one
+            # merged run; compaction/subagent support will partition the turns
+            # into multiple runs here (the reply is already a list on the wire).
+            samples = [merge_samples(samples, tokenizer)]
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
         return _samples_response(encode_samples_reply(samples, metadata))

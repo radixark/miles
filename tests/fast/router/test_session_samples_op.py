@@ -142,23 +142,19 @@ async def _make_session(core, records, accumulated) -> str:
     return sid
 
 
-async def _collect_via_op(core, sid, *, multi_samples=False, max_seq_len=None):
-    response = await core.collect_samples(sid, multi_samples=multi_samples, max_seq_len=max_seq_len)
+async def _collect_via_op(core, sid, *, max_seq_len=None):
+    response = await core.collect_samples(sid, max_seq_len=max_seq_len)
     return response.status_code, response.body
 
 
-def _new_pipeline(payload, input_sample, *, multi_samples):
-    """What collect_samples() does after the cutover: overlay + driver-side metadata."""
+def _new_pipeline(payload, input_sample):
+    """What the driver does with the reply: overlay + driver-side metadata."""
     reply = decode_samples_reply(payload, input_sample)
     samples = reply.samples
     for s in samples:
         s.metadata.update(_AGENT_METADATA)
     if samples:
-        if not multi_samples:
-            (merged,) = samples
-            merged.metadata.update(reply.session_metadata)
-        else:
-            samples[-1].metadata.update(reply.session_metadata)
+        samples[-1].metadata.update(reply.session_metadata)
     return samples, reply
 
 
@@ -169,62 +165,13 @@ def _expected_r3(seed: int, num_tokens: int):
     return np.arange(seed, seed + num_tokens * NUM_LAYERS * TOPK, dtype=np.int32).reshape(num_tokens, NUM_LAYERS, TOPK)
 
 
-async def test_assembled_samples_golden_multi(core):
-    """multi_samples=True, no truncation: per-turn Samples carry exactly the
-    values derivable from the records fixture, template fields come from the
-    driver's input sample, and the metadata application order holds."""
-    sid = await _make_session(core, _two_turn_records(), _ACCUMULATED)
-    status, payload = await _collect_via_op(core, sid, multi_samples=True)
-    assert status == 200
-    samples, reply = _new_pipeline(payload, _input_sample(), multi_samples=True)
-    assert reply.empty_reason is None
-    tokenizer = core.registry.tokenizer
-
-    s1, s2 = samples
-    assert s1.tokens == [1, 2, 3, 10, 11]
-    assert s1.response == tokenizer.decode([10, 11])
-    assert s1.response_length == 2
-    assert s1.loss_mask == [1, 1]
-    assert s1.rollout_log_probs == [-0.125, -0.25]
-    assert s1.status == Sample.Status.COMPLETED
-    assert s1.weight_versions == ["w1"]
-    assert np.array_equal(s1.rollout_routed_experts, _expected_r3(0, 4))
-    assert s1.prefix_cache_info.to_dict() == {"cached_tokens": 0, "total_prompt_tokens": 3}
-
-    assert s2.tokens == _ACCUMULATED
-    assert s2.response == tokenizer.decode([30, 31])
-    assert s2.response_length == 2
-    assert s2.loss_mask == [1, 1]
-    assert s2.rollout_log_probs == [-0.5, -1.0]
-    assert s2.status == Sample.Status.COMPLETED
-    assert s2.weight_versions == ["w2"]
-    assert np.array_equal(s2.rollout_routed_experts, _expected_r3(100, 8))
-    assert s2.prefix_cache_info.to_dict() == {"cached_tokens": 5, "total_prompt_tokens": 7}
-
-    # Overlay: template fields are the driver's, untouched by the wire.
-    for s in samples:
-        assert s.prompt == [{"role": "user", "content": "hi"}]
-        assert s.label == "lbl"
-        assert s.reward == 2.5
-        assert s.routing_key == "routing-sid"
-        assert s.train_metadata == {"loss": "ppo"}
-        assert s.metadata["task"] == "t1"
-    # Metadata application order: agent overrides the input's shared_key on every
-    # sample; session_metadata (applied last, last sample only) overrides the
-    # agent's max_trim_tokens plant.
-    assert samples[0].metadata["shared_key"] == "from-agent"
-    assert samples[0].metadata["max_trim_tokens"] == "agent-plant"
-    assert samples[-1].metadata["max_trim_tokens"] == reply.session_metadata["max_trim_tokens"]
-    assert samples[-1].metadata["accumulated_token_ids"] == _ACCUMULATED
-
-
 async def test_assembled_samples_golden_merged(core):
-    """multi_samples=False: turns merge into one trajectory Sample; the env
-    tokens between turns get zero loss/logprob; the last turn's R3 is kept."""
+    """Turns merge into one trajectory Sample; the env tokens between turns
+    get zero loss/logprob; the last turn's R3 is kept."""
     sid = await _make_session(core, _two_turn_records(), _ACCUMULATED)
     status, payload = await _collect_via_op(core, sid)
     assert status == 200
-    samples, reply = _new_pipeline(payload, _input_sample(), multi_samples=False)
+    samples, reply = _new_pipeline(payload, _input_sample())
     (m,) = samples
     tokenizer = core.registry.tokenizer
 
@@ -237,30 +184,34 @@ async def test_assembled_samples_golden_merged(core):
     assert m.weight_versions == ["w1", "w2"]
     assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
     assert m.prefix_cache_info.to_dict() == {"cached_tokens": 5, "total_prompt_tokens": 10}
+    # Overlay: template fields are the driver's, untouched by the wire.
+    assert m.prompt == [{"role": "user", "content": "hi"}]
+    assert m.label == "lbl"
+    assert m.reward == 2.5
+    assert m.routing_key == "routing-sid"
+    assert m.train_metadata == {"loss": "ppo"}
+    assert m.metadata["task"] == "t1"
+    # Metadata application order: the agent overrides the input's shared_key;
+    # session_metadata (applied last) overrides the agent's max_trim_tokens plant.
     assert m.metadata["shared_key"] == "from-agent"
+    assert m.metadata["max_trim_tokens"] == reply.session_metadata["max_trim_tokens"]
     assert m.metadata["accumulated_token_ids"] == _ACCUMULATED
 
 
-@pytest.mark.parametrize("multi_samples", [False, True], ids=["merge", "multi"])
-async def test_truncation_golden(core, multi_samples):
+async def test_truncation_golden(core):
     """max_seq_len=8 strips one output token off the second turn (a turn-level
-    budget applied before merge): the final sample ends TRUNCATED at 8 tokens
+    budget applied before merge): the merged sample ends TRUNCATED at 8 tokens
     with its per-token fields (including R3) trimmed in lockstep."""
     sid = await _make_session(core, _two_turn_records(), _ACCUMULATED)
-    status, payload = await _collect_via_op(core, sid, multi_samples=multi_samples, max_seq_len=8)
+    status, payload = await _collect_via_op(core, sid, max_seq_len=8)
     assert status == 200
-    samples, _ = _new_pipeline(payload, _input_sample(), multi_samples=multi_samples)
+    samples, _ = _new_pipeline(payload, _input_sample())
 
-    last = samples[-1]
+    (last,) = samples
     assert last.status == Sample.Status.TRUNCATED
     assert last.tokens == _ACCUMULATED[:8]
-    if multi_samples:
-        assert len(samples) == 2
-        assert last.loss_mask == [1]
-        assert last.rollout_log_probs == [-0.5]
-    else:
-        assert last.loss_mask == [1, 1, 0, 0, 1]
-        assert last.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5]
+    assert last.loss_mask == [1, 1, 0, 0, 1]
+    assert last.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5]
     assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 8)[:-1])
 
 
@@ -328,9 +279,7 @@ def app_client():
 
 
 def test_missing_session_returns_404(app_client):
-    response = app_client.post(
-        f"/sessions/{uuid.uuid4().hex}/samples", content=b'{"multi_samples":false,"max_seq_len":null}'
-    )
+    response = app_client.post(f"/sessions/{uuid.uuid4().hex}/samples", content=b'{"max_seq_len":null}')
     assert response.status_code == 404
     assert "not found" in response.json()["error"]
 
@@ -340,7 +289,7 @@ def test_samples_route_registered_before_catch_all_proxy(app_client):
     # backend (_UnusedBackend raises); the samples route must win instead and
     # answer with a decodable empty reply for a fresh session.
     sid = app_client.post("/sessions").json()["session_id"]
-    response = app_client.post(f"/sessions/{sid}/samples", content=b'{"multi_samples":false,"max_seq_len":null}')
+    response = app_client.post(f"/sessions/{sid}/samples", content=b'{"max_seq_len":null}')
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/octet-stream"
     reply = decode_samples_reply(response.content, Sample())

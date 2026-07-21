@@ -36,8 +36,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     tool_specs = load_function(args.generate_tool_specs_path)
     tool_call_parser = create_tool_call_parser(tool_specs, args.generate_tool_call_parser)
 
-    multi_samples = []
-
     # ----------------------- Initial prompts -------------------------
 
     prompt_tokens_ids = compute_prompt_ids_from_sample(input.state, sample, tools=tool_specs)
@@ -50,18 +48,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         payload, halt_status = compute_request_payload(args, sample.tokens, input.sampling_params)
         if payload is None:
             sample.status = halt_status
-            if args.generate_multi_samples and multi_samples:
-                multi_samples[-1].status = halt_status
             break
-
-        if args.generate_multi_samples:
-            sample = deepcopy(input.sample)
 
         output = await post(url, payload, headers=compute_routing_headers(args, sample))
         await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
-
-        if args.generate_multi_samples:
-            multi_samples.append(deepcopy(sample))
 
         if output["meta_info"]["finish_reason"]["type"] in ("abort", "length"):
             break
@@ -75,7 +65,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         tool_messages = await execute_tool_calls(tool_calls, execute_tool_function)
         update_sample_with_tool_responses(sample, tool_messages, tokenizer=tokenizer)
 
-    return GenerateFnOutput(samples=multi_samples if args.generate_multi_samples else sample)
+    return GenerateFnOutput(samples=sample)
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
@@ -83,7 +73,6 @@ def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--generate-tool-specs-path", type=str)
     parser.add_argument("--generate-tool-call-parser", type=str)
     parser.add_argument("--generate-execute-tool-function-path", type=str)
-    parser.add_argument("--generate-multi-samples", action="store_true")
 
 
 generate.add_arguments = _add_arguments
