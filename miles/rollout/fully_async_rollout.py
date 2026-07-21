@@ -10,8 +10,9 @@ Requires the class-based rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``)
 
     --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
 
-Evaluation is not served by this function; point ``--eval-function-path`` at
-``miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn``.
+Evaluation requires a dedicated eval fleet (``--eval-num-gpus``): the rollout fleet
+never has a quiet window, so eval runs on separate engines pinned per-eval to an HF
+checkpoint snapshot (see ``miles/rollout/checkpoint_eval.py``).
 """
 
 import asyncio
@@ -21,8 +22,16 @@ from collections.abc import Iterator
 
 import httpx
 
-from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnInput, RolloutFnOutput, RolloutFnTrainOutput
+from miles.rollout.base_types import (
+    RolloutFnConstructorInput,
+    RolloutFnEvalOutput,
+    RolloutFnInput,
+    RolloutFnOutput,
+    RolloutFnTrainOutput,
+)
+from miles.rollout.checkpoint_eval import make_eval_generate_state
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
+from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.utils.http_utils import get
 from miles.utils.types import Sample
 
@@ -91,18 +100,30 @@ class FullyAsyncRolloutFn:
         self._weight_version = _CachedWeightVersion()
         self._worker: asyncio.Task | None = None
         self._output: asyncio.Queue[Group] | None = None
+        self._eval_state: GenerateState | None = None
+        self._eval_prompt_dataset_cache: dict = {}
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
-            raise ValueError(
-                "FullyAsyncRolloutFn does not serve eval; set --eval-function-path to "
-                "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-            )
+            return await self._call_eval(input)
         if self._worker is None:
             self._output = asyncio.Queue(maxsize=OUTPUT_QUEUE_MAX_GROUPS)
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
         return await self._drain(input.rollout_id)
+
+    async def _call_eval(self, input: RolloutFnInput) -> RolloutFnOutput:
+        if getattr(self.args, "eval_num_gpus", 0) <= 0:
+            raise ValueError(
+                "fully-async eval requires a dedicated eval fleet: set --eval-num-gpus > 0 "
+                "(or run tools/checkpoint_eval_service.py against --save-hf checkpoints)"
+            )
+        # The eval fleet has its own router and engines, so eval coroutines coexist
+        # with the producer task on the shared loop without contending for capacity.
+        if self._eval_state is None:
+            self._eval_state = make_eval_generate_state(self.args)
+        results = await run_eval_datasets(self._eval_state, self._eval_prompt_dataset_cache)
+        return RolloutFnEvalOutput(data=results)
 
     # -------------------------- producer --------------------------
 

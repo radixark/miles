@@ -105,11 +105,48 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     assert len(output2.samples) == 3
 
 
-async def test_eval_raises(monkeypatch):
+async def test_eval_without_fleet_raises(monkeypatch):
     fn = make_fn(monkeypatch, make_args(), FakeDataSource())
-    with pytest.raises(ValueError, match="does not serve eval"):
+    with pytest.raises(ValueError, match="requires a dedicated eval fleet"):
         await fn(RolloutFnEvalInput(rollout_id=0))
     assert fn._worker is None
+
+
+async def test_eval_runs_on_dedicated_fleet(monkeypatch):
+    args = make_args(
+        eval_num_gpus=1,
+        eval_num_gpus_per_engine=1,
+        sglang_model_routers={"eval": ("127.0.0.1", 31000)},
+    )
+    data_source = FakeDataSource()
+    fn = make_fn(monkeypatch, args, data_source)
+
+    eval_results = {"fake_ds": {"rewards": [1.0], "truncated": [False], "samples": []}}
+    seen_states = []
+
+    def fake_make_eval_generate_state(a):
+        assert a.sglang_model_routers["eval"] == ("127.0.0.1", 31000)
+        state = FakeGenerateState(a)
+        seen_states.append(state)
+        return state
+
+    async def fake_run_eval_datasets(state, cache):
+        assert state in seen_states
+        return eval_results
+
+    monkeypatch.setattr(fully_async, "make_eval_generate_state", fake_make_eval_generate_state)
+    monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
+
+    output = await fn(RolloutFnEvalInput(rollout_id=0))
+
+    assert output.data == eval_results
+    # Eval must not start the producer or consume training prompts.
+    assert fn._worker is None
+    assert data_source.num_get_calls == 0
+
+    # The eval state is created once and reused across evals.
+    await fn(RolloutFnEvalInput(rollout_id=1))
+    assert len(seen_states) == 1
 
 
 async def test_aborted_group_recycled(monkeypatch):
