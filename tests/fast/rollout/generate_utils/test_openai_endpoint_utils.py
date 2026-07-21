@@ -16,7 +16,7 @@ import pytest
 
 import miles.utils.http_utils as http_utils
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
-from miles.rollout.session.samples import encode_samples_reply
+from miles.rollout.session.samples_codec import encode_samples_reply
 from miles.utils.http_utils import post_bytes_no_retry
 from miles.utils.types import Sample
 

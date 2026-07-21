@@ -27,7 +27,7 @@ from tests.fast.rollout.session.test_samples import _make_record
 
 from miles.rollout.session.core import SessionCore
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.samples import decode_samples_reply
+from miles.rollout.session.samples_codec import decode_samples_reply
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
@@ -119,7 +119,7 @@ def _input_sample() -> Sample:
         label="lbl",
         reward=2.5,
         metadata={"task": "t1", "shared_key": "from-input"},
-        session_id="routing-sid",
+        routing_key="routing-sid",
         train_metadata={"loss": "ppo"},
         generate_function_path="gen.fn",
     )
@@ -206,7 +206,7 @@ async def test_assembled_samples_golden_multi(core):
         assert s.prompt == [{"role": "user", "content": "hi"}]
         assert s.label == "lbl"
         assert s.reward == 2.5
-        assert s.session_id == "routing-sid"
+        assert s.routing_key == "routing-sid"
         assert s.train_metadata == {"loss": "ppo"}
         assert s.metadata["task"] == "t1"
     # Metadata application order: agent overrides the input's shared_key on every

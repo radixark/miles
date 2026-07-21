@@ -7,7 +7,7 @@ import logging
 import random
 from argparse import Namespace
 
-from miles.rollout.session.samples import SamplesReply, decode_samples_reply
+from miles.rollout.session.samples_codec import SamplesReply, decode_samples_reply
 from miles.utils.http_utils import post, post_bytes_no_retry
 from miles.utils.types import Sample
 

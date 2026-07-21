@@ -22,11 +22,8 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.samples import (
-    compute_samples_from_openai_records,
-    encode_samples_reply,
-    truncate_samples_by_total_tokens,
-)
+from miles.rollout.session.samples import compute_samples_from_openai_records, truncate_samples_by_total_tokens
+from miles.rollout.session.samples_codec import encode_samples_reply
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 
 logger = logging.getLogger(__name__)
@@ -52,7 +49,7 @@ def _render_json(payload) -> bytes:
 
 
 def _samples_response(payload: bytes) -> Response:
-    """The samples-op reply: one codec envelope (JSON meta + raw binary segments)."""
+    """The samples-op reply: one safetensors binary payload."""
     return Response(content=payload, status_code=200, media_type="application/octet-stream")
 
 

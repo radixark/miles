@@ -229,7 +229,7 @@ async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> byt
 
     For endpoints where a retry cannot help (the session samples endpoint: a
     5xx means the owning worker died and its state died with it, a 422 is a
-    deterministic assembly failure) and where the reply is a binary envelope
+    deterministic assembly failure) and where the reply is a binary payload
     that `post()`'s json()/text decoding would mangle. A non-2xx raises with
     the response body text; `timeout` bounds the whole call via wait_for (the
     shared client itself has timeout=None, and httpx timeouts are per-phase,
