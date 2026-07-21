@@ -164,17 +164,19 @@ def setup_model_and_optimizer(
     config = OptimizerConfig(**kwargs)
     config.timers = None
 
-    if _is_muon_optimizer(config.optimizer):
+    # Multi-LoRA wins over the plain Muon path: it builds per-slot optimizers of
+    # either family itself and applies LayerWise once over all slots.
+    if is_multi_lora_enabled(args):
+        from miles.backends.megatron_utils.multi_lora_optimizer import build_multi_lora_optimizer
+
+        optimizer = build_multi_lora_optimizer(args, config, model)
+    elif _is_muon_optimizer(config.optimizer):
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
             use_gloo_process_groups=args.enable_gloo_process_groups,
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
-    elif is_multi_lora_enabled(args):
-        from miles.backends.megatron_utils.multi_lora_optimizer import build_multi_lora_optimizer
-
-        optimizer = build_multi_lora_optimizer(args, config, model)
     else:
         optimizer = get_megatron_optimizer(
             config=config,

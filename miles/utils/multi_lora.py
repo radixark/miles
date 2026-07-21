@@ -68,10 +68,6 @@ def validate_multi_lora_args(args: Any) -> None:
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
     assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
-    assert "muon" not in str(getattr(args, "optimizer", "")).lower(), (
-        "Multi-LoRA does not support Muon: per-adapter decoupled stepping is only "
-        "implemented for Adam-family per-slot optimizers"
-    )
     assert not args.colocate, (
         "Multi-LoRA requires disaggregated rollout engines: weight sync is only "
         "implemented for the distributed path, not the colocated tensor path."
@@ -100,10 +96,9 @@ def validate_multi_lora_args(args: Any) -> None:
         "depend on batch contents. Drop --calculate-per-token-loss."
     )
     assert args.multi_lora_max_coalesce_wait_s >= 0, "--multi-lora-max-coalesce-wait-s must be non-negative"
-    assert (getattr(args, "optimizer", "adam") or "adam").lower() == "adam", (
-        "Multi-LoRA requires --optimizer adam: the per-slot optimizer isolation "
-        "(build_multi_lora_optimizer, slot retirement state cleanup) only implements "
-        f"Adam semantics; got --optimizer {args.optimizer}"
+    assert (getattr(args, "optimizer", "adam") or "adam").lower() in ("adam", "muon", "dist_muon"), (
+        "Multi-LoRA per-slot optimizers support adam (AdamW) and muon: state isolation and "
+        f"slot-retirement cleanup implement only those state layouts; got --optimizer {args.optimizer}"
     )
     from miles.utils.environ import enable_experimental_ft_trainer
 
