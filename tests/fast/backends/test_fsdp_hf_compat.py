@@ -216,11 +216,13 @@ def test_model_patch_registry_gating():
     from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
 
     by_name = {h.name: h for h in _MODEL_PATCH_HOOKS}
-    # the two expected generic hooks are registered, in order (GDN packing no longer a ModelPatchHook)
-    assert [h.name for h in _MODEL_PATCH_HOOKS][:2] == [
+    # the expected generic hooks are registered in order (GDN packing is not a ModelPatchHook)
+    assert [h.name for h in _MODEL_PATCH_HOOKS][:3] == [
         "fp8_checkpoint_guard",
         "dsa_train_infer_warn",
+        "model_type_verified",
     ]
+    assert [h.name for h in _MODEL_PATCH_HOOKS].count("model_type_verified") == 1
     assert "gated_deltanet_packing" not in by_name
     assert not by_name["fp8_checkpoint_guard"].applies_to(None)
     # the qwen3_moe MoE-block patch is a hook now (moved out of _enable_true_on_policy_optimizations),
@@ -234,6 +236,46 @@ def test_model_patch_registry_gating():
     by_name["qwen3_moe_moe_patch"].apply(
         SimpleNamespace(model_type="qwen3_moe"), SimpleNamespace(true_on_policy_mode=False)
     )
+
+
+@pytest.mark.parametrize("model_type", ["glm4_moe_lite", "nemotron_h", "qwen3", "qwen3_moe", "qwen3_vl"])
+def test_model_type_verified_accepts_recorded_models(model_type, caplog):
+    from types import SimpleNamespace
+
+    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import check_model_type_verified
+
+    check_model_type_verified(SimpleNamespace(model_type=model_type), SimpleNamespace(rank=0))
+
+    assert not caplog.records
+
+
+def test_verified_model_types_match_recorded_validation():
+    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import VERIFIED_MODEL_TYPES
+
+    assert VERIFIED_MODEL_TYPES == frozenset({"glm4_moe_lite", "nemotron_h", "qwen3", "qwen3_moe", "qwen3_vl"})
+
+
+def test_model_type_verified_warns_once_on_rank_zero(caplog):
+    from types import SimpleNamespace
+
+    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
+
+    hook = next(h for h in _MODEL_PATCH_HOOKS if h.name == "model_type_verified")
+    hook.apply(SimpleNamespace(model_type="qwen3_5_moe"), SimpleNamespace(rank=0))
+
+    assert len(caplog.records) == 1
+    assert "model_type='qwen3_5_moe' has no recorded FSDP validation" in caplog.text
+
+
+def test_model_type_verified_is_silent_on_nonzero_rank(caplog):
+    from types import SimpleNamespace
+
+    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
+
+    hook = next(h for h in _MODEL_PATCH_HOOKS if h.name == "model_type_verified")
+    hook.apply(SimpleNamespace(model_type="qwen3_5_moe"), SimpleNamespace(rank=1))
+
+    assert not caplog.records
 
 
 def test_packed_seq_context_boundaries():
