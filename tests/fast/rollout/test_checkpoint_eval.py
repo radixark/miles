@@ -158,6 +158,13 @@ def controller_env(monkeypatch, tmp_path):
         return fn(input)
 
     monkeypatch.setattr(rollout_manager_mod, "call_rollout_function", fake_call_rollout_function)
+
+    async def noop_router_ready(self, srv, timeout=180.0):
+        return None
+
+    monkeypatch.setattr(
+        rollout_manager_mod.RolloutManager.__ray_actor_class__, "_wait_eval_router_ready", noop_router_ready
+    )
     monkeypatch.setattr(rollout_manager_mod, "save_debug_rollout_data", lambda *a, **k: None)
     monkeypatch.setattr(
         rollout_manager_mod,
@@ -299,6 +306,28 @@ async def test_controller_marks_dead_engine_for_recovery(controller_env, tmp_pat
     assert srv.wrappers[0].stopped  # probed, found unreachable, marked for revival
     assert srv.recover_calls == 1
     assert controller_env.logged["skip"] == (5, "pin_violation")
+
+
+async def test_controller_router_not_ready_skips(controller_env, tmp_path, monkeypatch):
+    snapshot = tmp_path / "step_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    async def router_never_ready(self, srv, timeout=180.0):
+        raise TimeoutError("router not ready")
+
+    monkeypatch.setattr(
+        rollout_manager_mod.RolloutManager.__ray_actor_class__, "_wait_eval_router_ready", router_never_ready
+    )
+
+    engines = [FakeEngine(controller_env.log)]
+    args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
+    mgr = make_manager(args, engines)
+
+    await mgr._eval_on_dedicated_fleet(5, str(snapshot), export_time_seconds=None)
+
+    assert controller_env.logged["skip"] == (5, "unhealthy")
+    assert ("generate", 5) not in controller_env.log
 
 
 async def test_controller_gc_keeps_ring(controller_env, tmp_path):

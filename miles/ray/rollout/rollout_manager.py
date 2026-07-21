@@ -228,6 +228,13 @@ class RolloutManager:
                 self._log_eval_skip(rollout_id, "pin_violation")
                 return
 
+            try:
+                await self._wait_eval_router_ready(srv)
+            except Exception as e:
+                logger.warning(f"Eval router not ready at rollout {rollout_id}, skipping eval: {e}")
+                self._log_eval_skip(rollout_id, "unhealthy")
+                return
+
             result = await asyncio.to_thread(
                 call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
             )
@@ -243,6 +250,31 @@ class RolloutManager:
                 self._metric_checker.on_eval(metrics)
 
             self._gc_eval_snapshots(hf_dir)
+
+    async def _wait_eval_router_ready(self, srv, timeout: float = 180.0) -> None:
+        """Probe end-to-end generation through the eval router before dispatching.
+
+        After an engine revival the router needs a health-check cycle to evict the
+        dead worker and pick up the new one; a generate dispatched inside that window
+        gets 503s. A one-token probe (retried) proves the route is actually usable.
+        """
+        import httpx
+
+        url = f"http://{srv.router_ip}:{srv.router_port}/generate"
+        payload = {"input_ids": [0], "sampling_params": {"max_new_tokens": 1, "temperature": 0}}
+        deadline = time.time() + timeout
+        async with httpx.AsyncClient() as client:
+            while True:
+                try:
+                    response = await client.post(url, json=payload, timeout=60)
+                    if response.status_code == 200:
+                        return
+                    last_error = f"HTTP {response.status_code}"
+                except httpx.HTTPError as e:
+                    last_error = repr(e)
+                if time.time() > deadline:
+                    raise TimeoutError(f"eval router at {url} not ready after {timeout}s: {last_error}")
+                await asyncio.sleep(5)
 
     async def _mark_unreachable_eval_engines(self, srv) -> None:
         """Probe eval engines and mark unreachable ones stopped so recover() revives them.
