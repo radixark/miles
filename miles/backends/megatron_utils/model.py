@@ -30,6 +30,7 @@ from miles.backends.megatron_utils.local_weight_checksum import dump_local_weigh
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
+from miles.utils.hf_config import load_hf_config
 from miles.utils.hf_export import HF_EXPORT_COMPLETE_MARKER
 from miles.utils.memory_utils import clear_memory
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
@@ -826,6 +827,78 @@ def save(
         enable_forward_pre_hook(model)
 
 
+HF_METADATA_SKIP_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
+
+
+def export_hf_model_direct(
+    args,
+    model: Sequence[DDP],
+    path: str | Path,
+    *,
+    model_name: str,
+    quantization_config,
+    megatron_local_weights,
+) -> None:
+    """Export current weights as an HF checkpoint via miles' own megatron->HF converters.
+
+    This is the same conversion machinery the weight updater uses, so it covers exactly
+    the model families weight sync supports — unlike the bridge-based ``save_hf_model``,
+    which silently exports zero weights for specs it has no mapping for (e.g. the
+    qwen3.5 attention-output-gate layout).
+
+    Collective — all ranks must call it (the iterator gathers PP/EP/TP shards
+    internally and every rank materializes the full tensors); global rank 0 writes
+    safetensors shards streamingly plus the index, copies tokenizer/config metadata
+    from the base checkpoint, and stamps the completeness marker.
+    """
+    import json
+    import shutil
+
+    import safetensors.torch
+
+    from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
+
+    path = Path(path)
+    is_writer = torch.distributed.get_rank() == 0
+    if is_writer:
+        path.mkdir(parents=True, exist_ok=True)
+
+    iterator = HfWeightIteratorDirect(
+        args, model, model_name=model_name, quantization_config=quantization_config
+    )
+
+    weight_map: dict[str, str] = {}
+    total_size = 0
+    shard_index = 0
+    for hf_named_tensors in iterator.get_hf_weight_chunks(megatron_local_weights):
+        if not is_writer:
+            continue
+        shard_index += 1
+        shard_name = f"model-{shard_index:05d}.safetensors"
+        shard_tensors = {}
+        for name, tensor in hf_named_tensors:
+            shard_tensors[name] = tensor.detach().to("cpu").contiguous()
+            weight_map[name] = shard_name
+            total_size += shard_tensors[name].numel() * shard_tensors[name].element_size()
+        safetensors.torch.save_file(shard_tensors, path / shard_name)
+        del shard_tensors
+
+    if is_writer:
+        assert weight_map, f"HF export to {path} produced no weights"
+        for meta_file in Path(args.hf_checkpoint).iterdir():
+            # Copy tokenizer/config metadata only — never base weight files or the
+            # base checkpoint's safetensors index (ours is written below).
+            if meta_file.is_file() and not any(s in meta_file.name for s in HF_METADATA_SKIP_SUFFIXES):
+                shutil.copy2(meta_file, path / meta_file.name)
+        index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}
+        (path / "model.safetensors.index.json").write_text(json.dumps(index, indent=2))
+
+    # Everyone waits for the writer before the marker claims the snapshot complete.
+    torch.distributed.barrier()
+    if is_writer:
+        (path / HF_EXPORT_COMPLETE_MARKER).touch()
+
+
 _hf_bridge_cache: dict = {}
 
 
@@ -868,25 +941,46 @@ def save_hf_model(
     path = Path(path if path is not None else args.save_hf.format(rollout_id=rollout_id))
 
     try:
-        from miles.utils.megatron_bridge_utils import patch_megatron_model
-
         if should_log:
             logger.info(f"Saving model in HuggingFace format to {path}")
 
-        bridge = _get_hf_bridge(args.hf_checkpoint)
+        if args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
+            # miles' own converters cover exactly what weight sync covers; the
+            # bridge silently exports zero weights for specs it has no mapping for
+            # (e.g. qwen3.5). LoRA keeps the bridge (adapter merging).
+            from .update_weight.common import named_params_and_buffers
 
-        path.mkdir(parents=True, exist_ok=True)
+            hf_config = load_hf_config(args.hf_checkpoint)
+            export_hf_model_direct(
+                args,
+                model,
+                path,
+                model_name=type(hf_config).__name__.lower() if args.model_name is None else args.model_name,
+                quantization_config=getattr(hf_config, "quantization_config", None),
+                megatron_local_weights=dict(named_params_and_buffers(args, model, convert_to_global_name=True)),
+            )
+        else:
+            from miles.utils.megatron_bridge_utils import patch_megatron_model
 
-        with patch_megatron_model(model):
-            # For LoRA models, merge_adapter_weights=True (default) merges
-            # adapter weights into base weights for a standalone HF model.
-            bridge.save_hf_pretrained(model, path=path)
+            bridge = _get_hf_bridge(args.hf_checkpoint)
+            path.mkdir(parents=True, exist_ok=True)
+            with patch_megatron_model(model):
+                # For LoRA models, merge_adapter_weights=True (default) merges
+                # adapter weights into base weights for a standalone HF model.
+                bridge.save_hf_pretrained(model, path=path)
 
-        # save_hf_pretrained is collective; make sure every rank is done writing
-        # before the marker claims the snapshot is complete.
-        torch.distributed.barrier()
-        if torch.distributed.get_rank() == 0:
-            (path / HF_EXPORT_COMPLETE_MARKER).touch()
+            # save_hf_pretrained is collective; make sure every rank is done writing
+            # before checking the result and claiming the snapshot complete.
+            torch.distributed.barrier()
+            if torch.distributed.get_rank() == 0:
+                # The bridge silently exports zero weights for specs it has no mapping
+                # for; a marked-but-weightless snapshot must never exist.
+                if not any(path.glob("*.safetensors")) and not any(path.glob("*.bin")):
+                    raise RuntimeError(
+                        f"HF export to {path} produced no weight files — the megatron "
+                        f"bridge likely has no mapping for this model architecture."
+                    )
+                (path / HF_EXPORT_COMPLETE_MARKER).touch()
 
         if should_log:
             logger.info(f"Successfully saved merged HuggingFace model to {path}")

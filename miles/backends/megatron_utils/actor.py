@@ -568,8 +568,10 @@ class MegatronTrainRayActor(TrainRayActor):
     def export_hf(self, rollout_id: int, path: str) -> None:
         """Export current weights as an HF checkpoint to ``path`` (collective).
 
-        Unlike the periodic --save-hf path inside save_model, failures propagate to
-        the caller so an eval snapshot that failed to export can be skipped loudly.
+        Uses the direct megatron->HF converters (the weight updater's machinery), so
+        export coverage matches weight-sync coverage. Unlike the periodic --save-hf
+        path inside save_model, failures propagate to the caller so an eval snapshot
+        that failed to export can be skipped loudly.
         """
         self._heartbeat.bump()
         if self.args.debug_rollout_only:

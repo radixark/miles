@@ -192,11 +192,15 @@ class RolloutManager:
             engines = [e.actor_handle for e in srv.engines]
             weight_version = str(rollout_id)
             for _attempt in range(2):
-                await asyncio.gather(
-                    *[e.update_weights_from_disk.remote(hf_dir, weight_version=weight_version) for e in engines]
-                )
-                versions = await asyncio.gather(*[e.get_weight_version.remote() for e in engines])
-                if all(str(v) == weight_version for v in versions):
+                try:
+                    await asyncio.gather(
+                        *[e.update_weights_from_disk.remote(hf_dir, weight_version=weight_version) for e in engines]
+                    )
+                    versions = await asyncio.gather(*[e.get_weight_version.remote() for e in engines])
+                except Exception as e:
+                    logger.warning(f"Eval fleet weight load from {hf_dir} failed: {e}")
+                    versions = []
+                if versions and all(str(v) == weight_version for v in versions):
                     break
             else:
                 logger.warning(
