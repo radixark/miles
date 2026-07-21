@@ -175,12 +175,35 @@ def test_atomic_group_specs_raise_explicit_errors(direct_module, monkeypatch):
         with pytest.raises(AssertionError, match=error):
             direct_module.get_named_update_units([param.name for param in params], groups)
 
-    # A group with no matching params is skipped, not an error (e.g. a PP rank
-    # holding no layer needing it); the params are still returned as ungrouped units.
-    units = direct_module.get_named_update_units(
-        [param.name for param in params], [AtomicUpdateGroup("missing", (".c",))]
+
+def test_deepseekv4_atomic_group_skipped_when_layer_has_no_indexer(direct_module):
+    from miles.backends.megatron_utils.update_weight.common import get_atomic_update_groups
+
+    # A dense (non-DSA-indexer) layer's params -- no ".self_attention.indexer.*" names,
+    # since the indexer is only present on some layers (see --use-indexer-replay help).
+    param_names = [
+        "module.module.decoder.layers.0.input_layernorm.weight",
+        "module.module.decoder.layers.0.self_attention.wq_a.weight",
+        "module.module.decoder.layers.0.self_attention.wkv.weight",
+        "module.module.decoder.layers.0.self_attention.compressor.wkv.weight",
+        "module.module.decoder.layers.0.self_attention.compressor.wgate.weight",
+    ]
+
+    update_units = direct_module.get_named_update_units(
+        param_names, get_atomic_update_groups(Namespace(q_lora_rank=1024), "deepseekv4")
     )
-    assert {unit.names for unit in units} == {(param.name,) for param in params}
+
+    assert [unit.names for unit in update_units] == [
+        ("module.module.decoder.layers.0.input_layernorm.weight",),
+        (
+            "module.module.decoder.layers.0.self_attention.wq_a.weight",
+            "module.module.decoder.layers.0.self_attention.wkv.weight",
+        ),
+        (
+            "module.module.decoder.layers.0.self_attention.compressor.wkv.weight",
+            "module.module.decoder.layers.0.self_attention.compressor.wgate.weight",
+        ),
+    ]
 
 
 def _tensor(size: int) -> torch.Tensor:
