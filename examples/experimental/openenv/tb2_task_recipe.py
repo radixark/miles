@@ -12,8 +12,9 @@ provider.
   ``server_layer_commands(task_dir)``  shell commands that turn the official
       task image into a combined task+env-server image: a uv-managed Python
       venv at ``/opt/envserver`` running the INSTALLED tbench2_env package
-      (source embedded into the build, so a patched checkout ships without a
-      released package), plus the task directory staged at ``/opt/tb2-tasks/<id>``
+      (source embedded into the build, so the sandbox runs exactly the
+      version installed here — no released package needed), plus the task
+      directory staged at ``/opt/tb2-tasks/<id>``
       (downloaded from the tasks checkout's pinned-commit GitHub tarball) for
       ``reset(task_id)`` via ``TB2_TASKS_DIR``.
   ``server_cmd()``  starts the env server inside the sandbox. Sets
@@ -49,7 +50,8 @@ except ImportError:  # Python < 3.11
     import tomli as tomllib
 
 # Guard for the ONE payload that must be embedded into the build: the
-# tbench2_env package source (a patched checkout exists nowhere downloadable).
+# tbench2_env package source (embedding the local install is what guarantees
+# the sandbox scores with exactly the version validated here).
 # The hard ceiling is Daytona's Dockerfile parser: a single line may not
 # exceed 65535 bytes ("dockerfile line greater than max allowed size",
 # observed on real builds), and base64 inflates by 4/3; 45KB of tar.gz stays
