@@ -22,6 +22,7 @@ def compute_advantages(
     total_lengths: list[int],
     response_lengths: list[int],
     values: list[torch.Tensor] | None = None,
+    max_seq_lens: list[int] | None = None,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """Dispatch to the configured advantage estimator.
 
@@ -30,6 +31,7 @@ def compute_advantages(
         `T_i`: Prompt-plus-response length of sample `i`, excluding BSHD padding.
         `R_i`: Full response length of sample `i` before CP splitting.
         `C_i`: Number of response-aligned positions of sample `i` stored on this CP rank; prompt and padding positions are excluded.
+        `P_i`: Padded sequence length of sample `i` used by BSHD CP splitting.
 
     Args:
         args: `Namespace`; no tensor shape.
@@ -40,6 +42,7 @@ def compute_advantages(
         total_lengths: List length `B`; `total_lengths[i] = T_i`.
         response_lengths: List length `B`; `response_lengths[i] = R_i`.
         values: `None` or list length `B`; `values[i]` has shape `[C_i]`. PPO requires this input.
+        max_seq_lens: `None` or list length `B`; `max_seq_lens[i] = P_i`. Required for BSHD with CP.
 
     `C_i = R_i` when CP size is 1. With CP size greater than 1, `0 <= C_i <= R_i`; `C_i` can be zero and can differ across ranks. THD partitions a sequence of length `T_i`, while BSHD partitions the padded maximum sequence length, so the two formats do not guarantee the same `C_i`.
 
@@ -66,6 +69,8 @@ def compute_advantages(
             values_list=values,
             rewards_list=token_rewards,
             terminal_rewards=terminal_rewards,
+            qkv_format=args.qkv_format,
+            max_seq_lens=max_seq_lens,
             gamma=args.gamma,
             lambd=args.lambd,
         )

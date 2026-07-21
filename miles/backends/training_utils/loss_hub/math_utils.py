@@ -605,6 +605,8 @@ def get_advantages_and_returns_batch(
     values_list,
     rewards_list,
     terminal_rewards,
+    qkv_format,
+    max_seq_lens,
     gamma,
     lambd,
     chunked: bool = True,
@@ -618,6 +620,8 @@ def get_advantages_and_returns_batch(
         values_list:       list[Tensor], each current-CP-rank tensor has shape [C_i]
         rewards_list:      list[Tensor], same shape as values_list
         terminal_rewards:  list[float], one scalar sequence reward per sample
+        qkv_format:        sequence layout used to split tensors across CP ranks
+        max_seq_lens:      list[int] of BSHD padded lengths, or None for THD
     Output:
         advantages_list:   list[Tensor], each current-CP-rank tensor has shape [C_i]
         returns_list:      list[Tensor], same shape
@@ -630,6 +634,13 @@ def get_advantages_and_returns_batch(
         assert B == len(terminal_rewards)
 
         cp_size = get_parallel_state().cp.size
+        if cp_size > 1 and qkv_format == "bshd":
+            assert max_seq_lens is not None, "max_seq_lens is required for BSHD with CP"
+            assert B == len(max_seq_lens)
+            max_seq_lens_per_sample = max_seq_lens
+        else:
+            max_seq_lens_per_sample = [None] * B
+
         device = values_list[0].device
         dtype = values_list[0].dtype
 
@@ -639,11 +650,16 @@ def get_advantages_and_returns_batch(
             full_values_list = []
             full_rewards_list = []
 
-            for total_len, resp_len, v, r in zip(
-                total_lengths, response_lengths, values_list, rewards_list, strict=False
+            for total_len, resp_len, v, r, max_seq_len in zip(
+                total_lengths,
+                response_lengths,
+                values_list,
+                rewards_list,
+                max_seq_lens_per_sample,
+                strict=False,
             ):
-                full_v = all_gather_with_cp(v, total_len, resp_len)
-                full_r = all_gather_with_cp(r, total_len, resp_len)
+                full_v = all_gather_with_cp(v, total_len, resp_len, qkv_format=qkv_format, max_seq_len=max_seq_len)
+                full_r = all_gather_with_cp(r, total_len, resp_len, qkv_format=qkv_format, max_seq_len=max_seq_len)
                 full_values_list.append(full_v)
                 full_rewards_list.append(full_r)
 
@@ -685,18 +701,31 @@ def get_advantages_and_returns_batch(
         if cp_size > 1:
             from miles.backends.training_utils.cp_utils import slice_log_prob_with_cp
 
-            for total_len, resp_len, adv_row, ret_row in zip(
+            for total_len, resp_len, adv_row, ret_row, max_seq_len in zip(
                 total_lengths,
                 response_lengths,
                 full_advantages,
                 full_returns,
+                max_seq_lens_per_sample,
                 strict=False,
             ):
                 adv_full = adv_row  # shape = [resp_len_i padded to max_len]
                 ret_full = ret_row
 
-                adv_sliced = slice_log_prob_with_cp(adv_full[:resp_len], total_len, resp_len)
-                ret_sliced = slice_log_prob_with_cp(ret_full[:resp_len], total_len, resp_len)
+                adv_sliced = slice_log_prob_with_cp(
+                    adv_full[:resp_len],
+                    total_len,
+                    resp_len,
+                    qkv_format=qkv_format,
+                    max_token_len=max_seq_len,
+                )
+                ret_sliced = slice_log_prob_with_cp(
+                    ret_full[:resp_len],
+                    total_len,
+                    resp_len,
+                    qkv_format=qkv_format,
+                    max_token_len=max_seq_len,
+                )
 
                 advantages_list.append(adv_sliced)
                 returns_list.append(ret_sliced)
