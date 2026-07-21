@@ -16,6 +16,7 @@ pybase64
 pylatexenc
 pytest-asyncio
 pyyaml
+qwen_omni_utils==0.0.9 # for Qwen Omni audio/video inputs
 qwen_vl_utils # for VLM
 ray[default]
 ring_flash_attn; platform_system == "Linux"

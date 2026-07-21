@@ -2,31 +2,124 @@
 Utils to integrate SGLang's `/generate` endpoint with RL things like Sample.
 """
 
+import base64
 from copy import deepcopy
 from typing import Any
 
 import numpy as np
 import pybase64
+import torch
 
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
-from miles.utils.processing_utils import encode_image_for_rollout_engine
+from miles.utils.processing_utils import (
+    call_processor,
+    encode_image_for_rollout_engine,
+    extract_multimodal_train_inputs,
+)
 from miles.utils.types import Sample
+
+
+_MULTIMODAL_TENSOR_DTYPES = {
+    "bool",
+    "uint8",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "float16",
+    "bfloat16",
+    "float32",
+    "float64",
+}
+_SGLANG_OMNI_MULTIMODAL_TENSOR_NAMES = frozenset(
+    {
+        "pixel_values",
+        "image_grid_thw",
+        "input_features",
+        "feature_attention_mask",
+        "audio_feature_lengths",
+        "pixel_values_videos",
+        "video_grid_thw",
+        "video_second_per_grid",
+    }
+)
+
+
+def _multimodal_modalities(tensors: dict[str, torch.Tensor]) -> list[str]:
+    modalities = []
+    if "pixel_values" in tensors:
+        modalities.append("image")
+    if "input_features" in tensors:
+        modalities.append("audio")
+    if "pixel_values_videos" in tensors:
+        modalities.append("video")
+    return modalities
+
+
+def serialize_multimodal_train_inputs(
+    multimodal_train_inputs: dict[str, Any],
+) -> dict[str, Any]:
+    """Encode the processor tensor kwargs shared with SGLang Omni."""
+    if not multimodal_train_inputs:
+        raise ValueError("multimodal_train_inputs must not be empty")
+    unknown = sorted(set(multimodal_train_inputs) - _SGLANG_OMNI_MULTIMODAL_TENSOR_NAMES)
+    if unknown:
+        raise ValueError("unsupported SGLang Omni processor tensor fields: " + ", ".join(unknown))
+
+    tensors: dict[str, dict[str, Any]] = {}
+    tensor_values: dict[str, torch.Tensor] = {}
+    for name, value in multimodal_train_inputs.items():
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(
+                "multimodal_train_inputs must contain only tensors; " f"{name!r} has type {type(value).__name__}"
+            )
+        tensor = value.detach().to(device="cpu").contiguous()
+        dtype = str(tensor.dtype).removeprefix("torch.")
+        if dtype not in _MULTIMODAL_TENSOR_DTYPES:
+            raise TypeError(f"unsupported multimodal tensor dtype for {name!r}: {dtype}")
+        raw = tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
+        tensors[name] = {
+            "dtype": dtype,
+            "shape": list(tensor.shape),
+            "data": base64.b64encode(raw).decode("ascii"),
+        }
+        tensor_values[name] = tensor
+
+    modalities = _multimodal_modalities(tensor_values)
+    if not modalities:
+        raise ValueError("multimodal_train_inputs does not contain an image, audio, or video " "encoder tensor")
+    return {"version": 1, "modalities": modalities, "tensors": tensors}
+
+
+def multimodal_route_headers(
+    serialized_inputs: dict[str, Any] | None,
+) -> dict[str, str] | None:
+    """Route large JSON bundles without asking the router to scan tensor data."""
+    if not serialized_inputs:
+        return None
+    capabilities = [f"{modality}_input" for modality in serialized_inputs.get("modalities", [])]
+    if not capabilities:
+        return None
+    return {"x-sglang-omni-route-capabilities": ",".join(capabilities)}
 
 
 # Make this an isolated function because users may want to compute their own
 def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
 
-    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
-        processor_output = state.processor(text=prompt, **sample.multimodal_inputs)
+    if (
+        state.processor
+        and sample.multimodal_inputs
+        and any(value is not None for value in sample.multimodal_inputs.values())
+    ):
+        processor_output = call_processor(state.processor, prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
 
-        # TODO shall we move it to other places? then can make this function immutable
-        sample.multimodal_train_inputs = {
-            k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
-        } or None
+        sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
 
-        return prompt_ids
+        if hasattr(prompt_ids, "tolist"):
+            prompt_ids = prompt_ids.tolist()
+        return [int(token_id) for token_id in prompt_ids]
     else:
         if not isinstance(prompt, str):
             prompt = state.tokenizer.apply_chat_template(
@@ -56,6 +149,7 @@ def compute_request_payload(
     input_ids: list[int],
     sampling_params: dict,
     multimodal_inputs: dict | None = None,
+    multimodal_train_inputs: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
@@ -73,7 +167,9 @@ def compute_request_payload(
     }
     if is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
-    if image_data := (multimodal_inputs or {}).get("images"):
+    if multimodal_train_inputs:
+        payload["multimodal_train_inputs"] = serialize_multimodal_train_inputs(multimodal_train_inputs)
+    elif image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 
     return payload, None

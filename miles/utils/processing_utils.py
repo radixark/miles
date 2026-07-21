@@ -137,6 +137,23 @@ def call_processor(processor, text, multimodal_inputs: dict | None = None):
     return processor(text=text, **kwargs)
 
 
+def extract_multimodal_train_inputs(processor_output):
+    """Normalize processor kwargs to the tensor-only Megatron contract."""
+    import torch
+
+    result = {}
+    for name, value in processor_output.items():
+        if name in ("input_ids", "attention_mask"):
+            continue
+        if not isinstance(value, torch.Tensor):
+            try:
+                value = torch.as_tensor(value)
+            except (TypeError, ValueError, RuntimeError) as exc:
+                raise TypeError(f"processor output {name!r} cannot be converted to a tensor") from exc
+        result[name] = value
+    return result or None
+
+
 def load_processor(name_or_path: str, **kwargs):
     try:
         proc = AutoProcessor.from_pretrained(name_or_path, **kwargs)
@@ -153,6 +170,17 @@ def load_processor(name_or_path: str, **kwargs):
 
 def process_vision_info(prompt, processor):
     # TODO: temporary solution, will write image utils for miles later
+    if getattr(processor, "audio_token", None) is not None:
+        from qwen_omni_utils import process_mm_info
+
+        image_patch_size = getattr(processor.image_processor, "patch_size", DEFAULT_PATCH_SIZE)
+        audios, images, videos = process_mm_info(
+            prompt,
+            use_audio_in_video=False,
+            image_patch_size=image_patch_size,
+        )
+        return {"audio": audios, "images": images, "videos": videos}
+
     from qwen_vl_utils import process_vision_info as qwen_process_vision_info
 
     if hasattr(processor.image_processor, "patch_size"):
