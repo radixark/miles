@@ -19,6 +19,7 @@ class LaunchArgs(Protocol):
     """The config fields the shared helpers read (satisfied by each launcher's ScriptArgs)."""
 
     prompt_data: str
+    num_rollout: int
     rollout_batch_size: int
     n_samples_per_prompt: int
     max_seq_len: int
@@ -42,15 +43,28 @@ class LaunchArgs(Protocol):
 
 
 def cleanup() -> None:
-    """Kill old Ray jobs and stale processes to free GPU resources."""
+    """Kill stale training/rollout processes to free GPU resources before a run.
+
+    ASSUMES a disposable, single-tenant pod: this example colocates training and
+    rollout on all 8 GPUs of one node, so any lingering ``sglang`` / ``train.py``
+    / ``MegatronTrain`` process is a leftover from a previous crashed run on this
+    same box and must be reaped or it holds the GPUs. To avoid collateral damage
+    on a shared host we scope the kill to the current user's own processes
+    (``pgrep -u <euid>``) and still exclude this launcher and its parent. Set
+    ``OPENENV_SKIP_CLEANUP=1`` to disable entirely (e.g. when another of your jobs
+    is intentionally running on the same node)."""
+    if os.getenv("OPENENV_SKIP_CLEANUP") == "1":
+        print("Cleanup skipped (OPENENV_SKIP_CLEANUP=1)")
+        return
     my_pid = os.getpid()
     ppid = os.getppid()
-    print(f"Cleanup starting (pid={my_pid}, ppid={ppid})")
+    euid = os.geteuid()
+    print(f"Cleanup starting (pid={my_pid}, ppid={ppid}, euid={euid})")
     targets = ["sglang", "train.py", "MegatronTrain"]
     exclude = f"grep -v '^{my_pid}$' | grep -v '^{ppid}$'"
     for t in targets:
         subprocess.run(
-            f"pgrep -f '{t}' | {exclude} | xargs -r kill 2>/dev/null || true",
+            f"pgrep -u {euid} -f '{t}' | {exclude} | xargs -r kill 2>/dev/null || true",
             shell=True,
         )
     time.sleep(5)
@@ -63,7 +77,7 @@ def rollout_args(args: LaunchArgs) -> str:
         "--input-key prompt "
         "--metadata-key metadata "
         "--rollout-shuffle "
-        "--num-rollout 40 "
+        f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "

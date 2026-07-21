@@ -34,8 +34,10 @@ Env vars:
                      reset/exec/verify routinely exceed the client default of 60)
   OPENENV_MAX_ROLLOUT_TIME_SECONDS  hard wall-clock cap for one episode (default:
                      3600). An episode that does not return within the limit is
-                     terminated and scored reward 0 (bounds long-trajectory
-                     stragglers that would otherwise stall the whole rollout batch).
+                     terminated and the sample is dropped (the cap spans infra
+                     phases too, so a timeout may precede any verdict -- dropping,
+                     rather than scoring 0, avoids injecting a false negative while
+                     still bounding stragglers that would stall the rollout batch).
   AGENT_MODEL_NAME   model name sent to the policy (default: "model")
   MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for off-cluster agents
   OPENENV_TASK_WORKDIR  force a fixed container dir for every agent command
@@ -46,6 +48,10 @@ Env vars:
                      to disable; probe is a no-op on images without such an env.
   OPENENV_SWEBENCH_TESTS_SRC  where the upstream env stages the task's tests inside
                      the container (default: /task/tests); copied to /tests for test.sh.
+  OPENENV_SWEBENCH_TESTS_SNAPSHOT  path the pristine tests are snapshotted to at reset
+                     (default: /opt/.sb_pristine_tests); grading reads this snapshot so
+                     mid-episode tampering with the staged tests can't reach the grader.
+                     Set "" to disable and grade from OPENENV_SWEBENCH_TESTS_SRC directly.
   OPENENV_EVAL_CMD   override the whole grading command (must still print
                      "<_REWARD_MARKER><float>" as its last stdout line).
 """
@@ -109,12 +115,12 @@ _OBS_CHAR_CAP = 4000
 _TASK_WORKDIR = os.getenv("OPENENV_TASK_WORKDIR", "")
 _REPO_ROOT_CACHE = "/tmp/.openenv_swebench_repo_root"
 _DETECT_REPO_ROOT = (
-    f'R=$(cat {_REPO_ROOT_CACHE} 2>/dev/null); '
+    f"R=$(cat {_REPO_ROOT_CACHE} 2>/dev/null); "
     'if [ -z "$R" ]; then '
     'for c in /app /testbed; do [ -d "$c/.git" ] && R="$c" && break; done; '
     '[ -z "$R" ] && R=$(find / -maxdepth 3 -type d -name .git 2>/dev/null '
-    '| grep -v node_modules | head -1 | xargs -r dirname); '
-    'R=${R:-/}; '
+    "| grep -v node_modules | head -1 | xargs -r dirname); "
+    "R=${R:-/}; "
     f'echo "$R" > {_REPO_ROOT_CACHE}; fi; '
 )
 
@@ -149,13 +155,29 @@ _ACTIVATE_ENV = (
 # recoverable reward (the verifier crashed before scoring, e.g. it could not find
 # the repo), which the caller drops rather than scoring a false 0.0.
 _TESTS_SRC = os.getenv("OPENENV_SWEBENCH_TESTS_SRC", "/task/tests")
+# Verifier-tampering mitigation. The agent has a shell in the same container as
+# the grader assets under _TESTS_SRC, so a reward-hacking policy could edit
+# test.sh/config.json before grading. We snapshot the tests to _TESTS_SNAPSHOT
+# once at reset -- before the agent gets a turn -- and grade from that snapshot,
+# so tampering with _TESTS_SRC mid-episode no longer reaches the grader. NOTE:
+# this defeats the obvious attack but is NOT a hard security boundary -- SWE-bench
+# images run the agent as root, which can still reach the snapshot path; a fully
+# robust design grades in a separate container the agent never touches (out of
+# scope here: needs env-server support). Set OPENENV_SWEBENCH_TESTS_SNAPSHOT=""
+# to disable and grade from _TESTS_SRC directly.
+_TESTS_SNAPSHOT = os.getenv("OPENENV_SWEBENCH_TESTS_SNAPSHOT", "/opt/.sb_pristine_tests")
+_GRADE_TESTS_SRC = _TESTS_SNAPSHOT or _TESTS_SRC
 _REWARD_MARKER = "__SB_REWARD__:"
 # test.sh's exit code, echoed on its own marker purely for diagnostics.
 _TESTSH_RC_MARKER = "__SB_TESTSH_RC__:"
 _CANONICAL_EVAL_CMD = os.getenv("OPENENV_EVAL_CMD") or (
     "mkdir -p /tests /logs/verifier && "
     # test.sh reads /tests/config.json by absolute path, so stage the tests there.
-    f"cp -a {_TESTS_SRC}/. /tests/ 2>/dev/null || true; "
+    # Grade from the pristine reset-time snapshot (_GRADE_TESTS_SRC) so mid-episode
+    # edits to _TESTS_SRC do not reach the grader; fall back to _TESTS_SRC if the
+    # snapshot was never taken (donor tasks / snapshot disabled).
+    f"SB_SRC={_GRADE_TESTS_SRC}; [ -d $SB_SRC ] || SB_SRC={_TESTS_SRC}; "
+    "cp -a $SB_SRC/. /tests/ 2>/dev/null || true; "
     "bash /tests/test.sh > /tmp/sb_testsh.log 2>&1; rc=$?; "
     f"echo {_TESTSH_RC_MARKER}$rc; "
     # The tbench2 env wraps every command as bash -c '<cmd>' and docker-py
@@ -167,7 +189,7 @@ _CANONICAL_EVAL_CMD = os.getenv("OPENENV_EVAL_CMD") or (
     f'elif echo "$V" | grep -q FAILED; then echo {_REWARD_MARKER}0.0; '
     # No verdict line: verifier crashed before scoring -> emit empty value so the
     # caller recognizes an infra/harness failure and drops the sample.
-    f'else echo {_REWARD_MARKER}; fi'
+    f"else echo {_REWARD_MARKER}; fi"
 )
 
 
@@ -266,9 +288,7 @@ def _extract_command(reply: str) -> str | None:
     to feed prose/pseudo-code to bash and produce a syntax-error storm.
     """
     shell_bodies = [
-        body.strip()
-        for lang, body in _CMD_FENCE_RE.findall(reply)
-        if lang.lower() in _SHELL_LANGS and body.strip()
+        body.strip() for lang, body in _CMD_FENCE_RE.findall(reply) if lang.lower() in _SHELL_LANGS and body.strip()
     ]
     if shell_bodies:
         return shell_bodies[-1]
@@ -349,6 +369,25 @@ async def _multi_turn(
         t0 = time.monotonic()
         reset_result = await (env.reset(task_id=task_id) if task_id else env.reset())
         reset_time = time.monotonic() - t0
+
+        # Snapshot the pristine grader assets before the agent gets a turn, so the
+        # final grade reads tests the agent could not have tampered with (see
+        # _TESTS_SNAPSHOT). Best-effort: donor tasks may have no _TESTS_SRC, in
+        # which case grading falls back to _TESTS_SRC at eval time.
+        if _TESTS_SNAPSHOT:
+            try:
+                await env.step(
+                    action_cls(
+                        action_type="exec",
+                        command=(
+                            f"rm -rf {_TESTS_SNAPSHOT} && mkdir -p {_TESTS_SNAPSHOT} && "
+                            f"cp -a {_TESTS_SRC}/. {_TESTS_SNAPSHOT}/ 2>/dev/null || true"
+                        ),
+                    )
+                )
+            except Exception:
+                pass
+
         instruction = _obs_field(reset_result, "instruction")
         convo = list(messages)
         if instruction:
@@ -408,8 +447,20 @@ async def _multi_turn(
 
         # rm-hack: the env server (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs) leaves a
         # per-episode trial dir under that path after every episode, which fills
-        # the sandbox overlay disk and trips ENOSPC. One episode holds the sandbox
-        # at a time, so it is safe to purge them here.
+        # the disk and trips ENOSPC. One episode holds the sandbox at a time, so
+        # it is safe to purge them here.
+        #
+        # MODE-DEPENDENT: this runs *inside the execution sandbox* via env.step.
+        # - Daytona mode (what this run used): the sandbox IS the execution
+        #   filesystem, so /tmp/tbench2_env_runs is reachable and the purge is both
+        #   effective and necessary -- verified to fix ENOSPC on the 10 GiB Daytona
+        #   snapshot.
+        # - Docker mode: TB2_OUTPUT_DIR lives on the env-server *host* and is not
+        #   bind-mounted into the task container, so this purge is a no-op there.
+        #   The proper fix for docker mode is server-side cleanup on session close;
+        #   we deliberately do not patch the upstream env server, so docker-mode
+        #   disk pressure must be managed on the host (e.g. a reaper on the env
+        #   host) instead.
         #
         # BUT the same dir also holds repo_cache/ (TB2_CACHE_DIR defaults to
         # output_dir/repo_cache) -- the shared checkout that reset() clones once
@@ -472,7 +523,7 @@ async def run(
     messages = _extract_messages(prompt)
 
     try:
-        # Hard wall-clock cap: cancel the episode if it overruns and score it 0.
+        # Hard wall-clock cap: cancel the episode if it overruns (dropped below).
         # wait_for cancels the coroutine, so any in-flight policy call / env.step
         # is interrupted and the env session is closed by _with_env's async-with
         # during cancellation cleanup.
@@ -481,15 +532,16 @@ async def run(
             timeout=_MAX_ROLLOUT_TIME_S,
         )
     except asyncio.TimeoutError:
-        logger.warning(f"OpenEnv swebench episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; terminating with reward 0")
-        # eval_report empty: the episode was cancelled before the verifier ever
-        # ran, so there is no report to surface.
-        return {
-            "reward": 0.0,
-            "exit_status": "timeout",
-            "eval_report": {},
-            "agent_metrics": {"timed_out": 1},
-        }
+        # The wall-clock cap covers capacity wait + reset + generation + eval, so a
+        # timeout can fire before the verifier ever ran -- exactly the no-verdict
+        # case we drop elsewhere. Scoring it 0.0 would inject a false negative when
+        # the cause is infra latency, not a task the agent legitimately failed. So
+        # drop the sample (return None); wait_for still cancels the coroutine and
+        # frees the sandbox slot, so the straggler is bounded either way.
+        logger.warning(
+            f"OpenEnv swebench episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; terminating and dropping sample"
+        )
+        return None
     except Exception as e:
         logger.error(f"OpenEnv swebench episode failed: {e}", exc_info=True)
         return None

@@ -100,12 +100,14 @@ Common overrides:
 | --- | --- | --- |
 | `--openenv-env-url` | `http://localhost:8003` | Env server URL |
 | `--prompt-data` | `/root/swebench_train.jsonl` | Prompt set from step 2 |
-| `--num-rollout` | (launcher) | Number of GRPO steps |
+| `--num-rollout` | `40` | Number of GRPO steps |
 | `OPENENV_MAX_TURNS` | `30` | Max agent turns per episode |
 | `OPENENV_TASK_WORKDIR` | (unset → auto-detect) | Force a fixed repo path instead of detecting it |
 | `OPENENV_SWEBENCH_TESTS_SRC` | `/task/tests` | Where the env stages the task's tests in the container |
 | `OPENENV_EVAL_CMD` | (built-in) | Override the whole grading command (must print `__SB_REWARD__:<float>` last) |
-| `OPENENV_MAX_ROLLOUT_TIME_SECONDS` | `3600` | Per-episode wall-clock cap; a straggler that exceeds it is terminated and scored 0 |
+| `OPENENV_MAX_ROLLOUT_TIME_SECONDS` | `3600` | Per-episode wall-clock cap; a straggler that exceeds it is terminated and the sample is dropped (the cap covers infra phases too, so a timeout can't produce a verdict — dropping avoids a false negative) |
+| `OPENENV_SWEBENCH_TESTS_SNAPSHOT` | `/opt/.sb_pristine_tests` | Where the pristine grader tests are snapshotted at reset; grading reads this so mid-episode tampering with the staged tests can't reach the grader. Set `""` to disable |
+| `OPENENV_SKIP_CLEANUP` | (unset) | Set `1` to skip the pre-run process reaper (use when another of your jobs is intentionally sharing the node) |
 | `--dump-details <dir>` | off | Dump per-episode tokens/logprobs/masks/reward for inspection |
 | `WANDB_KEY`, `--wandb-project`, `--wandb-team` | — | W&B logging |
 
@@ -119,7 +121,15 @@ Common overrides:
   can't locate the repo because the agent trashed the checkout), the episode has
   no recoverable reward and the sample is **dropped** rather than scored 0 — same
   policy as the TB2 adapter, so an infra/harness failure never becomes a false
-  negative in training.
+  negative in training. A `OPENENV_MAX_ROLLOUT_TIME_SECONDS` timeout is treated
+  the same way: the cap covers capacity/reset/generation/eval, so a timeout may
+  fire before the verifier ran, which is a no-verdict case — dropped, not scored 0.
+- **Verifier tampering.** The agent shares the task container with the grader
+  assets, so it *could* edit them before grading. The adapter snapshots the
+  pristine tests at reset and grades from that snapshot
+  (`OPENENV_SWEBENCH_TESTS_SNAPSHOT`), which defeats naive tampering, but SWE-bench
+  images run the agent as root so this is not a hard boundary — a fully robust
+  setup would grade in a separate container the agent never touches.
 - **`_step` vs. rollout.** W&B `_step` is an internal log-call index that advances
   several times per rollout; it is **not** the training step. Read the driver log's
   `rollout N:` counter for true progress.

@@ -60,6 +60,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     prompt_data: str = "/root/swebench_train.jsonl"
 
     # Training settings (small; multi-turn so responses run long)
+    num_rollout: int = 40  # number of GRPO steps
     max_seq_len: int = 16384
     rollout_batch_size: int = 8
     n_samples_per_prompt: int = 8
