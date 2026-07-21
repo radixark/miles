@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.rollout.session.samples import compute_samples_from_openai_records
+from miles.rollout.session.samples.merge import compute_samples_from_openai_records
 from miles.rollout.session.types import SessionRecord
 from miles.utils.types import Sample
 

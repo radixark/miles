@@ -22,8 +22,8 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.samples import compute_samples_from_openai_records, truncate_samples_by_total_tokens
-from miles.rollout.session.samples_codec import encode_samples_reply
+from miles.rollout.session.samples.codec import encode_samples_reply
+from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 
 logger = logging.getLogger(__name__)

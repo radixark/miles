@@ -13,7 +13,7 @@ import pytest
 import safetensors.numpy
 from safetensors import SafetensorError
 
-from miles.rollout.session.samples_codec import (
+from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
     TEMPLATE_FIELDS,
     decode_samples_reply,

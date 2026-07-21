@@ -1,10 +1,10 @@
-"""Wire codec for the samples reply: assembled `Sample`s <-> one safetensors payload.
+"""Wire codec for the `POST /sessions/{id}/samples` reply.
 
-The operation-primitive pair `encode_samples_reply` / `decode_samples_reply` (`bytes` <-> `SamplesReply`) plus its wire contract, kept free of HTTP, session state, and assembly (`samples.py`) so the contract depends only on `Sample`, NumPy, and safetensors.
-
-- The payload is exactly one safetensors buffer: one named tensor per non-`None` `_TENSOR_SPECS` field, plus the scalar JSON stored as the rank-one uint8 tensor `_samples_meta` (the in-memory `safetensors.numpy.load` API does not expose header metadata, and `__metadata__` is reserved by the format).
-- Assembly builds each per-turn `Sample` from a blank template and populates only the COMPUTED_FIELDS; the driver's input-sample (template) fields never cross the wire — the driver overlays the computed fields onto deepcopies of its local input sample (`decode_samples_reply`). Overlay equivalence with the legacy driver-side pipeline requires the input sample to carry dataclass defaults on the fields that pipeline evolved in place — see `_assert_overlay_template_defaults`.
-- Decoded arrays are writable copies (`safetensors.numpy.load`), unlike the read-only `np.frombuffer` views of the removed envelope; values and Python/NumPy types are contractual, array flags are not.
+- Server: `encode_samples_reply(samples, session_metadata, empty_reason)` — assembled
+  `Sample`s in, one safetensors payload (`bytes`) out.
+- Driver: `decode_samples_reply(payload, input_sample)` — that payload in, `SamplesReply`
+  out, each `Sample` rebuilt by overlaying the wire's computed fields onto a deepcopy of
+  the driver's `input_sample`.
 """
 
 import dataclasses

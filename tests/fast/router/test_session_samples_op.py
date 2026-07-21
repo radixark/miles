@@ -27,7 +27,7 @@ from tests.fast.rollout.session.test_samples import _make_record
 
 from miles.rollout.session.core import SessionCore
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.samples_codec import decode_samples_reply
+from miles.rollout.session.samples.codec import decode_samples_reply
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
