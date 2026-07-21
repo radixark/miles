@@ -20,6 +20,7 @@ def packed_seq_context(position_ids):
     """Derive per-document boundaries from packed ``position_ids``, or ``None`` when not packing."""
     import torch
 
+    # FSDP requires context_parallel_size == 1, so this sees the full packed row, not a zigzag CP shard.
     if position_ids is None or position_ids.dim() != 2 or position_ids.shape[0] != 1:
         return None
     pos = position_ids.reshape(-1)
