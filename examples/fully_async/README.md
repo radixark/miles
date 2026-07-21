@@ -6,6 +6,7 @@ The implementation lives in the core library at `miles/rollout/fully_async_rollo
 
 ## Files
 * `run-qwen3-4b-fully_async.sh`: example launch script with Qwen3‑4B.
+* `run-qwen3.5-4b-fully_async-eval.sh`: Qwen3.5‑4B with a dedicated eval fleet (fully-async eval).
 
 ## Prerequisite
 First set up model & environment following the Qwen3-4B example.
@@ -26,8 +27,11 @@ Started fully-async rollout worker
 * Completed groups are pushed into a queue; each step drains until it has `--rollout-batch-size` groups.
 * Aborted or too-stale groups are recycled back into the data source.
 
+## Evaluation
+Eval runs on a dedicated eval fleet synced via HF checkpoint snapshots (`--eval-num-gpus`,
+`--eval-hf-dir`); see `run-qwen3.5-4b-fully_async-eval.sh` and the fully-async docs page.
+
 ## Limitations
-* No evaluation mode (`--eval-function-path` must point at the standard `InferenceRolloutFn`).
 * Ordering is best effort (sorted at the end by index).
 
 ## Config Differences (3 Key Points)

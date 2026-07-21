@@ -200,6 +200,14 @@ Sections mirror the launch-script argument groups.
 | `--eval-max-response-len` | int | – | Max eval response length. Inherits from rollout if unset. |
 | `--eval-temperature` | float | – | Eval temperature. Inherits from rollout if unset. |
 | `--eval-top-p` | float | – | Eval top-p. Inherits from rollout if unset. |
+| `--eval-num-gpus` | int | `0` | Dedicated eval fleet size (required for fully-async eval). `0` = shared-engine eval. |
+| `--eval-num-gpus-per-engine` | int | `1` | Eval engine TP, independent of rollout TP. |
+| `--eval-hf-dir` | str | – | Staging dir for per-eval HF snapshots (tmpfs recommended). Unset + `--save-hf` = reuse mode. |
+| `--eval-model-path` | str | – | Boot checkpoint for eval engines. Defaults to `--hf-checkpoint`. |
+| `--eval-dispatch` | str | `async` | `async` fires eval without blocking training; `blocking` awaits inline. |
+| `--eval-max-in-flight` | int | `2` | Max concurrently pending async evals. |
+| `--eval-overflow-policy` | str | `backpressure` | At the cap: await the oldest eval, or `skip` the new point (logged as `eval/skipped_busy`). |
+| `--eval-keep-snapshots` | int | `2` | GC ring for `--eval-hf-dir`; `--save-hf` output is never deleted. |
 
 ### Performance
 

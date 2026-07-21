@@ -100,6 +100,43 @@ signal. Fast [P2P weight transfer](/advanced/p2p-weight-transfer) keeps the
 rollout engines closer to the latest actor weights so fewer groups get recycled by
 `--max-weight-staleness`.
 
+## Evaluation
+
+The rollout fleet never has a quiet window, so fully-async eval runs on a **dedicated
+eval fleet** synced through HF checkpoint snapshots — never by joining training weight
+updates. Enable it with:
+
+```bash
+--eval-num-gpus 1                        # dedicated eval engines (own router)
+--eval-interval K
+--eval-hf-dir /dev/shm/miles_eval_hf     # snapshot staging; tmpfs = no disk dependency
+--eval-prompt-data aime /path/to/aime.jsonl
+```
+
+Per eval-due step the trainer exports an HF snapshot (seconds to tmpfs), fires the
+eval **fire-and-forget**, and keeps training; the eval fleet pins its weights to the
+snapshot (`weight_version = str(rollout_id)`), runs the standard eval datasets, and the
+point lands at the right x-axis step even when it completes a few steps later
+(`eval/lag_steps` reports how late).
+
+Two production-oriented variants:
+
+- **Reuse mode**: with `--save-hf` set and `--eval-hf-dir` unset, eval reuses the
+  periodic HF checkpoints (requires `eval_interval % save_interval == 0`) — zero extra
+  export cost. Pair with `--eval-overflow-policy skip` so a slow eval set can never
+  stall training.
+- **External service**: `tools/checkpoint_eval_service.py` watches `--save-hf` output
+  with its own sglang server — no GPU carve-out from the training job, restartable,
+  backfills missed points from its ledger. Works for `--colocate` runs too.
+
+Every skipped point is attributable from the dashboard: `eval/skipped_busy`,
+`eval/skipped_ckpt_missing`, `eval/skipped_unhealthy`, `eval/skipped_export_failed`
+are logged at the affected step. `eval/{ds}/weight_version/mean == eval/step` and
+`mixed_version_ratio == 0` confirm every point measured exactly the intended weights.
+
+The eval-engine `weight_version` namespace is the snapshot's `rollout_id` — deliberately
+different from the training fleet's job-local update counter; the two fleets never mix.
+
 ## Example implementation
 
 For a complete Qwen3 launch script and worker implementation, see the
