@@ -77,12 +77,31 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
     return router_ip, router_port
 
 
-def start_session_server(args):
-    """Start a standalone session server when ``--use-session-server`` is set.
+def _resolve_session_server_ports(raw: list[int] | None) -> list[int]:
+    """Resolve the ``--session-server-port`` value into the ports to serve on.
 
-    The session server runs as a separate process with its own port and proxies
-    inference requests directly to SGLang worker engines.  It is always started
-    as a standalone process regardless of whether ``--use-miles-router`` is active.
+    None: one auto-allocated port. One value: a single server on that port.
+    Two values: the half-open range [start, end), one server per port.
+    """
+    if raw is None:
+        return [find_available_port(random.randint(5000, 6000))]
+    if len(raw) == 1:
+        return raw
+    if len(raw) == 2:
+        start, end = raw
+        if start >= end:
+            raise ValueError(f"--session-server-port range [{start}, {end}) is empty.")
+        return list(range(start, end))
+    raise ValueError(f"--session-server-port takes one port or a start/end range, got {len(raw)} values: {raw}")
+
+
+def start_session_server(args):
+    """Start the standalone session servers when ``--use-session-server`` is set.
+
+    One independent single-process server per resolved port; the rollout side
+    picks one per session and its URL carries the affinity from then on.
+    Always started standalone regardless of whether ``--use-miles-router`` is
+    active.
     """
     if not getattr(args, "use_session_server", False):
         return
@@ -93,23 +112,39 @@ def start_session_server(args):
 
     if getattr(args, "session_server_ip", None) is None:
         args.session_server_ip = args.sglang_router_ip
-    if getattr(args, "session_server_port", None) is None:
-        args.session_server_port = find_available_port(random.randint(5000, 6000))
-    if getattr(args, "session_server_instance_id", None) is None:
-        args.session_server_instance_id = uuid.uuid4().hex
 
-    ip, port = args.session_server_ip, args.session_server_port
-    if not is_port_available(port):
-        raise RuntimeError(
-            f"Port {port} is already in use — a stale session server may still be running. "
-            f"Run 'pkill -9 python' to kill it, then retry."
-        )
+    ip = args.session_server_ip
+    ports = _resolve_session_server_ports(getattr(args, "session_server_port", None))
+    for port in ports:
+        if not is_port_available(port):
+            raise RuntimeError(
+                f"Port {port} is already in use — a stale session server may still be running. "
+                f"Run 'pkill -9 python' to kill it, then retry."
+            )
+    # The canonical driver-side value; rollout code picks from this list.
+    args.session_server_ports = ports
 
     router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
 
+    # Spawn all children before waiting on any: each child pays the ~10s
+    # transformers import, so N servers start in ~one import of wall-time.
     # spawn (not fork): see start_router for rationale.
-    process = multiprocessing.get_context("spawn").Process(target=run_session_server, args=(args, router_url))
-    process.daemon = True
-    process.start()
-    wait_for_server_ready(ip, port, process, timeout=30)
-    logger.info(f"Session server launched at {ip}:{port}")
+    instance_ids: dict[int, str] = {}
+    processes = []
+    for port in ports:
+        child_args = copy.copy(args)
+        child_args.session_server_port = port
+        child_args.session_server_instance_id = uuid.uuid4().hex
+        instance_ids[port] = child_args.session_server_instance_id
+        process = multiprocessing.get_context("spawn").Process(
+            target=run_session_server, args=(child_args, router_url)
+        )
+        process.daemon = True
+        process.start()
+        processes.append((port, process))
+    # The per-port map OpenAIEndpointTracer.create reads instance ids from,
+    # replacing the per-session /health probe.
+    args.session_server_instance_ids = instance_ids
+    for port, process in processes:
+        wait_for_server_ready(ip, port, process, timeout=30)
+    logger.info(f"Session servers launched at {ip}, ports {ports} ({len(ports)} instances)")

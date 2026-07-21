@@ -33,6 +33,10 @@ def router_env():
         choice["meta_info"] = {
             "output_token_logprobs": output_token_logprobs,
             "completion_tokens": len(output_token_logprobs),
+            # R3 replay payloads: must reach the session record but never the
+            # client-facing chat response (see _strip_replay_payloads).
+            "routed_experts": [[0, 1], [2, 3]],
+            "indexer_topk": [[4], [5]],
         }
         return response
 
@@ -138,3 +142,58 @@ class TestSessionProxy:
         record = records[0]
         assert record["path"] == "/v1/chat/completions"
         assert record["status_code"] == 200
+
+    def test_chat_malformed_json_body_returns_400(self, router_env):
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+
+        resp = requests.post(
+            f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
+            data=b"{not json",
+            headers={"Content-Type": "application/json"},
+            timeout=10.0,
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"].startswith("invalid JSON body:")
+
+    def test_chat_upstream_null_message_returns_502(self, router_env):
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+
+        fixture_response = MockSGLangServer._compute_chat_completions_response
+
+        def null_message_response(self, payload: dict) -> dict:
+            response = fixture_response(self, payload)
+            response["choices"][0]["message"] = None
+            return response
+
+        with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=null_message_response):
+            resp = requests.post(
+                f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+                timeout=10.0,
+            )
+        assert resp.status_code == 502
+        assert "assistant message content is None" in resp.json()["error"]
+
+    def test_chat_response_strips_replay_payloads_but_record_keeps_them(self, router_env):
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+
+        payload = {
+            "messages": [{"role": "user", "content": "What is 2+2?"}],
+            "return_logprob": True,
+        }
+        resp = requests.post(
+            f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
+            json=payload,
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
+        client_meta = resp.json()["choices"][0]["meta_info"]
+        assert "routed_experts" not in client_meta
+        assert "indexer_topk" not in client_meta
+        # Stripping must not swallow the rest of meta_info.
+        assert "output_token_logprobs" in client_meta
+
+        record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
+        record_meta = record["response"]["choices"][0]["meta_info"]
+        assert record_meta["routed_experts"] == [[0, 1], [2, 3]]
+        assert record_meta["indexer_topk"] == [[4], [5]]

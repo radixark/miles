@@ -52,9 +52,8 @@ class Sample:
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 
-    # Session ID for consistent hashing routing (used when router policy is consistent_hashing)
-    # TODO: Its definition needs to merge with the session server's session id in the new rollout function.
-    session_id: str | None = None
+    # Per-sample routing key for the router's consistent_hashing policy (sent as X-SMG-Routing-Key)
+    routing_key: str | None = None
 
     non_generation_time: float = 0.0  # time spent in non-generation steps
 
@@ -217,7 +216,7 @@ class Sample:
         """Reset generated outputs so the original prompt can be re-sampled.
 
         Keeps identity / prompt fields (group_index, index, prompt, label,
-        multimodal_inputs, metadata, generate_function_path, session_id) and
+        multimodal_inputs, metadata, generate_function_path, routing_key) and
         restores everything else to dataclass defaults.
         """
         self.tokens = []

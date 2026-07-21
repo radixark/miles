@@ -51,7 +51,8 @@ def add_sglang_arguments(parser):
         # memory
         "enable_memory_saver",
         # distributed
-        "tp_size",
+        # tp_size stays exposed: scripts pass --sglang-tp-size, but the value is
+        # overridden from --rollout-num-gpus-per-engine in validate_args below.
         "port",
         "nnodes",
         "node_rank",
@@ -135,11 +136,6 @@ def add_sglang_arguments(parser):
 
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
-    args.sglang_dp_size = args.sglang_data_parallel_size
-    args.sglang_pp_size = args.sglang_pipeline_parallel_size
-    args.sglang_ep_size = args.sglang_expert_parallel_size
-    if hasattr(args, "sglang_attention_context_parallel_size"):
-        args.sglang_attn_cp_size = args.sglang_attention_context_parallel_size
 
     if args.true_on_policy_mode:
         args.sglang_enable_deterministic_inference = True
@@ -151,12 +147,10 @@ def validate_args(args):
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention
 
-    if args.sglang_router_policy:
-        from miles.utils.environ import enable_experimental_rollout_refactor
-
-        assert (
-            not enable_experimental_rollout_refactor()
-        ), "--sglang-router-policy is not supported with MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1"
+    if args.sglang_router_policy is None and args.use_session_server:
+        args.sglang_router_policy = "manual"
+        if args.router_assignment_mode == "random":
+            args.router_assignment_mode = "min_load"
 
     if getattr(args, "sglang_router_ip", None):
         args.sglang_router_ip = _wrap_ipv6(args.sglang_router_ip)
