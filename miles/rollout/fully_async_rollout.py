@@ -10,8 +10,9 @@ Requires the class-based rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``)
 
     --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
 
-Evaluation requires a dedicated eval fleet (``--eval-num-gpus``); see
-``miles/rollout/checkpoint_eval.py``.
+Evaluation runs on a dedicated eval fleet when ``--eval-num-gpus`` is set (see
+``miles/rollout/checkpoint_eval.py``); otherwise it shares the rollout engines,
+pausing producer submissions for the duration of the (blocking) eval.
 """
 
 import asyncio
@@ -101,6 +102,8 @@ class FullyAsyncRolloutFn:
         self._output: asyncio.Queue[Group] | None = None
         self._eval_state: GenerateState | None = None
         self._eval_prompt_dataset_cache: dict = {}
+        self._producer_resumed = asyncio.Event()
+        self._producer_resumed.set()
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -112,14 +115,23 @@ class FullyAsyncRolloutFn:
         return await self._drain(input.rollout_id)
 
     async def _call_eval(self, input: RolloutFnInput) -> RolloutFnOutput:
-        if getattr(self.args, "eval_num_gpus", 0) <= 0:
-            raise ValueError(
-                "fully-async eval requires a dedicated eval fleet: set --eval-num-gpus > 0 "
-                "(or run tools/checkpoint_eval_service.py against --save-hf checkpoints)"
-            )
-        if self._eval_state is None:
-            self._eval_state = make_eval_generate_state(self.args)
-        results = await run_eval_datasets(self._eval_state, self._eval_prompt_dataset_cache)
+        if getattr(self.args, "eval_num_gpus", 0) > 0:
+            if self._eval_state is None:
+                self._eval_state = make_eval_generate_state(self.args)
+            results = await run_eval_datasets(self._eval_state, self._eval_prompt_dataset_cache)
+            return RolloutFnEvalOutput(data=results)
+
+        # No dedicated fleet: eval shares the rollout engines. The producer pauses
+        # new submissions while eval runs (in-flight groups finish and buffer); the
+        # driver awaits eval, so no weight update interleaves and the weight version
+        # stays pinned for both eval and the buffered train samples.
+        logger.info("Pausing fully-async producer submissions for shared-engine eval")
+        self._producer_resumed.clear()
+        try:
+            results = await run_eval_datasets(self.state, self._eval_prompt_dataset_cache)
+        finally:
+            self._producer_resumed.set()
+            logger.info("Resumed fully-async producer submissions after eval")
         return RolloutFnEvalOutput(data=results)
 
     # -------------------------- producer --------------------------
@@ -141,6 +153,7 @@ class FullyAsyncRolloutFn:
     async def _worker_loop(self):
         active: set[asyncio.Task] = set()
         while True:
+            await self._producer_resumed.wait()
             while len(active) < self._max_in_flight_groups():
                 active.add(self._submit_one_group())
             done, active = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)

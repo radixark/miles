@@ -105,11 +105,46 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     assert len(output2.samples) == 3
 
 
-async def test_eval_without_fleet_raises(monkeypatch):
-    fn = make_fn(monkeypatch, make_args(), FakeDataSource())
-    with pytest.raises(ValueError, match="requires a dedicated eval fleet"):
-        await fn(RolloutFnEvalInput(rollout_id=0))
-    assert fn._worker is None
+async def test_eval_without_fleet_pauses_producer(monkeypatch):
+    """Shared-engine eval: producer submissions pause during eval and resume after."""
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False):
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate)
+
+    eval_started = asyncio.Event()
+    eval_release = asyncio.Event()
+    eval_results = {"fake_ds": {"rewards": [1.0], "truncated": [False], "samples": []}}
+
+    async def fake_run_eval_datasets(state, cache):
+        assert state is fn.state  # shared-engine eval uses the train state
+        eval_started.set()
+        await eval_release.wait()
+        return eval_results
+
+    monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
+
+    # Start the producer via a train call, then run eval concurrently.
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.05)
+    submitted_before_eval = data_source.num_get_calls
+
+    eval_task = asyncio.create_task(fn(RolloutFnEvalInput(rollout_id=0)))
+    await eval_started.wait()
+    release.set()  # in-flight groups finish and buffer, but no NEW submissions
+    await asyncio.sleep(0.05)
+    assert data_source.num_get_calls == submitted_before_eval
+
+    eval_release.set()
+    output = await eval_task
+    assert output.data == eval_results
+
+    # Producer resumes and the train drain completes.
+    assert (await drain).samples
 
 
 async def test_eval_runs_on_dedicated_fleet(monkeypatch):

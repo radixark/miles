@@ -102,9 +102,14 @@ rollout engines closer to the latest actor weights so fewer groups get recycled 
 
 ## Evaluation
 
-The rollout fleet never has a quiet window, so fully-async eval runs on a **dedicated
-eval fleet** synced through HF checkpoint snapshots — never by joining training weight
-updates. Enable it with:
+Without extra GPUs (`--eval-num-gpus` unset), eval **shares the rollout engines**:
+the producer pauses new submissions for the duration of the blocking eval and resumes
+after. The weight version stays pinned because no update interleaves while the driver
+awaits eval — the cost is that rollout production stalls for roughly the eval duration,
+which is fine for small debug eval sets.
+
+For eval that never touches training capacity, use a **dedicated eval fleet** synced
+through HF checkpoint snapshots — never by joining training weight updates:
 
 ```bash
 --eval-num-gpus 1                        # dedicated eval engines (own router)

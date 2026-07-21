@@ -28,8 +28,9 @@ Started fully-async rollout worker
 * Aborted or too-stale groups are recycled back into the data source.
 
 ## Evaluation
-Eval runs on a dedicated eval fleet synced via HF checkpoint snapshots (`--eval-num-gpus`,
-`--eval-hf-dir`); see `run-qwen3.5-4b-fully_async-eval.sh` and the fully-async docs page.
+Without extra GPUs, eval shares the rollout engines (producer pauses during the blocking
+eval). With `--eval-num-gpus`/`--eval-hf-dir`, eval runs on a dedicated fleet synced via
+HF checkpoint snapshots; see `run-qwen3.5-4b-fully_async-eval.sh` and the fully-async docs.
 
 ## Limitations
 * Ordering is best effort (sorted at the end by index).
