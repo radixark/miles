@@ -1,11 +1,12 @@
-"""qwen3_moe adaptations: the train->rollout weight transform (split transformers>=5.6 batched experts
-into the per-expert names sglang expects) and the config-time MoE-block patch (true-on-policy swaps the
-batch-invariant block, otherwise the legacy graph patch that no-ops on batched experts)."""
+"""qwen3_moe adaptations: the train->rollout weight transform (unfuse transformers>=5.6 batched experts
+into the per-expert names sglang expects, via HF's own reverse conversion) and the config-time MoE-block
+patch (true-on-policy swaps the batch-invariant block, otherwise the legacy graph patch that no-ops on
+batched experts)."""
 
 from ..class_patches import ModelPatchHook, register_model_patch
-from ..weight_bridge import _qwen3_moe_expand, _qwen3_moe_matches, register_param_transform
+from ..weight_bridge import _batched_experts_matches, _hf_unfuse_experts_expand, register_param_transform
 
-register_param_transform("qwen3_moe", _qwen3_moe_matches, _qwen3_moe_expand)
+register_param_transform("qwen3_moe", _batched_experts_matches, _hf_unfuse_experts_expand)
 
 
 def _is_qwen3_moe(hf_config) -> bool:
