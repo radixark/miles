@@ -54,11 +54,9 @@ def allocate_gpus_for_actor(
         env_vars["LD_PRELOAD"] = dynlib_path
         env_vars["TMS_INIT_ENABLE"] = "1"
         if args.offload_train_target == "disk":
-            # Spill the offloaded training actor to node-local disk instead of
-            # a pinned CPU copy, for the case where even CPU RAM cannot hold it.
+            # TMS_DISK_BACKUP_DIR is set per-rank below.
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "0"
             env_vars["TMS_INIT_ENABLE_DISK_BACKUP"] = "1"
-            env_vars["TMS_DISK_BACKUP_DIR"] = args.offload_train_disk_dir
             env_vars["TMS_DISK_BACKUP_CHUNK_MB"] = str(args.offload_train_disk_chunk_mb)
         else:
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
@@ -85,14 +83,18 @@ def allocate_gpus_for_actor(
     actor_handles = []
     master_addr, master_port = None, None
     for rank in range(world_size):
-        actor = TrainRayActor.options(
+        options = dict(
             num_cpus=num_gpus_per_actor,
             num_gpus=num_gpus_per_actor,
             scheduling_strategy=PlacementGroupSchedulingStrategy(
                 placement_group=pg,
                 placement_group_bundle_index=reordered_bundle_indices[rank],
             ),
-        ).remote(
+        )
+        if args.offload_train_target == "disk" and args.offload_train and args.train_backend == "megatron":
+            rank_dir = os.path.join(args.offload_train_disk_dir, f"cell{cell_index}_rank{rank}")
+            options["runtime_env"] = {"env_vars": {**env_vars, "TMS_DISK_BACKUP_DIR": rank_dir}}
+        actor = TrainRayActor.options(**options).remote(
             args,
             world_size,
             rank,

@@ -1,8 +1,8 @@
 import atexit
-import glob
 import logging
 import os
 import random
+import shutil
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
@@ -69,50 +69,17 @@ logging.getLogger("megatron").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def _pid_is_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except OSError:
-        # PermissionError (owned by another user) or anything else ambiguous:
-        # treat as alive so we never delete a file we can't prove is orphaned.
-        return True
-
-
 def _setup_disk_offload_reclaim(disk_dir: str) -> None:
     """Reclaim train disk-offload files for --offload-train-target=disk.
 
-    torch_memory_saver unlinks each backup file when its allocation is freed on a
-    graceful teardown, but a SIGKILL'd run can leave stale files behind. So on
-    startup we wipe any leftover ``tms_*.bin`` from previous runs (bounded,
-    node-local /scratch), and register an atexit hook to remove this process's
-    own files on a clean exit.
+    ``disk_dir`` must be exclusive to this rank (see actor_factory's per-rank
+    TMS_DISK_BACKUP_DIR).
     """
     if not disk_dir:
         return
+    shutil.rmtree(disk_dir, ignore_errors=True)
     os.makedirs(disk_dir, exist_ok=True)
-    for f in glob.glob(os.path.join(disk_dir, "tms_*.bin")):
-        # Other actors on this node share disk_dir; only reclaim files whose
-        # owning pid is no longer alive, since a restarting actor must not
-        # delete a sibling actor's still-active backup files.
-        parts = os.path.basename(f).split("_")
-        if len(parts) >= 2 and parts[1].isdigit() and _pid_is_alive(int(parts[1])):
-            continue
-        try:
-            os.remove(f)
-        except OSError:
-            pass
-
-    def _reclaim(pid: int = os.getpid(), d: str = disk_dir) -> None:
-        for f in glob.glob(os.path.join(d, f"tms_{pid}_*.bin")):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
-
-    atexit.register(_reclaim)
+    atexit.register(shutil.rmtree, disk_dir, ignore_errors=True)
     logger.info(f"Train disk-offload reclaim armed for {disk_dir} (startup wipe + atexit)")
 
 
@@ -185,7 +152,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
                 torch_memory_saver.memory_margin_bytes = x
             if args.offload_train_target == "disk":
-                _setup_disk_offload_reclaim(args.offload_train_disk_dir)
+                _setup_disk_offload_reclaim(os.environ.get("TMS_DISK_BACKUP_DIR"))
 
         if self.args.debug_rollout_only:
             return 0
