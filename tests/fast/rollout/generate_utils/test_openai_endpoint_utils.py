@@ -91,7 +91,7 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
         assert port in ports
         chosen_ports.add(port)
 
-        await tracer.collect_samples(Sample(), multi_samples=False, max_seq_len=None)
+        await tracer.collect_samples(Sample(), max_seq_len=None)
         prefix = f"http://127.0.0.1:{port}"
         assert [url for _, url in calls] == [
             f"{prefix}/sessions",
@@ -130,7 +130,7 @@ class _CollectCalls:
 
         async def fake_post_bytes(url, payload, *, timeout):
             self.calls.append(f"POST {url}")
-            assert payload == {"multi_samples": False, "max_seq_len": 7}
+            assert payload == {"max_seq_len": 7}
             if isinstance(post_outcome, Exception):
                 raise post_outcome
             return post_outcome
@@ -149,7 +149,7 @@ class _CollectCalls:
 @pytest.mark.asyncio
 async def test_collect_samples_single_post_then_delete(monkeypatch):
     calls = _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload())
-    result = await _tracer().collect_samples(Sample(), multi_samples=False, max_seq_len=7)
+    result = await _tracer().collect_samples(Sample(), max_seq_len=7)
 
     assert calls.calls == [
         "POST http://127.0.0.1:12345/sessions/sid-1/samples",
@@ -164,7 +164,7 @@ async def test_collect_samples_single_post_then_delete(monkeypatch):
 async def test_collect_samples_non_2xx_raises_with_body_and_still_deletes(monkeypatch):
     calls = _CollectCalls(monkeypatch, post_outcome=RuntimeError("422: trim_count 2 exceeds allowed=1"))
     with pytest.raises(RuntimeError, match="trim_count 2 exceeds allowed=1"):
-        await _tracer().collect_samples(Sample(), multi_samples=False, max_seq_len=7)
+        await _tracer().collect_samples(Sample(), max_seq_len=7)
     assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
 
 
@@ -174,14 +174,14 @@ async def test_collect_samples_timeout_raises_and_still_deletes(monkeypatch):
     # (silently ABORTing the sample); the samples path must raise it.
     calls = _CollectCalls(monkeypatch, post_outcome=asyncio.TimeoutError())
     with pytest.raises(asyncio.TimeoutError):
-        await _tracer().collect_samples(Sample(), multi_samples=False, max_seq_len=7)
+        await _tracer().collect_samples(Sample(), max_seq_len=7)
     assert calls.calls[-1] == "DELETE http://127.0.0.1:12345/sessions/sid-1"
 
 
 @pytest.mark.asyncio
 async def test_collect_samples_delete_failure_is_tolerated(monkeypatch):
     _CollectCalls(monkeypatch, post_outcome=_computed_reply_payload(), delete_outcome=RuntimeError("delete boom"))
-    result = await _tracer().collect_samples(Sample(), multi_samples=False, max_seq_len=7)
+    result = await _tracer().collect_samples(Sample(), max_seq_len=7)
     assert len(result.samples) == 1
 
 

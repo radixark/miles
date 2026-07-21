@@ -31,10 +31,8 @@ DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 VARIANT_TO_GENERATE_FN_PATH = {
     "old_sglang_rollout": "miles.rollout.sglang_rollout.generate",
     "single_turn": "miles.rollout.generate_hub.single_turn.generate",
-    "multi_turn_single_sample": "miles.rollout.generate_hub.multi_turn.generate",
-    "multi_turn_multi_samples": "miles.rollout.generate_hub.multi_turn.generate",
-    "agentic_tool_call_single_sample": "miles.rollout.generate_hub.agentic_tool_call.generate",
-    "agentic_tool_call_multi_samples": "miles.rollout.generate_hub.agentic_tool_call.generate",
+    "multi_turn": "miles.rollout.generate_hub.multi_turn.generate",
+    "agentic_tool_call": "miles.rollout.generate_hub.agentic_tool_call.generate",
 }
 
 
@@ -53,7 +51,7 @@ def extra_argv_for_variant(
         custom_generate_function_path or VARIANT_TO_GENERATE_FN_PATH[variant],
     ]
 
-    if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
+    if variant == "multi_turn":
         argv += [
             "--generate-max-turns",
             str(generate_max_turns),
@@ -63,13 +61,9 @@ def extra_argv_for_variant(
             generate_execute_tool_function_path,
         ]
         argv += ["--generate-tool-call-parser", generate_tool_call_parser]
-        if variant == "multi_turn_multi_samples":
-            argv.append("--generate-multi-samples")
-    elif variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"):
+    elif variant == "agentic_tool_call":
         argv += ["--custom-agent-function-path", custom_agent_function_path]
         argv += ["--use-session-server", "--tito-model", "qwen3", "--tito-allowed-append-roles", "tool"]
-        if variant == "agentic_tool_call_multi_samples":
-            argv.append("--generate-multi-samples")
 
     return argv
 

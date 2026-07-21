@@ -338,7 +338,6 @@ def _build_server_args(
         apply_chat_template_kwargs=chat_template_kwargs,
         tito_model=bench_args.tito_model,
         tito_allowed_append_roles=bench_args.allowed_append_roles,
-        generate_multi_samples=False,
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=False,
         miles_router_timeout=600.0,
