@@ -112,11 +112,22 @@ persisted anyway), and does eval get standalone GPU resources?
 
 Without extra GPUs (`--eval-num-gpus` unset), eval **shares the rollout engines**:
 the producer pauses new submissions for the duration of the blocking eval and resumes
-after. The weight version stays pinned because no update interleaves while the driver
-awaits eval — expect `mixed_version_ratio == 0` with the training fleet's update
-counter as the version label (a constant offset from `eval/step`, unlike the dedicated
-fleet which stamps the rollout_id). The cost is that rollout production stalls for
-roughly the eval duration, which is fine for small debug eval sets.
+after. This is a gate, not a retract — in-flight rollout requests finish and buffer,
+nothing is aborted, and the `pause_generation` API is never involved; eval requests
+simply share engine capacity with the draining tail.
+
+No extra weight movement happens either: the engines already carry the weights the
+step's `update_weights` broadcast just pushed (in fully-async, only *generation* is
+continuous — weight updates are still driver-scheduled per step, each with its own
+generation pause per `--pause-generation-mode`; eval adds no pause of its own on top).
+Pinning comes from ordering: the driver awaits the eval, so the next
+`update_weights` cannot interleave —
+expect `mixed_version_ratio == 0` with the training fleet's update counter as the
+version label (a constant offset from `eval/step`, unlike the dedicated fleet which
+stamps the rollout_id). This ordering is also why shared-engine eval must stay
+blocking: fired-and-forgotten, the next weight update would rewrite the engines
+mid-eval. The cost is that rollout production stalls for roughly the eval duration,
+which is fine for small debug eval sets.
 
 For eval that never touches training capacity, use a **dedicated eval fleet** synced
 through HF checkpoint snapshots — never by joining training weight updates:
@@ -151,6 +162,18 @@ are logged at the affected step. `eval/{ds}/weight_version/mean == eval/step` an
 
 The eval-engine `weight_version` namespace is the snapshot's `rollout_id` — deliberately
 different from the training fleet's job-local update counter; the two fleets never mix.
+
+Where each posture's weights come from — and what "the weights at step R" means:
+
+| Posture | Weight delivery | Measures |
+|---|---|---|
+| Pause-the-world | none needed — training's own `update_weights` broadcast already put them on the shared engines | the engines' last-broadcast version (equals the actor's current weights when `update_weights_interval` is 1) |
+| Dedicated fleet | `update_weights_from_disk` on a snapshot exported **directly from the actor** | the actor's exact step-R weights, regardless of broadcast schedule |
+| External service | loads `--save-hf` checkpoints itself | the actor's exact step-R weights |
+
+Eval engines are never added to the training broadcast group: collectives cannot skip
+members, so a fleet inside the group would have its weights rewritten by every update
+and asynchronous points could not be pinned.
 
 ## Example implementation
 
