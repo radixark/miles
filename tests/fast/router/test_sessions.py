@@ -1,11 +1,13 @@
 """Integration tests for session HTTP routes (create / get / delete / proxy)."""
 
+import asyncio
 import json
 import re
 import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 import pytest
 import requests
 from fastapi.responses import JSONResponse
@@ -13,6 +15,7 @@ from fastapi.responses import JSONResponse
 from miles.rollout.session.server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
+from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
@@ -348,6 +351,73 @@ class TestChatFakeStreaming:
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("application/json")
         assert resp.json()["choices"][0]["message"]["content"]
+
+    def test_streaming_client_multi_turn_passes_prefix_check(self, router_env):
+        """The rebuilt assistant message must survive the next turn's TITO prefix check."""
+        session_id = _create_session(router_env.url)
+        url = f"{router_env.url}/sessions/{session_id}/v1/chat/completions"
+
+        async def run():
+            async with httpx.AsyncClient(timeout=10) as client:
+                first = await stream_chat_completions(client, url, {"messages": self.MESSAGES}, label="turn 1")
+                messages = [
+                    *self.MESSAGES,
+                    first["choices"][0]["message"],
+                    {"role": "tool", "content": "ok", "tool_call_id": "t0"},
+                ]
+                second = await stream_chat_completions(client, url, {"messages": messages}, label="turn 2")
+                return first, second
+
+        first, second = asyncio.run(run())
+        assert first["choices"][0]["message"]["content"]
+        assert second["choices"][0]["message"]["content"]
+        # Turn 2 extended (not rolled back) the session: both records are kept.
+        records = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
+        assert len(records) == 2
+
+    def test_streaming_client_rebuilds_tool_calls_exactly(self, router_env):
+        """Rebuilt tool_calls must dict-equal the record's stored assistant tool_calls."""
+        session_id = _create_session(router_env.url)
+        url = f"{router_env.url}/sessions/{session_id}/v1/chat/completions"
+
+        def tool_call_process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(
+                text=(
+                    '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Beijing"}}\n</tool_call>\n'
+                    '<tool_call>\n{"name": "get_time", "arguments": {"timezone": "UTC"}}\n</tool_call>'
+                )
+            )
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_time",
+                    "parameters": {"type": "object", "properties": {"timezone": {"type": "string"}}},
+                },
+            },
+        ]
+
+        async def run():
+            async with httpx.AsyncClient(timeout=10) as client:
+                return await stream_chat_completions(
+                    client, url, {"messages": self.MESSAGES, "tools": tools}, label="tool turn"
+                )
+
+        with patch.object(router_env.backend, "process_fn", new=tool_call_process_fn):
+            response = asyncio.run(run())
+
+        rebuilt = response["choices"][0]["message"]["tool_calls"]
+        record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
+        stored = record["response"]["choices"][0]["message"]["tool_calls"]
+        assert rebuilt == stored
 
     def test_openai_sdk_accumulates_fake_stream(self, router_env):
         openai = pytest.importorskip("openai")

@@ -31,6 +31,8 @@ import random
 
 import httpx
 
+from miles.utils.test_utils.openai_stream_client import stream_chat_completions
+
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_TURNS = 8
@@ -105,6 +107,11 @@ async def _chat(
     }
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
+    # Streaming is the e2e default: black-box agent harnesses mostly consume
+    # chat completions as SSE, so exercise the session server's fake-streaming
+    # path unless the caller opts out with stream=False in request_kwargs.
+    if payload.pop("stream", True):
+        return await stream_chat_completions(client, f"{url}/v1/chat/completions", payload, label=label)
     resp = await client.post(f"{url}/v1/chat/completions", json=payload)
     assert resp.status_code == 200, f"{label} failed ({resp.status_code}): {resp.text}"
     return resp.json()
