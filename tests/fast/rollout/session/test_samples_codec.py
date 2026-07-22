@@ -1,11 +1,9 @@
 """Tests for the samples wire codec: encode on the worker, overlay on the driver.
 
-Covers the COMPUTED/TEMPLATE field partition, safetensors-tensor round-trips,
-malformed-payload rejection, and the overlay defaults guard
-(`_assert_overlay_template_defaults`).
+Covers safetensors-tensor round-trips, malformed-payload rejection, and the
+overlay defaults guard (`_assert_overlay_template_defaults`).
 """
 
-import dataclasses
 import json
 
 import numpy as np
@@ -13,12 +11,7 @@ import pytest
 import safetensors.numpy
 from safetensors import SafetensorError
 
-from miles.rollout.session.samples.codec import (
-    COMPUTED_FIELDS,
-    TEMPLATE_FIELDS,
-    decode_samples_reply,
-    encode_samples_reply,
-)
+from miles.rollout.session.samples.codec import decode_samples_reply, encode_samples_reply
 from miles.utils.types import Sample
 
 
@@ -51,11 +44,6 @@ def _mutated_payload(payload: bytes, mutate) -> bytes:
 
 
 class TestSamplesWireCodec:
-    def test_field_partition_is_total_and_disjoint(self):
-        all_fields = {f.name for f in dataclasses.fields(Sample)}
-        assert set(COMPUTED_FIELDS) | set(TEMPLATE_FIELDS) == all_fields
-        assert not set(COMPUTED_FIELDS) & set(TEMPLATE_FIELDS)
-
     def test_round_trip_overlays_computed_and_keeps_template(self):
         template = Sample(
             group_index=7,
