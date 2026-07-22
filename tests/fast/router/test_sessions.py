@@ -13,6 +13,7 @@ import requests
 from fastapi.responses import JSONResponse
 
 from miles.rollout.session.server import SessionServer
+from miles.utils.chat_template_utils import message_matches
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
@@ -375,8 +376,14 @@ class TestChatFakeStreaming:
         records = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
         assert len(records) == 2
 
-    def test_streaming_client_rebuilds_tool_calls_exactly(self, router_env):
-        """Rebuilt tool_calls must dict-equal the record's stored assistant tool_calls."""
+    def test_streaming_client_rebuilt_tool_calls_match_stored(self, router_env):
+        """Rebuilt tool_calls must match the stored assistant under message_matches.
+
+        The stored message keeps SGLang's wire shape (tool_calls carry
+        ``index``); a protocol-faithful streaming client drops that
+        streaming-only key when rebuilding.  The server's own comparison
+        (``message_matches``) must treat the two as equal — dict equality is
+        deliberately NOT the contract."""
         session_id = _create_session(router_env.url)
         url = f"{router_env.url}/sessions/{session_id}/v1/chat/completions"
 
@@ -414,10 +421,77 @@ class TestChatFakeStreaming:
         with patch.object(router_env.backend, "process_fn", new=tool_call_process_fn):
             response = asyncio.run(run())
 
-        rebuilt = response["choices"][0]["message"]["tool_calls"]
+        rebuilt_message = response["choices"][0]["message"]
         record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
-        stored = record["response"]["choices"][0]["message"]["tool_calls"]
-        assert rebuilt == stored
+        stored_message = record["response"]["choices"][0]["message"]
+        # Mock fidelity guard: the stored wire shape carries index, the rebuilt drops it.
+        assert all("index" in tool_call for tool_call in stored_message["tool_calls"])
+        assert all("index" not in tool_call for tool_call in rebuilt_message["tool_calls"])
+        assert message_matches(stored_message, rebuilt_message)
+        # Template-relevant substance survives the round-trip exactly.
+        assert [tool_call["function"] for tool_call in rebuilt_message["tool_calls"]] == [
+            tool_call["function"] for tool_call in stored_message["tool_calls"]
+        ]
+        assert [tool_call["id"] for tool_call in rebuilt_message["tool_calls"]] == [
+            tool_call["id"] for tool_call in stored_message["tool_calls"]
+        ]
+
+    def test_streaming_client_tool_call_turn_then_tool_result_continues(self, router_env):
+        """Regression: a streamed tool-call turn must not roll back the next turn.
+
+        This is the CPU incarnation of the stage-c multi-role e2e failure: the
+        stored assistant carries SGLang-shaped tool_calls (with ``index``), the
+        client replays the SSE-rebuilt message (without it), and the follow-up
+        tool_result request must extend the session instead of dying with
+        HTTP 400 ``rollback failed``."""
+        session_id = _create_session(router_env.url)
+        url = f"{router_env.url}/sessions/{session_id}/v1/chat/completions"
+
+        def tool_then_text_process_fn(prompt: str) -> ProcessResult:
+            if "TOOL_SENTINEL_42" in prompt:
+                return ProcessResult(text="Final answer after tool.")
+            return ProcessResult(
+                text='<tool_call>\n{"name": "get_weather", "arguments": {"city": "Beijing"}}\n</tool_call>'
+            )
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                },
+            },
+        ]
+
+        async def run():
+            async with httpx.AsyncClient(timeout=10) as client:
+                first = await stream_chat_completions(
+                    client, url, {"messages": self.MESSAGES, "tools": tools}, label="tool turn"
+                )
+                assistant = first["choices"][0]["message"]
+                messages = [
+                    *self.MESSAGES,
+                    assistant,
+                    {
+                        "role": "tool",
+                        "content": "TOOL_SENTINEL_42",
+                        "tool_call_id": assistant["tool_calls"][0]["id"],
+                    },
+                ]
+                second = await stream_chat_completions(
+                    client, url, {"messages": messages, "tools": tools}, label="tool_result turn"
+                )
+                return first, second
+
+        with patch.object(router_env.backend, "process_fn", new=tool_then_text_process_fn):
+            first, second = asyncio.run(run())
+
+        assert first["choices"][0]["finish_reason"] == "tool_calls"
+        assert second["choices"][0]["message"]["content"] == "Final answer after tool."
+        # Turn 2 extended (not rolled back) the session: both records are kept.
+        records = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
+        assert len(records) == 2
 
     def test_openai_sdk_accumulates_fake_stream(self, router_env):
         openai = pytest.importorskip("openai")

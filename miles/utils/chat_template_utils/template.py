@@ -134,6 +134,12 @@ def apply_chat_template_from_str(
 
 _TEMPLATE_RELEVANT_KEYS = ("role", "content", "reasoning_content", "tool_calls")
 
+# Wire-only tool_call keys that no chat template reads.  SGLang's non-streaming
+# responses always serialize ``index`` (int or null, from ToolCall.index), while
+# streaming clients that rebuild the message from deltas drop it per OpenAI
+# semantics — so it must not participate in matching.
+_WIRE_ONLY_TOOL_CALL_KEYS = ("index",)
+
 
 def _normalize_value(value: Any) -> Any:
     """Normalize falsy sentinels that produce identical Jinja2 output.
@@ -151,6 +157,25 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
+def _normalize_tool_calls(value: Any) -> Any:
+    """Drop wire-only and null-valued keys from each tool_call dict.
+
+    Jinja2 templates render an absent key and a None-valued key identically,
+    and ``index`` is a streaming-accumulation artifact no template reads, so
+    neither may distinguish a stored message from its replay.
+    """
+    if not isinstance(value, list):
+        return value
+    return [
+        (
+            {k: v for k, v in call.items() if k not in _WIRE_ONLY_TOOL_CALL_KEYS and v is not None}
+            if isinstance(call, dict)
+            else call
+        )
+        for call in value
+    ]
+
+
 def message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     """Compare only the fields that affect chat-template tokenization.
 
@@ -158,9 +183,16 @@ def message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     ``provider_specific_fields`` into messages.  These have no effect on
     the Jinja2 chat template output, so we only compare the keys that
     templates actually read: role, content, reasoning_content, tool_calls.
+    Within tool_calls, wire-only keys (``index``) and null-valued keys are
+    ignored for the same reason.
     """
     for key in _TEMPLATE_RELEVANT_KEYS:
-        if _normalize_value(stored.get(key)) != _normalize_value(new.get(key)):
+        stored_value = _normalize_value(stored.get(key))
+        new_value = _normalize_value(new.get(key))
+        if key == "tool_calls":
+            stored_value = _normalize_tool_calls(stored_value)
+            new_value = _normalize_tool_calls(new_value)
+        if stored_value != new_value:
             return False
     return True
 
