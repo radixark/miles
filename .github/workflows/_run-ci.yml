@@ -269,7 +269,7 @@ jobs:
             msgspec ninja nvidia-ml-py openai openai-harmony orjson outlines \
             partial_json_parser prometheus-client psutil py-spy pydantic \
             python-multipart pyzmq scipy sentencepiece setproctitle soundfile \
-            tiktoken timm torchvision uvicorn uvloop watchfiles xgrammar
+            tiktoken timm torchvision uvicorn uvloop watchfiles xgrammar==0.2.1
           # sglang's memory_pool_host.py unconditionally imports sgl_kernel
           # on non-NPU/XPU/MPS hardware. sgl_kernel is GPU-only — install a
           # local stub so imports succeed at module load.
