@@ -35,7 +35,7 @@ from .dtensor import gather_full_param
 def _iter_sync_named_params(name, param, model_type, orig_dtypes=None):
     """Yield (name, tensor) pairs for the rollout engine, applying the registered WeightBridge transform
     for this model_type (e.g. splitting batched MoE experts); params with no transform stream unchanged.
-    ``orig_dtypes`` (fp32-master archs) downcasts the materialized tensor back to its on-disk dtype."""
+    ``orig_dtypes`` downcasts an fp32 master tensor back to its on-disk dtype."""
     expand = get_param_transform(name, param, model_type)
     if expand is None:
         yield name, param
@@ -78,7 +78,7 @@ class UpdateWeight(abc.ABC):
         bucket = []
         bucket_size = 0
         model_type = getattr(getattr(self.model, "config", None), "model_type", "")
-        # fp32-master archs (glm4_moe_lite): restore each param's on-disk dtype before streaming
+        # FP32 masters are streamed in each parameter's original on-disk dtype.
         orig_dtypes = getattr(self.model, "_fsdp_sync_orig_dtypes", None)
         for raw_name, raw_param in self.model.state_dict().items():
             for name, param in _iter_sync_named_params(raw_name, raw_param, model_type, orig_dtypes):

@@ -1,25 +1,40 @@
 """Unit tests for the FSDP precision policy (CPU-only)."""
 
+import sys
 from types import SimpleNamespace
 
 import torch
 
 from miles.backends.experimental.fsdp_utils.adaptations.precision import apply_fp32_master, resolve_precision_policy
+from miles.backends.experimental.fsdp_utils.arguments import parse_fsdp_cli
 
 
-def test_resolve_precision_policy_gating_and_dtypes():
+def test_resolve_precision_policy_uses_independent_fp32_master_switch_and_dtypes():
     dense = SimpleNamespace(model_type="qwen3")
-    bf16_args = SimpleNamespace(fp16=False)
+    bf16_args = SimpleNamespace(fp16=False, enable_fp32_master=True)
 
-    # fp32 master only for glm4_moe_lite; reduce is always fp32; param follows args.fp16
-    assert resolve_precision_policy(SimpleNamespace(model_type="glm4_moe_lite"), bf16_args).keep_fp32_master
     p = resolve_precision_policy(dense, bf16_args)
-    assert not p.keep_fp32_master
+    assert p.keep_fp32_master
     assert p.param_dtype == torch.bfloat16 and p.reduce_dtype == torch.float32
-    assert resolve_precision_policy(dense, SimpleNamespace(fp16=True)).param_dtype == torch.float16
-    # nemotron / qwen3_moe must NOT keep an fp32 master
-    assert not resolve_precision_policy(SimpleNamespace(model_type="nemotron_h"), bf16_args).keep_fp32_master
-    assert not resolve_precision_policy(SimpleNamespace(model_type="qwen3_moe"), bf16_args).keep_fp32_master
+
+    disabled = resolve_precision_policy(
+        SimpleNamespace(model_type="glm4_moe_lite"),
+        SimpleNamespace(fp16=True, enable_fp32_master=False),
+    )
+    assert not disabled.keep_fp32_master
+    assert disabled.param_dtype == torch.float16 and disabled.reduce_dtype == torch.float32
+    assert disabled == resolve_precision_policy(
+        dense,
+        SimpleNamespace(fp16=True, enable_fp32_master=False),
+    )
+
+
+def test_fp32_master_cli_defaults_enabled_and_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["miles"])
+    assert parse_fsdp_cli().enable_fp32_master
+
+    monkeypatch.setattr(sys, "argv", ["miles", "--no-enable-fp32-master"])
+    assert not parse_fsdp_cli().enable_fp32_master
 
 
 def test_apply_fp32_master_records_on_disk_dtypes_before_cast():

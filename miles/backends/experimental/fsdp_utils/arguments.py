@@ -35,6 +35,7 @@ class FSDPArgs:
     # Precision
     gradient_checkpointing: bool = False
     fp16: bool = False
+    enable_fp32_master: bool = True
 
     # FSDP configuration
     fsdp_state_dict_cpu_offload: bool = True  # If True, offload full state dict to CPU during collection.
@@ -76,7 +77,14 @@ def parse_fsdp_cli(extra_args_provider=None):
         else:
             arg_type = f.type
 
-        if arg_type is bool:
+        if f.name == "enable_fp32_master":
+            parser.add_argument(
+                "--enable-fp32-master",
+                action=argparse.BooleanOptionalAction,
+                default=f.default,
+                help="Keep an FP32 master copy of model weights (default: enabled).",
+            )
+        elif arg_type is bool:
             parser.add_argument(f"--{f.name.replace('_', '-')}", action="store_true")
         else:
             parser.add_argument(f"--{f.name.replace('_', '-')}", type=arg_type, default=f.default)
