@@ -18,7 +18,7 @@ ROLLOUT_DATA_TRANSPORT_CHOICES = (
 _MOONCAKE_IMPORT_ERROR: ImportError | None = None
 
 try:
-    from mooncake.store import MooncakeDistributedStore
+    from mooncake.store import MooncakeDistributedStore, ReplicateConfig
     from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref
 
     _MOONCAKE_AVAILABLE = True
@@ -26,6 +26,7 @@ except ImportError as exc:
     _MOONCAKE_AVAILABLE = False
     _MOONCAKE_IMPORT_ERROR = exc
     FieldSchema = None
+    ReplicateConfig = None
 
 
 def get_rollout_data_transport(args: Any) -> str:
@@ -51,6 +52,8 @@ def check_mooncake_available() -> None:
 
 def validate_rollout_data_transport(args: Any) -> None:
     _check_mooncake_available_if_needed(args)
+    if is_mooncake_rollout_data_transport(args) and _mooncake_rollout_replica_num(args) < 1:
+        raise ValueError("--mooncake-rollout-replica-num must be >= 1")
 
 
 def put_rollout_data_ref(
@@ -74,8 +77,8 @@ def put_rollout_data_ref(
 def get_rollout_data_ref(args: Any, ref: Box) -> dict[str, Any]:
     _check_mooncake_available_if_needed(args)
     if is_mooncake_rollout_data_transport(args):
-        return _mooncake_transfer(args, contribute_segment=_should_contribute_segment()).get_legacy_dict(
-            import_ref(ref.inner)
+        return _mooncake_transfer(args, contribute_segment=_should_contribute_segment()).get(
+            import_ref(ref.inner), type="dict"
         )
     return ray.get(ref.inner)
 
@@ -105,20 +108,38 @@ def _put_mooncake_rollout_data(
     store_partition: str,
     field_schemas: dict | None = None,
 ) -> Box:
-    config = getattr(args, "mooncake_store_init_kwargs", None) or {}
-    ref = _mooncake_transfer(args, contribute_segment=True).put_legacy_dict(
+    store_config = getattr(args, "mooncake_store_init_kwargs", None) or {}
+    ref = _mooncake_transfer(args, contribute_segment=True).put(
         data,
+        type="dict",
         namespace="miles",
         partition=store_partition,
         stage="rollout",
-        chunk_bytes=config.get("chunk_bytes"),
+        chunk_bytes=store_config.get("chunk_bytes"),
+        config=_mooncake_replicate_config(args),
         field_schemas=field_schemas,
     )
     return Box(export_ref(ref))
 
 
 def _cleanup_mooncake_rollout_data(args: Any, ref: Box) -> None:
-    _mooncake_transfer(args, contribute_segment=False).remove_legacy_dict(import_ref(ref.inner))
+    _mooncake_transfer(args, contribute_segment=False).cleanup_dataproto(import_ref(ref.inner))
+
+
+def _mooncake_replicate_config(args: Any) -> Any:
+    replica_num = _mooncake_rollout_replica_num(args)
+    if replica_num == 1:
+        return None
+    if ReplicateConfig is None:
+        check_mooncake_available()
+        raise ImportError("rollout-data-transport='mooncake' requires mooncake.store.ReplicateConfig")
+    config = ReplicateConfig()
+    config.replica_num = replica_num
+    return config
+
+
+def _mooncake_rollout_replica_num(args: Any) -> int:
+    return getattr(args, "mooncake_rollout_replica_num", 1)
 
 
 def _rollout_field_schemas_for_data(data: dict[str, Any], field_schema_specs: dict[str, tuple] | None) -> dict | None:

@@ -446,6 +446,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="JSON kwargs used to initialize MooncakeDistributedStore for rollout transfer.",
             )
+            parser.add_argument(
+                "--mooncake-rollout-replica-num",
+                type=int,
+                default=1,
+                help="Number of Mooncake memory replicas for each rollout object.",
+            )
 
             # sampling
             parser.add_argument(
