@@ -197,7 +197,7 @@ async def wait_server_healthy(ip: str, port: int, timeout: float = 1800.0) -> No
     await wait_http_ok(f"http://{ip}:{port}/health_generate", timeout=timeout)
 
 
-async def eval_snapshot(args: Namespace, state, cache: dict, rollout_id: int, snapshot: Path) -> None:
+async def evaluate_snapshot(args: Namespace, state, cache: dict, rollout_id: int, snapshot: Path) -> None:
     from miles.ray.rollout.metrics import log_eval_rollout_data
     from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
     from miles.utils.http_utils import get
@@ -261,7 +261,7 @@ async def main() -> None:
             for rollout_id, snapshot in ready:
                 logger.info(f"Evaluating snapshot {snapshot} (rollout_id={rollout_id})")
                 try:
-                    await eval_snapshot(args, state, cache, rollout_id, snapshot)
+                    await evaluate_snapshot(args, state, cache, rollout_id, snapshot)
                     ledger.mark(rollout_id)
                 except Exception:
                     logger.exception(f"Eval of {snapshot} failed; will retry next scan")
