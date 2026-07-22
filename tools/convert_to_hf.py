@@ -1,11 +1,13 @@
 import torch
 import torch.distributed as dist
 from megatron.core import mpu
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
 
 import miles.backends.megatron_utils as megatron_utils
 from miles.backends.megatron_utils import update_weight_utils
 from miles.utils.arguments import parse_args
+from miles.utils.hf_config import load_hf_config
+from miles.utils.processing_utils import load_tokenizer
 
 
 def add_checkpoint_args(parser):
@@ -25,7 +27,13 @@ def add_checkpoint_args(parser):
 
 
 def main(args):
-    megatron_utils.init(args)
+    from miles.utils.ft_utils.indep_dp import IndepDPInfo
+
+    megatron_utils.init(
+        args,
+        indep_dp_store_addr=None,
+        indep_dp_info=IndepDPInfo.create_trivial(),
+    )
 
     pp_size = mpu.get_pipeline_model_parallel_world_size()
     ep_size = mpu.get_expert_model_parallel_world_size()
@@ -39,10 +47,10 @@ def main(args):
     args.no_load_rng = True
     model, _, _, _ = megatron_utils.initialize_model_and_optimizer(args)
 
-    hf_config = AutoConfig.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    hf_config = load_hf_config(args.hf_checkpoint)
     model_name = type(hf_config).__name__.lower()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    tokenizer = load_tokenizer(args.hf_checkpoint, trust_remote_code=True)
 
     vocab_size = tokenizer.vocab_size if args.vocab_size is None else args.vocab_size
 

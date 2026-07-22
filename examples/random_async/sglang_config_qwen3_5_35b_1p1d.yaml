@@ -1,0 +1,42 @@
+# Layout: 8 rollout GPUs total
+#   - 1 prefill engine: 4 GPUs (DP=4, EP=4)
+#   - 1 decode engine: 4 GPUs (DP=4, EP=4)
+sglang:
+  - name: default
+    server_groups:
+      - worker_type: prefill
+        num_gpus: 4
+        num_gpus_per_engine: 4
+        overrides:
+          deepep_mode: normal
+          dp_size: 4
+          ep_size: 4
+          skip_tokenizer_init: true
+          mem_fraction_static: 0.85
+          disable_cuda_graph: true
+          load_balance_method: follow_bootstrap_room
+          chunked_prefill_size: 65536
+          max_running_requests: 512
+          enable_hierarchical_cache: true
+          hicache_size: 125 # should be doubled once HiCache doesn't double allocation (KV + Mamba states)
+          context_length: 80000
+          disaggregation_transfer_backend: nixl
+          disaggregation_ib_device: mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7
+
+      - worker_type: decode
+        num_gpus: 4
+        num_gpus_per_engine: 4
+        overrides:
+          deepep_mode: low_latency
+          dp_size: 4
+          ep_size: 4
+          skip_tokenizer_init: true
+          mem_fraction_static: 0.85
+          disable_radix_cache: true
+          cuda_graph_max_bs: 128
+          enable_two_batch_overlap: false
+          max_running_requests: 512
+          num_reserved_decode_tokens: 8192
+          context_length: 80000
+          disaggregation_transfer_backend: nixl
+          disaggregation_ib_device: mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7

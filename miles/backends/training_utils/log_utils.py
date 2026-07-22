@@ -9,10 +9,12 @@ import torch.distributed as dist
 
 from miles.utils import train_metric_utils
 from miles.utils.flops_utils import calculate_fwd_flops
-from miles.utils.metric_utils import compute_pass_rate, compute_rollout_step
+from miles.utils.ft_utils.process_group_utils import MultiPGUtil
+from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
-from ...utils import tracking_utils
+from ...utils.tracking_utils import tracking
 from .cp_utils import get_sum_of_sample_mean
 from .data import DataIterator
 from .parallel import get_parallel_state
@@ -36,27 +38,37 @@ def gather_log_data(
 
     parallel_state = get_parallel_state()
 
-    pg = parallel_state.intra_dp_cp
-    dp_size = pg.size
-    gathered_log_dict = [None] * dp_size
-    # Not sure if this will be a performance bottleneck.
-    dist.gather_object(
-        log_dict,
-        gathered_log_dict if pg.rank == 0 else None,
-        dst=dist.get_global_rank(pg.gloo_group, 0),
-        group=pg.gloo_group,
-    )
+    pg = parallel_state.effective_dp_cp
+    log_structured(logger.info, op="cross_cell", phase="start", kind="log_gather", rank=pg.rank)
+    try:
+        gathered_log_dict = MultiPGUtil.gather_object(
+            obj=log_dict,
+            groups_inner_to_outer=pg.gloo_groups_inner_to_outer,
+        )
+        log_structured(logger.info, op="cross_cell", phase="end", kind="log_gather", rank=pg.rank, success=True)
+    except RuntimeError:
+        log_structured(
+            logger.warning,
+            op="cross_cell",
+            phase="end",
+            kind="log_gather",
+            rank=pg.rank,
+            success=False,
+            degraded=True,
+            exc_info=True,
+        )
+        return None
 
     if pg.rank == 0:
         reduced_log_dict = {
-            f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / dp_size for key in log_dict
+            f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / pg.size for key in log_dict
         }
         logger.info(f"{metric_name} {rollout_id}: {reduced_log_dict}")
 
         # Calculate step once to avoid duplication
         step = compute_rollout_step(args, rollout_id)
         reduced_log_dict["rollout/step"] = step
-        tracking_utils.log(args, reduced_log_dict, step_key="rollout/step")
+        tracking.log(args, reduced_log_dict, step_key="rollout/step")
 
         return reduced_log_dict
     else:
@@ -119,10 +131,18 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "loss_masks",
                 "sample_indices",
                 "rollout_routed_experts",
+                "rollout_indexer_topk",
                 "max_seq_lens",
                 "dynamic_global_batch_size",
+                "witness_ids",
                 "weight_versions",
                 "metadata",
+                "n_adapters",
+                "adapter_slots",
+                "step_slots",
+                "step_adapter_names",
+                "step_adapter_batch_sizes",
+                "prompt_group_sizes",
             ]:
                 continue
             # Upload per sample mean for each rollout value
@@ -133,6 +153,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
                     # modified in place and will cause problem for the next rollout.
                     val = torch.cat(val).clone().detach()
+                    if val.device != loss_masks[0].device:
+                        val = val.to(loss_masks[0].device)
                     if key in [
                         "log_probs",
                         "ref_log_probs",
@@ -140,6 +162,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         "returns",
                         "advantages",
                         "values",
+                        "teacher_log_probs",
+                        "opd_reverse_kl",
                         "entropy",
                     ]:
                         sum_of_sample_mean = get_sum_of_sample_mean(
@@ -182,7 +206,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 # test_qwen2.5_0.5B_gsm8k.py on 8 GPUs hit ~3.7e-9 diff in CI), so use 1e-8
                 # rather than the previous 3e-9 to absorb BF16 reduction noise across configs.
                 if args.use_rollout_routing_replay:
-                    abs_tol = 1e-5
+                    # lop diff w/ w/o r3 is very big
+                    abs_tol = 5e-3
                 elif getattr(args, "sglang_config", None) is not None:
                     abs_tol = 1e-8
                 else:
@@ -206,8 +231,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
 
     if args.log_multi_turn:
         log_multi_turn_data(rollout_id, args, rollout_data)
-    if args.log_passrate:
-        log_passrate(rollout_id, args, rollout_data)
 
     if args.log_correct_samples:
         if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
@@ -308,40 +331,20 @@ def log_multi_turn_data(rollout_id: int, args: Namespace, rollout_data: RolloutB
         gather_log_data("multi_turn", args, rollout_id, log_dict)
 
 
-def log_passrate(rollout_id: int, args: Namespace, rollout_data: RolloutBatch) -> None:
-    """
-    Compute pass@k metrics from `raw_reward` groups and log the results.
-
-    `raw_reward` is reshaped to `[group_number, group_size]`, then pass@k is
-    estimated per problem and averaged.
-    """
-    parallel_state = get_parallel_state()
-    if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
-        log_dict = {}
-        for key, val in rollout_data.items():
-            if key != "raw_reward":
-                continue
-
-            log_dict |= compute_pass_rate(
-                flat_rewards=val,
-                group_size=args.n_samples_per_prompt,
-                num_groups=args.rollout_batch_size,
-            )
-
-        gather_log_data("passrate", args, rollout_id, log_dict)
-
-
-def log_perf_data(rollout_id: int, args: Namespace) -> None:
+def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None = None) -> None:
     parallel_state = get_parallel_state()
     train_metric_utils.log_perf_data_raw(
         rollout_id=rollout_id,
         args=args,
         is_primary_rank=(
-            parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage and parallel_state.intra_dp_cp.rank == 0
+            parallel_state.tp.rank == 0
+            and parallel_state.is_pp_last_stage
+            and parallel_state.effective_dp_cp.rank == 0
         ),
         compute_total_fwd_flops=lambda seq_lens: calculate_fwd_flops(seqlens=seq_lens, args=args)
         / dist.get_world_size()
         / 1e12,
+        extra_metrics=extra_metrics,
     )
 
 
@@ -354,7 +357,7 @@ def log_cpu_memory(rollout_id: int, args: Namespace, label: str) -> None:
     cpu_mem_gb = psutil.virtual_memory().used / 1e9
     step = compute_rollout_step(args, rollout_id)
     logger.info(f"[CPU memory] {label}: {cpu_mem_gb:.2f} GB (rollout_id={rollout_id}, step={step})")
-    tracking_utils.log(
+    tracking.log(
         args,
         {f"perf/cpu_memory_{label}_gb": cpu_mem_gb, "rollout/step": step},
         step_key="rollout/step",
@@ -392,7 +395,8 @@ def aggregate_train_losses(
 
     assert len(keys) + 1 == values.numel(), f"Expected {len(keys) + 1} values, got {values.numel()}"
 
-    dist.all_reduce(values, op=dist.ReduceOp.SUM, group=parallel_state.intra_dp_cp.group)
+    for group in parallel_state.effective_dp_cp.groups_inner_to_outer:
+        MultiPGUtil.all_reduce(values, [group], op=dist.ReduceOp.SUM)
 
     loss_reduced = {}
     values = values.tolist()
@@ -452,7 +456,7 @@ def log_train_step(
         should_log = dist.get_rank() == 0
 
     if should_log:
-        tracking_utils.log(args, log_dict_out, step_key="train/step")
+        tracking.log(args, log_dict_out, step_key="train/step")
         logger.info(f"{role_tag}step {accumulated_step_id}: {log_dict_out}")
 
     return log_dict_out

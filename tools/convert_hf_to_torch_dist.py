@@ -14,12 +14,11 @@ from mbridge import AutoBridge
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
-from miles.utils.logging_utils import configure_logger
+from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.memory_utils import print_memory
-from miles_plugins.models.hf_attention import _load_hf_config
 
 
-def add_convertion_args(parser):
+def add_conversion_args(parser):
     """Add conversion arguments to the parser"""
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
     parser.add_argument(
@@ -36,8 +35,11 @@ def add_convertion_args(parser):
 
 
 def get_args():
-    args = parse_args(add_convertion_args)
+    args = parse_args(add_conversion_args)
     args = set_default_megatron_args(args)
+
+    args.debug_deterministic_collective = False
+    args.enable_witness = False
 
     # set to pass megatron validate_args
     args.save_interval = 1
@@ -45,9 +47,9 @@ def get_args():
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     args.global_batch_size = int(os.environ.get("WORLD_SIZE", "1"))
 
-    assert world_size <= args.num_layers, (
-        f"World size {world_size} must be <= number of layers {args.num_layers}. "
-        "Use fewer GPUs (--nproc-per-node) for this conversion."
+    assert args.pipeline_model_parallel_size <= args.num_layers, (
+        f"Pipeline model parallel size {args.pipeline_model_parallel_size} must be less than or equal to "
+        f"number of layers {args.num_layers}."
     )
 
     def ceildiv(a, b):
@@ -81,13 +83,15 @@ def get_args():
 def main():
     if torch.version.hip:
         import megatron.core.dist_checkpointing.strategies.filesystem_async as filesystem_async_module
+        import megatron.core.dist_checkpointing.strategies.torch as torch_strategy_module
 
         from miles.utils.rocm_checkpoint_writer import ROCmFileSystemWriterAsync
 
         filesystem_async_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
+        torch_strategy_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
         print("[ROCm] Applied FileSystemWriterAsync patch for HIP compatibility")
 
-    configure_logger()
+    configure_logger_raw()
 
     # Initialize distributed environment
     world_size = int(os.getenv("WORLD_SIZE") or os.getenv("SLURM_NTASKS") or 1)
@@ -112,11 +116,7 @@ def main():
 
     # Load model
     hf_model_path = args.hf_checkpoint
-    try:
-        bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
-    except (ValueError, KeyError):
-        # Fallback for configs with model_type unknown to installed transformers.
-        bridge = AutoBridge.from_config(_load_hf_config(hf_model_path))
+    bridge = AutoBridge.from_pretrained(hf_model_path, trust_remote_code=True)
 
     bridge.load_weights(model, hf_model_path, memory_efficient=True)
     print(f"Model loaded: {hf_model_path}")

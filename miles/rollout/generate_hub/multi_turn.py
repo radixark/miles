@@ -9,6 +9,7 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
+    compute_routing_headers,
     update_sample_from_response,
 )
 from miles.rollout.generate_utils.tool_call_utils import (
@@ -56,7 +57,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         if args.generate_multi_samples:
             sample = deepcopy(input.sample)
 
-        output = await post(url, payload)
+        output = await post(url, payload, headers=compute_routing_headers(args, sample))
         await update_sample_from_response(args, sample, payload=payload, output=output, update_loss_mask=True)
 
         if args.generate_multi_samples:

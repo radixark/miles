@@ -4,14 +4,8 @@ Validates that setup_model_and_optimizer, save, and save_hf_model correctly
 route to LoRA-specific code paths depending on configuration — without GPU.
 """
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
-
 from argparse import Namespace
 from unittest.mock import MagicMock, patch
-
 
 # ---------------------------------------------------------------------------
 # _ensure_model_list
@@ -62,7 +56,6 @@ class TestShouldDisableForwardPreHook:
 # ---------------------------------------------------------------------------
 # setup_model_and_optimizer — LoRA branch routing
 # ---------------------------------------------------------------------------
-
 
 _MODEL_MODULE = "miles.backends.megatron_utils.model"
 

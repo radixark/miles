@@ -245,8 +245,13 @@ def slice_with_cp(
     pad_value: tuple[int, float, Callable],
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
+    parallel_state: object | None = None,
 ) -> torch.Tensor:
-    parallel_state = get_parallel_state()
+    """
+    Slice tokens into the local zigzag CP layout.
+    """
+    if parallel_state is None:
+        parallel_state = get_parallel_state()
     cp_rank = parallel_state.cp.rank
     cp_size = parallel_state.cp.size
 
@@ -309,7 +314,7 @@ def natural_to_zigzag_slice(tensor: torch.Tensor, dim: int, cp_size: int, cp_ran
     return torch.cat(slices, dim=dim)
 
 
-def _allgather_cp_redistribute(
+def allgather_cp_redistribute(
     res: dict[str, list[torch.Tensor]],
     *,
     logits: torch.Tensor,

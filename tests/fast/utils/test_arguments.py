@@ -1,15 +1,17 @@
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
 import argparse
+import logging
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from miles.utils.arguments import _maybe_apply_dumper_overrides, get_miles_extra_args_provider
+from miles.utils.arguments import (
+    _maybe_apply_dumper_overrides,
+    _resolve_ft_components,
+    get_miles_extra_args_provider,
+    miles_validate_args,
+)
 from miles.utils.misc import function_registry
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
@@ -145,3 +147,144 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
 
     assert args.recompute_logprobs_via_prefill is True
+
+
+def test_custom_megatron_post_save_hook_path_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--custom-megatron-post-save-hook-path", "pkg.module.hook"] + REQUIRED_ARGS)
+
+    assert args.custom_megatron_post_save_hook_path == "pkg.module.hook"
+
+
+def test_custom_megatron_post_save_hook_path_requires_save():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--custom-megatron-post-save-hook-path", "pkg.module.hook", "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+
+    with pytest.raises(
+        AssertionError,
+        match="'--save' is required when custom_megatron_post_save_hook_path is set.",
+    ):
+        miles_validate_args(args)
+
+
+class TestMultiLoRAValidation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(
+            [
+                "--multi-lora-n-adapters",
+                "2",
+                "--lora-rank",
+                "8",
+                "--target-modules",
+                "linear_qkv",
+                "--num-rollout",
+                "1",
+            ]
+            + extra
+            + REQUIRED_ARGS
+        )
+
+    def test_rejects_multiple_tokenizer_workers(self):
+        # Each sglang tokenizer worker holds its own LoRA registry, so per-step
+        # upserts fail non-deterministically; fail at launch, not first push.
+        args = self._parse(["--sglang-tokenizer-worker-num", "2"])
+
+        with pytest.raises(AssertionError, match="sglang-tokenizer-worker-num 1"):
+            miles_validate_args(args)
+
+    def test_accepts_default_single_tokenizer_worker(self):
+        args = self._parse([])
+
+        miles_validate_args(args)
+
+        assert args.multi_lora is True
+
+    def test_defaults_rollout_fn_and_data_source_to_multi_lora(self):
+        args = self._parse([])
+
+        miles_validate_args(args)
+
+        assert args.rollout_function_path == "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
+        assert args.data_source_path == "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
+        assert args.rollout_global_dataset is True
+
+    def test_keeps_user_supplied_rollout_fn_and_data_source(self):
+        args = self._parse(
+            ["--rollout-function-path", "my.custom.rollout_fn", "--data-source-path", "my.custom.DataSource"]
+        )
+
+        miles_validate_args(args)
+
+        assert args.rollout_function_path == "my.custom.rollout_fn"
+        assert args.data_source_path == "my.custom.DataSource"
+
+    def test_empty_wait_is_a_registered_argument(self):
+        assert self._parse([]).multi_lora_max_empty_wait_s == 30.0
+        assert self._parse(["--multi-lora-max-empty-wait-s", "5"]).multi_lora_max_empty_wait_s == 5.0
+
+    def test_rejects_non_adam_optimizer(self):
+        # Per-slot optimizer isolation (state init, retirement cleanup, step
+        # clocks) only implements Adam semantics. Muon has its own dedicated
+        # rejection; anything else non-Adam trips the generic guard.
+        args = self._parse([])
+        args.optimizer = "muon"
+        with pytest.raises(AssertionError, match="does not support Muon"):
+            miles_validate_args(args)
+
+        args = self._parse([])
+        args.optimizer = "sgd"
+        with pytest.raises(AssertionError, match="requires --optimizer adam"):
+            miles_validate_args(args)
+
+    def test_rejects_experimental_ft_trainer(self, monkeypatch):
+        # The v2 train group has no reconcile_adapters.
+        monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+        args = self._parse([])
+
+        with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
+            miles_validate_args(args)
+
+
+class TestResolveFtComponents:
+    def test_disabled_with_no_components_returns_empty_without_warning(self, caplog) -> None:
+        """use_fault_tolerance off and no ft_components yields an empty list and no warning."""
+        args = SimpleNamespace(use_fault_tolerance=False, ft_components=None)
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            result = _resolve_ft_components(args)
+
+        assert result == []
+        assert not any("--ft-components is ignored" in record.message for record in caplog.records)
+
+    def test_disabled_with_components_returns_empty_and_warns(self, caplog) -> None:
+        """use_fault_tolerance off but ft_components set returns empty list and logs an ignore warning."""
+        args = SimpleNamespace(use_fault_tolerance=False, ft_components=["train"])
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            result = _resolve_ft_components(args)
+
+        assert result == []
+        assert any(
+            "--ft-components is ignored without --use-fault-tolerance" in record.message for record in caplog.records
+        )
+
+    def test_enabled_with_no_components_returns_default(self) -> None:
+        """use_fault_tolerance on with no ft_components falls back to the default ['rollout']."""
+        args = SimpleNamespace(use_fault_tolerance=True, ft_components=None)
+        result = _resolve_ft_components(args)
+
+        assert result == ["rollout"]
+
+    def test_enabled_with_components_returns_distinct_copy(self) -> None:
+        """use_fault_tolerance on with ft_components returns an equal but distinct list copy."""
+        components = ["train", "rollout"]
+        args = SimpleNamespace(use_fault_tolerance=True, ft_components=components)
+        result = _resolve_ft_components(args)
+
+        assert result == ["train", "rollout"]
+        assert result is not components

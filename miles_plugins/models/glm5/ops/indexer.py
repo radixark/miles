@@ -1,5 +1,8 @@
 import torch
 
+from miles.utils.replay_base import indexer_replay_manager
+from miles_plugins.models.dsa_topk import get_dsa_topk_fn
+
 from .tilelang_indexer_bwd import indexer_bwd_interface
 from .tilelang_indexer_fwd import indexer_fwd_interface
 
@@ -21,25 +24,15 @@ class IndexerFunction(torch.autograd.Function):
         weights: torch.Tensor,
         cu_seqlen_ks: torch.Tensor,
         cu_seqlen_ke: torch.Tensor,
-        topk: int,
-        topk_indices: torch.Tensor | None = None,
+        logits: torch.Tensor,
+        topk_indices: torch.Tensor,
     ):
-        _, head_num, _ = index_q.shape
-        logits = indexer_fwd_interface(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True)
-        if topk_indices is None:
-            index_score, topk_indices = torch.topk(logits, topk, dim=-1)
-            topk_indices = topk_indices.to(torch.int32)
-            topk_indices = topk_indices.masked_fill(index_score == -torch.inf, -1)
-
         index_score = pytorch_extract_topk_scores(logits, topk_indices)
-
         ctx.save_for_backward(index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, topk_indices)
-        ctx.topk = topk
-        ctx.head_num = head_num
-        return index_score, topk_indices
+        return index_score
 
     @staticmethod
-    def backward(ctx, grad_scores, grad_indices):
+    def backward(ctx, grad_scores):
         index_q, index_k, weights, cu_seqlen_ks, cu_seqlen_ke, topk_indices = ctx.saved_tensors
         grad_q, grad_w, grad_k = indexer_bwd_interface(index_q, weights, index_k, topk_indices, grad_scores)
         return grad_q, grad_k, grad_w, None, None, None, None
@@ -52,9 +45,21 @@ def lighting_indexer(
     cu_seqlen_ks: torch.Tensor,
     cu_seqlen_ke: torch.Tensor,
     topk: int,
+    topk_backend: str = "torch",
     topk_indices: torch.Tensor | None = None,
 ):
-    return IndexerFunction.apply(index_q, index_k, weights.squeeze(-1), cu_seqlen_ks, cu_seqlen_ke, topk, topk_indices)
+    if topk_indices is not None:
+        assert not indexer_replay_manager.enabled
+
+    weights_2d = weights.squeeze(-1)
+    logits = indexer_fwd_interface(index_q, index_k, weights_2d, cu_seqlen_ks, cu_seqlen_ke, clean_logits=True)
+
+    if topk_indices is None:
+        topk_fn = indexer_replay_manager.get_topk_fn(get_dsa_topk_fn(topk_backend), return_probs=False)
+        topk_indices = topk_fn(logits, topk)
+
+    index_score = IndexerFunction.apply(index_q, index_k, weights_2d, cu_seqlen_ks, cu_seqlen_ke, logits, topk_indices)
+    return index_score, topk_indices
 
 
 def generate_varlen_mask_params(cu_seqlens):

@@ -3,6 +3,7 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
+from packaging.version import parse
 from torch.distributed.distributed_c10d import (
     Backend,
     PrefixStore,
@@ -13,6 +14,7 @@ from torch.distributed.distributed_c10d import (
     rendezvous,
 )
 
+from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 
 GLOO_GROUP = None
 
@@ -74,7 +76,7 @@ def init_process_group(
     # NOTE: The pg_options parameter was renamed into backend_options in PyTorch 2.6.0
     # https://github.com/pytorch/pytorch/commit/a0c7029a75628cd5fa8df83c0de0ea98ee7fd844
     # We need to determine the appropriate parameter name based on PyTorch version
-    pg_options_param_name = "backend_options" if str(torch.__version__) >= "2.6" else "pg_options"
+    pg_options_param_name = "backend_options" if parse(torch.__version__) >= parse("2.6") else "pg_options"
     pg, _ = _new_process_group_helper(
         world_size,
         rank,
@@ -128,7 +130,7 @@ def distributed_masked_whiten(
     )
 
     # Aggregate via all_reduce within the DP group
-    dist.all_reduce(stats_tensor, group=process_group)
+    GeneralPGUtil.create(process_group).all_reduce(stats_tensor, process_group, op=dist.ReduceOp.SUM)
 
     # Calculate global stats from aggregated results
     global_sum, global_sum_sq, global_mask_sum = stats_tensor

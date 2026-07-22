@@ -10,8 +10,14 @@ logger = logging.getLogger(__name__)
 
 
 def set_default_megatron_args(args):
-    # always use zero optimizer
-    args.use_distributed_optimizer = True
+    # Muon currently owns its sharding path, and Megatron's distributed optimizer
+    # only supports Adam-family optimizers.
+    args.use_distributed_optimizer = (args.optimizer is None or args.optimizer.lower() == "adam") and not getattr(
+        args, "debug_disable_optimizer", False
+    )
+    # Multi-LoRA: per-slot LayerWise optimizers require plain DDP all-reduce.
+    if getattr(args, "multi_lora_n_adapters", 0) > 0:
+        args.use_distributed_optimizer = False
     # TODO: maybe change this after megatron has good fp8 support
     args.bf16 = not args.fp16
     # placeholders
@@ -32,5 +38,8 @@ def set_default_megatron_args(args):
         logger.info("--tokenizer-model not set, use --hf-checkpoint as tokenizer model.")
         args.tokenizer_model = args.hf_checkpoint
         args.tokenizer_type = "HuggingFaceTokenizer"
+
+    if not hasattr(args, "miles_dsa_topk_backend"):
+        args.miles_dsa_topk_backend = "torch"
 
     return args

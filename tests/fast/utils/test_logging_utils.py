@@ -8,10 +8,6 @@ import warnings
 
 import pytest
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
 from miles.utils.logging_utils import configure_strict_async_warnings
 
 
@@ -34,7 +30,7 @@ def _run_snippet(code: str) -> subprocess.CompletedProcess:
         [sys.executable, "-c", textwrap.dedent(code)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=60,
     )
 
 

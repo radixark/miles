@@ -25,6 +25,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
     multi_eval: bool = False
     true_on_policy: bool = False
+    sglang_rl_on_policy_target: str | None = None
+    true_on_policy_contract: str | None = None
     dynamic_sampling: bool = False
     enable_eval: bool = True
     train_backend: Literal["fsdp", "megatron"] = "megatron"

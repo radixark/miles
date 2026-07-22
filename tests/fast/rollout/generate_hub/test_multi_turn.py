@@ -6,7 +6,7 @@ from itertools import groupby
 import numpy as np
 import pybase64
 import pytest
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 
 
@@ -16,9 +16,7 @@ from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResu
 from miles.utils.test_utils.mock_tools import SAMPLE_TOOLS, ThreeTurnStub, TwoTurnStub
 from miles.utils.types import Sample
 
-# generate_hub tests use generation_env → parse_args(fsdp) → fsdp_utils
-# import chain that requires flash_attn. Run in GPU fast suite.
-register_cuda_ci(est_time=60, suite="stage-b-fast-1-gpu", num_gpus=1)
+register_cpu_ci(est_time=130, suite="stage-b-cpu", labels=[])
 
 _ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
 
@@ -145,12 +143,14 @@ def expected_request(
     sampling_params: dict | None = None,
     *,
     return_routed_experts: bool = False,
+    return_indexer_topk: bool = False,
 ) -> dict:
     return {
         "input_ids": input_ids,
         "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
         "return_logprob": True,
         "return_routed_experts": return_routed_experts,
+        "return_indexer_topk": return_indexer_topk,
     }
 
 
@@ -714,7 +714,8 @@ class TestAgentMetadata:
             mock_tools.AGENTIC_RETURN_METADATA = None
 
         samples = listify(result.sample)
-        expected_session_server_id = f"127.0.0.1:{generation_env.args.session_server_port}"
+        (session_server_port,) = generation_env.args.session_server_ports
+        expected_session_server_id = f"127.0.0.1:{session_server_port}"
         for s in samples:
             assert s.metadata["session_server_id"] == expected_session_server_id
             assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
@@ -753,7 +754,7 @@ class TestAgentNoRecords:
             )
             with with_session_server(mock_server.url, args, port=session_port):
                 args.session_server_ip = "127.0.0.1"
-                args.session_server_port = session_port
+                args.session_server_ports = [session_port]
                 env = GenerateEnv(args=args, mock_server=mock_server)
                 result = _run_generate(agentic_variant, env, make_sample(prompt=TwoTurnStub.PROMPT))
 

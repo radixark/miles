@@ -14,11 +14,10 @@ import pytest
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
-from miles.rollout.session.session_server import SessionServer
+from miles.rollout.session.server import SessionServer
 from miles.utils.async_utils import run
 from miles.utils.http_utils import find_available_port, init_http_client
 from miles.utils.misc import SingletonMeta
-from miles.utils.test_utils import mock_tools
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 from miles.utils.types import Sample
@@ -230,16 +229,20 @@ def with_session_server(
     *,
     port: int,
 ):
-    args = SimpleNamespace(
+    # Mirror start_session_server (router_manager.py): the id is minted into the
+    # caller's per-port map, where OpenAIEndpointTracer.create reads it from.
+    instance_id = uuid.uuid4().hex
+    args.session_server_instance_ids = {port: instance_id}
+    server_args = SimpleNamespace(
         miles_router_timeout=30,
         hf_checkpoint=args.hf_checkpoint,
         chat_template_path=args.chat_template_path,
         tito_model=args.tito_model,
         tito_allowed_append_roles=args.tito_allowed_append_roles,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
-        session_server_instance_id=uuid.uuid4().hex,
+        session_server_instance_id=instance_id,
     )
-    session_server = SessionServer(args, backend_url=backend_url)
+    session_server = SessionServer(server_args, backend_url=backend_url)
 
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
     server.start()
@@ -252,6 +255,9 @@ def with_session_server(
 
 @pytest.fixture
 def generation_env(request, variant):
+    # tests/conftest.py imports this fixture for every test; load the tokenizer-backed helper only when it is used.
+    from miles.utils.test_utils import mock_tools
+
     SingletonMeta.clear_all_instances()
     params = getattr(request, "param", {})
     args_kwargs = params.get("args_kwargs", {})
@@ -293,9 +299,10 @@ def generation_env(request, variant):
 
         with cm:
             if is_agentic:
-                # Point session server address to the SessionServer we just started
+                # Point session server address to the SessionServer we just started,
+                # mirroring the driver-side contract set by start_session_server.
                 args.session_server_ip = "127.0.0.1"
-                args.session_server_port = server_port
+                args.session_server_ports = [server_port]
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
                 mock_tools.AGENTIC_RETURN_METADATA = args_kwargs.get("agentic_return_metadata")
             yield GenerateEnv(args=args, mock_server=mock_server)

@@ -7,6 +7,7 @@ from miles.utils.chat_template_utils.template import (
     extract_tool_dicts,
     load_hf_chat_template,
     message_matches,
+    normalize_tool_arguments,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import (
     TEMPLATE_DIR,
@@ -31,6 +32,7 @@ __all__ = [
     "assert_messages_append_only_with_allowed_role",
     "message_matches",
     "extract_tool_dicts",
+    "normalize_tool_arguments",
     "Mismatch",
     "TokenSeqComparator",
     "MismatchType",

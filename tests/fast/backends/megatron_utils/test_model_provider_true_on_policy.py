@@ -1,11 +1,5 @@
-import sys
 from argparse import Namespace
-from pathlib import Path
 from types import SimpleNamespace
-
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=10, suite="stage-a-fast")
 
 
 def _make_args():
@@ -34,10 +28,6 @@ def _make_args():
 
 
 def test_local_model_provider_passes_true_on_policy_spec_flags(monkeypatch):
-    megatron_path = Path.cwd().parent / "Megatron-LM"
-    if megatron_path.exists():
-        sys.path.insert(0, str(megatron_path))
-
     from miles.backends.megatron_utils import model_provider as provider_module
 
     captured = {}

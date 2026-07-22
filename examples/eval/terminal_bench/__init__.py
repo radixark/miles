@@ -1,1 +1,0 @@
-"""Terminal Bench evaluation helpers."""

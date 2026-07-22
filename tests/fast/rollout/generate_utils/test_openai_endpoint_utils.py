@@ -4,11 +4,6 @@ Validates the contract between session records, sample construction,
 and merge_samples — the core of the TITO (Token In Token Out) pipeline.
 """
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
-
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -19,7 +14,7 @@ from miles.rollout.generate_utils.openai_endpoint_utils import (
     compute_samples_from_openai_records,
 )
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.rollout.session.session_types import SessionRecord
+from miles.rollout.session.types import SessionRecord
 from miles.utils.types import Sample
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -97,30 +92,81 @@ def _make_record(
 
 
 @pytest.mark.asyncio
-async def test_create_fetches_session_server_instance_id(monkeypatch):
+async def test_create_reads_session_server_instance_id_from_args(monkeypatch):
     calls: list[tuple[str, str]] = []
 
     async def fake_post(url: str, payload: dict, action: str = "post"):
         calls.append((action, url))
-        if action == "get":
-            assert url == "http://127.0.0.1:12345/health"
-            return {"status": "ok", "session_server_instance_id": "server-instance-123"}
         assert action == "post"
         assert url == "http://127.0.0.1:12345/sessions"
         return {"session_id": "session-123"}
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
-    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_port=12345)
+    args = SimpleNamespace(
+        session_server_ip="127.0.0.1",
+        session_server_ports=[12345],
+        session_server_instance_ids={12345: "server-instance-123"},
+    )
     tracer = await OpenAIEndpointTracer.create(args)
 
     assert tracer.base_url == "http://127.0.0.1:12345/sessions/session-123"
+    assert tracer.session_server_id == "127.0.0.1:12345"
     assert tracer.session_server_instance_id == "server-instance-123"
-    assert args.session_server_instance_id == "server-instance-123"
-    assert calls == [
-        ("get", "http://127.0.0.1:12345/health"),
-        ("post", "http://127.0.0.1:12345/sessions"),
-    ]
+    # No /health probe: the id is read locally, create() issues only the POST.
+    assert calls == [("post", "http://127.0.0.1:12345/sessions")]
+
+
+@pytest.mark.asyncio
+async def test_create_without_instance_id_on_args(monkeypatch):
+    async def fake_post(url: str, payload: dict, action: str = "post"):
+        return {"session_id": "session-123"}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_ports=[12345])
+    tracer = await OpenAIEndpointTracer.create(args)
+
+    assert tracer.session_server_instance_id is None
+
+
+@pytest.mark.asyncio
+async def test_create_distributes_sessions_across_port_range(monkeypatch):
+    """With a multi-port range, sessions land on more than one instance, and every
+    request of a session (create, chat, GET, DELETE) hits the port chosen
+    at create time — the URL is the router."""
+    calls: list[tuple[str, str]] = []
+
+    async def fake_post(url: str, payload: dict, action: str = "post"):
+        calls.append((action, url))
+        if action == "post" and url.endswith("/sessions"):
+            return {"session_id": f"session-{len(calls)}"}
+        return {"session_id": url.rsplit("/", 1)[1], "records": [], "metadata": {}}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    ports = [12345, 12346, 12347, 12348]
+    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_ports=ports)
+
+    chosen_ports = set()
+    for _ in range(32):
+        calls.clear()
+        tracer = await OpenAIEndpointTracer.create(args)
+        port = int(tracer.session_server_id.rsplit(":", 1)[1])
+        assert port in ports
+        chosen_ports.add(port)
+
+        await tracer.collect_records()
+        prefix = f"http://127.0.0.1:{port}"
+        assert [url for _, url in calls] == [
+            f"{prefix}/sessions",
+            tracer.base_url,
+            tracer.base_url,
+        ]
+        assert tracer.base_url.startswith(f"{prefix}/sessions/")
+
+    # 32 uniform picks over 4 ports miss a given port with p = (3/4)^32 ≈ 1e-4.
+    assert len(chosen_ports) > 1
 
 
 # ── test: compute_samples_from_openai_records ────────────────────────
@@ -266,9 +312,103 @@ class TestMultiTurnPrefixChain:
         with pytest.raises(AssertionError, match="b.tokens must start with a.tokens"):
             merge_samples(samples, tok)
 
+    def test_two_turn_merge_propagates_teacher_log_probs(self):
+        """OPD teacher_log_probs merge like rollout_log_probs: per-turn values
+        concatenated with zeros over the injected observation span."""
+        tok = _mock_tokenizer()
+
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11], output_log_probs=[-0.1, -0.2]),
+            _make_record(
+                prompt_token_ids=[1, 2, 3, 10, 11, 20, 21],
+                output_token_ids=[30, 31],
+                output_log_probs=[-0.3, -0.4],
+            ),
+        ]
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
+
+        # OPD attaches per-response-token teacher log-probs to each turn's sample.
+        samples[0].teacher_log_probs = [-1.0, -1.1]
+        samples[1].teacher_log_probs = [-1.2, -1.3]
+
+        merged = merge_samples(samples, tok)
+
+        # resp1 (2) + obs (2 zeros) + resp2 (2)
+        assert merged.teacher_log_probs == [-1.0, -1.1, 0.0, 0.0, -1.2, -1.3]
+        assert len(merged.teacher_log_probs) == merged.response_length
+        merged.validate()  # the new teacher_log_probs length assertion must hold
+
+    def test_two_turn_merge_propagates_opd_student_top_logprobs_metadata(self):
+        """Top-k OPD student top-logprobs are per-token metadata, not equal metadata."""
+        tok = _mock_tokenizer()
+
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11], output_log_probs=[-0.1, -0.2]),
+            _make_record(
+                prompt_token_ids=[1, 2, 3, 10, 11, 20, 21],
+                output_token_ids=[30, 31],
+                output_log_probs=[-0.3, -0.4],
+            ),
+        ]
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
+
+        turn_0_top_logprobs = [[[-0.1, 101]], [[-0.2, 102]]]
+        turn_1_top_logprobs = [[[-0.3, 103]], [[-0.4, 104]]]
+        samples[0].metadata = {
+            "opd_student_top_logprobs": turn_0_top_logprobs,
+            "shared_metadata": "same",
+        }
+        samples[1].metadata = {
+            "opd_student_top_logprobs": turn_1_top_logprobs,
+            "shared_metadata": "same",
+        }
+
+        merged = merge_samples(samples, tok)
+
+        assert merged.metadata["shared_metadata"] == "same"
+        assert merged.metadata["opd_student_top_logprobs"] == [
+            *turn_0_top_logprobs,
+            [],
+            [],
+            *turn_1_top_logprobs,
+        ]
+        assert len(merged.metadata["opd_student_top_logprobs"]) == merged.response_length
+
+    def test_two_turn_merge_teacher_log_probs_none_stays_none(self):
+        """Non-OPD runs leave teacher_log_probs unset; merge must keep it None."""
+        tok = _mock_tokenizer()
+
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11]),
+            _make_record(prompt_token_ids=[1, 2, 3, 10, 11, 20, 21], output_token_ids=[30, 31]),
+        ]
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
+
+        merged = merge_samples(samples, tok)
+
+        assert merged.teacher_log_probs is None
+
+    def test_merge_raises_on_teacher_log_probs_length_mismatch(self):
+        """validate() guards teacher_log_probs length (surfaced via merge_samples)."""
+        tok = _mock_tokenizer()
+
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11]),
+            _make_record(prompt_token_ids=[1, 2, 3, 10, 11, 20, 21], output_token_ids=[30, 31]),
+        ]
+        input_sample = _make_input_sample()
+        samples = compute_samples_from_openai_records(_ARGS, input_sample, records, tok)
+
+        samples[0].teacher_log_probs = [-1.0]  # length 1 != response_length 2
+
+        with pytest.raises(AssertionError, match="teacher_log_probs length"):
+            merge_samples(samples, tok)
+
 
 # ── test: TITO trailing token trimming ────────────────────────────────
-
 
 STOP = 99  # stands for <|observation|> stop token
 

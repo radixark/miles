@@ -2,23 +2,24 @@ import logging
 import os
 import random
 from argparse import Namespace
+from typing import TYPE_CHECKING
 
 import ray
 import torch
 import torch.distributed as dist
-from ring_flash_attn import update_ring_flash_attn_params
 from tqdm import tqdm
-from transformers import AutoConfig
 
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
-from miles.utils.tracking_utils import init_tracking
+from miles.utils.tracking_utils.tracking import init_tracking
 
 from ....utils.profile_utils import TrainProfiler
 from ...training_utils.ci_utils import check_grad_norm
@@ -35,6 +36,10 @@ from . import checkpoint
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
+
+if TYPE_CHECKING:
+    from miles.ray.rollout.rollout_manager import EnginesAndLock
+    from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +58,21 @@ class FSDPTrainRayActor(TrainRayActor):
     """
 
     @with_defer(lambda: Timer().start("train_wait"))
-    def init(self, args: Namespace, role: str, with_ref: bool = False) -> int:  # type: ignore[override]
-        super().init(args, role, with_ref)
+    def init(
+        self,
+        args: Namespace,
+        role: str,
+        *,
+        with_ref: bool = False,
+        with_opd_teacher: bool = False,
+        recv_ckpt_src_rank: int | None = None,
+        indep_dp_info: IndepDPInfo,
+    ) -> int | None:  # type: ignore[override]
+        super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+
+        # Unsupported
+        assert recv_ckpt_src_rank is None
+        assert indep_dp_info.quorum_id == 0
 
         if args.dumper_enable:
             from sglang.srt.debug_utils.dumper import dumper
@@ -89,7 +107,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         for i in range(dist.get_world_size()):
             if i == dist.get_rank():
-                self.hf_config = AutoConfig.from_pretrained(self.args.hf_checkpoint, trust_remote_code=True)
+                self.hf_config = load_hf_config(self.args.hf_checkpoint)
                 self.tokenizer = load_tokenizer(
                     self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
                 )
@@ -391,7 +409,13 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.model.cuda()
                     dist.barrier(group=get_gloo_group())
 
-    def train(self, rollout_id: int, rollout_data_ref: Box) -> None:
+    def train(
+        self,
+        rollout_id: int,
+        rollout_data_ref: Box,
+        witness_info: "WitnessInfo | None" = None,
+        attempt: int = 0,
+    ) -> None:
         """Run one training update over a rollout batch.
 
         Parameters:
@@ -402,11 +426,16 @@ class FSDPTrainRayActor(TrainRayActor):
                 `rollout_log_probs`, etc.). It will be fetched and partitioned
                 by `process_rollout_data` based on data-parallel rank/size.
         """
+        assert witness_info is None
+        assert attempt == 0
+
+        self._heartbeat.bump()
+
         if self.args.offload_train:
             self.wake_up()
 
         with inverse_timer("train_wait"), timer("train"):
-            rollout_data = get_rollout_data(self.args, rollout_data_ref)
+            rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
             if self.args.debug_rollout_only:
                 return
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
@@ -417,6 +446,8 @@ class FSDPTrainRayActor(TrainRayActor):
             is_primary_rank=dist.get_rank() == 0,
             compute_total_fwd_flops=None,
         )
+
+        self._heartbeat.bump()
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
@@ -544,7 +575,7 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self) -> None:  # type: ignore[override]
+    def update_weights(self, info: "EnginesAndLock") -> None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines.
 
         Handles both colocated and distributed update modes. In offload mode,
@@ -553,10 +584,14 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        rollout_engines, rollout_engine_lock, num_new_engines, engine_gpu_counts, engine_gpu_offsets = ray.get(
-            self.rollout_manager.get_updatable_engines_and_lock.remote()
-        )
-        if num_new_engines > 0:
+        rollout_engines = info.rollout_engines
+        rollout_engine_lock = info.rollout_engine_lock
+        has_new_engines = info.has_new_engines
+        engine_gpu_counts = info.engine_gpu_counts
+        engine_gpu_offsets = info.engine_gpu_offsets
+        del info
+
+        if has_new_engines:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 rollout_engine_lock,
@@ -565,7 +600,7 @@ class FSDPTrainRayActor(TrainRayActor):
             )
             dist.barrier(group=get_gloo_group())
             if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_num_new_engines.remote())
+                ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
         self.weight_updater.update_weights()
 
@@ -627,6 +662,9 @@ class FSDPTrainRayActor(TrainRayActor):
         position_ids = batch["position_ids"]
 
         if get_parallel_state().cp.size > 1:
+            # TODO: Pin ring_flash_attn for torch 2.11+ compatibility; keep this local import to unblock non-FSDP+CP paths.
+            from ring_flash_attn import update_ring_flash_attn_params
+
             if "cu_seqlens" in batch:
                 cu_seqlens = batch["cu_seqlens"]
                 if not cu_seqlens.is_cuda:

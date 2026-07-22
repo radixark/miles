@@ -13,10 +13,12 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, convert_target_modules_to_hf, is_lora_enabled
+from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, lora_base_cpu_backup_enabled
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +37,7 @@ def get_base_gpu_id(args, rank):
 
 
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
     if not cvd:
         return physical_gpu_id  # no remapping
     # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
@@ -253,7 +255,8 @@ class SGLangEngine(RayActor):
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
-            e.add_note(f"{response.text=}")
+            if hasattr(e, "add_note"):
+                e.add_note(f"{response.text=}")
             raise
         return response.json()
 
@@ -334,26 +337,65 @@ class SGLangEngine(RayActor):
     def load_lora_adapter_from_tensors(
         self,
         lora_name: str,
-        serialized_tensors: str,
         config_dict: dict,
+        serialized_named_tensors: list,
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        upsert: bool = False,
+        expected_checksums: dict | None = None,
     ):
-        """Load a LoRA adapter from serialized tensor data."""
+        """Load a LoRA adapter; ``serialized_named_tensors[tp_rank]`` is bytes for that TP rank.
+        With ``upsert``, the already-loaded ``lora_name`` is overwritten in place (no unload/register)."""
         payload = {
             "lora_name": lora_name,
-            "serialized_tensors": serialized_tensors,
             "config_dict": config_dict,
+            "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
+        if upsert:
+            payload["upsert"] = True
         if load_format is not None:
             payload["load_format"] = load_format
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
+        if expected_checksums is not None:
+            payload["expected_checksums"] = expected_checksums
 
         return self._make_request(
             "load_lora_adapter_from_tensors",
+            payload,
+        )
+
+    def load_lora_adapter_from_distributed(
+        self,
+        lora_name: str,
+        config_dict: dict,
+        names: list,
+        dtypes: list,
+        shapes: list,
+        group_name: str,
+        pinned: bool = False,
+        added_tokens_config: dict | None = None,
+        upsert: bool = False,
+    ):
+        """Load a LoRA adapter: only metadata is sent; weights arrive via NCCL broadcast over ``group_name``.
+        With ``upsert``, the already-loaded ``lora_name`` is overwritten in place (no unload/register)."""
+        payload = {
+            "lora_name": lora_name,
+            "config_dict": config_dict,
+            "names": names,
+            "dtypes": [str(dtype).replace("torch.", "") for dtype in dtypes],
+            "shapes": shapes,
+            "group_name": group_name,
+            "pinned": pinned,
+            "upsert": upsert,
+        }
+        if added_tokens_config is not None:
+            payload["added_tokens_config"] = added_tokens_config
+
+        return self._make_request(
+            "load_lora_adapter_from_distributed",
             payload,
         )
 
@@ -445,18 +487,43 @@ class SGLangEngine(RayActor):
             {"tags": tags},
         )
 
-    def check_weights(self, action: str):
-        return self._make_request("weights_checker", {"action": action})
+    def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
+        payload = {"action": action, "allow_quant_error": allow_quant_error, "selector": selector}
+        if skip_list is not None:
+            # sglang's CheckWeightsReqInput names this field `skip_tensor_list`.
+            payload["skip_tensor_list"] = skip_list
+        return self._make_request("weights_checker", payload)
 
-    def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
+    def pull_weights(self, target_version: int):
+        """Have the engine sync every host it spans to target_version: each host pulls the
+        published weights (a full checkpoint copied as-is, or deltas verified per-tensor and
+        applied onto the local checkpoint) into its local checkpoint dir. The engine reloads
+        it afterwards via update_weights_from_disk."""
+        return self._make_request(
+            "pull_weights",
+            {
+                "local_checkpoint_dir": self.args.update_weight_local_checkpoint_dir,
+                "source_dir": self.args.update_weight_disk_dir,
+                "target_version": target_version,
+            },
+        )
+
+    def update_weights_from_disk(
+        self, model_path: str, load_format: str | None = None, weight_version: str | None = None
+    ):
         """Reload weights from *model_path* without restarting the engine.
 
-        Used for non-updatable (frozen) models that overlap with megatron:
-        after offload, weights are restored from disk instead of CPU cache.
+        Used for non-updatable (frozen) models that overlap with megatron (after offload,
+        weights are restored from disk instead of CPU cache), and by disk-delta weight sync
+        to reload the patched host-local checkpoint.
         """
         payload = {"model_path": model_path}
         if load_format is not None:
             payload["load_format"] = load_format
+        if weight_version is not None:
+            payload["weight_version"] = weight_version
         return self._make_request("update_weights_from_disk", payload)
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
@@ -514,26 +581,13 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
-    def post_process_weights(
-        self,
-        restore_weights_before_load: bool = False,
-        post_process_quantization: bool = False,
-        post_load_weights: bool = False,
-    ):
-        """
-        Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
-        Note: The model should be on GPUs rather than CPU for this functionality to work properly.
-        If you encounter issues, ensure your model is loaded on GPU devices rather than CPU.
-        """
+    def begin_weight_update(self):
+        """Open a weight-update session on the engine (restores packed weights for loading)."""
+        return self._make_request("begin_weight_update", {})
 
-        return self._make_request(
-            "post_process_weights",
-            {
-                "restore_weights_before_load": restore_weights_before_load,
-                "post_process_quantization": post_process_quantization,
-                "post_load_weights": post_load_weights,
-            },
-        )
+    def end_weight_update(self):
+        """Close the weight-update session (post-load + quant post-process on the full model)."""
+        return self._make_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
         return self._make_request(
@@ -630,6 +684,8 @@ def _compute_server_args(
         "skip_server_warmup": True,
         # always enable draft weights cpu backup so that we run training without mtp weights.
         "enable_draft_weights_cpu_backup": True,
+        # always serve /metrics so Prometheus scrapers can read engine stats.
+        "enable_metrics": True,
     }
 
     if sglang_overrides:
@@ -637,7 +693,7 @@ def _compute_server_args(
 
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
-        kwargs["load_balance_method"] = "round_robin"
+        kwargs.setdefault("load_balance_method", "round_robin")
         assert (
             disaggregation_bootstrap_port is not None
         ), "disaggregation_bootstrap_port must be set for prefill worker"
@@ -648,13 +704,20 @@ def _compute_server_args(
 
     if args.use_rollout_routing_replay:
         kwargs["enable_return_routed_experts"] = True
+    if args.use_rollout_indexer_replay:
+        kwargs["enable_return_indexer_topk"] = True
     if args.fp16:
         kwargs["dtype"] = "float16"
     if engine_info_bootstrap_port is not None:
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
-    if is_lora_enabled(args):
+    if is_multi_lora_enabled(args):
+        kwargs["enable_lora"] = True
+        kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
+        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+    elif is_lora_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
@@ -664,6 +727,18 @@ def _compute_server_args(
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
+
+        if lora_base_cpu_backup_enabled(args):
+            # Host-RAM mirror of the base weights so they survive
+            # torch_memory_saver.pause() across rollout/training swaps without
+            # needing to be re-shipped from the trainer. The trainer mirrors
+            # this by skipping the base weight sync entirely (see
+            # UpdateWeightFromTensor.update_weights).
+            kwargs["enable_weights_cpu_backup"] = True
+            logger.info(
+                "LoRA + colocate: enabling SGLang enable_weights_cpu_backup=True; "
+                "the trainer will skip per-step base weight sync."
+            )
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):
@@ -690,5 +765,6 @@ _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS = [
     "dist_init_addr",
     "skip_server_warmup",
     "enable_draft_weights_cpu_backup",
+    "enable_metrics",
     "mem_fraction_static",
 ]

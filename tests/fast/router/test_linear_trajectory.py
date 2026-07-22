@@ -4,11 +4,6 @@ Tests the session registry CRUD and the trajectory pretokenized state management
 logic in isolation (no HTTP server, no real tokenizer).
 """
 
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
-
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -16,11 +11,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.rollout.session.session_types import SessionRecord
+from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
-
 
 _MOCK_FIRST_TURN_TOKENS = [0]
 

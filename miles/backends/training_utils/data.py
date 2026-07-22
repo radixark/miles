@@ -6,13 +6,16 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import get_minimum_num_micro_batch_size
+from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
 from ...utils.data import process_rollout_data
 from ...utils.ray_utils import Box
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
+from .mm_data import expand_multimodal_rollout_data_in_place
 from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
@@ -27,15 +30,20 @@ def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     return torch.float32
 
 
-def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
+def get_rollout_data(
+    args: Namespace,
+    rollout_data_ref: Box,
+    witness_info: WitnessInfo | None = None,
+) -> RolloutBatch:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
     rollout_data = process_rollout_data(
         args,
         rollout_data_ref,
-        parallel_state.intra_dp.rank,
-        parallel_state.intra_dp.size,
+        parallel_state.effective_dp.rank,
+        parallel_state.effective_dp.size,
+        witness_info=witness_info,
     )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
@@ -44,6 +52,13 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
     ]
+    if args.enable_witness:
+        seq_witness_ids = rollout_data.pop("seq_witness_ids")
+        rollout_data["witness_ids"] = [
+            torch.full((len(t),), fill_value=sid, dtype=torch.long, device=torch.cuda.current_device())
+            for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
+        ]
+
     if "multimodal_train_inputs" in rollout_data:
         # Move multimodal training tensors to GPU in advance
         rollout_data["multimodal_train_inputs"] = [
@@ -61,6 +76,10 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
 
         # pad to reduce memory fragmentation and maybe make the computation faster
         pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
+        max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
+        if max_compress_ratio:
+            local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
+            pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
         max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
 
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
@@ -90,6 +109,8 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
         ]
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
+    if "rollout_indexer_topk" in rollout_data:
+        rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
     return rollout_data
 
 
@@ -107,7 +128,7 @@ def get_batch(
     Steps:
     - Fetch raw fields via iterator.
     - Save original token tensors under "unconcat_tokens".
-    - Slice tokens into two chunks for Context Parallelism (CP), concatenate, and pad to a configurable multiple.
+    - Slice tokens into two batches for Context Parallelism (CP), concatenate, and pad to a configurable multiple.
     - Build cu_seqlens and `PackedSeqParams` with T-H-D layout (T: sequence length, H: attention heads, D: head dimension).
 
     Args:
@@ -125,10 +146,17 @@ def get_batch(
     parallel_state = get_parallel_state()
 
     assert "tokens" in keys
+    # get_batch consumes adapter_slots itself (per-adapter token counts below);
+    # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
+    if "adapter_slots" not in keys:
+        keys = [*keys, "adapter_slots"]
     batch = data_iterator.get_next(keys)
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
+
+    # No-op safety net if batches reach get_batch without rollout-level preprocessing.
+    expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)
 
     tokens = batch["tokens"]
     # use 0 as the pad token id should be fine?
@@ -143,22 +171,34 @@ def get_batch(
     if qkv_format == "bshd":
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
-        tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+
+        if allgather_cp:
+            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
+            assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} not divisible by cp_size {cp_size}"
+            local_len = max_seqlen // cp_size
+            start = parallel_state.cp.rank * local_len
+            tokens = [
+                F.pad(t, (0, max_seqlen - t.size(0)), value=pad_token_id)[start : start + local_len] for t in tokens
+            ]
+        else:
+            tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        sample_token_lengths = [t.size(0) for t in tokens]
         tokens = torch.stack(tokens)
 
     elif qkv_format == "thd":
         cp_rank = parallel_state.cp.rank
 
         if allgather_cp:
+            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
             # DSA mode: concatenate all sequences first, then slice once with CP.
-            # We also pad the *global* concatenated stream to make per-rank chunks equal.
+            # We also pad the *global* concatenated stream to make per-rank batches equal.
             cu_seqlens_list: list[int] = [0]
             for t in tokens:
                 cu_seqlens_list.append(cu_seqlens_list[-1] + t.size(0))
 
             tokens = torch.cat(tokens, dim=0)
 
-            # Pad global stream so (1) divisible by cp_size (equal chunks),
+            # Pad global stream so (1) divisible by cp_size (equal batches),
             # (2) divisible by pad_size (reduce fragmentation).
             global_pad_size = cp_size * pad_size
             pad = (global_pad_size - tokens.size(0) % global_pad_size) % global_pad_size
@@ -170,6 +210,7 @@ def get_batch(
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
+            sample_token_lengths = [t.size(0) for t in tokens]
 
             cu_seqlens = [0]
             for t in tokens:
@@ -195,27 +236,49 @@ def get_batch(
     else:
         raise ValueError(f"Unsupported qkv_format: {qkv_format}")
 
+    # Multi-LoRA: compute per-adapter token counts from post-CP per-sample lengths.
+    # NOTE: allgather CP is currently not supported
+    adapter_slots = batch.get("adapter_slots")
+    if adapter_slots is not None:
+        assert all(
+            adapter_slots[i] <= adapter_slots[i + 1] for i in range(len(adapter_slots) - 1)
+        ), f"adapter_slots not sorted in micro-batch: {adapter_slots}"
+        n_adapters = data_iterator.rollout_data["n_adapters"]
+        total_tokens = tokens.numel()
+        counts = torch.zeros(n_adapters, dtype=torch.int32, device=torch.cuda.current_device())
+        for slot, length in zip(adapter_slots, sample_token_lengths, strict=True):
+            counts[slot] += length
+        counts[adapter_slots[-1]] += total_tokens - counts.sum().item()
+        batch["adapter_token_counts"] = counts
+
     batch["tokens"] = tokens
 
-    if get_position_ids:
+    def _compute_transform_like_token_ids(ids_list: list):
         assert not allgather_cp, "allgather CP is not supported for FSDP"
+        if qkv_format == "bshd":
+            ids = [slice_with_cp(p, 0, qkv_format, max_seqlen) for p in ids_list]
+            ids = torch.stack(ids)
+        elif qkv_format == "thd":
+            ids = [slice_with_cp(p, 0, qkv_format) for p in ids_list]
+            ids = torch.cat(ids)
+            if pad != 0:
+                ids = F.pad(ids, (0, pad), value=0)
+            ids = ids.unsqueeze(0)
+        else:
+            raise NotImplementedError
+        return ids
+
+    if get_position_ids:
         position_ids_list = []
         for t in batch["unconcat_tokens"]:
             seq_len = t.size(0)
             pos_ids = torch.arange(seq_len, device=t.device, dtype=torch.long)
             position_ids_list.append(pos_ids)
 
-        if qkv_format == "bshd":
-            position_ids = [slice_with_cp(p, 0, qkv_format, max_seqlen) for p in position_ids_list]
-            position_ids = torch.stack(position_ids)
-        elif qkv_format == "thd":
-            position_ids = [slice_with_cp(p, 0, qkv_format) for p in position_ids_list]
-            position_ids = torch.cat(position_ids)
-            if pad != 0:
-                position_ids = F.pad(position_ids, (0, pad), value=0)
-            position_ids = position_ids.unsqueeze(0)
+        batch["position_ids"] = _compute_transform_like_token_ids(position_ids_list)
 
-        batch["position_ids"] = position_ids
+    if (witness_ids := batch.get("witness_ids")) is not None:
+        batch["witness_ids"] = _compute_transform_like_token_ids(witness_ids)
 
     # loss masks
     loss_masks = []
@@ -235,6 +298,12 @@ def get_batch(
         loss_masks.append(loss_mask)
 
     if qkv_format == "bshd":
+        if allgather_cp:
+            local_len = max_seqlen // cp_size
+            start = parallel_state.cp.rank * local_len
+            loss_masks = [
+                F.pad(lm, (0, max_seqlen - lm.size(0)), value=0)[start : start + local_len] for lm in loss_masks
+            ]
         loss_masks = torch.stack(loss_masks)
     elif qkv_format == "thd" and allgather_cp:
         # DSA: concatenate first (same as tokens), pad globally (same pad as above), then slice once.
@@ -301,7 +370,7 @@ class DataIterator:
 
         - If `micro_batch_indices` is provided, selects rows according to the current
           index list for each requested key.
-        - Otherwise, slices a contiguous window of size `micro_batch_size` starting
+        - Otherwise, slices a contiguous adapter batch of size `micro_batch_size` starting
           at the current offset.
 
         Returns a dict mapping each key to a list subset (or None if absent).
@@ -352,9 +421,11 @@ def get_data_iterator(
     - `data_iterators`: list of `DataIterator`, one per VPP stage (size 1 if VPP disabled)
     - `num_microbatches`: list[int], one per local step in the rollout (length = steps)
     """
+    expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
+
     parallel_state = get_parallel_state()
-    dp_size = parallel_state.intra_dp.size
-    dp_group = parallel_state.intra_dp.group
+    dp_size = parallel_state.effective_dp.size
+    dp_group = parallel_state.effective_dp.group
     vpp_size = parallel_state.vpp_size
     microbatch_group_size_per_vp_stage = parallel_state.microbatch_group_size_per_vp_stage
 
@@ -379,6 +450,12 @@ def get_data_iterator(
         return data_iterator
 
     if not args.use_dynamic_batch_size:
+        if "adapter_slots" in rollout_data and num_local_gbs % args.micro_batch_size != 0:
+            raise ValueError(
+                "A multi-LoRA local batch must be divisible by --micro-batch-size; "
+                f"got local_batch_size={num_local_gbs}, micro_batch_size={args.micro_batch_size}. "
+                "Use --use-dynamic-batch-size or choose compatible adapter batch shapes."
+            )
         num_microbatches = [num_local_gbs // args.micro_batch_size for _ in range(num_steps_per_rollout)]
         data_iterator = _generate_data_iterator(rollout_data, args.micro_batch_size)
     else:
@@ -394,7 +471,7 @@ def get_data_iterator(
             )
 
         num_microbatches = torch.tensor(num_microbatches, dtype=torch.int, device=torch.cuda.current_device())
-        dist.all_reduce(num_microbatches, op=dist.ReduceOp.MAX, group=dp_group)
+        GeneralPGUtil.create(dp_group).all_reduce(num_microbatches, dp_group, op=dist.ReduceOp.MAX)
 
         if vpp_size > 1:
             # vpp requies the number of microbatches to be divisible by vpp_size
@@ -416,6 +493,10 @@ def get_data_iterator(
             for j in range(num_mbs):
                 for k in range(len(partitions[j])):
                     partitions[j][k] += start
+                # Multi-LoRA: microbatches must be contiguous-by-slot for the
+                # grouped GEMM's per-adapter token-count math.
+                if "adapter_slots" in rollout_data:
+                    partitions[j].sort(key=lambda index: rollout_data["adapter_slots"][index])
             micro_batch_indices.extend(partitions)
 
         assert len(set(sum(micro_batch_indices, []))) == num_local_samples

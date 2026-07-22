@@ -6,13 +6,13 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=600,
-    suite="stage-c-fsdp-8-gpu",
-    num_gpus=8,
+    suite="stage-c-4-gpu-h200",
+    labels=["fsdp"],
     disabled="FSDP backend has known issues, not actively maintained",
 )
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-NUM_GPUS = 8
+NUM_GPUS = 4
 
 MODEL_NAME = "Qwen3-VL-4B-Instruct"
 DATASET_NAME = "chenhegu/geo3k_imgurl"

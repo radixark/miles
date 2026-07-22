@@ -1,12 +1,9 @@
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=60, suite="stage-a-fast")
-
 from unittest.mock import MagicMock
 
+import numpy
 import pytest
 
-from miles.rollout.generate_utils.sample_utils import _merge_sample_pair
+from miles.rollout.generate_utils.sample_utils import _merge_sample_pair, merge_samples
 from miles.utils.types import Sample
 
 
@@ -77,6 +74,26 @@ class TestMergeSamples:
         assert "response1" in merged.response
         assert "response2" in merged.response
         assert "<decoded:[20, 21]>" in merged.response
+
+    def test_merge_preserves_indexer_topk_from_final_sample(self, mock_tokenizer):
+        a = make_sample(
+            tokens=[1, 2, 10],
+            response_length=1,
+            loss_mask=[1],
+            rollout_log_probs=[-0.1],
+        )
+        b = make_sample(
+            tokens=[1, 2, 10, 20, 30],
+            response_length=1,
+            loss_mask=[1],
+            rollout_log_probs=[-0.2],
+        )
+        a.rollout_indexer_topk = numpy.zeros((2, 2, 3), dtype=numpy.int32)
+        b.rollout_indexer_topk = numpy.ones((4, 2, 3), dtype=numpy.int32)
+
+        merged = _merge_sample_pair(a, b, mock_tokenizer)
+
+        numpy.testing.assert_array_equal(merged.rollout_indexer_topk, b.rollout_indexer_topk)
 
     def test_loss_mask_none_defaults_to_all_ones(self, mock_tokenizer):
         a = make_sample(
@@ -158,3 +175,33 @@ class TestMergeSamples:
 
         with pytest.raises(AssertionError, match="loss_mask length"):
             _merge_sample_pair(a, b, mock_tokenizer)
+
+    def test_merge_sample_pair_routed_experts_gap_raises_clear_error(self, mock_tokenizer):
+        # An aborted turn omits routed_experts; merging a routed turn into it must
+        # raise a clear assertion rather than an AttributeError on None.shape.
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.rollout_routed_experts = numpy.zeros((2, 2, 3), dtype=numpy.int32)
+        b.rollout_routed_experts = None
+
+        with pytest.raises(AssertionError, match="a has rollout_routed_experts but b does not"):
+            _merge_sample_pair(a, b, mock_tokenizer)
+
+    def test_merge_samples_stops_at_routing_gap(self, mock_tokenizer):
+        # merge_samples should keep the last fully-captured turn when a later turn
+        # lacks the replay payload, instead of crashing while extending into it.
+        t0 = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        t1 = make_sample(
+            tokens=[1, 2, 10, 20, 30],
+            response_length=1,
+            loss_mask=[1],
+            status=Sample.Status.TRUNCATED,
+        )
+        t0.rollout_routed_experts = numpy.zeros((2, 2, 3), dtype=numpy.int32)
+        t1.rollout_routed_experts = None
+
+        merged = merge_samples([t0, t1], mock_tokenizer)
+
+        assert merged is t0
+        assert merged.tokens == t0.tokens
+        assert merged.rollout_routed_experts is not None

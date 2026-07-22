@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
-from miles.utils.misc import load_function
+from miles.utils.logging_utils import configure_logger_raw
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,8 @@ def run_router(args):
     """
     Run the Miles router with the specified configuration.
     """
+    # Spawned as a fresh interpreter, so it inherits no logging config.
+    configure_logger_raw("miles_router")
     # Visible to `pkill -9 miles`; without this the daemon inherits "python".
     setproctitle.setproctitle("miles-router")
 
@@ -44,7 +46,6 @@ class MilesRouter:
         self.worker_failure_counts: dict[str, int] = {}
         # Quarantined workers excluded from routing pool
         self.dead_workers: set[str] = set()
-        self.max_weight_version = None
 
         max_connections = getattr(args, "miles_router_max_connections", None)
         if max_connections is None:
@@ -60,12 +61,6 @@ class MilesRouter:
         )
 
         self._setup_routes()
-
-        for middleware_path in args.miles_router_middleware_paths or []:
-            if self.verbose:
-                print(f"[miles-router] Loading middleware from: {middleware_path}")
-            middleware = load_function(middleware_path)
-            self.app.add_middleware(middleware, router=self)
 
     def _setup_routes(self):
         """Setup all the HTTP routes except catch-all proxy"""

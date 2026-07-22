@@ -81,9 +81,9 @@ class TestRunImplExecCommand:
     def test_cmd_contains_dumper_env(self) -> None:
         run_impl(_make_run_args(output_dir=Path("/out/test"), dumper_filter="logits"))
         cmd = self.mock_exec.call_args[0][0]
-        assert "DUMPER_ENABLE=1" in cmd
-        assert "DUMPER_DIR=/out/test" in cmd
-        assert "DUMPER_FILTER=logits" in cmd
+        assert "export DUMPER_ENABLE='1'" in cmd
+        assert "export DUMPER_DIR='/out/test'" in cmd
+        assert "export DUMPER_FILTER='logits'" in cmd
 
     def test_cmd_contains_script_args(self) -> None:
         run_impl(_make_run_args(role="critic", top_k=5))
@@ -104,4 +104,4 @@ class TestRunImplExecCommand:
     def test_backward_enables_grad_env(self) -> None:
         run_impl(_make_run_args(run_backward=True))
         cmd = self.mock_exec.call_args[0][0]
-        assert "DUMPER_ENABLE_MODEL_GRAD=1" in cmd
+        assert "export DUMPER_ENABLE_MODEL_GRAD='1'" in cmd

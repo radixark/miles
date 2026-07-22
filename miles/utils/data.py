@@ -8,11 +8,16 @@ import re
 import numpy as np
 import ray
 
+from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
+from .audit_utils.witness.allocator import WitnessInfo
+
 try:
     import pyarrow.parquet as pq
 except ImportError:
     pq = None
 
+from miles.utils import chat_template_utils
+from miles.utils.processing_utils import call_processor
 from miles.utils.types import MultimodalTypes, Sample
 
 from .timer import Timer
@@ -94,7 +99,7 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
             from miles.utils.processing_utils import process_vision_info
 
             multimodal_inputs = process_vision_info(sample.prompt, processor)
-            processor_output = processor(text=sample.prompt, **multimodal_inputs)
+            processor_output = call_processor(processor, sample.prompt, multimodal_inputs)
             input_ids = processor_output["input_ids"][0]
             if len(input_ids) <= max_length:
                 filtered_samples.append(sample)
@@ -200,8 +205,9 @@ class Dataset:
                 metadata["tools"] = tools
 
             if apply_chat_template:
-                output_prompt = tokenizer.apply_chat_template(
+                output_prompt = chat_template_utils.apply_chat_template(
                     prompt,
+                    tokenizer=tokenizer,
                     tools=tools,
                     tokenize=False,
                     add_generation_prompt=True,
@@ -269,9 +275,23 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     return len(batches)
 
 
-def process_rollout_data(args, rollout_data_ref, dp_rank, dp_size):
-    assert len(rollout_data_ref) == dp_size
-    rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
+def process_rollout_data(
+    args,
+    rollout_data_ref,
+    dp_rank,
+    dp_size,
+    witness_info: WitnessInfo | None,
+):
+    if args.delay_split_train_data_by_dp:
+        raw = ray.get(rollout_data_ref.inner)
+        if (x := witness_info) is not None:
+            raw = {**raw, "seq_witness_ids": x.witness_ids}
+        raw = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)
+        rollout_data = raw[dp_rank]
+    else:
+        assert len(rollout_data_ref) == dp_size
+        assert witness_info is None
+        rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
 
     partition = rollout_data.pop("partition")
     total_lengths = rollout_data["total_lengths"]

@@ -6,6 +6,22 @@ import numpy
 import torch
 
 
+@dataclass(frozen=True)
+class AdapterRef:
+    """Which LoRA adapter a sample is bound to (training slot routing, inference lora_path); ``None`` = no adapter."""
+
+    name: str
+    slot: int
+
+
+@dataclass(frozen=True)
+class RewardSpec:
+    """Per-sample spec of how the response is scored; intentionally decoupled from adapter routing."""
+
+    rm_type: str | None = None
+    custom_rm_path: str | None = None
+
+
 @dataclass
 class Sample:
     """The sample generated"""
@@ -28,7 +44,12 @@ class Sample:
     rollout_routed_experts: numpy.ndarray | None = (
         None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
     )
+    rollout_indexer_topk: numpy.ndarray | None = (
+        None  # Indexer topk from rollout engine. shape: (num_tokens-1, num_indexer_layers, index_topk), dtype=int32
+    )
     remove_sample: bool = False
+    teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
+    opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
 
     class Status(Enum):
         PENDING = "pending"
@@ -47,9 +68,13 @@ class Sample:
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 
-    # Session ID for consistent hashing routing (used when router policy is consistent_hashing)
-    # TODO: Its definition needs to merge with the session server's session id in the new rollout function.
-    session_id: str | None = None
+    # MultiLoRA: which adapter this sample trains/infers with
+    adapter: AdapterRef | None = None
+    # Per-sample reward dispatch override (e.g., per-adapter RM in multi-LoRA)
+    reward_spec: RewardSpec | None = None
+
+    # Per-sample routing key for the router's consistent_hashing policy (sent as X-SMG-Routing-Key)
+    routing_key: str | None = None
 
     non_generation_time: float = 0.0  # time spent in non-generation steps
 
@@ -166,10 +191,22 @@ class Sample:
             assert (
                 len(self.rollout_log_probs) == self.response_length
             ), f"rollout_log_probs length ({len(self.rollout_log_probs)}) != response_length ({self.response_length})"
+        if self.teacher_log_probs is not None:
+            assert (
+                len(self.teacher_log_probs) == self.response_length
+            ), f"teacher_log_probs length ({len(self.teacher_log_probs)}) != response_length ({self.response_length})"
+        if self.opd_reverse_kl is not None:
+            assert (
+                len(self.opd_reverse_kl) == self.response_length
+            ), f"opd_reverse_kl length ({len(self.opd_reverse_kl)}) != response_length ({self.response_length})"
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
             assert actual == expect, f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
+        if self.rollout_indexer_topk is not None:
+            actual = len(self.rollout_indexer_topk)
+            expect = len(self.tokens) - 1
+            assert actual == expect, f"rollout_indexer_topk length ({actual}) != len(tokens) - 1 ({expect})"
 
     def strip_last_output_tokens(self, n: int, tokenizer) -> None:
         """Remove the last *n* output tokens and all associated per-token info."""
@@ -182,17 +219,25 @@ class Sample:
         self.response_length -= n
         if self.rollout_log_probs is not None:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
+        if self.teacher_log_probs is not None:
+            self.teacher_log_probs = self.teacher_log_probs[:-n]
+        if self.opd_reverse_kl is not None:
+            self.opd_reverse_kl = self.opd_reverse_kl[:-n]
+        if self.metadata and "opd_student_top_logprobs" in self.metadata:
+            self.metadata["opd_student_top_logprobs"] = self.metadata["opd_student_top_logprobs"][:-n]
         if self.loss_mask is not None:
             self.loss_mask = self.loss_mask[:-n]
         self.response = tokenizer.decode(self.tokens[-self.response_length :]) if self.response_length > 0 else ""
         if self.rollout_routed_experts is not None:
             self.rollout_routed_experts = self.rollout_routed_experts[:-n]
+        if self.rollout_indexer_topk is not None:
+            self.rollout_indexer_topk = self.rollout_indexer_topk[:-n]
 
     def reset_for_retry(self) -> None:
         """Reset generated outputs so the original prompt can be re-sampled.
 
         Keeps identity / prompt fields (group_index, index, prompt, label,
-        multimodal_inputs, metadata, generate_function_path, session_id) and
+        multimodal_inputs, metadata, generate_function_path, routing_key) and
         restores everything else to dataclass defaults.
         """
         self.tokens = []
@@ -204,6 +249,7 @@ class Sample:
         self.weight_versions = []
         self.rollout_log_probs = None
         self.rollout_routed_experts = None
+        self.rollout_indexer_topk = None
         self.status = Sample.Status.ABORTED
         self.non_generation_time = 0.0
         self.spec_info = Sample.SpecInfo()

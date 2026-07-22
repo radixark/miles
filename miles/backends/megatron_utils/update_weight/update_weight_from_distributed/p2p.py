@@ -61,6 +61,10 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self._connection_stale: bool = False
+        assert not is_lora, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
+        self.is_lora = False
 
         self.transfer_plan = RemoteTransferPlan(args, model)
         self.global_rank = dist.get_rank(group=get_gloo_group())
@@ -117,9 +121,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self._model_registered = True
 
     def _finalize_and_resume_engines(self):
-        # The `update_weight_version` here is necessary because the engine was not aware that the write has happened
-        # After p2p transfering, some models (like the ones with Deepseek-arch) of rollout side should invoke
-        # `post_load_weights` to re-generate the params which are not registered as `model.named_parameters()`
         if dist.get_rank() == 0:
             ray.get(
                 [
@@ -127,7 +128,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                     for engine in self.rollout_engines
                 ]
             )
-        super()._finalize_and_resume_engines(post_load_weights=True)
+        super()._finalize_and_resume_engines()
 
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
@@ -174,6 +175,13 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
 
         converted_named_tensors.clear()
 
+    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
+    def is_rollout_engines_fresh(self) -> bool:
+        return self.rollout_engines is not None and not self._connection_stale
+
+    def mark_engine_connection_stale(self) -> None:
+        self._connection_stale = True
+
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[ActorHandle],
@@ -192,6 +200,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
           weight format conversion before transfer.
         """
         self.rollout_engines = rollout_engines
+        self._connection_stale = False
         self.rollout_engine_lock = rollout_engine_lock
 
         if self._is_source:
@@ -260,7 +269,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             model_loader_extra_config=None,
             rl_quant_profile=server_args.rl_quant_profile,
         )
-        server_args_module._global_server_args = server_args
+        server_args_module.set_global_server_args_for_scheduler(server_args)
         initialize_moe_config(server_args)
         initialize_fp8_gemm_config(server_args)
         initialize_fp4_gemm_config(server_args)
@@ -269,7 +278,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         # because get_model() calls post_load_weights() internally (loader.py:1310)
         # which may invoke CUDA-only kernels (e.g., per_tensor_quant_fp8 for FP8 models).
         # This is safe because the rollout engine runs post_load_weights on its own GPU
-        # after RDMA transfer via post_process_weights(post_load_weights=True).
+        # after RDMA transfer, at end_weight_update.
         from sglang.srt.model_loader import loader as model_loader_module
 
         original_post_load_weights = model_loader_module.post_load_weights
