@@ -19,7 +19,6 @@ from sglang.srt.utils import MultiprocessingSerializer
 
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
-
 try:
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
 except ImportError:
@@ -125,12 +124,8 @@ class UpdateWeight(abc.ABC):
 
 
 class UpdateWeightFromTensor(UpdateWeight):
-    """Push model weights to rollout engines using tensors.
-
-    Streams parameters in size-bounded buckets; optionally groups tensors by dtype
-    and flattens per dtype, gathers per-rank blobs to the source, and issues one
-    RPC per dtype per bucket (or one per bucket if not flattened).
-    """
+    """Push model weights to rollout engines as tensors, streamed in size-bounded buckets (optionally
+    grouped + flattened per dtype, one RPC per dtype per bucket)."""
 
     def connect_rollout_engines(
         self,
@@ -139,11 +134,7 @@ class UpdateWeightFromTensor(UpdateWeight):
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
-        """Attach rollout engines and create per-engine IPC (Gloo) groups.
-
-        Sets the gather source rank, engine handle, and `tp_rank` within the
-        engine's local group.
-        """
+        """Attach rollout engines and create per-engine IPC (Gloo) groups (sets gather src rank, engine, tp_rank)."""
         self.rollout_engines = rollout_engines
 
         # Here we assume the gpu id of rollout engines and train actors are the same.
@@ -159,14 +150,11 @@ class UpdateWeightFromTensor(UpdateWeight):
                 self._ipc_gather_src = start_rank
                 self._ipc_gather_group = new_group
                 self._ipc_engine = engine
-                # Calculate TP rank within this SGLang engine group
                 self.tp_rank = dist.get_rank() - start_rank
 
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
         monkey_patch_torch_reductions()
-        # Use flattened bucket approach similar to Megatron
         logger.info("Using flattened tensor bucket")
-        # Group tensors by dtype (same as Megatron)
         named_tensors_by_dtypes = {}
         for name, tensor in named_tensors:
             dtype = tensor.dtype
@@ -174,7 +162,6 @@ class UpdateWeightFromTensor(UpdateWeight):
                 named_tensors_by_dtypes[dtype] = []
             named_tensors_by_dtypes[dtype].append((name, tensor))
 
-        # Create flattened bucket for each dtype group
         serialized_tensors = []
         for _dtype, named_tensors in named_tensors_by_dtypes.items():
             flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=named_tensors)
@@ -200,9 +187,7 @@ class UpdateWeightFromTensor(UpdateWeight):
         )
 
         if dist.get_rank() == self._ipc_gather_src:
-            # Handle flattened bucket format (same as Megatron approach)
-            # Each rank may have multiple dtype buckets
-            # TODO: here we assume all ranks have the same number of dtypes
+            # TODO: assumes all ranks have the same number of dtype buckets
             num_dtypes = len(gathered_serialized_batches[0])
             assert num_dtypes > 0
             for i in range(num_dtypes):
@@ -244,9 +229,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
         self.rollout_engines = rollout_engines
         self.rollout_engine_lock = rollout_engine_lock
 
-        # For TP:
-        #   1. AllGather parameters to rank 0
-        #   2. Broadcast parameters from rank 0 to all sglang engines
+        # TP weight sync: AllGather params to rank 0, then broadcast from rank 0 to all sglang engines
         self._is_src_rank = dist.get_rank() == 0
         if self._is_src_rank:
             self._group_name = "miles"
@@ -254,7 +237,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
             with socket.socket() as sock:
                 sock.bind(("", 0))
                 master_port = sock.getsockname()[1]
-            ## TODO: why +1?
+            # +1 for the trainer's source rank (rank 0); rollout engine ranks start at 1
             world_size = self.args.rollout_num_gpus + 1
 
             refs = [
@@ -278,11 +261,8 @@ class UpdateWeightFromDistributed(UpdateWeight):
             ray.get(refs)
 
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
-        """Send names/dtypes/shapes metadata to engines, then broadcast tensors.
-
-        Ensures tensors are contiguous; when `world_size == 1`, converts DTensors
-        to full tensors prior to `dist.broadcast`.
-        """
+        """Send names/dtypes/shapes metadata to engines, then broadcast the tensors (contiguous;
+        DTensors materialized when world_size == 1)."""
         if not self._is_src_rank or not named_tensors:
             return
 
