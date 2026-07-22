@@ -97,6 +97,7 @@ def policy_loss_function(
     total_lengths = batch["total_lengths"]
     max_seq_lens = batch.get("max_seq_lens", None)
     calculate_entropy = args.entropy_coef != 0 or args.observe_training_entropy
+    padded_total_lengths = batch.get("padded_total_lengths", None)
 
     log_probs_and_entropy = get_log_probs_and_entropy(
         logits,
@@ -107,6 +108,7 @@ def policy_loss_function(
         with_entropy=calculate_entropy,
         entropy_requires_grad=args.entropy_coef != 0,
         max_seq_lens=max_seq_lens,
+        padded_total_lengths=padded_total_lengths,
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
@@ -120,15 +122,23 @@ def policy_loss_function(
     full_old_log_probs = None
     if need_full_log_probs:
         full_log_probs = [
-            all_gather_with_cp(log_prob, total_length, response_length)
-            for log_prob, total_length, response_length in zip(
-                log_probs, total_lengths, response_lengths, strict=False
+            all_gather_with_cp(log_prob, total_length, response_length, padded_total_length=padded_total_length)
+            for log_prob, total_length, response_length, padded_total_length in zip(
+                log_probs,
+                total_lengths,
+                response_lengths,
+                padded_total_lengths or [None] * len(total_lengths),
+                strict=False,
             )
         ]
         full_old_log_probs = [
-            all_gather_with_cp(old_log_prob, total_length, response_length)
-            for old_log_prob, total_length, response_length in zip(
-                old_log_probs, total_lengths, response_lengths, strict=False
+            all_gather_with_cp(old_log_prob, total_length, response_length, padded_total_length=padded_total_length)
+            for old_log_prob, total_length, response_length, padded_total_length in zip(
+                old_log_probs,
+                total_lengths,
+                response_lengths,
+                padded_total_lengths or [None] * len(total_lengths),
+                strict=False,
             )
         ]
 
@@ -163,6 +173,7 @@ def policy_loss_function(
         batch["loss_masks"],
         args.qkv_format,
         max_seq_lens,
+        padded_total_lengths,
     )
     local_loss_masks = torch.cat(local_loss_mask_list, dim=0).to(device=ppo_kl.device)
     active_tokens = local_loss_masks.bool()
@@ -241,6 +252,7 @@ def policy_loss_function(
             args.calculate_per_token_loss,
             args.qkv_format,
             max_seq_lens,
+            padded_total_lengths,
         )
 
     # Determine pg_loss reducer: use custom if specified, otherwise default
@@ -265,6 +277,7 @@ def policy_loss_function(
         qkv_format=args.qkv_format,
         max_seq_lens=max_seq_lens,
         calculate_per_token_loss=args.calculate_per_token_loss,
+        padded_total_lengths=padded_total_lengths,
     )
 
     pg_loss = pg_loss_reducer(pg_loss)
@@ -399,6 +412,7 @@ def value_loss_function(
         total_lengths=batch["total_lengths"],
         response_lengths=batch["response_lengths"],
         max_seq_lens=batch.get("max_seq_lens", None),
+        padded_total_lengths=batch.get("padded_total_lengths", None),
     )
     values = torch.cat([value.flatten() for value in values["values"]], dim=0)
 
@@ -458,6 +472,7 @@ def sft_loss_function(
         response_lengths=response_lengths,
         with_entropy=False,
         max_seq_lens=batch.get("max_seq_lens", None),
+        padded_total_lengths=batch.get("padded_total_lengths", None),
     )
 
     log_probs = log_probs_and_entropy["log_probs"]

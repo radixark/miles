@@ -133,6 +133,7 @@ def loss_function(
         args.calculate_per_token_loss,
         args.qkv_format,
         batch.get("max_seq_lens", None),
+        batch.get("padded_total_lengths", None),
     )
 
     func = get_loss_function(args)

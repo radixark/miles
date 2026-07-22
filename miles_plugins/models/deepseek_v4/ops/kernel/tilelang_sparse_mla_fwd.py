@@ -110,7 +110,11 @@ def sparse_mqa_fwd(
                     mask[bi_i] = Indices[b_i, s_i, i_i * BI + bi_i] != -1
 
                 for bi_i, d_i in T.Parallel(BI, D):
-                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, i_i * BI + bi_i], d_i]
+                    # Causal/window padding uses -1.  Keep the masked load in
+                    # bounds; the score mask below makes this value inert.
+                    index = Indices[b_i, s_i, i_i * BI + bi_i]
+                    safe_index = T.max(T.min(index, seq_len_kv - 1), 0)
+                    KV_shared[bi_i, d_i] = KV[b_i, safe_index, d_i]
 
                 for h_i, bi_i in T.Parallel(H_per_block, BI):
                     acc_s[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_s.dtype))

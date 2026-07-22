@@ -67,6 +67,36 @@ def get_q_positions_for_cp(
     return torch.arange(start, start + seqlen_local, device=device)
 
 
+def get_q_positions_for_packed_cp(seqlen_local: int, cp_size: int, cp_group: torch.distributed.ProcessGroup, device):
+    """Return global packed-stream positions owned by this contiguous CP rank."""
+    return get_q_positions_for_cp(
+        seqlen_local,
+        cp_size=cp_size,
+        cp_group=cp_group,
+        device=device,
+    )
+
+
+def is_packed_thd_contiguous_cp(packed_seq_params, cp_size: int) -> bool:
+    """Return whether THD boundaries describe the contiguous CP layout used here."""
+    return (
+        packed_seq_params is not None
+        and getattr(packed_seq_params, "qkv_format", None) == "thd"
+        and (cp_size == 1 or bool(getattr(packed_seq_params, "miles_allgather_cp", False)))
+    )
+
+
+def get_seq_ids_and_offsets_from_cu_seqlens(cu_seqlens: Tensor, positions: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Map packed global positions to sequence ids and in-sequence offsets."""
+    if cu_seqlens.ndim != 1 or cu_seqlens.numel() < 2:
+        raise ValueError(f"cu_seqlens must contain at least one packed sequence, got shape={tuple(cu_seqlens.shape)}")
+    seq_ids = torch.searchsorted(cu_seqlens, positions.to(cu_seqlens.dtype), right=True) - 1
+    seq_starts = cu_seqlens[seq_ids].to(positions.device)
+    seq_ends = cu_seqlens[seq_ids + 1].to(positions.device)
+    offsets = positions - seq_starts
+    return seq_ids, offsets, seq_starts, seq_ends
+
+
 def get_window_topk_idxs_cp(
     q_positions: Tensor,
     *,
@@ -88,6 +118,23 @@ def get_window_topk_idxs_cp(
         assert torch.equal(result.cpu(), ref_result.cpu()), "get_window_topk_idxs_cp mismatch with ref"
 
     return result
+
+
+def get_window_topk_idxs_packed(
+    q_positions: Tensor,
+    cu_seqlens: Tensor,
+    *,
+    window_size: int,
+    bsz: int,
+) -> Tensor:
+    """Get local-window indices for a packed stream without crossing sequence boundaries."""
+    device = q_positions.device
+    _, q_offsets, seq_starts, _ = get_seq_ids_and_offsets_from_cu_seqlens(cu_seqlens, q_positions)
+    width = min(int(window_size), int(cu_seqlens[-1].item()))
+    rel = (q_offsets.unsqueeze(1) - width + 1).clamp(min=0) + torch.arange(width, device=device)
+    k_pos = seq_starts.unsqueeze(1) + rel
+    topk_idxs = torch.where(rel > q_offsets.unsqueeze(1), -1, k_pos)
+    return topk_idxs.unsqueeze(0).expand(bsz, -1, -1)
 
 
 def get_compress_topk_idxs_cp(
@@ -113,6 +160,52 @@ def get_compress_topk_idxs_cp(
         assert torch.equal(result.cpu(), ref_result.cpu()), "get_compress_topk_idxs_cp mismatch with ref"
 
     return result
+
+
+def get_compress_topk_idxs_packed(
+    q_positions: Tensor,
+    cu_seqlens: Tensor,
+    *,
+    ratio: int,
+    bsz: int,
+) -> Tensor:
+    """Get compressed-KV topk indices for a packed stream without crossing boundaries."""
+    device = q_positions.device
+    comp_seq_starts, comp_seq_ends = get_compress_query_ranges_for_packed(q_positions, cu_seqlens, ratio=ratio)
+    comp_lengths = comp_seq_ends - comp_seq_starts
+    max_comp = int(comp_lengths.max().item()) if comp_lengths.numel() else 0
+    if max_comp == 0:
+        return torch.full((bsz, q_positions.numel(), 1), -1, device=device, dtype=torch.long)
+    rel_group = torch.arange(max_comp, device=device).unsqueeze(0)
+    valid = rel_group < comp_lengths.unsqueeze(1)
+    comp_idx = comp_seq_starts.unsqueeze(1) + rel_group
+    comp_offset = int(cu_seqlens[-1].item())
+    comp_idx = torch.where(valid, comp_idx + comp_offset, -1)
+    return comp_idx.unsqueeze(0).expand(bsz, -1, -1)
+
+
+def get_compress_cu_seqlens_for_packed(cu_seqlens: Tensor, *, ratio: int) -> Tensor:
+    """Return compressed packed boundaries. Requires per-sample lengths divisible by ratio."""
+    lengths = cu_seqlens[1:] - cu_seqlens[:-1]
+    if torch.any(lengths % ratio != 0):
+        raise AssertionError(f"Packed DeepSeek-V4 lengths must be divisible by compress ratio {ratio}: {lengths}")
+    comp_lengths = lengths // ratio
+    return torch.cat([cu_seqlens.new_zeros(1), comp_lengths.cumsum(dim=0)])
+
+
+def get_compress_query_ranges_for_packed(
+    q_positions: Tensor,
+    cu_seqlens: Tensor,
+    *,
+    ratio: int,
+) -> tuple[Tensor, Tensor]:
+    """Return the valid compressed-KV range for each packed query token."""
+    comp_cu_seqlens = get_compress_cu_seqlens_for_packed(cu_seqlens, ratio=ratio)
+    seq_ids, q_offsets, _, _ = get_seq_ids_and_offsets_from_cu_seqlens(cu_seqlens, q_positions)
+    starts = comp_cu_seqlens[seq_ids]
+    ends = starts + (q_offsets + 1) // ratio
+    ends = torch.minimum(ends, comp_cu_seqlens[seq_ids + 1])
+    return starts, ends
 
 
 def get_freqs_cis_for_cp(

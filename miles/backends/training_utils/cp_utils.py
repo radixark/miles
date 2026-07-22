@@ -21,6 +21,7 @@ def get_logits_and_tokens_offset_with_cp(
     response_length: int,
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
+    padded_total_length: int | None = None,
 ):
     """
     All offsets start from the begining of the prompt.
@@ -31,8 +32,10 @@ def get_logits_and_tokens_offset_with_cp(
     assert cp_size > 1
 
     prompt_length = total_length - response_length
+    effective_total_length = padded_total_length if padded_total_length is not None else total_length
+
     if qkv_format == "thd":
-        chunk_size = (total_length + 2 * cp_size - 1) // (2 * cp_size)
+        chunk_size = (effective_total_length + 2 * cp_size - 1) // (2 * cp_size)
     else:
         assert max_seq_len is not None, "max_seq_len must be provided for qkv_format=bshd"
         chunk_size = (max_seq_len + 2 * cp_size - 1) // (2 * cp_size)
@@ -67,11 +70,12 @@ def _slice_loss_mask_for_local_cp(
     loss_mask: torch.Tensor,
     qkv_format: str,
     max_seq_len: int | None,
+    padded_total_length: int | None = None,
 ) -> torch.Tensor:
     """Slice a per-sample response loss mask into this CP rank's local zigzag layout."""
     prompt_length = total_length - response_length
     _, _, _, tokens_offset = get_logits_and_tokens_offset_with_cp(
-        total_length, response_length, qkv_format, max_seq_len
+        total_length, response_length, qkv_format, max_seq_len, padded_total_length
     )
     mask_0 = loss_mask[tokens_offset[0][0] - prompt_length : tokens_offset[0][1] - prompt_length]
     mask_1 = loss_mask[tokens_offset[1][0] - prompt_length : tokens_offset[1][1] - prompt_length]
@@ -84,9 +88,12 @@ def slice_loss_masks_for_local_cp(
     response_lengths: list[int],
     qkv_format: str = "thd",
     max_seq_lens: list[int] | None = None,
+    padded_total_lengths: list[int] | None = None,
 ) -> list[torch.Tensor]:
     """Backward-compatible wrapper for local CP response mask slicing."""
-    return get_local_response_loss_masks(total_lengths, response_lengths, loss_masks, qkv_format, max_seq_lens)
+    return get_local_response_loss_masks(
+        total_lengths, response_lengths, loss_masks, qkv_format, max_seq_lens, padded_total_lengths
+    )
 
 
 def get_sum_of_sample_mean(
@@ -96,6 +103,7 @@ def get_sum_of_sample_mean(
     calculate_per_token_loss: bool = False,
     qkv_format: str = "thd",
     max_seq_lens: list[int] | None = None,
+    padded_total_lengths: list[int] | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
     """
     Calculate correct sample mean for CP
@@ -127,8 +135,11 @@ def get_sum_of_sample_mean(
             zip(total_lengths, response_lengths, loss_masks, strict=True)
         ):
             max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+            padded_total_length = padded_total_lengths[i] if padded_total_lengths is not None else None
             chunked_loss_masks.append(
-                _slice_loss_mask_for_local_cp(total_length, response_length, loss_mask, qkv_format, max_seq_len)
+                _slice_loss_mask_for_local_cp(
+                    total_length, response_length, loss_mask, qkv_format, max_seq_len, padded_total_length
+                )
             )
             cp_chunk_lengths.append(chunked_loss_masks[i].size(0))
 
@@ -161,6 +172,7 @@ def get_local_response_loss_masks(
     loss_masks: list[torch.Tensor],
     qkv_format: str = "thd",
     max_seq_lens: list[int] | None = None,
+    padded_total_lengths: list[int] | None = None,
 ) -> list[torch.Tensor]:
     """Return response loss masks aligned with this rank's local log-probs."""
     parallel_state = get_parallel_state()
@@ -172,8 +184,11 @@ def get_local_response_loss_masks(
         zip(total_lengths, response_lengths, loss_masks, strict=True)
     ):
         max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+        padded_total_length = padded_total_lengths[i] if padded_total_lengths is not None else None
         local_masks.append(
-            _slice_loss_mask_for_local_cp(total_length, response_length, loss_mask, qkv_format, max_seq_len)
+            _slice_loss_mask_for_local_cp(
+                total_length, response_length, loss_mask, qkv_format, max_seq_len, padded_total_length
+            )
         )
 
     return local_masks
@@ -185,6 +200,7 @@ def all_gather_with_cp(
     response_length: int,
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
+    padded_total_length: int | None = None,
 ) -> torch.Tensor:
     """
     Gather tensors across all ranks in the context parallel group.
@@ -198,7 +214,7 @@ def all_gather_with_cp(
         return tensor
 
     _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
-        total_length, response_length, qkv_format, max_seq_len
+        total_length, response_length, qkv_format, max_seq_len, padded_total_length
     )
 
     prompt_length = total_length - response_length
@@ -322,6 +338,7 @@ def allgather_cp_redistribute(
     total_lengths: list[int],
     response_lengths: list[int],
     max_seq_lens: list[int] | None = None,
+    padded_total_lengths: list[int] | None = None,
 ) -> None:
     """Redistribute response tensors from allgather-CP layout to zigzag ring-attn layout.
 
@@ -353,7 +370,9 @@ def allgather_cp_redistribute(
         # Reconstruct full response tensors with each rank's contiguous contribution
         full_resps = []
         seq_start = 0
-        for value, total_length, response_length in zip(values, total_lengths, response_lengths, strict=False):
+        for idx, (value, total_length, response_length) in enumerate(
+            zip(values, total_lengths, response_lengths, strict=False)
+        ):
             prompt_length = total_length - response_length
             logit_global_start = seq_start + prompt_length - 1
             logit_global_end = seq_start + total_length - 1
@@ -376,7 +395,7 @@ def allgather_cp_redistribute(
 
             assert full_resp.size(0) == response_length, f"Expected {response_length}, got {full_resp.size(0)}"
             full_resps.append(full_resp)
-            seq_start += total_length
+            seq_start += padded_total_lengths[idx] if padded_total_lengths is not None else total_length
 
         # Single differentiable all-reduce to gather full response from all CP ranks
         all_cat = torch.cat(full_resps, dim=0)
@@ -388,8 +407,11 @@ def allgather_cp_redistribute(
             zip(all_cat.split(response_lengths, dim=0), total_lengths, response_lengths, strict=False)
         ):
             max_seq_len = max_seq_lens[idx] if max_seq_lens is not None else None
+            padded_total_length = padded_total_lengths[idx] if padded_total_lengths is not None else None
             new_values.append(
-                slice_log_prob_with_cp(full_resp, total_length, response_length, args.qkv_format, max_seq_len)
+                slice_log_prob_with_cp(
+                    full_resp, total_length, response_length, args.qkv_format, max_seq_len, padded_total_length
+                )
             )
 
         res[key] = new_values
@@ -401,6 +423,7 @@ def slice_log_prob_with_cp(
     response_length: int,
     qkv_format: str = "thd",
     max_token_len: int | None = None,
+    padded_total_length: int | None = None,
 ) -> list[float] | torch.Tensor:
     assert len(log_prob) == response_length
 
@@ -412,7 +435,7 @@ def slice_log_prob_with_cp(
 
     prompt_length = total_length - response_length
     _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
-        total_length, response_length, qkv_format, max_token_len
+        total_length, response_length, qkv_format, max_token_len, padded_total_length
     )
 
     chunk_1 = log_prob[logits_offset[0][0] - (prompt_length - 1) : logits_offset[0][1] - (prompt_length - 1)]
