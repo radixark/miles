@@ -70,11 +70,13 @@ def _patch_decoder_forward(dl_cls, gdn_cls):
     @functools.wraps(orig)
     def forward(self, *args, **kwargs):
         ctx = packed_seq_context(kwargs.get("position_ids"))
-        if ctx is not None:
-            for module in self.modules():
-                if isinstance(module, gdn_cls):
-                    module._gdn_cu_seqlens = ctx.cu_seqlens
-                    module._gdn_seq_idx = ctx.seq_idx
+        # clear to None on non-packed forwards so stale boundaries can't leak into causal_conv1d
+        cu = ctx.cu_seqlens if ctx is not None else None
+        si = ctx.seq_idx if ctx is not None else None
+        for module in self.modules():
+            if isinstance(module, gdn_cls):
+                module._gdn_cu_seqlens = cu
+                module._gdn_seq_idx = si
         return orig(self, *args, **kwargs)
 
     forward._gdn_packing = True
