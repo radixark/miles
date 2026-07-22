@@ -2551,7 +2551,6 @@ def miles_validate_args(args):
             f"({args.eval_max_in_flight}), otherwise a pending eval's snapshot could be GC'd."
         )
         if args.eval_hf_dir is None:
-            # Reuse mode: every eval-due step must coincide with a save-due step.
             assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
                 "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
                 f"multiple of save_interval (got eval_interval={args.eval_interval}, "

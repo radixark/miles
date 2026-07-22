@@ -254,7 +254,6 @@ def init_http_client(args):
 
     _client_concurrency = args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
     if args.eval_num_gpus > 0:
-        # The eval fleet is served by the same client; size for both.
         _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
     if _http_client is None:
         _http_client = httpx.AsyncClient(

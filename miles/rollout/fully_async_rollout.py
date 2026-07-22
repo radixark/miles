@@ -118,10 +118,8 @@ class FullyAsyncRolloutFn:
         if self.args.eval_num_gpus > 0:
             return RolloutFnEvalOutput(data=await self._eval_fleet.run())
 
-        # No dedicated fleet: eval shares the rollout engines. The producer pauses
-        # new submissions while eval runs (in-flight groups finish and buffer); the
-        # driver awaits eval, so no weight update interleaves and the weight version
-        # stays pinned for both eval and the buffered train samples.
+        # Shared-engine eval: the driver awaits it, so no weight update interleaves
+        # and the version stays pinned while submissions are paused.
         logger.info("Pausing fully-async producer submissions for shared-engine eval")
         self._producer_resumed.clear()
         try:

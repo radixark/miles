@@ -56,7 +56,6 @@ async def train(args):
     eval_dispatcher = EvalDispatcher(args, actor_model, rollout_manager)
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
-        # The base checkpoint is the snapshot for the pre-train eval; no export needed.
         await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
     # async train loop.
@@ -97,8 +96,6 @@ async def train(args):
             await actor_model.update_weights(rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
-            # The final point is never skipped: training is over, so overflow
-            # backpressure no longer costs any training time.
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 
         if (

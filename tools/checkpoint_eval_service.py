@@ -160,7 +160,6 @@ def find_ready_snapshots(watch_dir: Path, min_rollout_id: int, consumed: set[int
         if is_complete_hf_export(child):
             ready.append((rollout_id, child))
         elif looks_like_hf_checkpoint(child):
-            # Pre-marker checkpoint: accept once quiescent.
             newest_mtime = max(p.stat().st_mtime for p in child.iterdir())
             if time.time() - newest_mtime > QUIESCENCE_SECS:
                 ready.append((rollout_id, child))

@@ -102,7 +102,6 @@ async def eval_rollout_single_dataset(
         try:
             sample = await future
         except Exception as e:
-            # One failed request costs one sample, not the whole eval point.
             logger.warning(f"Eval {dataset_cfg.name}: sample generation raised {e!r}")
             num_raised += 1
             pbar.update(1)
@@ -129,7 +128,6 @@ async def eval_rollout_single_dataset(
 
     data.sort(key=lambda sample: sample.index)
 
-    # Drop ABORTED/reward-less samples (engine died mid-eval) and report the count.
     kept = [s for s in data if s.status != Sample.Status.ABORTED and s.reward is not None]
     num_failed = len(data) - len(kept)
     if num_failed:

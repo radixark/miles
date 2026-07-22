@@ -134,9 +134,8 @@ def _resolve_sglang_config(args) -> SglangConfig:
         )
 
     if eval_num_gpus > 0:
-        # Dedicated eval fleet: own router, never receives training weight updates
-        # (weights are pinned per-eval via update_weights_from_disk). update_weights
-        # must be explicit — resolve() would infer True from the matching model_path.
+        # update_weights=False must be explicit — resolve() would infer True from
+        # the matching model_path.
         config.models.append(
             ModelConfig(
                 name="eval",

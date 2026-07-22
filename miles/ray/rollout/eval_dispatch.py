@@ -53,7 +53,6 @@ class EvalDispatcher:
 
     async def _ensure_snapshot(self, rollout_id: int) -> tuple[str, float | None]:
         if self.args.eval_hf_dir is None:
-            # Reuse mode: the --save-hf checkpoint for this step was just written.
             return self.args.save_hf.format(rollout_id=rollout_id), None
         hf_dir = os.path.join(self.args.eval_hf_dir, f"step_{rollout_id}")
         start = time.time()
