@@ -18,10 +18,9 @@ import safetensors.numpy
 
 from miles.utils.types import Sample
 
-# Every Sample field is either COMPUTED by assembly from the records (crosses
-# the wire) or belongs to the driver's input-sample TEMPLATE (never crosses;
-# the driver overlay keeps its local deepcopy's value). Adding a Sample field
-# without classifying it here fails at import time, not silently at training.
+# The wire allowlist: only these fields are assembled from the records on the
+# server and cross the samples wire. Every other Sample field never crosses —
+# the driver overlay keeps its local deepcopy's value verbatim.
 COMPUTED_FIELDS = (
     "tokens",
     "response",
@@ -33,35 +32,6 @@ COMPUTED_FIELDS = (
     "status",
     "weight_versions",
     "prefix_cache_info",
-)
-TEMPLATE_FIELDS = (
-    "group_index",
-    "index",
-    "prompt",
-    "multimodal_inputs",
-    "multimodal_train_inputs",
-    "label",
-    "reward",
-    "remove_sample",
-    "teacher_log_probs",
-    "opd_reverse_kl",
-    "metadata",
-    "generate_function_path",
-    "train_metadata",
-    "routing_key",
-    "non_generation_time",
-    "spec_info",
-)
-
-_SAMPLE_FIELDS = {f.name for f in dataclasses.fields(Sample)}
-assert set(COMPUTED_FIELDS) | set(TEMPLATE_FIELDS) == _SAMPLE_FIELDS and not set(COMPUTED_FIELDS) & set(
-    TEMPLATE_FIELDS
-), (
-    "Sample fields drifted: every field must be classified as COMPUTED (crosses the samples wire) "
-    "or TEMPLATE (stays on the driver's input sample). "
-    f"Unclassified: {sorted(_SAMPLE_FIELDS - set(COMPUTED_FIELDS) - set(TEMPLATE_FIELDS))}, "
-    f"unknown: {sorted((set(COMPUTED_FIELDS) | set(TEMPLATE_FIELDS)) - _SAMPLE_FIELDS)}, "
-    f"overlap: {sorted(set(COMPUTED_FIELDS) & set(TEMPLATE_FIELDS))}"
 )
 
 
