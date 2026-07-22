@@ -62,6 +62,47 @@ async def test_run_eval_datasets_merges_datasets(monkeypatch):
     assert set(results.keys()) == {"a", "b"}
 
 
+async def test_single_dataset_reward_key_only_applies_to_dict_rewards(monkeypatch):
+    """A per-dataset rm override (sample metadata rm_type) may return scalar rewards
+    even when --reward-key is set for the training rm's dict rewards."""
+    import miles.rollout.inference_rollout.inference_rollout_eval as eval_mod
+    from miles.utils.types import Sample
+
+    def make_sample(index, reward):
+        return Sample(index=index, prompt="p", response="r", label="l", reward=reward)
+
+    async def fake_generate_and_rm(state, sample, sampling_params, evaluation):
+        return sample
+
+    monkeypatch.setattr(eval_mod, "generate_and_rm", fake_generate_and_rm)
+    monkeypatch.setattr(eval_mod, "compute_sampling_params", lambda args, **kw: {})
+
+    args = Namespace(
+        group_rm=False,
+        hf_checkpoint="hf",
+        apply_chat_template=False,
+        chat_template_path=None,
+        reward_key="score",
+        eval_reward_key=None,
+    )
+    dataset_cfg = SimpleNamespace(
+        name="mixed",
+        cache_key=("mixed",),
+        n_samples_per_eval_prompt=1,
+        temperature=1.0,
+        top_p=1.0,
+        top_k=-1,
+        max_response_len=16,
+        inject_metadata=lambda md: md,
+    )
+    scalar, dict_reward = make_sample(0, 1), make_sample(1, {"score": 0.5})
+    cache = {dataset_cfg.cache_key + ("hf", False, None): SimpleNamespace(samples=[scalar, dict_reward])}
+
+    result = await eval_mod.eval_rollout_single_dataset(SimpleNamespace(args=args), dataset_cfg, cache)
+
+    assert result["mixed"]["rewards"] == [1, 0.5]
+
+
 # ---------------- controller (RolloutManager._eval_on_dedicated_fleet) ----------------
 
 

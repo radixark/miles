@@ -139,7 +139,12 @@ async def eval_rollout_single_dataset(
     reward_key = args.eval_reward_key or args.reward_key
     return {
         dataset_cfg.name: {
-            "rewards": [sample.reward if not reward_key else sample.reward[reward_key] for sample in data],
+            # reward_key only applies to dict rewards; a per-dataset rm override
+            # (sample metadata rm_type) may return plain scalars.
+            "rewards": [
+                sample.reward[reward_key] if reward_key and isinstance(sample.reward, dict) else sample.reward
+                for sample in data
+            ],
             "truncated": [sample.status == Sample.Status.TRUNCATED for sample in data],
             "samples": data,
             "failed_samples": num_failed,
