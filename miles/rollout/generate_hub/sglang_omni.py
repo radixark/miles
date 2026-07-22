@@ -9,7 +9,6 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
     compute_routing_headers,
-    multimodal_route_headers,
     update_sample_from_response,
 )
 from miles.utils.http_utils import post
@@ -56,9 +55,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = halt_status
         return GenerateFnOutput(samples=sample)
 
-    headers = compute_routing_headers(args, sample) or {}
-    headers.update(multimodal_route_headers(payload.get("multimodal_train_inputs")) or {})
-    output = await post(url, payload, headers=headers or None)
+    output = await post(url, payload, headers=compute_routing_headers(args, sample))
     await update_sample_from_response(
         args,
         sample,

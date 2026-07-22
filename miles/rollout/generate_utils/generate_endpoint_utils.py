@@ -45,17 +45,6 @@ _SGLANG_OMNI_MULTIMODAL_TENSOR_NAMES = frozenset(
 )
 
 
-def _multimodal_modalities(tensors: dict[str, torch.Tensor]) -> list[str]:
-    modalities = []
-    if "pixel_values" in tensors:
-        modalities.append("image")
-    if "input_features" in tensors:
-        modalities.append("audio")
-    if "pixel_values_videos" in tensors:
-        modalities.append("video")
-    return modalities
-
-
 def serialize_multimodal_train_inputs(
     multimodal_train_inputs: dict[str, Any],
 ) -> dict[str, Any]:
@@ -67,7 +56,6 @@ def serialize_multimodal_train_inputs(
         raise ValueError("unsupported SGLang Omni processor tensor fields: " + ", ".join(unknown))
 
     tensors: dict[str, dict[str, Any]] = {}
-    tensor_values: dict[str, torch.Tensor] = {}
     for name, value in multimodal_train_inputs.items():
         if not isinstance(value, torch.Tensor):
             raise TypeError(
@@ -83,24 +71,8 @@ def serialize_multimodal_train_inputs(
             "shape": list(tensor.shape),
             "data": base64.b64encode(raw).decode("ascii"),
         }
-        tensor_values[name] = tensor
 
-    modalities = _multimodal_modalities(tensor_values)
-    if not modalities:
-        raise ValueError("multimodal_train_inputs does not contain an image, audio, or video " "encoder tensor")
-    return {"version": 1, "modalities": modalities, "tensors": tensors}
-
-
-def multimodal_route_headers(
-    serialized_inputs: dict[str, Any] | None,
-) -> dict[str, str] | None:
-    """Route large JSON bundles without asking the router to scan tensor data."""
-    if not serialized_inputs:
-        return None
-    capabilities = [f"{modality}_input" for modality in serialized_inputs.get("modalities", [])]
-    if not capabilities:
-        return None
-    return {"x-sglang-omni-route-capabilities": ",".join(capabilities)}
+    return {"version": 1, "tensors": tensors}
 
 
 # Make this an isolated function because users may want to compute their own

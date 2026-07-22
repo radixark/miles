@@ -21,7 +21,7 @@ def test_serialize_audio_video_processor_tensors():
     bundle = serialize_multimodal_train_inputs(inputs)
 
     assert bundle["version"] == 1
-    assert bundle["modalities"] == ["audio", "video"]
+    assert set(bundle) == {"version", "tensors"}
     assert set(bundle["tensors"]) == set(inputs)
     for name, tensor in inputs.items():
         encoded = bundle["tensors"][name]
@@ -115,8 +115,8 @@ def test_sglang_omni_adapter_sends_processed_audio_video(monkeypatch):
 
     assert captured["url"].endswith("/generate")
     assert captured["payload"]["input_ids"] == [1, 2, 3]
-    assert captured["payload"]["multimodal_train_inputs"]["modalities"] == [
-        "audio",
-        "video",
-    ]
-    assert captured["headers"] == {"x-sglang-omni-route-capabilities": "audio_input,video_input"}
+    assert set(captured["payload"]["multimodal_train_inputs"]["tensors"]) == {
+        "input_features",
+        "pixel_values_videos",
+    }
+    assert captured["headers"] is None
