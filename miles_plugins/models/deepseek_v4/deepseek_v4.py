@@ -27,10 +27,17 @@ from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
+    get_compress_cu_seqlens_for_packed,
+    get_compress_query_ranges_for_packed,
     get_compress_topk_idxs_cp,
+    get_compress_topk_idxs_packed,
     get_freqs_cis_for_cp,
+    get_q_positions_for_packed_cp,
     get_q_positions_for_cp,
+    get_seq_ids_and_offsets_from_cu_seqlens,
     get_window_topk_idxs_cp,
+    get_window_topk_idxs_packed,
+    is_packed_thd_contiguous_cp,
 )
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
@@ -229,11 +236,37 @@ class DeepSeekV4Attention(MegatronModule):
         x = einops.rearrange(hidden_states, "s b d -> b s d")
 
         bsz, seqlen_local, _ = x.size()
+        packed_seq = is_packed_thd_contiguous_cp(packed_seq_params, self.cp_size)
+        if packed_seq:
+            if bsz != 1:
+                raise ValueError(f"DeepSeek-V4 THD packing requires batch dimension 1, got {bsz=}")
+            cu_seqlens = packed_seq_params.cu_seqlens_q.to(device=x.device, dtype=torch.long)
+            seqlen_global = int(cu_seqlens[-1].item())
+            expected_global = seqlen_local * self.cp_size
+            if seqlen_global != expected_global:
+                raise ValueError(
+                    "DeepSeek-V4 THD packing requires contiguous allgather CP: "
+                    f"cu_seqlens[-1]={seqlen_global}, local={seqlen_local}, cp={self.cp_size}"
+                )
+            if self.compress_ratio:
+                get_compress_cu_seqlens_for_packed(cu_seqlens, ratio=self.compress_ratio)
+            max_rope_seq_len = int(packed_seq_params.max_seqlen_q)
+            q_positions = get_q_positions_for_packed_cp(seqlen_local, self.cp_size, self.cp_group, x.device)
+            _, q_offsets, _, _ = get_seq_ids_and_offsets_from_cu_seqlens(cu_seqlens, q_positions)
+        else:
+            max_rope_seq_len = seqlen_local * self.cp_size
+            q_positions = get_q_positions_for_cp(
+                seqlen_local, cp_size=self.cp_size, cp_group=self.cp_group, device=x.device
+            )
+
         rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
         freqs_cis = wrapped_precompute_freqs_cis(
-            self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size, x.device
+            self.config, self.rope_head_dim, rope_base, not self.compress_ratio, max_rope_seq_len, x.device
         )
-        freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group)
+        if packed_seq:
+            freqs_cis = freqs_cis[q_offsets]
+        else:
+            freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group)
         win = self.window_size
         ratio = self.compress_ratio
         rd = self.rope_head_dim
@@ -255,12 +288,13 @@ class DeepSeekV4Attention(MegatronModule):
             kv_vanilla = kv_vanilla.clone()
             kv_vanilla[..., : self.nope_head_dim] = fp8_simulate_qat(kv_vanilla[..., : self.nope_head_dim], 64)
 
-        seqlen_global = seqlen_local * self.cp_size
-        q_positions = get_q_positions_for_cp(
-            seqlen_local, cp_size=self.cp_size, cp_group=self.cp_group, device=x.device
-        )
+        if not packed_seq:
+            seqlen_global = seqlen_local * self.cp_size
 
-        topk_idxs = get_window_topk_idxs_cp(q_positions, window_size=win, cp_size=self.cp_size, bsz=bsz)
+        if packed_seq:
+            topk_idxs = get_window_topk_idxs_packed(q_positions, cu_seqlens, window_size=win, bsz=bsz)
+        else:
+            topk_idxs = get_window_topk_idxs_cp(q_positions, window_size=win, cp_size=self.cp_size, bsz=bsz)
 
         if self.compress_ratio:
             kv_compress_offset = seqlen_global
@@ -271,22 +305,48 @@ class DeepSeekV4Attention(MegatronModule):
                     x_sbd = scatter_to_sequence_parallel_region(x_sbd, group=self.tp_group)
                     qr_sbd = scatter_to_sequence_parallel_region(qr_sbd, group=self.tp_group)
                 if isinstance(self.indexer, V4Indexer):
-                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd)
+                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd, packed_seq_params=packed_seq_params)
                 else:
-                    indexer_mask = self._compute_indexer_mask(q_positions=q_positions, seqlen_global=seqlen_global)
-                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd, mask=indexer_mask, packed_seq_params=None)
-                q_first_invalid_group = (q_positions + 1).unsqueeze(1) // ratio
+                    if packed_seq:
+                        raise NotImplementedError(
+                            "DeepSeek-V4 THD packing currently requires V4_INDEXER_IMPL=tilelang; "
+                            "the legacy Megatron DSAIndexer compressor is not packed-boundary aware."
+                        )
+                    indexer_mask = self._compute_indexer_mask(
+                        q_positions=q_positions,
+                        seqlen_global=seqlen_global,
+                        cu_seqlens=cu_seqlens if packed_seq else None,
+                    )
+                    compress_topk_idxs = self.indexer(
+                        x_sbd, qr_sbd, mask=indexer_mask, packed_seq_params=packed_seq_params
+                    )
+                if packed_seq:
+                    q_first_valid_group, q_first_invalid_group = get_compress_query_ranges_for_packed(
+                        q_positions, cu_seqlens, ratio=ratio
+                    )
+                    q_first_valid_group = q_first_valid_group.unsqueeze(1)
+                    q_first_invalid_group = q_first_invalid_group.unsqueeze(1)
+                else:
+                    q_first_valid_group = None
+                    q_first_invalid_group = (q_positions + 1).unsqueeze(1) // ratio
                 topk_idx_mask = (compress_topk_idxs >= q_first_invalid_group) | (compress_topk_idxs < 0)
+                if q_first_valid_group is not None:
+                    topk_idx_mask |= compress_topk_idxs < q_first_valid_group
                 compress_topk_idxs = torch.where(topk_idx_mask, -1, compress_topk_idxs + kv_compress_offset)
             else:
-                compress_topk_idxs = get_compress_topk_idxs_cp(q_positions, ratio=ratio, cp_size=self.cp_size, bsz=bsz)
+                if packed_seq:
+                    compress_topk_idxs = get_compress_topk_idxs_packed(q_positions, cu_seqlens, ratio=ratio, bsz=bsz)
+                else:
+                    compress_topk_idxs = get_compress_topk_idxs_cp(
+                        q_positions, ratio=ratio, cp_size=self.cp_size, bsz=bsz
+                    )
             topk_idxs = torch.cat([topk_idxs, compress_topk_idxs], dim=-1)
         topk_idxs = topk_idxs.int()
 
         kv_compress = None
         if self.compress_ratio:
             x_sbd = einops.rearrange(x, "b s d -> s b d")
-            kv_compress_sbd = self.compressor(x_sbd)
+            kv_compress_sbd = self.compressor(x_sbd, packed_seq_params=packed_seq_params)
             if kv_compress_sbd is not None:
                 kv_compress = einops.rearrange(kv_compress_sbd, "s b d -> b s d")
 
@@ -298,8 +358,8 @@ class DeepSeekV4Attention(MegatronModule):
                 kv_compress = all_gather_cp(kv_compress, dim=1, cp_group=self.cp_group)
 
         if kv_compress is not None:
-            kv = torch.cat([kv_vanilla, kv_compress], dim=1)
             assert kv_compress_offset == kv_vanilla.size(1)
+            kv = torch.cat([kv_vanilla, kv_compress], dim=1)
         else:
             kv = kv_vanilla
 
@@ -321,13 +381,24 @@ class DeepSeekV4Attention(MegatronModule):
 
         return output
 
-    def _compute_indexer_mask(self, *, q_positions: torch.Tensor, seqlen_global: int) -> torch.Tensor:
+    def _compute_indexer_mask(
+        self,
+        *,
+        q_positions: torch.Tensor,
+        seqlen_global: int,
+        cu_seqlens: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Dense causal mask for legacy DSAIndexer path."""
         ratio = 4
         device = q_positions.device
         k_group_idx = torch.arange(seqlen_global // ratio, device=device).unsqueeze(0)
-        q_first_invalid_group = (q_positions.unsqueeze(1) + 1) // ratio
-        invalid_mask = k_group_idx >= q_first_invalid_group
+        if cu_seqlens is None:
+            invalid_mask = k_group_idx >= (q_positions.unsqueeze(1) + 1) // ratio
+        else:
+            valid_start, valid_end = get_compress_query_ranges_for_packed(q_positions, cu_seqlens, ratio=ratio)
+            valid_start = valid_start.unsqueeze(1)
+            valid_end = valid_end.unsqueeze(1)
+            invalid_mask = (k_group_idx < valid_start) | (k_group_idx >= valid_end)
         return torch.where(invalid_mask, float("-inf"), 0.0)
 
 

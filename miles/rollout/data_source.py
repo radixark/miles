@@ -57,6 +57,17 @@ class RolloutDataSource(DataSource):
                 args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
             )
             processor = load_processor(args.hf_checkpoint, trust_remote_code=True)
+            skip_prompt_length_filter = os.environ.get("MILES_SKIP_PROMPT_LENGTH_FILTER", "").lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            max_prompt_length = None if skip_prompt_length_filter else args.rollout_max_prompt_len
+            if skip_prompt_length_filter:
+                logger.info(
+                    "MILES_SKIP_PROMPT_LENGTH_FILTER=1: skipping Dataset startup length filtering. "
+                    "Use only with pre-filtered prompt data."
+                )
 
             # TODO move (during the refactor)
             if (d := args.dump_details) is not None:
@@ -68,7 +79,7 @@ class RolloutDataSource(DataSource):
                 args.prompt_data,
                 tokenizer=tokenizer,
                 processor=processor,
-                max_length=args.rollout_max_prompt_len,
+                max_length=max_prompt_length,
                 prompt_key=args.input_key,
                 multimodal_keys=args.multimodal_keys,
                 label_key=args.label_key,

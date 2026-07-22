@@ -36,6 +36,7 @@ def compute_ess_ratio_contribution(
     qkv_format: str,
     max_seq_lens: list[int] | None,
     calculate_per_token_loss: bool,
+    padded_total_lengths: list[int] | None = None,
 ) -> torch.Tensor:
     """Return an ESS contribution compatible with ``aggregate_train_losses``.
 
@@ -52,6 +53,7 @@ def compute_ess_ratio_contribution(
         response_lengths,
         qkv_format,
         max_seq_lens,
+        padded_total_lengths,
     )
     local_lengths = [mask.size(0) for mask in local_masks]
     is_weights_per_sample = _safe_exp_neg_ppo_kl(ppo_kl.detach()).split(local_lengths, dim=0)

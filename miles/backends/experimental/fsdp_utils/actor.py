@@ -386,6 +386,7 @@ class FSDPTrainRayActor(TrainRayActor):
                             response_lengths=batch["response_lengths"],
                             with_entropy=(store_prefix == ""),
                             max_seq_lens=batch.get("max_seq_lens", None),
+                            padded_total_lengths=batch.get("padded_total_lengths", None),
                         )
 
                         batch_result = {

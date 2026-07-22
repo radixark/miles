@@ -6,7 +6,29 @@
 #   - Supports compressed KV (seq_len_kv = seq_len_q / compress_ratio)
 import tilelang
 import torch
+import torch.nn.functional as F
 from tilelang import language as T
+
+
+_INDEXER_BLOCK_N = 256
+
+
+def _get_indexer_padded_lengths(seq_len, seq_len_kv, heads, block_n=_INDEXER_BLOCK_N):
+    """Return workspace lengths that keep every TileLang load inside its buffers.
+
+    The forward kernel loads a full ``block_n`` KV rows for its last range block,
+    while the cleanup kernel iterates in larger blocks and relies on a runtime
+    column guard. One extra KV tile is reserved as a scratch tail; callers still
+    receive the original logical shape.
+    """
+    if seq_len < 0 or seq_len_kv < 0:
+        raise ValueError(f"sequence lengths must be non-negative, got {seq_len=} {seq_len_kv=}")
+    if block_n <= 0:
+        raise ValueError(f"block_n must be positive, got {block_n=}")
+    block_q = max(1, 128 // heads)
+    padded_seq_len = ((seq_len + block_q - 1) // block_q) * block_q if seq_len else 0
+    padded_seq_len_kv = ((seq_len_kv + block_n - 1) // block_n + 1) * block_n if seq_len_kv else 0
+    return padded_seq_len, padded_seq_len_kv
 
 
 @tilelang.jit(
@@ -116,7 +138,7 @@ def clean_logits_(
             for n_i in T.Pipelined(T.ceildiv(seq_len_kv, block_K)):
                 for k_i in T.serial(block_K // threads):
                     idx = n_i * block_K + k_i * threads + tx
-                    if idx < cu_k_s or idx >= cu_k_e:
+                    if idx < seq_len_kv and (idx < cu_k_s or idx >= cu_k_e):
                         Logits[bx, idx] = -T.infinity(dtype)
 
     return clean_logits_kernel
@@ -148,13 +170,42 @@ def indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logi
     """
     seq_len, heads, index_dim = q.shape
     seq_len_kv = kv.shape[0]
+    logical_seq_len = seq_len
+    logical_seq_len_kv = seq_len_kv
+
+    padded_seq_len, padded_seq_len_kv = _get_indexer_padded_lengths(seq_len, seq_len_kv, heads)
+    if padded_seq_len == 0 or padded_seq_len_kv == 0:
+        return torch.empty([seq_len, seq_len_kv], device=q.device, dtype=torch.float32)
+
+    cu_seqlen_ks = cu_seqlen_ks.to(device=q.device, dtype=torch.int32).clamp(0, logical_seq_len_kv)
+    cu_seqlen_ke = cu_seqlen_ke.to(device=q.device, dtype=torch.int32).clamp(0, logical_seq_len_kv)
+
+    if padded_seq_len != logical_seq_len:
+        pad_len = padded_seq_len - logical_seq_len
+        q = torch.cat((q, q.new_zeros((pad_len, heads, index_dim))), dim=0).contiguous()
+        weights = torch.cat((weights, weights.new_zeros((pad_len, heads))), dim=0).contiguous()
+        pad_rows = torch.zeros(
+            padded_seq_len - logical_seq_len,
+            device=q.device,
+            dtype=cu_seqlen_ks.dtype,
+        ).fill_(logical_seq_len_kv)
+        cu_seqlen_ks = torch.cat((cu_seqlen_ks, pad_rows), dim=0)
+        cu_seqlen_ke = torch.cat((cu_seqlen_ke, pad_rows), dim=0)
+    else:
+        q = q.contiguous()
+        weights = weights.contiguous()
+
+    if padded_seq_len_kv != logical_seq_len_kv:
+        kv = F.pad(kv, (0, 0, 0, padded_seq_len_kv - logical_seq_len_kv), value=0).contiguous()
+    else:
+        kv = kv.contiguous()
 
     clean_logits_kernel = clean_logits_()
     tl_indexer_fwd_kernel = tl_indexer_fwd_impl(heads=heads, index_dim=index_dim)
 
-    logits = torch.empty([seq_len, seq_len_kv], device=q.device, dtype=torch.float32)
+    logits = torch.empty([padded_seq_len, padded_seq_len_kv], device=q.device, dtype=torch.float32)
     tl_indexer_fwd_kernel(
-        q.view(seq_len * heads, index_dim),
+        q.view(padded_seq_len * heads, index_dim),
         kv,
         logits,
         weights.float(),
@@ -163,7 +214,7 @@ def indexer_fwd_interface(q, kv, weights, cu_seqlen_ks, cu_seqlen_ke, clean_logi
     )
     if clean_logits:
         clean_logits_kernel(logits, cu_seqlen_ks, cu_seqlen_ke)
-    return logits
+    return logits[:logical_seq_len, :logical_seq_len_kv]
 
 
 def batched_indexer_fwd(q, k, weights, cu_seqlen_ks, cu_seqlen_ke):

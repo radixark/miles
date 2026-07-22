@@ -85,13 +85,35 @@ def _parse_generalized_path(s: str):
 
 def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_length: int | None) -> list[Sample]:
     if max_length is None:
-        return False
+        return origin_samples
+
+    if not origin_samples:
+        return origin_samples
 
     if not isinstance(origin_samples[0].prompt, str):
-        logger.warning(
-            "Skipping max_length check for list prompt. Set apply_chat_template=True to enable length filtering."
+        filtered_samples = []
+        for sample in origin_samples:
+            if processor:
+                from miles.utils.processing_utils import process_vision_info
+
+                multimodal_inputs = process_vision_info(sample.prompt, processor)
+                processor_output = call_processor(processor, sample.prompt, multimodal_inputs)
+                input_ids = processor_output["input_ids"][0]
+            else:
+                input_ids = chat_template_utils.apply_chat_template(
+                    sample.prompt,
+                    tokenizer=tokenizer,
+                    tools=sample.metadata.get("tools") if sample.metadata else None,
+                    tokenize=True,
+                    add_generation_prompt=False,
+                )
+            if len(input_ids) <= max_length:
+                filtered_samples.append(sample)
+
+        logger.info(
+            f"Filtered {len(origin_samples) - len(filtered_samples)} samples longer than max_length={max_length}."
         )
-        return False
+        return filtered_samples
 
     if processor:
         filtered_samples = []

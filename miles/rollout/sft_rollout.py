@@ -55,7 +55,7 @@ def generate_rollout(args, rollout_id, data_buffer, evaluation=False):
         sample.tokens = token_ids
         sample.response_length = response_length
         sample.reward = 0
-        sample.loss_mask = loss_mask[-response_length:]
+        sample.loss_mask = loss_mask[-response_length:] if response_length > 0 else []
 
         if i == 0 and not SAMPLE_PRINTED:
             logger.info(

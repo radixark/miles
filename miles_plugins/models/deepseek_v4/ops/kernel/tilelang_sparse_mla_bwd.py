@@ -172,7 +172,11 @@ def bwd(
                     acc_p[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_p.dtype))
 
                 for bi_i, d_i in T.Parallel(BS, D):
-                    KV_shared[bi_i, d_i] = KV[by, Indices[by, s_i, i_i * BS + bi_i], d_i]
+                    # Keep invalid causal/window padding indices in bounds;
+                    # ``acc_p`` is masked to -inf immediately afterwards.
+                    index = Indices[by, s_i, i_i * BS + bi_i]
+                    safe_index = T.max(T.min(index, S_kv - 1), 0)
+                    KV_shared[bi_i, d_i] = KV[by, safe_index, d_i]
 
                 T.gemm(Q_shared, KV_shared, acc_p, transpose_B=True, policy=T.GemmWarpPolicy.FullCol)
 
@@ -217,14 +221,12 @@ def bwd(
                             acc_dkv_shared[bi_i, d_i] = acc_dkv[bi_i + s * (BS // split_store), d_i]
 
                     for bi_i, d_i in T.Parallel(BS // split_store, D // 4):
-                        T.atomic_addx4(
-                            dKV[
-                                by,
-                                Indices[by, s_i, i_i * BS + bi_i + s * (BS // split_store)],
-                                d_i * 4,
-                            ],
-                            acc_dkv_shared[bi_i, d_i * 4],
-                        )
+                        index = Indices[by, s_i, i_i * BS + bi_i + s * (BS // split_store)]
+                        if index >= 0 and index < S_kv:
+                            T.atomic_addx4(
+                                dKV[by, index, d_i * 4],
+                                acc_dkv_shared[bi_i, d_i * 4],
+                            )
 
             # Store dQ
             T.copy(acc_dq, dQ_shared)

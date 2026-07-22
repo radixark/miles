@@ -1,4 +1,5 @@
 import logging
+import math
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -19,6 +20,41 @@ from .mm_data import expand_multimodal_rollout_data_in_place
 from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
+
+
+def _get_thd_sample_pad_multiple(args: Namespace) -> int | None:
+    """Return per-sample padding multiple required by packed THD kernels."""
+    model_name = (getattr(args, "model_name", "") or "").lower().replace("-", "").replace("_", "")
+    is_deepseek_v4 = "deepseekv4" in model_name
+    if not is_deepseek_v4:
+        return None
+
+    compress_ratios = getattr(args, "compress_ratios", None)
+    active_ratios = [int(ratio) for ratio in (compress_ratios or []) if int(ratio) > 1]
+    if not active_ratios:
+        return None
+    return math.lcm(*active_ratios)
+
+
+def get_thd_padded_total_lengths(args: Namespace, total_lengths: Sequence[int]) -> list[int] | None:
+    """Return model-input lengths after DSV4 THD per-sample alignment."""
+    if getattr(args, "qkv_format", None) != "thd":
+        return None
+    multiple = _get_thd_sample_pad_multiple(args)
+    if multiple is None:
+        return None
+    return [((int(length) + multiple - 1) // multiple) * multiple for length in total_lengths]
+
+
+def _get_thd_allgather_pad_multiple(cp_size: int, pad_size: int, sample_pad_multiple: int | None) -> int:
+    """Return a global THD multiple that keeps every contiguous CP shard kernel-aligned."""
+    global_pad_multiple = cp_size * pad_size
+    if sample_pad_multiple is not None:
+        # DSV4 compressors require each CP-local shard to contain a whole
+        # pair of compression groups.  The global stream must therefore be
+        # divisible by 2 * cp_size * every active compression ratio.
+        global_pad_multiple = math.lcm(global_pad_multiple, 2 * cp_size * sample_pad_multiple)
+    return global_pad_multiple
 
 
 def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
@@ -84,6 +120,8 @@ def get_rollout_data(
 
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
+    padded_total_lengths = get_thd_padded_total_lengths(args, rollout_data["total_lengths"])
+
     if "rollout_log_probs" in rollout_data:
         rollout_logprob_dtype = _rollout_logprob_dtype(args)
         rollout_data["rollout_log_probs"] = [
@@ -94,6 +132,7 @@ def get_rollout_data(
                     response_length,
                     args.qkv_format,
                     rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
+                    padded_total_lengths[i] if padded_total_lengths is not None else None,
                 ),
                 device=torch.cuda.current_device(),
                 dtype=rollout_logprob_dtype,
@@ -162,6 +201,7 @@ def get_batch(
     # use 0 as the pad token id should be fine?
     pad_token_id = 0
     pad_size = parallel_state.tp.size * pad_multiplier
+    padded_total_lengths: list[int] | None = None
 
     # for cp, we need all tokens to calculate logprob
     batch["unconcat_tokens"] = tokens
@@ -187,20 +227,36 @@ def get_batch(
 
     elif qkv_format == "thd":
         cp_rank = parallel_state.cp.rank
+        sample_pad_multiple = _get_thd_sample_pad_multiple(data_iterator.args)
+        padded_total_lengths = [] if sample_pad_multiple is not None else None
+        if sample_pad_multiple is not None and cp_size > 1 and not allgather_cp:
+            raise NotImplementedError(
+                "DeepSeek-V4 THD packing with CP>1 requires --allgather-cp; "
+                "zigzag CP cannot preserve packed sample boundaries yet."
+            )
 
         if allgather_cp:
             assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
             # DSA mode: concatenate all sequences first, then slice once with CP.
             # We also pad the *global* concatenated stream to make per-rank batches equal.
             cu_seqlens_list: list[int] = [0]
+            padded_tokens: list[torch.Tensor] = []
             for t in tokens:
+                if sample_pad_multiple is not None:
+                    sample_pad = (sample_pad_multiple - t.size(0) % sample_pad_multiple) % sample_pad_multiple
+                    if sample_pad:
+                        t = F.pad(t, (0, sample_pad), value=pad_token_id)
+                    assert padded_total_lengths is not None
+                    padded_total_lengths.append(t.size(0))
+                padded_tokens.append(t)
                 cu_seqlens_list.append(cu_seqlens_list[-1] + t.size(0))
+            tokens = padded_tokens
 
             tokens = torch.cat(tokens, dim=0)
 
             # Pad global stream so (1) divisible by cp_size (equal batches),
             # (2) divisible by pad_size (reduce fragmentation).
-            global_pad_size = cp_size * pad_size
+            global_pad_size = _get_thd_allgather_pad_multiple(cp_size, pad_size, sample_pad_multiple)
             pad = (global_pad_size - tokens.size(0) % global_pad_size) % global_pad_size
             if pad != 0:
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
@@ -209,7 +265,16 @@ def get_batch(
             cu_seqlens = torch.tensor(cu_seqlens_list, dtype=torch.int, device=torch.cuda.current_device())
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
-            tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
+            padded_tokens: list[torch.Tensor] = []
+            for t in tokens:
+                if sample_pad_multiple is not None:
+                    sample_pad = (sample_pad_multiple - t.size(0) % sample_pad_multiple) % sample_pad_multiple
+                    if sample_pad:
+                        t = F.pad(t, (0, sample_pad), value=pad_token_id)
+                    assert padded_total_lengths is not None
+                    padded_total_lengths.append(t.size(0))
+                padded_tokens.append(t)
+            tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in padded_tokens]
             sample_token_lengths = [t.size(0) for t in tokens]
 
             cu_seqlens = [0]
@@ -219,7 +284,8 @@ def get_batch(
             tokens = torch.cat(tokens)
 
             # Always pad to reduce memory fragmentation and maybe make the computation faster
-            pad = (pad_size - tokens.size(0) % pad_size) % pad_size
+            final_pad_size = math.lcm(pad_size, sample_pad_multiple) if sample_pad_multiple is not None else pad_size
+            pad = (final_pad_size - tokens.size(0) % final_pad_size) % final_pad_size
             if pad != 0:
                 tokens = F.pad(tokens, (0, pad), value=pad_token_id)
                 cu_seqlens.append(cu_seqlens[-1] + pad)
@@ -233,6 +299,8 @@ def get_batch(
 
         batch["cu_seqlens"] = cu_seqlens
         batch["max_seqlen"] = max_seqlen
+        if padded_total_lengths is not None:
+            batch["padded_total_lengths"] = padded_total_lengths
     else:
         raise ValueError(f"Unsupported qkv_format: {qkv_format}")
 
@@ -259,6 +327,11 @@ def get_batch(
             ids = [slice_with_cp(p, 0, qkv_format, max_seqlen) for p in ids_list]
             ids = torch.stack(ids)
         elif qkv_format == "thd":
+            if padded_total_lengths is not None:
+                ids_list = [
+                    F.pad(p, (0, padded_total_length - p.size(0)), value=0)
+                    for p, padded_total_length in zip(ids_list, padded_total_lengths, strict=True)
+                ]
             ids = [slice_with_cp(p, 0, qkv_format) for p in ids_list]
             ids = torch.cat(ids)
             if pad != 0:
@@ -291,6 +364,11 @@ def get_batch(
         prompt_length = total_length - response_length
         # Align mask to token stream positions (prompt_length-1 left pad, 1 right pad)
         loss_mask = F.pad(loss_mask, (prompt_length - 1, 1), value=0)
+        if padded_total_lengths is not None:
+            padded_total_length = padded_total_lengths[len(loss_masks)]
+            sample_pad = padded_total_length - total_length
+            if sample_pad:
+                loss_mask = F.pad(loss_mask, (0, sample_pad), value=0)
         if allgather_cp:
             loss_masks.append(loss_mask)
             continue
@@ -350,6 +428,8 @@ class DataIterator:
         rollout_data: RolloutBatch,
         micro_batch_size: int | None = None,
         micro_batch_indices: list[list[int]] | None = None,
+        *,
+        args: Namespace | None = None,
     ) -> None:
         """Initialize an iterator over `rollout_data`.
 
@@ -358,7 +438,9 @@ class DataIterator:
             micro_batch_size: Fixed contiguous slice size when not using dynamic scheduling.
             micro_batch_indices: Explicit indices per micro-batch when using dynamic balancing.
                 Must be mutually exclusive with `micro_batch_size`.
+            args: Optional runtime args used for model-specific batch preparation.
         """
+        self.args = args or Namespace(model_name="", compress_ratios=None)
         self.rollout_data = rollout_data
         self.micro_batch_size = micro_batch_size
         self.micro_batch_indices = micro_batch_indices
@@ -446,7 +528,14 @@ def get_data_iterator(
     def _generate_data_iterator(rollout_data, micro_batch_size, micro_batch_indices=None):
         data_iterator = []
         for _ in range(vpp_size):
-            data_iterator.append(DataIterator(rollout_data, micro_batch_size, micro_batch_indices))
+            data_iterator.append(
+                DataIterator(
+                    rollout_data,
+                    micro_batch_size,
+                    micro_batch_indices,
+                    args=args,
+                )
+            )
         return data_iterator
 
     if not args.use_dynamic_batch_size:
