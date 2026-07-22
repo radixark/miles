@@ -900,9 +900,9 @@ def calculate_log_probs_and_entropy(
 
     def compute_entropy(logits_chunk: torch.Tensor) -> torch.Tensor:
         if entropy_requires_grad:
-            return compute_entropy_from_logits(logits_chunk.clone(), tp_group)
+            return compute_entropy_from_logits(logits_chunk.to(torch.float32, copy=True), tp_group)
         with torch.no_grad():
-            return compute_entropy_from_logits(logits_chunk.detach().clone(), tp_group)
+            return compute_entropy_from_logits(logits_chunk.detach().to(torch.float32, copy=True), tp_group)
 
     if logits.size(0) != 0:
         if chunk_size > 0:
@@ -911,7 +911,7 @@ def calculate_log_probs_and_entropy(
             logits_chunks = logits.chunk(num_chunks, dim=0)
             log_probs = []
             for tokens_chunk, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                log_prob = compute_log_probs(logits_chunk.clone(), tokens_chunk, tp_group)
+                log_prob = compute_log_probs(logits_chunk.to(torch.float32, copy=True), tokens_chunk, tp_group)
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
             if with_entropy:
@@ -921,7 +921,7 @@ def calculate_log_probs_and_entropy(
                     entropys.append(entropy)
                 entropy = torch.cat(entropys, dim=0)
         else:
-            log_prob = compute_log_probs(logits.clone(), tokens, tp_group)
+            log_prob = compute_log_probs(logits.to(torch.float32, copy=True), tokens, tp_group)
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
