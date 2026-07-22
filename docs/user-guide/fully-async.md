@@ -107,7 +107,7 @@ persisted anyway), and does eval get standalone GPU resources?
 
 | | Test run | Real run |
 |---|---|---|
-| **No standalone eval** | Pause-the-world (shared engines) | External service over `--save-hf` output; pause-the-world if eval must be strictly on-time (costs ~eval duration of rollout production per point) |
+| **No standalone eval** | Pause-the-world (shared engines) | External service over `--save-hf` output; pause-the-world if eval must be strictly on-time (costs ~eval duration of rollout production per point). The two compose: pause-the-world on a small sanity set for on-time points, the service on the full set for delayed high-fidelity points |
 | **Standalone eval fleet** | Fleet + tmpfs snapshot (`--eval-hf-dir /dev/shm/...`) | Fleet + checkpoint reuse (no `--eval-hf-dir`) |
 
 Without extra GPUs (`--eval-num-gpus` unset), eval **shares the rollout engines**:
