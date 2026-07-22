@@ -72,6 +72,7 @@ def make_args(**overrides) -> Namespace:
         max_weight_staleness=None,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
+        eval_num_gpus=0,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -105,11 +106,88 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     assert len(output2.samples) == 3
 
 
-async def test_eval_raises(monkeypatch):
-    fn = make_fn(monkeypatch, make_args(), FakeDataSource())
-    with pytest.raises(ValueError, match="does not serve eval"):
-        await fn(RolloutFnEvalInput(rollout_id=0))
+async def test_eval_without_fleet_pauses_producer(monkeypatch):
+    """Shared-engine eval: producer submissions pause during eval and resume after."""
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False):
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    fn = make_fn(
+        monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate
+    )
+
+    eval_started = asyncio.Event()
+    eval_release = asyncio.Event()
+    eval_results = {"fake_ds": {"rewards": [1.0], "truncated": [False], "samples": []}}
+
+    async def fake_run_eval_datasets(state, cache):
+        assert state is fn.state  # shared-engine eval uses the train state
+        eval_started.set()
+        await eval_release.wait()
+        return eval_results
+
+    monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
+
+    # Start the producer via a train call, then run eval concurrently.
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.05)
+    submitted_before_eval = data_source.num_get_calls
+
+    eval_task = asyncio.create_task(fn(RolloutFnEvalInput(rollout_id=0)))
+    await eval_started.wait()
+    release.set()  # in-flight groups finish and buffer, but no NEW submissions
+    await asyncio.sleep(0.05)
+    assert data_source.num_get_calls == submitted_before_eval
+
+    eval_release.set()
+    output = await eval_task
+    assert output.data == eval_results
+
+    # Producer resumes and the train drain completes.
+    assert (await drain).samples
+
+
+async def test_eval_runs_on_dedicated_fleet(monkeypatch):
+    import miles.rollout.checkpoint_eval as checkpoint_eval
+    import miles.rollout.inference_rollout.inference_rollout_eval as eval_mod
+
+    args = make_args(
+        eval_num_gpus=1,
+        eval_num_gpus_per_engine=1,
+        sglang_model_routers={"eval": ("127.0.0.1", 31000)},
+    )
+    data_source = FakeDataSource()
+    fn = make_fn(monkeypatch, args, data_source)
+
+    eval_results = {"fake_ds": {"rewards": [1.0], "truncated": [False], "samples": []}}
+    seen_states = []
+
+    def fake_make_eval_generate_state(a):
+        assert a.sglang_model_routers["eval"] == ("127.0.0.1", 31000)
+        state = FakeGenerateState(a)
+        seen_states.append(state)
+        return state
+
+    async def fake_run_eval_datasets(state, cache):
+        assert state in seen_states
+        return eval_results
+
+    monkeypatch.setattr(checkpoint_eval, "make_eval_generate_state", fake_make_eval_generate_state)
+    monkeypatch.setattr(eval_mod, "run_eval_datasets", fake_run_eval_datasets)
+
+    output = await fn(RolloutFnEvalInput(rollout_id=0))
+
+    assert output.data == eval_results
+    # Eval must not start the producer or consume training prompts.
     assert fn._worker is None
+    assert data_source.num_get_calls == 0
+
+    # The eval state is created once and reused across evals.
+    await fn(RolloutFnEvalInput(rollout_id=1))
+    assert len(seen_states) == 1
 
 
 async def test_aborted_group_recycled(monkeypatch):

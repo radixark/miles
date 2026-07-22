@@ -12,11 +12,24 @@ from miles.rollout.inference_rollout.inference_rollout_common import (
 )
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
-from miles.utils.misc import as_completed_async
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
+
+
+async def run_eval_datasets(
+    state: GenerateState,
+    prompt_dataset_cache: dict[Any, Dataset],
+) -> dict[str, dict[str, Any]]:
+    args = state.args
+    assert not args.group_rm, "Group RM is not supported for eval rollout"
+
+    coros = []
+    for dataset_cfg in getattr(args, "eval_datasets", []) or []:
+        coros.append(eval_rollout_single_dataset(state, dataset_cfg, prompt_dataset_cache))
+    results_list = await asyncio.gather(*coros)
+    return {k: v for r in results_list for k, v in r.items()}
 
 
 async def eval_rollout_single_dataset(
@@ -82,9 +95,17 @@ async def eval_rollout_single_dataset(
             )
 
     data = []
+    num_raised = 0
     do_print = True
     pbar = tqdm(total=len(tasks), desc=f"Eval {dataset_cfg.name}", disable=not do_print)
-    async for sample in as_completed_async(tasks):
+    for future in asyncio.as_completed(tasks):
+        try:
+            sample = await future
+        except Exception as e:
+            logger.warning(f"Eval {dataset_cfg.name}: sample generation raised {e!r}")
+            num_raised += 1
+            pbar.update(1)
+            continue
         if do_print:
             # TODO improve this after enhancing samples' type
             s = (sample[0] if len(sample) > 0 else None) if isinstance(sample, list) else sample
@@ -102,7 +123,16 @@ async def eval_rollout_single_dataset(
         pbar.update(1)
     pbar.close()
 
+    if num_raised == len(tasks):
+        raise RuntimeError(f"Eval {dataset_cfg.name}: all {num_raised} sample generations failed")
+
     data.sort(key=lambda sample: sample.index)
+
+    kept = [s for s in data if s.status != Sample.Status.ABORTED and s.reward is not None]
+    num_failed = len(data) - len(kept)
+    if num_failed:
+        logger.warning(f"Eval {dataset_cfg.name}: dropping {num_failed} aborted/reward-less samples")
+        data = kept
 
     reward_key = args.eval_reward_key or args.reward_key
     return {
@@ -110,5 +140,6 @@ async def eval_rollout_single_dataset(
             "rewards": [sample.reward if not reward_key else sample.reward[reward_key] for sample in data],
             "truncated": [sample.status == Sample.Status.TRUNCATED for sample in data],
             "samples": data,
+            "failed_samples": num_failed + num_raised,
         }
     }

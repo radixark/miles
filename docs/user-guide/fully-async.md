@@ -100,6 +100,81 @@ signal. Fast [P2P weight transfer](/advanced/p2p-weight-transfer) keeps the
 rollout engines closer to the latest actor weights so fewer groups get recycled by
 `--max-weight-staleness`.
 
+## Evaluation
+
+Pick a posture by two questions: is this a test run or a real run (are checkpoints
+persisted anyway), and does eval get standalone GPU resources?
+
+| | Test run | Real run |
+|---|---|---|
+| **No standalone eval** | Pause-the-world (shared engines) | External service over `--save-hf` output; pause-the-world if eval must be strictly on-time (costs ~eval duration of rollout production per point). The two compose: pause-the-world on a small sanity set for on-time points, the service on the full set for delayed high-fidelity points |
+| **Standalone eval fleet** | Fleet + tmpfs snapshot (`--eval-hf-dir /dev/shm/...`) | Fleet + checkpoint reuse (no `--eval-hf-dir`) |
+
+Without extra GPUs (`--eval-num-gpus` unset), eval **shares the rollout engines**:
+the producer pauses new submissions for the duration of the blocking eval and resumes
+after. This is a gate, not a retract — in-flight rollout requests finish and buffer,
+nothing is aborted, and the `pause_generation` API is never involved; eval requests
+simply share engine capacity with the draining tail.
+
+No extra weight movement happens either: the engines already carry the weights the
+step's `update_weights` broadcast just pushed (in fully-async, only *generation* is
+continuous — weight updates are still driver-scheduled per step, each with its own
+generation pause per `--pause-generation-mode`; eval adds no pause of its own on top).
+Pinning comes from ordering: the driver awaits the eval, so the next
+`update_weights` cannot interleave —
+expect `mixed_version_ratio == 0` with the training fleet's update counter as the
+version label (a constant offset from `eval/step`, unlike the dedicated fleet which
+stamps the rollout_id). This ordering is also why shared-engine eval must stay
+blocking: fired-and-forgotten, the next weight update would rewrite the engines
+mid-eval. The cost is that rollout production stalls for roughly the eval duration,
+which is fine for small debug eval sets.
+
+For eval that never touches training capacity, use a **dedicated eval fleet** synced
+through HF checkpoint snapshots — never by joining training weight updates:
+
+```bash
+--eval-num-gpus 1                        # dedicated eval engines (own router)
+--eval-interval K
+--eval-hf-dir /dev/shm/miles_eval_hf     # snapshot staging; tmpfs = no disk dependency
+--eval-prompt-data aime /path/to/aime.jsonl
+```
+
+Per eval-due step the trainer exports an HF snapshot (seconds to tmpfs), fires the
+eval **fire-and-forget**, and keeps training; the eval fleet pins its weights to the
+snapshot (`weight_version = str(rollout_id)`), runs the standard eval datasets, and the
+point lands at the right x-axis step even when it completes a few steps later
+(`eval/lag_steps` reports how late).
+
+Two production-oriented variants:
+
+- **Reuse mode**: with `--save-hf` set and `--eval-hf-dir` unset, eval reuses the
+  periodic HF checkpoints (requires `eval_interval % save_interval == 0`) — zero extra
+  export cost. Pair with `--eval-overflow-policy skip` so a slow eval set can never
+  stall training.
+- **External service**: `tools/checkpoint_eval_service.py` watches `--save-hf` output
+  with its own sglang server — no GPU carve-out from the training job, restartable,
+  backfills missed points from its ledger. Works for `--colocate` runs too.
+
+Every skipped point is attributable from the dashboard: `eval/skipped_busy`,
+`eval/skipped_ckpt_missing`, `eval/skipped_unhealthy`, `eval/skipped_export_failed`
+are logged at the affected step. `eval/{ds}/weight_version/mean == eval/step` and
+`mixed_version_ratio == 0` confirm every point measured exactly the intended weights.
+
+The eval-engine `weight_version` namespace is the snapshot's `rollout_id` — deliberately
+different from the training fleet's job-local update counter; the two fleets never mix.
+
+Where each posture's weights come from — and what "the weights at step R" means:
+
+| Posture | Weight delivery | Measures |
+|---|---|---|
+| Pause-the-world | none needed — training's own `update_weights` broadcast already put them on the shared engines | the engines' last-broadcast version (equals the actor's current weights when `update_weights_interval` is 1) |
+| Dedicated fleet | `update_weights_from_disk` on a snapshot exported **directly from the actor** | the actor's exact step-R weights, regardless of broadcast schedule |
+| External service | loads `--save-hf` checkpoints itself | the actor's exact step-R weights |
+
+Eval engines are never added to the training broadcast group: collectives cannot skip
+members, so a fleet inside the group would have its weights rewritten by every update
+and asynchronous points could not be pinned.
+
 ## Example implementation
 
 For a complete Qwen3 launch script and worker implementation, see the

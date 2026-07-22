@@ -224,6 +224,28 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
     return output
 
 
+async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, request_timeout: float = 60.0) -> None:
+    """Poll ``url`` until it answers HTTP 200 (POST when ``json_payload`` is given,
+    else GET); raise ``TimeoutError`` past the deadline."""
+    deadline = time.time() + timeout
+    last_error = "no attempt made"
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                if json_payload is not None:
+                    response = await client.post(url, json=json_payload, timeout=request_timeout)
+                else:
+                    response = await client.get(url, timeout=request_timeout)
+                if response.status_code == 200:
+                    return
+                last_error = f"HTTP {response.status_code}"
+            except httpx.HTTPError as e:
+                last_error = repr(e)
+            if time.time() > deadline:
+                raise TimeoutError(f"{url} not ready after {timeout}s: {last_error}")
+            await asyncio.sleep(5)
+
+
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
     global _http_client, _client_concurrency, _distributed_post_enabled
@@ -231,6 +253,8 @@ def init_http_client(args):
         return
 
     _client_concurrency = args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+    if args.eval_num_gpus > 0:
+        _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
     if _http_client is None:
         _http_client = httpx.AsyncClient(
             limits=httpx.Limits(max_connections=_client_concurrency),

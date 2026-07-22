@@ -88,6 +88,10 @@ class RayTrainGroup:
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
+    async def export_hf(self, rollout_id: int, path: str):
+        """Export current weights as an HF checkpoint (collective across all ranks)."""
+        await self._broadcast("export_hf", rollout_id, path)
+
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights from rank 0 to all other ranks."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
