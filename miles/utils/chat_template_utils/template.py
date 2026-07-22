@@ -134,10 +134,13 @@ def apply_chat_template_from_str(
 
 _TEMPLATE_RELEVANT_KEYS = ("role", "content", "reasoning_content", "tool_calls")
 
-# Wire-only tool_call keys that no chat template reads.  SGLang's non-streaming
-# responses always serialize ``index`` (int or null, from ToolCall.index), while
-# streaming clients that rebuild the message from deltas drop it per OpenAI
-# semantics — so it must not participate in matching.
+# Wire-only tool_call keys ignored when matching a stored message against a
+# client replay.  The OpenAI non-streaming message shape has no ``index`` on
+# tool_calls — it is an sglang extension (ToolCall.index, the tool's position
+# in the tools list, int or null) — so protocol-faithful clients (SSE
+# accumulators rebuilding the message from deltas) legitimately replay
+# tool_calls without it, or with a renumbered value.  No chat template reads
+# it either way.
 _WIRE_ONLY_TOOL_CALL_KEYS = ("index",)
 
 
@@ -158,11 +161,21 @@ def _normalize_value(value: Any) -> Any:
 
 
 def _normalize_tool_calls(value: Any) -> Any:
-    """Drop wire-only and null-valued keys from each tool_call dict.
+    """Project tool_calls down to template-relevant content for comparison.
 
-    Jinja2 templates render an absent key and a None-valued key identically,
-    and ``index`` is a streaming-accumulation artifact no template reads, so
+    Drops wire-only keys plus null-valued keys from each tool_call dict:
+    Jinja2 renders an absent key and a None-valued key identically, so
     neither may distinguish a stored message from its replay.
+
+    Deliberately a comparison-time projection, NOT a repair of the incoming
+    message from stored state.  Matching only decides whether a replay is
+    the same history: on a match the prefix tokens come from stored
+    checkpoints and records keep the raw backend response (``index``
+    intact), so nothing downstream reads the replayed keys.  Filling
+    missing keys from stored would also presuppose the per-call
+    correspondence this comparison is itself establishing, and cannot
+    handle a client that replays a different ``index`` value rather than
+    none.
     """
     if not isinstance(value, list):
         return value
