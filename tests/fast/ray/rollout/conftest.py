@@ -42,6 +42,7 @@ def make_args(**overrides: Any) -> Namespace:
         # batch / training
         global_batch_size=8,
         use_dynamic_global_batch_size=False,
+        wandb_always_use_train_step=False,
         disable_rollout_trim_samples=False,
         balance_data=False,
         delay_split_train_data_by_dp=False,

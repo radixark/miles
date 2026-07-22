@@ -85,7 +85,8 @@ def test_tracking_backend_end_to_end_local_ray(tmp_path):
 
 
 def test_registry_contains_dashboard_backend():
-    from miles.utils.tracking_utils.base import BACKEND_REGISTRY, MilesDashboardBackend
+    from miles.utils.tracking_utils.base import MilesDashboardBackend
+    from miles.utils.tracking_utils.tracking import BACKEND_REGISTRY
 
     cls, flag = BACKEND_REGISTRY["miles_dashboard"]
     assert cls is MilesDashboardBackend

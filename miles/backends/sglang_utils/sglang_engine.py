@@ -18,6 +18,7 @@ from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -376,18 +377,25 @@ class SGLangEngine(RayActor):
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        upsert: bool = False,
+        expected_checksums: dict | None = None,
     ):
-        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
+        """Load a LoRA adapter; ``serialized_named_tensors[tp_rank]`` is bytes for that TP rank.
+        With ``upsert``, the already-loaded ``lora_name`` is overwritten in place (no unload/register)."""
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
             "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
+        if upsert:
+            payload["upsert"] = True
         if load_format is not None:
             payload["load_format"] = load_format
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
+        if expected_checksums is not None:
+            payload["expected_checksums"] = expected_checksums
 
         return self._make_request(
             "load_lora_adapter_from_tensors",
@@ -404,14 +412,10 @@ class SGLangEngine(RayActor):
         group_name: str,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        upsert: bool = False,
     ):
-        """Load a LoRA adapter whose weights are broadcast over ``group_name``.
-
-        Mirrors ``update_weights_from_distributed``: only metadata is sent here;
-        the tensors arrive via NCCL broadcast (src=0), so no CUDA IPC is used and
-        this works across nodes. ``init_weights_update_group`` must have created
-        ``group_name`` already.
-        """
+        """Load a LoRA adapter: only metadata is sent; weights arrive via NCCL broadcast over ``group_name``.
+        With ``upsert``, the already-loaded ``lora_name`` is overwritten in place (no unload/register)."""
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
@@ -420,6 +424,7 @@ class SGLangEngine(RayActor):
             "shapes": shapes,
             "group_name": group_name,
             "pinned": pinned,
+            "upsert": upsert,
         }
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
@@ -745,7 +750,12 @@ def _compute_server_args(
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
-    if is_lora_enabled(args):
+    if is_multi_lora_enabled(args):
+        kwargs["enable_lora"] = True
+        kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
+        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+    elif is_lora_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)

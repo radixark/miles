@@ -252,7 +252,7 @@ class TestRegisterNegative:
 # --- AST helpers (extraction-only, isolated from KNOWN_LABELS validation) ---
 
 
-class TestExtractionHelpers:
+class TestSelectionHelpers:
     def test_extract_constant_int(self):
         node = ast.parse("42", mode="eval").body
         assert _extract_constant(node) == 42

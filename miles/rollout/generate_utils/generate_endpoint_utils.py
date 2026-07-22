@@ -36,6 +36,21 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
         return state.tokenizer.encode(prompt, add_special_tokens=False)
 
 
+def policy_uses_routing_key(args) -> bool:
+    return args.sglang_router_policy in ("consistent_hashing", "manual")
+
+
+def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
+    if policy_uses_routing_key(args) and not sample.routing_key:
+        raise ValueError(
+            f"router policy {args.sglang_router_policy} routes by X-SMG-Routing-Key, "
+            f"but sample (index={sample.index}) has no routing_key set"
+        )
+    if sample.routing_key:
+        return {"X-SMG-Routing-Key": sample.routing_key}
+    return None
+
+
 def compute_request_payload(
     args,
     input_ids: list[int],

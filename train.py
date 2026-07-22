@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
@@ -73,17 +74,12 @@ async def train(args):
         else:
             await actor_model.clear_memory()
 
-    async def save(rollout_id):
+    async def save(rollout_id, force_sync=False):
+        force_sync = force_sync or rollout_id == args.num_rollout - 1
         if (not args.use_critic) or (rollout_id >= args.num_critic_only_steps):
-            await actor_model.save_model(
-                rollout_id,
-                force_sync=rollout_id == args.num_rollout - 1,
-            )
+            await actor_model.save_model(rollout_id, force_sync=force_sync)
         if args.use_critic:
-            await critic_model.save_model(
-                rollout_id,
-                force_sync=rollout_id == args.num_rollout - 1,
-            )
+            await critic_model.save_model(rollout_id, force_sync=force_sync)
         await rollout_manager.save.remote(rollout_id)
 
     # train loop.
@@ -110,8 +106,13 @@ async def train(args):
         else:
             await actor_model.train(rollout_id, rollout_data_ref)
 
-        if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
-            await save(rollout_id)
+        external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
+        if external_save or should_run_periodic_action(
+            rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
+        ):
+            await save(rollout_id, force_sync=external_save)
+            if external_save:
+                os.remove(args.save_trigger_sentinel)
 
         await offload_train()
         if args.offload_rollout:

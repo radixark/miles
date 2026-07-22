@@ -10,6 +10,7 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
+    compute_routing_headers,
     update_sample_from_response,
 )
 from miles.rollout.generate_utils.tool_call_utils import (
@@ -63,7 +64,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             sample = deepcopy(input.sample)
 
         gen_t0 = time.time()
-        output = await post(url, payload)
+        output = await post(url, payload, headers=compute_routing_headers(args, sample))
         sink = None if input.evaluation else TrajectoryLifecycle().sink
         if sink is not None:
             tokens = output.get("meta_info", {}).get("completion_tokens", "")
