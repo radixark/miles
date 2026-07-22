@@ -8,7 +8,7 @@ import ray
 import torch
 import torch.distributed as dist
 from ray.actor import ActorHandle
-from torch.distributed.tensor import DTensor, Replicate
+from torch.distributed.tensor import DTensor
 
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions  # type: ignore[import]
@@ -27,6 +27,29 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+from .adaptations.weight_bridge import get_param_transform
+from .dtensor import gather_full_param
+
+
+def _iter_sync_named_params(name, param, model_type, model, orig_dtypes=None):
+    """Yield (name, tensor) pairs for the rollout engine, applying the registered WeightBridge transform
+    for this model_type (e.g. unfusing batched MoE experts); params with no transform stream unchanged.
+    ``model`` is the HF module the params came from (transforms resolve its checkpoint-conversion mapping);
+    ``orig_dtypes`` downcasts an fp32 master tensor back to its on-disk dtype."""
+    expand = get_param_transform(name, param, model_type)
+    if expand is None:
+        yield name, param
+        return
+
+    # Materialize the full (unsharded) tensor before the transform slices it.
+    full = gather_full_param(param)
+    if orig_dtypes is not None:
+        target = orig_dtypes.get(name)
+        if target is not None and full.dtype != target:
+            full = full.to(target)
+    yield from expand(name, full, model)
 
 
 class UpdateWeight(abc.ABC):
@@ -56,23 +79,23 @@ class UpdateWeight(abc.ABC):
 
         bucket = []
         bucket_size = 0
-        for name, param in self.model.state_dict().items():
-            param_size = param.numel() * param.element_size()
-            if bucket and bucket_size + param_size >= self.args.update_weight_buffer_size:
-                self.wait_and_update_bucket_weights(bucket)
-                del bucket
-                bucket = []
-                bucket_size = 0
+        model_type = getattr(getattr(self.model, "config", None), "model_type", "")
+        # FP32 masters are streamed in each parameter's original on-disk dtype.
+        orig_dtypes = getattr(self.model, "_fsdp_sync_orig_dtypes", None)
+        for raw_name, raw_param in self.model.state_dict().items():
+            for name, param in _iter_sync_named_params(raw_name, raw_param, model_type, self.model, orig_dtypes):
+                param_size = param.numel() * param.element_size()
+                if bucket and bucket_size + param_size >= self.args.update_weight_buffer_size:
+                    self.wait_and_update_bucket_weights(bucket)
+                    del bucket
+                    bucket = []
+                    bucket_size = 0
 
-            param = param.cuda()
-            if isinstance(param, DTensor):
-                # async version of param.full_tensor
-                param = param.redistribute(
-                    placements=[Replicate()] * param.device_mesh.ndim,
-                    async_op=True,
-                ).to_local()
-            bucket.append((name, param))
-            bucket_size += param_size
+                # passthrough params only (split experts are pre-cast); the target_dtype cast is deferred to post-wait
+                target_dtype = orig_dtypes.get(name) if orig_dtypes is not None else None
+                param = gather_full_param(param, async_op=True)
+                bucket.append((name, param, target_dtype))
+                bucket_size += param_size
 
         if bucket:
             self.wait_and_update_bucket_weights(bucket)
@@ -86,8 +109,15 @@ class UpdateWeight(abc.ABC):
         dist.barrier(group=get_gloo_group())
 
     def wait_and_update_bucket_weights(self, bucket):
-        bucket = [(name, param.wait()) if hasattr(param, "wait") else (name, param) for name, param in bucket]
-        self.update_bucket_weights(bucket, weight_version=self.weight_version)
+        resolved = []
+        for name, param, target_dtype in bucket:
+            if hasattr(param, "wait"):
+                param = param.wait()
+            # downcast the fp32 master to its on-disk dtype (round-to-nearest-even reproduces disk bf16); None = no cast
+            if target_dtype is not None and param.dtype != target_dtype:
+                param = param.to(target_dtype)
+            resolved.append((name, param))
+        self.update_bucket_weights(resolved, weight_version=self.weight_version)
 
     @abc.abstractmethod
     def update_bucket_weights(self, named_tensors, weight_version=None) -> None:
