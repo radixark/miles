@@ -21,7 +21,7 @@ def resolve_precision_policy(hf_config, args) -> PrecisionPolicy:
     return PrecisionPolicy(
         param_dtype=param_dtype,
         reduce_dtype=torch.float32,
-        keep_fp32_master=args.enable_fp32_master,
+        keep_fp32_master=args.keep_fp32_master,
     )
 
 
