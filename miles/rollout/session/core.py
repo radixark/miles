@@ -4,6 +4,7 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 
 - ``chat_completions`` strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) from the client reply copy-on-write; the ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
+- ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
 """
 
 import json
@@ -58,7 +59,47 @@ def _strip_replay_payloads(response: dict) -> dict:
     return {**response, "choices": stripped_choices}
 
 
-def _chat_client_response(result: dict, response: dict) -> Response:
+def _response_to_stream_chunk(response: dict) -> dict:
+    """Synthesize the single ``chat.completion.chunk`` for a fake stream.
+
+    Adapted from NVIDIA-NeMo/ProRL-Agent-Server (``gateway/server.py::_response_to_stream_chunk``)
+    and THUDM/slime (``agent/adapters/openai.py::_render_stream``).
+
+    One big delta is protocol-legal (streaming deltas concatenate). All
+    tool_calls ride in this one chunk with their ``index`` set: some clients
+    mis-assemble arguments fragmented across chunks. The chunk carries no
+    ``meta_info``; the training path reads ``GET /sessions/{id}`` instead.
+    """
+    choice = response.get("choices", [{}])[0]
+    message = choice.get("message") or {}
+    delta = {"role": message.get("role", "assistant"), "content": message.get("content")}
+    if message.get("reasoning_content") is not None:
+        delta["reasoning_content"] = message["reasoning_content"]
+    if message.get("tool_calls"):
+        delta["tool_calls"] = [{**tool_call, "index": i} for i, tool_call in enumerate(message["tool_calls"])]
+    chunk = {
+        "id": response.get("id"),
+        "object": "chat.completion.chunk",
+        "created": response.get("created"),
+        "model": response.get("model"),
+        "choices": [{"index": 0, "delta": delta, "finish_reason": choice.get("finish_reason")}],
+    }
+    if response.get("usage") is not None:
+        chunk["usage"] = response["usage"]
+    return chunk
+
+
+def _chat_client_response(result: dict, response: dict, client_stream: bool) -> Response:
+    if client_stream:
+        sse = b"data: " + _render_json(_response_to_stream_chunk(response)) + b"\n\ndata: [DONE]\n\n"
+        # Fresh headers: upstream's headers describe its JSON body, not this SSE body.
+        # X-Accel-Buffering keeps reverse proxies from buffering the stream.
+        return Response(
+            content=sse,
+            status_code=result["status_code"],
+            headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+            media_type="text/event-stream",
+        )
     headers = {k: v for k, v in result["headers"].items() if k.lower() not in _DROP_RESPONSE_HEADERS}
     return Response(
         content=_render_json(_strip_replay_payloads(response)),
@@ -161,6 +202,13 @@ class SessionCore:
             except json.JSONDecodeError as e:
                 raise MessageValidationError(f"invalid JSON body: {e}") from e
 
+            # Fake streaming: the backend must stay non-streaming (TITO needs the
+            # complete message + meta_info, and sglang rejects return_meta_info
+            # with stream=true), so pop the client's intent here and honor it
+            # when rendering the client response.
+            client_stream = bool(request_body.pop("stream", False))
+            request_body.pop("stream_options", None)
+
             # TITO token tracking needs Miles-owned input_ids plus SGLang output
             # metadata: logprobs=True populates meta_info.output_token_logprobs and
             # return_meta_info wraps it in choice.meta_info. Hardcoded (not
@@ -240,7 +288,7 @@ class SessionCore:
         async with session.lock:
             if session.closing:
                 logger.warning(f"Session {session_id} closed during proxy, skipping state update")
-                return _chat_client_response(result, response)
+                return _chat_client_response(result, response, client_stream)
 
             if session.num_assistant != expected_num_assistant:
                 logger.warning(
@@ -248,7 +296,7 @@ class SessionCore:
                     f"(expected num_assistant={expected_num_assistant}, "
                     f"got {session.num_assistant}), skipping state update"
                 )
-                return _chat_client_response(result, response)
+                return _chat_client_response(result, response, client_stream)
 
             session.update_pretokenized_state(
                 request_messages,
@@ -269,7 +317,7 @@ class SessionCore:
             session.append_record(record)
         # --- lock released ---
 
-        return _chat_client_response(result, response)
+        return _chat_client_response(result, response, client_stream)
 
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes
