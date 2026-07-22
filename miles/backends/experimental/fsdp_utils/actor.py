@@ -96,7 +96,6 @@ class FSDPTrainRayActor(TrainRayActor):
         if self.args.offload_train and self.fsdp_cpu_offload:
             self.args.offload_train = False
 
-        self._enable_true_on_policy_optimizations(args)
         if dist.get_rank() == 0:
             init_tracking(args, primary=False)
 
@@ -111,10 +110,19 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.tokenizer = load_tokenizer(
                     self.args.hf_checkpoint, chat_template_path=self.args.chat_template_path, trust_remote_code=True
                 )
-                # Vision models have `vision_config` in the config
                 if hasattr(self.hf_config, "vision_config"):
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
+
+        # FSDP trains stock HF modeling: HF-compat patches + config-lifetime packing, before construction.
+        from .adaptations.class_patches import apply_class_patches
+        from .adaptations.packing import apply_packing
+
+        apply_class_patches(self.hf_config, self.args)
+        apply_packing(None, self.hf_config, "config")
+
+        # backend-level true-on-policy setup (batch-invariant ops)
+        self._enable_true_on_policy_optimizations(args)
 
         init_context = self._get_init_weight_context_manager()
 
@@ -125,12 +133,31 @@ class FSDPTrainRayActor(TrainRayActor):
                 attn_implementation=self.args.attn_implementation,
             )
 
+        from .adaptations.precision import apply_fp32_master, resolve_precision_policy
+
+        precision = resolve_precision_policy(self.hf_config, self.args)
+        if precision.keep_fp32_master:
+            model = apply_fp32_master(model)
+
+        # re-assert the checkpoint over any param from_pretrained clobbered post-load (arch-gated, else no-op)
+        from .adaptations.post_load_fixups import apply_post_load_fixups
+
+        apply_post_load_fixups(model, self.hf_config, self.args.hf_checkpoint)
+
+        # post-load packing patches that need the instantiated model (NemotronH); no-op for archs that don't
+        apply_packing(model, self.hf_config, "post_load")
+
         model.train()
 
         full_state = model.state_dict()
 
         model = apply_fsdp2(
-            model, mesh=get_parallel_state().dp_mesh, cpu_offload=self.fsdp_cpu_offload, args=self.args
+            model,
+            mesh=get_parallel_state().dp_mesh,
+            cpu_offload=self.fsdp_cpu_offload,
+            args=self.args,
+            param_dtype=precision.param_dtype,
+            reduce_dtype=precision.reduce_dtype,
         )
 
         model = self._fsdp2_load_full_state_dict(
@@ -196,10 +223,9 @@ class FSDPTrainRayActor(TrainRayActor):
             return AutoModelForCausalLM
 
     def _enable_true_on_policy_optimizations(self, args):
+        """Backend-level true-on-policy setup (batch-invariant ops), gated on the run mode."""
         if args.true_on_policy_mode:
             from sglang.srt.batch_invariant_ops import enable_batch_invariant_mode
-
-            from .models.qwen3_moe import apply_true_on_policy_patch_for_qwen3_moe
 
             logger.info("FSDPTrainRayActor call enable_batch_invariant_mode for true-on-policy")
             enable_batch_invariant_mode(
@@ -208,25 +234,14 @@ class FSDPTrainRayActor(TrainRayActor):
                 enable_bmm=False,
             )
 
-            apply_true_on_policy_patch_for_qwen3_moe()
-        else:
-            from .models.qwen3_moe_hf import apply_fsdp_moe_patch
-
-            apply_fsdp_moe_patch()
-
     def _get_init_weight_context_manager(self):
-        """Get context manager for model initialization.
-
-        Returns a callable that creates a context manager.
-        Uses meta device (no memory allocation) for non-rank-0 processes,
-        UNLESS tie_word_embeddings=True (which causes hangs with meta tensors).
+        """Context manager for model init: meta device (no allocation) on non-rank-0, EXCEPT when
+        tie_word_embeddings=True (meta tensors hang there) -- then full CPU load on all ranks.
 
         Ref: verl/utils/fsdp_utils.py::get_init_weight_context_manager
-        NOTE: tie_word_embedding causes meta_tensor init to hang
         """
         from accelerate import init_empty_weights
 
-        # Check if model uses tied word embeddings (which doesn't work with meta tensors)
         use_meta_tensor = not self.hf_config.tie_word_embeddings
 
         def cpu_init_weights():
