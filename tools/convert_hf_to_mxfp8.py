@@ -45,6 +45,10 @@ SKIP_WEIGHT_SUBSTRINGS = (
     "lm_head",
     "eh_proj",
     "weights_proj",
+    "head.",
+    "wo_a",
+    "ffn.gate.",
+    "compressor.",
 )
 
 SOURCE_FP8_BLOCK_SIZE = [128, 128]
