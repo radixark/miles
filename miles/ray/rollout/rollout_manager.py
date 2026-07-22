@@ -80,6 +80,20 @@ class RolloutManager:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
             start_session_server(args)
+            # Dynamo's frontend doesn't expose sgl_router's `/workers` route,
+            # so the rollout-side abort path can't enumerate workers over
+            # HTTP. Stash engine actor handles on the GenerateState singleton
+            # so abort() reaches into them via Ray instead.
+            if getattr(args, "rollout_backend", "sglang") == "dynamo":
+                from miles.rollout.sglang_rollout import GenerateState
+
+                engine_handles = [
+                    e.actor_handle
+                    for srv in self.servers.values()
+                    for group in srv.server_groups
+                    for e in group.engines
+                ]
+                GenerateState(args).rollout_engines = engine_handles
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 

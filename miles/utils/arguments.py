@@ -1506,6 +1506,86 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Number of consecutive failures before marking a worker as unhealthy.",
             )
             RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
+
+            # ---- Dynamo router opt-in (drop-in replacement for sgl_router) -----
+            parser.add_argument(
+                "--rollout-backend",
+                type=str,
+                default="sglang",
+                choices=["sglang", "dynamo"],
+                help=(
+                    "Inference backend used during rollout. 'sglang' is the "
+                    "default (sgl_router + multiprocessing-launched sglang "
+                    "servers); 'dynamo' swaps in a Dynamo frontend and "
+                    "subprocess-launched dynamo.sglang workers."
+                ),
+            )
+            parser.add_argument(
+                "--dynamo-router-mode",
+                type=str,
+                default=None,
+                choices=["kv", "round-robin", "random"],
+                help=(
+                    "Routing policy for the Dynamo frontend. 'kv' uses the "
+                    "KV-block prefix tree (best for multi-turn / shared-prefix "
+                    "workloads). Defaults to round-robin."
+                ),
+            )
+            parser.add_argument(
+                "--dynamo-discovery-backend",
+                type=str,
+                default=None,
+                choices=["etcd", "file"],
+                help=(
+                    "Worker discovery backend. 'etcd' is mandatory when "
+                    "--dynamo-router-mode=kv; 'file' is convenient for local "
+                    "single-node development."
+                ),
+            )
+            parser.add_argument(
+                "--dynamo-router-kv-events",
+                action="store_true",
+                default=True,
+                help="Subscribe to worker KV-cache events via NATS (default on for KV mode).",
+            )
+            parser.add_argument(
+                "--no-dynamo-router-kv-events",
+                dest="dynamo_router_kv_events",
+                action="store_false",
+                help="Disable the worker KV-event subscription (router falls back to predict-on-route only).",
+            )
+            parser.add_argument(
+                "--dynamo-router-predict-on-route",
+                action="store_true",
+                default=True,
+                help="Speculatively insert routed blocks with a TTL — patches the same-burst cache-hit gap.",
+            )
+            parser.add_argument(
+                "--dynamo-router-predicted-ttl-secs",
+                type=int,
+                default=None,
+                help="TTL on speculatively-inserted blocks. None ⇒ Dynamo's default.",
+            )
+            parser.add_argument(
+                "--dynamo-page-size",
+                type=int,
+                default=64,
+                help=(
+                    "SGLang page_size passed to dynamo.sglang. Must be >1 — "
+                    "the KV router uses block-hash matching and panics on "
+                    "per-token pages."
+                ),
+            )
+            parser.add_argument(
+                "--dynamo-model-name",
+                type=str,
+                default=None,
+                help=(
+                    "Override the model name used in /v1/completions requests. "
+                    "Defaults to basename(--hf-checkpoint), which matches the "
+                    "name dynamo.sglang registers under."
+                ),
+            )
             return parser
 
         # wandb
