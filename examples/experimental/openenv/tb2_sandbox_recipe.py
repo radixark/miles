@@ -6,7 +6,7 @@ harness itself runs). A sandbox serving this env must therefore be built per
 task: **the official task image ⊕ this env's server layer**, one layer, no
 DinD. This module owns that recipe as plain shell commands — nothing
 provider-specific — so the same layers can back a Dockerfile, a Daytona
-declarative build (``tb2_task_sandbox``, the sibling module), or another
+declarative build (``tb2_sandbox_daytona``, the sibling module), or another
 provider.
 
   ``server_layer_commands(task_dir)``  shell commands that turn the official
@@ -36,6 +36,7 @@ tampers with container binaries could still fake a pass.
 """
 
 import base64
+import gzip
 import io
 import re
 import shlex
@@ -107,14 +108,25 @@ def _tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
     name = Path(tarinfo.name).name
     if name in {"__pycache__", ".initial_env"} or name.endswith((".pyc", ".egg-info")):
         return None
+    # Zero out metadata the build doesn't need (mtimes, owner): it varies
+    # across hosts and checkouts and would break _dir_tar_b64's determinism.
+    tarinfo.mtime = 0
+    tarinfo.uid = tarinfo.gid = 0
+    tarinfo.uname = tarinfo.gname = ""
     return tarinfo
 
 
 def _dir_tar_b64(paths: list[Path], arcnames: list[str], max_bytes: int) -> str:
+    # Must be byte-for-byte deterministic for identical source: the b64 is
+    # embedded in a build command, so any drift — the gzip header's
+    # compression timestamp (mtime=0 suppresses it), per-entry mtimes/owners
+    # (_tar_filter zeroes them) — would change the image definition on every
+    # call and defeat provider build caches and pre-baked snapshots.
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for path, arcname in zip(paths, arcnames, strict=True):
-            tar.add(path, arcname=arcname, filter=_tar_filter)
+    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w") as tar:
+            for path, arcname in zip(paths, arcnames, strict=True):
+                tar.add(path, arcname=arcname, filter=_tar_filter)
     raw = buf.getvalue()
     if len(raw) > max_bytes:
         raise ValueError(f"embedded tar is {len(raw)} bytes (> {max_bytes}); " "inline embedding not suitable.")
@@ -127,9 +139,9 @@ def _task_layer_command(task_dir: Path) -> str:
     One uniform path for every task: download the checkout's pinned-commit
     GitHub tarball and extract just this task. Deterministic (the SHA pins
     the content — note: the committed tree, not uncommitted local edits) and
-    payload-free, so build commands stay far from Daytona's 64KB
-    Dockerfile-line ceiling regardless of task-dir size. Requires the tasks
-    checkout to be a git clone with a GitHub origin.
+    payload-free, so build commands stay far below provider build-command
+    size ceilings (see _MAX_INLINE_TAR_BYTES) regardless of task-dir size.
+    Requires the tasks checkout to be a git clone with a GitHub origin.
     """
     repo_root = task_dir.parent
     sha = subprocess.run(

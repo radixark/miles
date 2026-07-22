@@ -6,12 +6,14 @@ when touching the recipe:
     pytest examples/experimental/openenv/tests/ -q
 """
 
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import tb2_task_recipe as recipe  # noqa: E402
+import tb2_sandbox_recipe as recipe  # noqa: E402
 
 
 def _make_tasks_repo(root: Path, task_name: str = "some-task") -> Path:
@@ -47,6 +49,28 @@ def test_task_layer_excludes_solution(tmp_path: Path):
     assert f"--exclude='tb2tasks-{sha}/some-task/solution'" in cmd
     assert f"--exclude='tb2tasks-{sha}/some-task/solution/*'" in cmd
     assert cmd.rstrip().endswith(f"'tb2tasks-{sha}/some-task'")
+
+
+def test_dir_tar_b64_is_deterministic(tmp_path: Path):
+    # The b64 is embedded in a build command: identical source must yield
+    # identical bytes, or every call produces a new image definition and
+    # provider build caches / pre-baked snapshots never hit. Guards the two
+    # nondeterminism sources: the gzip header timestamp (differs between
+    # calls in different seconds) and per-entry mtime/owner metadata
+    # (differs between checkouts of the same content).
+    src = tmp_path / "pkg"
+    src.mkdir()
+    (src / "a.py").write_text("x = 1\n")
+    sub = src / "server"
+    sub.mkdir()
+    (sub / "b.py").write_text("y = 2\n")
+
+    first = recipe._dir_tar_b64([src], ["pkg"], max_bytes=100_000)
+    time.sleep(1.1)  # cross a gzip-header timestamp boundary
+    os.utime(src / "a.py", (0, 0))  # same content, different file mtime
+    second = recipe._dir_tar_b64([src], ["pkg"], max_bytes=100_000)
+
+    assert first == second
 
 
 def test_server_cmd_sets_withhold_gate():

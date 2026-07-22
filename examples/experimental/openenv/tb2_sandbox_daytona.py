@@ -1,7 +1,7 @@
 """Daytona materialization of the per-task Terminal-Bench-2 sandbox recipe.
 
 The recipe itself — the shell layers that turn a task's official image into a
-combined task+env-server image — lives in ``tb2_task_recipe`` (sibling module)
+combined task+env-server image — lives in ``tb2_sandbox_recipe`` (sibling module)
 and is provider-agnostic. This module is everything Daytona-specific about
 turning that recipe into a running cloud sandbox:
 
@@ -11,7 +11,7 @@ turning that recipe into a running cloud sandbox:
       the declarative path avoids the quota entirely, and repeat creates hit
       Daytona's build cache (~1min after the first build). Daytona does not
       run the image CMD, so this execs ``server_cmd()`` and waits for /health.
-  bake CLI (``python tb2_task_sandbox.py ...``)  optionally pre-register
+  bake CLI (``python tb2_sandbox_daytona.py ...``)  optionally pre-register
       named snapshots ``<prefix><task-id>`` as a warm cache.
 """
 
@@ -22,7 +22,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from tb2_task_recipe import (
+from tb2_sandbox_recipe import (
     read_task_config,
     resolve_docker_image,
     server_cmd,
