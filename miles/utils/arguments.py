@@ -179,6 +179,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--enable-pp-free-warmup",
+                action="store_true",
+                default=False,
+                help=(
+                    "Megatron only: run one PP-free forward/backward on every pipeline stage before the "
+                    "first actor step, without an optimizer step or gradient synchronization. "
+                    "Virtual pipeline stages are warmed one chunk at a time; skipped when PP size is 1."
+                ),
+            )
+            parser.add_argument(
                 "--train-env-vars",
                 type=json.loads,
                 default="{}",
