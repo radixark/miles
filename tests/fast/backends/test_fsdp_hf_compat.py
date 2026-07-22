@@ -210,21 +210,18 @@ def test_weight_bridge_registry():
 
 def test_model_patch_registry_gating():
     # The ModelPatchHook registry replaces the hardcoded per-arch dispatch in apply_class_patches.
-    # Verify the predicates gate correctly (s_aux always; config-checks need a config). Packed-sequence
-    # layout patches (GDN, ...) moved out of this registry into the unified packing registry
-    # (test_packing_registry below); apply_class_patches now dispatches them via apply_packing.
+    # Verify the config-check predicates gate correctly. Packed-sequence layout patches (GDN, ...) moved
+    # out of this registry into the unified packing registry (test_packing_registry below);
+    # apply_class_patches now dispatches them via apply_packing.
     from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
 
     by_name = {h.name: h for h in _MODEL_PATCH_HOOKS}
-    # the three expected hooks are registered, in order (GDN packing no longer a ModelPatchHook)
-    assert [h.name for h in _MODEL_PATCH_HOOKS][:3] == [
-        "flash_attn_saux_guard",
+    # the two expected generic hooks are registered, in order (GDN packing no longer a ModelPatchHook)
+    assert [h.name for h in _MODEL_PATCH_HOOKS][:2] == [
         "fp8_checkpoint_guard",
         "dsa_train_infer_warn",
     ]
     assert "gated_deltanet_packing" not in by_name
-    # s_aux guard runs even without a config; the others don't
-    assert by_name["flash_attn_saux_guard"].applies_to(None)
     assert not by_name["fp8_checkpoint_guard"].applies_to(None)
     # the qwen3_moe MoE-block patch is a hook now (moved out of _enable_true_on_policy_optimizations),
     # gated on model_type; the backend-level enable_batch_invariant_mode stays in the actor.

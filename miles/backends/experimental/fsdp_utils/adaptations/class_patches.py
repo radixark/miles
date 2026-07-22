@@ -4,61 +4,9 @@ The FSDP backend trains the stock HF model, so it's sensitive to transformers-ve
 idempotent patches keep the training forward runnable and warn when it diverges from the SGLang rollout.
 """
 
-import inspect
 import logging
-import textwrap
 
 logger = logging.getLogger(__name__)
-
-
-def apply_flash_attn_saux_guard() -> bool:
-    """Guard ``s_aux`` (attention sink) against None in transformers 5.6.0 flash_attention_forward, which
-    does ``s_aux.to(query.dtype)`` unconditionally and crashes sink-less models (Qwen3). Returns True if patched."""
-    try:
-        import transformers.integrations.flash_attention as fa
-    except Exception:  # pragma: no cover
-        return False
-    try:
-        src = inspect.getsource(fa.flash_attention_forward)
-    except (OSError, TypeError):
-        return False
-
-    BUG = "s_aux=s_aux.to(query.dtype)"
-    if "if s_aux is not None" in src or BUG not in src:
-        return False  # already guarded, or an unrecognized layout
-
-    new_src = textwrap.dedent(src).replace(BUG, "s_aux=(s_aux.to(query.dtype) if s_aux is not None else None)")
-    ns = vars(fa)
-    try:
-        exec(compile(new_src, fa.__file__, "exec"), ns)  # noqa: S102 - controlled recompile
-    except Exception as e:  # pragma: no cover
-        logger.warning(f"[fsdp class_patches] s_aux guard compile failed: {e}")
-        return False
-    patched = ns["flash_attention_forward"]
-    patched._saux_guarded = True
-    fa.flash_attention_forward = patched
-
-    try:
-        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS as A
-
-        for key in list(A.valid_keys()):
-            try:
-                cur = A[key]
-            except Exception:
-                continue
-            if getattr(cur, "__name__", None) == "flash_attention_forward":
-                try:
-                    A[key] = patched
-                except Exception:
-                    try:
-                        A.register(key, patched, exist_ok=True)
-                    except Exception:
-                        pass
-    except Exception as e:  # pragma: no cover
-        logger.warning(f"[fsdp class_patches] s_aux guard re-register skipped: {e}")
-
-    logger.info("[fsdp class_patches] applied flash-attention s_aux None-guard")
-    return True
 
 
 def check_train_infer_consistency(hf_config) -> None:
@@ -112,15 +60,10 @@ def register_model_patch(hook: ModelPatchHook) -> None:
     _MODEL_PATCH_HOOKS.append(hook)
 
 
-def _always(hf_config) -> bool:
-    return True
-
-
 def _has_config(hf_config) -> bool:
     return hf_config is not None
 
 
-register_model_patch(ModelPatchHook("flash_attn_saux_guard", _always, lambda cfg, args: apply_flash_attn_saux_guard()))
 register_model_patch(ModelPatchHook("fp8_checkpoint_guard", _has_config, lambda cfg, args: check_fp8_checkpoint(cfg)))
 register_model_patch(
     ModelPatchHook("dsa_train_infer_warn", _has_config, lambda cfg, args: check_train_infer_consistency(cfg))
