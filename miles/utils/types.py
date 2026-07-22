@@ -152,11 +152,7 @@ class Sample:
         return sample
 
     def get_reward_value(self, args) -> float:
-        # reward_key only applies to dict rewards; a per-dataset rm override
-        # (sample metadata rm_type) may return plain scalars.
-        if args.reward_key and isinstance(self.reward, dict):
-            return self.reward[args.reward_key]
-        return self.reward
+        return self.reward if not args.reward_key else self.reward[args.reward_key]
 
     @property
     def effective_response_length(self):

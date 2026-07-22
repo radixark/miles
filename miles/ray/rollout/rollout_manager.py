@@ -30,7 +30,7 @@ from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdenti
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.hf_config import is_complete_hf_export
-from miles.utils.http_utils import init_http_client
+from miles.utils.http_utils import init_http_client, wait_http_ok
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
@@ -149,7 +149,7 @@ class RolloutManager:
             return
         self._health_monitoring_resume()
 
-        if getattr(self.args, "eval_num_gpus", 0) > 0:
+        if self.args.eval_num_gpus > 0:
             assert hf_dir is not None, "eval with a dedicated fleet requires an HF snapshot dir"
             return await self._eval_on_dedicated_fleet(rollout_id, hf_dir, export_time_seconds)
 
@@ -182,12 +182,12 @@ class RolloutManager:
                 await srv.wait_all_engines_alive()
             except Exception as e:
                 logger.warning(f"Eval fleet unhealthy at rollout {rollout_id}, skipping eval: {e}")
-                self._log_eval_skip(rollout_id, "unhealthy")
+                self.report_eval_skip(rollout_id, "unhealthy")
                 return
 
             if hf_dir != self.args.hf_checkpoint and not is_complete_hf_export(hf_dir):
                 logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
-                self._log_eval_skip(rollout_id, "ckpt_missing")
+                self.report_eval_skip(rollout_id, "ckpt_missing")
                 return
 
             engines = [e.actor_handle for e in srv.engines]
@@ -218,14 +218,14 @@ class RolloutManager:
                 logger.warning(
                     f"Eval fleet failed to pin weight_version={weight_version} (got {versions}), skipping eval"
                 )
-                self._log_eval_skip(rollout_id, "pin_violation")
+                self.report_eval_skip(rollout_id, "pin_violation")
                 return
 
             try:
                 await self._wait_eval_router_ready(srv)
             except Exception as e:
                 logger.warning(f"Eval router not ready at rollout {rollout_id}, skipping eval: {e}")
-                self._log_eval_skip(rollout_id, "unhealthy")
+                self.report_eval_skip(rollout_id, "unhealthy")
                 return
 
             result = await asyncio.to_thread(
@@ -247,23 +247,11 @@ class RolloutManager:
     async def _wait_eval_router_ready(self, srv, timeout: float = 180.0) -> None:
         """After a revival the router 503s until its health cycle evicts the dead
         worker; a retried one-token probe proves the route is usable before dispatch."""
-        import httpx
-
-        url = f"http://{srv.router_ip}:{srv.router_port}/generate"
-        payload = {"input_ids": [0], "sampling_params": {"max_new_tokens": 1, "temperature": 0}}
-        deadline = time.time() + timeout
-        async with httpx.AsyncClient() as client:
-            while True:
-                try:
-                    response = await client.post(url, json=payload, timeout=60)
-                    if response.status_code == 200:
-                        return
-                    last_error = f"HTTP {response.status_code}"
-                except httpx.HTTPError as e:
-                    last_error = repr(e)
-                if time.time() > deadline:
-                    raise TimeoutError(f"eval router at {url} not ready after {timeout}s: {last_error}")
-                await asyncio.sleep(5)
+        await wait_http_ok(
+            f"http://{srv.router_ip}:{srv.router_port}/generate",
+            json_payload={"input_ids": [0], "sampling_params": {"max_new_tokens": 1, "temperature": 0}},
+            timeout=timeout,
+        )
 
     async def _mark_unreachable_eval_engines(self, srv) -> None:
         """Without fault tolerance nothing records an engine death (recover() only
@@ -283,9 +271,6 @@ class RolloutManager:
                     engine.mark_stopped()
 
     def report_eval_skip(self, rollout_id: int, reason: str) -> None:
-        self._log_eval_skip(rollout_id, reason)
-
-    def _log_eval_skip(self, rollout_id: int, reason: str) -> None:
         log_eval_skip(rollout_id, self.args, reason)
 
     def _gc_eval_snapshots(self, consumed_dir: str) -> None:

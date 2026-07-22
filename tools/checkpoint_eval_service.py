@@ -22,7 +22,7 @@ from pathlib import Path
 
 from miles.rollout.checkpoint_eval import retarget_args
 from miles.utils.hf_config import is_complete_hf_export, looks_like_hf_checkpoint
-from miles.utils.http_utils import init_http_client, post
+from miles.utils.http_utils import init_http_client, post, wait_http_ok
 
 logger = logging.getLogger("checkpoint_eval_service")
 
@@ -63,6 +63,7 @@ EVAL_ARG_DEFAULTS = dict(
     wandb_always_use_train_step=False,
     eval_num_gpus=0,  # the service talks to its own server; no in-job fleet
     ci_test=False,
+    use_wandb=False,  # set by init_service_tracking from --wandb-mode
 )
 
 
@@ -115,7 +116,6 @@ def parse_service_args() -> Namespace:
     parser.add_argument("--global-batch-size", type=int, default=None)
     # tracking
     parser.add_argument("--wandb-mode", type=str, choices=["shared", "separate", "off"], default="off")
-    parser.add_argument("--use-wandb", action="store_true", default=False)
     parser.add_argument("--wandb-project", type=str, default=None)
     parser.add_argument("--wandb-group", type=str, default=None)
     parser.add_argument("--wandb-run-id", type=str, default=None)
@@ -125,12 +125,12 @@ def parse_service_args() -> Namespace:
 
 
 def build_eval_namespace(service_args: Namespace, server_ip: str, server_port: int) -> Namespace:
-    from miles.utils.arguments import _resolve_eval_datasets
+    from miles.utils.arguments import resolve_eval_datasets
 
     args = Namespace(**EVAL_ARG_DEFAULTS)
     for key, value in vars(service_args).items():
         setattr(args, key, value)
-    args.eval_datasets = _resolve_eval_datasets(args)
+    args.eval_datasets = resolve_eval_datasets(args)
     return retarget_args(args, server_ip, server_port, service_args.num_gpus, service_args.tp)
 
 
@@ -151,7 +151,7 @@ def find_ready_snapshots(watch_dir: Path, min_rollout_id: int, consumed: set[int
     for child in watch_dir.iterdir():
         if not child.is_dir():
             continue
-        match = re.search(r"(\d+)", child.name)
+        match = re.search(r"(\d+)$", child.name)
         if match is None:
             continue
         rollout_id = int(match.group(1))
@@ -195,20 +195,8 @@ def launch_server(service_args: Namespace) -> tuple[subprocess.Popen | None, str
 
 
 async def wait_server_healthy(ip: str, port: int, timeout: float = 1800.0) -> None:
-    import httpx
-
-    deadline = time.time() + timeout
-    async with httpx.AsyncClient() as client:
-        while time.time() < deadline:
-            try:
-                # /health_generate runs a tiny generation; 200 body is not JSON.
-                response = await client.get(f"http://{ip}:{port}/health_generate", timeout=60)
-                if response.status_code == 200:
-                    return
-            except httpx.HTTPError:
-                pass
-            await asyncio.sleep(5)
-    raise TimeoutError(f"sglang server at {ip}:{port} not healthy after {timeout}s")
+    # /health_generate runs a tiny generation; its 200 body is not JSON.
+    await wait_http_ok(f"http://{ip}:{port}/health_generate", timeout=timeout)
 
 
 async def eval_snapshot(args: Namespace, state, cache: dict, rollout_id: int, snapshot: Path) -> None:

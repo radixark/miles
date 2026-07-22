@@ -826,7 +826,13 @@ def save(
         enable_forward_pre_hook(model)
 
 
-HF_METADATA_SKIP_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
+HF_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf")
+
+
+def _is_hf_metadata_file(path: Path) -> bool:
+    """Tokenizer/config files worth copying into an export — not weights, and not the
+    base checkpoint's weight index, which would clobber the one the export writes."""
+    return path.is_file() and path.suffix not in HF_WEIGHT_SUFFIXES and not path.name.endswith(".index.json")
 
 
 def export_hf_model_direct(
@@ -878,10 +884,8 @@ def export_hf_model_direct(
         assert weight_map, f"HF export to {path} produced no weights"
         base_checkpoint = Path(args.hf_checkpoint)
         if base_checkpoint.is_dir():
-            # Tokenizer/config metadata only — the skip list also excludes the base
-            # checkpoint's safetensors index, which would clobber ours below.
             for meta_file in base_checkpoint.iterdir():
-                if meta_file.is_file() and not any(s in meta_file.name for s in HF_METADATA_SKIP_SUFFIXES):
+                if _is_hf_metadata_file(meta_file):
                     shutil.copy2(meta_file, path / meta_file.name)
         else:
             logger.warning(f"hf_checkpoint {args.hf_checkpoint} is not a local dir; metadata not copied to {path}")
@@ -908,6 +912,7 @@ def save_hf_model(
     args,
     rollout_id: int,
     model: Sequence[DDP],
+    *,
     path: str | Path | None = None,
     raise_on_error: bool = False,
 ) -> None:

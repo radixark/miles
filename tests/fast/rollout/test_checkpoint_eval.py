@@ -62,32 +62,23 @@ async def test_run_eval_datasets_merges_datasets(monkeypatch):
     assert set(results.keys()) == {"a", "b"}
 
 
-async def test_single_dataset_reward_key_only_applies_to_dict_rewards(monkeypatch):
-    """A per-dataset rm override (sample metadata rm_type) may return scalar rewards
-    even when --reward-key is set for the training rm's dict rewards."""
+def _eval_dataset_env(monkeypatch, generate):
     import miles.rollout.inference_rollout.inference_rollout_eval as eval_mod
     from miles.utils.types import Sample
 
-    def make_sample(index, reward):
-        return Sample(index=index, prompt="p", response="r", label="l", reward=reward)
-
-    async def fake_generate_and_rm(state, sample, sampling_params, evaluation):
-        return sample
-
-    monkeypatch.setattr(eval_mod, "generate_and_rm", fake_generate_and_rm)
+    monkeypatch.setattr(eval_mod, "generate_and_rm", generate)
     monkeypatch.setattr(eval_mod, "compute_sampling_params", lambda args, **kw: {})
-
     args = Namespace(
         group_rm=False,
         hf_checkpoint="hf",
         apply_chat_template=False,
         chat_template_path=None,
-        reward_key="score",
+        reward_key=None,
         eval_reward_key=None,
     )
     dataset_cfg = SimpleNamespace(
-        name="mixed",
-        cache_key=("mixed",),
+        name="ds",
+        cache_key=("ds",),
         n_samples_per_eval_prompt=1,
         temperature=1.0,
         top_p=1.0,
@@ -95,12 +86,35 @@ async def test_single_dataset_reward_key_only_applies_to_dict_rewards(monkeypatc
         max_response_len=16,
         inject_metadata=lambda md: md,
     )
-    scalar, dict_reward = make_sample(0, 1), make_sample(1, {"score": 0.5})
-    cache = {dataset_cfg.cache_key + ("hf", False, None): SimpleNamespace(samples=[scalar, dict_reward])}
+    samples = [Sample(index=i, prompt="p", response="r", label="l", reward=1) for i in range(4)]
+    cache = {dataset_cfg.cache_key + ("hf", False, None): SimpleNamespace(samples=samples)}
+    return eval_mod, args, dataset_cfg, cache
 
+
+async def test_single_dataset_tolerates_partial_failures(monkeypatch):
+    from miles.utils.types import Sample
+
+    async def generate(state, sample, sampling_params, evaluation):
+        if sample.index == 0:
+            raise RuntimeError("engine died")
+        if sample.index == 1:
+            sample.status = Sample.Status.ABORTED
+        return sample
+
+    eval_mod, args, dataset_cfg, cache = _eval_dataset_env(monkeypatch, generate)
     result = await eval_mod.eval_rollout_single_dataset(SimpleNamespace(args=args), dataset_cfg, cache)
 
-    assert result["mixed"]["rewards"] == [1, 0.5]
+    assert result["ds"]["rewards"] == [1, 1]
+    assert result["ds"]["failed_samples"] == 2  # one raised + one aborted
+
+
+async def test_single_dataset_all_failures_raise(monkeypatch):
+    async def generate(state, sample, sampling_params, evaluation):
+        raise RuntimeError("engine died")
+
+    eval_mod, args, dataset_cfg, cache = _eval_dataset_env(monkeypatch, generate)
+    with pytest.raises(RuntimeError, match="all 4 sample generations failed"):
+        await eval_mod.eval_rollout_single_dataset(SimpleNamespace(args=args), dataset_cfg, cache)
 
 
 # ---------------- controller (RolloutManager._eval_on_dedicated_fleet) ----------------
@@ -594,3 +608,60 @@ async def test_dispatcher_without_fleet_blocks_like_today(dispatcher_env):
     await dispatcher.dispatch(3)
     assert manager.eval.calls == [3]
     assert len(dispatcher.pending) == 0
+
+
+# ---------------- external service (tools/checkpoint_eval_service.py) ----------------
+
+
+@pytest.fixture
+def service_mod():
+    import importlib.util
+    from pathlib import Path as _Path
+
+    path = _Path(__file__).resolve().parents[3] / "tools" / "checkpoint_eval_service.py"
+    spec = importlib.util.spec_from_file_location("checkpoint_eval_service", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_find_ready_snapshots(service_mod, tmp_path):
+    from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER
+
+    def snapshot(name, *, marker=False, config=False, old=False):
+        d = tmp_path / name
+        d.mkdir()
+        if marker:
+            (d / HF_EXPORT_COMPLETE_MARKER).touch()
+        if config:
+            (d / "config.json").touch()
+            (d / "model.safetensors").touch()
+        if old:
+            import os
+
+            stale = time.time() - 2 * service_mod.QUIESCENCE_SECS
+            for p in [d] + list(d.iterdir()):
+                os.utime(p, (stale, stale))
+        return d
+
+    import time
+
+    snapshot("step_3", marker=True)
+    snapshot("step_7", config=True, old=True)  # pre-marker, quiescent
+    snapshot("step_9", config=True)  # still being written
+    snapshot("qwen2.5-step_12", marker=True)  # id must come from the trailing number
+    snapshot("step_1", marker=True)  # below min_rollout_id
+    snapshot("step_5", marker=True)  # already consumed
+    (tmp_path / "notes.txt").touch()
+
+    ready = service_mod.find_ready_snapshots(tmp_path, min_rollout_id=2, consumed={5})
+
+    assert [(rid, p.name) for rid, p in ready] == [(3, "step_3"), (7, "step_7"), (12, "qwen2.5-step_12")]
+
+
+def test_snapshot_ledger_roundtrip(service_mod, tmp_path):
+    ledger = service_mod.SnapshotLedger(tmp_path)
+    ledger.mark(3)
+    ledger.mark(7)
+
+    assert service_mod.SnapshotLedger(tmp_path).consumed == {3, 7}

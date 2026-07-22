@@ -574,9 +574,6 @@ class MegatronTrainRayActor(TrainRayActor):
         that failed to export can be skipped loudly.
         """
         self._heartbeat.bump()
-        if self.args.debug_rollout_only:
-            return
-
         from miles.backends.megatron_utils.model import save_hf_model
 
         save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)

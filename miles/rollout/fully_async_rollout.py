@@ -29,7 +29,7 @@ from miles.rollout.base_types import (
     RolloutFnOutput,
     RolloutFnTrainOutput,
 )
-from miles.rollout.checkpoint_eval import make_eval_generate_state
+from miles.rollout.checkpoint_eval import EvalFleetSession
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.utils.http_utils import get
@@ -100,7 +100,7 @@ class FullyAsyncRolloutFn:
         self._weight_version = _CachedWeightVersion()
         self._worker: asyncio.Task | None = None
         self._output: asyncio.Queue[Group] | None = None
-        self._eval_state: GenerateState | None = None
+        self._eval_fleet = EvalFleetSession(input.args)
         self._eval_prompt_dataset_cache: dict = {}
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
@@ -115,11 +115,8 @@ class FullyAsyncRolloutFn:
         return await self._drain(input.rollout_id)
 
     async def _call_eval(self, input: RolloutFnInput) -> RolloutFnOutput:
-        if getattr(self.args, "eval_num_gpus", 0) > 0:
-            if self._eval_state is None:
-                self._eval_state = make_eval_generate_state(self.args)
-            results = await run_eval_datasets(self._eval_state, self._eval_prompt_dataset_cache)
-            return RolloutFnEvalOutput(data=results)
+        if self.args.eval_num_gpus > 0:
+            return RolloutFnEvalOutput(data=await self._eval_fleet.run())
 
         # No dedicated fleet: eval shares the rollout engines. The producer pauses
         # new submissions while eval runs (in-flight groups finish and buffer); the

@@ -171,10 +171,12 @@ def compute_sampling_params(
 
 class InferenceRolloutFn:
     def __init__(self, input: RolloutFnConstructorInput):
+        from miles.rollout.checkpoint_eval import EvalFleetSession
+
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
         self.eval_prompt_dataset_cache = {}
-        self._eval_state: GenerateState | None = None
+        self._eval_fleet = EvalFleetSession(input.args)
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -191,15 +193,9 @@ class InferenceRolloutFn:
         return output
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
-        from miles.rollout.checkpoint_eval import make_eval_generate_state
         from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 
-        if getattr(self.state.args, "eval_num_gpus", 0) > 0:
-            # Run against the dedicated eval fleet instead of the train engines.
-            if self._eval_state is None:
-                self._eval_state = make_eval_generate_state(self.state.args)
-            state = self._eval_state
-        else:
-            state = self.state
-        results = await run_eval_datasets(state, self.eval_prompt_dataset_cache)
+        if self.state.args.eval_num_gpus > 0:
+            return RolloutFnEvalOutput(data=await self._eval_fleet.run())
+        results = await run_eval_datasets(self.state, self.eval_prompt_dataset_cache)
         return RolloutFnEvalOutput(data=results)

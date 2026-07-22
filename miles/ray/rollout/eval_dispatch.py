@@ -71,9 +71,11 @@ class EvalDispatcher:
                 ray.get(ref)
             except Exception:
                 logger.exception(f"Async eval for rollout {rollout_id} raised")
+                self.rollout_manager.report_eval_skip.remote(rollout_id, "crashed")
 
     async def _await_ref(self, rollout_id: int, ref) -> None:
         try:
             await ref
         except Exception:
             logger.exception(f"Async eval for rollout {rollout_id} raised")
+            await self.rollout_manager.report_eval_skip.remote(rollout_id, "crashed")

@@ -72,6 +72,7 @@ def make_args(**overrides) -> Namespace:
         max_weight_staleness=None,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
+        eval_num_gpus=0,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -114,7 +115,9 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
         return group
 
     data_source = FakeDataSource()
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate)
+    fn = make_fn(
+        monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate
+    )
 
     eval_started = asyncio.Event()
     eval_release = asyncio.Event()
@@ -148,6 +151,9 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
 
 
 async def test_eval_runs_on_dedicated_fleet(monkeypatch):
+    import miles.rollout.checkpoint_eval as checkpoint_eval
+    import miles.rollout.inference_rollout.inference_rollout_eval as eval_mod
+
     args = make_args(
         eval_num_gpus=1,
         eval_num_gpus_per_engine=1,
@@ -169,8 +175,8 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
         assert state in seen_states
         return eval_results
 
-    monkeypatch.setattr(fully_async, "make_eval_generate_state", fake_make_eval_generate_state)
-    monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
+    monkeypatch.setattr(checkpoint_eval, "make_eval_generate_state", fake_make_eval_generate_state)
+    monkeypatch.setattr(eval_mod, "run_eval_datasets", fake_run_eval_datasets)
 
     output = await fn(RolloutFnEvalInput(rollout_id=0))
 
