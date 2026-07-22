@@ -102,6 +102,14 @@ rollout engines closer to the latest actor weights so fewer groups get recycled 
 
 ## Evaluation
 
+Pick a posture by two questions: is this a test run or a real run (are checkpoints
+persisted anyway), and does eval get standalone GPU resources?
+
+| | Test run | Real run |
+|---|---|---|
+| **No standalone eval** | Pause-the-world (shared engines) | External service over `--save-hf` output |
+| **Standalone eval fleet** | Fleet + tmpfs snapshot (`--eval-hf-dir /dev/shm/...`) | Fleet + checkpoint reuse (no `--eval-hf-dir`) |
+
 Without extra GPUs (`--eval-num-gpus` unset), eval **shares the rollout engines**:
 the producer pauses new submissions for the duration of the blocking eval and resumes
 after. The weight version stays pinned because no update interleaves while the driver
