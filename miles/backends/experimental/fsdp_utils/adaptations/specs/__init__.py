@@ -7,7 +7,6 @@ arch, create ``specs/<arch>.py`` registering only the hooks it needs and add it 
   * register_model_patch        [class_patches]    — config-time patch of transformers classes
   * register_packing_patch      [packing.registry] — per-document state reset under THD packing
   * register_post_load_fixup    [post_load_fixups] — correct weights from_pretrained clobbered
-  * register_fp32_master_type   [precision]        — keep an fp32 master for a bit-exact reshard
 
 An arch that needs none of these registers nothing. See the existing specs for examples.
 """

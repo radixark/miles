@@ -113,7 +113,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 attn_implementation=self.args.attn_implementation,
             )
 
-        # precision policy: MixedPrecisionPolicy dtypes + optional fp32 master (glm4_moe_lite)
         from .adaptations.precision import apply_fp32_master, resolve_precision_policy
 
         precision = resolve_precision_policy(self.hf_config, self.args)
