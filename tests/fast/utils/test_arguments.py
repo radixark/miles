@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
+from miles.backends.sglang_utils.arguments import add_sglang_arguments
+from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import _maybe_apply_dumper_overrides, get_miles_extra_args_provider
 from miles.utils.misc import function_registry
 
@@ -141,3 +143,32 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
 
     assert args.recompute_logprobs_via_prefill is True
+
+
+def test_sglang_parallel_sizes_keep_server_args_destinations():
+    parser = add_sglang_arguments(argparse.ArgumentParser())
+    args = parser.parse_args(
+        [
+            "--sglang-tp-size",
+            "6",
+            "--sglang-data-parallel-size",
+            "2",
+            "--sglang-pipeline-parallel-size",
+            "3",
+            "--sglang-expert-parallel-size",
+            "4",
+            "--sglang-attention-context-parallel-size",
+            "5",
+        ]
+    )
+    args.rollout_num_gpus_per_engine = 8
+    args.true_on_policy_mode = False
+    args.sglang_enable_dp_attention = True
+
+    validate_sglang_args(args)
+
+    assert args.sglang_tp_size == 8
+    assert args.sglang_dp_size == 2
+    assert args.sglang_pp_size == 3
+    assert args.sglang_ep_size == 4
+    assert args.sglang_attn_cp_size == 5

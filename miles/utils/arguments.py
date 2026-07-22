@@ -1835,13 +1835,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     fn.add_arguments(parser)
             return parser
 
-        def add_sglang_tp_size():
-            temp_parser = argparse.ArgumentParser(add_help=False)
-            temp_parser.add_argument("--rollout-num-gpus-per-engine", type=int, default=1)
-            temp_args, _ = temp_parser.parse_known_args()
-            sglang_tp_size = temp_args.rollout_num_gpus_per_engine
-            return sglang_tp_size
-
         # Add custom arguments in front to prevent overwritten some miles arguments.
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
@@ -1882,7 +1875,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         )
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
-        parser.set_defaults(sglang_tensor_parallel_size=add_sglang_tp_size())
         return parser
 
     return add_miles_arguments
