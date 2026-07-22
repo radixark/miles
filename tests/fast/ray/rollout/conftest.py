@@ -30,6 +30,8 @@ def make_args(**overrides: Any) -> Namespace:
         # rollout core
         rollout_num_gpus=8,
         rollout_num_gpus_per_engine=1,
+        eval_num_gpus=0,
+        eval_num_gpus_per_engine=1,
         num_gpus_per_node=8,
         rollout_batch_size=8,
         n_samples_per_prompt=4,
