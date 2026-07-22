@@ -194,7 +194,6 @@ def launch_server(service_args: Namespace) -> tuple[subprocess.Popen | None, str
 
 
 async def wait_server_healthy(ip: str, port: int, timeout: float = 1800.0) -> None:
-    # /health_generate runs a tiny generation; its 200 body is not JSON.
     await wait_http_ok(f"http://{ip}:{port}/health_generate", timeout=timeout)
 
 

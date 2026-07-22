@@ -134,8 +134,6 @@ def _resolve_sglang_config(args) -> SglangConfig:
         )
 
     if eval_num_gpus > 0:
-        # update_weights=False must be explicit — resolve() would infer True from
-        # the matching model_path.
         config.models.append(
             ModelConfig(
                 name="eval",

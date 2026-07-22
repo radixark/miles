@@ -972,7 +972,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--eval-min-new-tokens", type=int, default=None)
             parser.add_argument("--eval-max-context-len", type=int, default=None)
 
-            # Dedicated eval fleet (checkpoint-interfaced eval; required for fully-async eval).
             parser.add_argument(
                 "--eval-num-gpus",
                 type=int,

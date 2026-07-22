@@ -60,7 +60,6 @@ class EvalDispatcher:
         return hf_dir, time.time() - start
 
     def _reap_finished(self) -> None:
-        # The manager's eval lock serializes evals, so pending refs finish in order.
         while self.pending:
             done, _ = ray.wait([self.pending[0][1]], timeout=0)
             if not done:

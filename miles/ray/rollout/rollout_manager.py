@@ -43,7 +43,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# Per-attempt bound on eval-fleet weight loads; a zombie engine costs a skipped point.
 EVAL_WEIGHT_LOAD_TIMEOUT_SECS = 600.0
 
 
@@ -173,7 +172,6 @@ class RolloutManager:
         Every failure mode degrades to a skipped point logged at ``rollout_id``.
         """
         start_time = time.time()
-        # The lock holds across load -> verify -> generate; this is the pinning enforcement.
         async with self._eval_lock:
             srv = self.servers["eval"]
             try:
@@ -194,8 +192,6 @@ class RolloutManager:
             weight_version = str(rollout_id)
             for _attempt in range(2):
                 try:
-                    # A zombie engine (backend dead, actor alive) accepts the call and
-                    # never answers; unbounded, it would hold the eval lock forever.
                     await asyncio.wait_for(
                         asyncio.gather(
                             *[

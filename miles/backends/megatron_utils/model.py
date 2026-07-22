@@ -966,8 +966,6 @@ def save_hf_model(
 
             torch.distributed.barrier()
             if torch.distributed.get_rank() == 0:
-                # The bridge exports zero weights for specs it has no mapping for;
-                # a marked-but-weightless snapshot must never exist.
                 if not any(path.glob("*.safetensors")) and not any(path.glob("*.bin")):
                     raise RuntimeError(
                         f"HF export to {path} produced no weight files — the megatron "
