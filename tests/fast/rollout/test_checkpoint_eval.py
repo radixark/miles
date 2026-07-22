@@ -508,6 +508,28 @@ async def test_dispatcher_skip_policy_drops_before_export(dispatcher_env):
     assert actor_model.exports == [(1, "/dev/shm/eval_hf/step_1")]
 
 
+async def test_dispatcher_force_overrides_skip_policy(dispatcher_env):
+    """The final eval point must never be dropped: training is already over."""
+    manager = FakeManagerActor()
+    actor_model = FakeActorModel()
+    dispatcher, _ = make_dispatcher(
+        dispatcher_env, manager, actor_model, eval_max_in_flight=1, eval_overflow_policy="skip"
+    )
+
+    await dispatcher.dispatch(1)
+
+    async def finish_soon():
+        await asyncio.sleep(0.01)
+        manager.finish(0)
+
+    finisher = asyncio.create_task(finish_soon())
+    await dispatcher.dispatch(2, force=True)  # at cap: waits instead of dropping
+    await finisher
+
+    assert manager.skip_calls == []
+    assert [c[0] for c in manager.eval_calls] == [1, 2]
+
+
 async def test_dispatcher_backpressure_awaits_oldest(dispatcher_env):
     manager = FakeManagerActor()
     dispatcher, _ = make_dispatcher(dispatcher_env, manager, FakeActorModel(), eval_max_in_flight=1)

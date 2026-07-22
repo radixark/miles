@@ -18,14 +18,14 @@ class EvalDispatcher:
         self.rollout_manager = rollout_manager
         self.pending: deque[tuple[int, ray.ObjectRef]] = deque()
 
-    async def dispatch(self, rollout_id: int, hf_dir: str | None = None) -> None:
+    async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> None:
         if self.args.eval_num_gpus <= 0:
             await self.rollout_manager.eval.remote(rollout_id)
             return
 
         self._reap_finished()
         if len(self.pending) >= self.args.eval_max_in_flight:
-            if self.args.eval_overflow_policy == "skip":
+            if self.args.eval_overflow_policy == "skip" and not force:
                 await self.rollout_manager.report_eval_skip.remote(rollout_id, "busy")
                 return
             oldest_id, oldest_ref = self.pending.popleft()

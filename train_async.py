@@ -97,7 +97,9 @@ async def train(args):
             await actor_model.update_weights(rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
-            await eval_dispatcher.dispatch(rollout_id)
+            # The final point is never skipped: training is over, so overflow
+            # backpressure no longer costs any training time.
+            await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 
         if (
             args.debug_exit_after_rollout is not None
