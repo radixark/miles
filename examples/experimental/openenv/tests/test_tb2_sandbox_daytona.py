@@ -13,6 +13,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tb2_sandbox_daytona as sandbox  # noqa: E402
 
@@ -32,6 +34,41 @@ def test_sandbox_labels_explicit_launcher_and_run_id(monkeypatch):
     labels = sandbox.sandbox_labels(Path("/opt/tb2-tasks/regex-chess"))
     assert labels["openenv-launcher"] == "tao-lin"
     assert labels["openenv-run-id"] == "tb2-grpo-0717"
+
+
+def test_resolve_api_key_env_value_wins(monkeypatch, tmp_path: Path):
+    key_file = tmp_path / "api_key"
+    key_file.write_text("dtn_from_file\n")
+    monkeypatch.setenv("DAYTONA_API_KEY", "dtn_from_env")
+    monkeypatch.setenv("DAYTONA_API_KEY_FILE", str(key_file))
+    assert sandbox.resolve_api_key() == "dtn_from_env"
+
+
+def test_resolve_api_key_falls_back_to_file(monkeypatch, tmp_path: Path):
+    # The launcher forwards only this path (never the value, which would be
+    # echoed into driver logs via ray runtime_env); workers must read it here.
+    key_file = tmp_path / "api_key"
+    key_file.write_text("dtn_from_file\n")
+    monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
+    monkeypatch.setenv("DAYTONA_API_KEY_FILE", str(key_file))
+    assert sandbox.resolve_api_key() == "dtn_from_file"  # whitespace stripped
+
+
+def test_resolve_api_key_default_path_under_home(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
+    monkeypatch.delenv("DAYTONA_API_KEY_FILE", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = tmp_path / ".config" / "daytona"
+    cfg.mkdir(parents=True)
+    (cfg / "api_key").write_text("dtn_default\n")
+    assert sandbox.resolve_api_key() == "dtn_default"
+
+
+def test_resolve_api_key_errors_when_absent(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
+    monkeypatch.setenv("DAYTONA_API_KEY_FILE", str(tmp_path / "missing"))
+    with pytest.raises(RuntimeError, match="missing or empty"):
+        sandbox.resolve_api_key()
 
 
 def test_create_arms_ttl_by_default():

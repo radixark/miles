@@ -23,10 +23,12 @@ Env vars:
   POLICY_BASE_URL   OpenAI-compatible root (default https://api.deepseek.com)
   POLICY_MODEL      default deepseek-v4-flash
   OPENENV_TB2_TASKS_DIR  per-task sandbox mode (TB2 checkout path); with
-                    DAYTONA_API_KEY. Otherwise OPENENV_ENV_URL is used.
+                    DAYTONA_API_KEY or a key file at ~/.config/daytona/api_key.
+                    Otherwise OPENENV_ENV_URL is used.
   OPENENV_MAX_TURNS, OPENENV_MAX_ROLLOUT_TIME_SECONDS, ...   as in the adapter.
 
 Usage:
+  # DAYTONA_API_KEY may be omitted if ~/.config/daytona/api_key is provisioned
   DEEPSEEK_API_KEY=sk-... DAYTONA_API_KEY=dtn_... \
   OPENENV_TB2_TASKS_DIR=/path/to/terminal-bench-2 \
   python eval_tbench2_via_api.py --tasks chess-best-move --concurrency 2

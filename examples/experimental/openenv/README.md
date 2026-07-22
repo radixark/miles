@@ -82,10 +82,13 @@ Skip step 2 entirely and set:
 
 ```bash
 pip install daytona   # the SDK is imported lazily, not installed with tbench2_env
-export DAYTONA_API_KEY=dtn_...
+mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key   # or export DAYTONA_API_KEY
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2   # the checkout from step 1
 python run-openenv-tbench2.py
 ```
+
+Key supply on multi-host clusters (and why only a file *path* is ever
+forwarded) is documented in the `openenv_agent_function.py` docstring.
 
 Infra sanity checks without touching a GPU (both live beside the launcher):
 `scan_golden.py` replays each task's official solution through the full
@@ -109,7 +112,7 @@ Common overrides:
 | `--num-rollout` | (launcher) | Number of GRPO steps |
 | `OPENENV_MAX_TURNS` | `30` | Max agent turns per episode |
 | `OPENENV_MAX_ROLLOUT_TIME_SECONDS` | `3600` | Per-episode wall-clock cap; a straggler that exceeds it is terminated and scored 0 |
-| `OPENENV_TB2_TASKS_DIR` + `DAYTONA_API_KEY` | off | Per-task Daytona sandbox backend (section 2b); overrides `--openenv-env-url` |
+| `OPENENV_TB2_TASKS_DIR` + Daytona key | off | Per-task Daytona sandbox backend (section 2b); overrides `--openenv-env-url`. Key: `DAYTONA_API_KEY` in the env, else a key file (`~/.config/daytona/api_key`; `DAYTONA_API_KEY_FILE` overrides) |
 | `OPENENV_DAYTONA_CREATE_CONCURRENCY` | `4` | Max in-flight sandbox creates (Daytona rate-limits creation) |
 | `--dump-details <dir>` | off | Dump per-episode tokens/logprobs/masks/reward for inspection |
 | `WANDB_KEY`, `--wandb-project`, `--wandb-team` | — | W&B logging |
