@@ -140,7 +140,6 @@ class SessionCore:
     async def chat_completions(
         self, session_id: str, *, method: str, query: str, headers: dict, body: bytes
     ) -> Response:
-        request_timestamp = time.time()
         """Proxy a chat completion through the backend with TITO token tracking.
 
         Flow: prepare pretokenized input_ids (lock held briefly) → proxy to
@@ -148,6 +147,7 @@ class SessionCore:
         append record (lock held briefly). The lock is NOT held during the slow
         proxy call so DELETE/other ops are not blocked if the agent disconnects.
         """
+        request_timestamp = time.time()
         session = self.registry.get_session(session_id)
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")

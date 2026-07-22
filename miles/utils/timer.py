@@ -16,10 +16,8 @@ class Timer(metaclass=SingletonMeta):
     def __init__(self):
         self.timers = {}
         self.start_time = {}
-        # interval observers called as sink(name, start_ts, end_ts) on every
-        # end(); a sink additionally exposing .begin(name, start_ts) hears
-        # starts too, so long-running intervals are observable while open.
-        # Registered by miles.dashboard when the dashboard is enabled.
+        # observers called sink(name, t0, t1) on end(); an optional
+        # sink.begin(name, t0) also hears starts. Registered by the dashboard.
         self.event_sinks = []
 
     def start(self, name):

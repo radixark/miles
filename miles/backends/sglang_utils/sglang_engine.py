@@ -140,12 +140,8 @@ class SGLangEngine(RayActor):
         self.num_gpus_per_engine = num_gpus_per_engine
 
     def get_topology_info(self) -> dict:
-        """Placement facts for the dashboard timeline (called after init()).
-
-        ``base_gpu_id`` is node-physical (the local remap for the sglang
-        server happens later in ``_compute_server_args``), so these ids line
-        up with NVML device order used by the dashboard's GPU sampler.
-        """
+        """Placement facts for the dashboard timeline. ``base_gpu_id`` is
+        node-physical, so these ids match the NVML order the GPU sampler uses."""
         from miles.utils.misc import get_current_node_ip
 
         if self.base_gpu_id is None:  # external engines: placement unknown
@@ -438,11 +434,9 @@ class SGLangEngine(RayActor):
         """Flush the cache of the server."""
         if self.node_rank != 0:
             return
-        # flush cache will not return status_code 200 when there are pending
-        # requests -- that 400 is a normal response, not an exception, so the
-        # backoff sleep must run for it too, or the 60 attempts burn through
-        # in a fraction of a second instead of giving in-flight generation
-        # ~60s to actually drain
+        # a 400 (pending requests) is a normal response, not an exception, so
+        # the backoff must run on that path too or the 60 attempts burn through
+        # instantly instead of giving generation ~60s to drain
         for _ in range(60):
             try:
                 response = requests.get(f"http://{self.server_host}:{self.server_port}/flush_cache")

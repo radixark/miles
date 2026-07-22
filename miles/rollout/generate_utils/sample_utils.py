@@ -84,9 +84,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         return av + [[] for _ in range(obs_len)] + bv
 
     def _pop_lifecycle(metadata):
-        # per-turn dashboard lifecycle segments (miles.dashboard.lifecycle)
-        # differ across turns by construction; a merged sample carries them
-        # as one ordered list instead of failing the equality assert below
+        # per-turn lifecycle segments differ; a merged sample keeps them as an ordered list
         if not metadata or "lifecycle" not in metadata:
             return metadata, []
         value = metadata["lifecycle"]
