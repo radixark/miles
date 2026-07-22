@@ -44,6 +44,12 @@ HARBOR_TASKS_DIR=/path/to/harbor_tasks uv run python miles_agent_server.py \
 Docker and enough capacity for the requested number of concurrent sandboxes.
 Verify `http://<agent-server>:30000/health` before launching Miles.
 
+When the trainer reaches the machine through the Kubernetes Tailscale egress
+service, use its stable service name, for example
+`http://egress-agent-server.tailscale.svc.cluster.local:8080`. The rollout
+client enables TCP keepalive probes so long-running trials do not lose an idle
+connection while Harbor is working.
+
 ## 2. Prepare Terminal-Bench data
 
 Convert a local JSONL whose rows include a task instruction and instance name:
