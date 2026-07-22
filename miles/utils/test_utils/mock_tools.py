@@ -189,9 +189,17 @@ class TwoTurnStub:
             "type": "function",
         },
     ]
+    # What the mock backend serves on the wire: SGLang's non-streaming ToolCall
+    # additionally carries ``index`` (the tool's position in the tools list).
+    # Clients normalized to the OpenAI shape (above) legitimately drop it.
+    FIRST_TOOL_CALLS_SGLANG_WIRE = [
+        {**tool_call, "index": index} for index, tool_call in zip((0, 1), FIRST_TOOL_CALLS_OPENAI_FORMAT, strict=True)
+    ]
 
     OPENAI_MESSAGES_FIRST_TURN = [{"role": "user", "content": USER_QUESTION}]
 
+    # The openai SDK preserves unknown keys (extra="allow"), so a client replay
+    # echoes the wire shape — index included.
     OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT = OPENAI_MESSAGES_FIRST_TURN + [
         {
             "content": FIRST_RESPONSE_CONTENT,
@@ -200,7 +208,7 @@ class TwoTurnStub:
             "annotations": None,
             "audio": None,
             "function_call": None,
-            "tool_calls": FIRST_TOOL_CALLS_OPENAI_FORMAT,
+            "tool_calls": FIRST_TOOL_CALLS_SGLANG_WIRE,
         },
         {"role": "tool", "tool_call_id": "call00000", "content": '{"year": 2026}', "name": "get_year"},
         {"role": "tool", "tool_call_id": "call00001", "content": '{"temperature": -60}', "name": "get_temperature"},
@@ -283,6 +291,12 @@ class ThreeTurnStub:
         },
     ]
 
+    # SGLang wire shape: index is the tool's position in the tools list
+    # (get_year=0, get_temperature=1), not the call position.
+    FIRST_TOOL_CALLS_SGLANG_WIRE = [
+        {**tool_call, "index": index} for index, tool_call in zip((0, 1), FIRST_TOOL_CALLS_OPENAI_FORMAT, strict=True)
+    ]
+
     SECOND_RESPONSE_CONTENT = "Now let me get Earth temperature."
     SECOND_TOOL_CALLS_OPENAI_FORMAT = [
         {
@@ -291,9 +305,12 @@ class ThreeTurnStub:
             "type": "function",
         },
     ]
+    SECOND_TOOL_CALLS_SGLANG_WIRE = [{**SECOND_TOOL_CALLS_OPENAI_FORMAT[0], "index": 1}]
 
     OPENAI_MESSAGES_FIRST_TURN = [{"role": "user", "content": USER_QUESTION}]
 
+    # The openai SDK preserves unknown keys (extra="allow"), so a client replay
+    # echoes the wire shape — index included.
     OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT = OPENAI_MESSAGES_FIRST_TURN + [
         {
             "content": FIRST_RESPONSE_CONTENT,
@@ -302,7 +319,7 @@ class ThreeTurnStub:
             "annotations": None,
             "audio": None,
             "function_call": None,
-            "tool_calls": FIRST_TOOL_CALLS_OPENAI_FORMAT,
+            "tool_calls": FIRST_TOOL_CALLS_SGLANG_WIRE,
         },
         {"role": "tool", "tool_call_id": "call00000", "content": '{"year": 2026}', "name": "get_year"},
         {"role": "tool", "tool_call_id": "call00001", "content": '{"temperature": -60}', "name": "get_temperature"},
@@ -316,7 +333,7 @@ class ThreeTurnStub:
             "annotations": None,
             "audio": None,
             "function_call": None,
-            "tool_calls": SECOND_TOOL_CALLS_OPENAI_FORMAT,
+            "tool_calls": SECOND_TOOL_CALLS_SGLANG_WIRE,
         },
         {"role": "tool", "tool_call_id": "call00000", "content": '{"temperature": 15}', "name": "get_temperature"},
     ]
