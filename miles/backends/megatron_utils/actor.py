@@ -613,10 +613,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
             save_hf_model(self.args, rollout_id, self.model)
 
-        if self.args.custom_megatron_post_save_hook_path is not None and dist.get_rank() == 0:
-            if self.args.async_save:
-                maybe_finalize_async_save(blocking=True)
+        post_save_hook_path = self.args.custom_megatron_post_save_hook_path
+        if post_save_hook_path is not None and self.args.async_save:
+            # Distributed checkpoint finalization must run on every rank.
+            maybe_finalize_async_save(blocking=True)
 
+        if post_save_hook_path is not None and dist.get_rank() == 0:
             from megatron.training.checkpointing import get_checkpoint_name
 
             from miles.utils.misc import load_function
@@ -627,7 +629,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 if self.args.save_hf is not None and self.role == "actor"
                 else None
             )
-            post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
+            post_save_hook = load_function(post_save_hook_path)
             post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
 
         if self.args.offload_train:
