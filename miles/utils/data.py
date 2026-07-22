@@ -110,7 +110,7 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
                 if len(input_ids) <= max_length:
                     filtered_samples.append(sample)
         if multimodal:
-            from slime.utils.processing_utils import process_vision_info
+            from miles.utils.processing_utils import process_vision_info
 
             for sample in multimodal:
                 multimodal_inputs = process_vision_info(sample.prompt, processor)
