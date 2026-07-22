@@ -4,7 +4,14 @@ import torch.nn as nn
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch.nn import Linear
 
-from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
+from miles_plugins.models.deepseek_v4.ops.cp_utils import (
+    all_gather_cp,
+    get_compress_cu_seqlens_for_packed,
+    get_freqs_cis_for_cp,
+    get_q_positions_for_packed_cp,
+    get_seq_ids_and_offsets_from_cu_seqlens,
+    is_packed_thd_contiguous_cp,
+)
 from miles_plugins.models.deepseek_v4.ops.kernel.precision_aligned_ops import linear_bf16_fp32
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
@@ -119,7 +126,36 @@ class DeepSeekV4Compressor(nn.Module):
         start = self.cp_rank * G_local
         return tensor[:, start : start + G_local, :, :]
 
-    def forward_raw(self, x: torch.Tensor) -> torch.Tensor:
+    def overlap_transform_packed(self, tensor: torch.Tensor, cu_seqlens: torch.Tensor, value=0) -> torch.Tensor:
+        """Apply overlap transform independently inside each packed sample."""
+        if self.cp_size > 1:
+            tensor = all_gather_cp(tensor, dim=1, cp_group=self.cp_group)
+
+        comp_cu_seqlens = get_compress_cu_seqlens_for_packed(cu_seqlens, ratio=self.compress_ratio)
+        expected_groups = int(comp_cu_seqlens[-1].item())
+        if tensor.size(1) != expected_groups:
+            raise ValueError(
+                "Packed DeepSeek-V4 compressor group count mismatch: "
+                f"tensor={tensor.size(1)}, boundaries={expected_groups}"
+            )
+        group_boundaries = comp_cu_seqlens.tolist()
+        pieces = [
+            self.overlap_transform_raw(tensor[:, start:end], value)
+            for start, end in zip(group_boundaries[:-1], group_boundaries[1:], strict=True)
+        ]
+        tensor = torch.cat(pieces, dim=1) if pieces else tensor[:, :0]
+
+        if self.cp_size == 1:
+            return tensor
+        if tensor.shape[1] % self.cp_size != 0:
+            raise ValueError(
+                f"Packed compressed length {tensor.shape[1]} must be divisible by CP size {self.cp_size}"
+            )
+        G_local = tensor.shape[1] // self.cp_size
+        start = self.cp_rank * G_local
+        return tensor[:, start : start + G_local, :, :]
+
+    def forward_raw(self, x: torch.Tensor, packed_seq_params=None) -> torch.Tensor:
         assert self.ape.dtype == torch.float32
         assert self.wkv.weight.dtype == torch.bfloat16
         assert self.wgate.weight.dtype == torch.bfloat16
@@ -132,6 +168,18 @@ class DeepSeekV4Compressor(nn.Module):
         if self.cp_size > 1:
             assert seqlen_local % (ratio * 2) == 0
 
+        packed_seq = is_packed_thd_contiguous_cp(packed_seq_params, self.cp_size)
+        cu_seqlens = None
+        if packed_seq:
+            cu_seqlens = packed_seq_params.cu_seqlens_q.to(device=x.device, dtype=torch.long)
+            get_compress_cu_seqlens_for_packed(cu_seqlens, ratio=ratio)
+            expected_global = seqlen_local * self.cp_size
+            if int(cu_seqlens[-1].item()) != expected_global:
+                raise ValueError(
+                    "Packed DeepSeek-V4 compressor requires contiguous allgather CP: "
+                    f"cu_seqlens[-1]={int(cu_seqlens[-1].item())}, local={seqlen_local}, cp={self.cp_size}"
+                )
+
         kv = linear_bf16_fp32(x, self.wkv.weight)
         score = linear_bf16_fp32(x, self.wgate.weight)
 
@@ -139,23 +187,52 @@ class DeepSeekV4Compressor(nn.Module):
         score = score.unflatten(1, (-1, ratio)) + self.ape
 
         if overlap:
-            kv = self.overlap_transform_with_cp(kv, 0)
-            score = self.overlap_transform_with_cp(score, float("-inf"))
+            if packed_seq:
+                kv = self.overlap_transform_packed(kv, cu_seqlens, 0)
+                score = self.overlap_transform_packed(score, cu_seqlens, float("-inf"))
+            else:
+                kv = self.overlap_transform_with_cp(kv, 0)
+                score = self.overlap_transform_with_cp(score, float("-inf"))
 
         score_softmax = score.softmax(dim=2)
         kv = (kv * score_softmax).sum(dim=2)
 
         kv = self.norm(kv.to(dtype))
 
-        freqs_cis = wrapped_precompute_freqs_cis(
-            self.config,
-            self.rope_head_dim,
-            self.config.dsv4_compress_rope_theta,
-            False,
-            seqlen_local * self.cp_size,
-            x.device,
-        )
-        freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group, stride=ratio)
+        if packed_seq:
+            max_seq_len = int(packed_seq_params.max_seqlen_q)
+            q_positions = get_q_positions_for_packed_cp(seqlen_local, self.cp_size, self.cp_group, x.device)
+            _, offsets, _, _ = get_seq_ids_and_offsets_from_cu_seqlens(cu_seqlens, q_positions)
+            if int(q_positions[0].item()) % ratio != 0:
+                raise ValueError(
+                    f"Packed CP chunk must start on a compression-group boundary: {q_positions[0].item()=}, {ratio=}"
+                )
+            group_offsets = offsets[::ratio] // ratio
+            if group_offsets.numel() != kv.size(1):
+                raise ValueError(
+                    "Packed DeepSeek-V4 compressor RoPE/group mismatch: "
+                    f"offsets={group_offsets.numel()}, compressed_kv={kv.size(1)}"
+                )
+            max_comp_seq_len = (max_seq_len + ratio - 1) // ratio
+            freqs_cis = wrapped_precompute_freqs_cis(
+                self.config,
+                self.rope_head_dim,
+                self.config.dsv4_compress_rope_theta,
+                False,
+                max_comp_seq_len * ratio,
+                x.device,
+            )
+            freqs_cis = freqs_cis[::ratio][group_offsets]
+        else:
+            freqs_cis = wrapped_precompute_freqs_cis(
+                self.config,
+                self.rope_head_dim,
+                self.config.dsv4_compress_rope_theta,
+                False,
+                seqlen_local * self.cp_size,
+                x.device,
+            )
+            freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group, stride=ratio)
 
         apply_rotary_emb(kv[..., -self.rope_head_dim :], freqs_cis)
 
@@ -170,7 +247,7 @@ class DeepSeekV4Compressor(nn.Module):
 
         return kv
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, packed_seq_params=None) -> torch.Tensor:
         """
         Args:
             x: [seqlen, batch, dim] SBHD layout (Megatron standard)
@@ -178,6 +255,6 @@ class DeepSeekV4Compressor(nn.Module):
             k: [seqlen // compress_ratio, batch, head_dim] SBHD layout
         """
         x_bshd = einops.rearrange(x, "s b d -> b s d")
-        k_bshd = self.forward_raw(x_bshd)
+        k_bshd = self.forward_raw(x_bshd, packed_seq_params=packed_seq_params)
         k = einops.rearrange(k_bshd, "b sc d -> sc b d")
         return k

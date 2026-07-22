@@ -1,5 +1,7 @@
 from transformers import AutoTokenizer
 
+from miles.utils import chat_template_utils
+
 
 def get_response_lengths(loss_masks: list[list[int]]) -> list[int]:
     # return the lengths starting from the first occurrence of 1 to the end of each loss mask
@@ -9,8 +11,12 @@ def get_response_lengths(loss_masks: list[list[int]]) -> list[int]:
 class MultiTurnLossMaskGenerator:
     def __init__(self, tokenizer: AutoTokenizer, tokenizer_type: str = "qwen"):
         self.tokenizer = tokenizer
-        self.system_message_length, self.gen_token_length = self.get_system_message_length()
         self.tokenizer_type = tokenizer_type
+        if tokenizer_type == "deepseek_v4":
+            self.system_message_length = 0
+            self.gen_token_length = 0
+        else:
+            self.system_message_length, self.gen_token_length = self.get_system_message_length()
 
     def get_response_lengths(self, loss_masks: list[list[int]]) -> list[int]:
         return get_response_lengths(loss_masks)
@@ -130,6 +136,54 @@ class MultiTurnLossMaskGenerator:
             loss_mask = [0] * len(token_ids)
         return token_ids, loss_mask
 
+    def gen_multi_turn_loss_mask_deepseek_v4(
+        self, messages: list[dict], tools: list[dict] = None
+    ) -> tuple[list[int], list[int]]:
+        rendered = chat_template_utils.apply_chat_template(
+            messages,
+            tokenizer=self.tokenizer,
+            tools=tools,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        encoded = self.tokenizer(rendered, add_special_tokens=False, return_offsets_mapping=True)
+        all_token_ids = encoded["input_ids"]
+        offset_mapping = encoded["offset_mapping"]
+        all_loss_masks = [0] * len(all_token_ids)
+
+        def eos_end(start: int) -> int:
+            candidates = []
+            eos_token = getattr(self.tokenizer, "eos_token", None)
+            if isinstance(eos_token, str) and eos_token:
+                candidates.append(eos_token)
+            candidates.append("<｜end▁of▁sentence｜>")
+            for eos in dict.fromkeys(candidates):
+                if rendered.startswith(eos, start):
+                    return start + len(eos)
+            return start
+
+        cursor = 0
+        for message in messages:
+            content = message.get("content") or ""
+            if not isinstance(content, str) or not content:
+                continue
+
+            content_start = rendered.find(content, cursor)
+            if content_start < 0:
+                continue
+            content_end = content_start + len(content)
+            cursor = content_end
+
+            if message["role"] != "assistant" or message.get("step_loss_mask", 1) != 1:
+                continue
+
+            content_end = eos_end(content_end)
+            for idx, (token_start, token_end) in enumerate(offset_mapping):
+                if token_end > content_start and token_start < content_end:
+                    all_loss_masks[idx] = 1
+
+        return all_token_ids, all_loss_masks
+
     def get_loss_mask(self, messages: list[dict], tools: list[dict] = None) -> tuple[list[int], list[int]]:
         if self.tokenizer_type == "qwen":
             if "<｜Assistant｜>" in self.tokenizer.get_added_vocab():
@@ -140,6 +194,8 @@ class MultiTurnLossMaskGenerator:
             return self.gen_multi_turn_loss_mask_qwen3(messages, tools)
         elif self.tokenizer_type == "distill_qwen":
             return self.gen_multi_turn_loss_mask_distill_qwen(messages, tools)
+        elif self.tokenizer_type == "deepseek_v4":
+            return self.gen_multi_turn_loss_mask_deepseek_v4(messages, tools)
         else:
             raise ValueError(f"Unsupported tokenizer type: {self.tokenizer_type}")
 
