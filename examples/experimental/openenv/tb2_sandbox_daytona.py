@@ -175,18 +175,42 @@ def create_task_sandbox(
         raise
 
 
+_DEFAULT_API_KEY_FILE = "~/.config/daytona/api_key"
+
+
+def resolve_api_key() -> str:
+    """The Daytona API key: DAYTONA_API_KEY, else the key file.
+
+    The file indirection (DAYTONA_API_KEY_FILE, default
+    ``~/.config/daytona/api_key``) exists so launchers can hand rollout
+    workers a PATH instead of the secret itself: anything a launcher
+    forwards rides ray's runtime_env, which is echoed into driver logs and
+    persisted in job metadata in plaintext. Env vars the worker already has
+    (platform-injected, single-host inheritance) never pass through ray, so
+    DAYTONA_API_KEY is checked first.
+    """
+    key = os.environ.get("DAYTONA_API_KEY", "").strip()
+    if key:
+        return key
+    key_file = Path(os.environ.get("DAYTONA_API_KEY_FILE", "").strip() or _DEFAULT_API_KEY_FILE).expanduser()
+    try:
+        key = key_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        key = ""
+    if not key:
+        raise RuntimeError(f"no Daytona API key: DAYTONA_API_KEY is unset and {key_file} is missing or empty")
+    return key
+
+
 def make_daytona():
-    """Daytona client from the env-var contract (DAYTONA_API_KEY, optional
-    DAYTONA_API_URL). Public: callers driving create_task_sandbox() need a
+    """Daytona client: key from resolve_api_key(), endpoint from optional
+    DAYTONA_API_URL. Public: callers driving create_task_sandbox() need a
     client configured the same way this module's own CLI is."""
     from daytona import Daytona, DaytonaConfig
 
-    api_key = os.environ.get("DAYTONA_API_KEY")
-    if not api_key:
-        raise RuntimeError("DAYTONA_API_KEY not set")
     return Daytona(
         DaytonaConfig(
-            api_key=api_key,
+            api_key=resolve_api_key(),
             api_url=os.getenv("DAYTONA_API_URL", "https://app.daytona.io/api"),
         )
     )

@@ -30,7 +30,7 @@ class LaunchArgs(Protocol):
     openenv_max_turns: int
     openenv_max_rollout_time_seconds: int
     openenv_tb2_tasks_dir: str
-    daytona_api_key: str
+    daytona_api_key_file: str
     router_external_host: str
     miles_host_ip: str
 
@@ -156,8 +156,45 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
     if args.router_external_host:
         env["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     if args.openenv_tb2_tasks_dir:
-        if not args.daytona_api_key:
-            raise ValueError("DAYTONA_API_KEY required in per-task Daytona mode")
+        # Key-supply contract (kept deliberately general): rollout workers get
+        # the Daytona key from their OWN environment (DAYTONA_API_KEY, e.g.
+        # platform-injected) or from a file they can read (DAYTONA_API_KEY_FILE,
+        # default ~/.config/daytona/api_key — a dotfile, K8s Secret mount, or
+        # shared-FS path). The launcher forwards only the file PATH, never the
+        # value: worker env rides ray's runtime_env, which exec_command echoes
+        # into driver logs and ray persists in job metadata, all in plaintext.
+        key_file = Path(args.daytona_api_key_file or "~/.config/daytona/api_key").expanduser()
+        try:
+            key_present = bool(key_file.read_text(encoding="utf-8").strip())
+        except OSError:
+            key_present = False
+        # Either supply is fine; neither is fully verifiable from here (the
+        # launcher cannot probe worker nodes), so echo which one is in effect.
+        if key_present:
+            env["DAYTONA_API_KEY_FILE"] = str(key_file)
+            print(
+                f"openenv: Daytona key supply: file {key_file} "
+                "(readable here; forwarding the path, workers read it themselves)",
+                flush=True,
+            )
+        elif args.daytona_api_key_file:
+            # An explicitly configured path that doesn't resolve on the launcher
+            # is a config error; failing every episode later is far worse.
+            raise ValueError(f"DAYTONA_API_KEY_FILE={args.daytona_api_key_file} is missing or empty")
+        elif os.environ.get("DAYTONA_API_KEY", "").strip():
+            print(
+                "openenv: Daytona key supply: worker environment (DAYTONA_API_KEY "
+                "is set here; workers are assumed to have it in their own env — "
+                "single-host inheritance or platform-injected pod env)",
+                flush=True,
+            )
+        else:
+            raise ValueError(
+                "per-task Daytona mode needs an API key: put it in a file "
+                f"({key_file}; DAYTONA_API_KEY_FILE overrides) or in the "
+                "environment as DAYTONA_API_KEY. Provision the file with:\n"
+                "  mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key"
+            )
         # Preflight the lazily-imported SDK. Without this, a missing install only
         # surfaces inside each episode's sandbox start, where the failed sample is
         # aborted, the group dropped, and the rollout loop refills forever — a
@@ -194,4 +231,3 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
                 "not upstream main"
             )
         env["OPENENV_TB2_TASKS_DIR"] = args.openenv_tb2_tasks_dir
-        env["DAYTONA_API_KEY"] = args.daytona_api_key

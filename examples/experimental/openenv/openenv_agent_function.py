@@ -41,7 +41,17 @@ resident env server) and zero cross-episode state leakage.
                      layers by definition hash, so only the first episode of a
                      task builds (~10 min); repeats start in ~1 min. No named
                      snapshots, so no org snapshot quota.
-  DAYTONA_API_KEY              required in per-task mode.
+  DAYTONA_API_KEY              the Daytona API key, authenticating every
+                     sandbox create/delete. Read from the worker's own
+                     node-local environment; nothing forwards it. Supply it
+                     via platform-injected pod env, or by exporting it in
+                     the shell that starts ray on a single host.
+  DAYTONA_API_KEY_FILE         fallback when DAYTONA_API_KEY is unset: path
+                     of a file holding the key (default
+                     ~/.config/daytona/api_key). Launchers forward this path
+                     instead of the key itself, because ray runtime_env is
+                     logged in plaintext. Point it at a file every node can
+                     read: a dotfile, K8s Secret mount, or shared-FS path.
   OPENENV_DAYTONA_CREATE_CONCURRENCY  max in-flight sandbox creates (default 4).
   OPENENV_DAYTONA_READY_TIMEOUT_S     server-ready wait per sandbox (default 300).
   TB2_COMMAND_TIMEOUT_S        per-exec timeout inside the sandbox (default 900).

@@ -126,7 +126,10 @@ async def main() -> None:
     # Golden replay only exists on the per-task sandbox backend; fail fast so
     # golden_one can read OPENENV_TB2_TASKS_DIR unconditionally.
     if not os.getenv("OPENENV_TB2_TASKS_DIR", "").strip():
-        sys.exit("scan_golden requires the per-task sandbox backend: set OPENENV_TB2_TASKS_DIR (+ DAYTONA_API_KEY)")
+        sys.exit(
+            "scan_golden requires the per-task sandbox backend: set OPENENV_TB2_TASKS_DIR "
+            "(+ DAYTONA_API_KEY or a key file at ~/.config/daytona/api_key)"
+        )
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
     print(f"golden sweep | {len(tasks)} tasks | concurrency={args.concurrency}", flush=True)
 
