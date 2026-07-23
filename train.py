@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 
 async def train(args):
     configure_logger(args, source=MainProcessIdentity())
-    object_store.init_instance(args, contribute_segment=False)
     maybe_start_periodic_pyspy_dump()
     # allocate the GPUs
     pgs = create_placement_groups(args)
+    object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.

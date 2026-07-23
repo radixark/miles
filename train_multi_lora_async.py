@@ -32,11 +32,11 @@ async def main(args):
         not args.colocate
     ), "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
     configure_logger(args, source=MainProcessIdentity())
-    object_store.init_instance(args, contribute_segment=False)
 
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
     pgs = create_placement_groups(args)
+    object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
     rollout_manager, _num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
 
