@@ -82,8 +82,6 @@ class RolloutManager:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
             start_session_server(args)
-            # only now does args carry the real router address (init_tracking
-            # above ran before the router existed)
             dashboard_hooks.register_router(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1

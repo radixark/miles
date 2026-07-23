@@ -84,7 +84,6 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         return av + [[] for _ in range(obs_len)] + bv
 
     def _pop_lifecycle(metadata):
-        # per-turn lifecycle segments differ; a merged sample keeps them as an ordered list
         if not metadata or "lifecycle" not in metadata:
             return metadata, []
         value = metadata["lifecycle"]
@@ -92,7 +91,6 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         return rest, value if isinstance(value, list) else [value]
 
     def _pop_messages(metadata):
-        # the later turn's conversation snapshot is a superset; keep it
         if not metadata or "messages" not in metadata:
             return metadata, None
         return {k: v for k, v in metadata.items() if k != "messages"}, metadata["messages"]

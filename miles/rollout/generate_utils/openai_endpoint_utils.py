@@ -156,7 +156,6 @@ def compute_samples_from_openai_records(
         sample = _compute_sample_from_openai_record(args, input_sample, record, tokenizer, trim_count)
         attach_lifecycle_metadata(sample, record, records[i - 1] if i else None, turn=i + 1)
         if is_last and args.save_debug_trajectory_data is not None:
-            # the final turn's request holds the full message history
             sample.metadata["messages"] = record.request["messages"] + [record.response["choices"][0]["message"]]
         samples.append(sample)
 
