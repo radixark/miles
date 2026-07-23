@@ -36,7 +36,6 @@ except ImportError as exc:
 class ValueSpec:
     codec: str
     dtype: str | None = None
-    section: str = "non_tensor_batch"
 
 
 class ObjectStoreGetResult:
@@ -177,7 +176,7 @@ def _field_schemas_for_value(value: Any, value_spec: dict[str, ValueSpec] | None
     for field, spec in value_spec.items():
         if field not in value:
             continue
-        metadata: dict[str, str] = {"section": spec.section}
+        metadata: dict[str, str] = {"section": "meta_info" if spec.codec == "auto" else "non_tensor_batch"}
         if spec.dtype is not None:
             metadata["dtype"] = spec.dtype
         schemas[field] = FieldSchema(codec=spec.codec, nullable=False, metadata=metadata)
