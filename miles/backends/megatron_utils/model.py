@@ -75,7 +75,21 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
         OptimizerParamScheduler: Initialized scheduler bound to ``optimizer``.
     """
     # Iteration-based training.
-    args.train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+    estimated_train_iters = (
+        args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+    )
+    if args.num_rollout == 0:
+        # Eval-only: no training runs, but the scheduler is still constructed
+        # and Megatron asserts ``lr_decay_steps > 0``.
+        args.train_iters = 1
+    elif estimated_train_iters <= 0:
+        total_samples = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt
+        raise ValueError(
+            f"Invalid training configuration: total samples ({total_samples}) "
+            f"must be at least global_batch_size ({args.global_batch_size})."
+        )
+    else:
+        args.train_iters = estimated_train_iters
     if args.lr_decay_iters is None:
         args.lr_decay_iters = args.train_iters
     lr_decay_steps = args.lr_decay_iters * args.global_batch_size
