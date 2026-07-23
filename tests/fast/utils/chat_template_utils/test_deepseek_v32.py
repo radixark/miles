@@ -160,6 +160,120 @@ def test_thinking_mode_changes_output():
 
 
 # ---------------------------------------------------------------------------
+# Miles extension: render-level drop_thinking=False (vendored encoder)
+# ---------------------------------------------------------------------------
+
+_THINKING_HISTORY = [
+    {"role": "user", "content": "q1"},
+    {"role": "assistant", "content": "a1", "reasoning_content": "r1"},
+    {"role": "user", "content": "q2"},
+    {"role": "assistant", "content": "a2", "reasoning_content": "r2"},
+]
+
+_TOOL_TAIL_HISTORY = [
+    {"role": "user", "content": "q"},
+    {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "r",
+        "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": '{"a": 1}'}}],
+    },
+    {"role": "tool", "content": "out", "tool_call_id": "c0"},
+]
+
+
+def test_drop_thinking_false_renders_historical_thinking():
+    dropped = _reference_encode(_THINKING_HISTORY, thinking=True, drop_thinking=True)
+    kept = _reference_encode(_THINKING_HISTORY, thinking=True, drop_thinking=False)
+    assert "r1" not in dropped
+    assert "r1" in kept and "r2" in kept
+
+
+@pytest.mark.parametrize("history", [_THINKING_HISTORY, _TOOL_TAIL_HISTORY], ids=["user-turns", "tool-tail"])
+def test_drop_thinking_false_is_append_only_across_user_append(history):
+    # The point of the render-level drop_thinking=False extension: a new user
+    # turn must extend the rendered history byte-for-byte.  Upstream's
+    # last_user_idx gates break this (the tool tail flips its trailing <think>
+    # to </think>; earlier assistants lose their thinking block).
+    before = _reference_encode(history, thinking=True, drop_thinking=False)
+    after = _reference_encode(history + [{"role": "user", "content": "next"}], thinking=True, drop_thinking=False)
+    assert after.startswith(before)
+
+
+@pytest.mark.parametrize("history", [_THINKING_HISTORY, _TOOL_TAIL_HISTORY], ids=["user-turns", "tool-tail"])
+def test_drop_thinking_true_is_not_append_only_across_user_append(history):
+    # Regression guard for why every V3.2 surface pins drop_thinking=False.
+    before = _reference_encode(history, thinking=True, drop_thinking=True)
+    after = _reference_encode(history + [{"role": "user", "content": "next"}], thinking=True, drop_thinking=True)
+    assert not after.startswith(before)
+
+
+def test_tool_only_history_drop_false_matches_drop_true():
+    # Pure tool-loop histories (the pre-existing {tool} surface) render
+    # byte-identically under either drop mode: every assistant sits after the
+    # single user turn, so the pinned drop_thinking=False changes nothing for
+    # existing tool-only configs.
+    history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "r1",
+            "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": '{"a": 1}'}}],
+        },
+        {"role": "tool", "content": "out1", "tool_call_id": "c0"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "r2",
+            "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": '{"a": 2}'}}],
+        },
+        {"role": "tool", "content": "out2", "tool_call_id": "c1"},
+    ]
+    assert _reference_encode(history, thinking=True, drop_thinking=False) == _reference_encode(
+        history, thinking=True, drop_thinking=True
+    )
+
+
+# Upstream parity: every drop_thinking=True path must keep rendering
+# byte-identically to the installed sglang encoder the file was vendored from.
+
+_UPSTREAM_PARITY_SCENARIOS = {
+    **_PARITY_SCENARIOS,
+    "developer": [{"role": "developer", "content": "do the thing"}],
+    "thinking_history": _THINKING_HISTORY,
+    "tool_tail": _TOOL_TAIL_HISTORY,
+}
+
+
+@pytest.mark.parametrize("scenario", list(_UPSTREAM_PARITY_SCENARIOS), ids=list(_UPSTREAM_PARITY_SCENARIOS))
+@pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
+def test_drop_thinking_true_matches_upstream_sglang(scenario, thinking):
+    from sglang.srt.entrypoints.openai import encoding_dsv32 as upstream
+
+    messages = _UPSTREAM_PARITY_SCENARIOS[scenario]
+    thinking_mode = "thinking" if thinking else "chat"
+    assert _reference_encode(messages, thinking=thinking, drop_thinking=True) == upstream.encode_messages(
+        messages, thinking_mode=thinking_mode, drop_thinking=True
+    )
+
+
+def test_drop_thinking_true_raise_parity_with_upstream():
+    # thinking mode + a post-last-user assistant without reasoning_content or
+    # tool_calls raises upstream; the vendored copy keeps that contract.
+    from sglang.srt.entrypoints.openai import encoding_dsv32 as upstream
+
+    from miles.utils.chat_template_utils.templates import encoding_dsv32 as vendored
+
+    bad = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+    with pytest.raises(vendored.DS32EncodingError):
+        vendored.encode_messages(bad, thinking_mode="thinking", drop_thinking=True)
+    with pytest.raises(upstream.DS32EncodingError):
+        upstream.encode_messages(bad, thinking_mode="thinking", drop_thinking=True)
+
+
+# ---------------------------------------------------------------------------
 # Tool injection (sglang-aligned: tools go into the system <functions> block)
 # ---------------------------------------------------------------------------
 

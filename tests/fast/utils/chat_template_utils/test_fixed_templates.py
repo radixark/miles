@@ -52,6 +52,17 @@ def test_deepseek_v4_tool_user_pins_drop_thinking_false():
     assert kwargs == {"drop_thinking": False}
 
 
+@pytest.mark.parametrize("roles", [["tool"], ["tool", "user"]])
+def test_deepseek_v32_pins_drop_thinking_false_on_every_surface(roles):
+    # The vendored encoding_dsv32 honors drop_thinking=False at the render
+    # level (unlike upstream, which strips historical thinking whenever a new
+    # user turn advances last_user_index).  Every V3.2 surface pins it so
+    # renders stay append-only for both tool and user appends.
+    path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.DEEPSEEKV32, roles)
+    assert path is None
+    assert kwargs == {"drop_thinking": False}
+
+
 @pytest.mark.parametrize(
     "tito_model",
     [TITOTokenizerType.QWEN3, TITOTokenizerType.QWEN35, TITOTokenizerType.QWENNEXT],

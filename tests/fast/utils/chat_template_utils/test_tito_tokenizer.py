@@ -46,7 +46,7 @@ TestFactory
 
 from __future__ import annotations
 
-from pathlib import Path
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -261,6 +261,58 @@ class TestConfig:
         """create_comparator propagates trailing_token_ids to the comparator's trim set."""
         comp = qwen3_tito.create_comparator()
         assert comp._trim_trailing_ids == set(qwen3_tito.trailing_token_ids)
+
+
+class TestDeepSeekV32IncrementalAppend:
+    """V3.2 rides the default synthetic-prefix suffix diff; with the family's
+    pinned ``drop_thinking=False`` the vendored encoder renders every turn
+    position-independently, so the synthetic-prefix incremental must equal the
+    real-history render suffix for both tool and user appends."""
+
+    class _CharTokenizer:
+        def __init__(self, name_or_path: str):
+            self.name_or_path = name_or_path
+
+        def encode(self, text, add_special_tokens=False):
+            assert add_special_tokens is False
+            return [ord(c) for c in text]
+
+        def convert_tokens_to_ids(self, token):
+            return {"<｜User｜>": 1, "<｜Assistant｜>": 2}[token]
+
+    @pytest.mark.parametrize(
+        "appended",
+        [
+            [{"role": "user", "content": "next question"}],
+            [{"role": "tool", "content": "out", "tool_call_id": "c0"}],
+        ],
+        ids=["user", "tool"],
+    )
+    def test_incremental_equals_real_history_suffix(self, tmp_path, appended):
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "deepseek_v32"}), encoding="utf-8")
+        tokenizer = self._CharTokenizer(str(tmp_path))
+        tito = DeepSeekV32TITOTokenizer(
+            tokenizer,
+            chat_template_kwargs={"drop_thinking": False},
+            allowed_append_roles=["tool", "user"],
+        )
+        old = [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "r",
+                "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": '{"a": 1}'}}],
+            },
+        ]
+        new = old + appended
+
+        incremental = tito.tokenize_additional_non_assistant(old, new)
+
+        text_old = tito.apply_chat_template(old, add_generation_prompt=False)
+        text_new = tito.apply_chat_template(new, add_generation_prompt=True)
+        assert text_new.startswith(text_old)
+        assert incremental == tokenizer.encode(text_new[len(text_old) :])
 
 
 # ---------------------------------------------------------------------------
