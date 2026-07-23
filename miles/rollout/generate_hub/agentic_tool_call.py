@@ -4,8 +4,9 @@ Generic agentic generate function for agent-environment RL training.
 The agent logic is fully encapsulated in a user-provided async function
 (--custom-agent-function-path). This generate function only handles:
   1. TITO session tracing (OpenAIEndpointTracer)
-  2. Converting session records to training samples
-  3. Multi-turn merge
+  2. Collecting the worker-assembled training samples (the session server
+     converts records to samples, truncates and merges in the owning worker)
+  3. Driver-side metadata application (agent_metadata, session_metadata)
 
 Agent function contract:
   async def my_agent(
@@ -33,8 +34,6 @@ from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
-from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
@@ -81,55 +80,48 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
 
     finally:
-        logger.debug(f"{log_prefix} Calling collect_records...")
-        records, session_metadata = await tracer.collect_records()
-        logger.debug(f"{log_prefix} collect_records done: {len(records)} records")
+        # The session server assembles the samples on the owning instance; records
+        # never leave it. Runs even when the agent function failed, like the old
+        # collect_records; a collect failure (422/5xx/timeout) raises loudly.
+        logger.debug(f"{log_prefix} Calling collect_samples...")
+        result = await tracer.collect_samples(
+            input.sample,
+            multi_samples=input.args.generate_multi_samples,
+            max_seq_len=max_seq_len,
+        )
+        logger.debug(
+            f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
+            f"total_time={time.monotonic()-t_start:.1f}s"
+        )
 
-    if not records:
-        logger.warning("No model calls recorded for sample")
+    if not result.samples:
+        if result.empty_reason == "all_truncated":
+            logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
+        else:
+            logger.warning("No model calls recorded for sample")
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=sample)
 
-    logger.debug(f"{log_prefix} Computing samples from {len(records)} records...")
-    samples = compute_samples_from_openai_records(
-        input.args,
-        input.sample,
-        records,
-        input.state.tokenizer,
-        accumulated_token_ids=session_metadata.get("accumulated_token_ids"),
-        max_trim_tokens=session_metadata.get("max_trim_tokens", 0),
-    )
-
-    logger.debug(
-        f"{log_prefix} compute_samples done: {len(samples)} samples, total_time={time.monotonic()-t_start:.1f}s"
-    )
+    samples = result.samples
     for s in samples:
         s.metadata.update(agent_metadata or {})
 
     # If the agent function reports wall-clock time spent outside policy generation
     # (env/tool steps), surface it on Sample.non_generation_time so throughput
-    # accounting subtracts it. Must be equal across all turn-samples: merge_samples
-    # collapses them with _merge_equal_value, which asserts the values match.
+    # accounting subtracts it (applied to every returned sample, merged or per-turn).
     ngt = ((agent_metadata or {}).get("agent_metrics") or {}).get("total_tool_time")
     if ngt is not None:
         for s in samples:
             s.non_generation_time = ngt
 
-    if max_seq_len is not None:
-        samples = truncate_samples_by_total_tokens(samples, max_seq_len, input.state.tokenizer)
-
-    if not samples:
-        logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
-        sample = deepcopy(input.sample)
-        sample.status = Sample.Status.ABORTED
-        return GenerateFnOutput(samples=sample)
-
     if not input.args.generate_multi_samples:
-        samples = merge_samples(samples, input.state.tokenizer)
-        samples.metadata.update(session_metadata)
-    else:
-        samples[-1].metadata.update(session_metadata)
+        # The server merged already; unwrap to a scalar Sample — downstream
+        # forks on isinstance(sample, list) to pick the multi-samples branch.
+        (merged,) = samples
+        merged.metadata.update(result.session_metadata)
+        return GenerateFnOutput(samples=merged)
+    samples[-1].metadata.update(result.session_metadata)
     return GenerateFnOutput(samples=samples)
 
 
@@ -142,8 +134,8 @@ def _add_arguments(parser: argparse.ArgumentParser):
         default=None,
         dest="max_seq_len",
         help="Max sequence length in tokens (prompt + completion, including env responses) "
-        "per session. Truncates samples on the Miles side and is forwarded to the "
-        "Harbor agent server (as max_seq_len) to abort the trial early.",
+        "per session. Truncation happens inside the session server during sample assembly; "
+        "also forwarded to the Harbor agent server (as max_seq_len) to abort the trial early.",
     )
 
 

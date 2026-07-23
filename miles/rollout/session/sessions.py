@@ -4,6 +4,7 @@ Thin layer: converts each HTTP request to primitive inputs, calls
 ``SessionCore``. All session/TITO logic lives in ``core``.
 """
 
+import json
 import logging
 
 from fastapi import Request
@@ -69,6 +70,21 @@ def setup_session_routes(app, backend, args):
             query=request.url.query,
             headers=dict(request.headers),
             body=body,
+        )
+
+    @app.post("/sessions/{session_id}/samples")
+    async def collect_samples(request: Request, session_id: str):
+        # Must stay registered BEFORE the catch-all session_proxy below: Starlette
+        # matches in registration order, and the catch-all would otherwise swallow
+        # this path and forward it to the inference backend.
+        # Request params are parsed here, OUTSIDE core.collect_samples's 422 lane:
+        # a malformed body is a protocol violation (500), not an assembly failure.
+        body = await request.body()
+        params = json.loads(body) if body else {}
+        return await core.collect_samples(
+            session_id,
+            multi_samples=bool(params.get("multi_samples", False)),
+            max_seq_len=params.get("max_seq_len"),
         )
 
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
