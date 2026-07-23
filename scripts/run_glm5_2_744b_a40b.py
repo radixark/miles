@@ -151,10 +151,15 @@ def _convert_to_fp8(args: ScriptArgs):
     """Convert HF checkpoint to FP8 (block quantization). Megatron still uses bf16."""
     src = f"{args.model_dir}/{args.model_name}"
     dst = f"{args.model_dir}/{args.model_name}_fp8"
+    sentinel = Path(dst) / "model.safetensors.index.json"
+    if sentinel.exists():
+        print(f"_convert_to_fp8 skip {dst} since {sentinel} exists")
+        return
     U.exec_command(
         f"python tools/convert_hf_to_fp8.py "
         f"--model-dir {src} --save-dir {dst} "
-        f"--strategy block --block-size 128 128"
+        f"--strategy block --block-size 128 128 "
+        f"--max-workers 16"
     )
 
 
@@ -180,9 +185,12 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         num_gpus_per_node = 1
         multinode = False
     else:
+        # torch_dist is parallelism-agnostic on load, so size EP to whatever
+        # world size the hardware provides.
+        world_size = args.num_nodes * args.num_gpus_per_node
         extra_args += (
             "--pipeline-model-parallel-size 4 "
-            "--expert-model-parallel-size 32 "
+            f"--expert-model-parallel-size {world_size // 4} "
             "--decoder-first-pipeline-num-layers 18 "
             "--decoder-last-pipeline-num-layers 20 "
         )
@@ -255,6 +263,22 @@ def _execute_train(args: ScriptArgs):
             f"--expert-model-parallel-size {args.num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )
+    elif args.num_nodes >= 16 and args.num_gpus_per_node == 4:  # GB300 64-GPU config
+        # TP=8 * PP=4 * DP=2 = 64 GPUs; EP=16 halves per-rank expert params vs
+        # EP8, which is what fits the fp32 optimizer states on 276GB GPUs.
+        # DSA cross-layer index sharing needs every pipeline stage to start on a
+        # computing layer (1,2,3 then 3+4k): first=18/last=20 puts the stage
+        # starts on layers 1,19,39,59.
+        perf_args = (
+            "--tensor-model-parallel-size 8 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 4 "
+            "--decoder-first-pipeline-num-layers 18 "
+            "--decoder-last-pipeline-num-layers 20 "
+            "--context-parallel-size 1 "
+            "--expert-model-parallel-size 16 "
+            "--expert-tensor-parallel-size 1 "
+        )
     elif args.num_nodes >= 16:  # slime's setting for the full model
         # TP=4 * PP=8 * CP=8 = 256 GPUs (32 nodes) for one training group; EP=32.
         # DSA cross-layer index sharing needs every pipeline stage to START on a
@@ -321,27 +345,32 @@ def _execute_train(args: ScriptArgs):
             sglang_world_size = 64
     else:
         sglang_decode_max_bs = 256
-        sglang_world_size = min(8, args.num_gpus_per_node)
+        sglang_world_size = 8
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-mem-fraction-static 0.70 "
-        "--sglang-enable-dp-attention "
+        # cookbook is 0.8, which will OOM under RL.
+        "--sglang-mem-fraction-static 0.75 "
         f"--sglang-ep-size {sglang_world_size} "
-        f"--sglang-dp-size {sglang_world_size} "
-        "--sglang-moe-dense-tp-size 1 "
-        "--sglang-enable-dp-lm-head "
+        "--sglang-router-policy consistent_hashing "
     )
+    if args.enable_pd:
+        # slime native config
+        sglang_args += (
+            "--sglang-enable-dp-attention "
+            f"--sglang-dp-size {sglang_world_size} "
+            "--sglang-moe-dense-tp-size 1 "
+            "--sglang-enable-dp-lm-head "
+        )
     if args.fp8_rollout and args.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep " "--sglang-deepep-mode auto "
     if args.enable_mtp:
-        # EAGLE using the model's own next-token-prediction layer (full GLM-5.2 only;
-        # the MTP layer is stripped from the pruned checkpoints).
+        # cookbook low-latency config
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
-            "--sglang-speculative-num-steps 4 "
+            "--sglang-speculative-num-steps 5 "
             "--sglang-speculative-eagle-topk 1 "
-            "--sglang-speculative-num-draft-tokens 5 "
+            "--sglang-speculative-num-draft-tokens 6 "
             "--sglang-speculative-draft-attention-backend nsa "
         )
     if args.enable_pd:
@@ -368,6 +397,9 @@ def _execute_train(args: ScriptArgs):
     sglang_extra_env_vars = {
         "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{64 if args.enable_pd else 256}",
         "SGLANG_NSA_FORCE_MLA": "1",
+        # Node-local triton cache: the default ~/.triton on NFS races across nodes
+        # (ESTALE) when many processes cold-compile the same kernels.
+        "TRITON_CACHE_DIR": "/scratch/yyuan/triton_cache",
     }
 
     misc_args = (
