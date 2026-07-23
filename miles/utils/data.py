@@ -19,7 +19,6 @@ except ImportError:
 from miles.utils import chat_template_utils
 from miles.utils.types import MultimodalTypes, Sample
 
-from .timer import Timer
 
 __all__ = ["Dataset"]
 
@@ -296,6 +295,8 @@ def process_rollout_data(
     dp_size,
     witness_info: WitnessInfo | None,
 ):
+    from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
+
     if args.delay_split_train_data_by_dp:
         raw = ray.get(rollout_data_ref.inner)
         if (x := witness_info) is not None:
@@ -307,11 +308,4 @@ def process_rollout_data(
         assert witness_info is None
         rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
 
-    partition = rollout_data.pop("partition")
-    total_lengths = rollout_data["total_lengths"]
-
-    # save the seqlen of the whole rollout batch
-    Timer().seq_lens = total_lengths
-    rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
-
-    return rollout_data
+    return process_rollout_data_shard(args, rollout_data)

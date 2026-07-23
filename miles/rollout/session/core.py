@@ -147,6 +147,7 @@ class SessionCore:
         append record (lock held briefly). The lock is NOT held during the slow
         proxy call so DELETE/other ops are not blocked if the agent disconnects.
         """
+        request_timestamp = time.time()
         session = self.registry.get_session(session_id)
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
@@ -260,6 +261,7 @@ class SessionCore:
 
             record = SessionRecord(
                 timestamp=time.time(),
+                request_timestamp=request_timestamp,
                 method=method,
                 path="/v1/chat/completions",
                 status_code=result["status_code"],
