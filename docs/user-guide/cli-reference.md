@@ -57,9 +57,15 @@ rollout_batch_size × n_samples_per_prompt
 | `--recompute-granularity` | Megatron default | `full` or `selective`. |
 | `--recompute-method` | Megatron default | `uniform` or `block`. |
 | `--recompute-num-layers` | Megatron default | Layers per recompute chunk. |
+| `--defer-multimodal-cuda-transfer` | off | VLM only: keep image tensors on CPU, move each micro-batch to GPU on demand. Cuts peak GPU memory. |
 
 Rule of thumb: start with `max_tokens_per_gpu = rollout_max_response_len / cp_size`,
 then push up until you OOM.
+
+For vision-language runs that OOM in the trainer, `--defer-multimodal-cuda-transfer`
+keeps the whole rollout's image features (`pixel_values`, `image_grid_thw`, ...) on
+pinned host memory and copies only the active micro-batch to the GPU during
+collation, trading a per-micro-batch host→device copy for lower peak memory.
 
 ### RL algorithm
 
@@ -218,6 +224,7 @@ Sections mirror the launch-script argument groups.
 | `--recompute-granularity` | enum | Megatron default | `full` or `selective`. |
 | `--recompute-method` | enum | Megatron default | `uniform` or `block`. |
 | `--recompute-num-layers` | int | Megatron default | Recompute chunk size. |
+| `--defer-multimodal-cuda-transfer` | flag | off | VLM only: hold multimodal tensors on pinned CPU, move each micro-batch to GPU during collation. Lowers peak GPU memory at the cost of a per-micro-batch host→device copy. |
 | `--gradient-checkpointing` | flag | off | FSDP equivalent of recompute flags. |
 | `--fsdp-cpu-offload` | flag | off | FSDP: offload params, grads, optimizer state to CPU. |
 | `--fsdp-cpu-backend` | str | `gloo` | FSDP: CPU backend for hybrid offload. |

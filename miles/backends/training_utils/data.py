@@ -15,7 +15,11 @@ from miles.utils.types import RolloutBatch
 from ...utils.data import process_rollout_data
 from ...utils.ray_utils import Box
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
-from .mm_data import expand_multimodal_rollout_data_in_place
+from .mm_data import (
+    collate_multimodal_train_inputs,
+    expand_multimodal_rollout_data_in_place,
+    materialize_multimodal_inputs,
+)
 from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
@@ -60,15 +64,19 @@ def get_rollout_data(
         ]
 
     if "multimodal_train_inputs" in rollout_data:
-        # Move multimodal training tensors to GPU in advance
-        rollout_data["multimodal_train_inputs"] = [
-            (
-                {key: tensor.to(device=torch.cuda.current_device()) for key, tensor in mm_dict.items()}
-                if mm_dict is not None
-                else None
-            )
-            for mm_dict in rollout_data["multimodal_train_inputs"]
-        ]
+        # Materialize multimodal training tensors. By default they are moved to
+        # GPU in advance; with --defer-multimodal-cuda-transfer they stay on
+        # pinned CPU memory and only the active microbatch is moved to CUDA
+        # during collation (see collate_multimodal_train_inputs).
+        target_device = (
+            torch.device("cpu")
+            if getattr(args, "defer_multimodal_cuda_transfer", False)
+            else torch.cuda.current_device()
+        )
+        rollout_data["multimodal_train_inputs"] = materialize_multimodal_inputs(
+            rollout_data["multimodal_train_inputs"],
+            target_device,
+        )
 
     if args.qkv_format == "bshd":
         # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
@@ -320,20 +328,14 @@ def get_batch(
     assert loss_masks.shape == tokens.shape, f"loss_masks.shape: {loss_masks.shape}, tokens.shape: {tokens.shape}"
     batch["full_loss_masks"] = loss_masks
 
-    # Process multimodal training tensors if present
-    multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
-    if multimodal_train_inputs is not None:
-        multimodal_data = {}  # key -> concatenated tensor
-        multimodal_num_items = {}  # key -> list of item counts per sequence
-        for mm_input_dict in multimodal_train_inputs:
-            if mm_input_dict is not None:
-                for key, mm_tensor in mm_input_dict.items():
-                    if key not in multimodal_data:
-                        multimodal_data[key] = mm_tensor
-                        multimodal_num_items[key] = [mm_tensor.size(0)]
-                    else:
-                        multimodal_data[key] = torch.cat([multimodal_data[key], mm_tensor], dim=0)
-                        multimodal_num_items[key].append(mm_tensor.size(0))
+    # Process multimodal training tensors if present. Only the active
+    # microbatch is collated here, and its tensors are placed on CUDA — moving
+    # deferred (pinned CPU) payloads over just before the model forward.
+    if (multimodal_train_inputs := batch.get("multimodal_train_inputs")) is not None:
+        multimodal_data, multimodal_num_items = collate_multimodal_train_inputs(
+            multimodal_train_inputs,
+            torch.cuda.current_device(),
+        )
         batch["multimodal_train_inputs"] = multimodal_data
         batch["multimodal_num_items"] = multimodal_num_items
 

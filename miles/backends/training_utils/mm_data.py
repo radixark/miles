@@ -1,15 +1,23 @@
-"""Multimodal-specific preprocessing for rollout data.
+"""Multimodal-specific preprocessing and tensor movement for rollout data.
 
-Currently Kimi-VL / Kimi-K2.5-only: the rollout side emits one media
-placeholder token per image, and training expands it to grid-derived token
-counts so the LM sees a position per vision patch.  Kept separate from
-data.py (generic batching / CP slicing) so additional VL models can land
-without inflating that module.
+Two concerns live here, kept out of data.py (generic batching / CP slicing)
+so additional VL models can land without inflating that module:
+
+1. Token expansion (currently Kimi-VL / Kimi-K2.5-only): the rollout side
+   emits one media placeholder token per image, and training expands it to
+   grid-derived token counts so the LM sees a position per vision patch.
+2. Multimodal tensor materialization and per-microbatch collation
+   (model-agnostic): moves image payloads (``pixel_values``, ``image_grid_thw``,
+   ...) between host and device. When ``--defer-multimodal-cuda-transfer`` is
+   set these tensors stay on pinned CPU memory after the rollout fetch and only
+   the active microbatch is copied to CUDA during collation, which avoids
+   holding a whole minibatch of vision features in GPU memory at once.
 """
 
 import logging
 from collections.abc import Sequence
 
+import numpy as np
 import torch
 
 from miles.utils.types import RolloutBatch
@@ -18,6 +26,9 @@ from .cp_utils import all_gather_with_cp, slice_log_prob_with_cp
 from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
+
+MultimodalValue = np.ndarray | torch.Tensor
+MultimodalInput = dict[str, MultimodalValue] | None
 
 # Kimi-K2.5 / Kimi-VL media placeholder token id.
 KIMI_VL_MEDIA_TOKEN_ID = 163605
@@ -197,3 +208,97 @@ def expand_multimodal_rollout_data_in_place(
             f"total_lengths_changed={expanded_total_lengths != old_total_lengths}, "
             f"response_lengths_changed={expanded_response_lengths != old_response_lengths}"
         )
+
+
+def _as_multimodal_tensor(value: MultimodalValue, device: torch.device | int | None) -> torch.Tensor:
+    """Convert one multimodal array-like value to a tensor on the requested device."""
+    if isinstance(value, np.ndarray):
+        tensor = torch.from_numpy(value.copy())
+    elif isinstance(value, torch.Tensor):
+        # Tensor inputs are already trainer-owned; cloning would duplicate large
+        # image payloads, including CUDA tensors in preload mode.
+        tensor = value
+    else:
+        raise TypeError(f"Expected multimodal value to be a tensor or ndarray, got {type(value).__name__}")
+    return tensor.to(device=device)
+
+
+def materialize_multimodal_inputs(
+    multimodal_inputs: Sequence[MultimodalInput],
+    device: torch.device | int,
+) -> list[dict[str, torch.Tensor] | None]:
+    """Resolve per-sequence multimodal sample dicts to tensors on ``device``.
+
+    Called once per rollout fetch. With ``device`` set to the CUDA device this
+    preloads every image payload (legacy behavior); with ``device`` set to CPU
+    (deferred mode) the tensors stay on pinned host memory so the later
+    non_blocking CPU->CUDA copy in :func:`collate_multimodal_train_inputs` can
+    overlap with compute.
+    """
+    materialized: list[dict[str, torch.Tensor] | None] = []
+    for multimodal_input in multimodal_inputs:
+        if multimodal_input is None:
+            materialized.append(None)
+            continue
+
+        materialized_input: dict[str, torch.Tensor] = {}
+        for key, value in multimodal_input.items():
+            tensor = _as_multimodal_tensor(value, device)
+            if isinstance(device, torch.device) and device.type == "cpu":
+                # Deferred tensors stay on CPU here; pin host memory so the
+                # later non_blocking CPU->CUDA copy can overlap with compute.
+                # pinning makes sure that the memory doesn't get paged out to disk
+                # which would make the copy synchronous.
+                tensor = tensor.pin_memory() if torch.cuda.is_available() else tensor
+            materialized_input[key] = tensor
+        materialized.append(materialized_input)
+    return materialized
+
+
+def _cat_multimodal_tensors_for_forward(tensors: list[torch.Tensor], device: torch.device | int) -> torch.Tensor:
+    """Concatenate one multimodal field and place only the active microbatch on CUDA.
+
+    The per-tensor ``.to()`` runs *before* the concat on purpose: ``torch.cat``
+    on CPU allocates a fresh *pageable* output tensor, dropping the pinning that
+    :func:`materialize_multimodal_inputs` applied. Concatenating first would
+    therefore force a synchronous host->device copy. Moving each (pinned) tensor
+    over first keeps the copy ``non_blocking`` so it overlaps with compute;
+    already-CUDA tensors (preload mode) make ``.to()`` a no-op.
+    """
+    tensors = [tensor.to(device=device, non_blocking=True) for tensor in tensors]
+    return torch.cat(tensors, dim=0)
+
+
+def collate_multimodal_train_inputs(
+    multimodal_train_inputs: Sequence[MultimodalInput],
+    device: torch.device | int,
+) -> tuple[dict[str, torch.Tensor], dict[str, list[int]]]:
+    """Collate the already-sliced microbatch multimodal payload for model forward.
+
+    Args:
+        multimodal_train_inputs: Per-sequence multimodal dicts selected by
+            ``DataIterator`` for the active microbatch.
+        device: CUDA device used by the current Megatron rank.
+
+    Returns:
+        A tuple of ``(multimodal_data, multimodal_num_items)``. Tensor values are
+        concatenated across the active microbatch and placed on ``device``.
+    """
+    values_by_key: dict[str, list[torch.Tensor]] = {}
+    multimodal_num_items: dict[str, list[int]] = {}
+    for mm_input_dict in multimodal_train_inputs:
+        if mm_input_dict is None:
+            continue
+        if not isinstance(mm_input_dict, dict):
+            raise TypeError(
+                f"Expected multimodal_train_inputs entries to be dict or None, got {type(mm_input_dict).__name__}"
+            )
+        for key, value in mm_input_dict.items():
+            tensor = _as_multimodal_tensor(value, None)
+            values_by_key.setdefault(key, []).append(tensor)
+            multimodal_num_items.setdefault(key, []).append(tensor.size(0))
+
+    multimodal_data = {
+        key: _cat_multimodal_tensors_for_forward(values, device) for key, values in values_by_key.items()
+    }
+    return multimodal_data, multimodal_num_items
