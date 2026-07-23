@@ -437,7 +437,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-data-transport",
                 type=str,
-                choices=tuple(ObjectStoreBackend),
+                choices=tuple(backend.value for backend in ObjectStoreBackend),
                 default="object-store",
                 help="Transport for rollout data refs sent from rollout manager to trainer.",
             )
