@@ -1,4 +1,5 @@
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -54,3 +55,21 @@ def test_post_layernorm_flags_propagate_to_megatron(monkeypatch):
 
     assert config.post_self_attn_layernorm is True
     assert config.post_mlp_layernorm is True
+
+
+def test_optimizer_cpu_offload_rejects_lower_precision_state_dtypes(monkeypatch):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("megatron.training.arguments")
+
+    import miles.backends.megatron_utils.arguments as megatron_arguments
+
+    args = SimpleNamespace(
+        optimizer_cpu_offload=True,
+        main_params_dtype=torch.float16,
+        exp_avg_dtype=torch.float16,
+        exp_avg_sq_dtype=torch.float16,
+    )
+    monkeypatch.setattr(megatron_arguments, "_megatron_validate_args", lambda args: args)
+
+    with pytest.raises(ValueError, match="--optimizer-cpu-offload does not honor lower-precision"):
+        megatron_arguments.validate_args(args)
