@@ -19,6 +19,11 @@ appended under `{dump-details}/dashboard/` (append-only JSONL). Overhead on
 the training path is a few milliseconds per step; all pushes are
 fire-and-forget and a dead collector never affects training.
 
+`--dump-details` alone (no `--use-miles-dashboard`) still writes the rollout
+`.pt`, a per-token column mirror (`dashboard_columns/`, so the token view
+never full-loads the `.pt`), and — for session / multi-turn runs — a
+raw-conversation sidecar (`trajectory/`, for the conversation view).
+
 ## View
 
 ```bash
@@ -27,22 +32,28 @@ python -m miles.dashboard.serve --dump-details /path/to/dump [--follow] [--port 
 ```
 
 Works on any machine that can see the directory (login node over NFS, the
-training node itself); `--follow` tails a still-running job. Typical remote
-usage is an SSH port-forward. Runs recorded *without* `--use-miles-dashboard`
-still get the full training-dynamics views (metrics fall back to dump-derived
-aggregates under the `dump/` namespace); only the timeline is absent.
+training node itself); `--follow` tails a still-running job, typically over an
+SSH port-forward. `--use-utilization-overview` forces the fleet overview
+(auto-enabled above 64 lanes). Runs recorded *without* `--use-miles-dashboard`
+still get the training-dynamics views; only the timeline is absent (metrics
+fall back to dump-derived `dump/*` aggregates).
 
 Views:
 
-- **metrics** — every logged metric plus `dump/*` per-step aggregates; click
-  a rollout-axis point to drill into that step.
-- **timeline** — per-GPU lanes: phase band (rollout / train / update_weights,
-  hatched `train_wait` idle), NVML utilization, sglang engine overlay
-  (running requests, throughput, KV usage), bubble strip with click-to-zoom.
-- **step drill-down** — per-trajectory table and scatter, GRPO group
-  degeneracy (`zero_std`), generation-time columns, eval tab.
-- **token view** — per-token importance ratio / entropy / advantage strips
-  with loss-masked regions dimmed.
+- **Metrics** — a wandb-style category sidebar over every logged metric, plus
+  an `sglang` category (scraped engine series) when present; hover for values,
+  drag to zoom.
+- **Compute Utilization** — per-GPU lanes below 64 GPUs (phase band, NVML
+  utilization, sglang overlay, click-to-zoom bubble strip); above that, a
+  scale-invariant fleet overview (phase composition + utilization band) with a
+  lane-selection grammar (`g:` / `rank:` / `node:` / `every:`) and outlier
+  quick-picks.
+- **Rollouts** — per-step trajectory table and scatter, GRPO group degeneracy
+  (`zero_std`), average weight-version staleness, eval tab.
+- **sample view** — a `conversation` tab (role-tagged turns with thinking /
+  tool calls, from the trajectory sidecar) and a lazily-loaded `tokens` tab
+  (per-token metric strips + a selectable metric-vs-position chart,
+  loss-masked regions dimmed).
 
 ## Develop
 
@@ -52,12 +63,11 @@ python -m pytest tests/fast/dashboard/ -q
 MILES_DASHBOARD_REALDATA_DIR=/path/to/real/dump python -m pytest tests/fast/dashboard/ -q
 ```
 
-Design and implementation-plan documents live with the dashboard workspace
-(`miles-dashboard-design.md`); the short version of the architecture:
+Architecture:
 
 ```
 producers (Timer sinks / rollout hooks / NVML samplers / sglang scraper)
-    -> DashboardCollector (named actor, driver node)  [writes JSONL streams]
-dump_details .pt files (existing dump path)           [written by training]
+    -> DashboardCollector (named actor, driver node)          [live JSONL streams]
+dump .pt + dashboard_columns/*.parquet + trajectory/*.jsonl   [written by training]
     -> serve.py: MetricStore + DumpReader -> FastAPI -> static SPA
 ```
