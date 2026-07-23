@@ -31,8 +31,6 @@ def prepare():
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
-# TODO(mooncake): the test starts mooncake_master as external infra for now; ideally miles
-# itself (e.g. RolloutManager) should launch the master when none is configured.
 def start_mooncake_master():
     U.exec_command(
         "pgrep -x mooncake_master >/dev/null || "
