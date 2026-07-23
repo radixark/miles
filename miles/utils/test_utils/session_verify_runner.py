@@ -70,7 +70,8 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
     "ci_test": True,
     "colocate": True,
     "train_backend": "fsdp",
-    "sglang_expert_parallel_size": 1,
+    "sglang_ep_size": 1,
+    "enable_spec": False,
 }
 
 
@@ -166,8 +167,17 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
     # DeepSeek V3.2 (and other NSA/MoE archs) requires expert-parallel > 1 in
     # sglang; the default is 1, which is fatal at engine init.  Only emit the
     # flag when the caller asks for ep>1 so single-expert models stay untouched.
-    if ns.sglang_expert_parallel_size > 1:
-        parts.append(f"--sglang-expert-parallel-size {ns.sglang_expert_parallel_size}")
+    if ns.sglang_ep_size > 1:
+        parts.append(f"--sglang-expert-parallel-size {ns.sglang_ep_size}")
+    if ns.enable_spec:
+        parts.extend(
+            [
+                "--sglang-speculative-algorithm EAGLE",
+                "--sglang-speculative-num-steps 2",
+                "--sglang-speculative-eagle-topk 1",
+                "--sglang-speculative-num-draft-tokens 3",
+            ]
+        )
     if ns.use_session_server:
         parts.append("--use-session-server")
     if ns.debug_rollout_only:

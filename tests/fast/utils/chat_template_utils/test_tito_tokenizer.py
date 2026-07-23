@@ -46,11 +46,15 @@ TestFactory
 
 from __future__ import annotations
 
+import json
+from unittest.mock import MagicMock
+
 import pytest
 from transformers import AutoTokenizer
 
 from miles.utils.chat_template_utils import MismatchType, apply_chat_template, resolve_fixed_chat_template
 from miles.utils.chat_template_utils.tito_tokenizer import (
+    DeepSeekV32TITOTokenizer,
     GLM47TITOTokenizer,
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
@@ -226,10 +230,89 @@ class TestConfig:
         assert default_tito._assistant_start_str is None
         assert default_tito.trailing_token_ids == frozenset()
 
+    @pytest.mark.parametrize(
+        "chat_template_kwargs, expected",
+        [
+            pytest.param({}, True, id="default-thinking"),
+            pytest.param({"enable_thinking": False}, False, id="disable-via-miles-kwarg"),
+            pytest.param({"thinking": False}, False, id="disable-via-sglang-kwarg"),
+            pytest.param(
+                {"enable_thinking": False, "thinking": True},
+                False,
+                id="miles-kwarg-precedes-sglang-kwarg",
+            ),
+            pytest.param(
+                {"thinking_mode": "thinking", "thinking": False},
+                True,
+                id="explicit-mode-precedes-sglang-kwarg",
+            ),
+            pytest.param({"thinking_mode": "chat"}, False, id="explicit-chat-mode"),
+        ],
+    )
+    def test_deepseek_v32_forwards_effective_thinking_mode(self, chat_template_kwargs, expected):
+        tokenizer = MagicMock()
+        tokenizer.convert_tokens_to_ids.side_effect = [1, 2]
+
+        tito = DeepSeekV32TITOTokenizer(tokenizer, chat_template_kwargs=chat_template_kwargs)
+
+        assert tito.chat_template_kwargs["thinking"] is expected
+
     def test_comparator_inherits_trailing_ids(self, qwen3_tito: Qwen3TITOTokenizer):
         """create_comparator propagates trailing_token_ids to the comparator's trim set."""
         comp = qwen3_tito.create_comparator()
         assert comp._trim_trailing_ids == set(qwen3_tito.trailing_token_ids)
+
+
+class TestDeepSeekV32IncrementalAppend:
+    """V3.2 rides the default synthetic-prefix suffix diff; with the family's
+    pinned ``drop_thinking=False`` the vendored encoder renders every turn
+    position-independently, so the synthetic-prefix incremental must equal the
+    real-history render suffix for both tool and user appends."""
+
+    class _CharTokenizer:
+        def __init__(self, name_or_path: str):
+            self.name_or_path = name_or_path
+
+        def encode(self, text, add_special_tokens=False):
+            assert add_special_tokens is False
+            return [ord(c) for c in text]
+
+        def convert_tokens_to_ids(self, token):
+            return {"<｜User｜>": 1, "<｜Assistant｜>": 2}[token]
+
+    @pytest.mark.parametrize(
+        "appended",
+        [
+            [{"role": "user", "content": "next question"}],
+            [{"role": "tool", "content": "out", "tool_call_id": "c0"}],
+        ],
+        ids=["user", "tool"],
+    )
+    def test_incremental_equals_real_history_suffix(self, tmp_path, appended):
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "deepseek_v32"}), encoding="utf-8")
+        tokenizer = self._CharTokenizer(str(tmp_path))
+        tito = DeepSeekV32TITOTokenizer(
+            tokenizer,
+            chat_template_kwargs={"drop_thinking": False},
+            allowed_append_roles=["tool", "user"],
+        )
+        old = [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "r",
+                "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": '{"a": 1}'}}],
+            },
+        ]
+        new = old + appended
+
+        incremental = tito.tokenize_additional_non_assistant(old, new)
+
+        text_old = tito.apply_chat_template(old, add_generation_prompt=False)
+        text_new = tito.apply_chat_template(new, add_generation_prompt=True)
+        assert text_new.startswith(text_old)
+        assert incremental == tokenizer.encode(text_new[len(text_old) :])
 
 
 # ---------------------------------------------------------------------------

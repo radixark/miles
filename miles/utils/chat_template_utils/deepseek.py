@@ -1,11 +1,10 @@
 """Shared bridge for the DeepSeek official-encoder families (V3.2, V4).
 
-Neither family ships a jinja chat_template: sglang renders their prompts
-through per-family ``encoding_dsv*`` modules that share one calling
-convention, and miles' ``apply_chat_template`` routes any matching tokenizer
-here so training-side renders stay byte-aligned with what the runtime
-serves.  Each family is one ``DeepSeekFamily`` instance wrapping its encoder
-module; everything else is shared.
+Neither family ships a jinja chat_template: prompts render through the
+per-family vendored ``templates.encoding_dsv*`` modules that share one
+calling convention, and miles' ``apply_chat_template`` routes any matching
+tokenizer here.  Each family is one ``DeepSeekFamily`` instance wrapping its
+encoder module; everything else is shared.
 """
 
 from __future__ import annotations
@@ -16,8 +15,9 @@ import json
 import os
 from typing import Any
 
-from sglang.srt.entrypoints.openai import encoding_dsv4, encoding_dsv32
 from sglang.srt.entrypoints.openai.protocol import Tool
+
+from miles.utils.chat_template_utils.templates import encoding_dsv4, encoding_dsv32
 
 _ASSISTANT_SP_TOKEN = "<｜Assistant｜>"
 
