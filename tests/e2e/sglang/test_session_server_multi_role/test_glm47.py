@@ -1,7 +1,15 @@
+import os
+
 from tests.ci.ci_register import register_cuda_ci
+from tests.ci.rocm_utils import IS_ROCM
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_one
 
 register_cuda_ci(est_time=500, suite="stage-c-4-gpu-h200", labels=["sglang"])
+
+
+if IS_ROCM:
+    os.environ["SGLANG_ROCM_FUSED_DECODE_MLA"] = "0"
+    os.environ["SGLANG_USE_AITER"] = "0"
 
 
 CONFIG = ModelConfig(
@@ -15,6 +23,7 @@ CONFIG = ModelConfig(
     # preceding assistant carries a matching tool_call.id, so the APPEND_TOOL
     # sentinel ("tool_call_id": "none") roundtrips cleanly.
     tool_call_failure_mode="append_tool",
+    assistant_text_threshold=0.4,
 )
 
 
