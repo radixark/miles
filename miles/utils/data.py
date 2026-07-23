@@ -285,7 +285,7 @@ def process_rollout_data(
     dp_size,
     witness_info: WitnessInfo | None,
 ):
-    store = object_store.get_instance(args)
+    store = object_store.get_instance()
 
     if args.delay_split_train_data_by_dp:
         ref = rollout_data_ref
@@ -314,7 +314,7 @@ def process_rollout_data(
 
 
 def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:
-    store = object_store.get_instance(args)
+    store = object_store.get_instance()
     data_ref = rollout_data_pack["data_ref"]
     for ref in data_ref if isinstance(data_ref, list) else [data_ref]:
         store.remove(ref)

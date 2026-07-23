@@ -62,10 +62,8 @@ def init_instance(args: Namespace, *, contribute_segment: bool | None = None) ->
     return _INSTANCE
 
 
-def get_instance(args: Namespace) -> "BaseObjectStore":
-    global _INSTANCE
-    if _INSTANCE is None:
-        _INSTANCE = _create_instance(args, contribute_segment=None)
+def get_instance() -> "BaseObjectStore":
+    assert _INSTANCE is not None, "object store instance is not initialized; call init_instance first"
     return _INSTANCE
 
 
