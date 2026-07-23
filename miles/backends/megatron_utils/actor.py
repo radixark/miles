@@ -1,5 +1,8 @@
+import atexit
 import logging
+import os
 import random
+import shutil
 import socket
 from argparse import Namespace
 from contextlib import nullcontext
@@ -66,6 +69,20 @@ if TYPE_CHECKING:
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _setup_disk_offload_reclaim(disk_dir: str) -> None:
+    """Reclaim train disk-offload files for --offload-train-target=disk.
+
+    ``disk_dir`` must be exclusive to this rank (see actor_factory's per-rank
+    TMS_DISK_BACKUP_DIR).
+    """
+    if not disk_dir:
+        return
+    shutil.rmtree(disk_dir, ignore_errors=True)
+    os.makedirs(disk_dir, exist_ok=True)
+    atexit.register(shutil.rmtree, disk_dir, ignore_errors=True)
+    logger.info(f"Train disk-offload reclaim armed for {disk_dir} (startup wipe + atexit)")
 
 
 class MegatronTrainRayActor(TrainRayActor):
@@ -138,6 +155,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 # --train-memory-margin-bytes can tune this
                 logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
                 torch_memory_saver.memory_margin_bytes = x
+            if args.offload_train_target == "disk":
+                _setup_disk_offload_reclaim(os.environ.get("TMS_DISK_BACKUP_DIR"))
 
         if self.args.debug_rollout_only:
             return 0
