@@ -182,16 +182,18 @@ def _check_mooncake_available() -> None:
 def _field_schemas_for_value(value: Any, value_spec: dict[str, ValueSpec] | None) -> dict[str, Any] | None:
     if value_spec is None:
         return None
-
-    schemas: dict[str, Any] = {}
-    for field, spec in value_spec.items():
-        if field not in value:
-            continue
-        metadata: dict[str, str] = {"section": "meta_info" if spec.codec == "auto" else "non_tensor_batch"}
-        if spec.dtype is not None:
-            metadata["dtype"] = spec.dtype
-        schemas[field] = FieldSchema(codec=spec.codec, nullable=False, metadata=metadata)
-    return schemas
+    return {
+        field: FieldSchema(
+            codec=spec.codec,
+            nullable=False,
+            metadata={
+                "section": "meta_info" if spec.codec == "auto" else "non_tensor_batch",
+                **({"dtype": spec.dtype} if spec.dtype is not None else {}),
+            },
+        )
+        for field, spec in value_spec.items()
+        if field in value
+    }
 
 
 def _mooncake_store_config(init_kwargs: dict[str, Any], *, contribute_segment: bool) -> dict[str, Any]:
