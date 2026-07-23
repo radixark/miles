@@ -45,7 +45,7 @@ VARIANTS = {
         "tag_postfix": "-cu12",
         "build_args": {
             "ENABLE_CUDA_13": "0",
-            "SGLANG_IMAGE_TAG": "v0.5.12-cu129",
+            "SGLANG_IMAGE_TAG": "v0.5.15-cu129",
             "WHEELS_TAG_X86": "cu129-x86_64-v0.5.12",
         },
     },
@@ -58,6 +58,7 @@ VARIANTS = {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
             "SGLANG_IMAGE_TAG": "v0.5.14-rocm700-mi35x-20260627",
+            "SGLANG_USE_ROCM700A": "1",
         },
     },
     "rocm700-mi30x": {
@@ -68,6 +69,7 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx942",
             "SGLANG_IMAGE_TAG": "v0.5.10-rocm700-mi30x",
+            "SGLANG_USE_ROCM700A": "1",
         },
     },
     "rocm720-mi35x": {
@@ -77,7 +79,10 @@ VARIANTS = {
         "dockerfile": "docker/Dockerfile.rocm",
         "build_args": {
             "GPU_ARCH": "gfx950",
-            "SGLANG_IMAGE_TAG": "v0.5.10-rocm720-mi35x",
+            "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
+            "SGLANG_IMAGE_TAG": "v0.5.14-rocm720-mi35x-20260627",
+            "APPLY_ROCR_VMMFIX": "1",
+            "TE_USE_WHEEL": "1",
         },
     },
 }

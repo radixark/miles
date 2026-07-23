@@ -28,6 +28,9 @@ _STANDARD_LORA_HF_TO_MEGATRON = {
     "gate_proj": "linear_fc1",
     "up_proj": "linear_fc1",
     "down_proj": "linear_fc2",
+    # GDN (Qwen3.5/Qwen3-Next): both slices live in the single fused megatron in_proj
+    "in_proj_qkvz": "in_proj",
+    "in_proj_ba": "in_proj",
 }
 
 _STANDARD_LORA_ALL_MODULES = ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]
@@ -41,6 +44,8 @@ _CANONICAL_LORA_HF_TO_MEGATRON = {
     "gate_proj": "linear_fc1_gate",
     "up_proj": "linear_fc1_up",
     "down_proj": "linear_fc2",
+    "in_proj_qkvz": "in_proj",
+    "in_proj_ba": "in_proj",
 }
 
 _CANONICAL_LORA_ALL_MODULES = [
@@ -67,9 +72,21 @@ _MEGATRON_TO_HF_MODULES = {
     "linear_v": ["v_proj"],
     "linear_fc1_gate": ["gate_proj"],
     "linear_fc1_up": ["up_proj"],
+    # GDN linear attention: SGLang serves the fused in_proj as two modules
+    "in_proj": ["in_proj_qkvz", "in_proj_ba"],
 }
 
-_HF_MODULE_NAMES = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+_HF_MODULE_NAMES = {
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+    "in_proj_qkvz",
+    "in_proj_ba",
+}
 
 # DeepSeek / Kimi MLA (HF names on checkpoint; Megatron uses linear_* from Megatron-Bridge mappings).
 _MLA_HF_TO_MEGATRON = {
@@ -235,13 +252,14 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
         megatron_modules = list(megatron_modules)
     hf_modules: list[str] = []
     for module in megatron_modules:
-        lookup_key = module.rsplit(".", 1)[-1] if "*" in module else module
+        lookup_key = module.rsplit(".", 1)[-1] if "." in module else module
         if lookup_key in _MEGATRON_MLA_TO_HF:
             hf_modules.append(_MEGATRON_MLA_TO_HF[lookup_key])
         elif lookup_key in _MEGATRON_TO_HF_MODULES:
             hf_modules.extend(_MEGATRON_TO_HF_MODULES[lookup_key])
         else:
-            hf_modules.append(module)
+            # same-name passthrough; SGLang needs the leaf, not a path or pattern
+            hf_modules.append(lookup_key)
     seen: set[str] = set()
     unique: list[str] = []
     for m in hf_modules:
@@ -365,18 +383,19 @@ def save_lora_checkpoint(
     from miles.utils import megatron_bridge_utils
 
     save_path = Path(save_dir)
-    is_dp_rank_0 = get_parallel_state().effective_dp.rank == 0
-    tp_rank = get_parallel_state().tp.rank
-    pp_rank = get_parallel_state().pp.rank
+    parallel_state = get_parallel_state()
+    is_dp_cp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0
+    tp_rank = parallel_state.tp.rank
+    pp_rank = parallel_state.pp.rank
 
     # Create directory on dp_rank=0, then synchronize
-    if is_dp_rank_0:
+    if is_dp_cp_rank_0:
         save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
         dist.barrier()
 
     # ---- Megatron-native format (per TP/PP rank, fast resume) ----
-    if is_dp_rank_0:
+    if is_dp_cp_rank_0:
         adapter_state: dict[str, torch.Tensor] = {}
         for model_chunk in model:
             for name, param in model_chunk.named_parameters():
@@ -401,8 +420,8 @@ def save_lora_checkpoint(
         ):
             lora_state_dict[hf_name] = weight
 
-    # Only one rank writes the HF PEFT files (bridge already gathered across TP)
-    if is_dp_rank_0 and tp_rank == 0:
+    # Only one rank writes the HF PEFT files (bridge already gathered across TP/PP)
+    if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
         torch.save(lora_state_dict, save_path / "adapter_model.bin")
 
         target_modules_hf = (

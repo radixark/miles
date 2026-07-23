@@ -10,7 +10,7 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
 
-ARG SGLANG_IMAGE_TAG=v0.5.14
+ARG SGLANG_IMAGE_TAG=v0.5.15
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -123,6 +123,11 @@ RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_
     cd Megatron-LM && \
     pip install -e .
 
+# Muon optimizer support: megatron/core/optimizer/muon.py requires this for Newton-Schulz
+# orthogonalization; not on PyPI (only a dependency-confusion stub), so install from the
+# git source Megatron-LM itself pins in pyproject.toml.
+RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.1.0"
+
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
@@ -199,6 +204,5 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 RUN rm -rf /tmp/wheels
 
-# cu130 sglang base ships rust at /root/.cargo/bin but not on PATH; a later CI
-# step calls `rustc` directly. Last so cached layers above stay valid.
+# The cu130 sglang base ships its baked Rust toolchain outside the default PATH.
 ENV PATH="/root/.cargo/bin:${PATH}"

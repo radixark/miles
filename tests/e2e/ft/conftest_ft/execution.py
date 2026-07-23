@@ -104,7 +104,6 @@ def get_common_train_args(
             "--rollout-temperature 0.8 "
             "--rollout-batch-size 32 "
             "--n-samples-per-prompt 8 "
-            "--sglang-disable-cuda-graph "
             # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
             "--sglang-enable-deterministic-inference "
             "--sglang-attention-backend flashinfer "
@@ -164,6 +163,9 @@ _DETERMINISTIC_ENV_VARS: dict[str, str] = {
     "NCCL_ALGO": "Ring",
     "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
     "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+    # The default 4096 split overflows FlashInfer's fixed 2 GiB deterministic workspace
+    # while capturing the 8192-token prefill graph for the 5-layer Qwen3 MoE model.
+    "SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE": "8192",
 }
 
 # Selects v2 RayTrainGroup (miles.ray.train.group). Required because
@@ -172,6 +174,17 @@ _DETERMINISTIC_ENV_VARS: dict[str, str] = {
 _TRAINER_FT_ENV_VARS: dict[str, str] = {
     "MILES_EXPERIMENTAL_FT_TRAINER": "1",
 }
+
+
+def get_train_env_vars_arg(mode: FTTestMode, *, deterministic: bool) -> str:
+    env_vars: dict[str, str] = {}
+    if deterministic:
+        env_vars.update(_DETERMINISTIC_ENV_VARS)
+    if mode.has_real_rollout:
+        env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    if not env_vars:
+        return ""
+    return f"--train-env-vars '{json.dumps(env_vars)}' "
 
 
 def run_training(
@@ -203,7 +216,7 @@ def run_training(
     }
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=mode.train_gpus_per_node,
+        num_gpus_per_node=mode.total_node_gpus,
         megatron_model_type=mode.megatron_model_type,
         extra_env_vars=merged_env_vars,
         megatron_path=_MEGATRON_PATH,

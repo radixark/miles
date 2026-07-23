@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from miles.rollout.generate_utils import prefill_logprobs
-from miles.utils.types import Sample
+from miles.utils.types import AdapterRef, Sample
 
 
 @pytest.mark.asyncio
@@ -111,6 +111,105 @@ async def test_recompute_samples_flushes_each_batch_and_batches_prefill_score(mo
     assert [call[2] for call in calls] == ["post", "post"]
     assert calls[1][1]["input_ids"] == [[10, 11, 20], [10, 11, 21]]
     assert calls[1][1]["logprob_start_len"] == 1
+
+
+@pytest.mark.asyncio
+async def test_recompute_uses_per_sample_adapter_lora_path(monkeypatch):
+    """Multi-LoRA: the scoring request must go to the sample's own slot adapter,
+    not the single-adapter name (which is never registered on those engines)."""
+    sample = Sample(
+        tokens=[10, 11, 20],
+        response_length=1,
+        status=Sample.Status.COMPLETED,
+        adapter=AdapterRef(name="run-a", slot=3),
+    )
+    # Multi-LoRA forces lora_rank > 0, so is_lora_enabled(args) is always true.
+    args = SimpleNamespace(recompute_logprobs_via_prefill=True, lora_rank=8)
+    seen = {}
+
+    async def fake_post(url, payload, headers=None):
+        seen["payload"] = payload
+        return {"meta_info": {"input_token_logprobs": [(None, 11), (-0.5, 20)]}}
+
+    monkeypatch.setattr(prefill_logprobs, "post", fake_post)
+
+    await prefill_logprobs.recompute_rollout_logprobs_via_prefill(
+        args,
+        sample,
+        url="http://localhost/generate",
+        sampling_params={},
+    )
+
+    assert seen["payload"]["lora_path"] == "__miles_slot_3"
+    assert sample.rollout_log_probs == [-0.5]
+
+
+@pytest.mark.asyncio
+async def test_recompute_samples_batches_group_by_adapter(monkeypatch):
+    """Samples from different adapters must not share a batch payload: each
+    batch carries a single lora_path."""
+    samples = [
+        Sample(
+            tokens=[10, 11, 20],
+            response_length=1,
+            status=Sample.Status.COMPLETED,
+            adapter=AdapterRef(name="run-a", slot=0),
+        ),
+        Sample(
+            tokens=[10, 11, 21],
+            response_length=1,
+            status=Sample.Status.COMPLETED,
+            adapter=AdapterRef(name="run-b", slot=1),
+        ),
+        Sample(
+            tokens=[10, 11, 22],
+            response_length=1,
+            status=Sample.Status.COMPLETED,
+            adapter=AdapterRef(name="run-a", slot=0),
+        ),
+    ]
+    args = SimpleNamespace(
+        recompute_logprobs_via_prefill=True,
+        lora_rank=8,
+        sglang_router_policy="round_robin",
+    )
+    generate_payloads = []
+
+    async def fake_post(url, payload, action="post", headers=None):
+        if url.endswith("/flush_cache"):
+            return {}
+        generate_payloads.append(payload)
+        return [
+            {"meta_info": {"input_token_logprobs": [(None, 11), (-float(tokens[-1]), tokens[-1])]}}
+            for tokens in payload["input_ids"]
+        ]
+
+    monkeypatch.setattr(prefill_logprobs, "post", fake_post)
+
+    await prefill_logprobs.recompute_samples_rollout_logprobs_via_prefill(
+        args,
+        samples,
+        url="http://localhost/generate",
+        sampling_params={"max_new_tokens": 32},
+    )
+
+    assert [sample.rollout_log_probs for sample in samples] == [[-20.0], [-21.0], [-22.0]]
+    by_lora_path = {payload["lora_path"]: payload["input_ids"] for payload in generate_payloads}
+    assert by_lora_path == {
+        "__miles_slot_0": [[10, 11, 20], [10, 11, 22]],
+        "__miles_slot_1": [[10, 11, 21]],
+    }
+
+
+def test_batch_payload_rejects_mixed_lora_paths():
+    samples = [
+        Sample(tokens=[10, 11, 20], response_length=1, adapter=AdapterRef(name="run-a", slot=0)),
+        Sample(tokens=[10, 11, 21], response_length=1, adapter=AdapterRef(name="run-b", slot=1)),
+    ]
+    args = SimpleNamespace(lora_rank=8)
+
+    with pytest.raises(ValueError, match="shared lora_path"):
+        prefill_logprobs._build_batch_prefill_scoring_payload(args, samples, {})
 
 
 @pytest.mark.asyncio

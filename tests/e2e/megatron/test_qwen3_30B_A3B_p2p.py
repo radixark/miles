@@ -1,4 +1,5 @@
 from tests.ci.ci_register import register_cuda_ci
+from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
@@ -9,10 +10,16 @@ ROLLOUT_NUM_GPUS = 2  # inference engine pool
 ACTOR_NUM_GPUS = NUM_GPUS - ROLLOUT_NUM_GPUS  # 6: training actor pool (p2p keeps it disjoint from rollout)
 
 register_cuda_ci(
-    est_time=900,
+    est_time=700,
     suite="stage-c-8-gpu-h100",
     labels=["megatron", "weight-update"],
 )
+
+register_ci_gate(metric_key="train/grad_norm")
+register_ci_gate(metric_key="train/ppo_kl")
+register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
+register_ci_gate(metric_key="train/train_rollout_kl")
+register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def prepare():
