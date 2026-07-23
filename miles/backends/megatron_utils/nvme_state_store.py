@@ -1,4 +1,5 @@
 import atexit
+import errno
 import json
 import logging
 import os
@@ -14,6 +15,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MOMENT_KEYS = ("exp_avg", "exp_avg_sq")
+
+
+def _fallocate_or_truncate(fd: int, size: int) -> None:
+    try:
+        os.posix_fallocate(fd, 0, size)
+    except OSError as e:
+        # tmpfs / some NFS / container mounts don't support fallocate.
+        if e.errno in (errno.EOPNOTSUPP, errno.ENOTSUP, errno.EINVAL):
+            os.ftruncate(fd, size)
+        else:
+            raise
 
 # Native-fp32 model params (e.g. router expert_bias, GDN/Mamba A_log) stay GPU-resident
 # instead of being NVMe-streamed -- warn if they add up to more than this, since the
@@ -83,8 +95,8 @@ class NVMeOptimizerStateStore:
         self._build_bucket_optimizers()
         self._build_fp32_optimizer()
         for spec in self.specs:
-            spec.fd = os.open(spec.path, os.O_RDWR | os.O_CREAT, 0o600)
-            os.posix_fallocate(spec.fd, 0, 3 * spec.numel * 4)
+            spec.fd = os.open(spec.path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+            _fallocate_or_truncate(spec.fd, 3 * spec.numel * 4)
 
         for spec in self.specs:
             for tensor, offset in self._segment(spec, "main"):
