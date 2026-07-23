@@ -355,7 +355,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
             if self.role == "critic":
                 return self.train_critic(rollout_id, rollout_data)
-            return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
+            else:
+                return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
 
     @with_logs
     def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutcome:
