@@ -16,6 +16,7 @@ MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4 if FEW_GPU else 8
 
 MOONCAKE_MASTER_PORT = 50051
+MOONCAKE_MASTER_METRICS_PORT = 50052
 MOONCAKE_STORE_INIT_KWARGS = {
     "protocol": "tcp",
     "master_server_address": f"127.0.0.1:{MOONCAKE_MASTER_PORT}",
@@ -33,7 +34,8 @@ def prepare():
 def start_mooncake_master():
     U.exec_command(
         "pgrep -x mooncake_master >/dev/null || "
-        f"(setsid mooncake_master --port {MOONCAKE_MASTER_PORT} > /tmp/mooncake_master.log 2>&1 &)"
+        f"(setsid mooncake_master --rpc_port {MOONCAKE_MASTER_PORT} --metrics_port {MOONCAKE_MASTER_METRICS_PORT} "
+        "> /tmp/mooncake_master.log 2>&1 &)"
     )
 
 

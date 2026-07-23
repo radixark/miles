@@ -98,7 +98,7 @@ class TestMooncakeObjectStore:
     def mooncake_master_port(self):
         port = _free_port()
         master = subprocess.Popen(
-            ["mooncake_master", "--port", str(port)],
+            ["mooncake_master", "--rpc_port", str(port), "--metrics_port", str(_free_port())],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
