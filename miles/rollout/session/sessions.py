@@ -38,8 +38,16 @@ def setup_session_routes(app, backend, args):
         allowed_append_roles=getattr(args, "tito_allowed_append_roles", None),
     )
 
-    registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
-    core = SessionCore(backend, registry, args, session_server_instance_id)
+    use_v2 = getattr(args, "use_session_server", None) == "v2"
+    if use_v2:
+        from miles.rollout.session.v2.core import SessionCore as SessionCoreV2
+        from miles.rollout.session.v2.session_state import SessionRegistry as SessionRegistryV2
+
+        registry = SessionRegistryV2(args, tokenizer, tito_tokenizer=tito_tokenizer)
+        core = SessionCoreV2(backend, registry, args, session_server_instance_id)
+    else:
+        registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
+        core = SessionCore(backend, registry, args, session_server_instance_id)
 
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
@@ -81,6 +89,10 @@ def setup_session_routes(app, backend, args):
         # a malformed body is a protocol violation (500), not an assembly failure.
         body = await request.body()
         params = json.loads(body) if body else {}
+        if use_v2:
+            return await core.collect_samples(
+                session_id, max_seq_len=params.get("max_seq_len"), agent_metadata=params.get("metadata")
+            )
         return await core.collect_samples(session_id, max_seq_len=params.get("max_seq_len"))
 
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])

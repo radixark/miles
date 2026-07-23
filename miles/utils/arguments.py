@@ -2117,10 +2117,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         def add_session_arguments(parser):
             parser.add_argument(
                 "--use-session-server",
-                action="store_true",
+                nargs="?",
+                const=True,
                 default=False,
                 help="Start a standalone session server for TITO/session support. "
-                "Requires --hf-checkpoint and --chat-template-path to also be set.",
+                "Requires --hf-checkpoint and --chat-template-path to also be set. "
+                "Bare flag (or 'v1') selects the append-only linear v1 server; "
+                "'--use-session-server v2' selects the tree-serving v2 "
+                "(multi-lineage trajectories, always-branch).",
             )
             parser.add_argument(
                 "--session-server-ip",
@@ -2153,6 +2157,36 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["tool", "user", "system"],
                 help="Message roles allowed to be appended after the pretokenized "
                 "assistant prefix in TITO sessions (default: tool).",
+            )
+            parser.add_argument(
+                "--session-strict-append-only",
+                action="store_true",
+                default=False,
+                help="v2 only. Single-chain invariant guard (white-box debugging): "
+                "any request that would branch the session tree — attach to an "
+                "internal node, resend a non-leaf path, open a second root — "
+                "fails loud with 400 + attach diagnostics instead of branching.",
+            )
+            parser.add_argument(
+                "--session-sample-picker-path",
+                type=str,
+                default=None,
+                help="v2 only. Import path of a custom sample-pick hook for the "
+                "session samples op: fn(leaf_samples, session_metadata) -> "
+                "list[Sample], a pure selection over the per-leaf raw samples. "
+                "Runs synchronously inside the session server process; long CPU "
+                "work stalls every session on the instance. Default: the "
+                "temporal-supersession retry trim.",
+            )
+            parser.add_argument(
+                "--session-merge-function-path",
+                type=str,
+                default=None,
+                help="v2 only. Import path of a custom merge hook for the session "
+                "samples op: fn(leaf_samples, session_metadata) -> list[Sample], "
+                "finalizing loss masks / rewards over the picked samples. Runs "
+                "synchronously inside the session server process. Default: "
+                "exactly-once completion masking + rewards keyed by response id.",
             )
             return parser
 
@@ -2406,6 +2440,13 @@ def miles_validate_args(args):
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
     args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles))
 
+    if args.use_session_server not in (False, True, "v1", "v2"):
+        raise ValueError(
+            f"--use-session-server={args.use_session_server!r} is not a known session server "
+            "version; pass it bare (or 'v1') for the append-only linear server, or 'v2' for "
+            "tree serving."
+        )
+
     if not args.use_session_server:
         misconfigured = []
         if args.tito_model != TITOTokenizerType.DEFAULT.value:
@@ -2416,6 +2457,20 @@ def miles_validate_args(args):
             raise ValueError(
                 f"{', '.join(misconfigured)} require --use-session-server; "
                 "these flags only configure the session-server TITO middleware."
+            )
+
+    if args.use_session_server != "v2":
+        misconfigured = []
+        if getattr(args, "session_strict_append_only", False):
+            misconfigured.append("--session-strict-append-only")
+        if getattr(args, "session_sample_picker_path", None):
+            misconfigured.append(f"--session-sample-picker-path={args.session_sample_picker_path}")
+        if getattr(args, "session_merge_function_path", None):
+            misconfigured.append(f"--session-merge-function-path={args.session_merge_function_path}")
+        if misconfigured:
+            raise ValueError(
+                f"{', '.join(misconfigured)} require --use-session-server v2; "
+                "these flags configure the v2 tree-serving session server."
             )
 
     if "user" in args.tito_allowed_append_roles:

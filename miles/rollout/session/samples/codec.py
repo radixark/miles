@@ -34,6 +34,15 @@ COMPUTED_FIELDS = (
     "prefix_cache_info",
 )
 
+# The v2 (tree serving) wire adds the fields its server-side merge hook
+# assigns: per-branch rewards (semantic layer, keyed by response id) and
+# per-sample flat metadata — both must cross the wire or they exist only
+# inside the session server process. v1 keeps the base tuple, so its wire
+# stays byte-identical; decode semantics for the extras are conditional
+# (see decode_samples_reply): reward overlays only when non-null, metadata
+# merges over the input's dict.
+COMPUTED_FIELDS_V2 = COMPUTED_FIELDS + ("reward", "metadata")
+
 
 @dataclasses.dataclass(frozen=True)
 class _TensorSpec:
@@ -56,14 +65,16 @@ _TENSOR_SPECS = {
 }
 _SCALAR_FIELDS = ("response", "response_length", "loss_mask", "status", "weight_versions", "prefix_cache_info")
 
-assert set(_TENSOR_SPECS) | set(_SCALAR_FIELDS) == set(COMPUTED_FIELDS) and not set(_TENSOR_SPECS) & set(
-    _SCALAR_FIELDS
-), (
-    "every COMPUTED field needs exactly one wire representation (tensor spec or scalar JSON); "
-    f"uncovered: {sorted(set(COMPUTED_FIELDS) - set(_TENSOR_SPECS) - set(_SCALAR_FIELDS))}, "
-    f"unknown: {sorted((set(_TENSOR_SPECS) | set(_SCALAR_FIELDS)) - set(COMPUTED_FIELDS))}, "
-    f"overlap: {sorted(set(_TENSOR_SPECS) & set(_SCALAR_FIELDS))}"
-)
+for _fields in (COMPUTED_FIELDS, COMPUTED_FIELDS_V2):
+    _scalars = tuple(f for f in _fields if f not in _TENSOR_SPECS)
+    assert set(_TENSOR_SPECS) | set(_scalars) == set(_fields) and not set(_TENSOR_SPECS) & set(_scalars), (
+        "every COMPUTED field needs exactly one wire representation (tensor spec or scalar JSON); "
+        f"uncovered: {sorted(set(_fields) - set(_TENSOR_SPECS) - set(_scalars))}, "
+        f"unknown: {sorted((set(_TENSOR_SPECS) | set(_scalars)) - set(_fields))}, "
+        f"overlap: {sorted(set(_TENSOR_SPECS) & set(_scalars))}"
+    )
+assert tuple(f for f in COMPUTED_FIELDS if f not in _TENSOR_SPECS) == _SCALAR_FIELDS
+assert set(_TENSOR_SPECS) <= set(COMPUTED_FIELDS), "every tensor field must be on the v1 wire too"
 
 _SAMPLES_META_KEY = "_samples_meta"
 _OPD_STUDENT_TOP_LOGPROBS_KEY = "opd_student_top_logprobs"
@@ -82,8 +93,20 @@ class SamplesReply:
     empty_reason: str | None
 
 
-def encode_samples_reply(samples: list[Sample], session_metadata: dict, empty_reason: str | None = None) -> bytes:
-    """Worker side: pack assembled samples into one safetensors payload."""
+def encode_samples_reply(
+    samples: list[Sample],
+    session_metadata: dict,
+    empty_reason: str | None = None,
+    *,
+    fields: tuple[str, ...] = COMPUTED_FIELDS,
+) -> bytes:
+    """Worker side: pack assembled samples into one safetensors payload.
+
+    ``fields`` selects the wire allowlist (v1 default; the v2 server passes
+    ``COMPUTED_FIELDS_V2``) — with the default, the payload is byte-identical
+    to the pre-parameterized codec.
+    """
+    scalar_fields = tuple(f for f in fields if f not in _TENSOR_SPECS)
     tensors: dict[str, np.ndarray] = {}
     sample_metas = []
     for sample_index, sample in enumerate(samples):
@@ -102,7 +125,7 @@ def encode_samples_reply(samples: list[Sample], session_metadata: dict, empty_re
             tensors[name] = np.ascontiguousarray(arr)
             tensor_meta[field] = name
         scalar_meta = {}
-        for field in _SCALAR_FIELDS:
+        for field in scalar_fields:
             value = getattr(sample, field)
             if field == "status":
                 value = value.value
@@ -118,8 +141,16 @@ def encode_samples_reply(samples: list[Sample], session_metadata: dict, empty_re
     return safetensors.numpy.save(tensors)
 
 
-def decode_samples_reply(payload: bytes, input_sample: Sample) -> SamplesReply:
-    """Driver side: overlay each wire sample's computed fields onto a deepcopy of `input_sample`."""
+def decode_samples_reply(
+    payload: bytes, input_sample: Sample, *, fields: tuple[str, ...] = COMPUTED_FIELDS
+) -> SamplesReply:
+    """Driver side: overlay each wire sample's computed fields onto a deepcopy of `input_sample`.
+
+    ``fields`` must match the server's encode allowlist (v1 default); extra
+    keys a newer server sent are ignored, so a v1 decode of a v2 payload
+    keeps exactly the v1 overlay semantics.
+    """
+    scalar_fields = tuple(f for f in fields if f not in _TENSOR_SPECS)
     tensors = safetensors.numpy.load(payload)  # SafetensorError propagates: invalid container
     meta_arr = tensors.pop(_SAMPLES_META_KEY)  # KeyError propagates: missing meta is malformed
     if meta_arr.ndim != 1 or meta_arr.dtype != np.uint8:
@@ -145,7 +176,7 @@ def decode_samples_reply(payload: bytes, input_sample: Sample) -> SamplesReply:
             if arr.dtype != spec.wire_dtype:
                 raise ValueError(f"{field} must have dtype {spec.wire_dtype}, got {arr.dtype}")
             setattr(sample, field, arr.tolist() if spec.restore_list else arr)
-        for field in _SCALAR_FIELDS:
+        for field in scalar_fields:
             value = sample_meta[field]
             if field == "status":
                 value = Sample.Status(value)
@@ -153,6 +184,15 @@ def decode_samples_reply(payload: bytes, input_sample: Sample) -> SamplesReply:
                 value = list(value)
             elif field == "prefix_cache_info":
                 value = Sample.PrefixCacheInfo.from_dict(value)
+            elif field == "reward":
+                # Server reward is authoritative only when assigned; a null
+                # keeps the driver input's local reward.
+                if value is None:
+                    continue
+            elif field == "metadata":
+                # Server metadata merges over the input's dict (input-only
+                # keys survive; server keys win).
+                value = {**(sample.metadata or {}), **(value or {})}
             setattr(sample, field, value)
         samples.append(sample)
     if tensors:
