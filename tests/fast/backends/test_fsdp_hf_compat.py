@@ -9,6 +9,10 @@ Covers:
     per-tensor revert semantics turns them red.
 """
 
+import logging
+import subprocess
+import sys
+
 import pytest
 import torch
 
@@ -143,7 +147,7 @@ def test_is_mamba_hybrid_gating():
     # re-inits dt_bias + out_proj post-load); it must be a no-op gate for everything else.
     from types import SimpleNamespace
 
-    from miles.backends.experimental.fsdp_utils.adaptations.post_load_fixups import _is_mamba_hybrid
+    from miles.backends.experimental.fsdp_utils.adaptations.specs.nemotron_h import _is_mamba_hybrid
 
     assert _is_mamba_hybrid(SimpleNamespace(model_type="nemotron_h"))
     assert _is_mamba_hybrid(SimpleNamespace(model_type="mamba2"))
@@ -166,6 +170,56 @@ def test_post_load_fixups_registry():
     # the registered fixup gates on the same Mamba/hybrid predicate
     assert by_name["mamba_clobber_reload"].applies_to(SimpleNamespace(model_type="nemotron_h"))
     assert not by_name["mamba_clobber_reload"].applies_to(SimpleNamespace(model_type="qwen3_moe"))
+
+
+def test_post_load_fixup_lazily_loads_model_implementation():
+    script = """
+import sys
+import tempfile
+from types import SimpleNamespace
+
+from miles.backends.experimental.fsdp_utils.adaptations.post_load_fixups import (
+    _FIXUPS,
+    apply_post_load_fixups,
+)
+
+module_name = "miles.backends.experimental.fsdp_utils.models.nemotron_h"
+assert [fixup.name for fixup in _FIXUPS].count("mamba_clobber_reload") == 1
+assert module_name not in sys.modules
+apply_post_load_fixups(object(), SimpleNamespace(model_type="qwen3"), ".")
+assert module_name not in sys.modules
+with tempfile.TemporaryDirectory() as ckpt_path:
+    apply_post_load_fixups(object(), SimpleNamespace(model_type="nemotron_h"), ckpt_path)
+assert module_name in sys.modules
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_reload_clobbered_from_disk_behavior(tmp_path, caplog):
+    from safetensors.torch import save_file
+
+    from miles.backends.experimental.fsdp_utils.adaptations.specs.nemotron_h import _reload_clobbered_from_disk
+
+    model = torch.nn.Linear(1, 1, bias=False)
+    model.weight.data.fill_(1.0005)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _reload_clobbered_from_disk(model, empty) == 0
+
+    save_file({"weight": torch.ones(1, 1)}, tmp_path / "model.safetensors")
+    assert _reload_clobbered_from_disk(model, tmp_path) == 0
+    with caplog.at_level(
+        logging.INFO,
+        logger="miles.backends.experimental.fsdp_utils.models.nemotron_h",
+    ):
+        assert _reload_clobbered_from_disk(model, tmp_path, tol=1e-4) == 1
+    torch.testing.assert_close(model.weight, torch.ones(1, 1))
+    assert any(
+        record.name == "miles.backends.experimental.fsdp_utils.models.nemotron_h"
+        and "re-asserted 1 checkpoint param(s)" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_weight_bridge_registry():
