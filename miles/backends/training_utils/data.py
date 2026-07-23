@@ -1,7 +1,6 @@
 import logging
 from argparse import Namespace
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 
 import torch
 import torch.distributed as dist
@@ -10,6 +9,7 @@ import torch.nn.functional as F
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
+from miles.utils.object_store import ObjectStoreGetResult
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
@@ -31,91 +31,88 @@ def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     return torch.float32
 
 
-@contextmanager
 def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
     witness_info: WitnessInfo | None = None,
-) -> Iterator[RolloutBatch]:
+) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
-    with process_rollout_data(
+    rollout_data, store_get_result = process_rollout_data(
         args,
         rollout_data_ref,
         parallel_state.effective_dp.rank,
         parallel_state.effective_dp.size,
         witness_info=witness_info,
-    ) as rollout_data:
-        # move tokens to GPU in advance
-        rollout_data["tokens"] = [
-            torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
+    )
+    # move tokens to GPU in advance
+    rollout_data["tokens"] = [
+        torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
+    ]
+    rollout_data["loss_masks"] = [
+        torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
+    ]
+    if args.enable_witness:
+        seq_witness_ids = rollout_data.pop("seq_witness_ids")
+        rollout_data["witness_ids"] = [
+            torch.full((len(t),), fill_value=sid, dtype=torch.long, device=torch.cuda.current_device())
+            for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
         ]
-        rollout_data["loss_masks"] = [
-            torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
+
+    if "multimodal_train_inputs" in rollout_data:
+        # Move multimodal training tensors to GPU in advance
+        rollout_data["multimodal_train_inputs"] = [
+            (
+                {key: tensor.to(device=torch.cuda.current_device()) for key, tensor in mm_dict.items()}
+                if mm_dict is not None
+                else None
+            )
+            for mm_dict in rollout_data["multimodal_train_inputs"]
         ]
-        if args.enable_witness:
-            seq_witness_ids = rollout_data.pop("seq_witness_ids")
-            rollout_data["witness_ids"] = [
-                torch.full((len(t),), fill_value=sid, dtype=torch.long, device=torch.cuda.current_device())
-                for t, sid in zip(rollout_data["tokens"], seq_witness_ids, strict=True)
-            ]
 
-        if "multimodal_train_inputs" in rollout_data:
-            # Move multimodal training tensors to GPU in advance
-            rollout_data["multimodal_train_inputs"] = [
-                (
-                    {key: tensor.to(device=torch.cuda.current_device()) for key, tensor in mm_dict.items()}
-                    if mm_dict is not None
-                    else None
+    if args.qkv_format == "bshd":
+        # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
+        max_seq_len = max(rollout_data["total_lengths"])
+
+        # pad to reduce memory fragmentation and maybe make the computation faster
+        pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
+        max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
+        if max_compress_ratio:
+            local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
+            pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
+        max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
+
+        rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
+
+    if "rollout_log_probs" in rollout_data:
+        rollout_logprob_dtype = _rollout_logprob_dtype(args)
+        rollout_data["rollout_log_probs"] = [
+            torch.tensor(
+                slice_log_prob_with_cp(
+                    log_prob,
+                    total_length,
+                    response_length,
+                    args.qkv_format,
+                    rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
+                ),
+                device=torch.cuda.current_device(),
+                dtype=rollout_logprob_dtype,
+            )
+            for i, (log_prob, total_length, response_length) in enumerate(
+                zip(
+                    rollout_data["rollout_log_probs"],
+                    rollout_data["total_lengths"],
+                    rollout_data["response_lengths"],
+                    strict=False,
                 )
-                for mm_dict in rollout_data["multimodal_train_inputs"]
-            ]
-
-        if args.qkv_format == "bshd":
-            # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
-            max_seq_len = max(rollout_data["total_lengths"])
-
-            # pad to reduce memory fragmentation and maybe make the computation faster
-            pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
-            max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
-            if max_compress_ratio:
-                local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
-                pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
-            max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
-
-            rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
-
-        if "rollout_log_probs" in rollout_data:
-            rollout_logprob_dtype = _rollout_logprob_dtype(args)
-            rollout_data["rollout_log_probs"] = [
-                torch.tensor(
-                    slice_log_prob_with_cp(
-                        log_prob,
-                        total_length,
-                        response_length,
-                        args.qkv_format,
-                        rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
-                    ),
-                    device=torch.cuda.current_device(),
-                    dtype=rollout_logprob_dtype,
-                )
-                for i, (log_prob, total_length, response_length) in enumerate(
-                    zip(
-                        rollout_data["rollout_log_probs"],
-                        rollout_data["total_lengths"],
-                        rollout_data["response_lengths"],
-                        strict=False,
-                    )
-                )
-            ]
-        if "rollout_routed_experts" in rollout_data:
-            rollout_data["rollout_routed_experts"] = [
-                torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]
-            ]
-        if "rollout_indexer_topk" in rollout_data:
-            rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
-        yield rollout_data
+            )
+        ]
+    if "rollout_routed_experts" in rollout_data:
+        rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
+    if "rollout_indexer_topk" in rollout_data:
+        rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
+    return rollout_data, store_get_result
 
 
 def get_batch(

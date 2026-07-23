@@ -44,6 +44,10 @@ class ObjectStoreGetResult:
         self._value = value
         self._release_fn = release_fn
 
+    @property
+    def value(self) -> Any:
+        return self._value
+
     def __enter__(self) -> Any:
         return self._value
 

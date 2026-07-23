@@ -346,9 +346,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with ExitStack() as stack:
             with timer("data_preprocess"):
-                rollout_data = stack.enter_context(
-                    get_rollout_data(self.args, rollout_data_ref, witness_info=witness_info)
+                rollout_data, store_get_result = get_rollout_data(
+                    self.args, rollout_data_ref, witness_info=witness_info
                 )
+                stack.enter_context(store_get_result)
                 if self.args.debug_rollout_only:
                     log_rollout_data(rollout_id, self.args, rollout_data)
                     return TrainStepOutcome.NORMAL

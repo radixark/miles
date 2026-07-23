@@ -277,14 +277,13 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     return len(batches)
 
 
-@contextmanager
 def process_rollout_data(
     args,
     rollout_data_ref,
     dp_rank,
     dp_size,
     witness_info: WitnessInfo | None,
-):
+) -> tuple[dict, ObjectStoreGetResult]:
     store = object_store.get_instance()
 
     if args.delay_split_train_data_by_dp:
@@ -294,23 +293,25 @@ def process_rollout_data(
         assert witness_info is None
         ref = rollout_data_ref[dp_rank]
 
-    with store.get(ref) as fetched:
-        if args.delay_split_train_data_by_dp:
-            raw = fetched
-            if (x := witness_info) is not None:
-                raw = {**raw, "seq_witness_ids": x.witness_ids}
-            rollout_data = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)[dp_rank]
-        else:
-            rollout_data = dict(fetched)
+    get_result = store.get(ref)
+    fetched = get_result.value
 
-        partition = rollout_data.pop("partition")
-        total_lengths = rollout_data["total_lengths"]
+    if args.delay_split_train_data_by_dp:
+        raw = fetched
+        if (x := witness_info) is not None:
+            raw = {**raw, "seq_witness_ids": x.witness_ids}
+        rollout_data = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)[dp_rank]
+    else:
+        rollout_data = dict(fetched)
 
-        # save the seqlen of the whole rollout batch
-        Timer().seq_lens = total_lengths
-        rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
+    partition = rollout_data.pop("partition")
+    total_lengths = rollout_data["total_lengths"]
 
-        yield rollout_data
+    # save the seqlen of the whole rollout batch
+    Timer().seq_lens = total_lengths
+    rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
+
+    return rollout_data, get_result
 
 
 def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:
