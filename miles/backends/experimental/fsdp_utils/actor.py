@@ -33,6 +33,7 @@ from ...training_utils.log_utils import (
 from ...training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from ...training_utils.parallel import get_parallel_state, set_parallel_state
 from . import checkpoint
+from .adaptations.precision import apply_fp32_master, precision_forward_context, resolve_precision_policy
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
@@ -116,6 +117,8 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
+        self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
+
         init_context = self._get_init_weight_context_manager()
 
         with init_context():
@@ -125,12 +128,19 @@ class FSDPTrainRayActor(TrainRayActor):
                 attn_implementation=self.args.attn_implementation,
             )
 
+        if self.precision_policy.keep_fp32_master:
+            model = apply_fp32_master(model, self.precision_policy.sync_dtype_resolver)
         model.train()
 
         full_state = model.state_dict()
 
         model = apply_fsdp2(
-            model, mesh=get_parallel_state().dp_mesh, cpu_offload=self.fsdp_cpu_offload, args=self.args
+            model,
+            mesh=get_parallel_state().dp_mesh,
+            cpu_offload=self.fsdp_cpu_offload,
+            args=self.args,
+            param_dtype=self.precision_policy.param_dtype,
+            reduce_dtype=self.precision_policy.reduce_dtype,
         )
 
         model = self._fsdp2_load_full_state_dict(
@@ -376,7 +386,9 @@ class FSDPTrainRayActor(TrainRayActor):
                         )
 
                         model_args = self._get_model_inputs_args(batch)
-                        logits = active_model(**model_args).logits.float()
+                        # keep logits in native bf16 (chunks upcast to fp32 downstream); avoids a full-vocab fp32 tensor (~5GB)
+                        with precision_forward_context(self.precision_policy):
+                            logits = active_model(**model_args).logits
 
                         result = get_log_probs_and_entropy(
                             logits=logits,
@@ -560,7 +572,9 @@ class FSDPTrainRayActor(TrainRayActor):
     def _train_step(self, batch, step_id, num_microbatches):
         # Prepare model inputs
         model_args = self._get_model_inputs_args(batch)
-        logits = self.model(**model_args).logits.float()
+        # bf16 logits (see log_probs phase); per-response chunks are upcast to fp32 in the loss path.
+        with precision_forward_context(self.precision_policy):
+            logits = self.model(**model_args).logits
 
         loss, normalizer, log_dict = loss_function(
             args=self.args,
@@ -644,10 +658,19 @@ class FSDPTrainRayActor(TrainRayActor):
                     attn_implementation=self.args.attn_implementation,
                 )
 
+            if self.precision_policy.keep_fp32_master and self.precision_policy.param_dtype is torch.float32:
+                ref_model = apply_fp32_master(ref_model, self.precision_policy.sync_dtype_resolver)
             full_state = ref_model.state_dict()
 
             # Always use CPUOffloadPolicy for reference, let FSDP2 handle the offload. It is faster than model.cpu().
-            ref_model = apply_fsdp2(ref_model, mesh=get_parallel_state().dp_mesh, cpu_offload=True, args=self.args)
+            ref_model = apply_fsdp2(
+                ref_model,
+                mesh=get_parallel_state().dp_mesh,
+                cpu_offload=True,
+                args=self.args,
+                param_dtype=self.precision_policy.param_dtype,
+                reduce_dtype=self.precision_policy.reduce_dtype,
+            )
             ref_model = self._fsdp2_load_full_state_dict(
                 ref_model, full_state, get_parallel_state().dp_mesh, cpu_offload=True
             )
