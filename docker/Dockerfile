@@ -92,15 +92,6 @@ RUN pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
 RUN pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation
 
-# Mooncake rollout-data transport (--rollout-data-transport mooncake): the
-# structured_object_store API miles uses (FieldSchema / export_ref) is newer
-# than the released wheel shipped with the sglang base image, so overlay the
-# pinned pure-python module until mooncake publishes a release containing it.
-ARG MOONCAKE_SOS_COMMIT=4dbe5a4c194669850e9abad61172e9878b245b15
-RUN target=$(python -c "import mooncake, os; print(os.path.join(os.path.dirname(mooncake.__file__), 'structured_object_store.py'))") && \
-    curl -fSL https://raw.githubusercontent.com/kvcache-ai/Mooncake/${MOONCAKE_SOS_COMMIT}/mooncake-wheel/mooncake/structured_object_store.py \
-      -o "$target"
-
 # transformer_engine
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       pip install --no-deps transformer_engine==2.12.0 && \
