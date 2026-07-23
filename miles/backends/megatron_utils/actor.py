@@ -11,6 +11,7 @@ import torch.distributed as dist
 from ray.actor import ActorHandle
 from torch_memory_saver import torch_memory_saver
 
+from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
@@ -111,11 +112,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self._is_first_replica_megatron_main_rank:
             init_tracking(args, primary=False)
 
-        # every rank, not just main: per-GPU dashboard phase lanes need each
-        # rank's Timer events (no-op unless --use-miles-dashboard)
-        from miles.dashboard.hooks import register_train_actor
-
-        register_train_actor(args)
+        dashboard_hooks.register_train_actor(args)
 
         unsupported = {"train_actor", "train_log_probs"} & set(args.profile_target)
         if unsupported and args.use_pytorch_profiler:

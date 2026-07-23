@@ -52,13 +52,12 @@ setup(
         "mlflow": [
             "mlflow>=2.0",
         ],
-        # dashboard server deps; present in the training image via sglang,
-        # needed explicitly only for standalone offline serving
+        # standalone offline serving; the training image already has these via
+        # sglang, and polars is a base requirement (used by the collector)
         "dashboard": [
-            "fastapi",
-            "uvicorn",
-            "prometheus_client",
-            "polars",
+            "fastapi>=0.135",
+            "uvicorn>=0.41",
+            "prometheus_client>=0.24",
         ],
     },
     python_requires=">=3.10",

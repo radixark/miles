@@ -9,6 +9,7 @@ from sglang_router.launch_router import RouterArgs
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
@@ -2199,8 +2200,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_prometheus_arguments(parser)
-        from miles.dashboard.args import add_dashboard_arguments
-
         add_dashboard_arguments(parser)
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
@@ -2380,8 +2379,6 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
 
 
 def miles_validate_args(args):
-    from miles.dashboard.args import validate_dashboard_args
-
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
