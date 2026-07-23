@@ -61,6 +61,10 @@ class LinearTrajectory:
 
         Must be called under ``self.lock``.
         """
+        # 1. Detect agent retries and roll back (at most one assistant step).
+        self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
+
+        # No stored prefix (first turn, or a rollback reset the trajectory): render fresh.
         if not self.token_ids:
             return tito_tokenizer.render_messages(
                 request_messages,
@@ -69,8 +73,6 @@ class LinearTrajectory:
                 tokenize=True,
             )
 
-        # 1. Detect agent retries and roll back (at most one assistant step).
-        self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
         # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
         #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
         try:
@@ -173,6 +175,14 @@ class LinearTrajectory:
               records              = [record_0]
               num_assistant        = 1
 
+        A retry that is a strict *prefix* of the stored history (no assistant in
+        the matched prefix) rolls back to zero assistant checkpoints — the
+        timeout-desync recovery for #955, where the engine committed an assistant
+        reply the client never received.  Bounded by
+        ``MAX_ASSISTANT_ROLLBACK_STEPS`` like any rollback, so a strict prefix
+        discarding two or more assistants, or a request that diverges *inside*
+        the matched prefix, is still rejected with ``MessageValidationError``.
+
         No rollback occurs when:
         - The stored history is empty.
         - *request_messages* is a strict extension of stored messages
@@ -193,7 +203,7 @@ class LinearTrajectory:
             return
 
         # Find the last assistant message within the matched prefix.
-        rollback_msg_end = None
+        rollback_msg_end = 0
         checkpoint_index = -1
         assistant_count = 0
         for i in range(match_len):
@@ -203,11 +213,15 @@ class LinearTrajectory:
                 assistant_count += 1
 
         if checkpoint_index < 0:
-            raise MessageValidationError(
-                f"rollback failed: no assistant message found in the first "
-                f"{match_len} matched messages (stored has {len(stored)} messages, "
-                f"request has {len(request_messages)} messages)"
-            )
+            # Reject a divergent or empty request; a strict prefix of stored
+            # history is the #955 timeout-desync retry -> roll back to zero.
+            if match_len == 0 or match_len < len(request_messages):
+                raise MessageValidationError(
+                    f"rollback failed: no assistant message found in the first "
+                    f"{match_len} matched messages (stored has {len(stored)} messages, "
+                    f"request has {len(request_messages)} messages)"
+                )
+            rollback_msg_end = match_len
 
         discard_count = self.num_assistant - (checkpoint_index + 1)
         if discard_count > MAX_ASSISTANT_ROLLBACK_STEPS:
@@ -227,7 +241,19 @@ class LinearTrajectory:
             rollback_msg_end,
             discard_count,
         )
+        if checkpoint_index < 0:
+            # Greppable signal so #955 timeout-desyncs are countable until a metric lands.
+            logger.warning(
+                "session rollback-to-zero: request is a strict prefix of stored "
+                "history (likely a router-timeout desync, #955); discarding the "
+                "orphaned assistant and resetting the trajectory "
+                "(stored=%d messages, request=%d messages)",
+                len(stored),
+                len(request_messages),
+            )
 
+        # On a zero rollback messages keeps the matched prefix while the rest reset;
+        # the next completion overwrites messages, so the brief asymmetry is expected.
         self.messages = stored[:rollback_msg_end]
         self.trajectory_token_ids = self.trajectory_token_ids[: checkpoint_index + 1]
         self.records = self.records[: checkpoint_index + 1]
