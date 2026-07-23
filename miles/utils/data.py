@@ -281,26 +281,21 @@ def process_rollout_data(
     dp_rank,
     dp_size,
     witness_info: WitnessInfo | None,
-) -> tuple[dict, ObjectStoreGetResult]:
+) -> tuple[dict, object_store.ObjectStoreGetResult]:
     store = object_store.get_instance()
 
     if args.delay_split_train_data_by_dp:
-        ref = rollout_data_ref
+        get_result = store.get(rollout_data_ref)
+        raw = get_result.value
+        if (x := witness_info) is not None:
+            raw = {**raw, "seq_witness_ids": x.witness_ids}
+        raw = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)
+        rollout_data = raw[dp_rank]
     else:
         assert len(rollout_data_ref) == dp_size
         assert witness_info is None
-        ref = rollout_data_ref[dp_rank]
-
-    get_result = store.get(ref)
-    fetched = get_result.value
-
-    if args.delay_split_train_data_by_dp:
-        raw = fetched
-        if (x := witness_info) is not None:
-            raw = {**raw, "seq_witness_ids": x.witness_ids}
-        rollout_data = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)[dp_rank]
-    else:
-        rollout_data = dict(fetched)
+        get_result = store.get(rollout_data_ref[dp_rank])
+        rollout_data = dict(get_result.value)
 
     partition = rollout_data.pop("partition")
     total_lengths = rollout_data["total_lengths"]
