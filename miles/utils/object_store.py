@@ -71,14 +71,6 @@ def get_instance() -> "BaseObjectStore":
     return _INSTANCE
 
 
-def validate_object_store_args(args: Namespace) -> None:
-    backend = _object_store_backend(args)
-    if backend == ObjectStoreBackend.MOONCAKE:
-        _check_mooncake_available()
-        if args.mooncake_rollout_replica_num < 1:
-            raise ValueError("--mooncake-rollout-replica-num must be >= 1")
-
-
 class BaseObjectStore(ABC):
     @abstractmethod
     def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:

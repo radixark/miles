@@ -17,7 +17,7 @@ from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.misc import load_function
-from miles.utils.object_store import ObjectStoreBackend, validate_object_store_args
+from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -2297,8 +2297,6 @@ def parse_args(add_custom_arguments=None):
     args.ci_enable_metrics_capture = bool(os.environ.get(RECORD_DIR_ENV))
 
     miles_validate_args(args)
-
-    validate_object_store_args(args)
 
     if backend == "megatron":
         megatron_validate_args(args)
