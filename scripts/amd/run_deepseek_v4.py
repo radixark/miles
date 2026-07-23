@@ -406,35 +406,17 @@ def _train(args: ScriptArgs):
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "  # TODO improve
-        # gfx950: DSv4 sgl-kernel topk_v2 is CUDA-only; route DSA top-k through torch.
-        "--sglang-dsa-topk-backend torch "
-        # AITER graph registration fails through HIP IPC on gfx950; use RCCL.
-        "--sglang-disable-custom-all-reduce "
     )
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
-        "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
-        "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
-        "SGLANG_OPT_FP8_WO_A_GEMM": "0",
-        # ROCm/gfx950 rollout kernel knobs
         "SGLANG_HACK_FLASHMLA_BACKEND": "triton",
-        "SGLANG_FP8_PAGED_MQA_LOGITS_TORCH": "1",
-        "SGLANG_DSA_TOPK_BROADCAST": "1",
         "SGLANG_OPT_USE_TILELANG_INDEXER": "true",
-        "SGLANG_OPT_USE_AITER_INDEXER": "false",
-        "SGLANG_OPT_USE_TILELANG_MHC_PRE": "false",
-        "SGLANG_OPT_USE_TILELANG_MHC_POST": "false",
-        "SGLANG_OPT_DEEPGEMM_HC_PRENORM": "false",
-        "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
-        "SGLANG_OPT_USE_FUSED_COMPRESS_TRITON": "true",
-        "SGLANG_OPT_USE_JIT_INDEXER_METADATA": "false",
-        "SGLANG_OPT_USE_TOPK_V2": "false",
         "SGLANG_OPT_USE_COMPRESSOR_V2": "false",
-        "SGLANG_OPT_USE_MULTI_STREAM_OVERLAP": "false",
-        "SGLANG_ROCM_USE_MULTI_STREAM": "false",
-        "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": "0",
+        "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
+        "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "AITER_BF16_FP8_MOE_BOUND": "0",
+        "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "1",
     }
 
     misc_args = (
@@ -487,9 +469,6 @@ def _train(args: ScriptArgs):
         misc_args += "--use-rollout-routing-replay "
         # Skip indexer-replay for now
         # misc_args += "--use-rollout-indexer-replay "
-        # Route replay through the miles python router: the Rust router drops return_routed_experts
-        # on /generate passthrough, so routed_experts never reaches the scheduler.
-        misc_args += "--use-miles-router "
 
     if args.train_deterministic:
         misc_args += "--deterministic-mode "
