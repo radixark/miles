@@ -212,13 +212,12 @@ def _mooncake_store_config(init_kwargs: dict[str, Any], *, contribute_segment: b
         "protocol": str(init_kwargs.get("protocol") or os.getenv("MOONCAKE_PROTOCOL", "rdma")),
         "rdma_devices": str(init_kwargs.get("device_name") or os.getenv("MOONCAKE_DEVICE", "")),
         "master_server_addr": str(init_kwargs.get("master_server_address") or os.getenv("MOONCAKE_MASTER", "")),
+        "global_segment_size": (
+            _parse_size(init_kwargs.get("global_segment_size", os.getenv("MOONCAKE_GLOBAL_SEGMENT_SIZE", 8 * 1024**3)))
+            if contribute_segment
+            else 0
+        ),
     }
-    # The store rejects global_segment_size=0; omitting the key mounts mooncake's
-    # minimal default segment, which is how non-contributing processes join.
-    if contribute_segment:
-        config["global_segment_size"] = _parse_size(
-            init_kwargs.get("global_segment_size", os.getenv("MOONCAKE_GLOBAL_SEGMENT_SIZE", 8 * 1024**3))
-        )
     return config
 
 
