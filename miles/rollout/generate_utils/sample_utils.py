@@ -83,9 +83,25 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         )
         return av + [[] for _ in range(obs_len)] + bv
 
+    def _pop_lifecycle(metadata):
+        if not metadata or "lifecycle" not in metadata:
+            return metadata, []
+        value = metadata["lifecycle"]
+        rest = {k: v for k, v in metadata.items() if k != "lifecycle"}
+        return rest, value if isinstance(value, list) else [value]
+
+    def _pop_messages(metadata):
+        if not metadata or "messages" not in metadata:
+            return metadata, None
+        return {k: v for k, v in metadata.items() if k != "messages"}, metadata["messages"]
+
     def _merge_metadata():
         a_metadata, a_top_logprobs = _pop_opd_student_top_logprobs(a.metadata)
         b_metadata, b_top_logprobs = _pop_opd_student_top_logprobs(b.metadata)
+        a_metadata, a_lifecycle = _pop_lifecycle(a_metadata)
+        b_metadata, b_lifecycle = _pop_lifecycle(b_metadata)
+        a_metadata, a_messages = _pop_messages(a_metadata)
+        b_metadata, b_messages = _pop_messages(b_metadata)
         assert a_metadata == b_metadata, f"metadata mismatch: a.metadata={a.metadata}, b.metadata={b.metadata}"
 
         merged_metadata = deepcopy(a_metadata)
@@ -94,6 +110,14 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             if merged_metadata is None:
                 merged_metadata = {}
             merged_metadata[_OPD_STUDENT_TOP_LOGPROBS_KEY] = merged_top_logprobs
+        if a_lifecycle or b_lifecycle:
+            if merged_metadata is None:
+                merged_metadata = {}
+            merged_metadata["lifecycle"] = a_lifecycle + b_lifecycle
+        if (messages := b_messages or a_messages) is not None:
+            if merged_metadata is None:
+                merged_metadata = {}
+            merged_metadata["messages"] = messages
         return merged_metadata
 
     _fill_defaults(a)

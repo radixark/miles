@@ -85,29 +85,31 @@ def get_rollout_data(
 
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
-    if "rollout_log_probs" in rollout_data:
-        rollout_logprob_dtype = _rollout_logprob_dtype(args)
-        rollout_data["rollout_log_probs"] = [
-            torch.tensor(
-                slice_log_prob_with_cp(
-                    log_prob,
-                    total_length,
-                    response_length,
-                    args.qkv_format,
-                    rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
-                ),
-                device=torch.cuda.current_device(),
-                dtype=rollout_logprob_dtype,
-            )
-            for i, (log_prob, total_length, response_length) in enumerate(
-                zip(
-                    rollout_data["rollout_log_probs"],
-                    rollout_data["total_lengths"],
-                    rollout_data["response_lengths"],
-                    strict=False,
+    # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
+    for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):
+        if key in rollout_data:
+            dtype = _rollout_logprob_dtype(args) if key == "rollout_log_probs" else torch.float32
+            rollout_data[key] = [
+                torch.as_tensor(
+                    slice_log_prob_with_cp(
+                        value,
+                        total_length,
+                        response_length,
+                        args.qkv_format,
+                        rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
+                    ),
+                    device=torch.cuda.current_device(),
+                    dtype=dtype,
                 )
-            )
-        ]
+                for i, (value, total_length, response_length) in enumerate(
+                    zip(
+                        rollout_data[key],
+                        rollout_data["total_lengths"],
+                        rollout_data["response_lengths"],
+                        strict=False,
+                    )
+                )
+            ]
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
     if "rollout_indexer_topk" in rollout_data:

@@ -5,6 +5,7 @@ import torch
 from miles.utils import object_store
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.timer import Timer
 from miles.utils.types import Sample
 
 ROLLOUT_DATA_TENSOR_DTYPES = {
@@ -215,7 +216,7 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     if adapter_slots is not None:
         partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
 
-    ans = []
+    shards = []
 
     for i in range(dp_size):
         rollout_data = {}
@@ -259,5 +260,18 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
             rollout_data[key] = data[key]
         if "adapter_slots" in rollout_data:
             rollout_data["n_adapters"] = args.multi_lora_n_adapters
-        ans.append(rollout_data)
-    return ans
+        shards.append(rollout_data)
+    return shards
+
+
+def process_rollout_data_shard(args, rollout_data):
+    """Train-side completion of the DP split: drop the ``partition`` key and
+    reorder the batch-global ``total_lengths`` into this shard's row order."""
+    partition = rollout_data.pop("partition")
+    total_lengths = rollout_data["total_lengths"]
+
+    # save the seqlen of the whole rollout batch
+    Timer().seq_lens = total_lengths
+    rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
+
+    return rollout_data

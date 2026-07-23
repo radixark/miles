@@ -19,7 +19,8 @@ from miles.utils.types import Sample
 
 # ── helpers ──────────────────────────────────────────────────────────
 
-_ARGS = SimpleNamespace()
+_ARGS = SimpleNamespace(save_debug_trajectory_data=None)
+_ARGS_RECORDING = SimpleNamespace(save_debug_trajectory_data="/unused/{rollout_id}.jsonl")
 
 
 def _mock_tokenizer():
@@ -205,6 +206,32 @@ class TestComputeSamplesFromRecords:
         assert len(samples) == 2
         assert samples[0].tokens == [1, 2, 10]
         assert samples[1].tokens == [1, 2, 10, 20, 30]
+
+    def test_last_sample_carries_raw_conversation(self):
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(prompt_token_ids=[1, 2], output_token_ids=[10]),
+            _make_record(prompt_token_ids=[1, 2, 10, 20], output_token_ids=[30]),
+        ]
+
+        samples = compute_samples_from_openai_records(_ARGS_RECORDING, _make_input_sample(), records, tok)
+
+        assert "messages" not in (samples[0].metadata or {})
+        assert samples[1].metadata["messages"] == records[1].request["messages"] + [
+            records[1].response["choices"][0]["message"]
+        ]
+
+    def test_merge_keeps_last_conversation_snapshot(self):
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11]),
+            _make_record(prompt_token_ids=[1, 2, 3, 10, 11, 20, 21], output_token_ids=[30, 31]),
+        ]
+
+        samples = compute_samples_from_openai_records(_ARGS_RECORDING, _make_input_sample(), records, tok)
+        merged = merge_samples(samples, tok)
+
+        assert merged.metadata["messages"] == samples[-1].metadata["messages"]
 
     def test_finish_reason_length_gives_truncated(self):
         tok = _mock_tokenizer()

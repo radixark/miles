@@ -20,7 +20,6 @@ from miles.utils import chat_template_utils
 from miles.utils.processing_utils import call_processor
 from miles.utils.types import MultimodalTypes, Sample
 
-from .timer import Timer
 
 __all__ = ["Dataset"]
 
@@ -282,6 +281,8 @@ def process_rollout_data(
     dp_size,
     witness_info: WitnessInfo | None,
 ) -> tuple[dict, object_store.ObjectStoreGetResult]:
+    from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
+
     store = object_store.get_instance()
 
     if args.delay_split_train_data_by_dp:
@@ -297,14 +298,7 @@ def process_rollout_data(
         get_result = store.get(rollout_data_ref[dp_rank])
         rollout_data = dict(get_result.value)
 
-    partition = rollout_data.pop("partition")
-    total_lengths = rollout_data["total_lengths"]
-
-    # save the seqlen of the whole rollout batch
-    Timer().seq_lens = total_lengths
-    rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
-
-    return rollout_data, get_result
+    return process_rollout_data_shard(args, rollout_data), get_result
 
 
 def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:

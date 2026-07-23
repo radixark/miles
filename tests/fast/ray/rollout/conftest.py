@@ -102,6 +102,7 @@ def make_args(**overrides: Any) -> Namespace:
         custom_eval_rollout_log_function_path=None,
         # debug data
         save_debug_rollout_data=None,
+        save_debug_trajectory_data=None,
         load_debug_rollout_data=None,
         load_debug_rollout_data_subsample=None,
         ci_inject_rollout_data_path=None,

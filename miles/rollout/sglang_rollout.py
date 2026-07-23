@@ -21,6 +21,7 @@ from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
+from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
 from miles.utils.multi_lora import make_rid, slot_lora_name
@@ -277,11 +278,21 @@ async def generate_and_rm(
 
     state = GenerateState(args)
 
+    # dashboard lifecycle probe (design §18.3): the semaphore wait IS the
+    # queue; attempt_end fires once generation is over, before reward
+    sink = None if evaluation else TrajectoryLifecycle().sink
+    if sink is not None:
+        sink.attempt_start(sample)
+
     # generate
     async with state.semaphore:
         if state.aborted:
             sample.status = Sample.Status.ABORTED
+            if sink is not None:
+                sink.attempt_end(sample)
             return sample
+        if sink is not None:
+            sink.gen_start(sample)
 
         with state.dp_rank_context() as _:
             # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
@@ -295,6 +306,9 @@ async def generate_and_rm(
                 sample = output.samples
             else:
                 sample = await generate(args, sample, sampling_params)
+
+    if sink is not None:
+        sink.attempt_end(sample)
 
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:
