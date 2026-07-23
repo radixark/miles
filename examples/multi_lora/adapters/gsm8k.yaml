@@ -1,0 +1,9 @@
+rank: 16
+alpha: 16
+rollout_batch_size: 32      # prompt groups per optimizer step
+n_samples_per_prompt: 4     # -> 128 samples per step
+data: /root/datasets/gsm8k/train.parquet
+input_key: messages
+label_key: label
+rm_type: math
+num_step: 400
