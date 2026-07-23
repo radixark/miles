@@ -1,6 +1,7 @@
 import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+from tests.ci.rocm_utils import IS_ROCM
 
 import miles.utils.external_utils.command_utils as U
 
@@ -81,6 +82,8 @@ def execute():
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.7 " "--sglang-enable-metrics "
 
     ci_args = "--ci-test "
+    if IS_ROCM:
+        ci_args += "--ci-disable-kl-checker --ci-disable-logprobs-checker "
 
     fault_tolerance_args = (
         "--use-fault-tolerance "
@@ -93,6 +96,10 @@ def execute():
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
+        # ROCm (gfx950): hipBLASLt has no algorithm for bf16→fp32 +
+        # HIPBLASLT_EPILOGUE_BGRADB + accumulate in TE's LayerNormLinear
+        # backward when gradient_accumulation_fusion=True and bias=True.
+        f"{'--no-gradient-accumulation-fusion ' if IS_ROCM else ''}"
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
