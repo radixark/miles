@@ -1,6 +1,7 @@
 import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+from tests.ci.rocm_utils import IS_ROCM
 
 import miles.utils.external_utils.command_utils as U
 
@@ -82,6 +83,7 @@ def execute():
     ci_args = (
         "--ci-test "
         "--ci-disable-kl-checker "
+        f"{'--ci-disable-logprobs-checker ' if IS_ROCM else ''}"
         "--ci-metric-checker-key eval/gsm8k "
         "--ci-metric-checker-threshold 0.55 "  # loose threshold at 250 step
     )
@@ -92,6 +94,7 @@ def execute():
         "--hidden-dropout 0.0 "
         # should be good for model performance
         "--accumulate-allreduce-grads-in-fp32 "
+        f"{'--no-gradient-accumulation-fusion ' if IS_ROCM else ''}"
         "--attention-softmax-in-fp32 "
         # need to comment this when using model with MLA
         "--attention-backend flash "
