@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import miles.ray.rollout.rollout_manager as rollout_manager_mod
-from miles.rollout.checkpoint_eval import make_eval_args, retarget_args
+from miles.rollout.checkpoint_eval import EvalFleetSession, make_eval_args, retarget_args
 
 
 def make_args(**overrides) -> Namespace:
@@ -45,6 +45,29 @@ def test_make_eval_args_reads_router_registry():
     assert (eval_args.sglang_router_ip, eval_args.sglang_router_port) == ("10.0.0.2", 31000)
     assert eval_args.rollout_num_gpus == args.eval_num_gpus
     assert eval_args.rollout_num_gpus_per_engine == args.eval_num_gpus_per_engine
+
+
+def test_eval_fleet_session_builds_state_once_and_caches(monkeypatch):
+    """RolloutManager owns one EvalFleetSession and calls .state() on every eval;
+    the router only exists once servers are up, so the state must be built lazily
+    on first use, not eagerly in __init__, and reused after that."""
+    import miles.rollout.checkpoint_eval as checkpoint_eval
+
+    build_calls = []
+
+    def fake_make_eval_generate_state(args):
+        build_calls.append(args)
+        return SimpleNamespace(args=args)
+
+    monkeypatch.setattr(checkpoint_eval, "make_eval_generate_state", fake_make_eval_generate_state)
+
+    session = EvalFleetSession(make_args())
+    assert build_calls == []  # not built in __init__
+
+    state = session.state()
+    assert len(build_calls) == 1
+    assert session.state() is state  # cached, not rebuilt
+    assert len(build_calls) == 1
 
 
 async def test_run_eval_datasets_merges_datasets(monkeypatch):
@@ -197,6 +220,9 @@ def make_manager(args, engines, eval_fn_result=None):
     mgr._eval_consumed_snapshots = []
     mgr.servers = {"eval": FakeEvalServer(engines)}
     mgr._metric_checker = None
+    mgr._eval_fleet = SimpleNamespace(state=lambda: "fake-fleet-state")
+    # eval_generate_rollout ignores its RolloutFnEvalInput; the fleet's generate_state
+    # is opaque to this fake, only real InferenceRolloutFn/FullyAsyncRolloutFn use it.
     mgr.eval_generate_rollout = lambda input: eval_fn_result
     return mgr
 
@@ -254,6 +280,32 @@ async def test_controller_pins_all_engines_before_generate(controller_env, tmp_p
     assert rollout_id == 5
     assert extra["eval/lag_steps"] == 2
     assert extra["eval/export_time_seconds"] == 1.5
+
+
+async def test_controller_threads_fleet_state_and_weight_version(controller_env, tmp_path):
+    """RolloutManager is the single place that decides fleet-vs-shared: it must pass
+    the fleet's GenerateState and the pinned weight_version into RolloutFnEvalInput so
+    RolloutFn classes stay unaware of --eval-num-gpus."""
+    snapshot = tmp_path / "step_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    seen_inputs = []
+
+    def eval_generate_rollout(input):
+        seen_inputs.append(input)
+        return SimpleNamespace(data={}, metrics=None)
+
+    engines = [FakeEngine(controller_env.log)]
+    args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
+    mgr = make_manager(args, engines)
+    mgr.eval_generate_rollout = eval_generate_rollout
+
+    await mgr._eval_on_dedicated_fleet(5, str(snapshot), export_time_seconds=None)
+
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0].generate_state == "fake-fleet-state"
+    assert seen_inputs[0].weight_version == "5"
 
 
 async def test_controller_skips_on_missing_marker(controller_env, tmp_path):

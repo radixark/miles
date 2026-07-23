@@ -22,7 +22,8 @@ from pathlib import Path
 
 from miles.rollout.checkpoint_eval import retarget_args
 from miles.utils.hf_config import is_complete_hf_export, looks_like_hf_checkpoint
-from miles.utils.http_utils import init_http_client, post, wait_http_ok
+from miles.utils.http_utils import init_http_client, wait_http_ok
+from miles.utils.weight_target import HttpServerTarget, pin_and_verify
 
 logger = logging.getLogger("checkpoint_eval_service")
 
@@ -200,20 +201,12 @@ async def wait_server_healthy(ip: str, port: int, timeout: float = 1800.0) -> No
 async def evaluate_snapshot(args: Namespace, state, cache: dict, rollout_id: int, snapshot: Path) -> None:
     from miles.ray.rollout.metrics import log_eval_rollout_data
     from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
-    from miles.utils.http_utils import get
 
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     start = time.time()
     weight_version = str(rollout_id)
-    await post(
-        f"{url}/update_weights_from_disk",
-        {"model_path": str(snapshot), "weight_version": weight_version},
-    )
-    info = await get(f"{url}/model_info")
-    if str(info.get("weight_version")) != weight_version:
-        raise RuntimeError(
-            f"weight_version pin failed: engine reports {info.get('weight_version')}, expected {weight_version}"
-        )
+    if not await pin_and_verify([HttpServerTarget(url)], str(snapshot), weight_version):
+        raise RuntimeError(f"weight_version pin failed for {snapshot} (expected {weight_version})")
 
     results = await run_eval_datasets(state, cache)
     extra = {"eval/duration_seconds": time.time() - start}

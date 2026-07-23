@@ -23,6 +23,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     call_rollout_fn,
 )
+from miles.rollout.checkpoint_eval import EvalFleetSession
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -36,6 +37,7 @@ from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.weight_target import RayEngineTarget, pin_and_verify
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -94,6 +96,7 @@ class RolloutManager:
         self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
         self._eval_consumed_snapshots: list[str] = []
+        self._eval_fleet = EvalFleetSession(args)
 
         self._metric_checker = MetricChecker.maybe_create(args)
 
@@ -188,32 +191,9 @@ class RolloutManager:
                 self.report_eval_skip(rollout_id, "ckpt_missing")
                 return
 
-            engines = [e.actor_handle for e in srv.engines]
             weight_version = str(rollout_id)
-            for _attempt in range(2):
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(
-                            *[
-                                e.update_weights_from_disk.remote(hf_dir, weight_version=weight_version)
-                                for e in engines
-                            ]
-                        ),
-                        timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
-                    )
-                    versions = await asyncio.wait_for(
-                        asyncio.gather(*[e.get_weight_version.remote() for e in engines]),
-                        timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
-                    )
-                except Exception as e:
-                    logger.warning(f"Eval fleet weight load from {hf_dir} failed: {e}")
-                    versions = []
-                if versions and all(str(v) == weight_version for v in versions):
-                    break
-            else:
-                logger.warning(
-                    f"Eval fleet failed to pin weight_version={weight_version} (got {versions}), skipping eval"
-                )
+            targets = [RayEngineTarget(e.actor_handle) for e in srv.engines]
+            if not await pin_and_verify(targets, hf_dir, weight_version, timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS):
                 self.report_eval_skip(rollout_id, "pin_violation")
                 return
 
@@ -225,7 +205,11 @@ class RolloutManager:
                 return
 
             result = await asyncio.to_thread(
-                call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
+                call_rollout_function,
+                self.eval_generate_rollout,
+                RolloutFnEvalInput(
+                    rollout_id=rollout_id, generate_state=self._eval_fleet.state(), weight_version=weight_version
+                ),
             )
             data = result.data
             save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)

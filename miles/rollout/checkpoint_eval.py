@@ -37,20 +37,19 @@ def make_eval_generate_state(args: Namespace) -> GenerateState:
 
 
 class EvalFleetSession:
-    """Eval-fleet ``GenerateState`` + prompt cache, built lazily on first use.
+    """Eval-fleet ``GenerateState``, built lazily on first use and cached.
 
-    Lazy because the eval router only exists once the servers are up, while rollout
-    functions are constructed earlier.
+    Lazy because the eval router only exists once the servers are up. Owned by
+    ``RolloutManager`` (not by individual ``RolloutFn`` instances) — it decides
+    once whether a given eval targets the fleet or the shared engines, and
+    passes the resulting state through ``RolloutFnEvalInput.generate_state``.
     """
 
     def __init__(self, args: Namespace):
         self.args = args
         self._state: GenerateState | None = None
-        self._prompt_dataset_cache: dict = {}
 
-    async def run(self) -> dict:
-        from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
-
+    def state(self) -> GenerateState:
         if self._state is None:
             self._state = make_eval_generate_state(self.args)
-        return await run_eval_datasets(self._state, self._prompt_dataset_cache)
+        return self._state

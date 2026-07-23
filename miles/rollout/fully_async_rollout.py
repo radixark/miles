@@ -10,9 +10,11 @@ Requires the class-based rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``)
 
     --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
 
-Evaluation runs on a dedicated eval fleet when ``--eval-num-gpus`` is set (see
-``miles/rollout/checkpoint_eval.py``); otherwise it shares the rollout engines,
-pausing producer submissions for the duration of the (blocking) eval.
+Evaluation targets whatever ``GenerateState`` ``RolloutManager`` passes via
+``RolloutFnEvalInput.generate_state`` (see ``miles/rollout/checkpoint_eval.py``
+for how the dedicated-fleet state is built). When unset, eval shares the
+rollout engines, pausing producer submissions for the duration of the
+(blocking) eval.
 """
 
 import asyncio
@@ -24,12 +26,12 @@ import httpx
 
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
+    RolloutFnEvalInput,
     RolloutFnEvalOutput,
     RolloutFnInput,
     RolloutFnOutput,
     RolloutFnTrainOutput,
 )
-from miles.rollout.checkpoint_eval import EvalFleetSession
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.utils.http_utils import get
@@ -100,7 +102,6 @@ class FullyAsyncRolloutFn:
         self._weight_version = _CachedWeightVersion()
         self._worker: asyncio.Task | None = None
         self._output: asyncio.Queue[Group] | None = None
-        self._eval_fleet = EvalFleetSession(input.args)
         self._eval_prompt_dataset_cache: dict = {}
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
@@ -114,9 +115,10 @@ class FullyAsyncRolloutFn:
             logger.info("Started fully-async rollout worker")
         return await self._drain(input.rollout_id)
 
-    async def _call_eval(self, input: RolloutFnInput) -> RolloutFnOutput:
-        if self.args.eval_num_gpus > 0:
-            return RolloutFnEvalOutput(data=await self._eval_fleet.run())
+    async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
+        if input.generate_state is not None:
+            results = await run_eval_datasets(input.generate_state, self._eval_prompt_dataset_cache)
+            return RolloutFnEvalOutput(data=results)
 
         logger.info("Pausing fully-async producer submissions for shared-engine eval")
         self._producer_resumed.clear()
