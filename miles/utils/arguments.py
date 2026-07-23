@@ -2159,10 +2159,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--tito-allowed-append-roles",
                 nargs="+",
-                default=["tool"],
+                default=None,
                 choices=["tool", "user", "system"],
                 help="Message roles allowed to be appended after the pretokenized "
-                "assistant prefix in TITO sessions (default: tool).",
+                "assistant prefix in TITO sessions (default: tool user). The "
+                "None sentinel distinguishes an explicit value from the default "
+                "so passing the flag without --use-session-server can fail loud.",
             )
             return parser
 
@@ -2415,15 +2417,17 @@ def miles_validate_args(args):
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
 
-    # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
-    raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
-    args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles))
+    # Normalize --tito-allowed-append-roles: lowercase + deduplicate.  None is
+    # the parser sentinel for "not explicitly passed".
+    raw_roles = getattr(args, "tito_allowed_append_roles", None)
+    roles_explicitly_set = raw_roles is not None
+    args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles or ["tool", "user"]))
 
     if not args.use_session_server:
         misconfigured = []
         if args.tito_model != TITOTokenizerType.DEFAULT.value:
             misconfigured.append(f"--tito-model={args.tito_model}")
-        if args.tito_allowed_append_roles != ["tool"]:
+        if roles_explicitly_set:
             misconfigured.append(f"--tito-allowed-append-roles={args.tito_allowed_append_roles}")
         if misconfigured:
             raise ValueError(
@@ -2431,9 +2435,16 @@ def miles_validate_args(args):
                 "these flags only configure the session-server TITO middleware."
             )
 
-    if "user" in args.tito_allowed_append_roles:
+    # Non-default tito families resolve a fixed template below and hard-fail
+    # unsupported role combos; only the DEFAULT family's native HF template
+    # keeps the context-sensitive render risk for user appends.
+    if (
+        args.use_session_server
+        and args.tito_model == TITOTokenizerType.DEFAULT.value
+        and "user" in args.tito_allowed_append_roles
+    ):
         logger.warning(
-            "--tito-allowed-append-roles includes 'user'. "
+            "--tito-allowed-append-roles includes 'user' with --tito-model=default. "
             "Incremental tokenization assumes appended messages do not change how "
             "earlier turns render, which may not hold for user messages on "
             "context-sensitive chat templates (e.g. last_query_index logic, "

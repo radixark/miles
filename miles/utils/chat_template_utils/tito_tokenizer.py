@@ -98,7 +98,9 @@ class TITOTokenizer:
         self.tokenizer = tokenizer
         self.chat_template_kwargs = chat_template_kwargs or {}
         self._assistant_start_str = assistant_start_str
-        self.allowed_append_roles: list[str] = allowed_append_roles if allowed_append_roles is not None else ["tool"]
+        self.allowed_append_roles: list[str] = (
+            allowed_append_roles if allowed_append_roles is not None else ["tool", "user"]
+        )
         self.special_token_ids: set[int] = special_token_ids
 
     def create_comparator(self) -> TokenSeqComparator:
