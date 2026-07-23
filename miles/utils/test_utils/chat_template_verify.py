@@ -407,8 +407,8 @@ def run_all_checks(
 # layer.  This is necessary but not sufficient for production correctness —
 # production runs ``get_tito_tokenizer(...)`` and exercises ``merge_tokens``
 # (model-specific token-level boundary patches) plus
-# ``tokenize_additional_non_assistant`` (renders appended segments under a
-# synthetic ``[_DUMMY_SYSTEM, ...]`` context, not the real history).
+# ``tokenize_additional_non_assistant`` (renders the complete appendix under a
+# synthetic ``[_DUMMY_SYSTEM, dummy_assistant]`` context, not the real history).
 #
 # The primitive below mirrors the production path: it instantiates the actual
 # TITO subclass + HF tokenizer, runs ``merge_tokens`` against the encoded
@@ -456,12 +456,12 @@ def verify_append_only_via_tito_instance(
         prefix_msgs = deepcopy(messages[:n])
         full_msgs = deepcopy(messages[:m])
 
-        prefix_text = tito.render_messages(
+        prefix_text = tito.apply_chat_template(
             prefix_msgs,
             tools=tools,
             add_generation_prompt=False,
         )
-        full_text = tito.render_messages(
+        full_text = tito.apply_chat_template(
             full_msgs,
             tools=tools,
             add_generation_prompt=True,
@@ -520,7 +520,7 @@ def verify_append_only_via_tito(
 
     Matches the production wiring at ``miles/rollout/session/sessions.py:35`` —
     the same ``get_tito_tokenizer`` factory call, with ``chat_template_kwargs``
-    threaded through so ``merge_tokens`` and the dummy-context segment renders
+    threaded through so ``merge_tokens`` and the dummy-context appendix render
     use the same kwargs as the reference full render.
     """
     from miles.utils.chat_template_utils import get_tito_tokenizer
@@ -554,7 +554,7 @@ def run_all_checks_via_tito(
 
     Per-case TITO rebuild: each (case, ``enable_thinking`` variant) gets a fresh
     TITO instance constructed with the merged kwargs, so the dummy-context
-    segment renders inside ``tokenize_additional_non_assistant`` see the same
+    appendix render inside ``tokenize_additional_non_assistant`` sees the same
     ``enable_thinking`` value as the reference render.  Construction is
     millisecond-level and runs ~50 times per CLI invocation; cheap.
 

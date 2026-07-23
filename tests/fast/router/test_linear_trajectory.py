@@ -28,7 +28,7 @@ class _MockTITOTokenizer(TITOTokenizer):
     def create_comparator(self):
         return None
 
-    def render_messages(
+    def apply_chat_template(
         self,
         messages: list[dict[str, Any]],
         *,
@@ -676,7 +676,7 @@ class TestComputeSessionMismatch:
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
         # Simulate: template returns same IDs as stored
-        registry.tito_tokenizer.render_messages = MagicMock(return_value=[1, 2, 3, 10, 11])
+        registry.tito_tokenizer.apply_chat_template = MagicMock(return_value=[1, 2, 3, 10, 11])
 
         # Need a real comparator; replace the None one
         mock_comparator = MagicMock()
@@ -686,7 +686,7 @@ class TestComputeSessionMismatch:
         result = registry.compute_session_mismatch(session)
         assert result == []
         mock_comparator.compare_sequences.assert_called_once_with([1, 2, 3, 10, 11], [1, 2, 3, 10, 11])
-        registry.tito_tokenizer.render_messages.assert_called_once_with(
+        registry.tito_tokenizer.apply_chat_template.assert_called_once_with(
             session.messages,
             tools=None,
             add_generation_prompt=False,
@@ -698,7 +698,7 @@ class TestComputeSessionMismatch:
         session = registry.get_session(sid)
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
-        registry.tito_tokenizer.render_messages = MagicMock(return_value=[1, 2, 99, 10, 11])
+        registry.tito_tokenizer.apply_chat_template = MagicMock(return_value=[1, 2, 99, 10, 11])
 
         @dataclass
         class FakeMismatch:
@@ -719,7 +719,7 @@ class TestComputeSessionMismatch:
         session = registry.get_session(sid)
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
-        registry.tito_tokenizer.render_messages = MagicMock(side_effect=RuntimeError("tokenizer failed"))
+        registry.tito_tokenizer.apply_chat_template = MagicMock(side_effect=RuntimeError("tokenizer failed"))
 
         with pytest.raises(TokenizationError, match="tokenizer failed"):
             registry.compute_session_mismatch(session)
@@ -741,7 +741,7 @@ class TestComputeSessionMismatch:
         session.append_record(record)
 
         mock_tokenize = MagicMock(return_value=[1, 2, 10])
-        registry.tito_tokenizer.render_messages = mock_tokenize
+        registry.tito_tokenizer.apply_chat_template = mock_tokenize
         mock_comparator = MagicMock()
         mock_comparator.compare_sequences.return_value = []
         registry.comparator = mock_comparator
