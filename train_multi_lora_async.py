@@ -36,9 +36,9 @@ async def main(args):
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
     pgs = create_placement_groups(args)
-    object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
     rollout_manager, _num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+    await object_store.init_driver_instance(args, rollout_manager=rollout_manager)
 
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
     router_ip, router_port = await rollout_manager.get_router_address.remote()

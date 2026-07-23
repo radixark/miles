@@ -25,12 +25,12 @@ async def train(args):
     maybe_start_periodic_pyspy_dump()
     # allocate the GPUs
     pgs = create_placement_groups(args)
-    object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+    await object_store.init_driver_instance(args, rollout_manager=rollout_manager)
 
     # create the actor and critic models
     actor_model, critic_model = await create_training_models(args, pgs, rollout_manager)
