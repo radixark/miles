@@ -18,7 +18,7 @@ except ImportError:
 from sglang.srt.utils import MultiprocessingSerializer
 
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
-
+from miles.utils.http_utils import _wrap_ipv6
 
 try:
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
@@ -240,7 +240,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
             ]
             self._model_update_groups = init_process_group(
                 backend="nccl",
-                init_method=f"tcp://{master_address}:{master_port}",
+                init_method=f"tcp://{_wrap_ipv6(master_address)}:{master_port}",
                 world_size=world_size,
                 rank=0,
                 group_name=self._group_name,

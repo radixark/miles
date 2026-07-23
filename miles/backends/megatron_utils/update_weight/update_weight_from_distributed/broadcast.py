@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import init_process_group
+from miles.utils.http_utils import _wrap_ipv6
 
 from miles.utils.lora import LORA_ADAPTER_NAME
 from ..common import _check_weight_sync_results
@@ -231,7 +232,7 @@ def connect_rollout_engines_from_distributed(
         rank_cursor += engine_gpu_counts[i]
     model_update_groups = init_process_group(
         backend="nccl",
-        init_method=f"tcp://{master_address}:{master_port}",
+        init_method=f"tcp://{_wrap_ipv6(master_address)}:{master_port}",
         world_size=world_size,
         rank=0,
         group_name=group_name,
