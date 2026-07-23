@@ -175,7 +175,7 @@ def _load_fixed_or_none(tito_model: TITOTokenizerType | None) -> str | None:
     """Return the bundled fixed chat-template content for *tito_model*, or ``None``."""
     if tito_model is None:
         return None
-    path, _kwargs = resolve_fixed_chat_template(tito_model, ["tool"])
+    path, _kwargs = resolve_fixed_chat_template(tito_model)
     if path is None:
         return None
     with open(path) as f:

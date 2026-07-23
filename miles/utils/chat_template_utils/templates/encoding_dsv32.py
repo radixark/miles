@@ -282,7 +282,10 @@ def render_message(
 
         summary_content = content or ""
 
-        if thinking_mode == "thinking" and index > last_user_idx:
+        # Miles modification: only the upstream drop path enforces the
+        # reasoning-required invariant; drop_thinking=False accepts injected
+        # assistant input without reasoning_content (renders as `</think>`).
+        if drop_thinking and thinking_mode == "thinking" and index > last_user_idx:
             if not (reasoning_content or tool_calls):
                 raise DS32EncodingError(
                     f"ThinkingMode: {thinking_mode}, invalid message without reasoning_content/tool_calls `{msg}` after last user message"

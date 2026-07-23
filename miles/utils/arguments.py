@@ -10,7 +10,7 @@ from sglang_router.launch_router import RouterArgs
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
-from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, TITOTokenizerType
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
@@ -2160,7 +2160,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--tito-allowed-append-roles",
                 nargs="+",
                 default=None,
-                choices=["tool", "user", "system"],
+                choices=list(VALID_APPEND_ROLES),
                 help="Message roles allowed to be appended after the pretokenized "
                 "assistant prefix in TITO sessions (default: tool user). The "
                 "None sentinel distinguishes an explicit value from the default "
@@ -2478,10 +2478,7 @@ def miles_validate_args(args):
         tito_model = TITOTokenizerType(args.tito_model)
         from miles.utils.chat_template_utils import resolve_fixed_chat_template
 
-        resolved_path, resolved_kwargs = resolve_fixed_chat_template(
-            tito_model,
-            allowed_append_roles=args.tito_allowed_append_roles,
-        )
+        resolved_path, resolved_kwargs = resolve_fixed_chat_template(tito_model)
         if resolved_path is not None:
             args.chat_template_path = resolved_path
         # Merge inferred kwargs.  User-explicit values win on conflict; only
@@ -2493,12 +2490,11 @@ def miles_validate_args(args):
                     continue
                 user_kwargs[key] = value
                 logger.warning(
-                    "Auto-set --apply-chat-template-kwargs %s=%r for tito_model=%s "
-                    "(allowed_append_roles=%s); pass an explicit value to override.",
+                    "Auto-set --apply-chat-template-kwargs %s=%r for tito_model=%s; "
+                    "pass an explicit value to override.",
                     key,
                     value,
                     tito_model.value,
-                    sorted(args.tito_allowed_append_roles),
                 )
             args.apply_chat_template_kwargs = user_kwargs
 

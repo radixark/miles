@@ -495,3 +495,28 @@ def test_apply_chat_template_is_generation_ready(tmp_path):
     out = apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False)
     assert "<｜User｜>" in out
     assert "<｜Assistant｜>" in out
+
+
+# ---------------------------------------------------------------------------
+# Miles extension: injected system / assistant appends (role-independent)
+# ---------------------------------------------------------------------------
+
+_INJECT_SHAPES = {
+    "system": [{"role": "system", "content": "mid-session system"}],
+    "assistant": [{"role": "assistant", "content": "injected"}],
+    "assistant_then_user": [
+        {"role": "assistant", "content": "injected"},
+        {"role": "user", "content": "next question"},
+    ],
+}
+
+
+@pytest.mark.parametrize("shape", list(_INJECT_SHAPES), ids=list(_INJECT_SHAPES))
+def test_drop_thinking_false_injected_appends_are_append_only(shape):
+    # With drop_thinking=False the vendored encoder renders position-
+    # independently AND accepts injected assistant input without
+    # reasoning_content (the upstream reasoning-required raise only guards the
+    # drop_thinking=True path).
+    before = _reference_encode(_THINKING_HISTORY, thinking=True, drop_thinking=False)
+    after = _reference_encode(_THINKING_HISTORY + _INJECT_SHAPES[shape], thinking=True, drop_thinking=False)
+    assert after.startswith(before)

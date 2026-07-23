@@ -38,7 +38,7 @@ class _MockTITOTokenizer(TITOTokenizer):
     ) -> list[int]:
         return list(_MOCK_FIRST_TURN_TOKENS)
 
-    def tokenize_additional_non_assistant(
+    def tokenize_additional_messages(
         self,
         old_messages: list[dict[str, Any]],
         new_messages: list[dict[str, Any]],
@@ -86,6 +86,12 @@ def registry_with_system():
 def registry_with_user():
     """Registry that allows tool and user in appended messages."""
     return _make_registry(allowed_append_roles=["tool", "user"])
+
+
+@pytest.fixture
+def registry_with_assistant():
+    """Registry that additionally allows injected assistant input."""
+    return _make_registry(allowed_append_roles=["tool", "user", "assistant"])
 
 
 class TestSessionCRUD:
@@ -339,6 +345,40 @@ class TestAppendRoleToolOnly:
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "extra"}]
         result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+        assert isinstance(result, list)
+
+    def test_default_policy_rejects_assistant_append(self, registry: SessionRegistry):
+        # Injected assistant input requires opting in via allowed_append_roles.
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "assistant", "content": "injected"}]
+        with pytest.raises(MessageValidationError, match="role='assistant'.*allowed="):
+            session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+
+
+class TestAppendRoleAssistant:
+    """Config: allowed_append_roles=['tool', 'user', 'assistant'].
+
+    Injected assistant input joins the prompt region of the next sample (the
+    loss mask only ever covers generated response tokens), so allowing the
+    role is purely a harness-policy decision."""
+
+    def test_assistant_append_allowed(self, registry_with_assistant: SessionRegistry):
+        sid = registry_with_assistant.create_session()
+        session = registry_with_assistant.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [
+            SYS_MSG,
+            USER_MSG,
+            ASSISTANT_MSG_1,
+            TOOL_MSG_1,
+            {"role": "assistant", "content": "injected"},
+            {"role": "user", "content": "next"},
+        ]
+        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_assistant.tito_tokenizer)
         assert isinstance(result, list)
 
 

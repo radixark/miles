@@ -1,8 +1,8 @@
-"""Unit tests for ``resolve_fixed_chat_template`` smallest-superset lookup.
+"""Unit tests for ``resolve_fixed_chat_template`` — one template per family.
 
-Rows live as ``SUPPORTED_TEMPLATES`` class attributes on each
-``TITOTokenizer`` subclass; the resolver picks the smallest superset of the
-caller's ``allowed_append_roles`` and returns ``(template_path, extra_kwargs)``.
+Each ``TITOTokenizer`` subclass registers a single ``FIXED_TEMPLATE``
+(template path + preserve-think kwargs).  Resolution is role-independent:
+``allowed_append_roles`` only gates which roles the harness may append.
 """
 
 import os
@@ -10,180 +10,60 @@ import os
 import pytest
 
 from miles.utils.chat_template_utils import TEMPLATE_DIR, TITOTokenizerType, resolve_fixed_chat_template
-from miles.utils.chat_template_utils.tito_tokenizer import FixedTemplateRow, Qwen3TITOTokenizer, Qwen35TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer import FixedTemplate, Qwen3TITOTokenizer
 
-_QWEN3_FIXED = str(TEMPLATE_DIR / "qwen3_fixed.jinja")
-_QWEN35_FIXED = str(TEMPLATE_DIR / "qwen3.5_fixed.jinja")
-_THINKING_FIXED = str(TEMPLATE_DIR / "qwen3_thinking_2507_and_next_fixed.jinja")
-
-
-@pytest.mark.parametrize(
-    "tito_model, expected_path",
-    [
-        (TITOTokenizerType.QWEN3, _QWEN3_FIXED),
-        (TITOTokenizerType.QWEN35, _QWEN35_FIXED),
-        (TITOTokenizerType.QWENNEXT, _THINKING_FIXED),
-    ],
-)
-def test_tool_only_resolution_matches_registered_template(tito_model, expected_path):
-    path, kwargs = resolve_fixed_chat_template(tito_model, ["tool"])
-    assert path == expected_path
-    assert kwargs == {}
-    assert os.path.isfile(path)
+_EXPECTED_FIXED_TEMPLATES = {
+    TITOTokenizerType.QWEN3: ("qwen3_fixed.jinja", {"clear_thinking": False}),
+    TITOTokenizerType.QWEN35: ("qwen3.5_fixed.jinja", {"clear_thinking": False}),
+    TITOTokenizerType.QWENNEXT: ("qwen3_thinking_2507_and_next_fixed.jinja", {"clear_thinking": False}),
+    TITOTokenizerType.GLM47: (None, {"clear_thinking": False}),
+    TITOTokenizerType.NEMOTRON3: (None, {"truncate_history_thinking": False}),
+    TITOTokenizerType.KIMI25: ("kimi_k25_fixed.jinja", {"preserve_thinking": True}),
+    TITOTokenizerType.KIMI26: (None, {"preserve_thinking": True}),
+    TITOTokenizerType.MINIMAX_M25: ("minimax_m25_fixed.jinja", {"clear_thinking": False}),
+    TITOTokenizerType.MINIMAX_M27: ("minimax_m27_fixed.jinja", {"clear_thinking": False}),
+    TITOTokenizerType.DEEPSEEKV32: (None, {"drop_thinking": False}),
+    TITOTokenizerType.DEEPSEEKV4: (None, {"drop_thinking": False}),
+}
 
 
-def test_deepseek_v4_tool_only_is_hf_native_no_kwargs():
-    # The native tool-calling surface keeps the HF-native dsv4 bridge with no
-    # kwargs override; the encoder itself forces drop_thinking=False whenever
-    # `tools` are present, so this surface is already append-only.
-    path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.DEEPSEEKV4, ["tool"])
-    assert path is None
-    assert kwargs == {}
-
-
-def test_deepseek_v4_tool_user_pins_drop_thinking_false():
-    # OpenEnv-style text-protocol scaffolds append env output as plain `user`
-    # turns and pass no `tools`. Without drop_thinking=False the encoder strips
-    # prior assistants' thinking once a new user turn advances last_user_index —
-    # a non-append-only mutation that corrupts the pretokenized prefix and NaNs
-    # the first backward. This row must pin drop_thinking=False.
-    path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.DEEPSEEKV4, ["tool", "user"])
-    assert path is None
-    assert kwargs == {"drop_thinking": False}
-
-
-@pytest.mark.parametrize("roles", [["tool"], ["tool", "user"]])
-def test_deepseek_v32_pins_drop_thinking_false_on_every_surface(roles):
-    # The vendored encoding_dsv32 honors drop_thinking=False at the render
-    # level (unlike upstream, which strips historical thinking whenever a new
-    # user turn advances last_user_index).  Every V3.2 surface pins it so
-    # renders stay append-only for both tool and user appends.
-    path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.DEEPSEEKV32, roles)
-    assert path is None
-    assert kwargs == {"drop_thinking": False}
+def test_every_non_default_family_is_covered():
+    # New families must register a FIXED_TEMPLATE and take a row here.
+    assert set(_EXPECTED_FIXED_TEMPLATES) == set(TITOTokenizerType) - {TITOTokenizerType.DEFAULT}
 
 
 @pytest.mark.parametrize(
-    "tito_model",
-    [TITOTokenizerType.QWEN3, TITOTokenizerType.QWEN35, TITOTokenizerType.QWENNEXT],
+    "tito_model", list(_EXPECTED_FIXED_TEMPLATES), ids=[t.value for t in _EXPECTED_FIXED_TEMPLATES]
 )
-def test_no_superset_raises(tito_model):
-    # ``{"tool", "system"}`` has no superset registered for the Qwen fixed
-    # families (which register ``{"tool"}`` and ``{"tool", "user"}``).  The
-    # resolver must surface this as a hard error so the caller cannot silently
-    # fall through to a non-append-only HF render.
-    with pytest.raises(ValueError) as excinfo:
-        resolve_fixed_chat_template(tito_model, ["tool", "system"])
-    msg = str(excinfo.value)
-    assert f"tito_model={tito_model.value}" in msg
-    assert "allowed_append_roles=['system', 'tool']" in msg
-    assert "SUPPORTED_TEMPLATES" in msg
+def test_family_resolves_template_and_preserve_think_kwargs(tito_model):
+    # Every family pins its preserve-think kwargs unconditionally, so renders
+    # stay append-only regardless of which roles the harness appends.
+    expected_template, expected_kwargs = _EXPECTED_FIXED_TEMPLATES[tito_model]
+    path, kwargs = resolve_fixed_chat_template(tito_model)
+    if expected_template is None:
+        assert path is None
+    else:
+        assert path == str(TEMPLATE_DIR / expected_template)
+        assert os.path.isfile(path)
+    assert kwargs == expected_kwargs
 
 
-# ---------------------------------------------------------------------------
-# Smallest-superset semantics — covered with monkeypatched class attributes
-# so the behavior is pinned independently of which rows happen to be
-# registered today.
-# ---------------------------------------------------------------------------
+def test_default_family_has_no_fixed_template():
+    with pytest.raises(ValueError, match="No FIXED_TEMPLATE registered"):
+        resolve_fixed_chat_template(TITOTokenizerType.DEFAULT)
 
 
-def test_subset_caller_falls_through_to_multi_role_row(monkeypatch):
-    # Only a multi-role row is registered; a strict-subset caller resolves to it.
+def test_string_tito_model_accepted():
+    assert resolve_fixed_chat_template("qwen3") == resolve_fixed_chat_template(TITOTokenizerType.QWEN3)
+
+
+def test_kwargs_are_copied_not_shared(monkeypatch):
+    # Mutating the returned kwargs must not leak into the registration.
     monkeypatch.setattr(
         Qwen3TITOTokenizer,
-        "SUPPORTED_TEMPLATES",
-        (
-            FixedTemplateRow(
-                allowed_roles=frozenset({"tool", "user"}),
-                template="fake.jinja",
-            ),
-        ),
+        "FIXED_TEMPLATE",
+        FixedTemplate(template=None, extra_kwargs={"clear_thinking": False}),
     )
-    path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.QWEN3, ["tool"])
-    assert path == str(TEMPLATE_DIR / "fake.jinja")
-    assert kwargs == {}
-
-
-def test_exact_match_wins_over_strict_superset(monkeypatch):
-    # Both an exact ``{tool}`` row and a multi-role ``{tool, user}`` row exist.
-    # Smallest-cardinality wins, so caller ``["tool"]`` gets the exact row.
-    monkeypatch.setattr(
-        Qwen3TITOTokenizer,
-        "SUPPORTED_TEMPLATES",
-        (
-            FixedTemplateRow(
-                allowed_roles=frozenset({"tool"}),
-                template="exact.jinja",
-            ),
-            FixedTemplateRow(
-                allowed_roles=frozenset({"tool", "user"}),
-                template="multi.jinja",
-            ),
-        ),
-    )
-    path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.QWEN3, ["tool"])
-    assert path == str(TEMPLATE_DIR / "exact.jinja")
-    assert kwargs == {}
-
-
-def test_ambiguous_minimal_supersets_raise(monkeypatch):
-    # Two rows of equal cardinality both ⊇ caller's roles → ambiguous.
-    monkeypatch.setattr(
-        Qwen3TITOTokenizer,
-        "SUPPORTED_TEMPLATES",
-        (
-            FixedTemplateRow(
-                allowed_roles=frozenset({"tool", "user"}),
-                template="a.jinja",
-            ),
-            FixedTemplateRow(
-                allowed_roles=frozenset({"tool", "system"}),
-                template="b.jinja",
-            ),
-        ),
-    )
-    with pytest.raises(ValueError, match="Ambiguous fixed-template registration"):
-        resolve_fixed_chat_template(TITOTokenizerType.QWEN3, ["tool"])
-
-
-def test_other_tito_model_rows_ignored(monkeypatch):
-    # Rows for a different tito_model never participate in the match — when
-    # the requested family has nothing registered, the resolver must throw.
-    monkeypatch.setattr(Qwen3TITOTokenizer, "SUPPORTED_TEMPLATES", ())
-    monkeypatch.setattr(
-        Qwen35TITOTokenizer,
-        "SUPPORTED_TEMPLATES",
-        (
-            FixedTemplateRow(
-                allowed_roles=frozenset({"tool"}),
-                template="qwen35.jinja",
-            ),
-        ),
-    )
-    with pytest.raises(ValueError, match="No SUPPORTED_TEMPLATES row registered"):
-        resolve_fixed_chat_template(TITOTokenizerType.QWEN3, ["tool"])
-
-
-def test_kwargs_only_row_returns_none_path_and_kwargs(monkeypatch):
-    # A row with template=None registers a kwargs-only fix (HF native + kwargs
-    # override).  Resolver returns (None, kwargs) so caller can keep the HF
-    # template and merge the kwargs.
-    monkeypatch.setattr(
-        Qwen3TITOTokenizer,
-        "SUPPORTED_TEMPLATES",
-        (
-            FixedTemplateRow(
-                allowed_roles=frozenset({"tool", "user"}),
-                template=None,
-                extra_kwargs={"clear_thinking": False},
-            ),
-        ),
-    )
-    path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.QWEN3, ["tool", "user"])
-    assert path is None
-    assert kwargs == {"clear_thinking": False}
-
-
-def test_invalid_role_raises():
-    with pytest.raises(ValueError, match="Unknown roles"):
-        resolve_fixed_chat_template(TITOTokenizerType.QWEN3, ["tool", "users"])
+    _path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.QWEN3)
+    kwargs["clear_thinking"] = True
+    assert Qwen3TITOTokenizer.FIXED_TEMPLATE.extra_kwargs == {"clear_thinking": False}

@@ -982,7 +982,7 @@ class MultiRoleSequenceTrajectory:
     """sys, user, asst+tool, tool, user2, asst+tool, system_reminder, tool, asst-final.
 
     Fills the {thinking=False, append_roles={tool, user, system}} matrix cell
-    that GLM47's tool+user+system SUPPORTED_TEMPLATES row otherwise has no
+    that GLM47's tool+user+system append configuration otherwise has no
     fixture for. Cuts exercise three boundaries: tool-append (N=3), user-after-tool
     (N=4), system-after-asst (N=6). Cuts at N=5/N=7/N=8 are intentionally not
     listed — they only exercise generation-prompt-only or repeat tool-append
