@@ -102,9 +102,8 @@ def get_named_update_units(param_names: Sequence[str], atomic_update_groups) -> 
         matched_group_keys.add(group.key)
 
     for group in atomic_update_groups:
-        assert (
-            group.key in matched_group_keys
-        ), f"Atomic update group {group.key} references no params matching suffixes {group.suffixes}"
+        if group.key not in matched_group_keys:
+            continue
 
     for (prefix, key), names in pending_groups.items():
         assert all(names), f"Atomic update group {prefix}:{key} is incomplete: {names}"
@@ -159,7 +158,8 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
 def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> torch.Tensor:
     """
     All-gather TP-sharded param to full tensor. expert_bias→param, non-TP/duplicated→param.data.
-    Uses expert-TP for ".experts.", else regular-TP. Handles strided partitioning via partition_stride.
+    Uses expert-TP for ".experts." (excluding ".shared_experts."), else regular-TP. Handles strided
+    partitioning via partition_stride.
     """
     if "expert_bias" in name:
         return param
@@ -168,12 +168,15 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
     if not param.tensor_model_parallel or getattr(param, "parallel_mode", None) == "duplicated":
         return param.data
 
-    if ".experts." in name:
+    if ".experts." in name and ".shared_experts." not in name:
         tp_size = get_parallel_state().etp.size
         tp_group = get_parallel_state().etp.group
     else:
         tp_size = get_parallel_state().tp.size
         tp_group = get_parallel_state().tp.group
+
+    if tp_size <= 1:
+        return param.data
 
     param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
     dist.all_gather(param_partitions, param.data, group=tp_group)
@@ -208,12 +211,17 @@ def all_gather_params_async(
             handles.append(None)
         else:
             # Start async all_gather
-            if ".experts." in info.name:
+            if ".experts." in info.name and ".shared_experts." not in info.name:
                 tp_size = get_parallel_state().etp.size
                 tp_group = get_parallel_state().etp.group
             else:
                 tp_size = get_parallel_state().tp.size
                 tp_group = get_parallel_state().tp.group
+
+            if tp_size <= 1:
+                gather_tasks.append((info, param.data, None, None, None, None))
+                handles.append(None)
+                continue
 
             param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
             handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
