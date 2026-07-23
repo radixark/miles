@@ -7,7 +7,6 @@ from argparse import Namespace
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from types import TracebackType
 from typing import Any
 
@@ -158,17 +157,14 @@ def start_mooncake_master_if_needed(args: Namespace) -> MooncakeMasterHandle | N
     if init_kwargs.get("master_server_address") or os.getenv("MOONCAKE_MASTER"):
         return None
 
-    rpc_port = _find_free_port()
-    metrics_port = _find_free_port()
-    log_path = Path(f"/tmp/miles_mooncake_master_{rpc_port}.log")
-    with log_path.open("wb") as log_file:
-        process = subprocess.Popen(
-            ["mooncake_master", "--rpc_port", str(rpc_port), "--metrics_port", str(metrics_port)],
-            stdout=log_file,
-            stderr=log_file,
-        )
-    _wait_port_ready(port=rpc_port, process=process, log_path=log_path)
-    return MooncakeMasterHandle(address=f"{_local_hostname()}:{rpc_port}", process=process)
+    port = _find_free_port()
+    process = subprocess.Popen(
+        ["mooncake_master", "--port", str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    _wait_port_ready(port=port)
+    return MooncakeMasterHandle(address=f"{_local_hostname()}:{port}", process=process)
 
 
 def _find_free_port() -> int:
@@ -177,16 +173,14 @@ def _find_free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _wait_port_ready(*, port: int, process: subprocess.Popen, log_path: Path, timeout_seconds: float = 30.0) -> None:
+def _wait_port_ready(*, port: int, timeout_seconds: float = 30.0) -> None:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError(f"mooncake_master exited with code {process.returncode}; see {log_path}")
         with socket.socket() as sock:
             if sock.connect_ex(("127.0.0.1", port)) == 0:
                 return
         time.sleep(0.5)
-    raise RuntimeError(f"mooncake_master did not become ready on port {port}; see {log_path}")
+    raise RuntimeError(f"mooncake_master did not become ready on port {port}")
 
 
 # ========================= mooncake backend ========================
