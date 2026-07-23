@@ -84,11 +84,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         # never leave it. Runs even when the agent function failed, like the old
         # collect_records; a collect failure (422/5xx/timeout) raises loudly.
         logger.debug(f"{log_prefix} Calling collect_samples...")
-        result = await tracer.collect_samples(
-            input.sample,
-            multi_samples=input.args.generate_multi_samples,
-            max_seq_len=max_seq_len,
-        )
+        result = await tracer.collect_samples(input.sample, max_seq_len=max_seq_len)
         logger.debug(
             f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
             f"total_time={time.monotonic()-t_start:.1f}s"
@@ -101,7 +97,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             logger.warning("No model calls recorded for sample")
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
-        return GenerateFnOutput(samples=sample)
+        return GenerateFnOutput(samples=[sample])
 
     samples = result.samples
     for s in samples:
@@ -109,25 +105,18 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     # If the agent function reports wall-clock time spent outside policy generation
     # (env/tool steps), surface it on Sample.non_generation_time so throughput
-    # accounting subtracts it (applied to every returned sample, merged or per-turn).
+    # accounting subtracts it (applied to every returned sample).
     ngt = ((agent_metadata or {}).get("agent_metrics") or {}).get("total_tool_time")
     if ngt is not None:
         for s in samples:
             s.non_generation_time = ngt
 
-    if not input.args.generate_multi_samples:
-        # The server merged already; unwrap to a scalar Sample — downstream
-        # forks on isinstance(sample, list) to pick the multi-samples branch.
-        (merged,) = samples
-        merged.metadata.update(result.session_metadata)
-        return GenerateFnOutput(samples=merged)
     samples[-1].metadata.update(result.session_metadata)
     return GenerateFnOutput(samples=samples)
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--custom-agent-function-path", type=str)
-    parser.add_argument("--generate-multi-samples", action="store_true", default=False)
     parser.add_argument(
         "--max-seq-len",
         type=int,

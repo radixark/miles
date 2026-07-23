@@ -6,17 +6,8 @@ from miles.utils.types import Sample
 __all__ = ["check_reward_nonzero_std", "check_no_aborted"]
 
 
-def check_reward_nonzero_std(args, samples: list[Sample], **kwargs):
-    rewards = [sample.get_reward_value(args) for sample in samples]
-    keep = torch.tensor(rewards, dtype=torch.float64).std() > 1e-8
-    return DynamicFilterOutput(
-        keep=keep,
-        reason=None if keep else f"zero_std_{round(rewards[0], 1)}",
-    )
-
-
-def _flatten_samples(samples):
-    """Flatten samples that may contain nested lists (from --generate-multi-samples)."""
+def _flatten_samples(samples: list[Sample | list[Sample]]):
+    """Flatten a group whose elements are `Sample` or `list[Sample]` (generate-function dependent)."""
     for s in samples:
         if isinstance(s, list):
             yield from s
@@ -24,7 +15,16 @@ def _flatten_samples(samples):
             yield s
 
 
-def check_no_aborted(args, samples: list[Sample], **kwargs):
+def check_reward_nonzero_std(args, samples: list[Sample | list[Sample]], **kwargs):
+    rewards = [sample.get_reward_value(args) for sample in _flatten_samples(samples)]
+    keep = torch.tensor(rewards, dtype=torch.float64).std() > 1e-8
+    return DynamicFilterOutput(
+        keep=keep,
+        reason=None if keep else f"zero_std_{round(rewards[0], 1)}",
+    )
+
+
+def check_no_aborted(args, samples: list[Sample | list[Sample]], **kwargs):
     """Reject entire group if any sample was aborted (e.g. env timeout, Docker crash)."""
     if any(s.status == Sample.Status.ABORTED for s in _flatten_samples(samples)):
         return DynamicFilterOutput(keep=False, reason="group_has_aborted")

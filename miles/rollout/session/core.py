@@ -140,7 +140,7 @@ class SessionCore:
             content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
         )
 
-    async def collect_samples(self, session_id: str, *, multi_samples: bool, max_seq_len: int | None) -> Response:
+    async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
         """Assemble training Samples from this session's records, on the server.
 
         Runs synchronously on the server loop — no await between reading the
@@ -173,8 +173,9 @@ class SessionCore:
                 samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
             if not samples:
                 return _samples_response(encode_samples_reply([], metadata, empty_reason="all_truncated"))
-            if not multi_samples:
-                samples = [merge_samples(samples, tokenizer)]
+            # TODO: today the whole session is one linear run and merge must succeed;
+            # splitting (compaction/subagent) is a separate message-level operation, not built yet.
+            samples = [merge_samples(samples, tokenizer)]
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
         return _samples_response(encode_samples_reply(samples, metadata))
