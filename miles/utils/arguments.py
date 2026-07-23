@@ -2748,6 +2748,21 @@ def miles_validate_args(args):
             "tree serving."
         )
 
+    if args.use_session_server == "v2":
+        unsupported = [
+            flag
+            for enabled, flag in (
+                (args.group_rm, "--group-rm"),
+                (args.partial_rollout, "--partial-rollout"),
+                (args.recompute_logprobs_via_prefill, "--recompute-logprobs-via-prefill"),
+            )
+            if enabled
+        ]
+        if unsupported:
+            raise ValueError(
+                f"--use-session-server v2 does not support {', '.join(unsupported)}; v2 returns list[Sample]"
+            )
+
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
             f"--tito-model={args.tito_model} requires --use-session-server; "

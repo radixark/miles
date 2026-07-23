@@ -261,6 +261,32 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
         miles_validate_args(args)
 
 
+class TestSessionServerV2Validation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    @pytest.mark.parametrize(
+        ("extra", "flag"),
+        [
+            (["--group-rm"], "--group-rm"),
+            (["--partial-rollout"], "--partial-rollout"),
+            (
+                ["--true-on-policy-mode", "--recompute-logprobs-via-prefill"],
+                "--recompute-logprobs-via-prefill",
+            ),
+        ],
+    )
+    def test_rejects_unsupported_list_consumers(self, extra, flag):
+        args = self._parse(["--use-session-server", "v2", *extra])
+
+        with pytest.raises(ValueError) as exc_info:
+            miles_validate_args(args)
+
+        assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
+
+
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
