@@ -1,5 +1,5 @@
 import os
-from abc import ABC
+from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -77,12 +77,15 @@ def validate_object_store_args(args: Namespace) -> None:
 
 
 class BaseObjectStore(ABC):
+    @abstractmethod
     def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
         raise NotImplementedError
 
+    @abstractmethod
     def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
         raise NotImplementedError
 
+    @abstractmethod
     def remove(self, ref: StoreObjectRef) -> None:
         raise NotImplementedError
 
