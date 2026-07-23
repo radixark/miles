@@ -54,7 +54,7 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
     )
 
 
-def _gpu_uuids(gpu_ids: list[int]) -> list:
+def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
     """Best-effort NVML UUIDs so the dashboard can reconcile GPU index
     spaces across processes; None entries when NVML is unavailable."""
     try:
@@ -153,7 +153,7 @@ class SGLangEngine(RayActor):
             url=f"http://{self.server_host}:{self.server_port}",
             node_ip=get_current_node_ip(),
             gpu_ids=gpu_ids,
-            gpu_uuids=_gpu_uuids(gpu_ids),
+            gpu_uuids=_get_gpu_uuids(gpu_ids),
             worker_type=self.worker_type,
             node_rank=self.node_rank,
         )
