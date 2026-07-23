@@ -199,7 +199,7 @@ def _field_schemas_for_value(value: Any, value_spec: dict[str, ValueSpec] | None
 
 
 def _mooncake_store_config(init_kwargs: dict[str, Any], *, contribute_segment: bool) -> dict[str, Any]:
-    config = {
+    return {
         "local_hostname": str(
             init_kwargs.get("local_hostname") or os.getenv("MOONCAKE_LOCAL_HOSTNAME") or _local_hostname()
         ),
@@ -218,7 +218,6 @@ def _mooncake_store_config(init_kwargs: dict[str, Any], *, contribute_segment: b
             else 0
         ),
     }
-    return config
 
 
 def _parse_size(value: Any) -> int:
