@@ -1,6 +1,10 @@
 default_language_version:
   python: python3
 
+# Vendored upstream modules stay byte-diffable against their source; keep
+# formatters and linters away so upstream-tracking diffs remain minimal.
+exclude: '^miles/utils/chat_template_utils/templates/encoding_dsv(4|32)\.py$'
+
 ci:
   autofix_prs: true
   autoupdate_commit_msg: '[pre-commit.ci] pre-commit suggestions'
