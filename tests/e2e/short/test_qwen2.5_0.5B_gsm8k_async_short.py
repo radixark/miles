@@ -1,4 +1,6 @@
+import json
 import os
+import shlex
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
@@ -13,6 +15,14 @@ MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4 if FEW_GPU else 8
 
+MOONCAKE_MASTER_PORT = 50051
+MOONCAKE_STORE_INIT_KWARGS = {
+    "protocol": "tcp",
+    "master_server_address": f"127.0.0.1:{MOONCAKE_MASTER_PORT}",
+    "global_segment_size": "2gb",
+    "local_buffer_size": "2gb",
+}
+
 
 def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
@@ -20,8 +30,20 @@ def prepare():
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
+def start_mooncake_master():
+    U.exec_command(
+        "pgrep -x mooncake_master >/dev/null || "
+        f"(setsid mooncake_master --port {MOONCAKE_MASTER_PORT} > /tmp/mooncake_master.log 2>&1 &)"
+    )
+
+
 def execute():
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
+
+    rollout_data_transport_args = (
+        "--rollout-data-transport mooncake "
+        f"--mooncake-store-init-kwargs {shlex.quote(json.dumps(MOONCAKE_STORE_INIT_KWARGS))} "
+    )
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -103,6 +125,7 @@ def execute():
 
     train_args = (
         f"{ckpt_args} "
+        f"{rollout_data_transport_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
@@ -114,6 +137,8 @@ def execute():
         f"{fault_tolerance_args} "
         f"{misc_args} "
     )
+
+    start_mooncake_master()
 
     U.execute_train(
         train_args=train_args,
