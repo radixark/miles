@@ -1,7 +1,4 @@
 import os
-import socket
-import subprocess
-import time
 from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections.abc import Callable
@@ -77,16 +74,6 @@ def init_instance(args: Namespace, *, contribute_segment: bool | None = None) ->
     return _INSTANCE
 
 
-async def init_driver_instance(args: Namespace, *, rollout_manager: Any) -> "BaseObjectStore":
-    master_address = await rollout_manager.get_object_store_master_address.remote()
-    if master_address is not None:
-        args.mooncake_store_init_kwargs = {
-            **(args.mooncake_store_init_kwargs or {}),
-            "master_server_address": master_address,
-        }
-    return init_instance(args, contribute_segment=False)
-
-
 def get_instance() -> "BaseObjectStore":
     assert _INSTANCE is not None, "object store instance is not initialized; call init_instance first"
     return _INSTANCE
@@ -139,48 +126,6 @@ class RayObjectStore(BaseObjectStore):
 
 def _release_noop(value: Any) -> None:
     pass
-
-
-# ========================= mooncake master =========================
-
-
-@dataclass(frozen=True)
-class MooncakeMasterHandle:
-    address: str
-    process: subprocess.Popen
-
-
-def start_mooncake_master_if_needed(args: Namespace) -> MooncakeMasterHandle | None:
-    if ObjectStoreBackend(args.rollout_data_transport) != ObjectStoreBackend.MOONCAKE:
-        return None
-    init_kwargs: dict[str, Any] = args.mooncake_store_init_kwargs or {}
-    if init_kwargs.get("master_server_address") or os.getenv("MOONCAKE_MASTER"):
-        return None
-
-    port = _find_free_port()
-    process = subprocess.Popen(
-        ["mooncake_master", "--port", str(port)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    _wait_port_ready(port=port)
-    return MooncakeMasterHandle(address=f"{_local_hostname()}:{port}", process=process)
-
-
-def _find_free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("", 0))
-        return sock.getsockname()[1]
-
-
-def _wait_port_ready(*, port: int, timeout_seconds: float = 30.0) -> None:
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        with socket.socket() as sock:
-            if sock.connect_ex(("127.0.0.1", port)) == 0:
-                return
-        time.sleep(0.5)
-    raise RuntimeError(f"mooncake_master did not become ready on port {port}")
 
 
 # ========================= mooncake backend ========================

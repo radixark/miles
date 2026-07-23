@@ -58,13 +58,6 @@ class RolloutManager:
         self.args = args
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
-
-        self._mooncake_master = object_store.start_mooncake_master_if_needed(args)
-        if self._mooncake_master is not None:
-            args.mooncake_store_init_kwargs = {
-                **(args.mooncake_store_init_kwargs or {}),
-                "master_server_address": self._mooncake_master.address,
-            }
         object_store.init_instance(args, contribute_segment=False)
 
         data_source_cls = load_function(self.args.data_source_path)
@@ -114,9 +107,6 @@ class RolloutManager:
     def get_router_address(self) -> tuple[str, int]:
         return self.args.sglang_router_ip, self.args.sglang_router_port
 
-    def get_object_store_master_address(self) -> str | None:
-        return None if self._mooncake_master is None else self._mooncake_master.address
-
     def dispose(self):
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
@@ -125,8 +115,6 @@ class RolloutManager:
             self._metric_checker.dispose()
         for monitor in self._health_monitors:
             monitor.stop()
-        if self._mooncake_master is not None:
-            self._mooncake_master.process.terminate()
 
     # -------------------------- data generation -----------------------------
 
