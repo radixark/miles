@@ -233,3 +233,66 @@ async def test_post_bytes_no_retry_transport_error_propagates_once(monkeypatch):
     with pytest.raises(ConnectionError, match="boom"):
         await post_bytes_no_retry("http://x/samples", {}, timeout=5)
     assert client.post_count == 1
+
+
+# ── v2 wire (--use-session-server v2): metadata channel + extended fields ──
+
+
+@pytest.mark.asyncio
+async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(monkeypatch):
+    """v2 pin: the collect body gains the "metadata" key only when the caller
+    passes agent metadata, and the v2 field tuple overlays reward + merged
+    metadata; the v1 pin above (`payload == {"max_seq_len": 7}`) stays."""
+    from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2
+
+    sample = Sample()
+    sample.tokens = [1, 2, 10]
+    sample.response = "r"
+    sample.response_length = 1
+    sample.loss_mask = [1]
+    sample.rollout_log_probs = [-0.5]
+    sample.status = Sample.Status.COMPLETED
+    sample.reward = 0.75
+    sample.metadata = {"leaf": {"node_id": 1}}
+    payload = encode_samples_reply([sample], {"max_trim_tokens": 1}, None, fields=COMPUTED_FIELDS_V2)
+
+    seen = []
+
+    async def fake_post_bytes(url, body, *, timeout):
+        seen.append(body)
+        return payload
+
+    async def fake_post(url, body, action="post"):
+        assert action == "delete"
+        return {}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    tracer = OpenAIEndpointTracer(
+        router_url="http://127.0.0.1:12345", session_id="sid-1", samples_wire_fields=COMPUTED_FIELDS_V2
+    )
+    input_sample = Sample()
+    input_sample.metadata = {"env": "keep-me"}
+    result = await tracer.collect_samples(input_sample, max_seq_len=7, agent_metadata={"rewards": {"resp-1": 0.75}})
+
+    assert seen == [{"max_seq_len": 7, "metadata": {"rewards": {"resp-1": 0.75}}}]
+    (decoded,) = result.samples
+    assert decoded.reward == 0.75
+    assert decoded.metadata == {"env": "keep-me", "leaf": {"node_id": 1}}
+
+
+@pytest.mark.asyncio
+async def test_create_selects_wire_fields_by_session_server_version(monkeypatch):
+    from miles.rollout.session.samples.codec import COMPUTED_FIELDS, COMPUTED_FIELDS_V2
+
+    async def fake_post(url: str, payload: dict, action: str = "post"):
+        return {"session_id": "sid-x"}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    def args(version):
+        return SimpleNamespace(session_server_ip="127.0.0.1", session_server_ports=[7000], use_session_server=version)
+
+    assert (await OpenAIEndpointTracer.create(args(True))).samples_wire_fields == COMPUTED_FIELDS
+    assert (await OpenAIEndpointTracer.create(args("v2"))).samples_wire_fields == COMPUTED_FIELDS_V2

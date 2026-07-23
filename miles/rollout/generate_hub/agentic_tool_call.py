@@ -84,7 +84,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         # never leave it. Runs even when the agent function failed, like the old
         # collect_records; a collect failure (422/5xx/timeout) raises loudly.
         logger.debug(f"{log_prefix} Calling collect_samples...")
-        result = await tracer.collect_samples(input.sample, max_seq_len=max_seq_len)
+        use_v2 = getattr(input.args, "use_session_server", None) == "v2"
+        result = await tracer.collect_samples(
+            input.sample, max_seq_len=max_seq_len, agent_metadata=agent_metadata if use_v2 else None
+        )
         logger.debug(
             f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
             f"total_time={time.monotonic()-t_start:.1f}s"
@@ -100,8 +103,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         return GenerateFnOutput(samples=[sample])
 
     samples = result.samples
-    for s in samples:
-        s.metadata.update(agent_metadata or {})
+    if not use_v2:
+        # v1: the agent's metadata is applied driver-side. Under v2 it traveled
+        # through collect_samples and came back applied by the server-side
+        # merge (per-sample metadata/reward on the wire) — no overlay here.
+        for s in samples:
+            s.metadata.update(agent_metadata or {})
 
     # If the agent function reports wall-clock time spent outside policy generation
     # (env/tool steps), surface it on Sample.non_generation_time so throughput
@@ -111,7 +118,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         for s in samples:
             s.non_generation_time = ngt
 
-    samples[-1].metadata.update(result.session_metadata)
+    if not use_v2:
+        samples[-1].metadata.update(result.session_metadata)
     return GenerateFnOutput(samples=samples)
 
 
