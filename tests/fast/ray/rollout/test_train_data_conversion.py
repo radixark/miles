@@ -15,6 +15,7 @@ from miles.ray.rollout.train_data_conversion import (
     split_train_data_by_dp,
     split_train_data_by_dp_raw,
 )
+from miles.utils import object_store
 from miles.utils.types import Sample
 
 
@@ -391,6 +392,11 @@ class TestPostProcessRewardsProperties:
 
 
 class TestSplitTrainDataByDp:
+    @pytest.fixture(autouse=True)
+    def _init_object_store(self):
+        """split_train_data_by_dp puts through the object store singleton."""
+        object_store.init_instance(make_args())
+
     def test_strided_partition_when_balance_data_off(self):
         args = make_args(balance_data=False)
         data = {

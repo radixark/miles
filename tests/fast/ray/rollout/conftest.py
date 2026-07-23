@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 import ray
 
+from miles.utils import object_store
 from miles.utils.types import Sample
 
 
@@ -46,6 +47,10 @@ def make_args(**overrides: Any) -> Namespace:
         disable_rollout_trim_samples=False,
         balance_data=False,
         delay_split_train_data_by_dp=False,
+        # rollout data transport
+        rollout_data_transport="object-store",
+        mooncake_store_init_kwargs=None,
+        mooncake_rollout_replica_num=1,
         # advantage / reward
         advantage_estimator="grpo",
         rewards_normalization=True,
@@ -213,6 +218,12 @@ def ray_actor_baseline(ray_local_mode):
     yield
     after = _count()
     assert after <= before, f"Ray actor leaked: before={before} after={after}"
+
+
+@pytest.fixture(autouse=True)
+def _autouse_reset_object_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate the process-wide object store singleton between tests."""
+    monkeypatch.setattr(object_store, "_INSTANCE", None)
 
 
 @pytest.fixture(autouse=True)
