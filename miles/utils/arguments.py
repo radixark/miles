@@ -493,6 +493,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--rollout-group-timeout-s",
+                type=float,
+                default=1800.0,
+                help=(
+                    "Hard upper bound (seconds) on a single group-generation task in the fully "
+                    "async worker. A group that exceeds this deadline has its samples marked "
+                    "Sample.Status.ABORTED and is returned to the data buffer for retry via the "
+                    "existing aborted-requeue path, preventing stuck trials from owning a "
+                    "concurrency slot forever. Set to None (or <= 0) to disable."
+                ),
+            )
+            parser.add_argument(
                 "--custom-generate-function-path",
                 type=str,
                 default=None,
