@@ -31,7 +31,7 @@ StoreObjectRef = Box
 
 
 class ObjectStoreBackend(Enum):
-    RAY = "object-store"
+    RAY = "ray"
     MOONCAKE = "mooncake"
 
 
@@ -80,7 +80,7 @@ def get_instance() -> "BaseObjectStore":
 
 
 def _create_instance(args: Namespace, *, contribute_segment: bool | None) -> "BaseObjectStore":
-    backend = ObjectStoreBackend(args.rollout_data_transport)
+    backend = ObjectStoreBackend(args.object_store_backend)
     if backend == ObjectStoreBackend.MOONCAKE:
         if contribute_segment is None:
             contribute_segment = _default_contribute_segment()
@@ -136,9 +136,9 @@ class MooncakeObjectStore(BaseObjectStore):
         _check_mooncake_available()
 
         self._init_kwargs: dict[str, Any] = args.mooncake_store_init_kwargs or {}
-        self._replica_num: int = args.mooncake_rollout_replica_num
+        self._replica_num: int = args.mooncake_replica_num
         if self._replica_num < 1:
-            raise ValueError("--mooncake-rollout-replica-num must be >= 1")
+            raise ValueError("--mooncake-replica-num must be >= 1")
 
         store = MooncakeDistributedStore()
         setup_error = store.setup(_mooncake_store_config(self._init_kwargs, contribute_segment=contribute_segment))
@@ -177,7 +177,7 @@ class MooncakeObjectStore(BaseObjectStore):
 def _check_mooncake_available() -> None:
     if not _MOONCAKE_AVAILABLE:
         raise ImportError(
-            "rollout-data-transport='mooncake' requires the mooncake package"
+            "object-store-backend='mooncake' requires the mooncake package"
         ) from _MOONCAKE_IMPORT_ERROR
 
 

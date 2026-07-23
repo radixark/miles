@@ -44,8 +44,8 @@ def start_mooncake_master():
 def execute():
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
 
-    rollout_data_transport_args = (
-        "--rollout-data-transport mooncake "
+    object_store_args = (
+        "--object-store-backend mooncake "
         f"--mooncake-store-init-kwargs {shlex.quote(json.dumps(MOONCAKE_STORE_INIT_KWARGS))} "
     )
 
@@ -129,7 +129,7 @@ def execute():
 
     train_args = (
         f"{ckpt_args} "
-        f"{rollout_data_transport_args} "
+        f"{object_store_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "

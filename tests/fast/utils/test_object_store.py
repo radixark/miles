@@ -73,7 +73,7 @@ class TestRayObjectStore:
 
     def test_roundtrip_and_noop_remove(self):
         """RayObjectStore puts/gets a rollout dict and remove is a no-op."""
-        args = Namespace(rollout_data_transport="object-store")
+        args = Namespace(object_store_backend="ray")
         store = object_store.init_instance(args)
         assert isinstance(store, object_store.RayObjectStore)
 
@@ -109,14 +109,14 @@ class TestMooncakeObjectStore:
 
     def _make_args(self, port: int) -> Namespace:
         return Namespace(
-            rollout_data_transport="mooncake",
+            object_store_backend="mooncake",
             mooncake_store_init_kwargs={
                 "protocol": "tcp",
                 "master_server_address": f"127.0.0.1:{port}",
                 "global_segment_size": "64mb",
                 "local_buffer_size": "64mb",
             },
-            mooncake_rollout_replica_num=1,
+            mooncake_replica_num=1,
         )
 
     def test_roundtrip_release_and_remove(self, mooncake_master_port: int):
@@ -138,6 +138,6 @@ class TestMooncakeObjectStore:
     def test_replica_num_below_one_rejected(self, mooncake_master_port: int):
         """Constructing the store with replica num < 1 raises ValueError."""
         args = self._make_args(mooncake_master_port)
-        args.mooncake_rollout_replica_num = 0
+        args.mooncake_replica_num = 0
         with pytest.raises(ValueError):
             object_store.init_instance(args)

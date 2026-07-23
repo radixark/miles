@@ -436,11 +436,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--rollout-data-transport",
+                "--object-store-backend",
                 type=str,
                 choices=tuple(backend.value for backend in ObjectStoreBackend),
-                default="object-store",
-                help="Transport for rollout data refs sent from rollout manager to trainer.",
+                default="ray",
+                help="Backend of the object store used to pass data (e.g. rollout data) between processes.",
             )
             parser.add_argument(
                 "--mooncake-store-init-kwargs",
@@ -449,10 +449,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="JSON kwargs used to initialize MooncakeDistributedStore for rollout transfer.",
             )
             parser.add_argument(
-                "--mooncake-rollout-replica-num",
+                "--mooncake-replica-num",
                 type=int,
                 default=1,
-                help="Number of Mooncake memory replicas for each rollout object.",
+                help="Number of Mooncake memory replicas for each stored object.",
             )
 
             # sampling

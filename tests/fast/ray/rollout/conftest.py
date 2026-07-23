@@ -47,10 +47,10 @@ def make_args(**overrides: Any) -> Namespace:
         disable_rollout_trim_samples=False,
         balance_data=False,
         delay_split_train_data_by_dp=False,
-        # rollout data transport
-        rollout_data_transport="object-store",
+        # object store
+        object_store_backend="ray",
         mooncake_store_init_kwargs=None,
-        mooncake_rollout_replica_num=1,
+        mooncake_replica_num=1,
         # advantage / reward
         advantage_estimator="grpo",
         rewards_normalization=True,
