@@ -232,6 +232,7 @@
        "examples/retool",
        "examples/multi-agent",
        "examples/reproducibility",
+       "examples/glm47-flash-gsm8k",
        "examples/openhermes-sft"
       ]
      }
