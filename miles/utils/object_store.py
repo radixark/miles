@@ -151,8 +151,6 @@ class MooncakeObjectStore(BaseObjectStore):
             value,
             type="dict",
             namespace="miles",
-            partition="default",
-            stage="rollout",
             chunk_bytes=self._init_kwargs.get("chunk_bytes"),
             config=self._replicate_config(),
             field_schemas=_field_schemas_for_value(value, value_spec),
