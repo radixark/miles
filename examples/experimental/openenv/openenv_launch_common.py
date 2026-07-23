@@ -100,11 +100,15 @@ def optimizer_args() -> str:
     )
 
 
-def agent_args(tito_model: str) -> str:
-    """Agentic-rollout wiring. Only the TITO surface differs across models."""
+def agent_args(tito_model: str, daytona_sandboxes: bool = False) -> str:
+    """Agentic-rollout wiring. The TITO surface differs across models; the
+    agent function decides where episodes run — the shared env server by
+    default, Daytona sandboxes (openenv_daytona_agent_function)
+    when the launcher runs with openenv_tb2_tasks_dir set."""
+    agent_fn = "openenv_daytona_agent_function.run" if daytona_sandboxes else "openenv_agent_function.run"
     return (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
-        "--custom-agent-function-path openenv_agent_function.run "
+        f"--custom-agent-function-path {agent_fn} "
         "--custom-rm-path openenv_generate.reward_func "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         f"--tito-model {tito_model} "
@@ -150,7 +154,7 @@ def base_env_vars(args: LaunchArgs, script_dir: str, megatron_path: str, miles_r
 
 
 def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
-    """Add host-rewrite / per-task-Daytona env vars when the args request them."""
+    """Add host-rewrite / Daytona-sandbox env vars when the args request them."""
     if args.miles_host_ip:
         env["MILES_HOST_IP"] = args.miles_host_ip
     if args.router_external_host:
@@ -190,7 +194,7 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
             )
         else:
             raise ValueError(
-                "per-task Daytona mode needs an API key: put it in a file "
+                "the Daytona sandbox mode needs an API key: put it in a file "
                 f"({key_file}; DAYTONA_API_KEY_FILE overrides) or in the "
                 "environment as DAYTONA_API_KEY. Provision the file with:\n"
                 "  mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key"
@@ -203,21 +207,21 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
             import daytona  # noqa: F401
         except ImportError as e:
             raise RuntimeError(
-                "per-task Daytona mode needs the daytona SDK in the rollout "
+                "the Daytona sandbox mode needs the daytona SDK in the rollout "
                 "process's environment: pip install daytona "
                 "(or pip install -e '<OpenEnv>/envs/tbench2_env[daytona]')"
             ) from e
         # Same preflight for the env package the recipe bakes into each task
         # image. The import check catches a missing install; the source probe
         # catches an install that imports fine but lacks the server features
-        # the per-task leg scores through (canonical tests/test.sh evaluate,
+        # the sandbox leg scores through (canonical tests/test.sh evaluate,
         # TB2_WITHHOLD_TESTS) — that one would not even fail per-episode, it
         # would silently mis-score every episode.
         try:
             import tbench2_env
         except ImportError as e:
             raise RuntimeError(
-                "per-task Daytona mode needs tbench2_env in the rollout "
+                "the Daytona sandbox mode needs tbench2_env in the rollout "
                 "process's environment: pip install -e '<OpenEnv>/envs/tbench2_env' "
                 "from the pinned checkout in this directory's README"
             ) from e
@@ -225,7 +229,7 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
         src_text = server_src.read_text(encoding="utf-8") if server_src.is_file() else ""
         if "TB2_WITHHOLD_TESTS" not in src_text:
             raise RuntimeError(
-                "the installed tbench2_env server lacks the per-task sandbox "
+                "the installed tbench2_env server lacks the native-evaluate "
                 "contract (canonical test.sh scoring / TB2_WITHHOLD_TESTS): "
                 "install the pinned checkout from this directory's README, "
                 "not upstream main"
