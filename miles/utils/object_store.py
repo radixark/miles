@@ -3,9 +3,13 @@ from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import StrEnum
 from types import TracebackType
 from typing import Any
+
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
 
 import ray
 
