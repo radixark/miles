@@ -62,9 +62,7 @@ class TestFilterLongPromptMultimodal:
         mm_sample = _make_vlm_sample(tokenizer, processor, with_image=True)
         long_text_sample = Sample(prompt="word " * 500)
 
-        kept = filter_long_prompt(
-            [text_sample, mm_sample, long_text_sample], tokenizer, processor, max_length=400
-        )
+        kept = filter_long_prompt([text_sample, mm_sample, long_text_sample], tokenizer, processor, max_length=400)
         assert text_sample in kept
         assert mm_sample in kept
         assert long_text_sample not in kept
