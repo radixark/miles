@@ -165,7 +165,7 @@ def message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     return True
 
 
-_DEFAULT_APPEND_ROLES: list[str] = ["tool"]
+_DEFAULT_APPEND_ROLES: list[str] = ["tool", "user"]
 
 
 def assert_messages_append_only_with_allowed_role(
@@ -177,7 +177,7 @@ def assert_messages_append_only_with_allowed_role(
 
     The stored prefix must match exactly (compared by template-relevant keys),
     and any appended messages must have a role in *allowed_append_roles*
-    (default: ``{'tool'}``).
+    (default: ``{'tool', 'user'}``).
     """
     if not stored_messages:
         return

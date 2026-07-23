@@ -22,7 +22,7 @@ class ModelConfig:
     reasoning_parser: str
     tool_call_parser: str | None
     tito_model: str
-    allowed_append_roles: tuple[str, ...]
+    allowed_append_roles: tuple[str, ...] = ("tool", "user")
     num_gpus: int = 4
     tp_size: int = 1
     # sglang expert-parallel size.  MoE archs like DeepSeek V4 hit a fused-moe
