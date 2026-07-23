@@ -407,7 +407,7 @@ def run_all_checks(
 # layer.  This is necessary but not sufficient for production correctness —
 # production runs ``get_tito_tokenizer(...)`` and exercises ``merge_tokens``
 # (model-specific token-level boundary patches) plus
-# ``tokenize_additional_non_assistant`` (renders the complete appendix under a
+# ``tokenize_additional_messages`` (renders the complete appendix under a
 # synthetic ``[_DUMMY_SYSTEM, dummy_assistant]`` context, not the real history).
 #
 # The primitive below mirrors the production path: it instantiates the actual
@@ -554,13 +554,13 @@ def run_all_checks_via_tito(
 
     Per-case TITO rebuild: each (case, ``enable_thinking`` variant) gets a fresh
     TITO instance constructed with the merged kwargs, so the dummy-context
-    appendix render inside ``tokenize_additional_non_assistant`` sees the same
+    appendix render inside ``tokenize_additional_messages`` sees the same
     ``enable_thinking`` value as the reference render.  Construction is
     millisecond-level and runs ~50 times per CLI invocation; cheap.
 
     The caller is responsible for setting ``tokenizer.chat_template`` (e.g. via
     ``resolve_fixed_chat_template`` lookup or ``--template`` override) before
-    calling this — this function does not consult ``SUPPORTED_TEMPLATES``.
+    calling this — this function does not consult ``FIXED_TEMPLATE``.
     """
     if allowed_append_roles is None:
         allowed_append_roles = {"tool"}

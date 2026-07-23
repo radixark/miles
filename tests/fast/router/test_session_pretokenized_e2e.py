@@ -43,25 +43,25 @@ FIXED_TEMPLATE_SMOKE_CONFIGS: tuple[FixedTemplateSmokeConfig, ...] = (
     FixedTemplateSmokeConfig(
         name="qwen3-fixed",
         hf_checkpoint="Qwen/Qwen3-0.6B",
-        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWEN3, ["tool"])[0],
+        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWEN3)[0],
         tito_model=TITOTokenizerType.QWEN3.value,
     ),
     FixedTemplateSmokeConfig(
         name="qwen3.5-fixed",
         hf_checkpoint="Qwen/Qwen3.5-0.8B",
-        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWEN35, ["tool"])[0],
+        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWEN35)[0],
         tito_model=TITOTokenizerType.QWEN35.value,
     ),
     FixedTemplateSmokeConfig(
         name="qwen3-thinking2507-fixed",
         hf_checkpoint="Qwen/Qwen3-4B-Thinking-2507",
-        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWENNEXT, ["tool"])[0],
+        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWENNEXT)[0],
         tito_model=TITOTokenizerType.QWENNEXT.value,
     ),
     FixedTemplateSmokeConfig(
         name="qwen3-next-thinking-fixed",
         hf_checkpoint="Qwen/Qwen3-Next-80B-A3B-Thinking",
-        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWENNEXT, ["tool"])[0],
+        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWENNEXT)[0],
         tito_model=TITOTokenizerType.QWENNEXT.value,
     ),
 )

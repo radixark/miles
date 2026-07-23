@@ -14,7 +14,7 @@ TestMergeTokensBoundary
     manipulation — not about template rendering.
 
     Why synthetic IDs?  merge_tokens is: ``prefix + [boundary fix] + incremental``.
-    The incremental part comes from tokenize_additional_non_assistant (tested
+    The incremental part comes from tokenize_additional_messages (tested
     separately); boundary logic depends only on the last token of the prefix.
     Synthetic IDs isolate this and make failures trivially diagnosable.
 
@@ -26,7 +26,7 @@ TestMergeTokensBoundary
     - Default: plain concatenation (no boundary handling).
 
 TestTokenizeAdditional
-    Behavioral tests for tokenize_additional_non_assistant — the single
+    Behavioral tests for tokenize_additional_messages — the single
     synthetic-prefix diff that computes incremental token IDs for the complete
     appended non-assistant suffix.
 
@@ -84,7 +84,7 @@ _TOK_CACHE: dict[tuple[str, str | None], AutoTokenizer] = {}
 
 
 def _get_tokenizer(model_id: str, tito_type: TITOTokenizerType | None = None) -> AutoTokenizer:
-    chat_template_path = resolve_fixed_chat_template(tito_type, ["tool"])[0] if tito_type is not None else None
+    chat_template_path = resolve_fixed_chat_template(tito_type)[0] if tito_type is not None else None
     cache_key = (model_id, chat_template_path)
     if cache_key not in _TOK_CACHE:
         _TOK_CACHE[cache_key] = load_tokenizer(
@@ -285,8 +285,9 @@ class TestDeepSeekV32IncrementalAppend:
         [
             [{"role": "user", "content": "next question"}],
             [{"role": "tool", "content": "out", "tool_call_id": "c0"}],
+            [{"role": "assistant", "content": "injected"}, {"role": "user", "content": "next"}],
         ],
-        ids=["user", "tool"],
+        ids=["user", "tool", "assistant_then_user"],
     )
     def test_incremental_equals_real_history_suffix(self, tmp_path, appended):
         (tmp_path / "config.json").write_text(json.dumps({"model_type": "deepseek_v32"}), encoding="utf-8")
@@ -294,7 +295,7 @@ class TestDeepSeekV32IncrementalAppend:
         tito = DeepSeekV32TITOTokenizer(
             tokenizer,
             chat_template_kwargs={"drop_thinking": False},
-            allowed_append_roles=["tool", "user"],
+            allowed_append_roles=["tool", "user", "assistant"],
         )
         old = [
             {"role": "user", "content": "q"},
@@ -307,7 +308,7 @@ class TestDeepSeekV32IncrementalAppend:
         ]
         new = old + appended
 
-        incremental = tito.tokenize_additional_non_assistant(old, new)
+        incremental = tito.tokenize_additional_messages(old, new)
 
         text_old = tito.apply_chat_template(old, add_generation_prompt=False)
         text_new = tito.apply_chat_template(new, add_generation_prompt=True)
@@ -333,7 +334,7 @@ class TestMergeTokensBoundary:
 
     def test_qwen3_inserts_newline_after_im_end(self, qwen3_tito: Qwen3TITOTokenizer):
         """Model stops at <|im_end|> without trailing \\n; merge_tokens inserts it."""
-        incremental = qwen3_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
+        incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
         im_end = qwen3_tito._im_end_id
         nl = qwen3_tito._newline_id
 
@@ -342,7 +343,7 @@ class TestMergeTokensBoundary:
 
     def test_qwen3_no_newline_otherwise(self, qwen3_tito: Qwen3TITOTokenizer):
         """No insertion when prefix does not end with <|im_end|>."""
-        incremental = qwen3_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
+        incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
         result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
         assert result == [100, 200, 300] + incremental
 
@@ -350,19 +351,19 @@ class TestMergeTokensBoundary:
 
     def test_glm47_strips_observation(self, glm47_tito: GLM47TITOTokenizer):
         """Model emits <|observation|> as stop token; merge_tokens strips the duplicate."""
-        incremental = glm47_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
+        incremental = glm47_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
         result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, glm47_tito._observation_id], _BND_TOOLS)
         assert result == [100, 200] + incremental
 
     def test_glm47_strips_user(self, glm47_tito: GLM47TITOTokenizer):
         """<|user|> is also an ambiguous boundary — stripped the same way."""
-        incremental = glm47_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
+        incremental = glm47_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
         result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, glm47_tito._user_id], _BND_TOOLS)
         assert result == [100, 200] + incremental
 
     def test_glm47_no_strip_otherwise(self, glm47_tito: GLM47TITOTokenizer):
         """Non-boundary trailing token is preserved."""
-        incremental = glm47_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
+        incremental = glm47_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
         result = glm47_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
         assert result == [100, 200, 300] + incremental
 
@@ -370,7 +371,7 @@ class TestMergeTokensBoundary:
 
     def test_default_concatenates(self, default_tito: TITOTokenizer):
         """Base class does plain concatenation without any prefix modification."""
-        incremental = default_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
+        incremental = default_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
         result = default_tito.merge_tokens(_BND_OLD, _BND_NEW, [100, 200, 300], _BND_TOOLS)
         assert result == [100, 200, 300] + incremental
 
@@ -378,7 +379,7 @@ class TestMergeTokensBoundary:
 
     def test_empty_prefix(self, qwen3_tito: Qwen3TITOTokenizer):
         """Empty prefix → no boundary handling, result is just incremental."""
-        incremental = qwen3_tito.tokenize_additional_non_assistant(_BND_OLD, _BND_NEW, _BND_TOOLS)
+        incremental = qwen3_tito.tokenize_additional_messages(_BND_OLD, _BND_NEW, _BND_TOOLS)
         result = qwen3_tito.merge_tokens(_BND_OLD, _BND_NEW, [], _BND_TOOLS)
         assert result == incremental
 
@@ -396,7 +397,7 @@ class TestMergeTokensBoundary:
 
 
 class TestTokenizeAdditional:
-    """tokenize_additional_non_assistant produces valid incremental tokens."""
+    """tokenize_additional_messages produces valid incremental tokens."""
 
     @pytest.mark.parametrize("traj_cls, pos", _TRAJ_CASES)
     def test_produces_nonempty_incremental(self, tito: TITOTokenizer, traj_cls, pos):
@@ -406,7 +407,7 @@ class TestTokenizeAdditional:
         TITO splits against every model tokenizer.
         """
         old_msgs, new_msgs, tools = _split_at(traj_cls, pos)
-        incremental = tito.tokenize_additional_non_assistant(old_msgs, new_msgs, tools)
+        incremental = tito.tokenize_additional_messages(old_msgs, new_msgs, tools)
         assert len(incremental) > 0
 
     def test_complete_appendix_reaches_renderer_and_its_error_propagates(
@@ -429,7 +430,7 @@ class TestTokenizeAdditional:
         monkeypatch.setattr(qwen3_tito, "_tokenize_rendered_suffix", reject_invalid_order)
 
         with pytest.raises(ValueError, match="invalid tool ordering"):
-            qwen3_tito.tokenize_additional_non_assistant(
+            qwen3_tito.tokenize_additional_messages(
                 old_msgs,
                 old_msgs + appended,
                 SingleToolTrajectory.TOOLS,
@@ -451,7 +452,7 @@ class TestTokenizeAdditional:
         ]
         tools = SingleToolThinkingTrajectory.TOOLS
 
-        incremental = qwen3_tito.tokenize_additional_non_assistant(old_msgs, new_msgs, tools)
+        incremental = qwen3_tito.tokenize_additional_messages(old_msgs, new_msgs, tools)
         decoded = qwen3_tito.tokenizer.decode(incremental)
         assert decoded.count(qwen3_tito._assistant_start_str) == 1
         assert decoded.endswith(
@@ -506,20 +507,20 @@ class TestTokenizeAdditional:
         mutated_old = [{"role": "user", "content": "CHANGED"}] + list(old_msgs[1:])
         mutated_new = mutated_old + list(new_msgs[len(old_msgs) :])
         with pytest.raises(ValueError, match="mismatch"):
-            qwen3_tito.tokenize_additional_non_assistant(old_msgs, mutated_new)
+            qwen3_tito.tokenize_additional_messages(old_msgs, mutated_new)
 
     def test_rejects_fewer_messages(self, qwen3_tito: Qwen3TITOTokenizer):
         """new_messages shorter than old_messages raises ValueError."""
         old_msgs = SingleToolTrajectory.MESSAGES[:3]
         with pytest.raises(ValueError, match="fewer"):
-            qwen3_tito.tokenize_additional_non_assistant(old_msgs, old_msgs[:1])
+            qwen3_tito.tokenize_additional_messages(old_msgs, old_msgs[:1])
 
     def test_rejects_assistant_append(self, qwen3_tito: Qwen3TITOTokenizer):
         """Appending an assistant message (not tool/system) raises ValueError."""
         old_msgs = SingleToolTrajectory.MESSAGES[:3]
         bad_new = list(old_msgs) + [{"role": "assistant", "content": "hi"}]
         with pytest.raises(ValueError, match="role"):
-            qwen3_tito.tokenize_additional_non_assistant(old_msgs, bad_new)
+            qwen3_tito.tokenize_additional_messages(old_msgs, bad_new)
 
 
 # ---------------------------------------------------------------------------

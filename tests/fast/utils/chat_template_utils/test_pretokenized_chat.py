@@ -12,7 +12,7 @@ from copy import deepcopy
 import pytest
 
 from miles.utils.chat_template_utils import TITOTokenizerType, resolve_fixed_chat_template
-from miles.utils.chat_template_utils.template import load_hf_chat_template
+from miles.utils.chat_template_utils.template import apply_chat_template_from_str, load_hf_chat_template
 from miles.utils.test_utils.chat_template_verify import (
     CaseSpec,
     assert_pretokenized_equals_standard,
@@ -30,15 +30,8 @@ from miles.utils.test_utils.mock_trajectories import (
 
 
 def _load_fixed(tito_model: TITOTokenizerType) -> str:
-    path, _kwargs = resolve_fixed_chat_template(tito_model, ["tool"])
+    path, _kwargs = resolve_fixed_chat_template(tito_model)
     assert path is not None, f"resolve_fixed_chat_template should resolve {tito_model.value}"
-    with open(path) as f:
-        return f.read()
-
-
-def _load_fixed_for_roles(tito_model: TITOTokenizerType, roles: list[str]) -> str:
-    path, _kwargs = resolve_fixed_chat_template(tito_model, roles)
-    assert path is not None, f"resolve_fixed_chat_template should resolve {tito_model.value} for roles={roles}"
     with open(path) as f:
         return f.read()
 
@@ -140,7 +133,7 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
     ("minimax_m25", load_hf_chat_template("MiniMaxAI/MiniMax-M2.5"), True, frozenset({"tool"}), {}),
     (
         "minimax_m25_fixed_clear_thinking_off",
-        _load_fixed_for_roles(TITOTokenizerType.MINIMAX_M25, ["tool", "user"]),
+        _load_fixed(TITOTokenizerType.MINIMAX_M25),
         True,
         frozenset({"tool", "user"}),
         {"clear_thinking": False},
@@ -148,13 +141,13 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
     ("minimax_m27", load_hf_chat_template("MiniMaxAI/MiniMax-M2.7"), True, frozenset({"tool"}), {}),
     (
         "minimax_m27_fixed_clear_thinking_off",
-        _load_fixed_for_roles(TITOTokenizerType.MINIMAX_M27, ["tool", "user"]),
+        _load_fixed(TITOTokenizerType.MINIMAX_M27),
         True,
         frozenset({"tool", "user"}),
         {"clear_thinking": False},
     ),
     # Nemotron 3 Super: HF-native template is append-only.  No fixed jinja is
-    # shipped (SUPPORTED_TEMPLATES.template=None on all surfaces); multi-user
+    # shipped (FIXED_TEMPLATE.template=None); multi-user
     # surfaces require truncate_history_thinking=False to preserve reasoning
     # across user turns, while {tool}-only does not.
     (
@@ -301,3 +294,51 @@ def test_cross_user_turn_thinking_prefix_mismatch(chat_template, enable_thinking
             tools=MultiUserTurnThinkingTrajectory.TOOLS,
             enable_thinking=enable_thinking,
         )
+
+
+# ---------------------------------------------------------------------------
+# Intermediate system / injected-assistant appends — role-independent surface
+# ---------------------------------------------------------------------------
+#
+# allowed_append_roles no longer participates in template resolution: every
+# family's single FIXED_TEMPLATE (with pinned preserve-think kwargs) must
+# render intermediate system and injected assistant input append-only.
+# DeepSeek V3.2/V4 ride the encoder bridge and are covered in their own files.
+
+_APPEND_ROLE_FAMILIES = [
+    (TITOTokenizerType.QWEN3, None),
+    (TITOTokenizerType.QWEN35, None),
+    (TITOTokenizerType.QWENNEXT, None),
+    (TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash"),
+    (TITOTokenizerType.KIMI25, None),
+    (TITOTokenizerType.KIMI26, "moonshotai/Kimi-K2.6"),
+    (TITOTokenizerType.MINIMAX_M25, None),
+    (TITOTokenizerType.MINIMAX_M27, None),
+    (TITOTokenizerType.NEMOTRON3, "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"),
+]
+
+_APPEND_SHAPES = {
+    "system": [{"role": "system", "content": "mid-session system"}],
+    "assistant": [{"role": "assistant", "content": "injected", "reasoning_content": ""}],
+    "assistant_then_user": [
+        {"role": "assistant", "content": "injected", "reasoning_content": ""},
+        {"role": "user", "content": "next question"},
+    ],
+}
+
+
+@pytest.mark.parametrize("shape", list(_APPEND_SHAPES), ids=list(_APPEND_SHAPES))
+@pytest.mark.parametrize("family, hf_model_id", _APPEND_ROLE_FAMILIES, ids=[f.value for f, _ in _APPEND_ROLE_FAMILIES])
+def test_appends_are_append_only_on_family_template(family, hf_model_id, shape):
+    path, kwargs = resolve_fixed_chat_template(family)
+    template = open(path).read() if path is not None else load_hf_chat_template(hf_model_id)
+    history = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1", "reasoning_content": "r1"},
+    ]
+
+    base = apply_chat_template_from_str(template, history, add_generation_prompt=False, **kwargs)
+    full = apply_chat_template_from_str(
+        template, history + _APPEND_SHAPES[shape], add_generation_prompt=False, **kwargs
+    )
+    assert full.startswith(base)

@@ -471,3 +471,29 @@ def test_non_deepseek_uses_hf_fallback(tmp_path):
     tok = _FakeHFTokenizer(str(tmp_path))
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3"}), encoding="utf-8")
     assert apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False) == "HF_FALLBACK_SENTINEL"
+
+
+# ---------------------------------------------------------------------------
+# Injected system / assistant appends (role-independent template resolution)
+# ---------------------------------------------------------------------------
+
+_INJECT_HISTORY = [
+    {"role": "user", "content": "q1"},
+    {"role": "assistant", "content": "a1", "reasoning_content": "r1"},
+]
+
+_INJECT_SHAPES = {
+    "system": [{"role": "system", "content": "mid-session system"}],
+    "assistant": [{"role": "assistant", "content": "injected"}],
+    "assistant_then_user": [
+        {"role": "assistant", "content": "injected"},
+        {"role": "user", "content": "next question"},
+    ],
+}
+
+
+@pytest.mark.parametrize("shape", list(_INJECT_SHAPES), ids=list(_INJECT_SHAPES))
+def test_drop_thinking_false_injected_appends_are_append_only(shape):
+    before = _reference_encode(_INJECT_HISTORY, thinking=True, drop_thinking=False)
+    after = _reference_encode(_INJECT_HISTORY + _INJECT_SHAPES[shape], thinking=True, drop_thinking=False)
+    assert after.startswith(before)
