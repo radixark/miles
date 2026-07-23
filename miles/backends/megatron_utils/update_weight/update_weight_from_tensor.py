@@ -328,7 +328,7 @@ def _send_to_colocated_engine(
     long_live_tensors = []
 
     if getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
-        converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors}
+        converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors} if hf_named_tensors else {}
     else:
         converted_named_tensors_by_dtypes = {}
         for name, tensor in hf_named_tensors:
@@ -388,13 +388,33 @@ def _send_to_colocated_engine(
             )
 
         else:
-            num_dtypes = len(serialized_named_tensors[0])
-            for i in range(num_dtypes):
+            num_buckets = max(len(tensors) for tensors in serialized_named_tensors)
+            empty_serialized_tensor = None
+            for i in range(num_buckets):
+                serialized_tensors_for_bucket = []
+                for tensors in serialized_named_tensors:
+                    if i < len(tensors):
+                        serialized_tensors_for_bucket.append(tensors[i])
+                        continue
+
+                    if empty_serialized_tensor is None:
+                        empty_tensor_data = _empty_flattened_tensor_data()
+                        long_live_tensors.append(empty_tensor_data)
+                        empty_serialized_tensor = MultiprocessingSerializer.serialize(empty_tensor_data, output_str=True)
+                    serialized_tensors_for_bucket.append(empty_serialized_tensor)
+
                 kwargs = {
-                    "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
+                    "serialized_named_tensors": serialized_tensors_for_bucket,
                     "load_format": "flattened_bucket",
                     "weight_version": str(weight_version),
                 }
                 refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
 
     return refs, long_live_tensors
+
+
+def _empty_flattened_tensor_data():
+    return {
+        "flattened_tensor": torch.empty(0, dtype=torch.uint8, device=torch.cuda.current_device()),
+        "metadata": [],
+    }
