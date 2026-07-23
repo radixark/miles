@@ -260,17 +260,13 @@ def _field_schemas_for_value(value: Any, value_spec: dict[str, ValueSpec] | None
 
 
 def _mooncake_store_config(init_kwargs: dict[str, Any], *, contribute_segment: bool) -> dict[str, Any]:
-    global_segment_size = _parse_size(
-        init_kwargs.get("global_segment_size", os.getenv("MOONCAKE_GLOBAL_SEGMENT_SIZE", 8 * 1024**3))
-    )
-    return {
+    config = {
         "local_hostname": str(
             init_kwargs.get("local_hostname") or os.getenv("MOONCAKE_LOCAL_HOSTNAME") or _local_hostname()
         ),
         "metadata_server": str(
             init_kwargs.get("metadata_server") or os.getenv("MOONCAKE_TE_META_DATA_SERVER", "P2PHANDSHAKE")
         ),
-        "global_segment_size": global_segment_size if contribute_segment else 0,
         "local_buffer_size": _parse_size(
             init_kwargs.get("local_buffer_size", os.getenv("MOONCAKE_LOCAL_BUFFER_SIZE", 32 * 1024**3))
         ),
@@ -278,6 +274,13 @@ def _mooncake_store_config(init_kwargs: dict[str, Any], *, contribute_segment: b
         "rdma_devices": str(init_kwargs.get("device_name") or os.getenv("MOONCAKE_DEVICE", "")),
         "master_server_addr": str(init_kwargs.get("master_server_address") or os.getenv("MOONCAKE_MASTER", "")),
     }
+    # The store rejects global_segment_size=0; omitting the key mounts mooncake's
+    # minimal default segment, which is how non-contributing processes join.
+    if contribute_segment:
+        config["global_segment_size"] = _parse_size(
+            init_kwargs.get("global_segment_size", os.getenv("MOONCAKE_GLOBAL_SEGMENT_SIZE", 8 * 1024**3))
+        )
+    return config
 
 
 def _parse_size(value: Any) -> int:
