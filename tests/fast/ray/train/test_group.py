@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 import ray
@@ -37,6 +37,7 @@ def _make_mock_args(
         trainer_heartbeat_checker_first_wait=300.0,
         trainer_heartbeat_checker_failure_threshold=3,
         ci_ft_test_actions=None,
+        async_save=False,
         debug_train_only=False,
         debug_rollout_only=False,
         # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
@@ -648,6 +649,74 @@ class TestExecuteFirstAliveFallback:
             await group._execute_first_alive("save_model", 42)
 
         assert group._cells[0].is_stopped
+
+
+class TestFinalizeAsyncSave:
+    async def test_finalizes_the_cell_that_scheduled_the_checkpoint(self):
+        group = await _make_alive_group(num_cells=2)
+        group.args.async_save = True
+
+        await group.save_model(rollout_id=42)
+        completed = await group.finalize_async_save(blocking=False)
+
+        assert completed is True
+        assert group._async_save_cell is None
+        first_cell_calls = ray.get(group._cells[0]._get_actor_handles()[0].get_calls.remote())
+        second_cell_calls = ray.get(group._cells[1]._get_actor_handles()[0].get_calls.remote())
+        assert first_cell_calls == [
+            ("init", (), ANY),
+            ("save_model", (42,), {"force_sync": False}),
+            ("finalize_async_save", (), {"blocking": False}),
+        ]
+        assert second_cell_calls == [("init", (), ANY)]
+
+    async def test_keeps_incomplete_checkpoint_pending(self):
+        group = await _make_alive_group(num_cells=1)
+        group.args.async_save = True
+        actor = group._cells[0]._get_actor_handles()[0]
+        ray.get(actor.set_async_save_complete.remote(False))
+
+        await group.save_model(rollout_id=42)
+
+        assert await group.finalize_async_save(blocking=False) is False
+        assert group._async_save_cell is group._cells[0]
+
+    async def test_rejects_second_save_when_blocking_finalization_is_incomplete(self):
+        group = await _make_alive_group(num_cells=1)
+        group.args.async_save = True
+        actor = group._cells[0]._get_actor_handles()[0]
+        ray.get(actor.set_async_save_complete.remote(False))
+        await group.save_model(rollout_id=42)
+
+        with pytest.raises(RuntimeError, match="remained active after blocking finalization"):
+            await group.save_model(rollout_id=43)
+
+        calls = ray.get(actor.get_calls.remote())
+        assert calls == [
+            ("init", (), ANY),
+            ("save_model", (42,), {"force_sync": False}),
+            ("finalize_async_save", (), {"blocking": True}),
+        ]
+
+    async def test_rejects_rank_disagreement(self):
+        group = await _make_alive_group(num_cells=1, actor_count_per_cell=2)
+        group.args.async_save = True
+        first_actor, second_actor = group._cells[0]._get_actor_handles()
+        ray.get(first_actor.set_async_save_complete.remote(True))
+        ray.get(second_actor.set_async_save_complete.remote(False))
+        await group.save_model(rollout_id=42)
+
+        with pytest.raises(RuntimeError, match="completion disagreed across ranks"):
+            await group.finalize_async_save(blocking=False)
+
+    async def test_rejects_dead_checkpoint_owner(self):
+        group = await _make_alive_group(num_cells=2)
+        group.args.async_save = True
+        await group.save_model(rollout_id=42)
+        group.stop_cell(0)
+
+        with pytest.raises(RuntimeError, match="owner cell 0 is no longer alive"):
+            await group.finalize_async_save(blocking=True)
 
 
 def _make_failing_actor_factory() -> Callable:

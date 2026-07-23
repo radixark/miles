@@ -88,6 +88,16 @@ class RayTrainGroup:
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
+    async def finalize_async_save(self, blocking: bool) -> bool:
+        """Finalize a Megatron async checkpoint collectively across all actors."""
+        if not self.args.async_save:
+            return True
+
+        completed = await self._broadcast("finalize_async_save", blocking=blocking)
+        if any(result != completed[0] for result in completed[1:]):
+            raise RuntimeError(f"Megatron async checkpoint completion disagreed across ranks: {completed}")
+        return completed[0]
+
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights from rank 0 to all other ranks."""
         if self.args.debug_train_only or self.args.debug_rollout_only:

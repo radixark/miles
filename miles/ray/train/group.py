@@ -121,6 +121,7 @@ class RayTrainGroup:
             return cell
 
         self._cells: list[RayTrainCell] = [_create_cell(cell_index) for cell_index in range(num_cells)]
+        self._async_save_cell: RayTrainCell | None = None
 
         self._witness_allocator: WitnessIdAllocator | None = (
             WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
@@ -246,11 +247,36 @@ class RayTrainGroup:
 
     async def save_model(self, rollout_id: int, force_sync: bool = False):
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
+        if self._async_save_cell is not None:
+            if not await self.finalize_async_save(blocking=True):
+                raise RuntimeError("Megatron async checkpoint remained active after blocking finalization")
+
+        async def _save_on_first_alive(_: int):
+            alive_cells = [cell for cell in self._cells if cell.is_alive]
+            assert alive_cells, "No alive cells, therefore cannot save"
+            cell = alive_cells[0]
+            result = await cell.execute("save_model", rollout_id, force_sync=force_sync)
+            self._async_save_cell = cell if self.args.async_save and not force_sync else None
+            return result
+
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        await retry(
-            lambda _: self._execute_first_alive("save_model", rollout_id, force_sync=force_sync),
-            max_attempts=_RETRY_MAX_ATTEMPTS,
-        )
+        await retry(_save_on_first_alive, max_attempts=_RETRY_MAX_ATTEMPTS)
+
+    async def finalize_async_save(self, blocking: bool) -> bool:
+        """Finalize an async checkpoint on every rank in the cell that saved it."""
+        if not self.args.async_save or self._async_save_cell is None:
+            return True
+
+        cell = self._async_save_cell
+        if not cell.is_alive:
+            raise RuntimeError(f"Async checkpoint owner cell {cell.cell_index} is no longer alive")
+
+        completed = await cell.execute("finalize_async_save", blocking=blocking)
+        if any(result != completed[0] for result in completed[1:]):
+            raise RuntimeError(f"Megatron async checkpoint completion disagreed across ranks: {completed}")
+        if completed[0]:
+            self._async_save_cell = None
+        return completed[0]
 
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights to rollout engines."""
