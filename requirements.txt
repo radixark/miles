@@ -9,6 +9,7 @@ mcp[cli]
 memray  # needed for debugging (but is lightweight), we can put it to dev mode when using pyproject.toml
 nvidia-resiliency-ext~=0.6.0; platform_system == "Linux"
 omegaconf
+openai  # imported by miles.rollout.generate_utils.tool_call_utils and the openenv adapter; previously only satisfied transitively via sglang
 pillow
 polars==1.42.1
 psycopg[binary]  # metric-history gate store (Neon Postgres driver)

@@ -25,6 +25,12 @@ Env vars:
                      prefix. Needed because upstream OpenEnv defaults to /task.
   OPENENV_TB2_TESTS_SRC  where the upstream env stages the task's tests inside the
                      container (default: /task/tests); copied to /tests for test.sh.
+
+Daytona-sandbox variant: ``openenv_daytona_agent_function`` (sibling module)
+is a drop-in ``--custom-agent-function-path`` alternative that runs every
+episode in its own Daytona cloud sandbox. It reuses this module's
+agent loop and training wrapper, supplying only its own run_episode (see the
+episode-wiring note below); its env vars are documented there.
 """
 
 import asyncio
@@ -60,6 +66,21 @@ _FENCE_RE = re.compile(r"```(?:python|py|bash|sh)?\s*\n?(.*?)```", re.DOTALL | r
 
 # Max chars of command output fed back to the policy per turn (keeps context bounded).
 _OBS_CHAR_CAP = 4000
+
+# The system prompt that teaches a policy this adapter's agent contract, i.e.
+# what _multi_turn parses: exactly one shell command per turn in a single
+# ```bash block, TASK_COMPLETE (no code block) to stop. It lives here, next to
+# that parsing logic; make_tbench2_data.py (training prompt data) and
+# eval_tbench2_via_api.py (API-policy eval) import it so all consumers stay on
+# the one contract.
+TB2_AGENT_SYSTEM_PROMPT = (
+    "You are an autonomous terminal agent solving a Terminal-Bench task. You will "
+    "be given the task instruction, then interact with a real Linux shell. On each "
+    "turn respond with EXACTLY ONE shell command inside a single ```bash code block "
+    "and nothing else. Inspect the environment, make the required changes, and "
+    "verify your work. When you are confident the task is fully complete, reply with "
+    "TASK_COMPLETE (with no code block)."
+)
 
 # --- Adapter-driven Terminal-Bench-2 fidelity --------------------------------
 # Upstream OpenEnv's Tbench2DockerEnvironment runs the task container with workdir
@@ -209,6 +230,72 @@ def _load_tbench2() -> dict[str, Any]:
 _DEFAULT_ENV_URL = "http://localhost:8003"
 
 
+# --- Episode wiring -------------------------------------------------------------
+# The agent loop (_multi_turn) is shared; everything that differs between the
+# episode legs enters it as three keyword parameters, filled in only by each
+# module's run_episode():
+#
+#   run_body(env_cls, metadata, body)   how an env comes into being — connect to
+#                       the shared server (_shared_run_body below, capacity-
+#                       retried) vs create a Daytona sandbox
+#                       (openenv_daytona_agent_function).
+#   native_evaluate                     server contract: True when the server
+#                       scores natively (canonical tests/test.sh inside
+#                       `evaluate`, WORKDIR server-side, verifier assets
+#                       withheld — upstream since huggingface/OpenEnv#965+#972);
+#                       False keeps the adapter compensation (_apply_workdir +
+#                       _CANONICAL_EVAL_CMD + marker parse) for the OLDER
+#                       tbench2_env today's shared deployments run. A shared
+#                       server upgraded to current upstream could flip this;
+#                       that is a follow-up gated on validating docker-mode
+#                       native scoring.
+#   post_episode(env, action_cls)       optional hygiene hook (a long-lived
+#                       shared server accumulates trial dirs; a Daytona
+#                       sandbox lives only for its episode and needs nothing).
+#
+# Every agent-function module exposes the same two entries: run() for miles
+# (session-server policy wiring + training failure semantics) and
+# run_episode() for callers that bring their own policy client and own
+# timeout/failure semantics (eval_tbench2_via_api).
+
+
+async def _shared_run_body(env_cls: Any, metadata: dict[str, Any], body: Callable[[Any], Any]) -> Any:
+    """Run *body* against the one shared env server at OPENENV_ENV_URL."""
+    env_url = os.getenv("OPENENV_ENV_URL", _DEFAULT_ENV_URL)
+    return await _with_env(env_cls, env_url, body)
+
+
+async def _purge_trial_dirs(env: Any, action_cls: Any) -> None:
+    # Shared-server disk hygiene (a Daytona sandbox needs none of
+    # this — it is deleted when its episode ends): the tbench2 env server
+    # (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs) leaves a per-episode trial dir
+    # under that path after every episode, which fills the sandbox overlay
+    # disk and trips ENOSPC. One episode holds the sandbox at a time, so it
+    # is safe to purge them here.
+    #
+    # BUT the same dir also holds repo_cache/ (TB2_CACHE_DIR defaults to
+    # output_dir/repo_cache) -- the shared terminal-bench-2 checkout that
+    # reset() clones once and every later episode reads its task from
+    # (repo_cache/terminal-bench-2-main/<task>). A blanket `rm -rf .../*`
+    # wiped repo_cache too, so on a pooled/reused sandbox every episode
+    # after the first either re-cloned the whole repo (huge) or raced into
+    # "Task path not found", collapsing effective concurrency and exploding
+    # step time. Preserve repo_cache; delete only the ephemeral per-trial
+    # dirs beside it.
+    try:
+        await env.step(
+            action_cls(
+                action_type="exec",
+                command=(
+                    "find /tmp/tbench2_env_runs -mindepth 1 -maxdepth 1 "
+                    "! -name repo_cache -exec rm -rf {} + 2>/dev/null || true"
+                ),
+            )
+        )
+    except Exception:
+        pass
+
+
 async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> Any:
     """Open an env session and run ``body(env)``, retrying while a slot is busy."""
     deadline = asyncio.get_event_loop().time() + _CAPACITY_MAX_WAIT_S
@@ -225,21 +312,30 @@ async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> A
 
 async def _multi_turn(
     classes: dict[str, Any],
-    env_url: str,
     policy: AsyncOpenAI,
     model_name: str,
     messages: list[dict[str, str]],
     request_kwargs: dict[str, Any],
     metadata: dict[str, Any],
+    *,
+    run_body: Callable[..., Any],
+    native_evaluate: bool,
+    post_episode: Callable[..., Any] | None = None,
 ) -> tuple[float | None, dict[str, Any]]:
     """Agentic loop: reset(task) -> {policy -> exec -> feed output back} -> evaluate (tbench2).
 
     The policy emits one shell command per turn (a ```bash block or the bare
-    reply), executed in the real task workdir (_TASK_WORKDIR, /app); the loop ends
-    when the policy stops emitting a command, says TASK_COMPLETE, or hits
-    OPENENV_MAX_TURNS. Scoring runs the task's canonical tests/test.sh via an
-    ``exec`` step and parses /logs/verifier/reward.txt for the binary reward
-    (faithful to Terminal-Bench-2, and needs no OpenEnv-side changes).
+    reply), executed in the real task workdir; the loop ends when the policy
+    stops emitting a command, says TASK_COMPLETE, or hits OPENENV_MAX_TURNS.
+
+    Scoring depends on ``native_evaluate``, matching what the episode's env
+    server provides. A server carrying the upstream fixes from
+    huggingface/OpenEnv#965 + #972 runs the task's canonical tests/test.sh
+    natively inside the standard ``evaluate`` action and resolves the task
+    WORKDIR itself; against an OLDER server the adapter compensates — it
+    prefixes exec commands with the workdir (_apply_workdir), runs canonical
+    test.sh via an ``exec`` step (_CANONICAL_EVAL_CMD), and parses
+    /logs/verifier/reward.txt back out of the output.
     """
     action_cls = classes["action"]
     task_id = metadata.get("task_id") or metadata.get("task_name")
@@ -285,7 +381,10 @@ async def _multi_turn(
                 break
 
             t0 = time.monotonic()
-            step_result = await env.step(action_cls(action_type="exec", command=_apply_workdir(command)))
+            # A native server runs the toolkit in the task's real WORKDIR
+            # already; only an older server needs the adapter-side prefix.
+            exec_command = command if native_evaluate else _apply_workdir(command)
+            step_result = await env.step(action_cls(action_type="exec", command=exec_command))
             tool_times.append(time.monotonic() - t0)
             output = _obs_field(step_result, "output")
             # Feed the command output back as a user turn, not a tool turn. GLM
@@ -301,43 +400,29 @@ async def _multi_turn(
             convo.append({"role": "user", "content": content})
 
         t0 = time.monotonic()
-        eval_result = await env.step(action_cls(action_type="exec", command=_CANONICAL_EVAL_CMD))
-        eval_time = time.monotonic() - t0
-        eval_output = _obs_field(eval_result, "output")
-        reward = _parse_reward_marker(eval_output)
-        testsh_rc = _parse_testsh_rc(eval_output)
+        if native_evaluate:
+            # The server runs the canonical test.sh natively inside the
+            # standard evaluate action; there is no adapter-side test.sh
+            # exit-code marker to parse.
+            eval_result = await env.step(action_cls(action_type="evaluate"))
+            eval_time = time.monotonic() - t0
+            reward = float(getattr(eval_result, "reward", 0.0) or 0.0)
+            testsh_rc = None
+        else:
+            # Older server: adapter-driven canonical exec + marker parse.
+            eval_result = await env.step(action_cls(action_type="exec", command=_CANONICAL_EVAL_CMD))
+            eval_time = time.monotonic() - t0
+            eval_output = _obs_field(eval_result, "output")
+            reward = _parse_reward_marker(eval_output)
+            testsh_rc = _parse_testsh_rc(eval_output)
 
-        # rm-hack: the tbench2 env server (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs)
-        # leaves a per-episode trial dir under that path after every episode, which
-        # fills the sandbox overlay disk and trips ENOSPC. One episode holds the
-        # sandbox at a time, so it is safe to purge them here.
-        #
-        # BUT the same dir also holds repo_cache/ (TB2_CACHE_DIR defaults to
-        # output_dir/repo_cache) -- the shared terminal-bench-2 checkout that
-        # reset() clones once and every later episode reads its task from
-        # (repo_cache/terminal-bench-2-main/<task>). A blanket `rm -rf .../*` wiped
-        # repo_cache too, so on a pooled/reused sandbox every episode after the first
-        # either re-cloned the whole repo (huge) or raced into "Task path not found",
-        # collapsing effective concurrency and exploding step time. Preserve
-        # repo_cache; delete only the ephemeral per-trial dirs beside it.
-        try:
-            await env.step(
-                action_cls(
-                    action_type="exec",
-                    command=(
-                        "find /tmp/tbench2_env_runs -mindepth 1 -maxdepth 1 "
-                        "! -name repo_cache -exec rm -rf {} + 2>/dev/null || true"
-                    ),
-                )
-            )
-        except Exception:
-            pass
+        if post_episode is not None:
+            await post_episode(env, action_cls)
 
         return reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc
 
-    reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc = await _with_env(
-        classes["env"], env_url, body
-    )
+    result = await run_body(classes["env"], metadata, body)
+    reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc = result
     total_gen_time = sum(gen_times)
     # non_generation_time = everything the rollout spent outside policy generation:
     # per-turn exec latency plus the one-off reset() and evaluate() env steps. Feeds
@@ -356,21 +441,49 @@ async def _multi_turn(
     }
 
 
-async def run(
+async def run_episode(
+    policy: AsyncOpenAI,
+    model_name: str,
+    messages: list[dict[str, str]],
+    request_kwargs: dict[str, Any],
+    metadata: dict[str, Any],
+) -> tuple[float | None, dict[str, Any]]:
+    """One episode against the shared env server, with the caller's own policy.
+
+    The direct-drive entry (see the module docstring): returns the loop's raw
+    ``(reward, agent_metrics)``; wall-clock caps and failure semantics are the
+    caller's. miles goes through run() instead.
+    """
+    return await _multi_turn(
+        _load_tbench2(),
+        policy,
+        model_name,
+        messages,
+        request_kwargs,
+        metadata,
+        run_body=_shared_run_body,
+        native_evaluate=False,
+        post_episode=_purge_trial_dirs,
+    )
+
+
+async def _run_for_training(
     base_url: str,
     prompt: Any,
-    request_kwargs: dict[str, Any] | None = None,
-    metadata: dict[str, Any] | None = None,
-    **kwargs,
+    request_kwargs: dict[str, Any] | None,
+    metadata: dict[str, Any] | None,
+    run_episode_fn: Callable[..., Any],
 ) -> dict[str, Any] | None:
-    """Run one OpenEnv tbench2 episode via the trained policy."""
+    """miles-side wrapper around one episode: session-server policy wiring plus
+    training failure semantics (timeout -> reward 0, no verdict -> drop sample).
+
+    Shared by every agent-function module: each passes its own run_episode.
+    """
     request_kwargs = request_kwargs or {}
     metadata = metadata or {}
 
-    classes = _load_tbench2()
     session_url = _resolve_session_url(base_url)
     model_name = os.getenv("AGENT_MODEL_NAME", os.getenv("SWE_AGENT_MODEL_NAME", "model"))
-    env_url = os.getenv("OPENENV_ENV_URL", _DEFAULT_ENV_URL)
 
     policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY")
     messages = _extract_messages(prompt)
@@ -378,10 +491,10 @@ async def run(
     try:
         # Hard wall-clock cap: cancel the episode if it overruns and score it 0.
         # wait_for cancels the coroutine, so any in-flight policy call / env.step
-        # is interrupted and the env session is closed by _with_env's async-with
+        # is interrupted and the env session is closed by the env context manager
         # during cancellation cleanup.
         reward, agent_metrics = await asyncio.wait_for(
-            _multi_turn(classes, env_url, policy, model_name, messages, request_kwargs, metadata),
+            run_episode_fn(policy, model_name, messages, request_kwargs, metadata),
             timeout=_MAX_ROLLOUT_TIME_S,
         )
     except asyncio.TimeoutError:
@@ -422,3 +535,14 @@ async def run(
         "eval_report": {},
         "agent_metrics": agent_metrics,
     }
+
+
+async def run(
+    base_url: str,
+    prompt: Any,
+    request_kwargs: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    **kwargs,
+) -> dict[str, Any] | None:
+    """Run one OpenEnv tbench2 episode via the trained policy (shared env server)."""
+    return await _run_for_training(base_url, prompt, request_kwargs, metadata, run_episode)

@@ -50,6 +50,55 @@ concurrency. Per-task containers are heavy on disk — if you'd rather not coloc
 them with the GPU workload, run the env server on a separate Docker host and point
 the launcher at it via `--openenv-env-url http://<env-host>:8003`.
 
+### 2b. Alternative: Daytona cloud sandboxes (no Docker host)
+
+Instead of one shared env server, the adapter can give **every episode its own
+[Daytona](https://www.daytona.io/) cloud sandbox**, built from the task's official
+image plus an env server layer and deleted when the episode ends. Same
+per-task image fidelity as docker mode, with zero resident infrastructure (no
+Docker socket, no shared server to size or babysit, no cross-episode state), at
+the cost of per-episode sandbox creation (~1 min warm; the first episode of each
+task builds its image in ~10 min, cached after that by definition hash).
+
+The image recipe lives in [`tb2_sandbox_recipe.py`](tb2_sandbox_recipe.py), its Daytona
+materialization in [`tb2_sandbox_daytona.py`](tb2_sandbox_daytona.py) (this
+directory). The recipe bakes the **installed** `tbench2_env` package — OpenEnv's
+Terminal-Bench-2 environment package, the same one step 2's shared server
+runs — into each task image, and in this mode the adapter scores via the
+standard `evaluate` action, so the install must carry the server-side fixes
+this leg relies on (canonical `tests/test.sh` scoring built into `evaluate`,
+per-task WORKDIR resolved server-side, `TB2_WITHHOLD_TESTS` verifier-asset
+withholding — all upstream since huggingface/OpenEnv#965 + #972; the launcher
+preflights the installed source and fails fast on an older install). Install
+from upstream main (editable: the recipe embeds the package source, which
+needs `pyproject.toml` present next to the package):
+
+```bash
+git clone https://github.com/huggingface/OpenEnv.git   # >= the #965/#972 merge (39c91bfd); pin that sha if you need frozen reward semantics across a long run
+pip install -e OpenEnv/envs/tbench2_env
+```
+
+Skip step 2 entirely and set:
+
+```bash
+pip install daytona   # the SDK is imported lazily, not installed with tbench2_env
+mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key   # or export DAYTONA_API_KEY
+export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2   # the checkout from step 1
+python run-openenv-tbench2.py
+```
+
+Key supply on multi-host clusters (and why only a file *path* is ever
+forwarded) is documented in the `openenv_daytona_agent_function.py` docstring —
+this mode's own agent function, which the launcher selects automatically
+when `OPENENV_TB2_TASKS_DIR` is set.
+
+Infra sanity checks without touching a GPU (both live beside the launcher):
+`scan_golden.py` replays each task's official solution through the full
+sandbox + scoring path (`--logs` captures failure evidence; 82/89 of the TB2
+suite pass, the rest have upstream-broken solutions), and
+`eval_tbench2_via_api.py` runs the identical agentic loop with any
+OpenAI-compatible API standing in for the policy.
+
 ## 3. Launch training
 
 ```bash
@@ -65,6 +114,8 @@ Common overrides:
 | `--num-rollout` | (launcher) | Number of GRPO steps |
 | `OPENENV_MAX_TURNS` | `30` | Max agent turns per episode |
 | `OPENENV_MAX_ROLLOUT_TIME_SECONDS` | `3600` | Per-episode wall-clock cap; a straggler that exceeds it is terminated and scored 0 |
+| `OPENENV_TB2_TASKS_DIR` + Daytona key | off | Daytona sandbox mode (section 2b); overrides `--openenv-env-url`. Key: `DAYTONA_API_KEY` in the env, else a key file (`~/.config/daytona/api_key`; `DAYTONA_API_KEY_FILE` overrides) |
+| `OPENENV_DAYTONA_CREATE_CONCURRENCY` | `4` | Max in-flight sandbox creates (Daytona rate-limits creation) |
 | `--dump-details <dir>` | off | Dump per-episode tokens/logprobs/masks/reward for inspection |
 | `WANDB_KEY`, `--wandb-project`, `--wandb-team` | — | W&B logging |
 
