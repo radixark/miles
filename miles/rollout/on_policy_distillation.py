@@ -38,11 +38,17 @@ def _get_reward_weight_mode(args: Namespace) -> str:
     return mode
 
 
-def _score_payload(input_ids: list[int], top_k: int = 0, token_ids: list[int] | None = None) -> dict[str, Any]:
+def _score_payload(
+    input_ids: list[int],
+    *,
+    temperature: float = 1.0,
+    top_k: int = 0,
+    token_ids: list[int] | None = None,
+) -> dict[str, Any]:
     payload = {
         "input_ids": input_ids,
         "sampling_params": {
-            "temperature": 0,
+            "temperature": temperature,
             "max_new_tokens": 0,
             "skip_special_tokens": False,
         },
@@ -271,8 +277,9 @@ def _compute_topk_reverse_kl(
 
 async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[str, Any]:
     top_k = _get_opd_top_k(args)
+    temperature = args.rollout_temperature
     if top_k == 0:
-        return await _post_json(args.rm_url, _score_payload(sample.tokens))
+        return await _post_json(args.rm_url, _score_payload(sample.tokens, temperature=temperature))
 
     strategy = _get_top_k_strategy(args)
 
@@ -283,6 +290,7 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
 
     teacher_payload = _score_payload(
         sample.tokens,
+        temperature=temperature,
         top_k=top_k if strategy in TEACHER_TOP_STRATEGIES else 0,
         token_ids=teacher_token_ids,
     )
@@ -294,7 +302,7 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
         student_token_ids = _unique_ids(teacher_top)
         reward_payload["student_on_teacher"] = await _post_json(
             _student_score_url(args),
-            _score_payload(sample.tokens, token_ids=student_token_ids),
+            _score_payload(sample.tokens, temperature=temperature, token_ids=student_token_ids),
         )
 
     return reward_payload

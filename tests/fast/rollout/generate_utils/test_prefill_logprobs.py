@@ -14,7 +14,7 @@ async def test_recompute_rollout_logprobs_via_prefill_uses_response_tail(monkeyp
         rollout_log_probs=[-9.0, -9.0, -9.0],
         status=Sample.Status.COMPLETED,
     )
-    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False)
+    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False, rollout_temperature=0.7)
     seen = {}
 
     async def fake_post(url, payload, headers=None):
@@ -50,13 +50,22 @@ async def test_recompute_rollout_logprobs_via_prefill_uses_response_tail(monkeyp
     assert seen["payload"]["return_logprob"] is True
     assert seen["payload"]["logprob_start_len"] == 2
     assert seen["payload"]["sampling_params"]["max_new_tokens"] == 0
-    assert seen["payload"]["sampling_params"]["temperature"] == 0
+    assert seen["payload"]["sampling_params"]["temperature"] == 0.7
+
+
+def test_prefill_scoring_payload_uses_rollout_temperature():
+    sample = Sample(tokens=[10, 11, 20, 21], response_length=2, status=Sample.Status.COMPLETED)
+
+    args = SimpleNamespace(sglang_enable_lora=False, rollout_temperature=1.3)
+    payload = prefill_logprobs._build_prefill_scoring_payload(args, sample, {"max_new_tokens": 64})
+    assert payload["sampling_params"]["temperature"] == 1.3
+    assert payload["sampling_params"]["max_new_tokens"] == 0
 
 
 @pytest.mark.asyncio
 async def test_recompute_rollout_logprobs_via_prefill_checks_token_alignment(monkeypatch):
     sample = Sample(tokens=[10, 11, 20], response_length=1, status=Sample.Status.COMPLETED)
-    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False)
+    args = SimpleNamespace(recompute_logprobs_via_prefill=True, sglang_enable_lora=False, rollout_temperature=1.0)
 
     async def fake_post(url, payload, headers=None):
         return {"meta_info": {"input_token_logprobs": [(None, 11), (-0.1, 999)]}}
@@ -82,6 +91,7 @@ async def test_recompute_samples_flushes_each_batch_and_batches_prefill_score(mo
         recompute_logprobs_via_prefill=True,
         sglang_enable_lora=False,
         sglang_router_policy="round_robin",
+        rollout_temperature=1.0,
     )
     calls = []
 
@@ -223,6 +233,7 @@ async def test_recompute_samples_batches_by_logprob_start_len(monkeypatch):
         recompute_logprobs_via_prefill=True,
         sglang_enable_lora=False,
         sglang_router_policy="round_robin",
+        rollout_temperature=1.0,
     )
     calls = []
 
