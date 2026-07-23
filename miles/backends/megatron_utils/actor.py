@@ -682,6 +682,9 @@ class MegatronTrainRayActor(TrainRayActor):
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             self.weight_updater.update_weights()
+            # Reap CUDA-IPC pending frees from any updater path; under
+            # torch_memory_saver offload nothing else triggers the lazy reap.
+            torch.cuda.ipc_collect()
             print_memory("after update_weights")
 
             if is_multi_lora_enabled(self.args):

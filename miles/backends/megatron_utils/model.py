@@ -509,7 +509,13 @@ def train_one_step(
             }
 
             if args.enable_mtp_training:
-                forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
+                # Megatron-core's MTP loss expects next-token-shifted labels
+                # (labels[i] == token[i+1]); it rolls -1 once more per MTP depth.
+                # Raw tokens would make the MTP target off-by-one and blow up
+                # mtp_loss against the pretrained MTP head, so pre-shift here.
+                forward_kwargs["mtp_kwargs"] = {
+                    "mtp_labels": torch.roll(batch["tokens"], shifts=-1, dims=-1)
+                }
 
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
@@ -755,6 +761,7 @@ def train(
 
             mtp_loss_scale = 1 / num_microbatches[step_id]
             tracker = MTPLossLoggingHelper.tracker
+            mtp_losses = None
             if "values" in tracker:
                 values = tracker["values"]
                 if (x := tracker.get("reduce_group")) is not None:
@@ -778,7 +785,7 @@ def train(
             role_tag = "" if role == "actor" else f"{role}-"
 
             extra_metrics = {}
-            if args.enable_mtp_training:
+            if args.enable_mtp_training and mtp_losses is not None:
                 extra_metrics["mtp_loss"] = mtp_losses
 
             if not disable_optimizer:
