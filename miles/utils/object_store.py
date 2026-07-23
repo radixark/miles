@@ -11,13 +11,6 @@ import ray
 
 from miles.utils.ray_utils import Box
 
-StoreObjectRef = Box
-
-
-class ObjectStoreBackend(StrEnum):
-    RAY = "object-store"
-    MOONCAKE = "mooncake"
-
 _MOONCAKE_IMPORT_ERROR: ImportError | None = None
 
 try:
@@ -30,6 +23,16 @@ except ImportError as exc:
     _MOONCAKE_IMPORT_ERROR = exc
     FieldSchema = None
     ReplicateConfig = None
+
+
+# ============================== types ==============================
+
+StoreObjectRef = Box
+
+
+class ObjectStoreBackend(StrEnum):
+    RAY = "object-store"
+    MOONCAKE = "mooncake"
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,11 @@ class ObjectStoreGetResult:
         self._release_fn(self._value)
 
 
+# ============================ singleton ============================
+
+_INSTANCE: "BaseObjectStore | None" = None
+
+
 def init_instance(args: Namespace, *, contribute_segment: bool | None = None) -> "BaseObjectStore":
     global _INSTANCE
     assert _INSTANCE is None, "object store instance is already initialized"
@@ -69,6 +77,23 @@ def init_instance(args: Namespace, *, contribute_segment: bool | None = None) ->
 def get_instance() -> "BaseObjectStore":
     assert _INSTANCE is not None, "object store instance is not initialized; call init_instance first"
     return _INSTANCE
+
+
+def _create_instance(args: Namespace, *, contribute_segment: bool | None) -> "BaseObjectStore":
+    backend = ObjectStoreBackend(args.rollout_data_transport)
+    if backend == ObjectStoreBackend.MOONCAKE:
+        if contribute_segment is None:
+            contribute_segment = _default_contribute_segment()
+        return MooncakeObjectStore(args, contribute_segment=contribute_segment)
+    return RayObjectStore()
+
+
+def _default_contribute_segment() -> bool:
+    local_rank = os.getenv("LOCAL_RANK")
+    return local_rank is None or int(local_rank) == 0
+
+
+# ============================ base class ===========================
 
 
 class BaseObjectStore(ABC):
@@ -85,6 +110,9 @@ class BaseObjectStore(ABC):
         raise NotImplementedError
 
 
+# ============================ ray backend ==========================
+
+
 class RayObjectStore(BaseObjectStore):
     def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
         return Box(ray.put(value))
@@ -94,6 +122,13 @@ class RayObjectStore(BaseObjectStore):
 
     def remove(self, ref: StoreObjectRef) -> None:
         pass
+
+
+def _release_noop(value: Any) -> None:
+    pass
+
+
+# ========================= mooncake backend ========================
 
 
 class MooncakeObjectStore(BaseObjectStore):
@@ -137,22 +172,6 @@ class MooncakeObjectStore(BaseObjectStore):
         return config
 
 
-_INSTANCE: BaseObjectStore | None = None
-
-
-def _create_instance(args: Namespace, *, contribute_segment: bool | None) -> BaseObjectStore:
-    backend = _object_store_backend(args)
-    if backend == ObjectStoreBackend.MOONCAKE:
-        if contribute_segment is None:
-            contribute_segment = _default_contribute_segment()
-        return MooncakeObjectStore(args, contribute_segment=contribute_segment)
-    return RayObjectStore()
-
-
-def _object_store_backend(args: Namespace) -> ObjectStoreBackend:
-    return ObjectStoreBackend(args.rollout_data_transport)
-
-
 def _check_mooncake_available() -> None:
     if not _MOONCAKE_AVAILABLE:
         raise ImportError(
@@ -173,15 +192,6 @@ def _field_schemas_for_value(value: Any, value_spec: dict[str, ValueSpec] | None
             metadata["dtype"] = spec.dtype
         schemas[field] = FieldSchema(codec=spec.codec, nullable=False, metadata=metadata)
     return schemas
-
-
-def _release_noop(value: Any) -> None:
-    pass
-
-
-def _default_contribute_segment() -> bool:
-    local_rank = os.getenv("LOCAL_RANK")
-    return local_rank is None or int(local_rank) == 0
 
 
 def _mooncake_store_config(init_kwargs: dict[str, Any], *, contribute_segment: bool) -> dict[str, Any]:
