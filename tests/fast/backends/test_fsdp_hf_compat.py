@@ -10,12 +10,15 @@ Covers:
 """
 
 import logging
+import subprocess
+import sys
 
 import pytest
 import torch
 
 from miles.backends.experimental.fsdp_utils.adaptations.weight_bridge import (
     _hf_unfuse_experts_expand,
+    get_param_transform,
 )
 from miles.backends.experimental.fsdp_utils.update_weight_utils import _iter_sync_named_params
 
@@ -112,6 +115,22 @@ def test_unfuse_glm4_moe_lite_same_family():
         torch.testing.assert_close(out[f"model.layers.1.mlp.experts.{e}.up_proj.weight"], full[e, two_inter // 2 :, :])
 
 
+def test_param_transform_gating():
+    def applies(name, param, model_type):
+        return get_param_transform(name, param, model_type) is not None
+
+    gate_up = torch.zeros(2, 6, 4)
+    name = "model.layers.0.mlp.experts.gate_up_proj"
+    # only for model types whose SGLang loader expects per-expert weights
+    assert applies(name, gate_up, "qwen3_moe")
+    assert not applies(name, gate_up, "qwen3_5_moe")  # consumes batched directly
+    assert not applies(name, gate_up, "qwen3")  # dense
+    # non-expert params are never split
+    assert not applies("model.layers.0.self_attn.q_proj.weight", torch.zeros(4, 4), "qwen3_moe")
+    # 2D tensor named like an expert param is not the batched layout
+    assert not applies(name, torch.zeros(6, 4), "qwen3_moe")
+
+
 def test_iter_passthrough_for_non_expert():
     # model=None proves the passthrough path never consumes the model
     p = torch.zeros(4, 4)
@@ -121,6 +140,43 @@ def test_iter_passthrough_for_non_expert():
     g = torch.zeros(2, 6, 4)
     out = list(_iter_sync_named_params("model.layers.0.mlp.experts.gate_up_proj", g, "qwen3_5_moe", model=None))
     assert len(out) == 1 and out[0][1] is g
+
+
+def test_nemotron_h_post_load_fixup_gating():
+    from types import SimpleNamespace
+
+    from miles.backends.experimental.fsdp_utils.adaptations.post_load_fixups import _FIXUPS
+
+    by_name = {f.name: f for f in _FIXUPS}
+    fixup = by_name["nemotron_h_clobber_reload"]
+    assert fixup.applies_to(SimpleNamespace(model_type="nemotron_h"))
+    assert not fixup.applies_to(SimpleNamespace(model_type="mamba2"))
+    assert not fixup.applies_to(SimpleNamespace(model_type="hybrid", layer_types=["mamba", "attention"]))
+    assert not fixup.applies_to(SimpleNamespace(model_type="qwen3_moe"))
+
+
+def test_post_load_fixup_lazily_loads_model_implementation():
+    script = """
+import sys
+import tempfile
+from types import SimpleNamespace
+
+from miles.backends.experimental.fsdp_utils.adaptations.post_load_fixups import (
+    _FIXUPS,
+    apply_post_load_fixups,
+)
+
+module_name = "miles.backends.experimental.fsdp_utils.models.nemotron_h"
+assert [fixup.name for fixup in _FIXUPS].count("nemotron_h_clobber_reload") == 1
+assert module_name not in sys.modules
+apply_post_load_fixups(object(), SimpleNamespace(model_type="mamba2"), ".")
+assert module_name not in sys.modules
+with tempfile.TemporaryDirectory() as ckpt_path:
+    apply_post_load_fixups(object(), SimpleNamespace(model_type="nemotron_h"), ckpt_path)
+assert module_name in sys.modules
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_reload_nemotron_h_clobbered_weights_behavior(tmp_path, caplog):
@@ -171,6 +227,55 @@ def test_reload_nemotron_h_clobbered_weights_behavior(tmp_path, caplog):
         record.name == "miles.backends.experimental.fsdp_utils.models.nemotron_h"
         and "restored 1 NemotronH mixer parameter(s)" in record.getMessage()
         for record in caplog.records
+    )
+
+
+def test_weight_bridge_registry():
+    # The WeightBridge registry is the train->rollout param-name/shape contract: a model type with
+    # a registered transform gets its params rewritten; unregistered types stream verbatim.
+    import torch
+
+    from miles.backends.experimental.fsdp_utils.adaptations.weight_bridge import (
+        get_param_transform,
+        register_param_transform,
+    )
+
+    # qwen3_moe is registered (batched experts -> per-expert); a 3D experts param matches.
+    g = torch.zeros(2, 6, 4)
+    assert get_param_transform("model.layers.0.mlp.experts.gate_up_proj", g, "qwen3_moe") is not None
+    # unregistered model type -> no transform (passthrough)
+    assert get_param_transform("model.layers.0.mlp.experts.gate_up_proj", g, "qwen3_5_moe") is None
+    # registering a new transform routes matching params through it
+    register_param_transform(
+        "_test_arch",
+        matches=lambda name, p: name.endswith(".foo"),
+        expand=lambda name, full: [(name.replace(".foo", ".bar"), full)],
+    )
+    fn = get_param_transform("x.foo", g, "_test_arch")
+    assert fn is not None and list(fn("x.foo", g))[0][0] == "x.bar"
+    assert get_param_transform("x.baz", g, "_test_arch") is None
+
+
+def test_model_patch_registry_gating():
+    # The ModelPatchHook registry replaces the hardcoded per-arch dispatch in apply_class_patches.
+    # Verify the config-check predicates gate correctly. Packed-sequence layout patches (GDN, ...) moved
+    # out of this registry into the unified packing registry (test_packing_registry below);
+    # apply_class_patches now dispatches them via apply_packing.
+    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
+
+    by_name = {h.name: h for h in _MODEL_PATCH_HOOKS}
+    assert "gated_deltanet_packing" not in by_name
+    assert not by_name["fp8_checkpoint_guard"].applies_to(None)
+    # the qwen3_moe MoE-block patch is a hook now (moved out of _enable_true_on_policy_optimizations),
+    # gated on model_type; the backend-level enable_batch_invariant_mode stays in the actor.
+    from types import SimpleNamespace
+
+    assert "qwen3_moe_moe_patch" in by_name
+    assert by_name["qwen3_moe_moe_patch"].applies_to(SimpleNamespace(model_type="qwen3_moe"))
+    assert not by_name["qwen3_moe_moe_patch"].applies_to(SimpleNamespace(model_type="qwen3"))
+    # Batched experts need no off-mode patch under the pinned transformers version.
+    by_name["qwen3_moe_moe_patch"].apply(
+        SimpleNamespace(model_type="qwen3_moe"), SimpleNamespace(true_on_policy_mode=False)
     )
 
 
@@ -253,3 +358,30 @@ def test_nemotron_attention_reuses_precomputed_max_seqlen(monkeypatch):
     assert flash_calls["cu_seqlens_q"] is cu_seqlens
     assert flash_calls["max_seqlen_q"] == 3
     assert flash_calls["max_seqlen_k"] == 3
+
+
+def test_packing_registry():
+    # The unified packing registry dispatches per (model_type, lifetime); GDN is config-lifetime,
+    # NemotronH is post-load-lifetime, and archs that pack natively / don't pack match nothing.
+    from types import SimpleNamespace
+
+    from miles.backends.experimental.fsdp_utils.adaptations.packing import get_packing_patches
+
+    gdn = SimpleNamespace(model_type="qwen3_5_moe", layer_types=["linear_attention", "full_attention"])
+    nemo = SimpleNamespace(model_type="nemotron_h")
+    glm = SimpleNamespace(model_type="glm4_moe_lite", layer_types=["full_attention"])
+    dense = SimpleNamespace(model_type="qwen3", layer_types=["full_attention"])
+
+    def names(cfg, lifetime):
+        return {p.name for p in get_packing_patches(cfg, lifetime)}
+
+    # GatedDeltaNet: config lifetime only
+    assert names(gdn, "config") == {"gated_deltanet_packing"}
+    assert names(gdn, "post_load") == set()
+    # NemotronH: post-load lifetime only
+    assert names(nemo, "post_load") == {"nemotron_h_packing"}
+    assert names(nemo, "config") == set()
+    # glm4_moe_lite (native MLA varlen) and dense qwen3: no packing patch at either lifetime
+    for cfg in (glm, dense, None):
+        assert names(cfg, "config") == set()
+        assert names(cfg, "post_load") == set()
