@@ -9,6 +9,8 @@ Covers:
     per-tensor revert semantics turns them red.
 """
 
+import logging
+
 import pytest
 import torch
 
@@ -121,6 +123,57 @@ def test_iter_passthrough_for_non_expert():
     assert len(out) == 1 and out[0][1] is g
 
 
+def test_reload_nemotron_h_clobbered_weights_behavior(tmp_path, caplog):
+    from safetensors.torch import save_file
+
+    from miles.backends.experimental.fsdp_utils.models.nemotron_h import reload_nemotron_h_clobbered_weights
+
+    class Mixer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dt_bias = torch.nn.Parameter(torch.tensor([1.0005]))
+            self.out_proj = torch.nn.Linear(1, 1, bias=False)
+            self.in_proj = torch.nn.Linear(1, 1, bias=False)
+            self.out_proj.weight.data.fill_(2.0)
+            self.in_proj.weight.data.fill_(3.0)
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            layer = torch.nn.Module()
+            layer.mixer = Mixer()
+            self.backbone = torch.nn.ModuleList([layer])
+
+    model = Model()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert reload_nemotron_h_clobbered_weights(model, empty) == 0
+
+    disk = {
+        "backbone.0.mixer.dt_bias": torch.ones(1),
+        "backbone.0.mixer.out_proj.weight": torch.ones(1, 1),
+        "backbone.0.mixer.in_proj.weight": torch.ones(1, 1),
+    }
+    save_file(disk, tmp_path / "model.safetensors")
+    assert reload_nemotron_h_clobbered_weights(model, tmp_path) == 1
+    torch.testing.assert_close(model.backbone[0].mixer.dt_bias, torch.tensor([1.0005]))
+    torch.testing.assert_close(model.backbone[0].mixer.out_proj.weight, torch.ones(1, 1))
+    torch.testing.assert_close(model.backbone[0].mixer.in_proj.weight, torch.tensor([[3.0]]))
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="miles.backends.experimental.fsdp_utils.models.nemotron_h",
+    ):
+        assert reload_nemotron_h_clobbered_weights(model, tmp_path, tol=1e-4) == 1
+    torch.testing.assert_close(model.backbone[0].mixer.dt_bias, torch.ones(1))
+    torch.testing.assert_close(model.backbone[0].mixer.in_proj.weight, torch.tensor([[3.0]]))
+    assert any(
+        record.name == "miles.backends.experimental.fsdp_utils.models.nemotron_h"
+        and "restored 1 NemotronH mixer parameter(s)" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_packed_seq_context_boundaries():
     # The shared boundary derivation (formerly duplicated verbatim in nemotron_h.py + qwen3_5_moe.py).
     from miles.backends.experimental.fsdp_utils.adaptations.packing.boundaries import packed_seq_context
@@ -141,3 +194,62 @@ def test_packed_seq_context_boundaries():
     assert ctx.seq_idx.dtype == torch.int32
     assert ctx.seq_idx.shape == (1, 9)
     assert ctx.max_seqlen == 4
+
+
+def test_nemotron_attention_reuses_precomputed_max_seqlen(monkeypatch):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from miles.backends.experimental.fsdp_utils.models import nemotron_h
+
+    flash_calls = {}
+    flash_attn = ModuleType("flash_attn")
+
+    def flash_attn_varlen_func(q, k, v, **kwargs):
+        flash_calls.update(kwargs)
+        return q
+
+    flash_attn.flash_attn_varlen_func = flash_attn_varlen_func
+    monkeypatch.setitem(sys.modules, "flash_attn", flash_attn)
+
+    class UnreadableCuSeqlens:
+        def __getitem__(self, key):
+            raise AssertionError("attention must not recompute max_seqlen from cu_seqlens")
+
+    cu_seqlens = UnreadableCuSeqlens()
+    ctx = SimpleNamespace(cu_seqlens=cu_seqlens, seq_idx=None, max_seqlen=3)
+    monkeypatch.setattr(nemotron_h, "packed_seq_context", lambda position_ids: ctx)
+
+    class DummyMixer(torch.nn.Module):
+        pass
+
+    class DummyAttention(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.head_dim = 2
+            self.q_proj = torch.nn.Identity()
+            self.k_proj = torch.nn.Identity()
+            self.v_proj = torch.nn.Identity()
+            self.o_proj = torch.nn.Identity()
+
+        def forward(self, hidden_states, *args, **kwargs):
+            raise AssertionError("packed attention should use flash_attn_varlen_func")
+
+    class DummyCausalLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = DummyAttention()
+
+        def forward(self, hidden_states, position_ids=None):
+            return self.attn(hidden_states)
+
+    nemotron_h._patch_attn_forward(DummyAttention)
+    nemotron_h._patch_causallm_forward(DummyCausalLM, DummyMixer, DummyAttention)
+
+    model = DummyCausalLM()
+    output, _ = model(torch.ones(1, 3, 2), position_ids=torch.zeros(1, 3, dtype=torch.long))
+
+    assert output.shape == (1, 3, 2)
+    assert flash_calls["cu_seqlens_q"] is cu_seqlens
+    assert flash_calls["max_seqlen_q"] == 3
+    assert flash_calls["max_seqlen_k"] == 3
