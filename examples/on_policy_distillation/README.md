@@ -10,6 +10,10 @@ This directory contains runnable examples:
 - `run-qwen3-8B-opd.sh`: SGLang teacher server OPD. This script enables
   Rethinking OPD with `--opd-log-prob-top-k 16`, `--opd-top-k-strategy only-student`,
   and `--opd-reward-weight-mode student_p`.
+- `run-qwen3-8B-opd-multi-teacher.sh`: Multi-teacher OPD with per-sample routing.
+  Math prompts are scored by a Qwen3-32B teacher and code prompts by a
+  Qwen3-Coder-30B-A3B teacher, selected via `--opd-teacher-urls` and a per-row
+  `{"metadata": {"opd_teacher": ...}}` tag in the dataset.
 - `run-qwen3-8B-opd-megatron.sh`: Megatron-loaded teacher OPD.
 
 Use `--opd-log-prob-top-k 0` to run the original sampled-token OPD path.

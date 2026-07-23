@@ -19,6 +19,60 @@ TEACHER_TOP_STRATEGIES = TOP_K_STRATEGIES - {"only-student"}
 TEACHER_ON_STUDENT_STRATEGIES = {"only-student", "union", "xor"}
 STUDENT_ON_TEACHER_STRATEGIES = {"only-teacher", "union", "xor"}
 
+# Reserved teacher name in --opd-teacher-urls used as the fallback route.
+DEFAULT_TEACHER_NAME = "default"
+
+
+def parse_teacher_urls(values: Iterable[str] | None) -> dict[str, str]:
+    """Parse ``NAME=URL`` entries from ``--opd-teacher-urls`` into a routing map.
+
+    Splits on the first ``=`` only, so URLs containing ``=`` (e.g. query
+    strings) survive intact. Raises on malformed entries and duplicate names
+    so misconfiguration fails at startup, not mid-rollout.
+    """
+    url_map: dict[str, str] = {}
+    for value in values or []:
+        name, sep, url = value.partition("=")
+        name, url = name.strip(), url.strip()
+        if not sep or not name or not url:
+            raise ValueError(f"Invalid --opd-teacher-urls entry {value!r}; expected NAME=URL.")
+        if name in url_map:
+            raise ValueError(f"Duplicate teacher name {name!r} in --opd-teacher-urls.")
+        url_map[name] = url
+    return url_map
+
+
+def _teacher_url_for_sample(args: Namespace, sample: Sample) -> str:
+    """Resolve the teacher scoring endpoint for one sample.
+
+    Without ``--opd-teacher-urls`` every sample goes to ``--rm-url`` (the
+    original single-teacher path, unchanged). With it, the sample is routed by
+    the teacher name in ``sample.metadata[--opd-teacher-key]``; samples whose
+    name is missing or unknown fall back to the reserved ``default`` entry,
+    and raise if no default is configured — silently distilling from the
+    wrong teacher is worse than failing the rollout.
+    """
+    url_map = parse_teacher_urls(getattr(args, "opd_teacher_urls", None))
+    if not url_map:
+        return args.rm_url
+
+    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
+    key = getattr(args, "opd_teacher_key", "opd_teacher")
+    name = metadata.get(key)
+    if name is not None:
+        url = url_map.get(str(name))
+        if url is not None:
+            return url
+        if DEFAULT_TEACHER_NAME in url_map:
+            return url_map[DEFAULT_TEACHER_NAME]
+        raise ValueError(
+            f"Sample metadata[{key!r}]={name!r} matches no --opd-teacher-urls name "
+            f"(known: {sorted(url_map)}) and no 'default' entry is configured."
+        )
+    if DEFAULT_TEACHER_NAME in url_map:
+        return url_map[DEFAULT_TEACHER_NAME]
+    raise ValueError(f"Sample metadata is missing teacher key {key!r} and --opd-teacher-urls has no 'default' entry.")
+
 
 def _get_opd_top_k(args: Namespace) -> int:
     return max(0, int(getattr(args, "opd_log_prob_top_k", 0) or 0))
@@ -38,7 +92,12 @@ def _get_reward_weight_mode(args: Namespace) -> str:
     return mode
 
 
-def _score_payload(input_ids: list[int], top_k: int = 0, token_ids: list[int] | None = None) -> dict[str, Any]:
+def _score_payload(
+    input_ids: list[int],
+    top_k: int = 0,
+    token_ids: list[int] | None = None,
+    token_ids_positions: list[list[int]] | None = None,
+) -> dict[str, Any]:
     payload = {
         "input_ids": input_ids,
         "sampling_params": {
@@ -51,17 +110,38 @@ def _score_payload(input_ids: list[int], top_k: int = 0, token_ids: list[int] | 
     }
     if top_k > 0:
         payload["top_logprobs_num"] = top_k
-    if token_ids:
+    if token_ids_positions is not None:
+        # Per-position scoring (patched sglang): one id-list per input position, so the
+        # teacher returns each position's own ids (sparse) instead of the global union
+        # broadcast to every position (dense O(R^2)). Aligned to logprob_start_len=0.
+        payload["token_ids_logprob_positions"] = token_ids_positions
+    elif token_ids:
         payload["token_ids_logprob"] = token_ids
     return payload
+
+
+def _per_position_ids(top_logprobs: TopLogprobs, prompt_len: int) -> list[list[int]]:
+    """Build one token-id list per scored input position for ``token_ids_logprob_positions``.
+
+    ``top_logprobs`` is per response position (length == response_length). Prompt
+    positions are padded with empty id-lists so the layout aligns with
+    ``logprob_start_len=0`` and the existing ``_trim_input_field`` extraction
+    (``values[1:][-response_length:]``) — i.e. response position r lands at index
+    ``prompt_len + r``.
+    """
+    per_pos: list[list[int]] = [[] for _ in range(prompt_len)]
+    for entries in top_logprobs:
+        per_pos.append([_top_entry_token_id(e) for e in (entries or []) if e is not None])
+    return per_pos
 
 
 def _student_score_url(args: Namespace) -> str:
     return f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
 
-async def _post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
-    async with aiohttp.ClientSession() as session:
+async def _post_json(url: str, payload: dict[str, Any], timeout_secs: int | float | None = None) -> dict[str, Any]:
+    timeout = aiohttp.ClientTimeout(total=timeout_secs)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(url, json=payload) as resp:
             resp.raise_for_status()
             return await resp.json()
@@ -271,30 +351,50 @@ def _compute_topk_reverse_kl(
 
 async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[str, Any]:
     top_k = _get_opd_top_k(args)
+    # Optional per-request timeout so a hung teacher/student scoring call cannot stall
+    # the whole rollout (no-op when unset).
+    request_timeout = getattr(args, "sglang_router_request_timeout_secs", None)
+    # Multi-teacher routing: pick this sample's teacher endpoint (falls back to
+    # --rm-url when --opd-teacher-urls is unset).
+    teacher_url = _teacher_url_for_sample(args, sample)
     if top_k == 0:
-        return await _post_json(args.rm_url, _score_payload(sample.tokens))
+        return await _post_json(teacher_url, _score_payload(sample.tokens), timeout_secs=request_timeout)
 
     strategy = _get_top_k_strategy(args)
+    # Per-position scoring requires a patched teacher/student server that understands
+    # token_ids_logprob_positions; default off so an unpatched server keeps working.
+    per_position = getattr(args, "opd_topk_per_position", False)
+    prompt_len = len(sample.tokens) - sample.response_length
 
-    teacher_token_ids = None
+    teacher_top_k = top_k if strategy in TEACHER_TOP_STRATEGIES else 0
     if strategy in TEACHER_ON_STUDENT_STRATEGIES:
         student_top = _student_top_logprobs(sample, sample.response_length)
         teacher_token_ids = _unique_ids(student_top)
+    else:
+        student_top = None
+        teacher_token_ids = None
 
-    teacher_payload = _score_payload(
-        sample.tokens,
-        top_k=top_k if strategy in TEACHER_TOP_STRATEGIES else 0,
-        token_ids=teacher_token_ids,
-    )
-    teacher_response = await _post_json(args.rm_url, teacher_payload)
+    if student_top is not None and per_position:
+        teacher_payload = _score_payload(
+            sample.tokens, top_k=teacher_top_k, token_ids_positions=_per_position_ids(student_top, prompt_len)
+        )
+    elif teacher_token_ids is not None:
+        teacher_payload = _score_payload(sample.tokens, top_k=teacher_top_k, token_ids=teacher_token_ids)
+    else:
+        teacher_payload = _score_payload(sample.tokens, top_k=teacher_top_k)
+    teacher_response = await _post_json(teacher_url, teacher_payload, timeout_secs=request_timeout)
 
     reward_payload = {"teacher": teacher_response}
     if strategy in STUDENT_ON_TEACHER_STRATEGIES:
         teacher_top = _trim_input_field(teacher_response["meta_info"], "input_top_logprobs", sample.response_length)
-        student_token_ids = _unique_ids(teacher_top)
+        if per_position:
+            student_payload = _score_payload(
+                sample.tokens, token_ids_positions=_per_position_ids(teacher_top, prompt_len)
+            )
+        else:
+            student_payload = _score_payload(sample.tokens, token_ids=_unique_ids(teacher_top))
         reward_payload["student_on_teacher"] = await _post_json(
-            _student_score_url(args),
-            _score_payload(sample.tokens, token_ids=student_token_ids),
+            _student_score_url(args), student_payload, timeout_secs=request_timeout
         )
 
     return reward_payload
