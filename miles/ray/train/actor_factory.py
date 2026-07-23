@@ -38,6 +38,26 @@ def allocate_gpus_for_actor(
         **args.train_env_vars,
     }
 
+    if args.update_weight_transfer_mode == "rdt":
+        # RDT/NIXL: let Ray set CUDA_VISIBLE_DEVICES per training actor so each
+        # NCCL rank sees only its assigned GPU. NIXL still works because it uses
+        # CUDA driver APIs for physical GPU IDs.
+        env_vars["RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES"] = "0"
+        # Each SchedulerActor that maps this trainer's IPC bucket holds a
+        # ~520 MiB CUDA context on the trainer GPU; expandable segments
+        # reclaim allocator fragmentation so tightly-packed trainers (e.g.
+        # the multi_engine validate case) keep enough headroom.
+        env_vars.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        # NOTE: do NOT unmask CUDA_VISIBLE_DEVICES here (tried; with 8 GPUs
+        # visible, helper threads default to cuda:0 and NCCL group re-init
+        # in reloadable_process_group fails with "Duplicate GPU detected").
+        #
+        # LIBFABRIC-vs-UCX backend probe must validate registration at the
+        # size we actually register (the staging bucket), not a token size:
+        # EFA accepts small CUDA MRs via its host bounce pool even when
+        # GPUDirect is broken, then fails on the real bucket.
+        env_vars.setdefault("MILES_RDT_NIXL_VALIDATE_BYTES", str(args.update_weight_buffer_size))
+
     if source_patcher_config := args.dumper_source_patcher_config_train:
         env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
 
@@ -71,11 +91,20 @@ def allocate_gpus_for_actor(
         actor_impl = FSDPTrainRayActor
 
     ft = args.use_fault_tolerance
-    TrainRayActor = ray.remote(
-        num_gpus=1,
-        runtime_env={"env_vars": env_vars},
-        **(dict(concurrency_groups={"heartbeat_status": 1, "default": 1, "fault_injector": 1}) if ft else {}),
-    )(_with_ft_concurrency_groups(actor_impl) if ft else actor_impl)
+    remote_kwargs = {"num_gpus": 1, "runtime_env": {"env_vars": env_vars}}
+    if ft:
+        remote_kwargs["concurrency_groups"] = {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+    elif args.update_weight_transfer_mode == "rdt":
+        # RDT/NIXL: update_weights() blocks this actor in ray.get() while it
+        # awaits each engine rank's pull_weights, and Ray's tensor-transport
+        # threads concurrently serve the NIXL reads of the
+        # ray.put(_tensor_transport="nixl") objects owned by this same actor.
+        # Raise the actor's concurrency above 1 so the blocking update_weights
+        # call does not starve those concurrent serve operations (one per
+        # engine rank this source feeds).
+        rdt_tp_size = getattr(args, "rollout_num_gpus_per_engine", 1)
+        remote_kwargs["max_concurrency"] = 1 + rdt_tp_size
+    TrainRayActor = ray.remote(**remote_kwargs)(_with_ft_concurrency_groups(actor_impl) if ft else actor_impl)
 
     # Create worker actors
     actor_handles = []
