@@ -33,6 +33,10 @@ from ...training_utils.log_utils import (
 from ...training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from ...training_utils.parallel import get_parallel_state, set_parallel_state
 from . import checkpoint
+from .adaptations.class_patches import apply_class_patches
+from .adaptations.packing import apply_packing
+from .adaptations.post_load_fixups import apply_post_load_fixups
+from .adaptations.precision import apply_fp32_master, resolve_precision_policy
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
@@ -110,9 +114,6 @@ class FSDPTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
 
         # FSDP trains stock HF modeling: HF-compat patches + config-lifetime packing, before construction.
-        from .adaptations.class_patches import apply_class_patches
-        from .adaptations.packing import apply_packing
-
         apply_class_patches(self.hf_config, self.args)
         apply_packing(None, self.hf_config, "config")
 
@@ -128,15 +129,11 @@ class FSDPTrainRayActor(TrainRayActor):
                 attn_implementation=self.args.attn_implementation,
             )
 
-        from .adaptations.precision import apply_fp32_master, resolve_precision_policy
-
         precision = resolve_precision_policy(self.hf_config, self.args)
         if precision.keep_fp32_master:
             model = apply_fp32_master(model)
 
         # re-assert the checkpoint over any param from_pretrained clobbered post-load (arch-gated, else no-op)
-        from .adaptations.post_load_fixups import apply_post_load_fixups
-
         apply_post_load_fixups(model, self.hf_config, self.args.hf_checkpoint)
 
         # post-load packing patches that need the instantiated model (NemotronH); no-op for archs that don't
