@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import re
 import time
 import traceback
@@ -189,7 +190,7 @@ async def run_agent_system(args, sample):
     并发运行 num_parallel 组 pipeline。
     """
 
-    args = deepcopy(args)  # 深拷贝 args，因为 args 在 rollout_with_multi_agents 中会被修改
+    args = copy.copy(args)
     args.sample = sample
     args.results_dict = {"solver": [], "rewriter": [], "selector": []}
 

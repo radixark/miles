@@ -1,3 +1,4 @@
+import copy
 import random
 
 from miles.utils.misc import load_function
@@ -11,15 +12,22 @@ MULTI_AGENT_CONFIGS = {
     "correct_reward_weight": 1.2,
 }
 
+_TOKENIZER = None
+
 
 async def generate_with_multi_agents(args, sample: Sample, sampling_params, evaluation=False) -> list[Sample]:
 
-    tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True)
+    global _TOKENIZER
+    if _TOKENIZER is None:
+        _TOKENIZER = load_tokenizer(
+            args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
+        )
     max_context_length = args.rollout_max_context_len if not evaluation else args.eval_max_context_len
 
+    args = copy.copy(args)
     args.sampling_params = sampling_params
     args.rollout_max_context_len = max_context_length
-    args.tokenizer = tokenizer
+    args.tokenizer = _TOKENIZER
 
     for key, value in MULTI_AGENT_CONFIGS.items():
         setattr(args, key, value)
