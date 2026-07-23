@@ -2,6 +2,7 @@ import logging
 import os
 import random
 from argparse import Namespace
+from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
 import ray
