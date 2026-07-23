@@ -32,7 +32,7 @@ function that owns the background worker:
 ```diff
 - python3 train.py ...
 + python3 train_async.py ...
-+   --rollout-function-path fully_async_rollout.generate_rollout_fully_async
++   --rollout-function-path miles.rollout.fully_async_rollout.generate_rollout_fully_async
 ```
 
 Everything else belongs in the same [argument groups](/user-guide/argument-groups) as a
