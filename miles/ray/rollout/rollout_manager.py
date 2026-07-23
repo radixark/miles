@@ -58,7 +58,7 @@ class RolloutManager:
         self.args = args
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
-        object_store.init_instance(args, contribute_segment=True)
+        object_store.init_instance(args, contribute_segment=False)
 
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
