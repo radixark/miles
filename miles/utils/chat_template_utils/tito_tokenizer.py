@@ -94,6 +94,13 @@ class TITOTokenizer:
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
 
+    # Whether the family's fixed template can canonically re-render a
+    # mid-conversation assistant (reasoning preserved). DeepSeek-V3.2 is the
+    # one structural exception: its sglang encoder hardcodes the think gate
+    # with no escape kwarg, so an assistant preceding a later user turn
+    # cannot be re-rendered without cutting reasoning.
+    supports_midpath_assistant_rerender: bool = True
+
     # ``(roles, template, extra_kwargs)`` rows this family supports.  Resolved
     # by ``resolve_fixed_chat_template`` via smallest-superset match against
     # the caller's ``allowed_append_roles``.
@@ -307,6 +314,7 @@ class Qwen3TITOTokenizer(TITOTokenizer):
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
             template="qwen3_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
         ),
         FixedTemplateRow(
             allowed_roles=frozenset({"tool", "user"}),
@@ -366,6 +374,7 @@ class Qwen35TITOTokenizer(Qwen3TITOTokenizer):
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
             template="qwen3.5_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
         ),
         FixedTemplateRow(
             allowed_roles=frozenset({"tool", "user"}),
@@ -383,6 +392,7 @@ class QwenNextTITOTokenizer(Qwen3TITOTokenizer):
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
             template="qwen3_thinking_2507_and_next_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
         ),
         FixedTemplateRow(
             allowed_roles=frozenset({"tool", "user"}),
@@ -418,6 +428,7 @@ class GLM47TITOTokenizer(TITOTokenizer):
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
             template=None,
+            extra_kwargs={"clear_thinking": False},
         ),
         FixedTemplateRow(
             allowed_roles=frozenset({"tool", "user"}),
@@ -479,9 +490,10 @@ class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
     ``<|im_end|>`` without the trailing newline.
 
     No fixed jinja is shipped — HF native template is append-only when
-    ``truncate_history_thinking=False``.  Multi-user-turn surfaces
-    auto-merge that kwarg via ``extra_kwargs`` below; ``{tool}``-only does
-    not need it (no user-turn boundary to truncate across).
+    ``truncate_history_thinking=False``.  That kwarg is a family constant on
+    every surface: history reasoning must never be cut, because carried
+    assistant deltas are re-rendered canonically mid-path (trajectory-tree
+    design; see the preserve-think registry test).
 
     The plain-text assistant turn does not roundtrip cleanly under
     sglang's upstream ``nemotron_3`` reasoning parser (it keeps a trailing
@@ -497,6 +509,7 @@ class Nemotron3TITOTokenizer(Qwen3TITOTokenizer):
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
             template=None,
+            extra_kwargs={"truncate_history_thinking": False},
         ),
         FixedTemplateRow(
             allowed_roles=frozenset({"tool", "user"}),
@@ -647,7 +660,8 @@ class MinimaxM25TITOTokenizer(TITOTokenizer):
     SUPPORTED_TEMPLATES = (
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
-            template=None,
+            template="minimax_m25_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
         ),
         FixedTemplateRow(
             allowed_roles=frozenset({"tool", "user"}),
@@ -704,7 +718,8 @@ class MinimaxM27TITOTokenizer(MinimaxM25TITOTokenizer):
     SUPPORTED_TEMPLATES = (
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
-            template=None,
+            template="minimax_m27_fixed.jinja",
+            extra_kwargs={"clear_thinking": False},
         ),
         FixedTemplateRow(
             allowed_roles=frozenset({"tool", "user"}),
@@ -735,6 +750,8 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
     append-only.  Tool-only append is safe because ``find_last_user_index``
     ignores tool roles, so the last-user position never moves.
     """
+
+    supports_midpath_assistant_rerender = False
 
     reasoning_parser = "deepseek-v3"
     tool_call_parser = "deepseekv32"
@@ -791,6 +808,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
             template=None,
+            extra_kwargs={"drop_thinking": False},
         ),
         FixedTemplateRow(
             allowed_roles=frozenset({"tool", "user"}),

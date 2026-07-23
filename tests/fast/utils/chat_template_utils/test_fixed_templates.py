@@ -10,7 +10,12 @@ import os
 import pytest
 
 from miles.utils.chat_template_utils import TEMPLATE_DIR, TITOTokenizerType, resolve_fixed_chat_template
-from miles.utils.chat_template_utils.tito_tokenizer import FixedTemplateRow, Qwen3TITOTokenizer, Qwen35TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer import (
+    FixedTemplateRow,
+    Qwen3TITOTokenizer,
+    Qwen35TITOTokenizer,
+    TITOTokenizer,
+)
 
 _QWEN3_FIXED = str(TEMPLATE_DIR / "qwen3_fixed.jinja")
 _QWEN35_FIXED = str(TEMPLATE_DIR / "qwen3.5_fixed.jinja")
@@ -28,17 +33,21 @@ _THINKING_FIXED = str(TEMPLATE_DIR / "qwen3_thinking_2507_and_next_fixed.jinja")
 def test_tool_only_resolution_matches_registered_template(tito_model, expected_path):
     path, kwargs = resolve_fixed_chat_template(tito_model, ["tool"])
     assert path == expected_path
-    assert kwargs == {}
+    # Preserve-think kwargs are family constants on every surface (carried
+    # assistant deltas re-render mid-path assistants; F5 spike verified the
+    # pure tool-loop rendering is byte-identical with and without the kwarg).
+    assert kwargs == {"clear_thinking": False}
     assert os.path.isfile(path)
 
 
-def test_deepseek_v4_tool_only_is_hf_native_no_kwargs():
-    # The native tool-calling surface keeps the HF-native dsv4 bridge with no
-    # kwargs override; the encoder itself forces drop_thinking=False whenever
-    # `tools` are present, so this surface is already append-only.
+def test_deepseek_v4_tool_only_pins_drop_thinking_false():
+    # drop_thinking=False is a family constant on every surface. The encoder
+    # forces it only when `tools` are present; a tool-loop driven WITHOUT the
+    # tools field (or a carried assistant delta) would otherwise strip prior
+    # thinking once merge_tool_messages advances last_user_index.
     path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.DEEPSEEKV4, ["tool"])
     assert path is None
-    assert kwargs == {}
+    assert kwargs == {"drop_thinking": False}
 
 
 def test_deepseek_v4_tool_user_pins_drop_thinking_false():
@@ -176,3 +185,27 @@ def test_kwargs_only_row_returns_none_path_and_kwargs(monkeypatch):
 def test_invalid_role_raises():
     with pytest.raises(ValueError, match="Unknown roles"):
         resolve_fixed_chat_template(TITOTokenizerType.QWEN3, ["tool", "users"])
+
+
+def test_preserve_think_kwargs_are_family_constants():
+    """Trajectory-tree precondition (MULTI_LINEAGE_DESIGN, F5 spike): carried
+    assistant deltas are re-rendered canonically, so think-preservation must
+    not depend on which append surface was requested — every registered row
+    of a family must resolve to the same (template, extra_kwargs)."""
+
+    def own_registries(cls):
+        for sub in cls.__subclasses__():
+            rows = sub.__dict__.get("SUPPORTED_TEMPLATES")
+            if rows:
+                yield sub, rows
+            yield from own_registries(sub)
+
+    checked = 0
+    for family, rows in own_registries(TITOTokenizer):
+        configs = {(row.template, tuple(sorted(row.extra_kwargs.items()))) for row in rows}
+        assert len(configs) == 1, (
+            f"{family.__name__}: (template, extra_kwargs) must be a family constant "
+            f"across append surfaces, got {configs}"
+        )
+        checked += 1
+    assert checked >= 10
