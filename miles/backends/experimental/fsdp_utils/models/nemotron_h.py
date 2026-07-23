@@ -83,7 +83,7 @@ def _patch_attn_forward(attn_cls):
         qf = Q.transpose(1, 2).reshape(q, self.num_heads, self.head_dim).contiguous()
         kf = kk.transpose(1, 2).reshape(q, self.num_heads, self.head_dim).contiguous()
         vf = vv.transpose(1, 2).reshape(q, self.num_heads, self.head_dim).contiguous()
-        ml = int((cu[1:] - cu[:-1]).max())
+        ml = self._packing_max_seqlen
         o = flash_attn_varlen_func(
             qf, kf, vf, cu_seqlens_q=cu, cu_seqlens_k=cu, max_seqlen_q=ml, max_seqlen_k=ml, causal=True
         )
@@ -111,11 +111,13 @@ def _patch_causallm_forward(causallm_cls, mixer_cls, attn_cls):
         ctx = packed_seq_context(position_ids)
         cu = ctx.cu_seqlens if ctx is not None else None
         si = ctx.seq_idx if ctx is not None else None
+        ml = ctx.max_seqlen if ctx is not None else None
         for mod in self.modules():
             if isinstance(mod, mixer_cls):
                 mod._packing_seq_idx = si
             elif attn_cls is not None and isinstance(mod, attn_cls):
                 mod._packing_cu_seqlens = cu
+                mod._packing_max_seqlen = ml
         return orig(self, *args, **kwargs)
 
     forward._nemotron_packing = True

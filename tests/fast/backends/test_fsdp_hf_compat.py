@@ -258,6 +258,69 @@ def test_packed_seq_context_boundaries():
     assert ctx.max_seqlen == 4
 
 
+def test_nemotron_attention_reuses_precomputed_max_seqlen(monkeypatch):
+    import sys
+    from types import ModuleType, SimpleNamespace
+
+    from miles.backends.experimental.fsdp_utils.models import nemotron_h
+
+    flash_calls = {}
+    flash_attn = ModuleType("flash_attn")
+
+    def flash_attn_varlen_func(q, k, v, **kwargs):
+        flash_calls.update(kwargs)
+        return q
+
+    flash_attn.flash_attn_varlen_func = flash_attn_varlen_func
+    monkeypatch.setitem(sys.modules, "flash_attn", flash_attn)
+    monkeypatch.setattr(sys.modules[__name__], "repeat_kv", lambda tensor, groups: tensor, raising=False)
+
+    class UnreadableCuSeqlens:
+        def __getitem__(self, key):
+            raise AssertionError("attention must not recompute max_seqlen from cu_seqlens")
+
+    cu_seqlens = UnreadableCuSeqlens()
+    ctx = SimpleNamespace(cu_seqlens=cu_seqlens, seq_idx=None, max_seqlen=3)
+    monkeypatch.setattr(nemotron_h, "packed_seq_context", lambda position_ids: ctx)
+
+    class DummyMixer(torch.nn.Module):
+        pass
+
+    class DummyAttention(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.num_heads = 1
+            self.num_key_value_heads = 1
+            self.num_key_value_groups = 1
+            self.head_dim = 2
+            self.q_proj = torch.nn.Identity()
+            self.k_proj = torch.nn.Identity()
+            self.v_proj = torch.nn.Identity()
+            self.o_proj = torch.nn.Identity()
+
+        def forward(self, hidden_states, *args, **kwargs):
+            raise AssertionError("packed attention should use flash_attn_varlen_func")
+
+    class DummyCausalLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = DummyAttention()
+
+        def forward(self, hidden_states, position_ids=None):
+            return self.attn(hidden_states)
+
+    nemotron_h._patch_attn_forward(DummyAttention)
+    nemotron_h._patch_causallm_forward(DummyCausalLM, DummyMixer, DummyAttention)
+
+    model = DummyCausalLM()
+    output, _, _ = model(torch.ones(1, 3, 2), position_ids=torch.zeros(1, 3, dtype=torch.long))
+
+    assert output.shape == (1, 3, 2)
+    assert flash_calls["cu_seqlens_q"] is cu_seqlens
+    assert flash_calls["max_seqlen_q"] == 3
+    assert flash_calls["max_seqlen_k"] == 3
+
+
 def test_packing_registry():
     # The unified packing registry dispatches per (model_type, lifetime); GDN is config-lifetime,
     # NemotronH is post-load-lifetime, and archs that pack natively / don't pack match nothing.
