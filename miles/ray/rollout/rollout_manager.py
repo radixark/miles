@@ -14,11 +14,10 @@ from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_server
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.rollout.train_data_conversion import (
-    ROLLOUT_DATA_FIELD_SCHEMA_SPECS,
+    ROLLOUT_DATA_VALUE_SPEC,
     convert_samples_to_train_data,
     split_train_data_by_dp,
 )
-from miles.utils.data_transfer import put_rollout_data_ref
 from miles.ray.utils import Lock
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -27,6 +26,7 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
+from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdentity
@@ -135,11 +135,10 @@ class RolloutManager:
         )
         sample_indices = data.get("sample_indices")
         if self.args.delay_split_train_data_by_dp:
-            data_ref = put_rollout_data_ref(
-                self.args,
-                data,
-                store_partition=f"rollout-{rollout_id}",
-                field_schema_specs=ROLLOUT_DATA_FIELD_SCHEMA_SPECS,
+            data_ref = object_store.get_instance(self.args).put(
+                key=f"rollout-{rollout_id}",
+                value=data,
+                value_spec=ROLLOUT_DATA_VALUE_SPEC,
             )
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])

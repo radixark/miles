@@ -12,7 +12,6 @@ from tqdm import tqdm
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
-from miles.utils.data_transfer import release_rollout_data
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
@@ -24,7 +23,6 @@ from miles.utils.tracking_utils.tracking import init_tracking
 
 from ....utils.profile_utils import TrainProfiler
 from ...training_utils.ci_utils import check_grad_norm
-
 from ...training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
 from ...training_utils.log_utils import (
     aggregate_forward_results,
@@ -437,14 +435,10 @@ class FSDPTrainRayActor(TrainRayActor):
             self.wake_up()
 
         with inverse_timer("train_wait"), timer("train"):
-            rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
-            if self.args.debug_rollout_only:
-                release_rollout_data(self.args, rollout_data)
-                return
-            try:
+            with get_rollout_data(self.args, rollout_data_ref, witness_info=None) as rollout_data:
+                if self.args.debug_rollout_only:
+                    return
                 self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
-            finally:
-                release_rollout_data(self.args, rollout_data)
 
         train_metric_utils.log_perf_data_raw(
             rollout_id=rollout_id,

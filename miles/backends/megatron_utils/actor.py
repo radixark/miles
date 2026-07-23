@@ -2,7 +2,7 @@ import logging
 import random
 import socket
 from argparse import Namespace
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from typing import TYPE_CHECKING
 
 import ray
@@ -17,7 +17,6 @@ from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
-from miles.utils.data_transfer import release_rollout_data
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
@@ -345,19 +344,18 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.offload_train:
             self.wake_up()
 
-        with timer("data_preprocess"):
-            rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info=witness_info)
-            if self.args.debug_rollout_only:
-                log_rollout_data(rollout_id, self.args, rollout_data)
-                release_rollout_data(self.args, rollout_data)
-                return TrainStepOutcome.NORMAL
+        with ExitStack() as stack:
+            with timer("data_preprocess"):
+                rollout_data = stack.enter_context(
+                    get_rollout_data(self.args, rollout_data_ref, witness_info=witness_info)
+                )
+                if self.args.debug_rollout_only:
+                    log_rollout_data(rollout_id, self.args, rollout_data)
+                    return TrainStepOutcome.NORMAL
 
-        try:
             if self.role == "critic":
                 return self.train_critic(rollout_id, rollout_data)
             return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
-        finally:
-            release_rollout_data(self.args, rollout_data)
 
     @with_logs
     def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutcome:

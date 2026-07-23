@@ -6,7 +6,8 @@ from miles.ray.placement_group import create_placement_groups, create_rollout_ma
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
-from miles.utils.data_transfer import cleanup_rollout_data_refs
+from miles.utils import object_store
+from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.ft_utils.control_server.server import start_control_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 async def train(args):
     assert not args.colocate, "Colocation is not supported for async training."
     configure_logger(args, source=MainProcessIdentity())
+    object_store.init_instance(args, contribute_segment=False)
     maybe_start_periodic_pyspy_dump()
     # allocate the GPUs
     pgs = create_placement_groups(args)
@@ -68,18 +70,14 @@ async def train(args):
         if rollout_id + 1 < args.num_rollout:
             rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
 
-        try:
-            if args.use_critic:
-                critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_curr_ref))
-                try:
-                    if rollout_id >= args.num_critic_only_steps:
-                        await actor_model.train(rollout_id, rollout_data_curr_ref)
-                finally:
-                    await critic_task
-            else:
+        if args.use_critic:
+            critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_curr_ref))
+            if rollout_id >= args.num_critic_only_steps:
                 await actor_model.train(rollout_id, rollout_data_curr_ref)
-        finally:
-            cleanup_rollout_data_refs(args, rollout_data_curr_ref)
+            await critic_task
+        else:
+            await actor_model.train(rollout_id, rollout_data_curr_ref)
+        remove_rollout_data_refs(args, rollout_data_curr_ref)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(

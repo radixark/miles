@@ -2,7 +2,8 @@ from typing import Any
 
 import torch
 
-from miles.utils.data_transfer import put_rollout_data_ref
+from miles.utils import object_store
+from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import Sample
 
@@ -16,22 +17,22 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "rollout_indexer_topk": "int32",
 }
 
-ROLLOUT_DATA_FIELD_SCHEMA_SPECS = {
-    **{field: ("typed_ragged", None) for field in ROLLOUT_DATA_TENSOR_DTYPES},
-    "partition": ("ndarray", "int64"),
-    "seq_witness_ids": ("ndarray", "int64"),
-    "response_lengths": ("ndarray", "int64"),
-    "rewards": ("ndarray", "float32"),
-    "truncated": ("ndarray", "int64"),
-    "round_number": ("ndarray", "int64"),
-    "sample_indices": ("ndarray", "int64"),
-    "multimodal_train_inputs": ("ragged_tensor_dict", None),
-    "prompt": ("msgpack_ragged", None),
-    "metadata": ("msgpack_ragged", None),
-    "weight_versions": ("msgpack_ragged", None),
-    "raw_reward": ("auto", None, "meta_info"),
-    "total_lengths": ("auto", None, "meta_info"),
-    "dynamic_global_batch_size": ("auto", None, "meta_info"),
+ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
+    **{field: ValueSpec(codec="typed_ragged") for field in ROLLOUT_DATA_TENSOR_DTYPES},
+    "partition": ValueSpec(codec="ndarray", dtype="int64"),
+    "seq_witness_ids": ValueSpec(codec="ndarray", dtype="int64"),
+    "response_lengths": ValueSpec(codec="ndarray", dtype="int64"),
+    "rewards": ValueSpec(codec="ndarray", dtype="float32"),
+    "truncated": ValueSpec(codec="ndarray", dtype="int64"),
+    "round_number": ValueSpec(codec="ndarray", dtype="int64"),
+    "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
+    "prompt": ValueSpec(codec="msgpack_ragged"),
+    "metadata": ValueSpec(codec="msgpack_ragged"),
+    "weight_versions": ValueSpec(codec="msgpack_ragged"),
+    "raw_reward": ValueSpec(codec="auto", section="meta_info"),
+    "total_lengths": ValueSpec(codec="auto", section="meta_info"),
+    "dynamic_global_batch_size": ValueSpec(codec="auto", section="meta_info"),
 }
 
 
@@ -194,13 +195,9 @@ def _post_process_rewards(
 def split_train_data_by_dp(args, data, dp_size):
     """Split the train data by data parallel size."""
     rollout_data_list = split_train_data_by_dp_raw(args, data, dp_size=dp_size)
+    store = object_store.get_instance(args)
     return [
-        put_rollout_data_ref(
-            args,
-            rollout_data,
-            store_partition=f"dp{i}",
-            field_schema_specs=ROLLOUT_DATA_FIELD_SCHEMA_SPECS,
-        )
+        store.put(key=f"dp{i}", value=rollout_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         for i, rollout_data in enumerate(rollout_data_list)
     ]
 

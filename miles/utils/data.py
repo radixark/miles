@@ -5,11 +5,12 @@ import os
 import random
 import re
 
+from contextlib import contextmanager
+
 import numpy as np
-import ray
 
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
-from miles.utils.data_transfer import get_rollout_data_ref
+from miles.utils import object_store
 from .audit_utils.witness.allocator import WitnessInfo
 
 try:
@@ -276,6 +277,7 @@ def get_minimum_num_micro_batch_size(total_lengths, max_tokens_per_gpu):
     return len(batches)
 
 
+@contextmanager
 def process_rollout_data(
     args,
     rollout_data_ref,
@@ -283,24 +285,36 @@ def process_rollout_data(
     dp_size,
     witness_info: WitnessInfo | None,
 ):
-    get_rollout_ref = lambda ref: get_rollout_data_ref(args, ref)
+    store = object_store.get_instance(args)
 
     if args.delay_split_train_data_by_dp:
-        raw = get_rollout_ref(rollout_data_ref)
-        if (x := witness_info) is not None:
-            raw = {**raw, "seq_witness_ids": x.witness_ids}
-        raw = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)
-        rollout_data = raw[dp_rank]
+        ref = rollout_data_ref
     else:
         assert len(rollout_data_ref) == dp_size
         assert witness_info is None
-        rollout_data = get_rollout_ref(rollout_data_ref[dp_rank])
+        ref = rollout_data_ref[dp_rank]
 
-    partition = rollout_data.pop("partition")
-    total_lengths = rollout_data["total_lengths"]
+    with store.get(ref) as fetched:
+        if args.delay_split_train_data_by_dp:
+            raw = fetched
+            if (x := witness_info) is not None:
+                raw = {**raw, "seq_witness_ids": x.witness_ids}
+            rollout_data = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)[dp_rank]
+        else:
+            rollout_data = dict(fetched)
 
-    # save the seqlen of the whole rollout batch
-    Timer().seq_lens = total_lengths
-    rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
+        partition = rollout_data.pop("partition")
+        total_lengths = rollout_data["total_lengths"]
 
-    return rollout_data
+        # save the seqlen of the whole rollout batch
+        Timer().seq_lens = total_lengths
+        rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
+
+        yield rollout_data
+
+
+def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:
+    store = object_store.get_instance(args)
+    data_ref = rollout_data_pack["data_ref"]
+    for ref in data_ref if isinstance(data_ref, list) else [data_ref]:
+        store.remove(ref)
