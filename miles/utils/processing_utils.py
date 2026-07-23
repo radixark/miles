@@ -3,7 +3,9 @@ import inspect
 import io
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer as RawTokenizer
@@ -135,6 +137,11 @@ def call_processor(processor, text, multimodal_inputs: dict | None = None):
 
     kwargs = build_processor_kwargs(multimodal_inputs)
     return processor(text=text, **kwargs)
+
+
+def extract_multimodal_train_inputs(processor_output: Mapping[str, Any]) -> dict[str, Any] | None:
+    excluded_keys = {"input_ids", "attention_mask", "mm_token_type_ids"}
+    return {key: value for key, value in processor_output.items() if key not in excluded_keys} or None
 
 
 def load_processor(name_or_path: str, **kwargs):

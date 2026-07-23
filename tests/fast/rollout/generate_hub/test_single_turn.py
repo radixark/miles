@@ -406,7 +406,7 @@ class TestMultimodal:
         expected_mti = {
             k: v
             for k, v in processor(text=PROMPT, **multimodal_inputs).items()
-            if k not in ["input_ids", "attention_mask"]
+            if k not in ["input_ids", "attention_mask", "mm_token_type_ids"]
         }
 
         result = _run_generate(variant, generation_env, _make_sample(multimodal_inputs=multimodal_inputs))
@@ -420,6 +420,7 @@ class TestMultimodal:
         ]
         actual_mti = result.sample.multimodal_train_inputs
         assert actual_mti is not None
+        assert "mm_token_type_ids" not in actual_mti
         assert set(actual_mti.keys()) == set(expected_mti.keys())
         assert torch.all(actual_mti["pixel_values"] == expected_mti["pixel_values"])
         assert torch.all(actual_mti["image_grid_thw"] == expected_mti["image_grid_thw"])
