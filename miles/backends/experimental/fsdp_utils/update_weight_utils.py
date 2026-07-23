@@ -74,6 +74,7 @@ class UpdateWeight(abc.ABC):
             futures = [engine.pause_generation.remote() for engine in self.rollout_engines]
             futures.extend([engine.flush_cache.remote() for engine in self.rollout_engines])
             ray.get(futures)
+            ray.get([engine.begin_weight_update.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
         bucket = []
@@ -104,6 +105,7 @@ class UpdateWeight(abc.ABC):
 
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
+            ray.get([engine.end_weight_update.remote() for engine in self.rollout_engines])
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
