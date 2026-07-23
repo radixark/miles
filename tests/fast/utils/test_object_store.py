@@ -132,7 +132,7 @@ class TestMooncakeObjectStore:
             pass
 
         store.remove(ref)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017 - mooncake surfaces missing keys as varying exception types
             store.get(ref)
 
     def test_replica_num_below_one_rejected(self, mooncake_master_port: int):

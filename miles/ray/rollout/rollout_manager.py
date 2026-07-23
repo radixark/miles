@@ -36,7 +36,6 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
-from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils.tracking import init_tracking
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
