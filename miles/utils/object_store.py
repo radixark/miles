@@ -141,6 +141,8 @@ class MooncakeObjectStore(BaseObjectStore):
 
         self._init_kwargs: dict[str, Any] = args.mooncake_store_init_kwargs or {}
         self._replica_num: int = args.mooncake_rollout_replica_num
+        if self._replica_num < 1:
+            raise ValueError("--mooncake-rollout-replica-num must be >= 1")
 
         store = MooncakeDistributedStore()
         setup_error = store.setup(_mooncake_store_config(self._init_kwargs, contribute_segment=contribute_segment))
