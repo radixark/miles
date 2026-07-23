@@ -383,7 +383,7 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         urls = response["urls"]
     else:
         response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        urls = [worker["url"] for worker in response["workers"]]
+        urls = list(dict.fromkeys(worker.get("base_url", worker["url"]) for worker in response["workers"]))
 
     logger.info(f"Abort request for {urls}")
     abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
