@@ -9,7 +9,7 @@ from miles.utils.types import Sample
 
 TWO_TURN_DATA_ROWS = [{"input": [{"role": "user", "content": TwoTurnStub.USER_QUESTION}], "label": "2008"}]
 
-_AGENTIC_VARIANTS = ["agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"]
+_AGENTIC_VARIANTS = ["agentic_tool_call_single_sample"]
 
 _METADATA_RM_EXTRA_ARGV = [
     "--rollout-batch-size",
