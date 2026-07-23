@@ -15,8 +15,10 @@ MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4 if FEW_GPU else 8
 
+MOONCAKE_MASTER_PORT = 50051
 MOONCAKE_STORE_INIT_KWARGS = {
     "protocol": "tcp",
+    "master_server_address": f"127.0.0.1:{MOONCAKE_MASTER_PORT}",
     "global_segment_size": "2gb",
     "local_buffer_size": "2gb",
 }
@@ -26,6 +28,13 @@ def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
+
+
+def start_mooncake_master():
+    U.exec_command(
+        "pgrep -x mooncake_master >/dev/null || "
+        f"(setsid mooncake_master --port {MOONCAKE_MASTER_PORT} > /tmp/mooncake_master.log 2>&1 &)"
+    )
 
 
 def execute():
@@ -128,6 +137,8 @@ def execute():
         f"{fault_tolerance_args} "
         f"{misc_args} "
     )
+
+    start_mooncake_master()
 
     U.execute_train(
         train_args=train_args,
