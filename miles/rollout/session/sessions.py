@@ -71,6 +71,26 @@ def setup_session_routes(app, backend, args):
             body=body,
         )
 
+    @app.get("/sessions/{session_id}/v1/model_info")
+    async def session_v1_model_info(session_id: str):
+        """OpenAI-compatible /v1/model_info stub.
+
+        LiteLLM (and other OpenAI-compat clients) probe /v1/model_info on
+        first connect for tokenizer hash and model-ID discovery. SGLang
+        does not expose /v1/model_info (it exposes /model_info without
+        the /v1/ prefix), so the default wildcard proxy below returns
+        404 and clients emit a warning on every new session.
+
+        Return a minimal stub advertising the served model name. Does
+        not validate the session_id because /v1/model_info is
+        session-independent; the session path segment is retained to
+        keep URL shape consistent with the other session endpoints.
+        """
+        return {
+            "id": getattr(args, "sglang_served_model_name", None) or "model",
+            "object": "model",
+        }
+
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def session_proxy(request: Request, session_id: str, path: str):
         body = await request.body()
