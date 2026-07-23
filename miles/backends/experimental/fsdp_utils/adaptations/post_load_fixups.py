@@ -62,7 +62,11 @@ def _reload_clobbered_from_disk(model, ckpt_path, tol=1e-3) -> int:
     if not files:
         return 0
     index = os.path.join(ckpt_path, "model.safetensors.index.json")
-    shard_of = json.load(open(index))["weight_map"] if os.path.exists(index) else {}
+    if os.path.exists(index):
+        with open(index) as f:
+            shard_of = json.load(f)["weight_map"]
+    else:
+        shard_of = {}
 
     reloaded = 0
     with torch.no_grad():
