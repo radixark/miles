@@ -176,9 +176,7 @@ class MooncakeObjectStore(BaseObjectStore):
 
 def _check_mooncake_available() -> None:
     if not _MOONCAKE_AVAILABLE:
-        raise ImportError(
-            "object-store-backend='mooncake' requires the mooncake package"
-        ) from _MOONCAKE_IMPORT_ERROR
+        raise ImportError("object-store-backend='mooncake' requires the mooncake package") from _MOONCAKE_IMPORT_ERROR
 
 
 def _field_schemas_for_value(value: Any, value_spec: dict[str, ValueSpec] | None) -> dict[str, Any] | None:
