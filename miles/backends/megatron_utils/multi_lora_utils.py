@@ -107,6 +107,9 @@ def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
                 state["exp_avg"].zero_()
             if "exp_avg_sq" in state:
                 state["exp_avg_sq"].zero_()
+            # Muon (emerging-optimizers OrthogonalizedOptimizer) keeps its state here.
+            if "momentum_buffer" in state:
+                state["momentum_buffer"].zero_()
             # Bias correction restarts for the slot's next tenant.
             if "step" in state:
                 if isinstance(state["step"], torch.Tensor):

@@ -229,18 +229,18 @@ class TestMultiLoRAValidation:
         assert self._parse([]).multi_lora_max_empty_wait_s == 30.0
         assert self._parse(["--multi-lora-max-empty-wait-s", "5"]).multi_lora_max_empty_wait_s == 5.0
 
-    def test_rejects_non_adam_optimizer(self):
-        # Per-slot optimizer isolation (state init, retirement cleanup, step
-        # clocks) only implements Adam semantics. Muon has its own dedicated
-        # rejection; anything else non-Adam trips the generic guard.
-        args = self._parse([])
-        args.optimizer = "muon"
-        with pytest.raises(AssertionError, match="does not support Muon"):
+    def test_optimizer_allowlist(self):
+        # Per-slot isolation implements the Adam/AdamW and Muon state layouts;
+        # anything else trips the guard.
+        for accepted in ("adam", "muon", "dist_muon"):
+            args = self._parse([])
+            args.optimizer = accepted
             miles_validate_args(args)
+            assert args.multi_lora is True
 
         args = self._parse([])
         args.optimizer = "sgd"
-        with pytest.raises(AssertionError, match="requires --optimizer adam"):
+        with pytest.raises(AssertionError, match="support adam \\(AdamW\\) and muon"):
             miles_validate_args(args)
 
     def test_rejects_experimental_ft_trainer(self, monkeypatch):

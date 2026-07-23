@@ -1,5 +1,6 @@
-"""Per-slot decoupled Adam optimizers for multi-LoRA, chained under Megatron's LayerWiseDistributedOptimizer;
-requires plain DDP all-reduce (use_distributed_optimizer OFF) so cross-batch gradient retention stays idempotent."""
+"""Per-slot decoupled optimizers (Adam/AdamW or Muon) for multi-LoRA, chained under Megatron's
+LayerWiseDistributedOptimizer; requires plain DDP all-reduce (use_distributed_optimizer OFF) so
+cross-batch gradient retention stays idempotent."""
 
 import logging
 from argparse import Namespace
@@ -35,14 +36,6 @@ def adapter_slot_parameters(model, slot: int) -> list[torch.nn.Parameter]:
     return parameters
 
 
-def _adam_init_state_fn(opt, config=None):
-    for group in opt.param_groups:
-        for p in group["params"]:
-            if len(opt.state[p]) == 0:
-                opt.state[p]["exp_avg"] = torch.zeros_like(p.data)
-                opt.state[p]["exp_avg_sq"] = torch.zeros_like(p.data)
-
-
 @contextmanager
 def _only_slot_trainable(model_chunks, slot_params: list[torch.nn.Parameter]):
     """Temporarily freeze every trainable param outside ``slot_params`` so the
@@ -67,24 +60,33 @@ def build_multi_lora_optimizer(
     config: OptimizerConfig,
     model_chunks: Sequence,
 ) -> MegatronOptimizer:
-    """Build one Float16-wrapped Adam per adapter slot under a LayerWiseDistributedOptimizer (ChainedOptimizer);
-    each child's param groups are tagged with ``miles_multi_lora_slot`` and narrowed to this rank's shard."""
+    """Build one Float16-wrapped optimizer (Adam/AdamW or Muon) per adapter slot under a
+    LayerWiseDistributedOptimizer (ChainedOptimizer); each child's param groups are tagged with
+    ``miles_multi_lora_slot`` and narrowed to this rank's shard."""
     assert not config.use_distributed_optimizer, (
         "multi-LoRA per-slot optimizers require use_distributed_optimizer=False: "
         "gradient retention relies on all-reduce idempotency, and LayerWise "
         "sharding replaces byte-level ZeRO"
     )
     assert not config.fp16, "multi-LoRA per-slot optimizers require bf16 (no dynamic loss scaler)"
-    assert (config.optimizer or "").lower() == "adam", (
-        "multi-LoRA per-slot optimizers only implement Adam semantics (state init, "
-        f"slot retirement cleanup, step clocks); got optimizer={config.optimizer!r}"
+    assert (config.optimizer or "").lower() in ("adam", "muon", "dist_muon"), (
+        "multi-LoRA per-slot optimizers implement Adam/AdamW and Muon state layouts "
+        f"(state init, slot retirement cleanup); got optimizer={config.optimizer!r}"
     )
 
     pg_collection = ProcessGroupCollection.use_mpu_process_groups()
 
-    # Defer bf16 master-weight creation into LayerWise (post-sharding) so fp32 masters exist only for owned params.
+    # Defer bf16 master-weight creation into LayerWise (post-sharding) so fp32 masters exist only
+    # for owned params. Children must also come out raw (not layer-wise wrapped): multi-LoRA applies
+    # LayerWise ONCE over all slots below, so dist_muon collapses to plain muon here.
     reset_bf16 = config.bf16
+    reset_optimizer = config.optimizer
+    reset_layer_wise = getattr(config, "use_layer_wise_distributed_optimizer", False)
     config.bf16 = False
+    if (config.optimizer or "").lower() == "dist_muon":
+        config.optimizer = "muon"
+    if hasattr(config, "use_layer_wise_distributed_optimizer"):
+        config.use_layer_wise_distributed_optimizer = False
 
     base_optimizers: list = []
     init_fns: list = []
@@ -110,9 +112,14 @@ def build_multi_lora_optimizer(
                 for group in child.param_groups:
                     group["miles_multi_lora_slot"] = slot
                 base_optimizers.append(child)
-                init_fns.append(_adam_init_state_fn)
+                # Each child carries the stock init fn matching its own family
+                # (Adam moments, or Muon's _init_group momentum buffers).
+                init_fns.append(child.init_state_fn)
     finally:
         config.bf16 = reset_bf16
+        config.optimizer = reset_optimizer
+        if hasattr(config, "use_layer_wise_distributed_optimizer"):
+            config.use_layer_wise_distributed_optimizer = reset_layer_wise
 
     optimizer = LayerWiseDistributedOptimizer(base_optimizers, config, pg_collection, init_state_fn_list=init_fns)
 
