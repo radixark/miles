@@ -136,11 +136,7 @@ class RolloutManager:
         )
         sample_indices = data.get("sample_indices")
         if self.args.delay_split_train_data_by_dp:
-            data_ref = object_store.get_instance().put(
-                key=f"rollout-{rollout_id}",
-                value=data,
-                value_spec=ROLLOUT_DATA_VALUE_SPEC,
-            )
+            data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
         return dict(sample_indices=sample_indices, data_ref=data_ref)

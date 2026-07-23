@@ -3,6 +3,7 @@ from abc import ABC
 from argparse import Namespace
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from types import TracebackType
 from typing import Any
 
@@ -10,12 +11,12 @@ import ray
 
 from miles.utils.ray_utils import Box
 
-OBJECT_STORE_BACKEND_RAY = "object-store"
-OBJECT_STORE_BACKEND_MOONCAKE = "mooncake"
-OBJECT_STORE_BACKEND_CHOICES = (
-    OBJECT_STORE_BACKEND_RAY,
-    OBJECT_STORE_BACKEND_MOONCAKE,
-)
+StoreObjectRef = Box
+
+
+class ObjectStoreBackend(StrEnum):
+    RAY = "object-store"
+    MOONCAKE = "mooncake"
 
 _MOONCAKE_IMPORT_ERROR: ImportError | None = None
 
@@ -69,31 +70,31 @@ def get_instance() -> "BaseObjectStore":
 
 def validate_object_store_args(args: Namespace) -> None:
     backend = _object_store_backend(args)
-    if backend == OBJECT_STORE_BACKEND_MOONCAKE:
+    if backend == ObjectStoreBackend.MOONCAKE:
         _check_mooncake_available()
         if args.mooncake_rollout_replica_num < 1:
             raise ValueError("--mooncake-rollout-replica-num must be >= 1")
 
 
 class BaseObjectStore(ABC):
-    def put(self, key: str, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> Box:
+    def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
         raise NotImplementedError
 
-    def get(self, ref: Box) -> ObjectStoreGetResult:
+    def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
         raise NotImplementedError
 
-    def remove(self, ref: Box) -> None:
+    def remove(self, ref: StoreObjectRef) -> None:
         raise NotImplementedError
 
 
 class RayObjectStore(BaseObjectStore):
-    def put(self, key: str, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> Box:
+    def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
         return Box(ray.put(value))
 
-    def get(self, ref: Box) -> ObjectStoreGetResult:
+    def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
         return ObjectStoreGetResult(value=ray.get(ref.inner), release_fn=_release_noop)
 
-    def remove(self, ref: Box) -> None:
+    def remove(self, ref: StoreObjectRef) -> None:
         pass
 
 
@@ -110,12 +111,12 @@ class MooncakeObjectStore(BaseObjectStore):
             raise RuntimeError(f"Mooncake store setup failed: {setup_error}")
         self._transfer = MooncakeBundleTransfer(store, key_prefix="miles-object-store")
 
-    def put(self, key: str, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> Box:
+    def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
         ref = self._transfer.put(
             value,
             type="dict",
             namespace="miles",
-            partition=key,
+            partition="default",
             stage="rollout",
             chunk_bytes=self._init_kwargs.get("chunk_bytes"),
             config=self._replicate_config(),
@@ -123,11 +124,11 @@ class MooncakeObjectStore(BaseObjectStore):
         )
         return Box(export_ref(ref))
 
-    def get(self, ref: Box) -> ObjectStoreGetResult:
+    def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
         value = self._transfer.get(import_ref(ref.inner), type="dict")
         return ObjectStoreGetResult(value=value, release_fn=MooncakeBundleTransfer.release_result)
 
-    def remove(self, ref: Box) -> None:
+    def remove(self, ref: StoreObjectRef) -> None:
         self._transfer.cleanup_dataproto(import_ref(ref.inner))
 
     def _replicate_config(self) -> Any:
@@ -143,18 +144,15 @@ _INSTANCE: BaseObjectStore | None = None
 
 def _create_instance(args: Namespace, *, contribute_segment: bool | None) -> BaseObjectStore:
     backend = _object_store_backend(args)
-    if backend == OBJECT_STORE_BACKEND_MOONCAKE:
+    if backend == ObjectStoreBackend.MOONCAKE:
         if contribute_segment is None:
             contribute_segment = _default_contribute_segment()
         return MooncakeObjectStore(args, contribute_segment=contribute_segment)
     return RayObjectStore()
 
 
-def _object_store_backend(args: Namespace) -> str:
-    backend = args.rollout_data_transport
-    if backend not in OBJECT_STORE_BACKEND_CHOICES:
-        raise ValueError(f"Unsupported rollout data transport: {backend!r}")
-    return backend
+def _object_store_backend(args: Namespace) -> ObjectStoreBackend:
+    return ObjectStoreBackend(args.rollout_data_transport)
 
 
 def _check_mooncake_available() -> None:

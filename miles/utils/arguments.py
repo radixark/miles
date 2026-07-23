@@ -17,7 +17,7 @@ from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.misc import load_function
-from miles.utils.object_store import OBJECT_STORE_BACKEND_CHOICES, validate_object_store_args
+from miles.utils.object_store import ObjectStoreBackend, validate_object_store_args
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -437,7 +437,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-data-transport",
                 type=str,
-                choices=OBJECT_STORE_BACKEND_CHOICES,
+                choices=tuple(ObjectStoreBackend),
                 default="object-store",
                 help="Transport for rollout data refs sent from rollout manager to trainer.",
             )

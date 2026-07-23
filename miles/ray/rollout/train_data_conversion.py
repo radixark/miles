@@ -197,8 +197,7 @@ def split_train_data_by_dp(args, data, dp_size):
     rollout_data_list = split_train_data_by_dp_raw(args, data, dp_size=dp_size)
     store = object_store.get_instance()
     return [
-        store.put(key=f"dp{i}", value=rollout_data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
-        for i, rollout_data in enumerate(rollout_data_list)
+        store.put(value=rollout_data, value_spec=ROLLOUT_DATA_VALUE_SPEC) for rollout_data in rollout_data_list
     ]
 
 
