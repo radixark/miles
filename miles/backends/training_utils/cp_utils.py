@@ -367,7 +367,7 @@ def allgather_cp_redistribute(
                     response_length,
                     dtype=value.dtype,
                     device=value.device,
-                    requires_grad=True,
+                    requires_grad=value.requires_grad,
                 )
             else:
                 resp_start = s - logit_global_start
