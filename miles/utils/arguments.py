@@ -2291,13 +2291,6 @@ def parse_args(add_custom_arguments=None):
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
 
-        if not args.ci_test:
-            raise ValueError(
-                "The FSDP backend has known issues with SGLang v0.5.10 and is not actively maintained in the current version. "
-                "It has been moved to miles.backends.experimental. "
-                "Contributions are welcome if you are interested in improving it."
-            )
-
     # On iff the CI harness injected MILES_CI_GATE_RECORD_DIR (the same env var
     # locates the per-test record). No CLI flag: non-CI runs always stay False.
     args.ci_enable_metrics_capture = bool(os.environ.get(RECORD_DIR_ENV))
