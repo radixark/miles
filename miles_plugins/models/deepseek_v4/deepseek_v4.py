@@ -35,6 +35,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.utils import fixed_tree_mean_last_dim
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
 
 
@@ -159,6 +160,7 @@ class DeepSeekV4Attention(MegatronModule):
         )
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
+        self.batch_invariant_mode = getattr(config, "batch_invariant_mode", False)
 
         if self.compress_ratio:
             self.compressor = DeepSeekV4Compressor(
@@ -243,7 +245,13 @@ class DeepSeekV4Attention(MegatronModule):
         q_after_wq_b = self.wq_b(q)[0]
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
         q_fp32 = q.float()
-        q = (q_fp32 * torch.rsqrt(q_fp32.square().mean(-1, keepdim=True) + self.eps)).to(q.dtype)
+        q_square = q_fp32.square()
+        q_square_mean = (
+            fixed_tree_mean_last_dim(q_square)
+            if self.batch_invariant_mode
+            else q_square.mean(-1, keepdim=True)
+        )
+        q = (q_fp32 * torch.rsqrt(q_square_mean + self.eps)).to(q.dtype)
         q = q.clone()
         apply_rotary_emb(q[..., -rd:], freqs_cis)
 
@@ -311,7 +319,17 @@ class DeepSeekV4Attention(MegatronModule):
 
         o = o.view(bsz, seqlen_local, self.n_local_groups, -1)
         wo_a = self.wo_a.weight.view(self.n_local_groups, self.o_lora_rank, -1)
-        o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
+        if self.batch_invariant_mode:
+            if self.n_local_groups != 1:
+                raise RuntimeError(
+                    "DeepSeek-V4 batch-invariant wo_a currently requires exactly one local output group, "
+                    f"got {self.n_local_groups}."
+                )
+            o = torch.mm(o.reshape(-1, o.size(-1)), wo_a[0].transpose(0, 1)).view(
+                bsz, seqlen_local, 1, self.o_lora_rank
+            )
+        else:
+            o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
         x, _ = self.wo_b(o.flatten(2))
 
         output = einops.rearrange(x, "b s d -> s b d")

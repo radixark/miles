@@ -169,12 +169,34 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to enable true-on-policy mode.",
             )
             parser.add_argument(
+                "--true-on-policy-logprob-dtype",
+                type=str,
+                choices=["training", "fp32"],
+                default="training",
+                help=(
+                    "Precision used by the full-vocabulary log_softmax in true-on-policy mode. "
+                    "'training' preserves the current behavior (BF16/FP16 according to the "
+                    "training precision); 'fp32' matches SGLang prefill scoring when no SGLang "
+                    "TOP contract forces a lower-precision LM-head/logprob path."
+                ),
+            )
+            parser.add_argument(
                 "--recompute-logprobs-via-prefill",
                 action="store_true",
                 default=False,
                 help=(
                     "Recompute rollout logprobs via SGLang prefill instead of decode kernels. "
                     "Only needed for models whose prefill and decode paths are not numerically identical."
+                ),
+            )
+            parser.add_argument(
+                "--allow-nondeterministic-top-parity-probe",
+                action="store_true",
+                default=False,
+                help=(
+                    "Diagnostic only: permit a true-on-policy prefill-logprob parity probe without "
+                    "enabling SGLang deterministic inference. This does not certify true on-policy "
+                    "behavior and must not be used for training."
                 ),
             )
             parser.add_argument(
@@ -2296,6 +2318,13 @@ def miles_validate_args(args):
 
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
+        if getattr(args, "use_rollout_routing_replay", False):
+            raise ValueError(
+                "--recompute-logprobs-via-prefill is incompatible with "
+                "--use-rollout-routing-replay: the former defines the recomputed "
+                "prefill forward as the behavior-policy scoring path, while the latter "
+                "injects expert routes recorded by rollout/decode into the trainer."
+            )
 
     # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])

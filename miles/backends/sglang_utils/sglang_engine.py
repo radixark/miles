@@ -213,6 +213,30 @@ class SGLangEngine(RayActor):
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
+        if os.environ.get("MILES_ALLOW_DSV4_DETERMINISTIC_BACKEND_PROBE", "0") == "1":
+            if not server_args_dict.get("enable_deterministic_inference", False):
+                raise ValueError(
+                    "MILES_ALLOW_DSV4_DETERMINISTIC_BACKEND_PROBE requires "
+                    "SGLang deterministic inference"
+                )
+            import sglang.srt.server_args as sglang_server_args_module
+
+            choices = sglang_server_args_module.DETERMINISTIC_ATTENTION_BACKEND_CHOICES
+            if not isinstance(choices, list):
+                raise TypeError(
+                    "Expected mutable deterministic attention backend choices, "
+                    f"got {type(choices)!r}"
+                )
+            if "dsv4" not in choices:
+                sglang_server_args_module.DETERMINISTIC_ATTENTION_BACKEND_CHOICES = [
+                    *choices,
+                    "dsv4",
+                ]
+            logger.warning(
+                "Diagnostic-only: allowing the DSV4 attention backend through "
+                "SGLang's deterministic-inference validator. This compatibility "
+                "shim does not by itself certify the DSV4 backend as deterministic."
+            )
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:

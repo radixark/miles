@@ -1,3 +1,5 @@
+import warnings
+
 from sglang.srt.server_args import ServerArgs
 from miles.utils.http_utils import _wrap_ipv6
 
@@ -137,12 +139,27 @@ def add_sglang_arguments(parser):
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
 
-    if args.true_on_policy_mode:
-        args.sglang_enable_deterministic_inference = True
+    recompute_via_prefill = getattr(args, "recompute_logprobs_via_prefill", False)
+    allow_nondeterministic_probe = getattr(args, "allow_nondeterministic_top_parity_probe", False)
 
-    if getattr(args, "recompute_logprobs_via_prefill", False):
-        args.sglang_enable_prefill_only_deterministic_inference = True
-        args.sglang_enable_deterministic_inference = True
+    if allow_nondeterministic_probe:
+        if not (args.true_on_policy_mode and recompute_via_prefill):
+            raise ValueError(
+                "--allow-nondeterministic-top-parity-probe requires both "
+                "--true-on-policy-mode and --recompute-logprobs-via-prefill"
+            )
+        warnings.warn(
+            "Running a nondeterministic TOP parity probe. This diagnostic mode does not certify "
+            "true on-policy behavior and must not be used for training.",
+            stacklevel=2,
+        )
+    else:
+        if args.true_on_policy_mode:
+            args.sglang_enable_deterministic_inference = True
+
+        if recompute_via_prefill:
+            args.sglang_enable_prefill_only_deterministic_inference = True
+            args.sglang_enable_deterministic_inference = True
 
     if args.sglang_dp_size > 1:
         assert args.sglang_enable_dp_attention

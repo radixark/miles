@@ -149,6 +149,27 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     assert args.recompute_logprobs_via_prefill is True
 
 
+def test_recompute_logprobs_via_prefill_rejects_rollout_routing_replay():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--true-on-policy-mode",
+            "--recompute-logprobs-via-prefill",
+            "--use-rollout-routing-replay",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="--recompute-logprobs-via-prefill is incompatible with --use-rollout-routing-replay",
+    ):
+        miles_validate_args(args)
+
+
 def test_custom_megatron_post_save_hook_path_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
