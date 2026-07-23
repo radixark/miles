@@ -318,8 +318,8 @@ class SessionCore:
 
         Flow: prepare pretokenized input_ids (lock held briefly) → proxy to
         backend (NO lock) → validate response → update trajectory checkpoint and
-        append record (lock held briefly). The lock is NOT held during the slow
-        proxy call so DELETE/other ops are not blocked if the agent disconnects.
+        append record (lock held briefly). The lock is NOT held during the long
+        inference call so DELETE/other ops are not blocked if the agent disconnects.
         """
         request_timestamp = time.time()
         session = self.registry.get_session(session_id)
