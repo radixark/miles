@@ -8,7 +8,6 @@ register_cuda_ci(
     est_time=300,
     suite="stage-c-8-gpu-h100",
     labels=["short"],
-    disabled="FSDP backend has known issues, not actively maintained",
 )
 
 MODEL_NAME = "Qwen3-0.6B"

@@ -8,7 +8,6 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-8-gpu-h100",
     labels=["fsdp"],
-    disabled="FSDP backend has known issues, not actively maintained",
 )
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
