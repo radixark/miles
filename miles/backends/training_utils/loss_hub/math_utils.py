@@ -893,9 +893,8 @@ def calculate_log_probs_and_entropy(
         )
 
     logits = logits.contiguous()
-    # TODO: not sure why we need to clone the logits here.
-    # Without the clone, the backward will trigger inplace edit error.
-    # It seems that the function with tp will modify the logits inplace.
+    # TP cross-entropy mutates its input in forward, and entropy does so in backward.
+    # Force a copy for fp32 inputs, where the dtype conversion would otherwise alias logits.
     entropy = None
 
     def compute_entropy(logits_chunk: torch.Tensor) -> torch.Tensor:
