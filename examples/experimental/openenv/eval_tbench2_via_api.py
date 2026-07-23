@@ -1,12 +1,12 @@
 """Standalone Terminal-Bench-2 eval: an OpenAI-compatible *API* as the policy,
-per-task Daytona sandboxes as the env. No GPU, no miles training pipeline.
+Daytona sandboxes as the env. No GPU, no miles training pipeline.
 
 This reuses the exact agent-env loop miles runs during training
 (``openenv_agent_function._multi_turn``: reset -> {policy emits a shell command
 -> exec -> feed output back} -> canonical tests/test.sh -> binary reward) but
 swaps miles' session-server policy for a plain API client. The machine running
 this only orchestrates; the policy runs in the cloud (e.g. DeepSeek) and each
-episode runs in its own per-task Daytona sandbox (the task's OFFICIAL image +
+episode runs in its own Daytona sandbox (the task's OFFICIAL image +
 env server layer — recipe in the sibling ``tb2_sandbox_recipe`` module,
 materialized by ``tb2_sandbox_daytona``), created
 before the episode and deleted after.
@@ -14,15 +14,15 @@ before the episode and deleted after.
 Why a separate script and not ``run-openenv-tbench2.py``: those launchers always
 bring up Megatron+sglang via Ray (the policy must be miles' own engine so the
 session server can record on-policy tokens for the backward pass). Pure eval
-needs none of that. The top-level ``openenv_agent_function.run`` also hardcodes
-``api_key="EMPTY"`` (self-hosted engines don't check it), so we call the
-underlying ``_multi_turn`` with our own authenticated client instead.
+needs none of that. The ``run()`` entry also hardcodes ``api_key="EMPTY"``
+(self-hosted engines don't check it), so we call each module's ``run_episode``
+with our own authenticated client instead.
 
 Env vars:
   DEEPSEEK_API_KEY / POLICY_API_KEY   policy API key (required)
   POLICY_BASE_URL   OpenAI-compatible root (default https://api.deepseek.com)
   POLICY_MODEL      default deepseek-v4-flash
-  OPENENV_TB2_TASKS_DIR  per-task sandbox mode (TB2 checkout path); with
+  OPENENV_TB2_TASKS_DIR  Daytona sandbox mode (TB2 checkout path); with
                     DAYTONA_API_KEY or a key file at ~/.config/daytona/api_key.
                     Otherwise OPENENV_ENV_URL is used.
   OPENENV_MAX_TURNS, OPENENV_MAX_ROLLOUT_TIME_SECONDS, ...   as in the adapter.
@@ -62,18 +62,18 @@ def _load_rows(args: argparse.Namespace) -> list[dict]:
 
 
 async def _eval_one(
-    policy: AsyncOpenAI, model: str, row: dict, request_kwargs: dict
+    run_episode, policy: AsyncOpenAI, model: str, row: dict, request_kwargs: dict
 ) -> tuple[str, float | None, dict]:
-    classes = oaf._load_tbench2()
     task_id = row.get("metadata", {}).get("task_id", "?")
     cap = float(os.getenv("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
     try:
-        # Per-task wall-clock cap (openenv_agent_function.run has this; _multi_turn
-        # alone does not). Bounds a task that loops on slow generations so one
-        # straggler can't stall the whole sweep.
+        # Per-episode wall-clock cap: run_episode deliberately leaves timeout
+        # and failure semantics to the caller (run() maps a timeout to reward 0
+        # for training; a sweep must count it as errored instead). Bounds a
+        # task that loops on slow generations so one straggler can't stall the
+        # whole sweep.
         reward, metrics = await asyncio.wait_for(
-            oaf._multi_turn(
-                classes,
+            run_episode(
                 policy,
                 model,
                 row.get("prompt", []),
@@ -107,8 +107,12 @@ async def main() -> None:
     rows = _load_rows(args)
     tasks_dir = os.getenv("OPENENV_TB2_TASKS_DIR", "").strip()
     if tasks_dir:
-        env_desc = f"per-task daytona sandboxes (tasks_dir={tasks_dir})"
+        import openenv_daytona_agent_function as odaf
+
+        run_episode = odaf.run_episode
+        env_desc = f"daytona sandboxes (tasks_dir={tasks_dir})"
     else:
+        run_episode = oaf.run_episode
         env_desc = os.getenv("OPENENV_ENV_URL", oaf._DEFAULT_ENV_URL)
     print(f"policy={model} @ {base_url} | env={env_desc} | " f"{len(rows)} tasks | concurrency={args.concurrency}")
 
@@ -118,7 +122,7 @@ async def main() -> None:
 
     async def _run(row: dict) -> tuple[str, float | None, dict]:
         async with sem:
-            tid, reward, metrics = await _eval_one(policy, model, row, request_kwargs)
+            tid, reward, metrics = await _eval_one(run_episode, policy, model, row, request_kwargs)
             tag = "ERR" if reward is None else f"{reward:.0f}"
             extra = metrics.get("error") or f"turns={metrics.get('turns')}"
             print(f"  [{tag}] {tid:40s} {extra}", flush=True)

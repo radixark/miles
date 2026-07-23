@@ -1,5 +1,5 @@
 """Golden-patch sweep: for each TB2 task, run the OFFICIAL solution/solve.sh in
-its per-task sandbox and score with the standard evaluate action. Expected
+its own Daytona sandbox and score with the standard evaluate action. Expected
 mostly 1.0 — this validates the infra (env + scoring) per task, no LLM involved.
 
 ``--logs`` additionally captures solve.log and test-log tails for every task
@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import openenv_agent_function as oaf
+import openenv_daytona_agent_function as odaf
 
 CAP_S = float(os.getenv("GOLDEN_TASK_CAP_S", "1800"))
 
@@ -59,7 +60,7 @@ async def golden_one(task_id: str, capture_logs: bool = False) -> tuple[str, flo
     try:
 
         async def run() -> dict:
-            async with oaf._episode_env(classes["env"], {"task_id": task_id}) as env:
+            async with odaf._episode_env(classes["env"], {"task_id": task_id}) as env:
                 await env.reset(task_id=task_id)
                 t = time.monotonic()
                 # Official oracle convention (harbor OracleAgent): solution dir
@@ -98,7 +99,7 @@ async def golden_one(task_id: str, capture_logs: bool = False) -> tuple[str, flo
                     "eval_s": round(time.monotonic() - t, 1),
                 }
                 if capture_logs and m["reward"] < 1.0:
-                    # The patched server's evaluate output carries the test.sh
+                    # The native-evaluate server's output carries the test.sh
                     # log tail itself; the on-disk copy lives under
                     # /logs/verifier only for the verify window (no more
                     # /tmp/tb2_testsh.log to read back).
@@ -123,11 +124,11 @@ async def main() -> None:
     ap.add_argument("--out", default="")
     ap.add_argument("--logs", action="store_true", help="capture solve.log/test-log tails for tasks scoring <1.0")
     args = ap.parse_args()
-    # Golden replay only exists on the per-task sandbox backend; fail fast so
+    # Golden replay only exists on the Daytona sandbox mode; fail fast so
     # golden_one can read OPENENV_TB2_TASKS_DIR unconditionally.
     if not os.getenv("OPENENV_TB2_TASKS_DIR", "").strip():
         sys.exit(
-            "scan_golden requires the per-task sandbox backend: set OPENENV_TB2_TASKS_DIR "
+            "scan_golden requires the Daytona sandbox mode: set OPENENV_TB2_TASKS_DIR "
             "(+ DAYTONA_API_KEY or a key file at ~/.config/daytona/api_key)"
         )
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]

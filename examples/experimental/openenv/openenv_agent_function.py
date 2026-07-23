@@ -26,35 +26,11 @@ Env vars:
   OPENENV_TB2_TESTS_SRC  where the upstream env stages the task's tests inside the
                      container (default: /task/tests); copied to /tests for test.sh.
 
-Per-task Daytona sandbox backend (alternative to OPENENV_ENV_URL): every episode
-gets its OWN cloud sandbox built from the task's OFFICIAL image plus an env
-server layer, deleted when the episode ends. The image recipe lives in
-``tb2_sandbox_recipe`` and its Daytona materialization in ``tb2_sandbox_daytona``
-(sibling modules); the recipe bakes the installed ``tbench2_env``
-package -- OpenEnv's Terminal-Bench-2 environment package -- into the image,
-so this backend needs the pinned tbench2_env install from the README (canonical
-test.sh scoring and verifier-asset withholding built into the server). Full
-per-task image fidelity with zero shared infrastructure (no Docker host, no
-resident env server) and zero cross-episode state leakage.
-  OPENENV_TB2_TASKS_DIR        path to a terminal-bench-2 checkout: build the
-                     sandbox declaratively per episode. Daytona caches image
-                     layers by definition hash, so only the first episode of a
-                     task builds (~10 min); repeats start in ~1 min. No named
-                     snapshots, so no org snapshot quota.
-  DAYTONA_API_KEY              the Daytona API key, authenticating every
-                     sandbox create/delete. Read from the worker's own
-                     node-local environment; nothing forwards it. Supply it
-                     via platform-injected pod env, or by exporting it in
-                     the shell that starts ray on a single host.
-  DAYTONA_API_KEY_FILE         fallback when DAYTONA_API_KEY is unset: path
-                     of a file holding the key (default
-                     ~/.config/daytona/api_key). Launchers forward this path
-                     instead of the key itself, because ray runtime_env is
-                     logged in plaintext. Point it at a file every node can
-                     read: a dotfile, K8s Secret mount, or shared-FS path.
-  OPENENV_DAYTONA_CREATE_CONCURRENCY  max in-flight sandbox creates (default 4).
-  OPENENV_DAYTONA_READY_TIMEOUT_S     server-ready wait per sandbox (default 300).
-  TB2_COMMAND_TIMEOUT_S        per-exec timeout inside the sandbox (default 900).
+Daytona-sandbox variant: ``openenv_daytona_agent_function`` (sibling module)
+is a drop-in ``--custom-agent-function-path`` alternative that runs every
+episode in its own Daytona cloud sandbox. It reuses this module's
+agent loop and training wrapper, supplying only its own run_episode (see the
+episode-wiring note below); its env vars are documented there.
 """
 
 import asyncio
@@ -62,11 +38,8 @@ import logging
 import os
 import random
 import re
-import threading
 import time
 from collections.abc import Callable
-from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
@@ -257,167 +230,70 @@ def _load_tbench2() -> dict[str, Any]:
 _DEFAULT_ENV_URL = "http://localhost:8003"
 
 
-# --- Per-task Daytona sandboxes (one per episode) -----------------------------
-# The per-task image recipe (official task image + env server layer) lives in
-# the sibling tb2_sandbox_recipe module; its Daytona materialization in
-# tb2_sandbox_daytona. Each episode materializes it
-# declaratively from the Image definition, read off the local TB2 checkout
-# (OPENENV_TB2_TASKS_DIR); repeat creates hit Daytona's build cache, and no
-# named snapshot is involved.
+# --- Episode wiring -------------------------------------------------------------
+# The agent loop (_multi_turn) is shared; everything that differs between the
+# episode legs enters it as three keyword parameters, filled in only by each
+# module's run_episode():
 #
-# The sandbox's env server is the PATCHED tbench2_env baked by the recipe
-# (canonical tests/test.sh scoring built into `evaluate`, per-task WORKDIR
-# resolved server-side, configurable exec timeout). The adapter-driven fidelity
-# machinery above (_apply_workdir / _CANONICAL_EVAL_CMD) exists to compensate
-# for an UNMODIFIED upstream server and is deliberately not applied on this
-# backend -- each leg matches what its server actually provides.
+#   run_body(env_cls, metadata, body)   how an env comes into being — connect to
+#                       the shared server (_shared_run_body below, capacity-
+#                       retried) vs create a Daytona sandbox
+#                       (openenv_daytona_agent_function).
+#   native_evaluate                     server contract: True when the server
+#                       scores natively (canonical tests/test.sh inside
+#                       `evaluate`, WORKDIR server-side, verifier assets
+#                       withheld — upstream since huggingface/OpenEnv#965+#972);
+#                       False keeps the adapter compensation (_apply_workdir +
+#                       _CANONICAL_EVAL_CMD + marker parse) for the OLDER
+#                       tbench2_env today's shared deployments run. A shared
+#                       server upgraded to current upstream could flip this;
+#                       that is a follow-up gated on validating docker-mode
+#                       native scoring.
+#   post_episode(env, action_cls)       optional hygiene hook (a long-lived
+#                       shared server accumulates trial dirs; a Daytona
+#                       sandbox lives only for its episode and needs nothing).
 #
-# Daytona rate-limits sandbox creation (ThrottlerException: Too Many Requests).
-# A rollout fans out many episodes at once; cap in-flight creates process-wide
-# and retry throttled ones with jittered exponential backoff.
-_CREATE_CONCURRENCY = int(os.getenv("OPENENV_DAYTONA_CREATE_CONCURRENCY", "4"))
-_CREATE_MAX_RETRIES = int(os.getenv("OPENENV_DAYTONA_CREATE_MAX_RETRIES", "8"))
-_CREATE_BACKOFF_BASE_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_BASE_S", "2.0"))
-_CREATE_BACKOFF_CAP_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_CAP_S", "30.0"))
-_READY_TIMEOUT_S = float(os.getenv("OPENENV_DAYTONA_READY_TIMEOUT_S", "300"))
-_COMMAND_TIMEOUT_S = int(os.getenv("TB2_COMMAND_TIMEOUT_S", "900"))
-
-_create_sem: asyncio.Semaphore | None = None
+# Every agent-function module exposes the same two entries: run() for miles
+# (session-server policy wiring + training failure semantics) and
+# run_episode() for callers that bring their own policy client and own
+# timeout/failure semantics (eval_tbench2_via_api).
 
 
-def _per_task_mode() -> bool:
-    """True when episodes run in per-task Daytona sandboxes instead of OPENENV_ENV_URL."""
-    return bool(os.getenv("OPENENV_TB2_TASKS_DIR", "").strip())
+async def _shared_run_body(env_cls: Any, metadata: dict[str, Any], body: Callable[[Any], Any]) -> Any:
+    """Run *body* against the one shared env server at OPENENV_ENV_URL."""
+    env_url = os.getenv("OPENENV_ENV_URL", _DEFAULT_ENV_URL)
+    return await _with_env(env_cls, env_url, body)
 
 
-def _is_throttle_error(exc: BaseException) -> bool:
-    """True when a sandbox create failed only because Daytona rate-limited it.
-
-    The daytona SDK is a lazy, per-task-mode-only dependency (shared-server
-    users don't install it), so its exception classes cannot be imported at
-    module scope -- but by the time a create has FAILED, daytona has
-    necessarily been imported, so the typed check happens here. The SDK
-    normalizes HTTP 429 to DaytonaRateLimitError; keep the text match as a
-    fallback for older SDKs and server messages that only surface as text
-    (e.g. "ThrottlerException: Too Many Requests").
-    """
+async def _purge_trial_dirs(env: Any, action_cls: Any) -> None:
+    # Shared-server disk hygiene (a Daytona sandbox needs none of
+    # this — it is deleted when its episode ends): the tbench2 env server
+    # (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs) leaves a per-episode trial dir
+    # under that path after every episode, which fills the sandbox overlay
+    # disk and trips ENOSPC. One episode holds the sandbox at a time, so it
+    # is safe to purge them here.
+    #
+    # BUT the same dir also holds repo_cache/ (TB2_CACHE_DIR defaults to
+    # output_dir/repo_cache) -- the shared terminal-bench-2 checkout that
+    # reset() clones once and every later episode reads its task from
+    # (repo_cache/terminal-bench-2-main/<task>). A blanket `rm -rf .../*`
+    # wiped repo_cache too, so on a pooled/reused sandbox every episode
+    # after the first either re-cloned the whole repo (huge) or raced into
+    # "Task path not found", collapsing effective concurrency and exploding
+    # step time. Preserve repo_cache; delete only the ephemeral per-trial
+    # dirs beside it.
     try:
-        from daytona.common.errors import DaytonaRateLimitError
-
-        if isinstance(exc, DaytonaRateLimitError):
-            return True
-    except ImportError:  # pragma: no cover - only without the daytona SDK
-        pass
-    s = str(exc).lower()
-    return "throttler" in s or "too many requests" in s or "429" in s
-
-
-def _get_create_sem() -> asyncio.Semaphore:
-    global _create_sem
-    if _create_sem is None:
-        _create_sem = asyncio.Semaphore(_CREATE_CONCURRENCY)
-    return _create_sem
-
-
-def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
-    import tb2_sandbox_daytona
-
-    daytona = tb2_sandbox_daytona.make_daytona()
-    sandbox, url = tb2_sandbox_daytona.create_task_sandbox(
-        daytona,
-        Path(tasks_dir) / task_id,
-        command_timeout_s=_COMMAND_TIMEOUT_S,
-        ready_timeout_s=_READY_TIMEOUT_S,
-    )
-    return (lambda: daytona.delete(sandbox)), url
-
-
-async def _create_once(task_id: str, tasks_dir: str) -> tuple[Any, str]:
-    """One sandbox-create attempt, safe against cancellation mid-create.
-
-    asyncio.to_thread is not cancellable: when the episode's wall-clock cap
-    cancels this coroutine mid-create, the worker thread keeps running and its
-    (close_fn, url) result would be discarded — leaking a sandbox that would
-    otherwise run (and bill) until the recipe's TTL backstop reclaims it.
-    Record the result thread-side and, on cancellation, hand it to a reaper
-    that deletes the orphan promptly once the create finishes.
-    """
-    result: list[tuple[Any, str]] = []
-    done = threading.Event()
-
-    def _start() -> tuple[Any, str]:
-        try:
-            result.append(_start_declarative(task_id, tasks_dir))
-        finally:
-            done.set()
-        return result[0]
-
-    try:
-        return await asyncio.to_thread(_start)
-    except asyncio.CancelledError:
-
-        def _reap() -> None:
-            done.wait()
-            for close_fn, _url in result:
-                try:
-                    close_fn()
-                    logger.info(f"Deleted sandbox orphaned by cancelled episode: {task_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete orphaned sandbox for {task_id}: {e}")
-
-        threading.Thread(target=_reap, name=f"tb2-sandbox-reap-{task_id}", daemon=True).start()
-        raise
-
-
-async def _start_task_sandbox(task_id: str) -> tuple[Any, str]:
-    """Create one per-task sandbox with the env server running.
-
-    Returns (close_fn, base_url); close_fn deletes the sandbox. Creation is
-    throttled process-wide and retried on Daytona rate limits.
-    """
-    tasks_dir = os.getenv("OPENENV_TB2_TASKS_DIR", "").strip()
-
-    attempt = 0
-    while True:
-        try:
-            # Hold the semaphore only for the create attempt; release it during
-            # backoff so other episodes keep the pipeline full.
-            async with _get_create_sem():
-                return await _create_once(task_id, tasks_dir)
-        except Exception as e:
-            if not _is_throttle_error(e) or attempt >= _CREATE_MAX_RETRIES:
-                raise
-            attempt += 1
-            delay = min(
-                _CREATE_BACKOFF_CAP_S,
-                _CREATE_BACKOFF_BASE_S * (2 ** (attempt - 1)),
-            ) * (0.5 + random.random())
-            logger.warning(
-                f"Daytona create throttled for {task_id} "
-                f"(attempt {attempt}/{_CREATE_MAX_RETRIES}); retrying in {delay:.1f}s"
+        await env.step(
+            action_cls(
+                action_type="exec",
+                command=(
+                    "find /tmp/tbench2_env_runs -mindepth 1 -maxdepth 1 "
+                    "! -name repo_cache -exec rm -rf {} + 2>/dev/null || true"
+                ),
             )
-            await asyncio.sleep(delay)
-
-
-@asynccontextmanager
-async def _episode_env(env_cls: Any, metadata: dict[str, Any]):
-    """Yield a connected env client on a fresh per-task sandbox; delete it after.
-
-    Per-task Daytona mode only (_per_task_mode() is True). The shared
-    OPENENV_ENV_URL backend goes through _with_env instead.
-    """
-    task_id = metadata.get("task_id") or metadata.get("task_name")
-    if not task_id:
-        raise ValueError("per-task sandbox mode requires metadata['task_id']")
-    close_fn, url = await _start_task_sandbox(str(task_id))
-    try:
-        async with env_cls(base_url=url, message_timeout_s=_MESSAGE_TIMEOUT_S) as env:
-            yield env
-    finally:
-        try:
-            await asyncio.to_thread(close_fn)
-        except Exception as e:
-            logger.warning(f"Failed to delete sandbox for {task_id}: {e}")
+        )
+    except Exception:
+        pass
 
 
 async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> Any:
@@ -441,6 +317,10 @@ async def _multi_turn(
     messages: list[dict[str, str]],
     request_kwargs: dict[str, Any],
     metadata: dict[str, Any],
+    *,
+    run_body: Callable[..., Any],
+    native_evaluate: bool,
+    post_episode: Callable[..., Any] | None = None,
 ) -> tuple[float | None, dict[str, Any]]:
     """Agentic loop: reset(task) -> {policy -> exec -> feed output back} -> evaluate (tbench2).
 
@@ -448,18 +328,18 @@ async def _multi_turn(
     reply), executed in the real task workdir; the loop ends when the policy
     stops emitting a command, says TASK_COMPLETE, or hits OPENENV_MAX_TURNS.
 
-    Scoring depends on the backend, matching what its env server provides:
-    shared-server episodes run the task's canonical tests/test.sh via an
-    ``exec`` step and parse /logs/verifier/reward.txt (faithful to
-    Terminal-Bench-2 against an unmodified upstream server); per-task-sandbox
-    episodes use the standard ``evaluate`` action, because the sandbox's
-    patched server runs that same canonical test.sh natively (and resolves the
-    task WORKDIR itself, so no _apply_workdir prefix either).
+    Scoring depends on ``native_evaluate``, matching what the episode's env
+    server provides. A server carrying the upstream fixes from
+    huggingface/OpenEnv#965 + #972 runs the task's canonical tests/test.sh
+    natively inside the standard ``evaluate`` action and resolves the task
+    WORKDIR itself; against an OLDER server the adapter compensates — it
+    prefixes exec commands with the workdir (_apply_workdir), runs canonical
+    test.sh via an ``exec`` step (_CANONICAL_EVAL_CMD), and parses
+    /logs/verifier/reward.txt back out of the output.
     """
     action_cls = classes["action"]
     task_id = metadata.get("task_id") or metadata.get("task_name")
     max_turns = int(os.getenv("OPENENV_MAX_TURNS", "30"))
-    per_task = _per_task_mode()
 
     async def body(env: Any) -> tuple[float | None, int, list[float], list[float], float, float, int | None]:
         # Per-turn wall-clock timings. gen_times[i] is turn i's policy generation
@@ -501,9 +381,9 @@ async def _multi_turn(
                 break
 
             t0 = time.monotonic()
-            # Per-task sandboxes run the server-side toolkit in the task's real
-            # WORKDIR already; only the shared upstream server needs the prefix.
-            exec_command = command if per_task else _apply_workdir(command)
+            # A native server runs the toolkit in the task's real WORKDIR
+            # already; only an older server needs the adapter-side prefix.
+            exec_command = command if native_evaluate else _apply_workdir(command)
             step_result = await env.step(action_cls(action_type="exec", command=exec_command))
             tool_times.append(time.monotonic() - t0)
             output = _obs_field(step_result, "output")
@@ -520,59 +400,28 @@ async def _multi_turn(
             convo.append({"role": "user", "content": content})
 
         t0 = time.monotonic()
-        if per_task:
-            # Per-task sandbox: the patched server scores via the standard
-            # evaluate action (runs the canonical test.sh natively), so there
-            # is no adapter-side test.sh exit-code marker to parse.
+        if native_evaluate:
+            # The server runs the canonical test.sh natively inside the
+            # standard evaluate action; there is no adapter-side test.sh
+            # exit-code marker to parse.
             eval_result = await env.step(action_cls(action_type="evaluate"))
             eval_time = time.monotonic() - t0
             reward = float(getattr(eval_result, "reward", 0.0) or 0.0)
             testsh_rc = None
         else:
-            # Shared upstream server: adapter-driven canonical exec + marker parse.
+            # Older server: adapter-driven canonical exec + marker parse.
             eval_result = await env.step(action_cls(action_type="exec", command=_CANONICAL_EVAL_CMD))
             eval_time = time.monotonic() - t0
             eval_output = _obs_field(eval_result, "output")
             reward = _parse_reward_marker(eval_output)
             testsh_rc = _parse_testsh_rc(eval_output)
 
-        # rm-hack (shared-server backend only -- a per-task sandbox is deleted
-        # when its episode ends, so nothing accumulates there):
-        # the tbench2 env server (TB2_OUTPUT_DIR=/tmp/tbench2_env_runs)
-        # leaves a per-episode trial dir under that path after every episode, which
-        # fills the sandbox overlay disk and trips ENOSPC. One episode holds the
-        # sandbox at a time, so it is safe to purge them here.
-        #
-        # BUT the same dir also holds repo_cache/ (TB2_CACHE_DIR defaults to
-        # output_dir/repo_cache) -- the shared terminal-bench-2 checkout that
-        # reset() clones once and every later episode reads its task from
-        # (repo_cache/terminal-bench-2-main/<task>). A blanket `rm -rf .../*` wiped
-        # repo_cache too, so on a pooled/reused sandbox every episode after the first
-        # either re-cloned the whole repo (huge) or raced into "Task path not found",
-        # collapsing effective concurrency and exploding step time. Preserve
-        # repo_cache; delete only the ephemeral per-trial dirs beside it.
-        if not per_task:
-            try:
-                await env.step(
-                    action_cls(
-                        action_type="exec",
-                        command=(
-                            "find /tmp/tbench2_env_runs -mindepth 1 -maxdepth 1 "
-                            "! -name repo_cache -exec rm -rf {} + 2>/dev/null || true"
-                        ),
-                    )
-                )
-            except Exception:
-                pass
+        if post_episode is not None:
+            await post_episode(env, action_cls)
 
         return reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc
 
-    if per_task:
-        async with _episode_env(classes["env"], metadata) as env:
-            result = await body(env)
-    else:
-        env_url = os.getenv("OPENENV_ENV_URL", _DEFAULT_ENV_URL)
-        result = await _with_env(classes["env"], env_url, body)
+    result = await run_body(classes["env"], metadata, body)
     reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc = result
     total_gen_time = sum(gen_times)
     # non_generation_time = everything the rollout spent outside policy generation:
@@ -592,18 +441,47 @@ async def _multi_turn(
     }
 
 
-async def run(
+async def run_episode(
+    policy: AsyncOpenAI,
+    model_name: str,
+    messages: list[dict[str, str]],
+    request_kwargs: dict[str, Any],
+    metadata: dict[str, Any],
+) -> tuple[float | None, dict[str, Any]]:
+    """One episode against the shared env server, with the caller's own policy.
+
+    The direct-drive entry (see the module docstring): returns the loop's raw
+    ``(reward, agent_metrics)``; wall-clock caps and failure semantics are the
+    caller's. miles goes through run() instead.
+    """
+    return await _multi_turn(
+        _load_tbench2(),
+        policy,
+        model_name,
+        messages,
+        request_kwargs,
+        metadata,
+        run_body=_shared_run_body,
+        native_evaluate=False,
+        post_episode=_purge_trial_dirs,
+    )
+
+
+async def _run_for_training(
     base_url: str,
     prompt: Any,
-    request_kwargs: dict[str, Any] | None = None,
-    metadata: dict[str, Any] | None = None,
-    **kwargs,
+    request_kwargs: dict[str, Any] | None,
+    metadata: dict[str, Any] | None,
+    run_episode_fn: Callable[..., Any],
 ) -> dict[str, Any] | None:
-    """Run one OpenEnv tbench2 episode via the trained policy."""
+    """miles-side wrapper around one episode: session-server policy wiring plus
+    training failure semantics (timeout -> reward 0, no verdict -> drop sample).
+
+    Shared by every agent-function module: each passes its own run_episode.
+    """
     request_kwargs = request_kwargs or {}
     metadata = metadata or {}
 
-    classes = _load_tbench2()
     session_url = _resolve_session_url(base_url)
     model_name = os.getenv("AGENT_MODEL_NAME", os.getenv("SWE_AGENT_MODEL_NAME", "model"))
 
@@ -616,7 +494,7 @@ async def run(
         # is interrupted and the env session is closed by the env context manager
         # during cancellation cleanup.
         reward, agent_metrics = await asyncio.wait_for(
-            _multi_turn(classes, policy, model_name, messages, request_kwargs, metadata),
+            run_episode_fn(policy, model_name, messages, request_kwargs, metadata),
             timeout=_MAX_ROLLOUT_TIME_S,
         )
     except asyncio.TimeoutError:
@@ -657,3 +535,14 @@ async def run(
         "eval_report": {},
         "agent_metrics": agent_metrics,
     }
+
+
+async def run(
+    base_url: str,
+    prompt: Any,
+    request_kwargs: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+    **kwargs,
+) -> dict[str, Any] | None:
+    """Run one OpenEnv tbench2 episode via the trained policy (shared env server)."""
+    return await _run_for_training(base_url, prompt, request_kwargs, metadata, run_episode)

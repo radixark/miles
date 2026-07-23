@@ -1,6 +1,8 @@
 """OpenEnv Terminal-Bench-2 (tbench2) learning launcher (GLM-4.7-Flash).
 
-Drives the OpenEnv tbench2 env via ``openenv_agent_function.run``. tbench2 is
+Drives the OpenEnv tbench2 env via ``openenv_agent_function.run`` (shared env
+server) or ``openenv_daytona_agent_function.run`` (Daytona sandboxes;
+selected automatically when ``openenv_tb2_tasks_dir`` is set). tbench2 is
 *multi-turn*: the adapter runs an agentic loop (reset(task_id) -> {policy emits a
 shell command -> step(exec) -> feed output back} -> evaluate) and the reward is
 the binary pytest result (1.0 all tests pass, else 0.0).
@@ -21,7 +23,7 @@ Prereqs:
     #    ... or skip the shared server entirely: set OPENENV_TB2_TASKS_DIR
     #    (+ the Daytona key: DAYTONA_API_KEY in the env, or a key file at
     #    ~/.config/daytona/api_key) and the adapter runs each episode in its
-    #    own per-task Daytona cloud sandbox (no Docker host needed).
+    #    own Daytona cloud sandbox (no Docker host needed).
 
     NOTE (open decisions before a real run): docker mode wants a Docker host with
     disk + socket; colocating heavy per-task containers on the GPU pod is risky,
@@ -78,7 +80,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # within the limit is terminated and scored reward 0, bounding long-trajectory
     # stragglers that would otherwise stall the whole rollout batch.
     openenv_max_rollout_time_seconds: int = int(os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
-    # Per-task Daytona sandbox backend: every episode runs in its own cloud
+    # Daytona sandbox mode: every episode runs in its own cloud
     # sandbox (the task's official image + env server layer; see the adapter
     # docstring). Set to the TB2 checkout path; the adapter then ignores
     # --openenv-env-url. Workers resolve the Daytona key from their own
@@ -163,7 +165,7 @@ def execute(args: ScriptArgs):
         "--sglang-router-port 31000 "
     )
 
-    agent_args = C.agent_args("glm47")
+    agent_args = C.agent_args("glm47", daytona_sandboxes=bool(args.openenv_tb2_tasks_dir))
 
     misc_args = (
         "--attention-dropout 0.0 "
