@@ -31,9 +31,9 @@ Steps 2–4 below all run inside the container.
 ## 2. Download model and data
 
 ```bash
-hf download Qwen/Qwen3-4B                          --local-dir /root/Qwen3-4B
+hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
 hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
+hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024
 ```
 
 ## 3. Convert to Megatron format
@@ -47,7 +47,7 @@ source scripts/models/qwen3-4B.sh
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/Qwen3-4B \
-   --save          /root/Qwen3-4B_torch_dist
+   --save /root/Qwen3-4B_torch_dist
 ```
 
 For larger models, run the converter under `torchrun --nproc-per-node 8` (optionally
@@ -79,14 +79,14 @@ flowchart LR
     P[Prompt dataset] --> R[SGLang rollout]
     R --> RM[Reward fn]
     RM --> A[Megatron actor]
-    A == P2P weight sync ==> R
+    A == weight sync ==> R
     A -. KL .-> Ref[(Reference model)]
 ```
 
 1. Sample `rollout-batch-size` prompts and generate `n-samples-per-prompt` responses.
-2. Score responses with the reward model (`--rm-type deepscaler` in this recipe).
+2. Score responses with the reward function (`--rm-type deepscaler` in this recipe).
 3. Compute the GRPO objective and step the optimizer.
-4. Push updated weights back to the SGLang engines via P2P.
+4. Push the updated weights back to the SGLang engines. This recipe uses the default NCCL broadcast; you can switch to point-to-point RDMA transfer with `--update-weight-transfer-mode p2p`.
 
 The four batch-sizing knobs satisfy:
 
@@ -115,6 +115,6 @@ Miles fills in whichever side you leave unset.
   dynamic sampling, partial rollout, and BF16+FP8 inference.
 - [Training backends](/user-guide/usage) — Megatron vs FSDP.
 - [Customization](/user-guide/customization) — plug in custom rollout / reward.
-- [Models](/models/index) — recipes for Qwen3.5, GLM4.5, DeepSeek R1, Kimi K2, and more.
+- [Models](/models/index) — recipes for Qwen3.5, GLM4.5, DeepSeek V4, Kimi K2, and more.
 
 If you hit issues, the [FAQ](/faq) covers the common ones.
