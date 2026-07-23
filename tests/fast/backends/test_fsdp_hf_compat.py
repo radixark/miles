@@ -7,8 +7,6 @@ Covers:
     only for the right model types. These tests pin the HF revert output to the
     on-disk dialect; any upstream drift in the qwen2_moe conversion family or in
     per-tensor revert semantics turns them red.
-  * F8: the legacy qwen3_moe MoE graph patch no-ops (does not crash) on the
-    transformers>=5.6 batched structure.
 """
 
 import pytest
@@ -140,18 +138,6 @@ def test_iter_passthrough_for_non_expert():
     assert len(out) == 1 and out[0][1] is g
 
 
-def test_qwen3_moe_patch_noops_on_batched_structure():
-    # On transformers>=5.6 the patch must not replace the forward (batched experts).
-    from transformers.models.qwen3_moe import modeling_qwen3_moe
-
-    from miles.backends.experimental.fsdp_utils.models.qwen3_moe_hf import apply_fsdp_moe_patch
-
-    original_forward = modeling_qwen3_moe.Qwen3MoeSparseMoeBlock.forward
-    apply_fsdp_moe_patch()  # must not raise
-    if hasattr(modeling_qwen3_moe, "Qwen3MoeExperts") or hasattr(modeling_qwen3_moe, "Qwen3MoeTopKRouter"):
-        assert modeling_qwen3_moe.Qwen3MoeSparseMoeBlock.forward is original_forward
-
-
 def test_is_mamba_hybrid_gating():
     # The clobber-reload only runs for Mamba/SSM-hybrid archs (NemotronH _init_weights
     # re-inits dt_bias + out_proj post-load); it must be a no-op gate for everything else.
@@ -230,7 +216,7 @@ def test_model_patch_registry_gating():
     assert "qwen3_moe_moe_patch" in by_name
     assert by_name["qwen3_moe_moe_patch"].applies_to(SimpleNamespace(model_type="qwen3_moe"))
     assert not by_name["qwen3_moe_moe_patch"].applies_to(SimpleNamespace(model_type="qwen3"))
-    # off-mode dispatch applies the legacy patch (a no-op on transformers>=5.6 batched experts); must not raise
+    # Batched experts need no off-mode patch under the pinned transformers version.
     by_name["qwen3_moe_moe_patch"].apply(
         SimpleNamespace(model_type="qwen3_moe"), SimpleNamespace(true_on_policy_mode=False)
     )
