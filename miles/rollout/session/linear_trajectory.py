@@ -70,7 +70,11 @@ class LinearTrajectory:
             )
 
         # 1. Detect agent retries and roll back (at most one assistant step).
-        self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
+        #    Returns True iff the session was reseeded (see below); in that case
+        #    there is no stored history to merge against, so fall through to the
+        #    same None-return as an empty session.
+        if self._try_detect_and_rollback_to_assistant_checkpoint(request_messages):
+            return None
         # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
         #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
         try:
@@ -135,8 +139,15 @@ class LinearTrajectory:
     def _try_detect_and_rollback_to_assistant_checkpoint(
         self,
         request_messages: list[dict[str, Any]],
-    ) -> None:
+    ) -> bool:
         """Detect if *request_messages* diverges from stored history and roll back.
+
+        Returns ``True`` iff the session was reseeded to empty because the
+        matched prefix contains no assistant and no assistant turn has been
+        persisted yet (see "pre-assistant re-seed" below). Returns ``False``
+        for every other outcome (no rollback, or a normal rollback to a
+        prior assistant checkpoint). Callers should treat a ``True`` return
+        as equivalent to entering a fresh session.
 
         In agentic workflows the agent may retry from an earlier point — for
         example, re-running a tool call with different arguments.  When that
@@ -177,10 +188,21 @@ class LinearTrajectory:
         - The stored history is empty.
         - *request_messages* is a strict extension of stored messages
           (``match_len >= len(stored)``).
+
+        Pre-assistant re-seed: if the matched prefix contains no assistant
+        AND no assistant turn has been persisted yet (``num_assistant == 0``),
+        the stored state is a prompt-only seed (system/user) from a prior
+        request whose first assistant turn never completed, e.g. the LLM hit
+        ``max_tokens`` before emitting a stop token, errored in flight, or
+        timed out before the session record could be written. In that case
+        the session is reseeded to empty and ``True`` is returned so the
+        caller takes the fresh-session branch. This replaces a previous
+        ``MessageValidationError`` that killed trials which would otherwise
+        have recovered on retry.
         """
         stored = self.messages
         if not stored or not self.trajectory_token_ids:
-            return
+            return False
 
         match_len = 0
         for i in range(min(len(request_messages), len(stored))):
@@ -190,7 +212,7 @@ class LinearTrajectory:
                 break
 
         if match_len >= len(stored):
-            return
+            return False
 
         # Find the last assistant message within the matched prefix.
         rollback_msg_end = None
@@ -203,6 +225,23 @@ class LinearTrajectory:
                 assistant_count += 1
 
         if checkpoint_index < 0:
+            if self.num_assistant == 0:
+                # Pre-assistant re-seed: stored is a prompt-only state from
+                # a prior request whose first assistant turn never
+                # persisted. Clear state and let the caller treat this as a
+                # fresh session.
+                logger.info(
+                    "Reseeding session: no assistant checkpoint stored yet, "
+                    "request diverges at index %d (stored=%d msgs, request=%d msgs)",
+                    match_len,
+                    len(stored),
+                    len(request_messages),
+                )
+                self.messages = []
+                self.trajectory_token_ids = []
+                self.records = []
+                self.num_assistant = 0
+                return True
             raise MessageValidationError(
                 f"rollback failed: no assistant message found in the first "
                 f"{match_len} matched messages (stored has {len(stored)} messages, "
@@ -232,6 +271,7 @@ class LinearTrajectory:
         self.trajectory_token_ids = self.trajectory_token_ids[: checkpoint_index + 1]
         self.records = self.records[: checkpoint_index + 1]
         self.num_assistant = checkpoint_index + 1
+        return False
 
 
 class SessionRegistry:
