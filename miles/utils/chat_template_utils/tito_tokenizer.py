@@ -183,6 +183,13 @@ class TITOTokenizer:
 
         When *add_generation_prompt* is True and *appended_messages* is empty,
         this computes the generation-prompt suffix (the assistant opener tokens).
+
+        The suffix ids are taken from the full prompt's own tokenization
+        (``full_ids[len(prefix_ids):]``) rather than by re-encoding the text slice
+        ``text_with[len(text_without):]`` on its own. A standalone re-encode can
+        add a start-of-segment marker (e.g. SentencePiece's leading ``▁``) that is
+        absent in context, so the re-encoded ids drift from what the model saw and
+        ``prefix + suffix`` would no longer reproduce the full prompt.
         """
         text_without = self.render_messages(base_messages, add_generation_prompt=False, tools=tools)
         text_with = self.render_messages(
@@ -193,7 +200,9 @@ class TITOTokenizer:
         if not text_with.startswith(text_without):
             roles = [msg["role"] for msg in appended_messages] if appended_messages else ["generation_prompt"]
             raise ValueError(f"rendered suffix diff failed for {roles}")
-        return self._encode_text(text_with[len(text_without) :])
+        prefix_ids = self._encode_text(text_without)
+        full_ids = self._encode_text(text_with)
+        return full_ids[len(prefix_ids) :]
 
     def _tokenize_tool_segment(
         self,
