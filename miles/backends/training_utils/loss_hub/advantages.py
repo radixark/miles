@@ -25,8 +25,27 @@ def compute_advantages(
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """Dispatch to the configured advantage estimator.
 
+    Shape symbols:
+        `B`: Number of samples in the current local batch.
+        `T_i`: Prompt-plus-response length of sample `i`, excluding BSHD padding.
+        `R_i`: Full response length of sample `i` before CP splitting.
+        `C_i`: Number of response-aligned positions of sample `i` stored on this CP rank; prompt and padding positions are excluded.
+
+    Args:
+        args: `Namespace`; no tensor shape.
+        kl: List length `B`; `kl[i]` has shape `[C_i]`.
+        rewards: List length `B`; `rewards[i]` is a scalar.
+        log_probs: `None` or list length `B`; `log_probs[i]` has shape `[C_i]`.
+        loss_masks: List length `B`; `loss_masks[i]` has shape `[R_i]`.
+        total_lengths: List length `B`; `total_lengths[i] = T_i`.
+        response_lengths: List length `B`; `response_lengths[i] = R_i`.
+        values: `None` or list length `B`; `values[i]` has shape `[C_i]`. PPO requires this input.
+
+    `C_i = R_i` when CP size is 1. With CP size greater than 1, `0 <= C_i <= R_i`; `C_i` can be zero and can differ across ranks. THD partitions a sequence of length `T_i`, while BSHD partitions the padded maximum sequence length, so the two formats do not guarantee the same `C_i`.
+
     Returns:
-        (advantages, returns) — both lists of tensors, one per sample.
+        `advantages`: List length `B`; `advantages[i]` has shape `[C_i]`.
+        `returns`: List length `B`; `returns[i]` has shape `[C_i]`.
     """
     if args.advantage_estimator in ["grpo", "gspo"]:
         rewards = torch.tensor(rewards, dtype=torch.float32, device=kl[0].device)
@@ -35,17 +54,20 @@ def compute_advantages(
         advantages = [r for r in returns]
 
     elif args.advantage_estimator == "ppo":
-        old_rewards = rewards
-        rewards = []
+        terminal_rewards = rewards
+        token_rewards = []
         kl_coef = -args.kl_coef
-        cp_rank = get_parallel_state().cp.rank
-        for reward, k in zip(old_rewards, kl, strict=False):
+        for k in kl:
             k *= kl_coef
-            if cp_rank == 0:
-                k[-1] += reward
-            rewards.append(k)
+            token_rewards.append(k)
         advantages, returns = get_advantages_and_returns_batch(
-            total_lengths, response_lengths, values, rewards, args.gamma, args.lambd
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            values_list=values,
+            rewards_list=token_rewards,
+            terminal_rewards=terminal_rewards,
+            gamma=args.gamma,
+            lambd=args.lambd,
         )
 
     elif args.advantage_estimator == "reinforce_plus_plus":
