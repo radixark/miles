@@ -881,6 +881,7 @@ def calculate_log_probs_and_entropy(
     chunk_size: int = -1,
     true_on_policy: bool = False,
     vocab_size: int | None = None,
+    need_entropy_grad: bool = True,
 ):
     if true_on_policy:
         return _calculate_log_probs_and_entropy_true_on_policy(
@@ -899,7 +900,7 @@ def calculate_log_probs_and_entropy(
     entropy = None
 
     def compute_entropy(logits_chunk: torch.Tensor) -> torch.Tensor:
-        if entropy_requires_grad:
+        if entropy_requires_grad and need_entropy_grad:
             return compute_entropy_from_logits(logits_chunk.clone(), tp_group)
         with torch.no_grad():
             return compute_entropy_from_logits(logits_chunk.detach().clone(), tp_group)
