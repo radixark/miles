@@ -59,6 +59,7 @@ def apply_fp32_master(model):
     ``e_score_correction_bias``) stay fp32 -- casting those to bf16 would flip MoE routing.
     """
     orig_dtypes = {name: p.dtype for name, p in model.state_dict().items()}
+    orig_dtypes.update(getattr(model, "_fsdp_sync_dtype_overrides", {}))
     model = model.to(torch.float32)
     model._fsdp_sync_orig_dtypes = orig_dtypes
     return model

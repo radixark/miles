@@ -606,6 +606,8 @@ class FSDPTrainRayActor(TrainRayActor):
                 )
 
             apply_model_instance_patches(ref_model, self.hf_config, self.args)
+            if self.precision_policy.keep_fp32_master and self.precision_policy.param_dtype is torch.float32:
+                ref_model = apply_fp32_master(ref_model)
             full_state = ref_model.state_dict()
 
             # Always use CPUOffloadPolicy for reference, let FSDP2 handle the offload. It is faster than model.cpu().

@@ -25,6 +25,8 @@ def _uses_formal_contract(hf_config, args) -> bool:
 def _resolve_precision(base_policy, hf_config, args):
     if getattr(args, "fp16", False):
         raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires bf16 training")
+    if not base_policy.keep_fp32_master:
+        raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires fp32 master weights")
     return replace(base_policy, param_dtype=torch.float32, autocast_dtype=torch.bfloat16)
 
 

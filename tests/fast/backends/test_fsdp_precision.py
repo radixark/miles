@@ -108,6 +108,19 @@ def test_qwen3_formal_true_on_policy_rejects_fp16():
         )
 
 
+def test_qwen3_formal_true_on_policy_rejects_disabled_fp32_master():
+    with pytest.raises(ValueError, match="requires fp32 master weights"):
+        resolve_precision_policy(
+            SimpleNamespace(model_type="qwen3"),
+            SimpleNamespace(
+                fp16=False,
+                keep_fp32_master=False,
+                true_on_policy_mode=True,
+                sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+            ),
+        )
+
+
 def test_precision_forward_context_uses_policy_autocast(monkeypatch):
     entered = []
 
