@@ -9,17 +9,22 @@ logger = logging.getLogger(__name__)
 
 
 class EvalDispatcher:
-    """Fire-and-forget evals against the dedicated eval fleet; blocking legacy call
-    when ``--eval-num-gpus`` is 0. Failures degrade to a skipped point, never a crash."""
+    """Fire-and-forget evals pinned to HF snapshots when the manager's eval fn
+    consumes checkpoints (dedicated fleet or external backend); blocking
+    shared-engine call otherwise. Failures degrade to a skipped point, never a
+    crash. The manager is the single authority on which posture is active."""
 
     def __init__(self, args, actor_model, rollout_manager):
         self.args = args
         self.actor_model = actor_model
         self.rollout_manager = rollout_manager
         self.pending: deque[tuple[int, ray.ObjectRef]] = deque()
+        self._snapshot_eval: bool | None = None
 
     async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> None:
-        if self.args.eval_num_gpus <= 0:
+        if self._snapshot_eval is None:
+            self._snapshot_eval = await self.rollout_manager.eval_uses_snapshots.remote()
+        if not self._snapshot_eval:
             await self.rollout_manager.eval.remote(rollout_id)
             return
 

@@ -151,43 +151,33 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
 
 
 async def test_eval_runs_on_dedicated_fleet(monkeypatch):
-    import miles.rollout.checkpoint_eval as checkpoint_eval
-    import miles.rollout.inference_rollout.inference_rollout_eval as eval_mod
-
-    args = make_args(
-        eval_num_gpus=1,
-        eval_num_gpus_per_engine=1,
-        sglang_model_routers={"eval": ("127.0.0.1", 31000)},
-    )
+    """RolloutManager (not the fn) decides fleet-vs-shared and builds the fleet's
+    GenerateState; it hands it in via RolloutFnEvalInput.generate_state. The fn must
+    use that state as-is (not self.state) and must not touch the producer/data_source.
+    Building/caching the fleet state itself is EvalFleetSession's job, covered in
+    tests/fast/rollout/test_checkpoint_eval.py.
+    """
+    args = make_args(eval_num_gpus=1, eval_num_gpus_per_engine=1)
     data_source = FakeDataSource()
     fn = make_fn(monkeypatch, args, data_source)
 
+    fleet_state = FakeGenerateState(args)
     eval_results = {"fake_ds": {"rewards": [1.0], "truncated": [False], "samples": []}}
     seen_states = []
 
-    def fake_make_eval_generate_state(a):
-        assert a.sglang_model_routers["eval"] == ("127.0.0.1", 31000)
-        state = FakeGenerateState(a)
-        seen_states.append(state)
-        return state
-
     async def fake_run_eval_datasets(state, cache):
-        assert state in seen_states
+        seen_states.append(state)
         return eval_results
 
-    monkeypatch.setattr(checkpoint_eval, "make_eval_generate_state", fake_make_eval_generate_state)
-    monkeypatch.setattr(eval_mod, "run_eval_datasets", fake_run_eval_datasets)
+    monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
 
-    output = await fn(RolloutFnEvalInput(rollout_id=0))
+    output = await fn(RolloutFnEvalInput(rollout_id=0, generate_state=fleet_state, weight_version="0"))
 
     assert output.data == eval_results
+    assert seen_states == [fleet_state]  # used the fleet's state, not fn.state
     # Eval must not start the producer or consume training prompts.
     assert fn._worker is None
     assert data_source.num_get_calls == 0
-
-    # The eval state is created once and reused across evals.
-    await fn(RolloutFnEvalInput(rollout_id=1))
-    assert len(seen_states) == 1
 
 
 async def test_aborted_group_recycled(monkeypatch):

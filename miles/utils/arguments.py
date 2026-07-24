@@ -2534,10 +2534,7 @@ def miles_validate_args(args):
             "--eval-num-gpus requires a snapshot source: set --eval-hf-dir (staging exports) "
             "or --save-hf (reuse periodic HF checkpoints)."
         )
-        assert not args.colocate, (
-            "--eval-num-gpus is not supported with --colocate; "
-            "use tools/checkpoint_eval_service.py against --save-hf checkpoints instead."
-        )
+        assert not args.colocate, "--eval-num-gpus is not supported with --colocate."
         assert (
             not args.debug_train_only and not args.debug_rollout_only
         ), "--eval-num-gpus is not supported with debug_train_only/debug_rollout_only."
