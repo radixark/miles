@@ -308,7 +308,7 @@ matchers:
             )
         case ("B200" | "B300" | "GB200" | "GB300", 1 | 2 | 4):
             perf_args += (
-                "--tensor-model-parallel-size 4 "
+                f"--tensor-model-parallel-size {min(4, args.actor_num_gpus_per_node)} "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 1 "
                 "--context-parallel-size 1 "
