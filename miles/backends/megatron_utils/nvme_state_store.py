@@ -70,7 +70,7 @@ def _rw_full(op, fd: int, offset: int, buf) -> None:
     while done < len(mv):
         n = op(fd, [mv[done:]], offset + done)
         if n <= 0:
-            raise IOError(f"short {op.__name__} ({n}) on optimizer state file at offset {offset + done}")
+            raise OSError(f"short {op.__name__} ({n}) on optimizer state file at offset {offset + done}")
         done += n
 
 
@@ -191,13 +191,12 @@ class NVMeOptimizerStateStore:
         config = distrib_optimizer.config
 
         assert not config.use_precision_aware_optimizer, (
-            "NVMe state store requires the non-precision-aware optimizer "
-            "(fp32 main params held by mcore)."
+            "NVMe state store requires the non-precision-aware optimizer " "(fp32 main params held by mcore)."
         )
         assert not config.optimizer_cpu_offload, "NVMe state store is mutually exclusive with CPU offload."
-        assert not config.offload_optimizer_states, (
-            "NVMe state store is mutually exclusive with --offload-optimizer-states."
-        )
+        assert (
+            not config.offload_optimizer_states
+        ), "NVMe state store is mutually exclusive with --offload-optimizer-states."
         assert not distrib_optimizer.ddp_config.use_megatron_fsdp
 
         moments = getattr(config, "optimizer_state_nvme_moment_dtype", "fp32")
@@ -234,9 +233,9 @@ class NVMeOptimizerStateStore:
 
     def _build_buckets(self) -> list[_Bucket]:
         by_ddp_bucket: dict[tuple, list[_Entry]] = {}
-        groups = zip(self.dist_opt.model_float16_groups, self.dist_opt.shard_fp32_from_float16_groups)
+        groups = zip(self.dist_opt.model_float16_groups, self.dist_opt.shard_fp32_from_float16_groups, strict=True)
         for group_index, (model_group, main_group) in enumerate(groups):
-            for model_param, main_param in zip(model_group, main_group):
+            for model_param, main_param in zip(model_group, main_group, strict=True):
                 assert main_param is not None and main_param.dtype == torch.float32
                 key = self.dist_opt.model_param_gbuf_map[model_param]
                 by_ddp_bucket.setdefault(key, []).append(_Entry(model_param, main_param, group_index))
@@ -258,7 +257,7 @@ class NVMeOptimizerStateStore:
         params: dict[int, list[torch.Tensor]] = {}
         total_bytes = 0
         for group_index, (model_group, shard_group) in enumerate(
-            zip(self.dist_opt.model_fp32_groups, self.dist_opt.shard_fp32_groups)
+            zip(self.dist_opt.model_fp32_groups, self.dist_opt.shard_fp32_groups, strict=True)
         ):
             if model_group:
                 params[group_index] = list(shard_group)
@@ -285,7 +284,7 @@ class NVMeOptimizerStateStore:
 
     def _sync_lr_wd(self, adam, group_indices) -> None:
         master_groups = self.dist_opt.optimizer.param_groups
-        for group, group_index in zip(adam.param_groups, group_indices):
+        for group, group_index in zip(adam.param_groups, group_indices, strict=True):
             group["lr"] = master_groups[group_index]["lr"]
             group["weight_decay"] = master_groups[group_index]["weight_decay"]
 
@@ -361,11 +360,11 @@ class NVMeOptimizerStateStore:
             f"current topology builds {len(self.buckets)} (same-topology resume only)"
         )
 
-        for bucket, meta in zip(self.buckets, manifest["buckets"]):
+        for bucket, meta in zip(self.buckets, manifest["buckets"], strict=True):
             assert meta["numel"] == bucket.numel
             assert meta["entry_numels"] == [e.main_param.numel() for e in bucket.entries]
             shutil.copyfile(os.path.join(dirpath, meta["file"]), bucket.path)
-            for group, step in zip(bucket.adam.param_groups, meta["steps"]):
+            for group, step in zip(bucket.adam.param_groups, meta["steps"], strict=True):
                 if step:
                     group["step"] = step
             bucket.allocate_moments()
