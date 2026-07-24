@@ -27,8 +27,8 @@ ARG WHEELS_REPO=yueming-yuan/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
-ARG WHEELS_TAG_X86=cu130-x86_64-v0.5.12
-ARG WHEELS_TAG_ARM64=cu130-aarch64-v0.5.12
+ARG WHEELS_TAG_X86=cu130-x86_64
+ARG WHEELS_TAG_ARM64=cu130-aarch64
 
 # ======================================== Setup =============================================
 
@@ -87,21 +87,30 @@ RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
 RUN pip install --no-deps tile_kernels==1.0.0
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
 RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git"
-RUN pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation
+# Prefer the prebuilt wheel; fall back to a source build while the current
+# arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
+# builds are the expensive path this avoids).
+RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; then \
+      pip install /tmp/wheels/fast_hadamard_transform-*.whl; \
+    else \
+      pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation; \
+    fi
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
-RUN pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation
+RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
+       ls /tmp/wheels/mamba_ssm-*.whl 2>/dev/null | grep -q .; then \
+      pip install /tmp/wheels/causal_conv1d-*.whl /tmp/wheels/mamba_ssm-*.whl; \
+    else \
+      pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation; \
+    fi
 
 # transformer_engine
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       pip install --no-deps transformer_engine==2.17.0 && \
       pip install transformer_engine_cu13==2.17.0 && \
-      if ls /tmp/wheels/transformer_engine_torch-*.whl 2>/dev/null | grep -q .; then \
-        pip install /tmp/wheels/transformer_engine_torch-*.whl; \
-      else \
-        pip install nvidia-mathdx==25.6.0 && \
-        pip -v install --no-build-isolation transformer_engine_torch==2.17.0; \
-      fi; \
+      rm -f /tmp/wheels/transformer_engine*.whl && \
+      pip install nvidia-mathdx==25.6.0 && \
+      pip -v install --no-build-isolation transformer_engine_torch==2.17.0; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.17.0"; \
     fi

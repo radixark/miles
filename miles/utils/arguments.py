@@ -493,6 +493,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--async-max-concurrent-samples",
+                type=int,
+                default=None,
+                help=(
+                    "Maximum number of concurrently generating trajectories in fully async mode, "
+                    "decoupling generation concurrency from the training batch size. None (default) "
+                    "keeps the legacy bound of one training batch worth of trajectories "
+                    "(rollout_batch_size groups, i.e. rollout_batch_size * n_samples_per_prompt)."
+                ),
+            )
+            parser.add_argument(
                 "--custom-generate-function-path",
                 type=str,
                 default=None,
@@ -2793,6 +2804,13 @@ def miles_validate_args(args):
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
+
+    if args.async_max_concurrent_samples is not None:
+        assert args.async_max_concurrent_samples >= args.n_samples_per_prompt, (
+            f"--async-max-concurrent-samples ({args.async_max_concurrent_samples}) must be at least "
+            f"--n-samples-per-prompt ({args.n_samples_per_prompt}): the worker submits whole groups, "
+            f"so one group already puts n_samples_per_prompt trajectories in flight"
+        )
 
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
