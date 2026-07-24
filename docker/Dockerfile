@@ -174,14 +174,10 @@ RUN cd /sgl-workspace/sglang && \
 
 # =========================== Mooncake structured object store wheel ===========================
 
-# miles' mooncake rollout-data backend needs the structured object store API (FieldSchema,
-# export_ref/import_ref, unified put/get, release_result) merged upstream in
-# kvcache-ai/Mooncake#2907/#3013/#3023 but not present in any released wheel (<= 0.3.12,
-# whose release branch was cut before those merges). The wheels release carries mooncake
-# built from a pinned master commit (the miles-wheels `mooncake` step); install it over the
-# base image's identically named dist. Wheels exist per (cuda, arch) release tag — cu13/amd64
-# is required, other variants keep the base image's mooncake until their wheel is built.
-# Drop this layer for a plain pip pin once a mooncake release contains the API.
+# miles' mooncake rollout-data backend needs the structured object store API, merged upstream
+# (kvcache-ai/Mooncake#2907/#3013/#3023) but in no released wheel (<= 0.3.12). Until a release
+# ships it, install the pinned-commit build from the wheels release (miles-wheels `mooncake`
+# step) over the base image's mooncake.
 RUN set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
     if [ -e "$1" ]; then \
       pip install --force-reinstall --no-deps "$@" && \
