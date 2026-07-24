@@ -43,6 +43,10 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
     # The weight_version pinned on generate_state's engines, for fns that want to
     # attribute results to it (e.g. logging). None when generate_state is None.
     weight_version: str | None = None
+    # HF snapshot dir for this eval point. Set on the dedicated-fleet path and for
+    # eval fns that declare ``eval_needs_snapshot = True`` (which own delivering the
+    # snapshot to their backend, e.g. an external server). None on shared-engine eval.
+    hf_dir: str | None = None
 
     @property
     def evaluation(self):

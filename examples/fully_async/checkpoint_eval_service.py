@@ -1,10 +1,21 @@
-"""Standalone checkpoint eval service: watch --save-hf output, pin an sglang server
-to each complete snapshot, run the miles eval datasets, log at the snapshot's step.
-No Ray; restarts resume from a ledger file next to the watch dir.
+"""Standalone checkpoint eval service: drives ``ExternalSglangEvalFn`` from outside a
+training job. Watch --save-hf output, pin an sglang server to each complete snapshot,
+run the miles eval datasets, log at the snapshot's step. No Ray; restarts resume from
+a ledger file next to the watch dir.
+
+Use this when there is no live training job to host the eval fn — post-hoc backlogs
+(``--once``), or surviving trainer restarts. During training prefer the in-job path
+(``--eval-function-path examples.fully_async.external_eval_fn.ExternalSglangEvalFn``):
+it reads the real training args, so nothing below needs to be kept in sync.
+
+This process cannot see the training args: every flag below that mirrors a training
+flag must be copied by hand, and fields in ``EVAL_ARG_DEFAULTS`` are fixed at miles
+defaults — notably ``lora_rank=0``, so LoRA training cannot be evaluated correctly
+by this service.
 
 Example::
 
-    python tools/checkpoint_eval_service.py \\
+    python examples/fully_async/checkpoint_eval_service.py \\
         --watch-dir /ckpt/exp/hf --hf-checkpoint /models/Qwen3.5-4B --tp 1 \\
         --eval-prompt-data aime /data/aime-2024.jsonl --rm-type dapo --reward-key score
 """
@@ -20,10 +31,12 @@ import time
 from argparse import Namespace
 from pathlib import Path
 
+from examples.fully_async.external_eval_fn import ExternalSglangEvalFn
+
+from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput
 from miles.rollout.checkpoint_eval import retarget_args
 from miles.utils.hf_config import is_complete_hf_export, looks_like_hf_checkpoint
 from miles.utils.http_utils import init_http_client, wait_http_ok
-from miles.utils.weight_target import HttpServerTarget, pin_and_verify
 
 logger = logging.getLogger("checkpoint_eval_service")
 
@@ -132,6 +145,9 @@ def build_eval_namespace(service_args: Namespace, server_ip: str, server_port: i
     for key, value in vars(service_args).items():
         setattr(args, key, value)
     args.eval_datasets = resolve_eval_datasets(args)
+    args.external_eval_url = f"http://{server_ip}:{server_port}"
+    args.external_eval_num_gpus = service_args.num_gpus
+    args.external_eval_num_gpus_per_engine = service_args.tp
     return retarget_args(args, server_ip, server_port, service_args.num_gpus, service_args.tp)
 
 
@@ -198,19 +214,13 @@ async def wait_server_healthy(ip: str, port: int, timeout: float = 1800.0) -> No
     await wait_http_ok(f"http://{ip}:{port}/health_generate", timeout=timeout)
 
 
-async def evaluate_snapshot(args: Namespace, state, cache: dict, rollout_id: int, snapshot: Path) -> None:
+async def evaluate_snapshot(fn: ExternalSglangEvalFn, args: Namespace, rollout_id: int, snapshot: Path) -> None:
     from miles.ray.rollout.metrics import log_eval_rollout_data
-    from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 
-    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     start = time.time()
-    weight_version = str(rollout_id)
-    if not await pin_and_verify([HttpServerTarget(url)], str(snapshot), weight_version):
-        raise RuntimeError(f"weight_version pin failed for {snapshot} (expected {weight_version})")
-
-    results = await run_eval_datasets(state, cache)
+    output = await fn(RolloutFnEvalInput(rollout_id=rollout_id, weight_version=str(rollout_id), hf_dir=str(snapshot)))
     extra = {"eval/duration_seconds": time.time() - start}
-    log_eval_rollout_data(rollout_id, args, results, extra)
+    log_eval_rollout_data(rollout_id, args, output.data, extra)
 
 
 def init_service_tracking(args: Namespace) -> None:
@@ -239,10 +249,7 @@ async def main() -> None:
         await wait_server_healthy(server_ip, server_port)
         init_service_tracking(args)
 
-        from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
-
-        state = GenerateState(args)
-        cache: dict = {}
+        fn = ExternalSglangEvalFn(RolloutFnConstructorInput(args=args, data_source=None))
         ledger = SnapshotLedger(watch_dir)
 
         while True:
@@ -254,7 +261,7 @@ async def main() -> None:
             for rollout_id, snapshot in ready:
                 logger.info(f"Evaluating snapshot {snapshot} (rollout_id={rollout_id})")
                 try:
-                    await evaluate_snapshot(args, state, cache, rollout_id, snapshot)
+                    await evaluate_snapshot(fn, args, rollout_id, snapshot)
                     ledger.mark(rollout_id)
                 except Exception:
                     logger.exception(f"Eval of {snapshot} failed; will retry next scan")

@@ -151,9 +151,17 @@ Two production-oriented variants:
   periodic HF checkpoints (requires `eval_interval % save_interval == 0`) — zero extra
   export cost. Pair with `--eval-overflow-policy skip` so a slow eval set can never
   stall training.
-- **External service**: `tools/checkpoint_eval_service.py` watches `--save-hf` output
-  with its own sglang server — no GPU carve-out from the training job, restartable,
-  backfills missed points from its ledger. Works for `--colocate` runs too.
+- **External backend**: an eval fn that declares `eval_needs_snapshot = True` receives
+  each snapshot's path via `RolloutFnEvalInput.hf_dir` and owns delivering it to its
+  own backend — no GPU carve-out from the training job, and because the fn runs in-job
+  it reads the real training args (nothing hand-copied) and logs through the trainer.
+  `examples/fully_async/external_eval_fn.py` implements this against any
+  sglang-compatible HTTP server; set
+  `--eval-function-path examples.fully_async.external_eval_fn.ExternalSglangEvalFn`
+  and `MILES_EXTERNAL_EVAL_URL`. For eval that must outlive the trainer (post-hoc
+  backfill, `--colocate` runs), `examples/fully_async/checkpoint_eval_service.py`
+  drives the same fn from a standalone process watching `--save-hf` output,
+  restartable from its ledger — at the cost of hand-copied eval config.
 
 Every skipped point is attributable from the dashboard: `eval/skipped_busy`,
 `eval/skipped_ckpt_missing`, `eval/skipped_unhealthy`, `eval/skipped_export_failed`
@@ -169,7 +177,7 @@ Where each posture's weights come from — and what "the weights at step R" mean
 |---|---|---|
 | Pause-the-world | none needed — training's own `update_weights` broadcast already put them on the shared engines | the engines' last-broadcast version (equals the actor's current weights when `update_weights_interval` is 1) |
 | Dedicated fleet | `update_weights_from_disk` on a snapshot exported **directly from the actor** | the actor's exact step-R weights, regardless of broadcast schedule |
-| External service | loads `--save-hf` checkpoints itself | the actor's exact step-R weights |
+| External backend (in-job fn or standalone service) | the eval fn / service loads the snapshot into its own server | the actor's exact step-R weights |
 
 Eval engines are never added to the training broadcast group: collectives cannot skip
 members, so a fleet inside the group would have its weights rewritten by every update

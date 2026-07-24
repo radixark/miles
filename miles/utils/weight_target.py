@@ -1,7 +1,7 @@
 """Pin-and-verify a set of inference engines to an HF checkpoint snapshot.
 
-Both the in-job dedicated eval fleet (Ray actors) and the standalone
-``tools/checkpoint_eval_service.py`` (bare sglang HTTP server) need the same
+Both the in-job dedicated eval fleet (Ray actors) and external eval backends
+(bare sglang HTTP servers, e.g. ``examples/fully_async``) need the same
 sequence: load a snapshot from disk, then confirm every target actually
 reports the expected ``weight_version`` before trusting it for eval. This
 module is the one place that sequence is implemented.

@@ -157,8 +157,6 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
     Building/caching the fleet state itself is EvalFleetSession's job, covered in
     tests/fast/rollout/test_checkpoint_eval.py.
     """
-    import miles.rollout.inference_rollout.inference_rollout_eval as eval_mod
-
     args = make_args(eval_num_gpus=1, eval_num_gpus_per_engine=1)
     data_source = FakeDataSource()
     fn = make_fn(monkeypatch, args, data_source)
@@ -171,7 +169,7 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
         seen_states.append(state)
         return eval_results
 
-    monkeypatch.setattr(eval_mod, "run_eval_datasets", fake_run_eval_datasets)
+    monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
 
     output = await fn(RolloutFnEvalInput(rollout_id=0, generate_state=fleet_state, weight_version="0"))
 

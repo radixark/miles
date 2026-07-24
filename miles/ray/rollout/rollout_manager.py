@@ -155,6 +155,10 @@ class RolloutManager:
             assert hf_dir is not None, "eval with a dedicated fleet requires an HF snapshot dir"
             return await self._eval_on_dedicated_fleet(rollout_id, hf_dir, export_time_seconds)
 
+        if getattr(self.eval_generate_rollout, "eval_needs_snapshot", False):
+            assert hf_dir is not None, "eval fn declares eval_needs_snapshot but got no HF snapshot dir"
+            return await self._eval_external(rollout_id, hf_dir, export_time_seconds)
+
         if self.use_experimental_refactor:
             result = await asyncio.to_thread(
                 call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
@@ -204,25 +208,43 @@ class RolloutManager:
                 self.report_eval_skip(rollout_id, "unhealthy")
                 return
 
-            result = await asyncio.to_thread(
-                call_rollout_function,
-                self.eval_generate_rollout,
-                RolloutFnEvalInput(
-                    rollout_id=rollout_id, generate_state=self._eval_fleet.state(), weight_version=weight_version
-                ),
+            eval_input = RolloutFnEvalInput(
+                rollout_id=rollout_id,
+                generate_state=self._eval_fleet.state(),
+                weight_version=weight_version,
+                hf_dir=hf_dir,
             )
-            data = result.data
-            save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
-            extra_metrics = dict(result.metrics or {})
-            extra_metrics["eval/lag_steps"] = max(self.rollout_id - rollout_id, 0)
-            extra_metrics["eval/duration_seconds"] = time.time() - start_time
-            if export_time_seconds is not None:
-                extra_metrics["eval/export_time_seconds"] = export_time_seconds
-            metrics = log_eval_rollout_data(rollout_id, self.args, data, extra_metrics)
-            if self._metric_checker is not None:
-                self._metric_checker.on_eval(metrics)
+            await self._run_eval_and_log(eval_input, start_time, export_time_seconds)
 
-            self._gc_eval_snapshots(hf_dir)
+    async def _eval_external(self, rollout_id: int, hf_dir: str, export_time_seconds: float | None):
+        """Run an eval fn that owns weight delivery to its own backend (declared via
+        ``eval_needs_snapshot``); the manager only supplies the snapshot and logs the
+        outcome at ``rollout_id``. The lock serializes pins against a single backend."""
+        start_time = time.time()
+        async with self._eval_lock:
+            if hf_dir != self.args.hf_checkpoint and not is_complete_hf_export(hf_dir):
+                logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
+                self.report_eval_skip(rollout_id, "ckpt_missing")
+                return
+            eval_input = RolloutFnEvalInput(rollout_id=rollout_id, weight_version=str(rollout_id), hf_dir=hf_dir)
+            await self._run_eval_and_log(eval_input, start_time, export_time_seconds)
+
+    async def _run_eval_and_log(
+        self, eval_input: RolloutFnEvalInput, start_time: float, export_time_seconds: float | None
+    ) -> None:
+        rollout_id = eval_input.rollout_id
+        result = await asyncio.to_thread(call_rollout_function, self.eval_generate_rollout, eval_input)
+        data = result.data
+        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
+        extra_metrics = dict(result.metrics or {})
+        extra_metrics["eval/lag_steps"] = max(self.rollout_id - rollout_id, 0)
+        extra_metrics["eval/duration_seconds"] = time.time() - start_time
+        if export_time_seconds is not None:
+            extra_metrics["eval/export_time_seconds"] = export_time_seconds
+        metrics = log_eval_rollout_data(rollout_id, self.args, data, extra_metrics)
+        if self._metric_checker is not None:
+            self._metric_checker.on_eval(metrics)
+        self._gc_eval_snapshots(eval_input.hf_dir)
 
     async def _wait_eval_router_ready(self, srv, timeout: float = 180.0) -> None:
         """After a revival the router 503s until its health cycle evicts the dead

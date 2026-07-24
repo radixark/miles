@@ -20,6 +20,8 @@ def make_args(**overrides) -> Namespace:
         rollout_num_gpus_per_engine=2,
         eval_num_gpus=1,
         eval_num_gpus_per_engine=1,
+        eval_function_path=None,
+        debug_train_only=False,
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
     )
     defaults.update(overrides)
@@ -218,6 +220,8 @@ def make_manager(args, engines, eval_fn_result=None):
     mgr.rollout_id = 7
     mgr._eval_lock = asyncio.Lock()
     mgr._eval_consumed_snapshots = []
+    mgr._health_monitors = []
+    mgr.use_experimental_refactor = True
     mgr.servers = {"eval": FakeEvalServer(engines)}
     mgr._metric_checker = None
     mgr._eval_fleet = SimpleNamespace(state=lambda: "fake-fleet-state")
@@ -306,6 +310,7 @@ async def test_controller_threads_fleet_state_and_weight_version(controller_env,
     assert len(seen_inputs) == 1
     assert seen_inputs[0].generate_state == "fake-fleet-state"
     assert seen_inputs[0].weight_version == "5"
+    assert seen_inputs[0].hf_dir == str(snapshot)
 
 
 async def test_controller_skips_on_missing_marker(controller_env, tmp_path):
@@ -466,6 +471,101 @@ async def test_controller_never_deletes_outside_staging(controller_env, tmp_path
 
     assert save_hf.exists()
     assert mgr._eval_consumed_snapshots == []
+
+
+# ---------------- external eval fn (eval_needs_snapshot) ----------------
+
+
+class ExternalFnStub:
+    eval_needs_snapshot = True
+
+    def __init__(self):
+        self.inputs = []
+
+    def __call__(self, input):
+        self.inputs.append(input)
+        return SimpleNamespace(data={"ds": {"rewards": [1.0]}}, metrics=None)
+
+
+async def test_eval_routes_external_fn_without_fleet_machinery(controller_env, tmp_path):
+    snapshot = tmp_path / "step_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    engines = [FakeEngine(controller_env.log)]
+    args = make_args(hf_checkpoint="/base", eval_num_gpus=0, eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
+    mgr = make_manager(args, engines)
+    fn = ExternalFnStub()
+    mgr.eval_generate_rollout = fn
+
+    await mgr.eval(5, hf_dir=str(snapshot), export_time_seconds=1.5)
+
+    # The fn owns weight delivery: no fleet pin, no recover, no fleet state threaded.
+    assert not [e for e in controller_env.log if e[0] == "update_weights_from_disk"]
+    assert mgr.servers["eval"].recover_calls == 0
+    assert len(fn.inputs) == 1
+    assert fn.inputs[0].generate_state is None
+    assert fn.inputs[0].weight_version == "5"
+    assert fn.inputs[0].hf_dir == str(snapshot)
+    rollout_id, _data, extra = controller_env.logged["eval"]
+    assert rollout_id == 5
+    assert extra["eval/lag_steps"] == 2
+    assert extra["eval/export_time_seconds"] == 1.5
+
+
+async def test_eval_external_fn_missing_marker_skips(controller_env, tmp_path):
+    snapshot = tmp_path / "step_5"
+    snapshot.mkdir()  # no .complete marker
+
+    args = make_args(hf_checkpoint="/base", eval_num_gpus=0, eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
+    mgr = make_manager(args, [])
+    fn = ExternalFnStub()
+    mgr.eval_generate_rollout = fn
+
+    await mgr.eval(5, hf_dir=str(snapshot))
+
+    assert fn.inputs == []
+    assert controller_env.logged["skip"] == (5, "ckpt_missing")
+
+
+async def test_eval_external_fn_gc_keeps_ring(controller_env, tmp_path):
+    args = make_args(hf_checkpoint="/base", eval_num_gpus=0, eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
+    mgr = make_manager(args, [])
+    mgr.eval_generate_rollout = ExternalFnStub()
+
+    dirs = []
+    for rollout_id in (1, 2, 3):
+        snapshot = tmp_path / f"step_{rollout_id}"
+        snapshot.mkdir()
+        (snapshot / ".complete").touch()
+        dirs.append(snapshot)
+        await mgr.eval(rollout_id, hf_dir=str(snapshot))
+
+    assert not dirs[0].exists()
+    assert dirs[1].exists() and dirs[2].exists()
+
+
+async def test_eval_shared_path_shape_unchanged(controller_env):
+    """eval_num_gpus=0 + a fn without eval_needs_snapshot must keep today's shared-engine
+    call shape: no snapshot fields threaded, no lag/duration metrics added."""
+    seen_inputs = []
+
+    def eval_generate_rollout(input):
+        seen_inputs.append(input)
+        return SimpleNamespace(data={}, metrics=None)
+
+    args = make_args(hf_checkpoint="/base", eval_num_gpus=0)
+    mgr = make_manager(args, [])
+    mgr.eval_generate_rollout = eval_generate_rollout
+
+    await mgr.eval(5)
+
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0].generate_state is None
+    assert seen_inputs[0].weight_version is None
+    assert seen_inputs[0].hf_dir is None
+    _rollout_id, _data, extra = controller_env.logged["eval"]
+    assert extra is None
 
 
 # ---------------- driver (train_async.EvalDispatcher) ----------------
@@ -662,19 +762,53 @@ async def test_dispatcher_without_fleet_blocks_like_today(dispatcher_env):
     assert len(dispatcher.pending) == 0
 
 
-# ---------------- external service (tools/checkpoint_eval_service.py) ----------------
+EXTERNAL_FN_PATH = "tests.fast.rollout.test_checkpoint_eval.ExternalFnStub"
+
+
+async def test_dispatcher_external_fn_exports_like_fleet(dispatcher_env, monkeypatch):
+    """eval_needs_snapshot without a fleet must still get the snapshot + async dispatch."""
+    monkeypatch.setenv("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR", "1")
+    manager = FakeManagerActor()
+    actor_model = FakeActorModel()
+    dispatcher, _ = make_dispatcher(
+        dispatcher_env,
+        manager,
+        actor_model,
+        eval_num_gpus=0,
+        eval_function_path=EXTERNAL_FN_PATH,
+        eval_keep_snapshots=2,
+    )
+
+    await dispatcher.dispatch(4)
+
+    assert actor_model.exports == [(4, "/dev/shm/eval_hf/step_4")]
+    assert len(manager.eval_calls) == 1
+    rollout_id, hf_dir, export_time = manager.eval_calls[0]
+    assert (rollout_id, hf_dir) == (4, "/dev/shm/eval_hf/step_4")
+    assert export_time is not None
+    assert len(dispatcher.pending) == 1
+
+
+async def test_dispatcher_rejects_fleet_plus_external_fn(dispatcher_env, monkeypatch):
+    monkeypatch.setenv("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR", "1")
+    with pytest.raises(AssertionError, match="eval_needs_snapshot"):
+        make_dispatcher(
+            dispatcher_env,
+            FakeManagerActor(),
+            FakeActorModel(),
+            eval_num_gpus=1,
+            eval_function_path=EXTERNAL_FN_PATH,
+        )
+
+
+# ------- standalone service (examples/fully_async/checkpoint_eval_service.py) -------
 
 
 @pytest.fixture
 def service_mod():
-    import importlib.util
-    from pathlib import Path as _Path
+    import importlib
 
-    path = _Path(__file__).resolve().parents[3] / "tools" / "checkpoint_eval_service.py"
-    spec = importlib.util.spec_from_file_location("checkpoint_eval_service", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    return importlib.import_module("examples.fully_async.checkpoint_eval_service")
 
 
 def test_find_ready_snapshots(service_mod, tmp_path):
@@ -717,3 +851,56 @@ def test_snapshot_ledger_roundtrip(service_mod, tmp_path):
     ledger.mark(7)
 
     assert service_mod.SnapshotLedger(tmp_path).consumed == {3, 7}
+
+
+# ---------------- example fn (examples/fully_async/external_eval_fn.py) ----------------
+
+
+@pytest.fixture
+def external_fn_env(monkeypatch):
+    import importlib
+
+    mod = importlib.import_module("examples.fully_async.external_eval_fn")
+    calls = []
+
+    async def fake_pin(targets, hf_dir, weight_version):
+        calls.append(("pin", targets[0]._url, hf_dir, weight_version))
+        return not getattr(fake_pin, "fail", False)
+
+    async def fake_run_eval(state, cache):
+        calls.append(("eval", state))
+        return {"ds": {"rewards": [1.0]}}
+
+    monkeypatch.setattr(mod, "pin_and_verify", fake_pin)
+    monkeypatch.setattr(mod, "run_eval_datasets", fake_run_eval)
+    monkeypatch.setattr(mod, "GenerateState", lambda args: SimpleNamespace(args=args))
+    monkeypatch.setenv("MILES_EXTERNAL_EVAL_URL", "http://eval-host:31000")
+    return SimpleNamespace(mod=mod, calls=calls, fake_pin=fake_pin)
+
+
+async def test_external_eval_fn_pins_then_evals(external_fn_env):
+    from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput
+
+    args = make_args(hf_checkpoint="/base")
+    fn = external_fn_env.mod.ExternalSglangEvalFn(RolloutFnConstructorInput(args=args, data_source=None))
+
+    output = await fn(RolloutFnEvalInput(rollout_id=5, weight_version="5", hf_dir="/snap/step_5"))
+
+    assert external_fn_env.calls[0] == ("pin", "http://eval-host:31000", "/snap/step_5", "5")
+    assert external_fn_env.calls[1][0] == "eval"
+    # The eval state targets the external server, built from the real training args.
+    state = external_fn_env.calls[1][1]
+    assert (state.args.sglang_router_ip, state.args.sglang_router_port) == ("eval-host", 31000)
+    assert output.data == {"ds": {"rewards": [1.0]}}
+
+
+async def test_external_eval_fn_pin_failure_raises(external_fn_env):
+    from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput
+
+    args = make_args(hf_checkpoint="/base")
+    fn = external_fn_env.mod.ExternalSglangEvalFn(RolloutFnConstructorInput(args=args, data_source=None))
+    external_fn_env.fake_pin.fail = True
+
+    with pytest.raises(RuntimeError, match="pin failed"):
+        await fn(RolloutFnEvalInput(rollout_id=5, weight_version="5", hf_dir="/snap/step_5"))
+    assert not [c for c in external_fn_env.calls if c[0] == "eval"]

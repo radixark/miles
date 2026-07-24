@@ -2536,7 +2536,7 @@ def miles_validate_args(args):
         )
         assert not args.colocate, (
             "--eval-num-gpus is not supported with --colocate; "
-            "use tools/checkpoint_eval_service.py against --save-hf checkpoints instead."
+            "use examples/fully_async/checkpoint_eval_service.py against --save-hf checkpoints instead."
         )
         assert (
             not args.debug_train_only and not args.debug_rollout_only
