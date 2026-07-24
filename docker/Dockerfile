@@ -27,7 +27,7 @@ ARG WHEELS_REPO=yueming-yuan/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
-ARG WHEELS_TAG_X86=cu130-x86_64-v0.5.12
+ARG WHEELS_TAG_X86=cu130-x86_64
 ARG WHEELS_TAG_ARM64=cu130-aarch64
 
 # ======================================== Setup =============================================
