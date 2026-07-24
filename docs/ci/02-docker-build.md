@@ -5,7 +5,7 @@ description: The Dockerfiles, the build script, the remote build workflow, and h
 
 # Docker build
 
-GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the script that builds them, how the remote build is triggered, and how to build & push manually.
+GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the script that builds them, the PR-side build check, how the remote build is triggered, and how to build & push manually.
 
 ## Dockerfiles
 
@@ -56,6 +56,20 @@ The cu13 variants share one CUDA base (`lmsysorg/sglang:v0.5.14`, multi-arch) an
 The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
 
 A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`.
+
+## PR build check (`docker-build-pr.yml`)
+
+Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this check breakage lands on `main` first.
+
+Triggered by PRs touching `docker/Dockerfile`, `docker/build.py`, `docker/patch/**`, or `requirements.txt`. Three chained jobs:
+
+| Job | What it does |
+| --- | --- |
+| `build-only` | builds `cu13-x86` without publishing; same-repo PRs additionally push a PR-scoped `radixark/miles:pr-<num>` tag (fork PRs have no secrets and build only) |
+| `test-in-fresh-image` | runs the stage-b 2-GPU suite via `_run-ci.yml` **inside the freshly built image**, so the change is validated by tests, not just by the build finishing |
+| `cleanup-pr-tag` | deletes `pr-<num>` from Docker Hub once its test run passes; a failed run keeps the tag for debugging (the next push of the same PR overwrites it) |
+
+New pushes to the same PR cancel the in-flight run (`concurrency` on the PR number). For a full-matrix test in the fresh image, add `ci-image-tag: pr-<num>` to the PR body (see the label doc) and re-run `pr-test`.
 
 ## Remote docker build (`docker-build.yml`)
 
