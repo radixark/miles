@@ -134,13 +134,8 @@ def apply_chat_template_from_str(
 
 _TEMPLATE_RELEVANT_KEYS = ("role", "content", "reasoning_content", "tool_calls")
 
-# Wire-only tool_call keys ignored when matching a stored message against a
-# client replay.  The OpenAI non-streaming message shape has no ``index`` on
-# tool_calls — it is an sglang extension (ToolCall.index, the tool's position
-# in the tools list, int or null) — so protocol-faithful clients (SSE
-# accumulators rebuilding the message from deltas) legitimately replay
-# tool_calls without it, or with a renumbered value.  No chat template reads
-# it either way.
+# SGLang serializes `index` on non-streaming tool calls, while accumulated
+# streaming messages may omit or renumber it; no chat template reads it.
 _WIRE_ONLY_TOOL_CALL_KEYS = ("index",)
 
 
@@ -163,9 +158,7 @@ def _normalize_value(value: Any) -> Any:
 def _normalize_tool_calls(value: Any) -> Any:
     """Project tool_calls down to template-relevant content for comparison.
 
-    Drops wire-only keys plus null-valued keys from each tool_call dict:
-    Jinja2 renders an absent key and a None-valued key identically, so
-    neither may distinguish a stored message from its replay.
+    Only keys in `_WIRE_ONLY_TOOL_CALL_KEYS` are removed; all other values remain part of history matching.
 
     Deliberately a comparison-time projection, NOT a repair of the incoming
     message from stored state.  Matching only decides whether a replay is
@@ -180,11 +173,7 @@ def _normalize_tool_calls(value: Any) -> Any:
     if not isinstance(value, list):
         return value
     return [
-        (
-            {k: v for k, v in call.items() if k not in _WIRE_ONLY_TOOL_CALL_KEYS and v is not None}
-            if isinstance(call, dict)
-            else call
-        )
+        ({k: v for k, v in call.items() if k not in _WIRE_ONLY_TOOL_CALL_KEYS} if isinstance(call, dict) else call)
         for call in value
     ]
 
@@ -196,8 +185,7 @@ def message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     ``provider_specific_fields`` into messages.  These have no effect on
     the Jinja2 chat template output, so we only compare the keys that
     templates actually read: role, content, reasoning_content, tool_calls.
-    Within tool_calls, wire-only keys (``index``) and null-valued keys are
-    ignored for the same reason.
+    Within tool_calls, wire-only keys such as `index` are ignored for the same reason.
     """
     for key in _TEMPLATE_RELEVANT_KEYS:
         stored_value = _normalize_value(stored.get(key))

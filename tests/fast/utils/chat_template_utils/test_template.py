@@ -598,8 +598,15 @@ class TestMessageMatches:
         stored["tool_calls"][0]["index"] = index_value
         assert message_matches(stored, self._rebuilt())
 
-    def test_null_valued_tool_call_key_matches_absent_key(self):
+    def test_null_index_matches_absent_index(self):
         assert message_matches(self.STORED_SGLANG_WIRE, self._rebuilt(index=None))
+
+    def test_null_tool_call_id_does_not_match_absent_id(self):
+        stored = copy.deepcopy(self.STORED_SGLANG_WIRE)
+        stored["tool_calls"][0]["id"] = None
+        rebuilt = self._rebuilt()
+        del rebuilt["tool_calls"][0]["id"]
+        assert not message_matches(stored, rebuilt)
 
     def test_different_arguments_still_mismatch(self):
         rebuilt = self._rebuilt()

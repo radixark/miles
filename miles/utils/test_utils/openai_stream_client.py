@@ -13,6 +13,8 @@ keep every upstream key except the streaming-only ``index``.
 
 import json
 
+import httpx
+
 
 def accumulate_chat_chunks(chunks: list[dict], *, label: str = "") -> dict:
     """Fold ``chat.completion.chunk`` dicts into a non-streaming response."""
@@ -61,7 +63,7 @@ def accumulate_chat_chunks(chunks: list[dict], *, label: str = "") -> dict:
     return response
 
 
-async def stream_chat_completions(client, url: str, payload: dict, *, label: str = "") -> dict:
+async def stream_chat_completions(client: httpx.AsyncClient, url: str, payload: dict, *, label: str = "") -> dict:
     """POST *payload* with ``stream: true`` via httpx and rebuild the response."""
     chunks: list[dict] = []
     done = False
