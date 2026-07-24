@@ -63,3 +63,25 @@ jobs:
         python tests/ci/run_suite.py --hw h200 --suite stage-b-2-gpu-h200
         --cadence pr --labels ''
     secrets: inherit
+
+  # Tests passed: the PR-scoped tag has served its purpose; drop it from the
+  # registry. A failed run keeps its tag for debugging (the next push of the
+  # same PR overwrites it).
+  cleanup-pr-tag:
+    needs: [test-in-fresh-image]
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete pr tag from Docker Hub
+        run: |
+          TOKEN=$(python3 -c "
+          import json, urllib.request
+          req = urllib.request.Request('https://hub.docker.com/v2/users/login/',
+              data=json.dumps({'username': '${{ secrets.DOCKERHUB_USERNAME }}',
+                               'password': '${{ secrets.DOCKERHUB_TOKEN }}'}).encode(),
+              headers={'Content-Type': 'application/json'})
+          print(json.load(urllib.request.urlopen(req))['token'])")
+          curl -sf -X DELETE \
+            -H "Authorization: JWT ${TOKEN}" \
+            "https://hub.docker.com/v2/repositories/radixark/miles/tags/pr-${{ github.event.pull_request.number }}/" \
+            && echo "deleted pr-${{ github.event.pull_request.number }}"
