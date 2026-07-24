@@ -1,6 +1,11 @@
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+register_cuda_ci(
+    est_time=60,
+    suite="stage-b-2-gpu-h200",
+    labels=[],
+    disabled="Requires Blackwell/B200 CI runner for NVFP4.",
+)
 
 
 import os
