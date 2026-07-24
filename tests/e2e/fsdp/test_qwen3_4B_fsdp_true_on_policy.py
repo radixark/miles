@@ -80,7 +80,6 @@ def execute():
         "--attn-implementation flash_attention_3 "
         "--deterministic-mode "
         "--true-on-policy-mode "
-        "--recompute-logprobs-via-prefill "
     )
 
     ci_args = "--ci-test "

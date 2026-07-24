@@ -241,7 +241,7 @@ def test_fsdp_e2e_uses_current_true_on_policy_contract(monkeypatch):
 
     train_args = captured["train_args"]
     assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
-    assert "--recompute-logprobs-via-prefill" in train_args
+    assert "--recompute-logprobs-via-prefill" not in train_args
     assert "--sglang-rl-on-policy-target" not in train_args
 
 
