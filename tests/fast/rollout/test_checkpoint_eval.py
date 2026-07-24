@@ -16,7 +16,6 @@ from miles.rollout.checkpoint_eval import (
     EvalSkip,
     FleetEvalFn,
     make_eval_args,
-    pin_and_verify,
     resolve_checkpoint_eval_fn,
     retarget_args,
 )
@@ -266,6 +265,19 @@ async def test_fleet_pin_violation_skips_after_retry(fleet_env):
 
     assert exc.value.reason == "pin_violation"
     assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 2  # one retry
+
+
+async def test_fleet_pin_requires_all_engines_to_match(fleet_env):
+    """The router load-balances across engines: one stale engine = mixed versions."""
+    log = []
+    good, stale = FakeEngine(log), FakeEngine(log)
+    stale.responses["get_weight_version"] = lambda: "999"
+    fn = make_fleet_fn(make_args(), [good, stale])
+
+    with pytest.raises(EvalSkip) as exc:
+        await fn.evaluate_checkpoint("/snap/step_5", eval_input(5, "/snap/step_5"))
+
+    assert exc.value.reason == "pin_violation"
 
 
 async def test_fleet_marks_dead_engine_for_recovery(fleet_env):
@@ -707,9 +719,15 @@ def external_fn_env(monkeypatch):
     mod = importlib.import_module("examples.fully_async.external_eval_fn")
     calls = []
 
-    async def fake_pin(loads, reads, hf_dir, weight_version):
-        calls.append(("pin", hf_dir, weight_version))
-        return not getattr(fake_pin, "fail", False)
+    server = SimpleNamespace(loaded_version=None)
+
+    async def fake_post(url, payload):
+        calls.append(("post", url, payload))
+        server.loaded_version = payload["weight_version"] if server.loaded_version != "stuck" else "stuck"
+
+    async def fake_get(url):
+        calls.append(("get", url))
+        return {"weight_version": server.loaded_version}
 
     async def fake_run_eval(state, cache):
         calls.append(("eval", state))
@@ -718,13 +736,14 @@ def external_fn_env(monkeypatch):
     async def fake_wait_ok(url, **kwargs):
         calls.append(("health", url))
 
-    monkeypatch.setattr(mod, "pin_and_verify", fake_pin)
+    monkeypatch.setattr(mod, "post", fake_post)
+    monkeypatch.setattr(mod, "get", fake_get)
     monkeypatch.setattr(mod, "run_eval_datasets", fake_run_eval)
     monkeypatch.setattr(mod, "GenerateState", lambda args: SimpleNamespace(args=args))
     monkeypatch.setattr(mod, "wait_http_ok", fake_wait_ok)
     for var in ("URL", "GPUS", "PORT", "SERVER_ARGS"):
         monkeypatch.delenv(f"MILES_EXTERNAL_EVAL_{var}", raising=False)
-    return SimpleNamespace(mod=mod, calls=calls, fake_pin=fake_pin, monkeypatch=monkeypatch)
+    return SimpleNamespace(mod=mod, calls=calls, server=server, monkeypatch=monkeypatch)
 
 
 def make_external_fn(external_fn_env, **env):
@@ -741,22 +760,28 @@ async def test_external_eval_fn_waits_pins_then_evals(external_fn_env):
 
     output = await fn(RolloutFnEvalInput(rollout_id=5, weight_version="5", hf_dir="/snap/step_5"))
 
-    assert fn._url == "http://eval-host:31000"
     assert external_fn_env.calls[0] == ("health", "http://eval-host:31000/health_generate")
-    assert external_fn_env.calls[1] == ("pin", "/snap/step_5", "5")
-    assert external_fn_env.calls[2][0] == "eval"
+    assert external_fn_env.calls[1] == (
+        "post",
+        "http://eval-host:31000/update_weights_from_disk",
+        {"model_path": "/snap/step_5", "weight_version": "5"},
+    )
+    assert external_fn_env.calls[2] == ("get", "http://eval-host:31000/model_info")
+    assert external_fn_env.calls[3][0] == "eval"
     # The eval state targets the external server, built from the real training args.
-    state = external_fn_env.calls[2][1]
+    state = external_fn_env.calls[3][1]
     assert (state.args.sglang_router_ip, state.args.sglang_router_port) == ("eval-host", 31000)
     assert output.data == {"ds": {"rewards": [1.0]}}
 
 
-async def test_external_eval_fn_pin_failure_raises(external_fn_env):
+async def test_external_eval_fn_pin_failure_retries_then_raises(external_fn_env):
     fn = make_external_fn(external_fn_env, URL="http://eval-host:31000")
-    external_fn_env.fake_pin.fail = True
+    external_fn_env.server.loaded_version = "stuck"  # server never reports the pinned version
 
     with pytest.raises(RuntimeError, match="pin failed"):
         await fn(RolloutFnEvalInput(rollout_id=5, weight_version="5", hf_dir="/snap/step_5"))
+
+    assert len([c for c in external_fn_env.calls if c[0] == "post"]) == 2  # one retry
     assert not [c for c in external_fn_env.calls if c[0] == "eval"]
 
 
@@ -782,84 +807,3 @@ def test_external_eval_fn_launches_own_server(external_fn_env, monkeypatch):
     assert fn._url == "http://127.0.0.1:31000"
     fn.dispose()
     assert proc.terminated
-
-
-# ---------------- pin_and_verify (miles/rollout/checkpoint_eval.py) ----------------
-
-
-class FakeTarget:
-    """Records calls; ``versions`` gives the version reported by read()
-    on each successive call (repeats the last entry once exhausted)."""
-
-    def __init__(self, versions, *, fail_loads: int = 0, hang: bool = False):
-        self.versions = list(versions)
-        self.fail_loads = fail_loads
-        self.hang = hang
-        self.load_calls = 0
-        self._reads = 0
-
-    async def load(self):
-        if self.hang:
-            await asyncio.sleep(10)
-        if self.fail_loads > 0:
-            self.fail_loads -= 1
-            raise RuntimeError("transient load failure")
-        self.load_calls += 1
-
-    async def read(self):
-        idx = min(self._reads, len(self.versions) - 1)
-        self._reads += 1
-        return self.versions[idx]
-
-
-async def pin_targets(targets, weight_version, **kwargs):
-    return await pin_and_verify(
-        [t.load for t in targets], [t.read for t in targets], "/snap", weight_version, **kwargs
-    )
-
-
-async def test_pin_and_verify_succeeds_first_try():
-    target = FakeTarget(versions=["5"])
-    ok = await pin_targets([target], "5")
-    assert ok
-    assert target.load_calls == 1
-
-
-async def test_pin_and_verify_all_targets_must_match():
-    a, b = FakeTarget(versions=["5"]), FakeTarget(versions=["4"])
-    ok = await pin_targets([a, b], "5", retries=1)
-    assert not ok
-
-
-async def test_pin_and_verify_retries_on_version_mismatch_then_succeeds():
-    # First read reports stale "4", second read (after a re-load) reports "5".
-    target = FakeTarget(versions=["4", "5"])
-    ok = await pin_targets([target], "5", retries=2)
-    assert ok
-    assert target.load_calls == 2  # one load per attempt
-
-
-async def test_pin_and_verify_exhausts_retries_and_returns_false():
-    target = FakeTarget(versions=["999"])
-    ok = await pin_targets([target], "5", retries=2)
-    assert not ok
-    assert target.load_calls == 2
-
-
-async def test_pin_and_verify_transient_load_error_is_retried():
-    target = FakeTarget(versions=["5"], fail_loads=1)
-    ok = await pin_targets([target], "5", retries=2)
-    assert ok
-    assert target.load_calls == 1  # the failed attempt loaded nothing
-
-
-async def test_pin_and_verify_never_raises_on_timeout():
-    target = FakeTarget(versions=["5"], hang=True)
-    ok = await pin_targets([target], "5", timeout=0.05, retries=1)
-    assert not ok
-
-
-async def test_pin_and_verify_empty_targets_is_never_pinned():
-    # No engines to confirm against: cannot claim the pin succeeded.
-    ok = await pin_targets([], "5")
-    assert not ok

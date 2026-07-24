@@ -28,7 +28,6 @@ __all__ = [
     "CheckpointEvalFn",
     "FleetEvalFn",
     "resolve_checkpoint_eval_fn",
-    "pin_and_verify",
 ]
 
 logger = logging.getLogger(__name__)
@@ -126,17 +125,7 @@ class FleetEvalFn(CheckpointEvalFn):
             logger.warning(f"Eval fleet unhealthy at rollout {input.rollout_id}: {e}")
             raise EvalSkip("unhealthy") from e
 
-        actors = [e.actor_handle for e in self._srv.engines]
-        if not await pin_and_verify(
-            [
-                lambda a=a: a.update_weights_from_disk.remote(checkpoint_dir, weight_version=input.weight_version)
-                for a in actors
-            ],
-            [lambda a=a: a.get_weight_version.remote() for a in actors],
-            checkpoint_dir,
-            input.weight_version,
-            timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
-        ):
+        if not await self._pin_fleet(checkpoint_dir, input.weight_version):
             raise EvalSkip("pin_violation")
 
         try:
@@ -158,6 +147,36 @@ class FleetEvalFn(CheckpointEvalFn):
         if inspect.iscoroutine(output):
             output = await output
         return output
+
+    async def _pin_fleet(self, checkpoint_dir: str, weight_version: str, *, retries: int = 2) -> bool:
+        """Load the snapshot into every fleet engine and confirm all report
+        ``weight_version`` — the router load-balances across engines, so a single
+        stale engine would mix versions. Never raises: transient failures and
+        mismatches are retried, then ``False`` lets the caller skip the point."""
+        actors = [e.actor_handle for e in self._srv.engines]
+        versions: list = []
+        for attempt in range(retries):
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *[
+                            a.update_weights_from_disk.remote(checkpoint_dir, weight_version=weight_version)
+                            for a in actors
+                        ]
+                    ),
+                    timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
+                )
+                versions = await asyncio.wait_for(
+                    asyncio.gather(*[a.get_weight_version.remote() for a in actors]),
+                    timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
+                )
+            except Exception as e:
+                logger.warning(f"Weight pin to {checkpoint_dir} failed (attempt {attempt + 1}/{retries}): {e}")
+                continue
+            if versions and all(str(v) == weight_version for v in versions):
+                return True
+        logger.warning(f"Failed to pin weight_version={weight_version} to {checkpoint_dir} (got {versions})")
+        return False
 
     async def _wait_router_ready(self, timeout: float = 180.0) -> None:
         """After a revival the router 503s until its health cycle evicts the dead
@@ -207,36 +226,3 @@ def resolve_checkpoint_eval_fn(args: Namespace, eval_fn, servers) -> CheckpointE
         inspect.isclass(eval_fn) and issubclass(eval_fn, CheckpointEvalFn)
     ), "checkpoint eval fns require the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
     return None
-
-
-async def pin_and_verify(
-    loads: list,
-    reads: list,
-    hf_dir: str,
-    weight_version: str,
-    *,
-    timeout: float = 600.0,
-    retries: int = 2,
-) -> bool:
-    """Load ``hf_dir`` into every target and confirm all report ``weight_version``.
-
-    ``loads``/``reads`` are per-target zero-arg callables returning awaitables,
-    re-invoked on every attempt: load the snapshot into the target, and read back
-    the weight_version it actually has loaded (Ray actor calls, HTTP requests, ...).
-
-    Never raises: transient failures (timeout, RPC error, mismatched version)
-    are retried up to ``retries`` times, then this returns ``False`` so the
-    caller can decide what a failed pin means for it (skip a point, raise, ...).
-    """
-    versions: list = []
-    for attempt in range(retries):
-        try:
-            await asyncio.wait_for(asyncio.gather(*[load() for load in loads]), timeout=timeout)
-            versions = await asyncio.wait_for(asyncio.gather(*[read() for read in reads]), timeout=timeout)
-        except Exception as e:
-            logger.warning(f"Weight pin to {hf_dir} failed (attempt {attempt + 1}/{retries}): {e}")
-            continue
-        if versions and all(str(v) == weight_version for v in versions):
-            return True
-    logger.warning(f"Failed to pin weight_version={weight_version} to {hf_dir} (got {versions})")
-    return False

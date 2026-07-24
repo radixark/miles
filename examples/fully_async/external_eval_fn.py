@@ -21,13 +21,14 @@ submits ``checkpoint_dir`` to the external service and maps its response into
 ``RolloutFnEvalOutput(data=...)``; raise ``EvalSkip(reason)`` for an attributable skip.
 """
 
+import asyncio
 import os
 import shlex
 import subprocess
 import sys
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnEvalOutput
-from miles.rollout.checkpoint_eval import CheckpointEvalFn, pin_and_verify, retarget_args
+from miles.rollout.checkpoint_eval import CheckpointEvalFn, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.utils.http_utils import get, post, wait_http_ok
@@ -83,21 +84,30 @@ class ExternalSglangEvalFn(CheckpointEvalFn):
         if not self._ready:
             await wait_http_ok(f"{self._url}/health_generate", timeout=1800.0)
             self._ready = True
-
-        async def load():
-            await post(
-                f"{self._url}/update_weights_from_disk",
-                {"model_path": checkpoint_dir, "weight_version": input.weight_version},
-            )
-
-        async def read_version():
-            return (await get(f"{self._url}/model_info")).get("weight_version")
-
-        if not await pin_and_verify([load], [read_version], checkpoint_dir, input.weight_version):
-            raise RuntimeError(f"weight_version pin failed for {checkpoint_dir} (expected {input.weight_version})")
+        await self._pin(checkpoint_dir, input.weight_version)
         if self._state is None:
             self._state = GenerateState(self._eval_args)
         return RolloutFnEvalOutput(data=await run_eval_datasets(self._state, self._cache))
+
+    async def _pin(self, checkpoint_dir: str, weight_version: str, *, retries: int = 2) -> None:
+        """Pin discipline: after loading, read the version back and compare — never
+        trust a silent load; retry once, then fail the point loudly."""
+
+        async def load_and_read():
+            await post(
+                f"{self._url}/update_weights_from_disk",
+                {"model_path": checkpoint_dir, "weight_version": weight_version},
+            )
+            return (await get(f"{self._url}/model_info")).get("weight_version")
+
+        for _attempt in range(retries):
+            try:
+                loaded = await asyncio.wait_for(load_and_read(), timeout=600.0)
+            except Exception:
+                continue
+            if str(loaded) == weight_version:
+                return
+        raise RuntimeError(f"weight_version pin failed for {checkpoint_dir} (expected {weight_version})")
 
     def dispose(self) -> None:
         if self._proc is not None:
