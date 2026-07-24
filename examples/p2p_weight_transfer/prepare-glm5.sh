@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Unified prepare script for all GLM-5 variants:
-#   GLM-5_4layer   - 4-layer pruned (3 dense + 1 MoE)
+#   GLM-5_5layer   - 5-layer pruned (3 dense + 2 MoE)
 #   GLM-5_20layer  - 20-layer pruned (3 dense + 17 MoE)
 #   GLM-5          - full 744B model (3 dense + 75 MoE)
 #
@@ -12,7 +12,7 @@
 #   bash prepare-glm5.sh <MODEL_NAME> [--download-only]
 #
 # MODEL_NAME:
-#   GLM-5_4layer   (Pinaster/GLM-5_4layer)
+#   GLM-5_5layer   (Pinaster/GLM-5_5layer)
 #   GLM-5_20layer  (Pinaster/GLM-5_20layer)
 #   GLM-5          (zai-org/GLM-5)
 #
@@ -26,7 +26,7 @@ set -ex
 # ---------------------------------------------------------------------------
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <MODEL_NAME> [--download-only]"
-    echo "  MODEL_NAME : GLM-5_4layer | GLM-5_20layer | GLM-5"
+    echo "  MODEL_NAME : GLM-5_5layer | GLM-5_20layer | GLM-5"
     exit 1
 fi
 
@@ -44,9 +44,9 @@ done
 # Resolve model config from MODEL_NAME
 # ---------------------------------------------------------------------------
 case "${MODEL_NAME}" in
-    GLM-5_4layer)
-        HF_REPO="Pinaster/GLM-5_4layer"
-        MODEL_TYPE="glm5-744B-A40B_4layer"
+    GLM-5_5layer)
+        HF_REPO="Pinaster/GLM-5_5layer"
+        MODEL_TYPE="glm5-744B-A40B_5layer"
         CONVERT_GPUS=4
         CONVERT_EXTRA_ARGS="--pipeline-model-parallel-size 1 --expert-model-parallel-size 1 --tensor-model-parallel-size 1 --expert-tensor-parallel-size 1"
         CONVERT_MULTINODE="false"
@@ -69,7 +69,7 @@ case "${MODEL_NAME}" in
         CONVERT_NUM_NODES=""
         ;;
     *)
-        echo "ERROR: Unknown model '${MODEL_NAME}'. Use GLM-5_4layer, GLM-5_20layer, or GLM-5."
+        echo "ERROR: Unknown model '${MODEL_NAME}'. Use GLM-5_5layer, GLM-5_20layer, or GLM-5."
         exit 1
         ;;
 esac

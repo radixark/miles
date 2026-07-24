@@ -12,8 +12,8 @@ Usage:
 Examples:
     python run.py prepare GLM-4.7-Flash
     python run.py run     GLM-4.7-Flash --mode p2p --node-rank 0 --head-ip 10.0.0.1
-    python run.py prepare GLM-5_4layer --download-only
-    python run.py run     GLM-5_4layer --mode broadcast --node-rank 1 --head-ip 10.0.0.1
+    python run.py prepare GLM-5_5layer --download-only
+    python run.py run     GLM-5_5layer --mode broadcast --node-rank 1 --head-ip 10.0.0.1
 """
 
 import json
@@ -159,9 +159,9 @@ PREPARE_CONFIGS: dict[str, PrepareConfig] = {
             "git+https://github.com/huggingface/transformers.git" "@76732b4e7120808ff989edbd16401f61fa6a0afa"
         ),
     ),
-    "GLM-5_4layer": PrepareConfig(
-        hf_repo="Pinaster/GLM-5_4layer",
-        model_type="glm5-744B-A40B_4layer",
+    "GLM-5_5layer": PrepareConfig(
+        hf_repo="Pinaster/GLM-5_5layer",
+        model_type="glm5-744B-A40B_5layer",
         convert_gpus_per_node=4,
         convert_extra_args=(
             "--pipeline-model-parallel-size 1 "
@@ -294,8 +294,8 @@ RUN_CONFIGS: dict[str, RunConfig] = {
         sglang_enable_dp_attention=True,
         sglang_enable_dp_lm_head=True,
     ),
-    "GLM-5_4layer": RunConfig(
-        model_type="glm5-744B-A40B_4layer",
+    "GLM-5_5layer": RunConfig(
+        model_type="glm5-744B-A40B_5layer",
         nnodes=2,
         num_train_gpus=8,
         num_rollout_gpus=8,
