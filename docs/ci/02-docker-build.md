@@ -57,19 +57,19 @@ The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `de
 
 A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`.
 
-## PR build check (`docker-build-pr.yml`)
+## PR build check (in `pr-test.yml`)
 
-Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this check breakage lands on `main` first.
+Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this breakage lands on `main` first.
 
-Triggered by PRs touching `docker/Dockerfile`, `docker/build.py`, `docker/patch/**`, or `requirements.txt`. Three chained jobs:
+When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
 
 | Job | What it does |
 | --- | --- |
-| `build-only` | builds `cu13-x86` without publishing; same-repo PRs additionally push a PR-scoped `radixark/miles:pr-<num>` tag (fork PRs have no secrets and build only) |
-| `test-in-fresh-image` | runs the stage-b 2-GPU suite via `_run-ci.yml` **inside the freshly built image**, so the change is validated by tests, not just by the build finishing |
-| `cleanup-pr-tag` | deletes `pr-<num>` from Docker Hub once its test run passes; a failed run keeps the tag for debugging (the next push of the same PR overwrites it) |
+| `docker-build` | builds `cu13-x86` and pushes a PR-scoped `radixark/miles:pr-<num>` tag (same-repo PRs; fork PRs skip it and test on `dev`) |
+| `resolve-ci-image` | waits for the build and resolves the CI image to `pr-<num>`, so **every GPU suite runs inside the freshly built image**; a failed build stops the matrix instead of testing the stale image. An explicit `ci-image-tag:` PR-body directive still wins |
+| `delete-pr-tag` (`docker-pr-tag-cleanup.yml`) | removes the `pr-<num>` tag when the PR closes; the tag stays available for re-runs while the PR is open |
 
-New pushes to the same PR cancel the in-flight run (`concurrency` on the PR number). For a full-matrix test in the fresh image, add `ci-image-tag: pr-<num>` to the PR body (see the label doc) and re-run `pr-test`.
+Non-docker PRs are untouched: `docker-paths` reports no change, `docker-build` skips, and the matrix runs on `dev` as before.
 
 ## Remote docker build (`docker-build.yml`)
 

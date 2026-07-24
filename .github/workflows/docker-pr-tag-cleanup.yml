@@ -1,0 +1,27 @@
+name: Docker PR tag cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  delete-pr-tag:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        run: |
+          TOKEN=$(python3 -c "
+          import json, urllib.request
+          req = urllib.request.Request('https://hub.docker.com/v2/users/login/',
+              data=json.dumps({'username': '${{ secrets.DOCKERHUB_USERNAME }}',
+                               'password': '${{ secrets.DOCKERHUB_TOKEN }}'}).encode(),
+              headers={'Content-Type': 'application/json'})
+          print(json.load(urllib.request.urlopen(req))['token'])")
+          curl -s -X DELETE \
+            -H "Authorization: JWT ${TOKEN}" \
+            "https://hub.docker.com/v2/repositories/radixark/miles/tags/pr-${{ github.event.pull_request.number }}/" \
+            || true
