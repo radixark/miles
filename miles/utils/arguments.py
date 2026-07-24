@@ -2721,6 +2721,9 @@ def miles_validate_args(args):
     args.use_critic = args.advantage_estimator == "ppo"
     if args.use_critic:
         assert args.train_backend == "megatron", "Shared Actor/Critic PPO requires the Megatron backend"
+        assert (
+            args.megatron_to_hf_mode != "bridge"
+        ), "Critic models are not supported with --megatron-to-hf-mode bridge"
         args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
         args.critic_num_nodes = args.actor_num_nodes
     else:
