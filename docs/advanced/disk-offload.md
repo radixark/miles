@@ -73,13 +73,17 @@ so they can be stored narrower than the fp32 tensors the optimizer computes on:
 --optimizer-state-nvme-moment-dtype bf16
 ```
 
-`bf16` cuts streaming volume by a third (12 bytes per parameter to 8) and is the
-recommended setting when the step time matters: on Qwen3.5-35B-A3B it took the state from
-46.1 GB to 30.8 GB per rank and the step from ~44s to ~24s, with rollout-vs-train logprob
-agreement unchanged. `fp32` is the default and is bit-identical to keeping the state on
-GPU. The fp8 options exist but are not recommended:
-`exp_avg_sq` needs per-block scaling to survive 8-bit storage, which this does not
-implement yet.
+`bf16` cuts streaming volume by a third (12 bytes per parameter to 8): on
+Qwen3.5-35B-A3B it takes the state from 46.1 GB to 30.8 GB per rank, with rollout-vs-train
+logprob agreement unchanged. Whether that shows up as a faster step depends entirely on
+whether your disk is the bottleneck — with 8 ranks sharing one array we measured the same
+configuration's step anywhere between 19s and 35s, so measure your own setup rather than
+assuming the byte reduction translates.
+
+`fp32` is the default and is bit-identical to keeping the state on GPU. The fp8 options
+halve the moments again but are not recommended: `exp_avg_sq` needs per-block scaling to
+survive 8-bit storage, which this does not implement, and a 3-rollout smoke test is far
+too short to expose the drift that would cause.
 
 A checkpoint records the dtypes it was written with and a resume verifies them, so
 bytes written as bf16 can never be read back as fp32.
