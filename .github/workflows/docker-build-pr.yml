@@ -33,6 +33,33 @@ jobs:
           apt-get update && apt-get install -y python3 python3-pip
           pip3 install --break-system-packages typer
 
-      - name: Build (no push)
+      - name: Login to Docker Hub
+        # Fork PRs have no secrets: build without pushing, skip the test stage.
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build (and push a PR-scoped tag for the test stage)
         run: |
-          python3 docker/build.py --variant cu13-x86 --image-tag dev
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            python3 docker/build.py --variant cu13-x86 --image-tag custom \
+              --custom-tag pr-${{ github.event.pull_request.number }} --push
+          else
+            python3 docker/build.py --variant cu13-x86 --image-tag dev
+          fi
+
+  # Smoke the freshly built image with a real GPU suite so a Dockerfile change
+  # is validated by tests, not only by "the build finished".
+  test-in-fresh-image:
+    needs: [build-only]
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      container_image: radixark/miles:pr-${{ github.event.pull_request.number }}
+      runs_on: '["h200", "2gpu"]'
+      execute_command: >-
+        python tests/ci/run_suite.py --hw h200 --suite stage-b-2-gpu-h200
+        --cadence pr --labels ''
+    secrets: inherit
