@@ -67,6 +67,19 @@ def validate_multi_lora_args(args: Any) -> None:
     args.rollout_global_dataset = True
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
     assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
+    # MoE expert multi-LoRA is not yet wired end-to-end: the training-side per-token
+    # slot-id threading through the MoE dispatcher (Megatron-LM) and the bridge
+    # grouped-expert multi-adapter layer land in later PRs. Until then, targeting expert
+    # modules would silently drop the expert adapters at train time, so fail loudly.
+    # (Detects explicit expert targets like '*.mlp.experts.linear_fc1'; bare leaf names
+    # such as 'linear_fc1' cannot be disambiguated here without the model.)
+    _expert_targets = [tm for tm in args.target_modules if "experts" in str(tm)]
+    assert not _expert_targets, (
+        "Multi-LoRA does not yet support MoE expert target modules "
+        f"(got {_expert_targets}). Expert multi-LoRA is under development; for now remove "
+        "expert target modules (e.g. '*.mlp.experts.linear_fc1'). Non-expert "
+        "(attention/dense) target modules are supported."
+    )
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
     assert "muon" not in str(getattr(args, "optimizer", "")).lower(), (
         "Multi-LoRA does not support Muon: per-adapter decoupled stepping is only "

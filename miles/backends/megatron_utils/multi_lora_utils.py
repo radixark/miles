@@ -116,21 +116,34 @@ def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
 
 
 def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) -> torch.Tensor:
-    if "lora_A" in hf_name and adapter_rank < tensor.shape[0]:
-        remainder = tensor[adapter_rank:]
-        assert remainder.abs().max() == 0, (
-            f"lora_A padded dims are non-zero: {hf_name}, "
-            f"max={remainder.abs().max().item():.6e}, shape={tensor.shape}, rank={adapter_rank}"
-        )
-        return tensor[:adapter_rank]
-    if "lora_B" in hf_name and adapter_rank < tensor.shape[1]:
-        remainder = tensor[:, adapter_rank:]
-        assert remainder.abs().max() == 0, (
-            f"lora_B padded dims are non-zero: {hf_name}, "
-            f"max={remainder.abs().max().item():.6e}, shape={tensor.shape}, rank={adapter_rank}"
-        )
-        return tensor[:, :adapter_rank]
-    return tensor
+    """Trim a max-rank-padded LoRA weight down to an adapter's real rank.
+
+    LoRA weights are allocated at the shared ``--lora-rank`` (max rank) with the unused
+    rank slots zero-padded; this slices them to ``adapter_rank`` to match the adapter's
+    ``adapter_config`` ``r``. The rank axis is the second-to-last for ``lora_A``
+    (``[..., rank, in]``) and the last for ``lora_B`` (``[..., out, rank]``). Selecting
+    the axis by position handles both the 2-D dense layout (``[rank, in]`` /
+    ``[out, rank]``) and the 3-D grouped MoE-expert layout (``[num_experts, rank, in]`` /
+    ``[num_experts, out, rank]``) — the previous hard-coded ``shape[0]`` / ``shape[1]``
+    sliced the wrong (expert) axis on 3-D expert tensors and silently corrupted them.
+    Asserts the trimmed-away slots are exactly zero so a mis-sliced adapter fails loudly.
+    """
+    if "lora_A" in hf_name:
+        axis = tensor.ndim - 2
+    elif "lora_B" in hf_name:
+        axis = tensor.ndim - 1
+    else:
+        return tensor
+    if adapter_rank >= tensor.shape[axis]:
+        return tensor
+    remainder = tensor.narrow(axis, adapter_rank, tensor.shape[axis] - adapter_rank)
+    max_abs = remainder.abs().max()
+    assert max_abs == 0, (
+        f"{'lora_A' if 'lora_A' in hf_name else 'lora_B'} padded rank slots are non-zero: "
+        f"{hf_name}, max={max_abs.item():.6e}, shape={tuple(tensor.shape)}, "
+        f"rank={adapter_rank}, axis={axis}"
+    )
+    return tensor.narrow(axis, 0, adapter_rank)
 
 
 def save_multi_lora_checkpoints(

@@ -34,7 +34,7 @@ def test_nonzero_padding_is_rejected():
     # Live values beyond the adapter's rank mean the pad rows were trained —
     # slicing would silently drop signal, so it must hard-fail instead.
     tensor = torch.ones(32, 8)
-    with pytest.raises(AssertionError, match="padded dims are non-zero"):
+    with pytest.raises(AssertionError, match="padded rank slots are non-zero"):
         slice_lora_to_rank("x.lora_A.weight", tensor, 16)
 
 
