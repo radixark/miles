@@ -37,14 +37,8 @@ class RolloutFnTrainInput(RolloutFnBaseInput):
 
 @dataclass(frozen=True)
 class RolloutFnEvalInput(RolloutFnBaseInput):
-    # Which engines to eval against. None = the fn's own (shared) GenerateState;
-    # set by RolloutManager when --eval-num-gpus routes eval to a dedicated fleet.
     generate_state: GenerateState | None = None
-    # The weight_version pinned on generate_state's engines, for fns that want to
-    # attribute results to it (e.g. logging). None when generate_state is None.
     weight_version: str | None = None
-    # HF snapshot dir for this eval point. Set whenever a CheckpointEvalFn runs
-    # (dedicated fleet or external backend); None on shared-engine eval.
     hf_dir: str | None = None
 
     @property
