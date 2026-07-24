@@ -9,7 +9,7 @@ import numpy as np
 import pybase64
 
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
-from miles.utils.processing_utils import encode_image_for_rollout_engine
+from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
 
 
@@ -22,9 +22,7 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
         prompt_ids = processor_output["input_ids"][0]
 
         # TODO shall we move it to other places? then can make this function immutable
-        sample.multimodal_train_inputs = {
-            k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
-        } or None
+        sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
 
         return prompt_ids
     else:

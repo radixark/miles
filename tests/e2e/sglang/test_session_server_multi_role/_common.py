@@ -44,7 +44,7 @@ class ModelConfig:
 
 def run_one(cfg: ModelConfig) -> None:
     invariants = dict(SESSION_VERIFY_INVARIANT_ARGS)
-    invariants["sglang_expert_parallel_size"] = cfg.ep_size
+    invariants["sglang_ep_size"] = cfg.ep_size
     args = argparse.Namespace(
         hf_checkpoint=cfg.model_name,
         tito_model=cfg.tito_model,

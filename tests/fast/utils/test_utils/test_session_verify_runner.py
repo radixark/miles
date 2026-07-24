@@ -55,7 +55,7 @@ def test_namespace_to_train_args_omits_expert_parallel_for_single_expert():
 
 
 def test_namespace_to_train_args_emits_expert_parallel_for_moe():
-    train_args = _build_args(sglang_expert_parallel_size=8)
+    train_args = _build_args(sglang_ep_size=8)
 
     assert "--sglang-expert-parallel-size 8" in train_args
 
