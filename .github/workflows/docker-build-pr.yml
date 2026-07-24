@@ -34,7 +34,6 @@ jobs:
           pip3 install --break-system-packages typer
 
       - name: Login to Docker Hub
-        # Fork PRs have no secrets: build without pushing, skip the test stage.
         if: github.event.pull_request.head.repo.full_name == github.repository
         uses: docker/login-action@v3
         with:
@@ -50,8 +49,6 @@ jobs:
             python3 docker/build.py --variant cu13-x86 --image-tag dev
           fi
 
-  # Smoke the freshly built image with a real GPU suite so a Dockerfile change
-  # is validated by tests, not only by "the build finished".
   test-in-fresh-image:
     needs: [build-only]
     if: github.event.pull_request.head.repo.full_name == github.repository
@@ -64,9 +61,6 @@ jobs:
         --cadence pr --labels ''
     secrets: inherit
 
-  # Tests passed: the PR-scoped tag has served its purpose; drop it from the
-  # registry. A failed run keeps its tag for debugging (the next push of the
-  # same PR overwrites it).
   cleanup-pr-tag:
     needs: [test-in-fresh-image]
     if: github.event.pull_request.head.repo.full_name == github.repository
