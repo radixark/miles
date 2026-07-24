@@ -81,21 +81,43 @@ class _Stager:
     def __init__(self, nbytes: int):
         self._buf = torch.empty(nbytes, dtype=torch.uint8, pin_memory=True)
         self._bytes = self._buf.numpy()
+        self._device_buf = None
+
+    def _device_staging(self, dtype: torch.dtype, numel: int, like: torch.Tensor) -> torch.Tensor:
+        # A cross-dtype copy between GPU and pinned host memory does not take the DMA
+        # path: casting on the device first and moving same-dtype bytes is ~40x faster
+        # for bf16 and ~100x for fp8.
+        size = self._buf.numel()
+        if self._device_buf is None or self._device_buf.device != like.device:
+            self._device_buf = torch.empty(size, dtype=torch.uint8, device=like.device)
+        return self._device_buf[: numel * dtype.itemsize].view(dtype)
 
     def transfer(self, fd: int, offset: int, tensor: torch.Tensor, dtype: torch.dtype, *, to_disk: bool) -> int:
         flat = tensor.view(-1)
+        cast = dtype != flat.dtype
         chunk = self._buf.numel() // dtype.itemsize
         pos = 0
         while pos < flat.numel():
             numel = min(chunk, flat.numel() - pos)
             host = self._buf[: numel * dtype.itemsize].view(dtype)
             at = offset + pos * dtype.itemsize
+            nbytes = numel * dtype.itemsize
             if to_disk:
-                host.copy_(flat[pos : pos + numel])
-                _rw_full(os.pwritev, fd, at, self._bytes[: numel * dtype.itemsize])
+                if cast:
+                    staged = self._device_staging(dtype, numel, flat)
+                    staged.copy_(flat[pos : pos + numel])
+                    host.copy_(staged)
+                else:
+                    host.copy_(flat[pos : pos + numel])
+                _rw_full(os.pwritev, fd, at, self._bytes[:nbytes])
             else:
-                _rw_full(os.preadv, fd, at, self._bytes[: numel * dtype.itemsize])
-                flat[pos : pos + numel].copy_(host)
+                _rw_full(os.preadv, fd, at, self._bytes[:nbytes])
+                if cast:
+                    staged = self._device_staging(dtype, numel, flat)
+                    staged.copy_(host)
+                    flat[pos : pos + numel].copy_(staged)
+                else:
+                    flat[pos : pos + numel].copy_(host)
             pos += numel
         return flat.numel() * dtype.itemsize
 
