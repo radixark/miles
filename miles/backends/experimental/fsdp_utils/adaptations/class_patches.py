@@ -43,6 +43,21 @@ def check_fp8_checkpoint(hf_config) -> None:
         )
 
 
+# A type is listed only after a successful FSDP RL run or dedicated FSDP e2e coverage.
+VERIFIED_MODEL_TYPES = frozenset({"glm4_moe_lite", "nemotron_h", "qwen3", "qwen3_moe", "qwen3_vl"})
+
+
+def check_model_type_verified(hf_config, args=None) -> None:
+    """Warn from rank 0 when the arch has no recorded FSDP validation."""
+    model_type = str(getattr(hf_config, "model_type", "") or "")
+    if model_type not in VERIFIED_MODEL_TYPES and getattr(args, "rank", 0) == 0:
+        logger.warning(
+            "[fsdp class_patches] model_type=%r has no recorded FSDP validation; "
+            "it will load via the generic HF path — correctness is not guaranteed.",
+            model_type,
+        )
+
+
 class ModelPatchHook:
     """A config-time patch: an ``applies_to(hf_config)`` predicate + an ``apply(hf_config, args)`` action
     (``args`` is the actor Namespace). New archs register a hook instead of editing ``apply_class_patches``."""
@@ -83,6 +98,9 @@ def _has_config(hf_config) -> bool:
 register_model_patch(ModelPatchHook("fp8_checkpoint_guard", _has_config, lambda cfg, args: check_fp8_checkpoint(cfg)))
 register_model_patch(
     ModelPatchHook("dsa_train_infer_warn", _has_config, lambda cfg, args: check_train_infer_consistency(cfg))
+)
+register_model_patch(
+    ModelPatchHook("model_type_verified", _has_config, lambda cfg, args: check_model_type_verified(cfg, args))
 )
 # Per-arch model patches register in their spec (adaptations/specs/); this module keeps only generic ones.
 
