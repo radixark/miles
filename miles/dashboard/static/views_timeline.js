@@ -14,6 +14,7 @@ const PHASE_COLORS = {
   rollout: "#d55816",
   eval_rollout: "#e8a683",
   actor_train: "#2a78d6",
+  critic_train: "#5f5aa8",
   train_log_probs: "#c3b8ec",
   log_probs: "#8b7bd8",
   ref_log_probs: "#4a3aa7",
@@ -34,6 +35,7 @@ const OVERLAY_METRICS = [
 ];
 const OVERLAY_COLOR = "#b84a12";
 const MEM_COLOR = "#1baf7a";
+const CPU_COLORS = ["#c2410c", "#b45309", "#a21caf", "#0f766e", "#4338ca", "#be123c"];
 const UTIL_STROKE = "rgba(42, 120, 214, 0.9)";
 const UTIL_FILL = "rgba(42, 120, 214, 0.14)";
 const TEXT = "#231f1c";
@@ -50,6 +52,8 @@ const QUICK_PICKS = [
 const QUICK_PICK_K = 8;
 
 const LANE_H = 66;
+const CPU_ROW_H = 58;
+const CPU_PLOT_H = 40;
 const PHASE_H = 14;
 const UTIL_H = 40;
 const M_LEFT = 96;
@@ -84,6 +88,8 @@ export async function renderTimeline(view, meta, route) {
   let advisories = [];
   let bubbles = [];
   let gpu = {};
+  let cpuMemory = {};
+  let cpuMemoryEnabled = Boolean(meta.capabilities.has_cpu_memory);
   let engineSeries = [];
   let T0 = 0;
   let T1 = 1;
@@ -131,6 +137,7 @@ export async function renderTimeline(view, meta, route) {
     if (!haveData) {
       lanes = [];
       gpu = {};
+      cpuMemory = {};
       phasesByLane = new Map();
       processesByLane = new Map();
       return;
@@ -155,10 +162,13 @@ export async function renderTimeline(view, meta, route) {
         history.replaceState(null, "", `#/timeline?lanes=${encodeURIComponent(selection)}`);
       }
     }
-    const [phasesRes, gpuRes, processesRes] = await Promise.all([
+    const [phasesRes, gpuRes, processesRes, cpuRes] = await Promise.all([
       api("/api/timeline/phases", { t0: f0, t1: f1, lanes: selection }),
       api("/api/timeline/gpu", { t0: f0, t1: f1, max_points: 4000, lanes: selection }),
       api("/api/timeline/gpu_processes", { t0: f0, t1: f1, lanes: selection }),
+      cpuMemoryEnabled
+        ? api("/api/timeline/cpu_memory", { t0: f0, t1: f1, max_points: 4000, lanes: selection })
+        : Promise.resolve({ nodes: {} }),
     ]);
     engineSeries = overlayMetric
       ? (await api("/api/timeline/engine_series", { metric: overlayMetric, t0: f0, t1: f1, max_points: 4000 }))
@@ -178,6 +188,7 @@ export async function renderTimeline(view, meta, route) {
     if (lanes.length > LANE_CAP) lanes = lanes.slice(0, LANE_CAP);
     capped = Math.max(0, total - lanes.length);
     gpu = gpuRes.lanes;
+    cpuMemory = cpuRes.nodes;
     multiNode = new Set(lanes.map((l) => l.node)).size > 1;
     phasesByLane = new Map(lanes.map((l) => [laneKey(l), []]));
     for (const p of phasesRes.phases) phasesByLane.get(`${p.node}:${p.gpu}`)?.push(p);
@@ -419,9 +430,12 @@ export async function renderTimeline(view, meta, route) {
   const canvas = el("canvas", { class: "timeline" });
   const overlayMax = () => Math.max(...engineSeries.flatMap((s) => s.value), 1e-9);
   const memMax = () => Math.max(...Object.values(gpu).flatMap((s) => s.mem_mb), 1);
+  const cpuNodes = () => Object.keys(cpuMemory).sort();
+  const cpuOffset = () => (cpuNodes().length ? CPU_ROW_H : 0);
 
   function draw() {
-    canvas.style.height = `${M_TOP + Math.max(lanes.length, 1) * LANE_H + 8}px`;
+    const cpuH = cpuOffset();
+    canvas.style.height = `${M_TOP + cpuH + Math.max(lanes.length, 1) * LANE_H + 8}px`;
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
     canvas.width = rect.width * dpr;
@@ -448,13 +462,44 @@ export async function renderTimeline(view, meta, route) {
       ctx.fillText(label, X(t) - Math.min(30, label.length * 3.2), 12);
       ctx.beginPath();
       ctx.moveTo(X(t), M_TOP - 6);
-      ctx.lineTo(X(t), M_TOP + lanes.length * LANE_H);
+      ctx.lineTo(X(t), M_TOP + cpuH + lanes.length * LANE_H);
       ctx.stroke();
+    }
+
+    if (cpuH) {
+      const nodes = cpuNodes();
+      const yTop = M_TOP + 4;
+      const yBot = yTop + CPU_PLOT_H;
+      ctx.fillStyle = TEXT;
+      ctx.fillText("CPU mem", 8, yTop + 8);
+      ctx.fillStyle = MUTED;
+      ctx.fillText("0–100%", 8, yTop + 22);
+      ctx.strokeStyle = GRID;
+      ctx.beginPath();
+      ctx.moveTo(M_LEFT, yBot);
+      ctx.lineTo(width - M_RIGHT, yBot);
+      ctx.stroke();
+      nodes.forEach((node, nodeIndex) => {
+        const series = cpuMemory[node];
+        ctx.beginPath();
+        let started = false;
+        for (let j = 0; j < series.ts.length; j++) {
+          const t = series.ts[j];
+          if (t < v0 || t > v1) continue;
+          const y = yBot - (series.percent[j] / 100) * CPU_PLOT_H;
+          started ? ctx.lineTo(X(t), y) : ctx.moveTo(X(t), y);
+          started = true;
+        }
+        ctx.strokeStyle = CPU_COLORS[nodeIndex % CPU_COLORS.length];
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+        ctx.lineWidth = 1;
+      });
     }
 
     lanes.forEach((lane, i) => {
       const key = laneKey(lane);
-      const yPhase = M_TOP + i * LANE_H + 4;
+      const yPhase = M_TOP + cpuH + i * LANE_H + 4;
       const yUtilTop = yPhase + PHASE_H + 4;
       const yUtilBot = yUtilTop + UTIL_H;
 
@@ -616,7 +661,29 @@ export async function renderTimeline(view, meta, route) {
       return;
     }
     const rect = canvas.getBoundingClientRect();
-    const laneIdx = Math.floor((ev.clientY - rect.top - M_TOP) / LANE_H);
+    const localY = ev.clientY - rect.top - M_TOP;
+    const cpuH = cpuOffset();
+    if (cpuH && localY >= 0 && localY < cpuH && ev.clientX - rect.left >= M_LEFT) {
+      const t = timeAt(ev.clientX);
+      const lines = [`CPU memory  +${fmtNum(t - T0)}s`];
+      cpuNodes().forEach((node) => {
+        const series = cpuMemory[node];
+        if (!series.ts.length) return;
+        let best = 0;
+        for (let j = 1; j < series.ts.length; j++) {
+          if (Math.abs(series.ts[j] - t) < Math.abs(series.ts[best] - t)) best = j;
+        }
+        const gib = 1024 ** 3;
+        lines.push(
+          `${node}: ${fmtNum(series.percent[best])}%`,
+          `  used ${fmtNum(series.used_bytes[best] / gib)} / ${fmtNum(series.total_bytes[best] / gib)} GiB` +
+            ` · available ${fmtNum(series.available_bytes[best] / gib)} GiB`,
+        );
+      });
+      showTooltip(ev.clientX, ev.clientY, lines.join("\n"));
+      return;
+    }
+    const laneIdx = Math.floor((localY - cpuH) / LANE_H);
     if (laneIdx < 0 || laneIdx >= lanes.length || ev.clientX - rect.left < M_LEFT) {
       hideTooltip();
       return;
@@ -677,6 +744,9 @@ export async function renderTimeline(view, meta, route) {
         }),
         el("span", { style: `color: ${OVERLAY_COLOR}` }, ["— engine overlay"]),
         el("span", { style: `color: ${UTIL_STROKE}` }, ["— gpu util"]),
+        ...cpuNodes().map((node, i) =>
+          el("span", { style: `color: ${CPU_COLORS[i % CPU_COLORS.length]}` }, [`— cpu memory ${node}`]),
+        ),
       ]),
     );
   };
@@ -727,7 +797,9 @@ export async function renderTimeline(view, meta, route) {
       refreshing = true;
       try {
         // fresh global range (cheap edge-stamp read); getMeta() is cached
-        applyRange((await api("/api/meta")).time_range);
+        const latestMeta = await api("/api/meta");
+        applyRange(latestMeta.time_range);
+        cpuMemoryEnabled = Boolean(latestMeta.capabilities.has_cpu_memory);
         await Promise.all([loadData(), loadAdvisories()]);
         renderAll();
         await carpet.refresh(carpetRange());

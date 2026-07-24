@@ -299,3 +299,20 @@ def test_phase_sink_begin_pushes_open_event_immediately():
     assert event.name == "rollout" and event.t0 == 100.0
     assert event.open and event.t1 == PhaseEvent.OPEN_T1
     assert (event.node, event.rank) == ("10.0.0.3", 7)
+
+
+def test_phase_sink_begin_flushes_previous_completion_before_open_event():
+    from miles.dashboard.store import PhaseEvent
+
+    handle = FakeHandle()
+    hooks.attach_phase_sink(handle, Role.TRAIN)
+    [sink] = Timer().event_sinks
+
+    sink("data_preprocess", 100.0, 100.4)
+    assert handle.push_phases.calls == []
+
+    sink.begin("critic_train", 100.4)
+    [(args, _)] = handle.push_phases.calls
+    completed, opened = args[0]
+    assert (completed.name, completed.t0, completed.t1) == ("data_preprocess", 100.0, 100.4)
+    assert (opened.name, opened.t0, opened.t1) == ("critic_train", 100.4, PhaseEvent.OPEN_T1)

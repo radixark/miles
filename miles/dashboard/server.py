@@ -101,7 +101,12 @@ def make_app(
             capabilities=dict(
                 has_metrics=store.has_stream(Stream.METRICS),
                 has_tokenizer=(reader.dump_dir / "tokenizer").is_dir(),
-                has_timeline=store.has_stream(Stream.PHASES) or store.has_stream(Stream.GPU_UTIL),
+                has_timeline=(
+                    store.has_stream(Stream.PHASES)
+                    or store.has_stream(Stream.GPU_UTIL)
+                    or store.has_stream(Stream.CPU_MEMORY)
+                ),
+                has_cpu_memory=store.has_stream(Stream.CPU_MEMORY),
                 has_engine_series=store.has_stream(Stream.ENGINE_SERIES),
                 max_window_s=MetricStore.MAX_WINDOW_S,
                 use_utilization_overview=use_utilization_overview,
@@ -175,6 +180,18 @@ def make_app(
         with _translate_errors():
             _check_window(t0, t1)
             return dict(advisories=[asdict(a) for a in compute_advisories(store, t0=t0, t1=t1)])
+
+    @app.get("/api/timeline/cpu_memory")
+    def timeline_cpu_memory(
+        t0: float | None = None, t1: float | None = None, max_points: int = 2000, lanes: str | None = None
+    ):
+        with _translate_errors():
+            _check_window(t0, t1)
+            if max_points < 2:
+                raise ValueError(f"{max_points=} must be >= 2")
+            resolved = store.resolve_lanes(lanes)
+            nodes = None if resolved is None else {node for node, _ in resolved}
+            return dict(nodes=store.cpu_memory_series(t0=t0, t1=t1, max_points=max_points, nodes=nodes))
 
     @app.get("/api/timeline/heatmap")
     def timeline_heatmap(

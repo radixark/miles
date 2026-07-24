@@ -354,7 +354,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 return TrainStepOutcome.NORMAL
 
         if self.role == "critic":
-            return self.train_critic(rollout_id, rollout_data)
+            with timer("critic_train"):
+                return self.train_critic(rollout_id, rollout_data)
         else:
             return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
 

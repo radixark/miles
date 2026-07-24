@@ -96,6 +96,23 @@ def test_gpu_series_time_filter(loaded):
         assert all(t0 <= ts <= t1 for ts in series["ts"])
 
 
+def test_cpu_memory_series_is_node_level_aligned_and_downsampled(loaded):
+    store, truth = loaded
+    nodes = store.cpu_memory_series(max_points=40)
+    assert set(nodes) == {GPU_NODE}
+    series = nodes[GPU_NODE]
+    assert len(series["ts"]) <= 40
+    assert len(series["ts"]) == len(series["percent"]) == len(series["used_bytes"])
+    assert len(series["ts"]) == len(series["available_bytes"]) == len(series["total_bytes"])
+    assert min(series["percent"]) == 25.0
+    assert max(series["percent"]) == 70.0
+    assert series["ts"] == sorted(series["ts"])
+
+    t0, t1 = truth.rollout_interval(0)
+    window = store.cpu_memory_series(t0=t0, t1=t1)[GPU_NODE]
+    assert all(t0 <= ts <= t1 for ts in window["ts"])
+
+
 def test_engine_series_split_on_restart(loaded):
     store, truth = loaded
     series = store.engine_series("sglang_num_running_reqs")
@@ -168,6 +185,7 @@ def test_timeline_endpoints(tmp_path):
     meta = client.get("/api/meta").json()
     assert meta["capabilities"]["has_timeline"] is True
     assert meta["capabilities"]["has_engine_series"] is True
+    assert meta["capabilities"]["has_cpu_memory"] is True
 
     topology = client.get("/api/timeline/topology").json()
     assert len(topology["lanes"]) == truth.gpus
@@ -179,6 +197,10 @@ def test_timeline_endpoints(tmp_path):
     gpu = client.get("/api/timeline/gpu", params={"max_points": 50}).json()
     assert set(gpu["lanes"]) == {f"{GPU_NODE}:{g}" for g in range(truth.gpus)}
     assert client.get("/api/timeline/gpu", params={"max_points": 1}).status_code == 400
+
+    cpu = client.get("/api/timeline/cpu_memory", params={"max_points": 50}).json()
+    assert set(cpu["nodes"]) == {GPU_NODE}
+    assert client.get("/api/timeline/cpu_memory", params={"max_points": 1}).status_code == 400
 
     engines = client.get("/api/timeline/engine_series", params={"metric": "sglang_gen_throughput"}).json()
     assert {s["addr"] for s in engines["series"]} == {ENGINE_A, ENGINE_B_OLD, ENGINE_B_NEW}
