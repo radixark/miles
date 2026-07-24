@@ -72,11 +72,6 @@ logger = logging.getLogger(__name__)
 
 
 def _setup_disk_offload_reclaim(disk_dir: str) -> None:
-    """Reclaim train disk-offload files for --offload-train-target=disk.
-
-    ``disk_dir`` must be exclusive to this rank (see actor_factory's per-rank
-    TMS_DISK_BACKUP_DIR).
-    """
     if not disk_dir:
         return
     shutil.rmtree(disk_dir, ignore_errors=True)

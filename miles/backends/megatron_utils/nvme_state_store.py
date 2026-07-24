@@ -1,12 +1,3 @@
-"""NVMe-backed residency for a DistributedOptimizer's state.
-
-The fp32 main params and Adam moments live in per-bucket files and stream through a
-shared pinned buffer during ``optimizer.step()``, so GPU residency is bounded to one
-bucket instead of the whole state. Each file holds the segments ``main | exp_avg |
-exp_avg_sq``, each storing the bucket's param shards in order; a segment has its own
-storage dtype, so the moments can be narrower than the fp32 copy Adam computes on.
-"""
-
 import atexit
 import errno
 import json
@@ -31,11 +22,9 @@ DTYPES = {
     "fp8e4m3": torch.float8_e4m3fn,
     "fp8e5m2": torch.float8_e5m2,
 }
-# A bucket is the streaming unit, so it bounds peak residency: cap it here instead of
-# inheriting DDP's bucket sizes, which reach tens of GB at DP=1.
 BUCKET_NUMEL_LIMIT = 200_000_000
 FP32_RESIDENT_WARN_MB = 256
-IO_ALIGN = 4096  # what O_DIRECT and cuFile want; keeps a GDS backend a _Stager swap
+IO_ALIGN = 4096
 
 
 class _Entry(NamedTuple):
@@ -57,7 +46,6 @@ def _allocate_file(path: str, nbytes: int) -> int:
     try:
         os.posix_fallocate(fd, 0, nbytes)
     except OSError as e:
-        # tmpfs / some NFS / container mounts don't support fallocate.
         if e.errno not in (errno.EOPNOTSUPP, errno.ENOTSUP, errno.EINVAL):
             raise
         os.ftruncate(fd, nbytes)
@@ -75,7 +63,6 @@ def _rw_full(op, fd: int, offset: int, buf) -> None:
 
 
 def plan_buckets(entries_by_ddp_bucket: dict, limit: int = BUCKET_NUMEL_LIMIT) -> list[list[_Entry]]:
-    """Split entries into streaming buckets of at most `limit` elements each."""
     planned, current, numel = [], [], 0
     for _, entries in sorted(entries_by_ddp_bucket.items(), key=lambda kv: kv[0]):
         for entry in entries:
@@ -91,15 +78,11 @@ def plan_buckets(entries_by_ddp_bucket: dict, limit: int = BUCKET_NUMEL_LIMIT) -
 
 
 class _Stager:
-    """Shared pinned buffer; the only code touching host memory or files, so a
-    GPUDirect Storage backend would replace this class alone."""
-
     def __init__(self, nbytes: int):
         self._buf = torch.empty(nbytes, dtype=torch.uint8, pin_memory=True)
         self._bytes = self._buf.numpy()
 
     def transfer(self, fd: int, offset: int, tensor: torch.Tensor, dtype: torch.dtype, *, to_disk: bool) -> int:
-        """Stream `tensor` to/from `fd` at `offset`, casting to `dtype` on the way."""
         flat = tensor.view(-1)
         chunk = self._buf.numel() // dtype.itemsize
         pos = 0
@@ -118,8 +101,6 @@ class _Stager:
 
 
 class _Bucket:
-    """One streaming unit: its entries, its backing file, and its own Adam."""
-
     def __init__(self, path: str, entries: list[_Entry], adam, stager: _Stager, dtypes: dict):
         self.path, self.entries, self.adam, self.dtypes = path, entries, adam, dtypes
         self._stager = stager
@@ -135,7 +116,6 @@ class _Bucket:
                 at += _align(entry.main_param.numel() * dtypes[segment].itemsize)
         self.nbytes = at
         self.fd = _allocate_file(path, at)
-        # The moments only exist once Adam has stepped, or a resume pre-created them.
         self.moments_ready = False
 
     def _tensors(self, segment: str):
@@ -167,7 +147,6 @@ class _Bucket:
             _resize(tensor, tensor.numel())
 
     def allocate_moments(self) -> None:
-        """Pre-create released moment tensors so a resumed run streams them in."""
         for entry in self.entries:
             state = self.adam.state.setdefault(entry.main_param, {})
             for segment in SEGMENTS[1:]:
@@ -178,10 +157,6 @@ class _Bucket:
 
 
 class NVMeOptimizerStateStore:
-    """Owns residency and I/O of one DistributedOptimizer's state."""
-
-    # ChainedOptimizer's dense/expert members can share distributed_optimizer_instance_id;
-    # this per-process counter keeps their store directories distinct.
     _next_uid = 0
 
     def __init__(self, distrib_optimizer: "DistributedOptimizer", dir_root: str, chunk_mb: int):
@@ -219,9 +194,6 @@ class NVMeOptimizerStateStore:
         self.buckets = self._build_buckets()
         self._fp32_group_indices, self._fp32_adam = self._build_fp32_optimizer()
 
-        # Evict main before anything else runs: the first rollout and forward/backward
-        # happen before the first step, so a lazy eviction would leave the whole state
-        # resident exactly when the config is tightest.
         for bucket in self.buckets:
             bucket.flush(segments=("main",))
 
@@ -250,10 +222,6 @@ class NVMeOptimizerStateStore:
         return buckets
 
     def _build_fp32_optimizer(self):
-        """Native-fp32 model params (router expert_bias, GDN/Mamba A_log) get a small
-        always-resident Adam instead of being streamed. Their ``shard_fp32_groups``
-        entries view the model params' own storage, so stepping updates the model
-        directly -- no copy-back, unlike the bf16 path."""
         params: dict[int, list[torch.Tensor]] = {}
         total_bytes = 0
         for group_index, (model_group, shard_group) in enumerate(
@@ -271,7 +239,6 @@ class NVMeOptimizerStateStore:
         return sorted(params), self._adam_for(params)
 
     def _adam_for(self, params_by_group: dict[int, list[torch.Tensor]]):
-        """A private Adam over `params_by_group`, inheriting the master group config."""
         from megatron.core.optimizer import Adam
 
         master_groups = self.dist_opt.optimizer.param_groups
@@ -311,9 +278,6 @@ class NVMeOptimizerStateStore:
 
     @torch.no_grad()
     def refresh_main_from_model_params(self, copy_fn) -> None:
-        """Re-derive main from the model params. ``copy_fn`` writes into every shard at
-        once, so they are all resident for its duration -- the one point where residency
-        is not bucket-bounded."""
         for bucket in self.buckets:
             bucket.materialize_main()
         copy_fn()
@@ -339,7 +303,6 @@ class NVMeOptimizerStateStore:
             shutil.copyfile(bucket.path, os.path.join(dirpath, os.path.basename(bucket.path)))
         if self._fp32_adam is not None:
             torch.save(self._fp32_adam.state_dict(), os.path.join(dirpath, "fp32_resident_optimizer.pt"))
-        # Written last: its presence marks the directory complete.
         with open(os.path.join(dirpath, "manifest.json"), "w") as f:
             json.dump(manifest, f)
         logger.info(f"NVMe optimizer state saved: {len(self.buckets)} buckets -> {dirpath}")

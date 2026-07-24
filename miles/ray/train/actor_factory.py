@@ -48,7 +48,6 @@ def allocate_gpus_for_actor(
         env_vars["LD_PRELOAD"] = dynlib_path
         env_vars["TMS_INIT_ENABLE"] = "1"
         if args.offload_train_target == "disk":
-            # TMS_DISK_BACKUP_DIR is set per-rank below.
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "0"
             env_vars["TMS_INIT_ENABLE_DISK_BACKUP"] = "1"
             env_vars["TMS_DISK_BACKUP_CHUNK_MB"] = str(args.offload_train_disk_chunk_mb)
