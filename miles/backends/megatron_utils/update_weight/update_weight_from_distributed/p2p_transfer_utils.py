@@ -4,6 +4,8 @@ from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from threading import Lock
 
 import ray
 import torch
@@ -11,9 +13,12 @@ import torch.distributed as dist
 from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
 from sglang.srt.server_args import ServerArgs
+
 from miles.backends.training_utils.parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
+
+P2P_TRANSFER_WAIT_FAILURE_MESSAGE = "P2P weight transfer failed; see trainer logs for details."
 
 
 @dataclasses.dataclass
@@ -151,35 +156,114 @@ class P2PTransferManager:
         self.num_workers = num_workers
         self.transfer_timeout = transfer_timeout
         self.executor: ThreadPoolExecutor | None = None
-        self.transfer_futures: list[Future] = []
+        self.transfer_futures: list[Future[None]] = []
+        self._failed = False
+        self._failure_cause: Exception | None = None
+        self._failure_lock = Lock()
+
+    @property
+    def failed(self) -> bool:
+        """Whether any submitted transfer failed or exceeded its timeout."""
+        with self._failure_lock:
+            return self._failed
+
+    @property
+    def failure_cause(self) -> Exception | None:
+        """Return the first local exception that poisoned this manager."""
+        with self._failure_lock:
+            return self._failure_cause
+
+    def record_failure(self, reason: str, error: Exception | None = None) -> None:
+        """Poison this manager after a transfer-path failure."""
+        with self._failure_lock:
+            if self._failed:
+                return
+            self._failed = True
+            self._failure_cause = error
+        if error is None:
+            logger.error("[P2P] %s", reason)
+        else:
+            logger.error("[P2P] %s", reason, exc_info=error)
 
     def ensure_started(self) -> None:
         if self.executor is None:
             # NOTE: RDMA ops won't be affected by the python GIL
             self.executor = ThreadPoolExecutor(max_workers=self.num_workers)
 
-    def submit(self, fn: Callable, *args) -> None:
+    def submit(self, fn: Callable[..., None], *args: object) -> None:
         """Submit a callable to the thread pool."""
-        self.ensure_started()
-        future = self.executor.submit(fn, *args)
-        self.transfer_futures.append(future)
+        self._submit(fn, args)
 
-    def submit_returning_future(self, fn: Callable, *args) -> torch.Future:
+    def submit_returning_future(self, fn: Callable[..., None], *args: object) -> Future[None]:
         """Submit a callable and return its future (also tracked for bulk waiting)."""
-        self.ensure_started()
-        future = self.executor.submit(fn, *args)
-        self.transfer_futures.append(future)
-        return future
+        return self._submit(fn, args)
+
+    def _submit(self, fn: Callable[..., None], args: tuple[object, ...]) -> Future[None]:
+        with self._failure_lock:
+            if self._failed:
+                if self._failure_cause is not None:
+                    raise RuntimeError(P2P_TRANSFER_WAIT_FAILURE_MESSAGE) from self._failure_cause
+                raise RuntimeError(P2P_TRANSFER_WAIT_FAILURE_MESSAGE)
+            self.ensure_started()
+            task_index = len(self.transfer_futures)
+            future = self.executor.submit(self._run_transfer_task, task_index, fn, args)
+            self.transfer_futures.append(future)
+            return future
+
+    def _run_transfer_task(
+        self,
+        task_index: int,
+        fn: Callable[..., None],
+        args: tuple[object, ...],
+    ) -> None:
+        try:
+            fn(*args)
+        except Exception as error:
+            self.record_failure(f"P2P transfer task {task_index} failed", error)
+            raise
+
+    def wait_transfer_batch(self, futures: Sequence[Future[None]]) -> None:
+        """Wait for one immediate transfer batch."""
+        self._wait_transfer_futures(futures)
 
     def wait_transfers(self) -> None:
-        """Wait for all submitted tasks to complete."""
-        for future in self.transfer_futures:
+        """Wait for all tracked background transfers."""
+        with self._failure_lock:
+            futures = tuple(self.transfer_futures)
+        self._wait_transfer_futures(futures)
+
+    def _wait_transfer_futures(self, futures: Sequence[Future[None]]) -> None:
+        """Settle each future with its own timeout and retain unresolved work."""
+        selected_futures = list(futures)
+        if not selected_futures:
+            return
+
+        first_error: Exception | None = None
+        for index, future in enumerate(selected_futures):
             try:
                 future.result(timeout=self.transfer_timeout)
-            except Exception as e:
-                logger.error(f"[P2P] Transfer future failed: {e}")
+            except FutureTimeoutError as error:
+                if first_error is None:
+                    first_error = error
+                self.record_failure(
+                    f"P2P transfer task {index} timed out after {self.transfer_timeout} seconds",
+                    error,
+                )
+                break
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+                self.record_failure(f"P2P transfer task {index} failed", error)
+                break
 
-        self.transfer_futures.clear()
+        selected_set = set(selected_futures)
+        with self._failure_lock:
+            self.transfer_futures = [
+                future for future in self.transfer_futures if future not in selected_set or not future.done()
+            ]
+
+        if first_error is not None:
+            raise RuntimeError(P2P_TRANSFER_WAIT_FAILURE_MESSAGE) from self.failure_cause or first_error
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
