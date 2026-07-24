@@ -120,7 +120,7 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
 # https://github.com/NVIDIA/TransformerEngine/pull/3141; drop it after TE v2.18.
 COPY docker/patch/ /tmp/patches/
 RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
-      TE_DIR=$(python -c 'import transformer_engine; print(transformer_engine.__path__[0])') && \
+      TE_DIR=$(python -c 'import importlib.util; print(importlib.util.find_spec("transformer_engine").submodule_search_locations[0])') && \
       for p in /tmp/patches/cu13/*.patch; do \
         echo "Applying $(basename $p) to $TE_DIR" && \
         patch -d "$TE_DIR" -p1 < "$p"; \
