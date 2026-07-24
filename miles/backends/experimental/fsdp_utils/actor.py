@@ -133,7 +133,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         apply_model_instance_patches(model, self.hf_config, self.args)
         if self.precision_policy.keep_fp32_master:
-            model = apply_fp32_master(model)
+            model = apply_fp32_master(model, self.precision_policy.sync_dtype_resolver)
 
         # re-assert the checkpoint over any param from_pretrained clobbered post-load (arch-gated, else no-op)
         apply_post_load_fixups(model, self.hf_config, self.args.hf_checkpoint)

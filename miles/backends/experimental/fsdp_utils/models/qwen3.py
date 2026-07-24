@@ -12,6 +12,20 @@ class Qwen3FinalRMSNorm(Qwen3RMSNorm):
         return self.weight.to(torch.bfloat16) * hidden_states.to(torch.bfloat16)
 
 
+_FP32_SYNC_SUFFIXES = (
+    ".input_layernorm.weight",
+    ".post_attention_layernorm.weight",
+    ".self_attn.q_norm.weight",
+    ".self_attn.k_norm.weight",
+)
+
+
+def resolve_qwen3_dense_sync_dtype(name: str, checkpoint_dtype: torch.dtype) -> torch.dtype:
+    if name == "model.embed_tokens.weight" or name.endswith(_FP32_SYNC_SUFFIXES):
+        return torch.float32
+    return checkpoint_dtype
+
+
 def apply_qwen3_dense_true_on_policy_patch(model) -> bool:
     base_model = getattr(model, "model", model)
     final_norm = getattr(base_model, "norm", None)

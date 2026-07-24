@@ -14,8 +14,9 @@ import torch
 class PrecisionPolicy:
     param_dtype: torch.dtype  # FSDP MixedPrecisionPolicy compute dtype
     reduce_dtype: torch.dtype  # gradient all-reduce dtype
-    keep_fp32_master: bool = True  # keep an fp32 master copy; downcast to on-disk dtype at weight sync
+    keep_fp32_master: bool = True
     autocast_dtype: torch.dtype | None = None
+    sync_dtype_resolver: Callable[[str, torch.dtype], torch.dtype] | None = None
 
 
 @dataclass
@@ -51,14 +52,21 @@ def precision_forward_context(policy: PrecisionPolicy):
     return torch.autocast(device_type="cuda", dtype=policy.autocast_dtype)
 
 
-def apply_fp32_master(model):
-    """Convert ``model`` to an fp32 master in place, recording each param's on-disk dtype first.
+def apply_fp32_master(
+    model,
+    sync_dtype_resolver: Callable[[str, torch.dtype], torch.dtype] | None = None,
+):
+    """Convert ``model`` to an fp32 master and record each parameter's outbound sync dtype.
 
-    The weight sync downcasts the master back to each param's on-disk dtype (compute still runs bf16 via
-    MixedPrecisionPolicy). Dtypes are recorded BEFORE the cast so fp32-on-disk params (e.g. glm's
-    ``e_score_correction_bias``) stay fp32 -- casting those to bf16 would flip MoE routing.
+    The checkpoint dtype is the default. A model-specific precision policy may override it when the
+    rollout contract stores selected parameters at a different dtype.
     """
-    orig_dtypes = {name: p.dtype for name, p in model.state_dict().items()}
+    sync_dtypes = {}
+    for name, param in model.state_dict().items():
+        checkpoint_dtype = param.dtype
+        sync_dtypes[name] = (
+            sync_dtype_resolver(name, checkpoint_dtype) if sync_dtype_resolver is not None else checkpoint_dtype
+        )
     model = model.to(torch.float32)
-    model._fsdp_sync_orig_dtypes = orig_dtypes
+    model._fsdp_sync_dtypes = sync_dtypes
     return model

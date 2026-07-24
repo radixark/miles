@@ -82,6 +82,7 @@ class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
 
     def update_bucket_weights(self, named_tensors, weight_version=None):
         assert named_tensors
+        self.last_named_tensors = named_tensors
         update_weight_utils.ray.get(self.rollout_engines[0].update_weights_from_tensor.remote())
 
 
@@ -147,3 +148,34 @@ def test_fsdp_nonzero_rank_does_not_manage_engine_session(monkeypatch):
 
     assert events == ["barrier", "barrier", "barrier"]
     assert engine.submissions == []
+
+
+def test_fsdp_weight_sync_casts_to_rollout_contract_dtypes(monkeypatch):
+    events = []
+    engine = _SessionEngine("engine0", events)
+    fp32_value = torch.tensor([1.0 + 2**-20], dtype=torch.float32)
+    updater = _make_updater(
+        {
+            "fp32_weight": fp32_value,
+            "bf16_weight": fp32_value.clone(),
+        },
+        [engine],
+    )
+    updater.model._fsdp_sync_dtypes = {
+        "fp32_weight": torch.float32,
+        "bf16_weight": torch.bfloat16,
+    }
+
+    monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
+    monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: None)
+    monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
+    monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
+
+    updater.update_weights()
+
+    synced = dict(updater.last_named_tensors)
+    assert synced["fp32_weight"].dtype is torch.float32
+    assert torch.equal(synced["fp32_weight"], fp32_value)
+    assert synced["bf16_weight"].dtype is torch.bfloat16
+    assert not torch.equal(synced["bf16_weight"].to(torch.float32), fp32_value)
