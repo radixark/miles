@@ -14,7 +14,11 @@ from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
-from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data, split_train_data_by_dp
+from miles.ray.rollout.train_data_conversion import (
+    ROLLOUT_DATA_VALUE_SPEC,
+    convert_samples_to_train_data,
+    split_train_data_by_dp,
+)
 from miles.ray.utils import Lock
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -23,6 +27,7 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
+from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdentity
@@ -32,7 +37,6 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
-from miles.utils.ray_utils import Box
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
@@ -55,6 +59,7 @@ class RolloutManager:
         self.args = args
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
+        object_store.init_instance(args, contribute_segment=False)
 
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
@@ -137,7 +142,7 @@ class RolloutManager:
         )
         sample_indices = data.get("sample_indices")
         if self.args.delay_split_train_data_by_dp:
-            data_ref = Box(ray.put(data))
+            data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
         return dict(sample_indices=sample_indices, data_ref=data_ref)

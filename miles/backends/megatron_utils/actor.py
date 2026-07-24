@@ -2,7 +2,7 @@ import logging
 import random
 import socket
 from argparse import Namespace
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from typing import TYPE_CHECKING
 
 import ray
@@ -347,16 +347,20 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.offload_train:
             self.wake_up()
 
-        with timer("data_preprocess"):
-            rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info=witness_info)
-            if self.args.debug_rollout_only:
-                log_rollout_data(rollout_id, self.args, rollout_data)
-                return TrainStepOutcome.NORMAL
+        with ExitStack() as stack:
+            with timer("data_preprocess"):
+                rollout_data, store_get_result = get_rollout_data(
+                    self.args, rollout_data_ref, witness_info=witness_info
+                )
+                stack.enter_context(store_get_result)
+                if self.args.debug_rollout_only:
+                    log_rollout_data(rollout_id, self.args, rollout_data)
+                    return TrainStepOutcome.NORMAL
 
-        if self.role == "critic":
-            return self.train_critic(rollout_id, rollout_data)
-        else:
-            return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
+            if self.role == "critic":
+                return self.train_critic(rollout_id, rollout_data)
+            else:
+                return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
 
     @with_logs
     def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutcome:

@@ -18,6 +18,7 @@ from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.misc import load_function
+from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -433,6 +434,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The seed for the random number generator during rollout. "
                     "This is used to shuffle the prompts and also for the random sampling of the prompts."
                 ),
+            )
+            parser.add_argument(
+                "--object-store-backend",
+                type=str,
+                choices=tuple(backend.value for backend in ObjectStoreBackend),
+                default="ray",
+                help="Backend of the object store used to pass data (e.g. rollout data) between processes.",
+            )
+            parser.add_argument(
+                "--mooncake-store-init-kwargs",
+                type=json.loads,
+                default=None,
+                help="JSON kwargs used to initialize MooncakeDistributedStore for rollout transfer.",
+            )
+            parser.add_argument(
+                "--mooncake-replica-num",
+                type=int,
+                default=1,
+                help="Number of Mooncake memory replicas for each stored object.",
             )
 
             # sampling

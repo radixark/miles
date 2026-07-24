@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
+from miles.utils.object_store import ObjectStoreGetResult
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
@@ -34,11 +35,11 @@ def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
     witness_info: WitnessInfo | None = None,
-) -> RolloutBatch:
+) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
-    rollout_data = process_rollout_data(
+    rollout_data, store_get_result = process_rollout_data(
         args,
         rollout_data_ref,
         parallel_state.effective_dp.rank,
@@ -113,7 +114,7 @@ def get_rollout_data(
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
     if "rollout_indexer_topk" in rollout_data:
         rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
-    return rollout_data
+    return rollout_data, store_get_result
 
 
 def get_batch(

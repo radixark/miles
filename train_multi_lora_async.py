@@ -8,9 +8,11 @@ import ray
 
 from miles.ray.multi_lora.controller import create_multilora_controller, get_multi_lora_controller
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.utils import object_store
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.data import remove_rollout_data_refs
 from miles.utils.logging_utils import configure_logger
 from miles.utils.multi_lora import EmptyBatchTimeoutError, define_new_adapter_metrics
 from miles.utils.tracking_utils.tracking import init_tracking
@@ -34,6 +36,7 @@ async def main(args):
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
     pgs = create_placement_groups(args)
+    object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
     rollout_manager, _num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
 
@@ -87,6 +90,7 @@ async def main(args):
                 continue
             raise
         await actor_model.train(rollout_id, rollout_data)
+        remove_rollout_data_refs(args, rollout_data)
 
         # Per-adapter save cadence decided inside save_model.
         await actor_model.save_model(rollout_id)
