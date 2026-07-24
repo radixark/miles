@@ -149,6 +149,26 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     assert args.recompute_logprobs_via_prefill is True
 
 
+def test_ci_can_disable_only_weight_update_checker():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--ci-test",
+            "--ci-disable-weight-update-checker",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    miles_validate_args(args)
+
+    assert args.ci_test is True
+    assert args.ci_disable_weight_update_checker is True
+    assert args.check_weight_update_equal is False
+
+
 def test_recompute_logprobs_via_prefill_rejects_rollout_routing_replay():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)

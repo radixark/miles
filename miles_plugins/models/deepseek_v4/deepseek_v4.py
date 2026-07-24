@@ -16,8 +16,12 @@ from megatron.core.tensor_parallel.layers import ColumnParallelLinear
 from megatron.core.tensor_parallel.mappings import (
     copy_to_tensor_model_parallel_region,
     gather_from_sequence_parallel_region,
+    reduce_from_tensor_model_parallel_region,
     scatter_to_sequence_parallel_region,
 )
+from megatron.core.transformer.identity_op import IdentityOp
+from megatron.core.transformer.moe.experts import TEGroupedMLP
+from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.experimental_attention_variant.dsa import DSAIndexer, DSAIndexerSubmodules
 from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec
@@ -33,8 +37,20 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     get_window_topk_idxs_cp,
 )
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
+from miles_plugins.models.deepseek_v4.ops.moe import (
+    DeepSeekV4TopKRouter,
+    DeepSeekV4TopMoELayer,
+    DeepSeekV4TopTEGroupedMLP,
+)
+from miles_plugins.models.deepseek_v4.ops.norm import (
+    DeepSeekV4BatchInvariantRMSNorm,
+)
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
-from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.rope import (
+    apply_rotary_emb,
+    precompute_freqs_cis,
+    wrapped_precompute_freqs_cis,
+)
 from miles_plugins.models.deepseek_v4.ops.utils import fixed_tree_mean_last_dim
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
 
@@ -232,31 +248,66 @@ class DeepSeekV4Attention(MegatronModule):
 
         bsz, seqlen_local, _ = x.size()
         rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
-        freqs_cis = wrapped_precompute_freqs_cis(
-            self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size, x.device
-        )
+        if self.batch_invariant_mode and self.compress_ratio:
+            precompute_freqs_cis.cache_clear()
+            with torch.device(x.device):
+                freqs_cis = wrapped_precompute_freqs_cis(
+                    self.config,
+                    self.rope_head_dim,
+                    rope_base,
+                    not self.compress_ratio,
+                    seqlen_local * self.cp_size,
+                    x.device,
+                )
+            precompute_freqs_cis.cache_clear()
+        else:
+            freqs_cis = wrapped_precompute_freqs_cis(
+                self.config,
+                self.rope_head_dim,
+                rope_base,
+                not self.compress_ratio,
+                seqlen_local * self.cp_size,
+                x.device,
+            )
         freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group)
         win = self.window_size
         ratio = self.compress_ratio
         rd = self.rope_head_dim
 
         q_after_wq_a = self.wq_a(x)[0]
-        qr = q = self.q_norm(q_after_wq_a)
+        if self.batch_invariant_mode:
+            from sglang.srt.batch_invariant_ops.batch_invariant_ops import (
+                rms_norm_batch_invariant,
+            )
+
+            q = rms_norm_batch_invariant(
+                q_after_wq_a,
+                self.q_norm.weight,
+                eps=self.eps,
+            )
+        else:
+            q = self.q_norm(q_after_wq_a)
+        qr = q
         q_after_wq_b = self.wq_b(q)[0]
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
         q_fp32 = q.float()
         q_square = q_fp32.square()
         q_square_mean = (
-            fixed_tree_mean_last_dim(q_square)
-            if self.batch_invariant_mode
-            else q_square.mean(-1, keepdim=True)
+            fixed_tree_mean_last_dim(q_square) if self.batch_invariant_mode else q_square.mean(-1, keepdim=True)
         )
         q = (q_fp32 * torch.rsqrt(q_square_mean + self.eps)).to(q.dtype)
         q = q.clone()
         apply_rotary_emb(q[..., -rd:], freqs_cis)
 
         kv_after_wkv = self.wkv(x)[0]
-        kv_vanilla = self.kv_norm(kv_after_wkv)
+        if self.batch_invariant_mode:
+            kv_vanilla = rms_norm_batch_invariant(
+                kv_after_wkv,
+                self.kv_norm.weight,
+                eps=self.eps,
+            )
+        else:
+            kv_vanilla = self.kv_norm(kv_after_wkv)
         kv_vanilla = kv_vanilla.clone()
         apply_rotary_emb(kv_vanilla[..., -rd:], freqs_cis)
         if self.use_fp8_qat:
@@ -330,7 +381,24 @@ class DeepSeekV4Attention(MegatronModule):
             )
         else:
             o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
-        x, _ = self.wo_b(o.flatten(2))
+        o_flat = o.flatten(2)
+        if self.batch_invariant_mode:
+            old_tp_size = self.wo_b.tp_size
+            old_parallel_mode = self.wo_b.parallel_mode
+            self.wo_b.tp_size = 1
+            self.wo_b.parallel_mode = None
+            try:
+                x, _ = self.wo_b(o_flat)
+            finally:
+                self.wo_b.tp_size = old_tp_size
+                self.wo_b.parallel_mode = old_parallel_mode
+            x = reduce_from_tensor_model_parallel_region(
+                x,
+                group=self.tp_group,
+                deterministic=True,
+            )
+        else:
+            x, _ = self.wo_b(o_flat)
 
         output = einops.rearrange(x, "b s d -> s b d")
 
@@ -357,6 +425,33 @@ def _dsv4_attention_module_spec(config, backend=None):
     )
 
 
+def _apply_dsv4_batch_invariant_spec(block_spec):
+    for layer_spec in block_spec.layer_specs:
+        layer_submodules = layer_spec.submodules
+        if layer_submodules.input_layernorm is not IdentityOp:
+            layer_submodules.input_layernorm = DeepSeekV4BatchInvariantRMSNorm
+        if layer_submodules.pre_mlp_layernorm is not IdentityOp:
+            layer_submodules.pre_mlp_layernorm = DeepSeekV4BatchInvariantRMSNorm
+
+        mlp_spec = layer_submodules.mlp
+        if not isinstance(mlp_spec, ModuleSpec) or mlp_spec.module not in (
+            MoELayer,
+            DeepSeekV4TopMoELayer,
+        ):
+            raise RuntimeError("DeepSeek-V4 batch-invariant mode requires Megatron MoELayer")
+        if mlp_spec.submodules.experts.module not in (
+            TEGroupedMLP,
+            DeepSeekV4TopTEGroupedMLP,
+        ):
+            raise RuntimeError("DeepSeek-V4 batch-invariant mode requires TEGroupedMLP experts")
+        mlp_spec.module = DeepSeekV4TopMoELayer
+        mlp_spec.submodules.router = DeepSeekV4TopKRouter
+        mlp_spec.submodules.experts.module = DeepSeekV4TopTEGroupedMLP
+
+    block_spec.layer_norm = DeepSeekV4BatchInvariantRMSNorm
+    return block_spec
+
+
 def get_dsv4_spec(args, config, vp_stage):
     """
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
@@ -371,6 +466,12 @@ def get_dsv4_spec(args, config, vp_stage):
 
     _eav_specs.get_experimental_attention_variant_module_spec = _patched_get_spec
     try:
-        return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
+        block_spec = get_transformer_block_with_experimental_attention_variant_spec(
+            config,
+            vp_stage=vp_stage,
+        )
+        if getattr(config, "batch_invariant_mode", False):
+            block_spec = _apply_dsv4_batch_invariant_spec(block_spec)
+        return block_spec
     finally:
         _eav_specs.get_experimental_attention_variant_module_spec = _orig_get_spec

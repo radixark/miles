@@ -15,16 +15,11 @@ def fixed_tree_mean_last_dim(x: torch.Tensor) -> torch.Tensor:
     """
     width = x.shape[-1]
     if width == 0 or width & (width - 1):
-        raise RuntimeError(
-            "fixed_tree_mean_last_dim requires a nonzero power-of-two last "
-            f"dimension, got {width}."
-        )
+        raise RuntimeError("fixed_tree_mean_last_dim requires a nonzero power-of-two last " f"dimension, got {width}.")
 
     reduced = x
     while reduced.shape[-1] > 1:
-        reduced = reduced.reshape(
-            *reduced.shape[:-1], reduced.shape[-1] // 2, 2
-        )
+        reduced = reduced.reshape(*reduced.shape[:-1], reduced.shape[-1] // 2, 2)
         reduced = reduced[..., 0] + reduced[..., 1]
     return reduced / width
 

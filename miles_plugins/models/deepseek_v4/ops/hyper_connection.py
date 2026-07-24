@@ -41,9 +41,7 @@ def _top_fused_hc_head_enabled() -> bool:
         return False
     if value in ("1", "true", "yes", "on"):
         return True
-    raise ValueError(
-        f"{_TOP_FUSED_HC_HEAD_ENV} must be a boolean value, got {value!r}"
-    )
+    raise ValueError(f"{_TOP_FUSED_HC_HEAD_ENV} must be a boolean value, got {value!r}")
 
 
 def _hc_head_reference(
@@ -60,9 +58,7 @@ def _hc_head_reference(
     flat_shape = (batch * seq, hc_mult, hidden)
     x_flat = x.reshape(flat_shape)
     x_compute = x_flat.flatten(1).float()
-    rsqrt = torch.rsqrt(
-        x_compute.square().mean(-1, keepdim=True) + norm_eps
-    )
+    rsqrt = torch.rsqrt(x_compute.square().mean(-1, keepdim=True) + norm_eps)
     mixes = F.linear(x_compute, hc_fn) * rsqrt
     pre = torch.sigmoid(mixes * hc_scale + hc_base) + hc_eps
     output = torch.sum(

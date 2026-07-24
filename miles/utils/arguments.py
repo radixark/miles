@@ -190,16 +190,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--allow-nondeterministic-top-parity-probe",
-                action="store_true",
-                default=False,
-                help=(
-                    "Diagnostic only: permit a true-on-policy prefill-logprob parity probe without "
-                    "enabling SGLang deterministic inference. This does not certify true on-policy "
-                    "behavior and must not be used for training."
-                ),
-            )
-            parser.add_argument(
                 "--train-env-vars",
                 type=json.loads,
                 default="{}",
@@ -1998,6 +1988,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
             )
             parser.add_argument(
+                "--ci-disable-weight-update-checker",
+                action="store_true",
+                help=(
+                    "Keep CI assertions enabled but skip the post-sync weight "
+                    "equality checker. Use this only when model-owned dynamic "
+                    "buffers cannot participate in the checker protocol."
+                ),
+            )
+            parser.add_argument(
                 "--ci-disable-kl-checker",
                 action="store_true",
             )
@@ -2615,7 +2614,12 @@ def miles_validate_args(args):
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
 
-    if args.ci_test and not args.debug_rollout_only and not args.debug_train_only:
+    if (
+        args.ci_test
+        and not args.ci_disable_weight_update_checker
+        and not args.debug_rollout_only
+        and not args.debug_train_only
+    ):
         args.check_weight_update_equal = True
 
     # always true on offload for colocate at the moment.

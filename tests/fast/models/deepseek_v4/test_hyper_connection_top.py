@@ -33,14 +33,8 @@ def test_top_fused_hc_head_flag_rejects_invalid_value(monkeypatch):
 
 def test_sglang_fused_hc_head_wrapper_uses_reference_backward(monkeypatch):
     x, hc_fn, hc_scale, hc_base = _inputs()
-    values = [
-        value.detach().requires_grad_(True)
-        for value in (x, hc_fn, hc_scale, hc_base)
-    ]
-    reference_values = [
-        value.detach().clone().requires_grad_(True)
-        for value in (x, hc_fn, hc_scale, hc_base)
-    ]
+    values = [value.detach().requires_grad_(True) for value in (x, hc_fn, hc_scale, hc_base)]
+    reference_values = [value.detach().clone().requires_grad_(True) for value in (x, hc_fn, hc_scale, hc_base)]
 
     def fake_fused_forward(
         x_value,

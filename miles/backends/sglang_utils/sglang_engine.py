@@ -3,6 +3,7 @@ import ipaddress
 import logging
 import multiprocessing
 import os
+from pathlib import Path
 import time
 from urllib.parse import quote
 
@@ -20,6 +21,33 @@ from miles.utils.http_utils import get_host_info
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 
 logger = logging.getLogger(__name__)
+
+
+def _dsv4_top_runtime_patches_enabled() -> bool:
+    value = os.environ.get("MILES_DSV4_TOP_RUNTIME_PATCHES", "0")
+    if value not in ("0", "1"):
+        raise ValueError("MILES_DSV4_TOP_RUNTIME_PATCHES must be 0 or 1, " f"got {value!r}")
+    return value == "1"
+
+
+def _launch_server_with_miles_patches(server_args: ServerArgs) -> None:
+    if _dsv4_top_runtime_patches_enabled():
+        # SGLang starts scheduler workers in fresh Python interpreters. Make
+        # the narrowly scoped sitecustomize bootstrap visible to those
+        # children so they receive the same runtime patches as this process.
+        bootstrap_dir = Path(__file__).with_name("runtime_bootstrap")
+        pythonpath = os.environ.get("PYTHONPATH")
+        os.environ["PYTHONPATH"] = f"{bootstrap_dir}{os.pathsep}{pythonpath}" if pythonpath else str(bootstrap_dir)
+
+        from miles.backends.sglang_utils.dsv4_top_patches import (
+            apply_dsv4_top_sglang_patches,
+        )
+
+        apply_dsv4_top_sglang_patches()
+
+    from sglang.srt.entrypoints.http_server import launch_server
+
+    launch_server(server_args)
 
 
 def get_base_gpu_id(args, rank):
@@ -54,11 +82,12 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
 
 
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
-    from sglang.srt.entrypoints.http_server import launch_server
-
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
-    p = multiprocessing.Process(target=launch_server, args=(server_args,))
+    p = multiprocessing.Process(
+        target=_launch_server_with_miles_patches,
+        args=(server_args,),
+    )
     p.start()
 
     if server_args.node_rank != 0:
@@ -213,30 +242,19 @@ class SGLangEngine(RayActor):
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
-        if os.environ.get("MILES_ALLOW_DSV4_DETERMINISTIC_BACKEND_PROBE", "0") == "1":
+        if _dsv4_top_runtime_patches_enabled():
             if not server_args_dict.get("enable_deterministic_inference", False):
-                raise ValueError(
-                    "MILES_ALLOW_DSV4_DETERMINISTIC_BACKEND_PROBE requires "
-                    "SGLang deterministic inference"
-                )
+                raise ValueError("MILES_DSV4_TOP_RUNTIME_PATCHES requires SGLang " "deterministic inference")
             import sglang.srt.server_args as sglang_server_args_module
 
             choices = sglang_server_args_module.DETERMINISTIC_ATTENTION_BACKEND_CHOICES
             if not isinstance(choices, list):
-                raise TypeError(
-                    "Expected mutable deterministic attention backend choices, "
-                    f"got {type(choices)!r}"
-                )
+                raise TypeError("Expected mutable deterministic attention backend choices, " f"got {type(choices)!r}")
             if "dsv4" not in choices:
-                sglang_server_args_module.DETERMINISTIC_ATTENTION_BACKEND_CHOICES = [
-                    *choices,
-                    "dsv4",
-                ]
-            logger.warning(
-                "Diagnostic-only: allowing the DSV4 attention backend through "
-                "SGLang's deterministic-inference validator. This compatibility "
-                "shim does not by itself certify the DSV4 backend as deterministic."
-            )
+                # SGLang's override validators import this list by reference. Mutate
+                # it in place so every already-imported validator observes DSV4.
+                choices.append("dsv4")
+            logger.info("Enabled the DSV4 attention backend for the explicit Miles TOP " "runtime contract.")
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:

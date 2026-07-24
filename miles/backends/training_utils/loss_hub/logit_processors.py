@@ -189,6 +189,7 @@ def get_log_probs_and_entropy(
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
             vocab_size=getattr(args, "vocab_size", None),
+            batch_invariant=getattr(args, "batch_invariant_mode", False),
         )
 
         if args.true_on_policy_mode and getattr(args, "true_on_policy_logprob_dtype", "training") == "fp32":
