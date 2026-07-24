@@ -17,6 +17,8 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
+from miles.utils import accelerator
+
 from megatron.core import mpu
 from megatron.core.enums import ModelType
 from megatron.core.pipeline_parallel import get_forward_backward_func
@@ -117,9 +119,9 @@ def _parse_args() -> tuple[argparse.Namespace, WorkerScriptArgs]:
 
 
 def _initialize_megatron(args: argparse.Namespace) -> None:
-    torch.distributed.init_process_group(backend="nccl")
+    torch.distributed.init_process_group(backend=accelerator.process_group_backend("nccl"))
     local_rank: int = int(os.environ.get("LOCAL_RANK", 0))
-    torch.cuda.set_device(local_rank)
+    accelerator.set_device(local_rank)
 
     args.hf_checkpoint = str(args.script_hf_checkpoint)
     args.__dict__.setdefault("megatron_to_hf_mode", "raw")

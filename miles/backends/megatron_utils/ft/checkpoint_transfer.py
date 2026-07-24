@@ -12,6 +12,7 @@ except ImportError:
 from megatron.core.dist_checkpointing.tensor_aware_state_dict import MCoreTensorAwareStateDict
 
 from miles.backends.megatron_utils.ft.in_memory_checkpoint import InMemoryCheckpointManager, save_to_memory
+from miles.utils import accelerator
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -216,5 +217,5 @@ def _create_transport(indep_dp: GroupInfo, timeout: timedelta) -> PGTransport:
     return PGTransport(
         pg=indep_dp.group,
         timeout=timeout,
-        device=torch.device("cuda"),
+        device=accelerator.device(),
     )

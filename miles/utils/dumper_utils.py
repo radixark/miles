@@ -12,7 +12,7 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
+import yaml
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.environ import enable_experimental_ft_trainer
@@ -26,6 +26,55 @@ class DumperPhase(enum.Enum):
     INFERENCE = "inference"
     FWD_ONLY = "fwd_only"
     FWD_BWD = "fwd_bwd"
+
+
+def _get_sglang_dumper_module():
+    try:
+        from sglang.srt.debug_utils import dumper as dumper_module
+    except ImportError as exc:
+        raise ImportError("SGLang dumper support requires sglang.srt.debug_utils.dumper.") from exc
+    return dumper_module
+
+
+def _get_rank() -> int:
+    try:
+        return _get_sglang_dumper_module()._get_rank()
+    except ImportError:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank()
+        return 0
+
+
+def _kv_pairs_to_dict(raw: Sequence[str] | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+
+    dumper_config = getattr(_get_sglang_dumper_module(), "DumperConfig", None)
+    if dumper_config is not None and hasattr(dumper_config, "_kv_pairs_to_dict"):
+        return dumper_config._kv_pairs_to_dict(raw)
+
+    parsed = {}
+    for item in raw:
+        if "=" not in item:
+            parsed[item] = True
+            continue
+        key, value = item.split("=", 1)
+        parsed[key] = yaml.safe_load(value)
+    return parsed
+
+
+def _require_modern_dumper():
+    dumper_module = _get_sglang_dumper_module()
+    dumper_config = getattr(dumper_module, "DumperConfig", None)
+    dumper_obj = getattr(dumper_module, "dumper", None)
+    required_methods = ("configure", "reset", "register_non_intrusive_dumper", "dump_model", "step")
+    if dumper_config is None or dumper_obj is None or any(not hasattr(dumper_obj, name) for name in required_methods):
+        raise RuntimeError(
+            "Dumper mode requires a SGLang dumper implementation with DumperConfig and "
+            "configure/reset/register_non_intrusive_dumper/dump_model/step APIs. "
+            "The SGLang source currently on PYTHONPATH provides an older lightweight dumper."
+        )
+    return dumper_config, dumper_obj
 
 
 # ------------------------------- SGLang -------------------------------------
@@ -101,6 +150,7 @@ class DumperMegatronUtil:
             args, phase=phase, rollout_id=rollout_id, store_prefix=store_prefix, overrides=self.overrides
         )
         if self.enabled:
+            _, dumper = _require_modern_dumper()
             dumper.register_non_intrusive_dumper(self._extract_model(model))
 
     def wrap_forward_step(self, forward_step_func: Callable) -> Callable:
@@ -123,6 +173,7 @@ class DumperMegatronUtil:
         # Weights/grads are a once-per-rollout end-state, so pin them to step 0 instead of
         # the running per-microbatch step. _configure already cleaned the scoped paths;
         # disable lazy cleanup after reset to preserve activations from this rollout.
+        _, dumper = _require_modern_dumper()
         dumper.reset()
         dumper.configure(cleanup_previous=False)
         dumper.dump_model(extracted_model, get_grad=get_grad)
@@ -167,6 +218,7 @@ class DumperMegatronUtil:
             merged["enable_output_file"] = False
             merged["enable_output_console"] = False
 
+        DumperConfig, dumper = _require_modern_dumper()
         full_config = DumperConfig(**merged)
         dumper.reset()
         # Wipe the whole phase dir only at run start (rollout 0). Gating on a
@@ -262,6 +314,7 @@ def _wrap_forward_step_with_stepping(forward_step_func: Callable) -> Callable:
     def _wrapped(*args: Any, **kwargs: Any) -> Any:
         nonlocal is_first_call
         if not is_first_call:
+            _, dumper = _require_modern_dumper()
             dumper.step()
         is_first_call = False
         return forward_step_func(*args, **kwargs)
@@ -332,7 +385,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
 
 def _get_phase_override_configs(args: Namespace, phase: DumperPhase) -> dict[str, Any]:
     raw = getattr(args, f"dumper_{phase.value}")
-    return {"enable": args.dumper_enable, **DumperConfig._kv_pairs_to_dict(raw)}
+    return {"enable": args.dumper_enable, **_kv_pairs_to_dict(raw)}
 
 
 def _is_phase_enabled(args: Namespace, phase: DumperPhase) -> bool:

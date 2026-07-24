@@ -20,6 +20,8 @@ from torch.distributed import ProcessGroup as BaseProcessGroup
 from torch.distributed import Work
 from torch.distributed.distributed_c10d import AllgatherOptions
 
+from miles.utils import accelerator
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,8 @@ def register_det_nccl_backend() -> None:
     deterministic fold. Idempotent.
     """
     global _backend_registered
+    if accelerator.is_musa_available():
+        raise RuntimeError("The deterministic NCCL debug backend is CUDA-only and is not supported on MUSA.")
     if _backend_registered:
         return
     dist.Backend.register_backend(DET_NCCL_BACKEND_NAME, _create_det_nccl_backend, extended_api=True, devices=["cuda"])

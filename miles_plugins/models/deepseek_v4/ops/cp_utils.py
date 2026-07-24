@@ -8,6 +8,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from miles.utils import accelerator
+
 
 @lru_cache(1)
 def _get_window_topk_idxs_ref(window_size: int, bsz: int, seqlen: int, start_pos: int):
@@ -26,7 +28,7 @@ def _get_window_topk_idxs_ref(window_size: int, bsz: int, seqlen: int, start_pos
             matrix = torch.where(matrix > base, -1, matrix)
             return matrix
 
-    return _inner().unsqueeze(0).expand(bsz, -1, -1).cuda()
+    return _inner().unsqueeze(0).expand(bsz, -1, -1).to(accelerator.device())
 
 
 @lru_cache(2)
@@ -44,7 +46,7 @@ def _get_compress_topk_idxs_ref(ratio: int, bsz: int, seqlen: int, start_pos: in
             matrix = torch.where(mask, -1, matrix + offset)
             return matrix
 
-    return _inner().unsqueeze(0).expand(bsz, -1, -1).cuda()
+    return _inner().unsqueeze(0).expand(bsz, -1, -1).to(accelerator.device())
 
 
 def all_gather_cp(tensor: Tensor, dim: int, cp_group: torch.distributed.ProcessGroup) -> Tensor:

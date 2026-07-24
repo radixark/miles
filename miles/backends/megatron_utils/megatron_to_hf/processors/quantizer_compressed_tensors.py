@@ -5,6 +5,8 @@ import re
 import torch
 import torch.nn as nn
 
+from miles.utils import accelerator
+
 try:
     import fake_int4_quant_cuda
 except ImportError:
@@ -90,7 +92,7 @@ class WQLinear_GEMM(nn.Module):
             awq_linear.bias = linear.bias.clone().half()
 
         pack_num = 32 // awq_linear.w_bit
-        device = torch.device(f"cuda:{torch.cuda.current_device()}")
+        device = accelerator.device()
 
         repeat_scales = scales.to(device).t().repeat_interleave(group_size, 1)
         if isinstance(zeros, torch.Tensor):

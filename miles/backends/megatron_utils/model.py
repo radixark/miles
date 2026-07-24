@@ -11,6 +11,8 @@ from functools import partial
 from pathlib import Path
 
 import torch
+from miles.utils import accelerator
+
 from megatron.core import mpu
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
@@ -622,8 +624,8 @@ def train_one_step(
 
 def finalize_model_grads_with_empty_cache(*args, **kwargs):
     # TODO: this is an ad-hoc method and we should figure out why the oom happens in the first place.
-    device = torch.cuda.current_device()
-    free, total = torch.cuda.mem_get_info(device)
+    device = accelerator.current_device()
+    free, total = accelerator.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
     return finalize_model_grads(*args, **kwargs)

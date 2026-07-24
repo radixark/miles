@@ -7,6 +7,8 @@ import time
 from urllib.parse import quote
 
 import requests
+from miles.utils import accelerator
+
 import sglang_router
 from packaging.version import parse
 from sglang.srt.server_args import ServerArgs
@@ -37,7 +39,7 @@ def get_base_gpu_id(args, rank):
 
 
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
+    cvd = os.environ.get(accelerator.visible_devices_env_key()) or os.environ.get("HIP_VISIBLE_DEVICES")
     if not cvd:
         return physical_gpu_id  # no remapping
     # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
@@ -49,7 +51,7 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
     if 0 <= physical_gpu_id < len(visible):
         return physical_gpu_id
     raise RuntimeError(
-        f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
+        f"GPU id {physical_gpu_id} is not valid under {accelerator.visible_devices_env_key()}={cvd}. "
         f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
     )
 

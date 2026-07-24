@@ -60,7 +60,7 @@ def _load_rollout_data(
     monkeypatch.setattr(data_utils, "process_rollout_data", lambda *args, **kwargs: rollout_data)
     monkeypatch.setattr(data_utils, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(data_utils.accelerator, "device", lambda: torch.device("cpu"))
 
     return data_utils.get_rollout_data(_args(qkv_format), object())
 
