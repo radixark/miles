@@ -20,6 +20,7 @@ from ray.actor import ActorHandle
 from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils import accelerator
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -330,7 +331,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 if use_pinned and nbytes <= max_bytes:
                     buf = free_q.get()  # blocks when all buffers are in flight -> backpressures the gather
                     buf[:nbytes].copy_(flat, non_blocking=True)
-                    torch.cuda.current_stream().synchronize()
+                    accelerator.current_stream().synchronize()
                     payload, pinned = buf, True
                 else:
                     payload, pinned = flat.cpu().numpy(), False
@@ -352,7 +353,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         counts = torch.tensor(
             [self.changed_bytes, self.total_bytes, self.wire_bytes],
             dtype=torch.int64,
-            device=torch.cuda.current_device(),
+            device=accelerator.device(),
         )
         dist.all_reduce(counts)
         changed, total, wire = counts.tolist()

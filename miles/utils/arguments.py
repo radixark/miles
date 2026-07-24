@@ -560,6 +560,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Interval for updating the weights",
             )
             parser.add_argument(
+                "--update-weight-master-port-base",
+                type=int,
+                default=23000,
+                help="Base port for update-weight distributed rendezvous. Use a non-ephemeral range.",
+            )
+            parser.add_argument(
+                "--update-weight-master-port-stride",
+                type=int,
+                default=100,
+                help="Port range stride reserved for each update-weight process group.",
+            )
+            parser.add_argument(
+                "--update-weight-master-port-retries",
+                type=int,
+                default=100,
+                help="Maximum number of update-weight rendezvous ports to scan per process group.",
+            )
+            parser.add_argument(
                 "--pause-generation-mode",
                 type=str,
                 choices=["abort", "retract", "in_place"],

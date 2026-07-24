@@ -8,6 +8,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils import accelerator
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.timer import timer
@@ -201,8 +202,7 @@ class DistBucketedWeightUpdateMixin:
         handles = []
         for i, (_name, param) in enumerate(named_tensors):
             params = [
-                torch.empty_like(param.data, device=torch.cuda.current_device())
-                for _ in range(get_parallel_state().ep.size)
+                torch.empty_like(param.data, device=accelerator.device()) for _ in range(get_parallel_state().ep.size)
             ]
             handle = dist.all_gather(params, param.data, group=get_parallel_state().ep.group, async_op=True)
             handles.append(handle)

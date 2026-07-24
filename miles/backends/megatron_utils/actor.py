@@ -13,6 +13,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.train_actor import TrainRayActor
+from miles.utils import accelerator
 from miles.utils import train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
@@ -510,7 +511,7 @@ class MegatronTrainRayActor(TrainRayActor):
             if self._enable_weight_backup:
                 self.weights_backuper.backup("actor")
             else:
-                torch.cuda.synchronize()
+                accelerator.synchronize()
 
             # Update ref model if needed
             if (
@@ -765,7 +766,7 @@ class MegatronTrainRayActor(TrainRayActor):
         group_name = "actor_critic"
         world_size = 2
         self._actor_critic_groups = init_process_group(
-            backend="nccl",
+            backend=accelerator.process_group_backend("nccl"),
             init_method=f"tcp://{master_address}:{master_port}",
             world_size=world_size,
             rank=0 if self.role == "actor" else 1,
