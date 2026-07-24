@@ -10,6 +10,8 @@ both forward and backward kernels (the legacy in-tree implementation only had
 a no-grad forward path — see ``_HYPER_CONNECTION_MIXER_NO_GRAD = True``).
 """
 
+import os
+
 import einops
 import torch
 import torch.nn.functional as F
@@ -30,6 +32,111 @@ from torch import Tensor
 # (see the legacy ``hc_split_sinkhorn`` kernel). TileKernels lets us pass the
 # same factor through ``post_mult_value``.
 _HC_POST_MULT_VALUE = 2.0
+_TOP_FUSED_HC_HEAD_ENV = "MILES_DSV4_TOP_FUSED_HC_HEAD"
+
+
+def _top_fused_hc_head_enabled() -> bool:
+    value = os.environ.get(_TOP_FUSED_HC_HEAD_ENV, "0").strip().lower()
+    if value in ("0", "false", "no", "off"):
+        return False
+    if value in ("1", "true", "yes", "on"):
+        return True
+    raise ValueError(f"{_TOP_FUSED_HC_HEAD_ENV} must be a boolean value, got {value!r}")
+
+
+def _hc_head_reference(
+    x: Tensor,
+    hc_fn: Tensor,
+    hc_scale: Tensor,
+    hc_base: Tensor,
+    norm_eps: float,
+    hc_eps: float,
+) -> Tensor:
+    """Differentiable reference used by the TOP fused kernel's backward."""
+    shape, dtype = x.shape, x.dtype
+    batch, seq, hc_mult, hidden = shape
+    flat_shape = (batch * seq, hc_mult, hidden)
+    x_flat = x.reshape(flat_shape)
+    x_compute = x_flat.flatten(1).float()
+    rsqrt = torch.rsqrt(x_compute.square().mean(-1, keepdim=True) + norm_eps)
+    mixes = F.linear(x_compute, hc_fn) * rsqrt
+    pre = torch.sigmoid(mixes * hc_scale + hc_base) + hc_eps
+    output = torch.sum(
+        pre.unsqueeze(-1) * x_compute.view(flat_shape),
+        dim=1,
+    )
+    return output.view(batch, seq, hidden).to(dtype)
+
+
+def _sglang_fused_hc_head_forward(
+    x: Tensor,
+    hc_fn: Tensor,
+    hc_scale: Tensor,
+    hc_base: Tensor,
+    norm_eps: float,
+    hc_eps: float,
+) -> Tensor:
+    from sglang.srt.layers.mhc_head import fused_hc_head
+
+    batch, seq, hc_mult, hidden = x.shape
+    return fused_hc_head(
+        x.reshape(-1, hc_mult, hidden).contiguous(),
+        hc_fn,
+        hc_scale,
+        hc_base,
+        norm_eps=norm_eps,
+        hc_eps=hc_eps,
+    ).view(batch, seq, hidden)
+
+
+class _SGLangFusedHCHead(torch.autograd.Function):
+    """SGLang-exact TOP forward with a differentiable reference backward."""
+
+    @staticmethod
+    def forward(
+        ctx,
+        x: Tensor,
+        hc_fn: Tensor,
+        hc_scale: Tensor,
+        hc_base: Tensor,
+        norm_eps: float,
+        hc_eps: float,
+    ) -> Tensor:
+        ctx.norm_eps = norm_eps
+        ctx.hc_eps = hc_eps
+        ctx.save_for_backward(x, hc_fn, hc_scale, hc_base)
+        return _sglang_fused_hc_head_forward(
+            x,
+            hc_fn,
+            hc_scale,
+            hc_base,
+            norm_eps,
+            hc_eps,
+        )
+
+    @staticmethod
+    def backward(ctx, grad_output: Tensor):
+        x_saved, fn_saved, scale_saved, base_saved = ctx.saved_tensors
+        with torch.enable_grad():
+            x_ref = x_saved.detach().requires_grad_(True)
+            fn_ref = fn_saved.detach().requires_grad_(True)
+            scale_ref = scale_saved.detach().requires_grad_(True)
+            base_ref = base_saved.detach().requires_grad_(True)
+            output_ref = _hc_head_reference(
+                x_ref,
+                fn_ref,
+                scale_ref,
+                base_ref,
+                ctx.norm_eps,
+                ctx.hc_eps,
+            )
+            grads = torch.autograd.grad(
+                output_ref,
+                (x_ref, fn_ref, scale_ref, base_ref),
+                grad_output,
+                allow_unused=False,
+            )
+        return (*grads, None, None)
 
 
 class HCHeadParams(MegatronModule):
@@ -143,6 +250,16 @@ class DeepSeekV4HyperConnectionUtil:
 
         dtype = x.dtype
         x_bf16 = (x if x.dtype == torch.bfloat16 else x.bfloat16()).contiguous()
+
+        if _top_fused_hc_head_enabled():
+            return _SGLangFusedHCHead.apply(
+                x_bf16,
+                hc_fn,
+                hc_scale,
+                hc_base,
+                self.norm_eps,
+                self.hc_eps,
+            ).to(dtype)
 
         # NOTE: TileKernels' ``mhc_head`` ends with ``mixes[..., :mhc_mult]``
         # which is a non-contiguous view that ``mhc_head_compute_mix_fwd_kernel``

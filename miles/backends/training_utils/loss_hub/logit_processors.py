@@ -54,10 +54,16 @@ def get_responses(
     if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
         logits = logits.div(args.rollout_temperature)
     if args.true_on_policy_mode:
-        if getattr(args, "bf16", False):
-            logits = logits.to(torch.bfloat16)
-        elif getattr(args, "fp16", False):
-            logits = logits.to(torch.float16)
+        logprob_dtype = getattr(args, "true_on_policy_logprob_dtype", "training")
+        if logprob_dtype == "training":
+            if getattr(args, "bf16", False):
+                logits = logits.to(torch.bfloat16)
+            elif getattr(args, "fp16", False):
+                logits = logits.to(torch.float16)
+        elif logprob_dtype == "fp32":
+            logits = logits.float()
+        else:
+            raise ValueError(f"Unsupported true-on-policy logprob dtype: {logprob_dtype}")
 
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
@@ -183,7 +189,17 @@ def get_log_probs_and_entropy(
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
             vocab_size=getattr(args, "vocab_size", None),
+            batch_invariant=getattr(args, "batch_invariant_mode", False),
         )
+
+        if args.true_on_policy_mode and getattr(args, "true_on_policy_logprob_dtype", "training") == "fp32":
+            # SGLang prefill computes full-vocabulary log_softmax in FP32, then
+            # transports selected-token scalars which Miles stores in the
+            # training precision. Match that cast order exactly.
+            if getattr(args, "bf16", False):
+                log_prob = log_prob.to(torch.bfloat16)
+            elif getattr(args, "fp16", False):
+                log_prob = log_prob.to(torch.float16)
 
         log_probs_list.append(log_prob.squeeze(-1))
         if with_entropy:

@@ -1,0 +1,490 @@
+# Version-pinned SGLang arithmetic contract for the DSV4 TOP B200 E2E.
+#
+# Source matching is intentionally fail-closed: a different SGLang revision
+# must be revalidated instead of silently falling back to off-policy kernels.
+---
+patches:
+- target: sglang.srt.models.deepseek_v4.MQALayer.refresh_attn_sink_cache
+  preamble: |
+    if self.compress_ratio == 0:
+        from sglang.srt.layers.deepseek_v4_rope import precompute_freqs_cis
+        self.freqs_cis = precompute_freqs_cis(
+            dim=self.qk_rope_head_dim,
+            seqlen=self.freqs_cis.shape[0],
+            original_seq_len=0,
+            base=10000,
+            factor=16,
+            beta_fast=32,
+            beta_slow=1,
+        ).to(self.freqs_cis.device)
+  edits: []
+- target: sglang.srt.models.deepseek_v4.MQALayer._compute_kv_to_cache
+  edits:
+  - match: |
+      token_to_kv_pool.set_swa_key_buffer_radix_fused_norm_rope(
+          layer_id=self.layer_id,
+          swa_loc=attn_backend.get_swa_out_cache_loc(forward_batch),
+          kv=kv,
+          kv_weight=self.kv_norm.weight.data,
+          eps=self.eps,
+          freqs_cis=self.freqs_cis,
+          positions=positions,
+      )
+    replacement: |
+      kv = self.kv_norm(kv)
+      fused_rope_inplace(
+          kv[..., -self.qk_rope_head_dim :].unsqueeze(1),
+          None,
+          self.freqs_cis,
+          positions=positions,
+      )
+      token_to_kv_pool.set_swa_key_buffer_radix_fused(
+          layer_id=self.layer_id,
+          swa_loc=attn_backend.get_swa_out_cache_loc(forward_batch),
+          cache_k=kv,
+      )
+- target: sglang.srt.models.deepseek_v4.MQALayer._compute_q_b
+  preamble: |
+    from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb
+    from miles_plugins.models.deepseek_v4.ops.utils import fixed_tree_mean_last_dim
+  edits:
+  - match: |
+      q, _ = self.wq_b(q)
+      q = q.view(-1, self.n_local_heads, self.head_dim)
+      if q_out is None:
+          q_out = torch.empty_like(q)
+      # Fused warp-per-(token, head) rmsnorm-self + RoPE + write to q_out.
+      fused_q_norm_rope(q, q_out, self.eps, self.freqs_cis, positions)
+      return q_out
+    replacement: |
+      q, _ = self.wq_b(q)
+      q = q.view(-1, self.n_local_heads, self.head_dim)
+      q_fp32 = q.float()
+      q = (
+          q_fp32
+          * torch.rsqrt(fixed_tree_mean_last_dim(q_fp32.square()) + self.eps)
+      ).to(q.dtype)
+      q = q.clone()
+      apply_rotary_emb(
+          q.unsqueeze(0)[..., -self.qk_rope_head_dim :],
+          self.freqs_cis[positions],
+      )
+      if q_out is not None:
+          q_out.copy_(q)
+          q = q_out
+      return q
+- target: sglang.srt.layers.attention.deepseek_v4_backend.DeepseekV4AttnBackend._forward_prefill_sparse
+  edits:
+  - match: |
+      o, _, _ = flash_mla_sparse_fwd(
+          q=q_flat,
+          kv=kv,
+          indices=combined_indices.unsqueeze(1),
+          sm_scale=self.softmax_scale,
+          d_v=self.head_dim_v,
+          attn_sink=attn_sink,
+          topk_length=combined_lens,
+      )
+      return o
+    replacement: |
+      from miles.backends.sglang_utils.dsv4_top_attention import (
+          maybe_dsv4_top_sparse_prefill,
+      )
+
+      o = maybe_dsv4_top_sparse_prefill(
+          model_runner=self.model_runner,
+          q_flat=q_flat,
+          kv=kv,
+          swa_slice=swa_slice,
+          combined_indices=combined_indices,
+          combined_lens=combined_lens,
+          compress_ratio=compress_ratio,
+          layer_id=layer_id,
+          attn_sink=attn_sink,
+          softmax_scale=self.softmax_scale,
+      )
+      if o is not None:
+          return o
+
+      o, _, _ = flash_mla_sparse_fwd(
+          q=q_flat,
+          kv=kv,
+          indices=combined_indices.unsqueeze(1),
+          sm_scale=self.softmax_scale,
+          d_v=self.head_dim_v,
+          attn_sink=attn_sink,
+          topk_length=combined_lens,
+      )
+      return o
+- target: sglang.srt.models.deepseek_v4.MQALayer.forward
+  preamble: |
+    from sglang.srt.distributed.parallel_state import get_tp_group
+    from sglang.srt.tp_invariant_ops import tree_all_reduce_sum
+    from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb
+  edits:
+  - match: |
+      fused_rope_inplace(
+          o[..., -self.qk_rope_head_dim :],
+          None,
+          self.freqs_cis,
+          positions=positions,
+          inverse=True,
+      )
+    replacement: |
+      apply_rotary_emb(
+          o.unsqueeze(0)[..., -self.qk_rope_head_dim :],
+          self.freqs_cis[positions],
+          inverse=True,
+      )
+  - match: |
+      else:
+          wo_a = self.wo_a.weight.view(self.n_local_groups, self.o_lora_rank, -1)
+          o = torch.einsum("tgd,grd->tgr", o, wo_a)
+    replacement: |
+      else:
+          wo_a = self.wo_a.weight.view(self.n_local_groups, self.o_lora_rank, -1)
+          if self.n_local_groups == 1:
+              # DSV4 TOP: match the trainer's batch-invariant
+              # single-group value-reconstruction GEMM exactly.
+              o = torch.mm(
+                  o.reshape(-1, o.size(-1)),
+                  wo_a[0].transpose(0, 1),
+              ).view(o.size(0), 1, self.o_lora_rank)
+          else:
+              o = torch.einsum("tgd,grd->tgr", o, wo_a)
+  - match: 'o, _ = self.wo_b(o.flatten(1))
+
+'
+    replacement: |
+      o_flat = o.flatten(1)
+      is_clean_reprefill = (
+          forward_batch.forward_mode.is_extend()
+          and forward_batch.is_prefill_only
+          and forward_batch.batch_size == 1
+          and forward_batch.extend_num_tokens == 96
+          and forward_batch.seq_lens.numel() == 1
+          and int(forward_batch.seq_lens[0].item()) == 96
+          and o_flat.shape == (96, 1024)
+      )
+      if self.layer_id in (0, 1, 2, 3) and is_clean_reprefill:
+          assert self.tp_size == 8, self.tp_size
+          assert get_tensor_model_parallel_world_size() == 8
+          assert not self.dsa_enable_prefill_cp
+          o, _ = self.wo_b(o_flat, skip_all_reduce=True)
+          o = tree_all_reduce_sum(
+              o,
+              device_group=get_tp_group().device_group,
+          )
+      else:
+          o, _ = self.wo_b(o_flat)
+- target: sglang.srt.models.deepseek_v4.DeepseekV4DecoderLayer.hc_pre
+  edits:
+  - match: 'shape, dtype = x.size(), x.dtype
+
+'
+    replacement: |
+      shape, dtype = x.size(), x.dtype
+      if x.shape[0] > 0:
+          from tile_kernels.modeling.mhc.ops import mhc_pre_big_fuse
+
+          assert x.dtype == torch.bfloat16, x.dtype
+          assert hc_fn.dtype == torch.float32, hc_fn.dtype
+          assert hc_scale.dtype == torch.float32, hc_scale.dtype
+          assert hc_base.dtype == torch.float32, hc_base.dtype
+          post, comb, y = mhc_pre_big_fuse(
+              residual=x.contiguous(),
+              fn=hc_fn.contiguous(),
+              mhc_scale=hc_scale.contiguous(),
+              mhc_base=hc_base.contiguous(),
+              rms_eps=self.rms_norm_eps,
+              mhc_pre_eps=self.hc_eps,
+              mhc_sinkhorn_eps=self.hc_eps,
+              mhc_post_mult_value=_MHC_POST_MULT_VALUE,
+              sinkhorn_repeat=self.hc_sinkhorn_iters,
+              n_splits=16,
+          )
+          return y.to(dtype), post.squeeze(-1), comb, False
+- target: sglang.srt.models.deepseek_v4.DeepseekV4DecoderLayer.hc_post
+  edits:
+  - match: |
+      if _is_npu:
+          return torch.ops.custom.npu_hc_post(x, residual, post, comb)
+    replacement: |
+      if _is_npu:
+          return torch.ops.custom.npu_hc_post(x, residual, post, comb)
+
+      from tile_kernels.modeling.mhc.ops import mhc_post as tk_mhc_post
+
+      assert x.dtype == torch.bfloat16, x.dtype
+      assert residual.dtype == torch.bfloat16, residual.dtype
+      assert post.dtype == torch.float32, post.dtype
+      assert comb.dtype == torch.float32, comb.dtype
+      assert residual.shape == (x.shape[0], self.hc_mult, x.shape[-1])
+      assert post.shape in (
+          (x.shape[0], self.hc_mult),
+          (x.shape[0], self.hc_mult, 1),
+      )
+      assert comb.shape == (x.shape[0], self.hc_mult, self.hc_mult)
+      post_4d = post.unsqueeze(-1) if post.ndim == 2 else post
+      return tk_mhc_post(
+          x.unsqueeze(0).contiguous(),
+          residual.unsqueeze(0).contiguous(),
+          post_4d.unsqueeze(0).contiguous(),
+          comb.unsqueeze(0).contiguous(),
+      ).squeeze(0)
+- target: sglang.srt.models.deepseek_v2.DeepseekV2MoE.forward_normal
+  edits:
+  - match: |
+      final_hidden_states = self.experts(
+          hidden_states,
+          topk_output,
+      )
+    replacement: |
+      from miles.backends.sglang_utils.dsv4_top_moe import (
+          dsv4_top_moe_context,
+      )
+
+      with dsv4_top_moe_context(
+          layer_id=self.layer_id,
+          hidden_states=hidden_states,
+          topk_ids=topk_output.topk_ids,
+      ) as _miles_dsv4_top_context:
+          final_hidden_states = self.experts(
+              hidden_states,
+              topk_output,
+          )
+      if _miles_dsv4_top_context.active:
+          if _miles_dsv4_top_context.routed_unscaled is None:
+              raise RuntimeError(
+                  "DSV4 TOP fused MoE did not produce trainer-order output"
+              )
+          _miles_dsv4_top_routed_global_trainer_order = (
+              _miles_dsv4_top_context.routed_unscaled
+              * self.routed_scaling_factor
+          ).to(_miles_dsv4_top_context.routed_unscaled.dtype)
+  - match: |
+      final_hidden_states = maybe_fuse_routed_scale_and_shared_add(
+          self.experts,
+          final_hidden_states,
+          None if self._shared_expert_tp1 else shared_output,
+          self.routed_scaling_factor,
+      )
+    replacement: |
+      if _miles_dsv4_top_context.active:
+          if self._shared_expert_tp1 or shared_output is None:
+              raise RuntimeError(
+                  "DSV4 TOP requires TP-sharded shared experts"
+              )
+          from sglang.srt.distributed.parallel_state import get_tp_group
+          from sglang.srt.tp_invariant_ops import tree_all_reduce_sum
+
+          _miles_dsv4_top_shared_global = tree_all_reduce_sum(
+              shared_output,
+              device_group=get_tp_group().device_group,
+          )
+          final_hidden_states = (
+              _miles_dsv4_top_routed_global_trainer_order
+              + _miles_dsv4_top_shared_global
+          )
+      else:
+          final_hidden_states = maybe_fuse_routed_scale_and_shared_add(
+              self.experts,
+              final_hidden_states,
+              None if self._shared_expert_tp1 else shared_output,
+              self.routed_scaling_factor,
+          )
+  - match: |
+      if self.tp_size > 1 and not should_skip_post_experts_all_reduce(
+          is_tp_path=True,
+          use_reduce_scatter=use_reduce_scatter,
+          should_allreduce_fusion=should_allreduce_fusion,
+      ):
+          final_hidden_states = tensor_model_parallel_all_reduce(final_hidden_states)
+    replacement: |
+      if (
+          not _miles_dsv4_top_context.active
+          and self.tp_size > 1
+          and not should_skip_post_experts_all_reduce(
+              is_tp_path=True,
+              use_reduce_scatter=use_reduce_scatter,
+              should_allreduce_fusion=should_allreduce_fusion,
+          )
+      ):
+          final_hidden_states = tensor_model_parallel_all_reduce(
+              final_hidden_states
+          )
+- target: sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe._fused_moe_kernel_sequence
+  edits:
+  - match: 'num_tokens = hidden_states.shape[0]
+
+'
+    replacement: |
+      num_tokens = hidden_states.shape[0]
+      from miles.backends.sglang_utils.dsv4_top_moe import (
+          get_dsv4_top_moe_context,
+      )
+
+      _miles_dsv4_top_context = get_dsv4_top_moe_context()
+  - match: 'if hooks and hooks.after_gate_up:
+
+'
+    replacement: |
+      if (
+          _miles_dsv4_top_context is not None
+          and _miles_dsv4_top_context.active
+      ):
+          from miles.backends.sglang_utils.dsv4_top_moe import (
+              replace_fused_moe_fc1,
+          )
+
+          replace_fused_moe_fc1(
+              hidden_states=hidden_states,
+              topk_ids=topk_ids,
+              intermediate_cache1=intermediate_cache1,
+              w1=w1,
+              w1_scale=w1_scale,
+              use_fp8_w8a8=use_fp8_w8a8,
+              block_shape=block_shape,
+              bias=b1,
+          )
+      if hooks and hooks.after_gate_up:
+  - match: |
+      not apply_router_weight_on_input and not no_combine,
+      1,
+    replacement: |
+      False,
+      1,
+  - match: 'if hooks and hooks.after_down:
+
+'
+    replacement: |
+      if (
+          _miles_dsv4_top_context is not None
+          and _miles_dsv4_top_context.active
+      ):
+          from miles.backends.sglang_utils.dsv4_top_moe import (
+              record_fused_moe_trainer_order,
+              replace_fused_moe_fc2,
+          )
+
+          replace_fused_moe_fc2(
+              topk_ids=topk_ids,
+              intermediate_cache2=intermediate_cache2,
+              intermediate_cache3=intermediate_cache3,
+              w2=w2,
+              w2_scale=w2_scale,
+              use_fp8_w8a8=use_fp8_w8a8,
+              block_shape=block_shape,
+              bias=b2,
+          )
+
+      # Match the trainer's FC2 ordering exactly. SGLang first stores
+      # BF16, then casts and applies routing weights separately.
+      if not apply_router_weight_on_input and not no_combine:
+          if use_fused_moe_sum_all_reduce:
+              raise RuntimeError(
+                  "DSV4 TOP does not support fused MoE sum/all-reduce"
+              )
+          intermediate_cache3.mul_(
+              topk_weights.to(
+                  dtype=intermediate_cache3.dtype
+              ).unsqueeze(-1)
+          )
+
+      if (
+          _miles_dsv4_top_context is not None
+          and _miles_dsv4_top_context.active
+      ):
+          if no_combine or use_fused_moe_sum_all_reduce:
+              raise RuntimeError(
+                  "DSV4 TOP requires the explicit routed combine path"
+              )
+          record_fused_moe_trainer_order(intermediate_cache3)
+      if hooks and hooks.after_down:
+- target: sglang.srt.layers.moe.moe_runner.triton_utils.fused_moe_triton_kernels.invoke_fused_moe_kernel
+  preamble: |
+    # Keep 128-wide FP8 scale groups while matching the trainer's K=32
+    # grouped-GEMM accumulation order.
+    if (
+        use_fp8_w8a8
+        and block_shape == [128, 128]
+        and B.shape[2] == 2048
+    ):
+        config = dict(config)
+        config["BLOCK_SIZE_K"] = 32
+  edits:
+  - match: 'A, A_scale = sglang_per_token_group_quant_fp8(A, block_k)
+
+'
+    replacement: |
+      # TE Float8BlockScaling uses 1x128 activation
+      # blocks with power-of-two (UE8M0-compatible) scales on Blackwell.
+      A, A_scale = sglang_per_token_group_quant_fp8(
+          A,
+          block_k,
+          scale_ue8m0=True,
+      )
+- target: sglang.srt.models.deepseek_v2.DeepseekV2MoE._forward_shared_experts
+  edits:
+  - match: |
+      if (hidden_states.shape[0] > 0) and (self.num_fused_shared_experts == 0):
+          return self.shared_experts(
+              hidden_states, gemm_output_zero_allocator=gemm_output_zero_allocator
+          )
+    replacement: |
+      if (hidden_states.shape[0] > 0) and (self.num_fused_shared_experts == 0):
+          # Keep the shared-expert FC2/activation arithmetic on the same
+          # common TOP path as the routed experts.
+          _miles_dsv4_top_contract_active = (
+              self.layer_id in (0, 1, 2, 3)
+              and hidden_states.shape == (96, 4096)
+          )
+          _miles_dsv4_top_previous_shared_contract = getattr(
+              self.shared_experts,
+              "_miles_dsv4_top_shared_contract_active",
+              False,
+          )
+          self.shared_experts._miles_dsv4_top_shared_contract_active = (
+              _miles_dsv4_top_contract_active
+          )
+          try:
+              return self.shared_experts(
+                  hidden_states,
+                  gemm_output_zero_allocator=gemm_output_zero_allocator,
+              )
+          finally:
+              self.shared_experts._miles_dsv4_top_shared_contract_active = (
+                  _miles_dsv4_top_previous_shared_contract
+              )
+- target: sglang.srt.models.deepseek_v2.DeepseekV2MLP.forward
+  edits:
+  - match: 'gate_up, _ = self.gate_up_proj(x)
+
+'
+    replacement: |
+      _miles_dsv4_top_shared_contract_active = bool(
+          getattr(self, "_miles_dsv4_top_shared_contract_active", False)
+      )
+      if _miles_dsv4_top_shared_contract_active:
+          assert isinstance(x, torch.Tensor) and x.shape == (96, 4096), type(x)
+      gate_up, _ = self.gate_up_proj(x)
+  - match: 'and self.down_proj.weight.dtype == torch.uint8
+
+'
+    replacement: |
+      and self.down_proj.weight.dtype == torch.uint8
+      and not _miles_dsv4_top_shared_contract_active
+  - match: |
+      x, _ = self.down_proj(
+          x,
+          skip_all_reduce=should_allreduce_fusion or use_reduce_scatter,
+      )
+    replacement: |
+      if _miles_dsv4_top_shared_contract_active:
+          # Recompute at an unambiguous boundary.  DeepSeek-V4's
+          # swiglu_limit branch bypasses the generic activation branch.
+          x = self.act_fn.forward_native(gate_up)
+      x, _ = self.down_proj(
+          x,
+          skip_all_reduce=should_allreduce_fusion or use_reduce_scatter,
+      )

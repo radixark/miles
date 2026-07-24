@@ -881,6 +881,7 @@ def calculate_log_probs_and_entropy(
     chunk_size: int = -1,
     true_on_policy: bool = False,
     vocab_size: int | None = None,
+    batch_invariant: bool = False,
 ):
     if true_on_policy:
         return _calculate_log_probs_and_entropy_true_on_policy(
@@ -890,6 +891,7 @@ def calculate_log_probs_and_entropy(
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
             vocab_size=vocab_size,
+            batch_invariant=batch_invariant,
         )
 
     logits = logits.contiguous()
@@ -939,6 +941,7 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     with_entropy: bool = False,
     entropy_requires_grad: bool = True,
     vocab_size: int | None = None,
+    batch_invariant: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """True-on-policy log-prob and entropy computation matching SGLang's scoring contract.
 
@@ -952,6 +955,9 @@ def _calculate_log_probs_and_entropy_true_on_policy(
             without attaching it to the autograd graph.
         vocab_size: Real tokenizer vocab size. If provided, padded logits are
             truncated after the full-vocab gather and before ``log_softmax``.
+        batch_invariant: Use SGLang's deterministic full-vocabulary
+            ``log_softmax`` implementation. Other TOP models retain the
+            existing PyTorch implementation.
 
     Returns:
         Tuple of ``(log_probs, entropy)`` where *log_probs* has shape ``[R]``
@@ -964,7 +970,14 @@ def _calculate_log_probs_and_entropy_true_on_policy(
 
     full_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
     _maybe_dump_top_logprob_backward("full_logits", full_logits)
-    log_probs_full = torch.log_softmax(full_logits, dim=-1)
+    if batch_invariant:
+        from sglang.srt.batch_invariant_ops.batch_invariant_ops import (
+            log_softmax as batch_invariant_log_softmax,
+        )
+
+        log_probs_full = batch_invariant_log_softmax(full_logits, dim=-1)
+    else:
+        log_probs_full = torch.log_softmax(full_logits, dim=-1)
     _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
     log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
     _maybe_dump_top_logprob_backward("log_prob", log_prob)

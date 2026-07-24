@@ -12,6 +12,12 @@ from ...sglang import (
 )
 
 
+def _use_dsv4_top_pow2_scales(args) -> bool:
+    return bool(
+        getattr(args, "true_on_policy_mode", False) and getattr(args, "experimental_attention_variant", None) == "dsv4"
+    )
+
+
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
     assert quantization_config["quant_method"] == "fp8"
     fmt = quantization_config.get("fmt", "e4m3")
@@ -106,15 +112,22 @@ def _quantize_param(args, name, weight, weight_block_size):
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
     FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
     FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
+    # SGLang's DSV4 FP8 path uses UE8M0-compatible power-of-two scales.
+    # Keep other TOP models on their existing conversion path.
+    force_pow_2_scales = _use_dsv4_top_pow2_scales(args)
     if weight_block_size is not None:
         if _get_scale_format(args, name, weight_block_size) == "ue8m0":
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         # TODO: this [128, 128] is hacky. need improve
-        elif per_block_cast_to_fp8 is not None and list(weight_block_size) == [128, 128]:
+        elif per_block_cast_to_fp8 is not None and list(weight_block_size) == [128, 128] and not force_pow_2_scales:
             qweight, scale = per_block_cast_to_fp8(weight)
         else:
-            qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
+            qweight, scale = blockwise_cast_to_fp8_triton(
+                weight,
+                weight_block_size,
+                force_pow_2_scales=force_pow_2_scales,
+            )
         scale_name = name.replace(".weight", ".weight_scale_inv")
     else:
         # per tensor quant

@@ -171,6 +171,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to enable true-on-policy mode.",
             )
             parser.add_argument(
+                "--true-on-policy-logprob-dtype",
+                type=str,
+                choices=["training", "fp32"],
+                default="training",
+                help=(
+                    "Precision used by the full-vocabulary log_softmax in true-on-policy mode. "
+                    "'training' preserves the current behavior (BF16/FP16 according to the "
+                    "training precision); 'fp32' matches SGLang prefill scoring when no SGLang "
+                    "TOP contract forces a lower-precision LM-head/logprob path."
+                ),
+            )
+            parser.add_argument(
                 "--recompute-logprobs-via-prefill",
                 action="store_true",
                 default=False,
@@ -2098,6 +2110,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
             )
             parser.add_argument(
+                "--ci-disable-weight-update-checker",
+                action="store_true",
+                help=(
+                    "Keep CI assertions enabled but skip the post-sync weight "
+                    "equality checker. Use this only when model-owned dynamic "
+                    "buffers cannot participate in the checker protocol."
+                ),
+            )
+            parser.add_argument(
                 "--ci-disable-kl-checker",
                 action="store_true",
             )
@@ -2425,6 +2446,13 @@ def miles_validate_args(args):
 
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
+        if getattr(args, "use_rollout_routing_replay", False):
+            raise ValueError(
+                "--recompute-logprobs-via-prefill is incompatible with "
+                "--use-rollout-routing-replay: the former defines the recomputed "
+                "prefill forward as the behavior-policy scoring path, while the latter "
+                "injects expert routes recorded by rollout/decode into the trainer."
+            )
 
     # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
     raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
@@ -2725,7 +2753,12 @@ def miles_validate_args(args):
         "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
     )
 
-    if args.ci_test and not args.debug_rollout_only and not args.debug_train_only:
+    if (
+        args.ci_test
+        and not args.ci_disable_weight_update_checker
+        and not args.debug_rollout_only
+        and not args.debug_train_only
+    ):
         args.check_weight_update_equal = True
 
     # always true on offload for colocate at the moment.
