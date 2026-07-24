@@ -108,12 +108,9 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       pip install --no-deps transformer_engine==2.17.0 && \
       pip install transformer_engine_cu13==2.17.0 && \
-      if ls /tmp/wheels/transformer_engine_torch-*.whl 2>/dev/null | grep -q .; then \
-        pip install /tmp/wheels/transformer_engine_torch-*.whl; \
-      else \
-        pip install nvidia-mathdx==25.6.0 && \
-        pip -v install --no-build-isolation transformer_engine_torch==2.17.0; \
-      fi; \
+      rm -f /tmp/wheels/transformer_engine*.whl && \
+      pip install nvidia-mathdx==25.6.0 && \
+      pip -v install --no-build-isolation transformer_engine_torch==2.17.0; \
     else \
       pip -v install --no-build-isolation "transformer_engine[pytorch]==2.17.0"; \
     fi
