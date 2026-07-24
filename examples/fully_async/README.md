@@ -7,7 +7,7 @@ The implementation lives in the core library at `miles/rollout/fully_async_rollo
 ## Files
 * `run-qwen3-4b-fully_async.sh`: example launch script with Qwen3‑4B.
 * `run-qwen3.5-4b-fully_async-eval.sh`: Qwen3.5‑4B with a dedicated eval fleet (fully-async eval).
-* `external_eval_fn.py`: eval fn for an external sglang server (the `eval_needs_snapshot` contract).
+* `external_eval_fn.py`: reference `CheckpointEvalFn` — launches/attaches an external sglang server and evals snapshots on it.
 * `checkpoint_eval_service.py`: standalone driver for the same eval fn — watches `--save-hf` output, no training job needed.
 
 ## Prerequisite

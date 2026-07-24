@@ -151,17 +151,22 @@ Two production-oriented variants:
   periodic HF checkpoints (requires `eval_interval % save_interval == 0`) — zero extra
   export cost. Pair with `--eval-overflow-policy skip` so a slow eval set can never
   stall training.
-- **External backend**: an eval fn that declares `eval_needs_snapshot = True` receives
-  each snapshot's path via `RolloutFnEvalInput.hf_dir` and owns delivering it to its
-  own backend — no GPU carve-out from the training job, and because the fn runs in-job
-  it reads the real training args (nothing hand-copied) and logs through the trainer.
-  `examples/fully_async/external_eval_fn.py` implements this against any
-  sglang-compatible HTTP server; set
-  `--eval-function-path examples.fully_async.external_eval_fn.ExternalSglangEvalFn`
-  and `MILES_EXTERNAL_EVAL_URL`. For eval that must outlive the trainer (post-hoc
-  backfill, `--colocate` runs), `examples/fully_async/checkpoint_eval_service.py`
-  drives the same fn from a standalone process watching `--save-hf` output,
-  restartable from its ledger — at the cost of hand-copied eval config.
+- **External backend**: subclass `CheckpointEvalFn` (`miles/rollout/checkpoint_eval.py`)
+  and implement `evaluate_checkpoint(checkpoint_dir, input)` — the trainer exports a
+  snapshot per eval point, hands over its path, and owns dispatch/logging/GC; raise
+  `EvalSkip(reason)` for an attributable skipped point. No GPU carve-out from the
+  training job, and because the fn runs in-job it reads the real training args
+  (nothing hand-copied) and logs through the trainer.
+  `examples/fully_async/external_eval_fn.py` is the reference implementation: it
+  launches its own sglang server on spare GPUs (`MILES_EXTERNAL_EVAL_GPUS=6,7`) or
+  attaches to one anywhere (`MILES_EXTERNAL_EVAL_URL`); set
+  `--eval-function-path examples.fully_async.external_eval_fn.ExternalSglangEvalFn`.
+  A non-sglang black box implements the same contract by calling out to its API and
+  mapping the response into `RolloutFnEvalOutput`. For eval that must outlive the
+  trainer (post-hoc backfill, `--colocate` runs),
+  `examples/fully_async/checkpoint_eval_service.py` drives the same fn from a
+  standalone process watching `--save-hf` output, restartable from its ledger — at
+  the cost of hand-copied eval config.
 
 Every skipped point is attributable from the dashboard: `eval/skipped_busy`,
 `eval/skipped_ckpt_missing`, `eval/skipped_unhealthy`, `eval/skipped_export_failed`

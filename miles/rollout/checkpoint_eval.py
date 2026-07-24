@@ -1,22 +1,34 @@
-"""Eval against a dedicated eval fleet pinned to HF checkpoint snapshots.
+"""Eval that consumes exported HF checkpoint snapshots.
 
-The eval fleet never joins training weight updates; weights reach it only through
-``update_weights_from_disk`` on a snapshot exported for a specific rollout_id.
+Two eval postures exist: against the live training engines (shared, pinned by
+blocking call order) or against a checkpoint file (pinned by the file itself).
+``CheckpointEvalFn`` is the contract for the second posture; ``FleetEvalFn`` is
+its in-job implementation (the dedicated fleet), external backends subclass it.
+Backends never join training weight updates; weights reach them only through a
+snapshot exported for a specific rollout_id.
 """
 
+import abc
 import asyncio
 import copy
+import inspect
 import logging
 from argparse import Namespace
 from typing import Protocol
 
+import ray
+
+from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnInput
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 
 __all__ = [
     "retarget_args",
     "make_eval_args",
     "make_eval_generate_state",
-    "EvalFleetSession",
+    "EvalSkip",
+    "CheckpointEvalFn",
+    "FleetEvalFn",
+    "resolve_checkpoint_eval_fn",
     "WeightTarget",
     "RayEngineTarget",
     "HttpServerTarget",
@@ -24,6 +36,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+EVAL_WEIGHT_LOAD_TIMEOUT_SECS = 600.0
 
 
 def retarget_args(args: Namespace, router_ip, router_port, num_gpus: int, num_gpus_per_engine: int) -> Namespace:
@@ -50,23 +64,146 @@ def make_eval_generate_state(args: Namespace) -> GenerateState:
     return GenerateState(make_eval_args(args))
 
 
-class EvalFleetSession:
-    """Eval-fleet ``GenerateState``, built lazily on first use and cached.
+class EvalSkip(Exception):
+    """Raise from a ``CheckpointEvalFn`` to skip this eval point with an attributable
+    reason (logged as ``eval/skipped_{reason}``) instead of counting as a crash."""
 
-    Lazy because the eval router only exists once the servers are up. Owned by
-    ``RolloutManager`` (not by individual ``RolloutFn`` instances) — it decides
-    once whether a given eval targets the fleet or the shared engines, and
-    passes the resulting state through ``RolloutFnEvalInput.generate_state``.
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class CheckpointEvalFn(abc.ABC):
+    """Contract for eval backends that consume HF checkpoint snapshots.
+
+    ``__init__`` prepares everything (launch or attach to your backend); each call
+    then receives a snapshot dir + eval info and returns the eval results. The
+    trainer owns the rest: per-point snapshot export, async dispatch, overflow
+    policy, logging at the snapshot's step, and snapshot GC.
+
+    Subclass and implement ``evaluate_checkpoint``; raise ``EvalSkip(reason)`` to
+    skip a point with proper accounting. Point ``--eval-function-path`` at the
+    subclass (requires ``train_async.py`` and a snapshot source: ``--eval-hf-dir``
+    or ``--save-hf``). See ``examples/fully_async/external_eval_fn.py`` for a full
+    implementation against an external sglang server; ``FleetEvalFn`` below is the
+    in-job flavor (constructed by ``RolloutManager``, not via the CLI flag).
     """
 
-    def __init__(self, args: Namespace):
+    @abc.abstractmethod
+    async def evaluate_checkpoint(self, checkpoint_dir: str, input: RolloutFnEvalInput) -> RolloutFnEvalOutput: ...
+
+    async def __call__(self, input: RolloutFnInput) -> RolloutFnEvalOutput:
+        assert input.evaluation, "CheckpointEvalFn only serves eval; keep the train fn on --rollout-function-path"
+        assert input.hf_dir is not None, (
+            "no snapshot was dispatched — checkpoint eval fns require train_async.py "
+            "and a snapshot source (--eval-hf-dir or --save-hf)"
+        )
+        return await self.evaluate_checkpoint(input.hf_dir, input)
+
+    def dispose(self) -> None:  # noqa: B027 — optional hook, deliberately a no-op default
+        """Tear down anything launched in ``__init__``. Called by RolloutManager.dispose()."""
+
+
+class FleetEvalFn(CheckpointEvalFn):
+    """The dedicated in-job eval fleet (``--eval-num-gpus``) as a checkpoint backend.
+
+    Pins every fleet engine to the snapshot (probing and reviving dead engines
+    first), then delegates generation to the inner eval fn with the fleet's
+    ``GenerateState`` — so custom eval fns work on the fleet unchanged. Privileged:
+    constructed by ``RolloutManager`` with the fleet's server handle, not via
+    ``--eval-function-path``.
+    """
+
+    def __init__(self, args: Namespace, srv, inner):
         self.args = args
+        self._srv = srv
+        self._inner = inner
+        # Lazy: the eval router only exists once the servers are up.
         self._state: GenerateState | None = None
 
-    def state(self) -> GenerateState:
+    async def evaluate_checkpoint(self, checkpoint_dir: str, input: RolloutFnEvalInput) -> RolloutFnEvalOutput:
+        try:
+            await self._mark_unreachable_engines()
+            await self._srv.recover()
+            await self._srv.wait_all_engines_alive()
+        except Exception as e:
+            logger.warning(f"Eval fleet unhealthy at rollout {input.rollout_id}: {e}")
+            raise EvalSkip("unhealthy") from e
+
+        targets = [RayEngineTarget(e.actor_handle) for e in self._srv.engines]
+        if not await pin_and_verify(
+            targets, checkpoint_dir, input.weight_version, timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS
+        ):
+            raise EvalSkip("pin_violation")
+
+        try:
+            await self._wait_router_ready()
+        except Exception as e:
+            logger.warning(f"Eval router not ready at rollout {input.rollout_id}: {e}")
+            raise EvalSkip("unhealthy") from e
+
         if self._state is None:
             self._state = make_eval_generate_state(self.args)
-        return self._state
+        output = self._inner(
+            RolloutFnEvalInput(
+                rollout_id=input.rollout_id,
+                generate_state=self._state,
+                weight_version=input.weight_version,
+                hf_dir=checkpoint_dir,
+            )
+        )
+        if inspect.iscoroutine(output):
+            output = await output
+        return output
+
+    async def _wait_router_ready(self, timeout: float = 180.0) -> None:
+        """After a revival the router 503s until its health cycle evicts the dead
+        worker; a retried one-token probe proves the route is usable before dispatch."""
+        from miles.utils.http_utils import wait_http_ok
+
+        await wait_http_ok(
+            f"http://{self._srv.router_ip}:{self._srv.router_port}/generate",
+            json_payload={"input_ids": [0], "sampling_params": {"max_new_tokens": 1, "temperature": 0}},
+            timeout=timeout,
+        )
+
+    async def _mark_unreachable_engines(self) -> None:
+        """Without fault tolerance nothing records an engine death (recover() only
+        restarts engines already marked stopped), so the fleet probes itself."""
+        for group in self._srv.server_groups:
+            for engine in group.all_engines:
+                if not engine.is_allocated:
+                    continue
+                try:
+                    await asyncio.wait_for(engine.actor_handle.get_weight_version.remote(), timeout=60)
+                except Exception as e:
+                    logger.warning(f"Eval engine unreachable ({e!r}); marking stopped for recovery")
+                    try:
+                        ray.kill(engine.actor_handle)
+                    except Exception:
+                        pass
+                    engine.mark_stopped()
+
+
+def resolve_checkpoint_eval_fn(args: Namespace, eval_fn, servers) -> CheckpointEvalFn | None:
+    """The single place that decides whether eval consumes snapshots, and with
+    which backend. None = shared-engine eval (the fn runs on its own state)."""
+    if args.eval_num_gpus > 0:
+        return FleetEvalFn(args, servers["eval"], inner=eval_fn)
+    if isinstance(eval_fn, CheckpointEvalFn):
+        assert args.eval_hf_dir is not None or args.save_hf is not None, (
+            "checkpoint eval fns need a snapshot source: set --eval-hf-dir (staging exports) "
+            "or --save-hf (reuse periodic HF checkpoints)."
+        )
+        assert args.eval_keep_snapshots >= args.eval_max_in_flight, (
+            f"--eval-keep-snapshots ({args.eval_keep_snapshots}) must be >= --eval-max-in-flight "
+            f"({args.eval_max_in_flight}), otherwise a pending eval's snapshot could be GC'd."
+        )
+        return eval_fn
+    assert not (
+        inspect.isclass(eval_fn) and issubclass(eval_fn, CheckpointEvalFn)
+    ), "checkpoint eval fns require the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
+    return None
 
 
 class WeightTarget(Protocol):

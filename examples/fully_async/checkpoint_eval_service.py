@@ -16,7 +16,7 @@ by this service.
 Example::
 
     python examples/fully_async/checkpoint_eval_service.py \\
-        --watch-dir /ckpt/exp/hf --hf-checkpoint /models/Qwen3.5-4B --tp 1 \\
+        --watch-dir /ckpt/exp/hf --hf-checkpoint /models/Qwen3.5-4B --gpus 0 --tp 1 \\
         --eval-prompt-data aime /data/aime-2024.jsonl --rm-type dapo --reward-key score
 """
 
@@ -25,8 +25,6 @@ import asyncio
 import json
 import logging
 import re
-import subprocess
-import sys
 import time
 from argparse import Namespace
 from pathlib import Path
@@ -34,9 +32,8 @@ from pathlib import Path
 from examples.fully_async.external_eval_fn import ExternalSglangEvalFn
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput
-from miles.rollout.checkpoint_eval import retarget_args
 from miles.utils.hf_config import is_complete_hf_export, looks_like_hf_checkpoint
-from miles.utils.http_utils import init_http_client, wait_http_ok
+from miles.utils.http_utils import init_http_client
 
 logger = logging.getLogger("checkpoint_eval_service")
 
@@ -70,6 +67,7 @@ EVAL_ARG_DEFAULTS = dict(
     use_opd=False,
     lora_rank=0,
     lora_adapter_path=None,
+    eval_model_path=None,  # the fn falls back to --hf-checkpoint
     log_passrate=False,
     log_reward_category=None,
     advantage_estimator="grpo",
@@ -95,9 +93,10 @@ def parse_service_args() -> Namespace:
         help="On startup/backlog: eval every unconsumed snapshot, or skip to the newest.",
     )
     parser.add_argument("--once", action="store_true", help="Process the current backlog and exit.")
-    # server
+    # server (the eval fn launches or attaches; pass one of --server-url / --gpus)
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="Base checkpoint (tokenizer/arch source).")
     parser.add_argument("--server-url", type=str, default=None, help="Attach to a running sglang server.")
+    parser.add_argument("--gpus", type=str, default=None, help="Launch our own server on these GPUs, e.g. '6,7'.")
     parser.add_argument("--num-gpus", type=int, default=1)
     parser.add_argument("--tp", type=int, default=1)
     parser.add_argument("--server-port", type=int, default=31000)
@@ -138,17 +137,17 @@ def parse_service_args() -> Namespace:
     return parser.parse_args()
 
 
-def build_eval_namespace(service_args: Namespace, server_ip: str, server_port: int) -> Namespace:
+def build_eval_namespace(service_args: Namespace) -> Namespace:
     from miles.utils.arguments import resolve_eval_datasets
 
     args = Namespace(**EVAL_ARG_DEFAULTS)
     for key, value in vars(service_args).items():
         setattr(args, key, value)
     args.eval_datasets = resolve_eval_datasets(args)
-    args.external_eval_url = f"http://{server_ip}:{server_port}"
-    args.external_eval_num_gpus = service_args.num_gpus
-    args.external_eval_num_gpus_per_engine = service_args.tp
-    return retarget_args(args, server_ip, server_port, service_args.num_gpus, service_args.tp)
+    # http client sizing (the fn retargets its own copy at the actual server)
+    args.rollout_num_gpus = service_args.num_gpus
+    args.rollout_num_gpus_per_engine = service_args.tp
+    return args
 
 
 class SnapshotLedger:
@@ -183,37 +182,6 @@ def find_ready_snapshots(watch_dir: Path, min_rollout_id: int, consumed: set[int
     return sorted(ready)
 
 
-def launch_server(service_args: Namespace) -> tuple[subprocess.Popen | None, str, int]:
-    if service_args.server_url is not None:
-        url = service_args.server_url.removeprefix("http://")
-        ip, port = url.split(":")
-        return None, ip, int(port)
-
-    cmd = [
-        sys.executable,
-        "-m",
-        "sglang.launch_server",
-        "--model-path",
-        service_args.hf_checkpoint,
-        "--tp",
-        str(service_args.tp),
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(service_args.server_port),
-        "--mem-fraction-static",
-        str(service_args.sglang_mem_fraction_static),
-        "--trust-remote-code",
-    ]
-    logger.info(f"Launching sglang server: {' '.join(cmd)}")
-    proc = subprocess.Popen(cmd)
-    return proc, "127.0.0.1", service_args.server_port
-
-
-async def wait_server_healthy(ip: str, port: int, timeout: float = 1800.0) -> None:
-    await wait_http_ok(f"http://{ip}:{port}/health_generate", timeout=timeout)
-
-
 async def evaluate_snapshot(fn: ExternalSglangEvalFn, args: Namespace, rollout_id: int, snapshot: Path) -> None:
     from miles.ray.rollout.metrics import log_eval_rollout_data
 
@@ -242,14 +210,20 @@ async def main() -> None:
     if not watch_dir.is_dir():
         raise FileNotFoundError(f"--watch-dir {watch_dir} does not exist")
 
-    proc, server_ip, server_port = launch_server(service_args)
-    try:
-        args = build_eval_namespace(service_args, server_ip, server_port)
-        init_http_client(args)
-        await wait_server_healthy(server_ip, server_port)
-        init_service_tracking(args)
+    args = build_eval_namespace(service_args)
+    init_http_client(args)
+    init_service_tracking(args)
 
-        fn = ExternalSglangEvalFn(RolloutFnConstructorInput(args=args, data_source=None))
+    fn = ExternalSglangEvalFn(
+        RolloutFnConstructorInput(args=args, data_source=None),
+        url=service_args.server_url,
+        gpus=service_args.gpus,
+        port=service_args.server_port,
+        mem_fraction_static=service_args.sglang_mem_fraction_static,
+        num_gpus=service_args.num_gpus,
+        num_gpus_per_engine=service_args.tp,
+    )
+    try:
         ledger = SnapshotLedger(watch_dir)
 
         while True:
@@ -269,8 +243,7 @@ async def main() -> None:
                 break
             await asyncio.sleep(service_args.poll_interval)
     finally:
-        if proc is not None:
-            proc.terminate()
+        fn.dispose()
 
 
 if __name__ == "__main__":

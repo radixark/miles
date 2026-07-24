@@ -5,52 +5,25 @@ from collections import deque
 
 import ray
 
-from miles.utils.environ import enable_experimental_rollout_refactor
-from miles.utils.misc import load_function
-
 logger = logging.getLogger(__name__)
 
 
-def eval_fn_needs_snapshot(args) -> bool:
-    """Whether the eval fn declares ``eval_needs_snapshot = True``: it delivers HF
-    snapshots to its own backend, so dispatch must export one per eval point."""
-    fn = load_function(args.eval_function_path)
-    return bool(getattr(fn, "eval_needs_snapshot", False))
-
-
 class EvalDispatcher:
-    """Fire-and-forget evals pinned to HF snapshots — against the dedicated eval
-    fleet (``--eval-num-gpus``) or an eval fn that owns weight delivery
-    (``eval_needs_snapshot``). Blocking shared-engine call otherwise. Failures
-    degrade to a skipped point, never a crash."""
+    """Fire-and-forget evals pinned to HF snapshots when the manager's eval fn
+    consumes checkpoints (dedicated fleet or external backend); blocking
+    shared-engine call otherwise. Failures degrade to a skipped point, never a
+    crash. The manager is the single authority on which posture is active."""
 
     def __init__(self, args, actor_model, rollout_manager):
         self.args = args
         self.actor_model = actor_model
         self.rollout_manager = rollout_manager
         self.pending: deque[tuple[int, ray.ObjectRef]] = deque()
-        fn_owns_delivery = eval_fn_needs_snapshot(args)
-        assert not (fn_owns_delivery and args.eval_num_gpus > 0), (
-            "eval fn declares eval_needs_snapshot (it delivers weights to its own backend); "
-            "--eval-num-gpus must be 0"
-        )
-        if fn_owns_delivery:
-            # Mirrors the --eval-num-gpus > 0 validation in arguments.py, which cannot
-            # see the fn attribute (eval_function_path is only resolved after it runs).
-            assert (
-                enable_experimental_rollout_refactor()
-            ), "eval_needs_snapshot requires the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
-            assert args.eval_hf_dir is not None or args.save_hf is not None, (
-                "eval_needs_snapshot requires a snapshot source: set --eval-hf-dir (staging exports) "
-                "or --save-hf (reuse periodic HF checkpoints)."
-            )
-            assert args.eval_keep_snapshots >= args.eval_max_in_flight, (
-                f"--eval-keep-snapshots ({args.eval_keep_snapshots}) must be >= --eval-max-in-flight "
-                f"({args.eval_max_in_flight}), otherwise a pending eval's snapshot could be GC'd."
-            )
-        self._snapshot_eval = fn_owns_delivery or args.eval_num_gpus > 0
+        self._snapshot_eval: bool | None = None
 
     async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> None:
+        if self._snapshot_eval is None:
+            self._snapshot_eval = await self.rollout_manager.eval_uses_snapshots.remote()
         if not self._snapshot_eval:
             await self.rollout_manager.eval.remote(rollout_id)
             return
