@@ -93,16 +93,24 @@ bytes written as bf16 can never be read back as fp32.
 The two reinforce each other: with the optimizer state already on disk, there is that
 much less to move when the actor is paused, so `sleep`/`wake_up` also get faster.
 
-Under `--colocate`, optimizer-state streaming on its own is not enough. Without
-`--offload-train`, the actor's weights and grad buffers stay resident through the rollout
-and the engine has nowhere to put its KV cache — the rollout engine fails to resume. If
-you are colocated and reach for streaming, keep actor offload on.
+Whether you need both depends on whether you are colocated.
+
+Without `--colocate` the actor owns its GPUs for the whole run, so nothing has to get out
+of the way and streaming stands on its own: `--optimizer-state-nvme-dir` alone is the
+right configuration, and actor offload buys you nothing.
+
+Under `--colocate` streaming alone is not enough. Without `--offload-train` the actor's
+weights and grad buffers stay resident through the rollout, the engine has nowhere to put
+its KV cache, and it fails to resume its memory. If you are colocated and reach for
+streaming, keep actor offload on.
 
 ## Choosing
 
-- Host RAM holds the actor: the default `--offload-train-target=cpu` is fastest. Do not
-  reach for disk.
-- Host RAM does not hold the actor: add `--offload-train-target=disk`.
+- Not colocated: you only ever need `--optimizer-state-nvme-dir`, and only if the
+  optimizer state does not fit the GPU during the step.
+- Colocated, host RAM holds the actor: the default `--offload-train-target=cpu` is
+  fastest. Do not reach for disk.
+- Colocated, host RAM does not hold the actor: add `--offload-train-target=disk`.
 - The optimizer state does not fit the GPU during the step: add
-  `--optimizer-state-nvme-dir` as well, and consider `--optimizer-state-nvme-moment-dtype
-  bf16` to claw back some of the I/O cost.
+  `--optimizer-state-nvme-dir`, and consider `--optimizer-state-nvme-moment-dtype bf16` to
+  claw back some of the I/O cost.
