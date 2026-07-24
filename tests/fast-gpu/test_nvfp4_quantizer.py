@@ -7,7 +7,10 @@ import pytest
 import torch
 from tools.convert_hf_to_nvfp4 import quantize_nvfp4 as tool_quantize_nvfp4
 from tools.convert_hf_to_nvfp4 import should_quantize as tool_should_quantize_nvfp4
-from transformer_engine.pytorch.custom_recipes.quantization_nvfp4 import NVFP4QuantizerRef
+try:
+    from transformer_engine.pytorch.custom_recipes.quantization_ref_nvfp4 import NVFP4QuantizerRef
+except ImportError:
+    from transformer_engine.pytorch.custom_recipes.quantization_nvfp4 import NVFP4QuantizerRef
 
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 import (
     NVFP4_GROUP_SIZE,
