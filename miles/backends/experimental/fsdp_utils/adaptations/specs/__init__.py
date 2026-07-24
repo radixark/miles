@@ -11,4 +11,4 @@ arch, create ``specs/<arch>.py`` registering only the hooks it needs and add it 
 An arch that needs none of these registers nothing. See the existing specs for examples.
 """
 
-from . import glm4_moe_lite, nemotron_h, qwen3_5_moe, qwen3_moe  # noqa: F401  (imports trigger registration)
+from . import glm4_moe_lite, nemotron_h, qwen3, qwen3_5_moe, qwen3_moe  # noqa: F401  (imports trigger registration)

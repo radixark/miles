@@ -689,18 +689,29 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None
 
     logger.info(f"FSDP MixedPrecision Policy: param_dtype={param_dtype}, reduce_dtype={reduce_dtype}")
 
+    default_mp_policy = MixedPrecisionPolicy(
+        param_dtype=param_dtype,
+        reduce_dtype=reduce_dtype,
+    )
     fsdp_kwargs = {
-        "mp_policy": MixedPrecisionPolicy(
-            param_dtype=param_dtype,
-            reduce_dtype=reduce_dtype,
-        ),
+        "mp_policy": default_mp_policy,
         "offload_policy": offload_policy,
         "mesh": mesh,
     }
 
     # fully_shard each layer first, then the root model
     for module in modules:
-        fully_shard(module, **fsdp_kwargs)
+        module_fsdp_kwargs = fsdp_kwargs
+        if getattr(module, "_fsdp_preserve_forward_input_dtype", False):
+            module_fsdp_kwargs = {
+                **fsdp_kwargs,
+                "mp_policy": MixedPrecisionPolicy(
+                    param_dtype=param_dtype,
+                    reduce_dtype=reduce_dtype,
+                    cast_forward_inputs=False,
+                ),
+            }
+        fully_shard(module, **module_fsdp_kwargs)
     fully_shard(model, **fsdp_kwargs)
 
     return model
