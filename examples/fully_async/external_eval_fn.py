@@ -23,10 +23,9 @@ Usage (the server can be launched however you like, on any host)::
 import os
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnEvalOutput
-from miles.rollout.checkpoint_eval import retarget_args
+from miles.rollout.checkpoint_eval import HttpServerTarget, pin_and_verify, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
-from miles.utils.weight_target import HttpServerTarget, pin_and_verify
 
 
 class ExternalSglangEvalFn:

@@ -23,7 +23,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     call_rollout_fn,
 )
-from miles.rollout.checkpoint_eval import EvalFleetSession
+from miles.rollout.checkpoint_eval import EvalFleetSession, RayEngineTarget, pin_and_verify
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
@@ -37,7 +37,6 @@ from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
 from miles.utils.tracking_utils.tracking import init_tracking
-from miles.utils.weight_target import RayEngineTarget, pin_and_verify
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
