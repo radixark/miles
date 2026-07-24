@@ -406,7 +406,18 @@ async def _multi_turn(
             # exit-code marker to parse.
             eval_result = await env.step(action_cls(action_type="evaluate"))
             eval_time = time.monotonic() - t0
-            reward = float(getattr(eval_result, "reward", 0.0) or 0.0)
+            # reward=None (with `error` set) means the scoring step itself
+            # errored server-side (toolkit timeout, staging I/O) -- no verdict
+            # was produced, which is not the same as tests failing. Propagate
+            # None so the sample is dropped, mirroring the older leg's
+            # missing-marker case, instead of coercing to a false-negative 0.
+            raw_reward = getattr(eval_result, "reward", None)
+            eval_error = _obs_field(eval_result, "error")
+            if raw_reward is None or eval_error:
+                logger.warning(f"OpenEnv tbench2 evaluate produced no verdict (error={eval_error!r})")
+                reward = None
+            else:
+                reward = float(raw_reward)
             testsh_rc = None
         else:
             # Older server: adapter-driven canonical exec + marker parse.

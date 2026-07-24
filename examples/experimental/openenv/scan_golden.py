@@ -21,6 +21,8 @@ import tarfile
 import time
 from pathlib import Path
 
+import tomllib
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import openenv_agent_function as oaf
 import openenv_daytona_agent_function as odaf
@@ -68,8 +70,6 @@ async def golden_one(task_id: str, capture_logs: bool = False) -> tuple[str, flo
                 # [solution].env exported, cwd = task workdir.
                 sol_env = "DEBIAN_FRONTEND=noninteractive"
                 try:
-                    import tomllib
-
                     cfg = tomllib.loads(
                         (Path(os.environ["OPENENV_TB2_TASKS_DIR"]) / task_id / "task.toml").read_text()
                     )

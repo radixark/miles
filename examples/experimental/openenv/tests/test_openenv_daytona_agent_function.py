@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import openenv_agent_function as oaf  # noqa: E402
 import openenv_daytona_agent_function as odaf  # noqa: E402
-from test_openenv_agent_function import _CLASSES, _FakeEnv, _FakePolicy  # noqa: E402
+from test_openenv_agent_function import _CLASSES, _FakeEnv, _FakePolicy, _FakeResult  # noqa: E402
 
 
 def run_async(coro):
@@ -60,6 +60,35 @@ def test_daytona_leg_dispatch(monkeypatch):
     assert not any("test.sh" in (a.command or "") for a in execs)
     assert not any("/tmp/tbench2_env_runs" in (a.command or "") for a in execs)
     assert metrics["turns"] == 2 and metrics["tool_calls"] == 1
+
+
+def test_daytona_leg_eval_error_yields_no_verdict(monkeypatch):
+    """A server-side scoring failure (`evaluate` comes back with error set and
+    no reward) surfaces as reward=None -- dropped by the training wrapper --
+    not coerced into a false-negative 0.0."""
+
+    class _EvalErrorEnv(_FakeEnv):
+        async def step(self, action):
+            if action.action_type == "evaluate":
+                self.actions.append(action)
+                res = _FakeResult()
+                res.observation.error = "toolkit timeout"
+                return res
+            return await super().step(action)
+
+    monkeypatch.setattr(oaf, "_load_tbench2", lambda: {"env": _EvalErrorEnv, "action": _CLASSES["action"]})
+
+    @asynccontextmanager
+    async def fake_episode_env(env_cls, metadata):
+        yield env_cls()
+
+    monkeypatch.setattr(odaf, "_episode_env", fake_episode_env)
+
+    reward, metrics = run_async(
+        odaf.run_episode(_FakePolicy(), "m", [{"role": "system", "content": "s"}], {}, {"task_id": "t1"})
+    )
+    assert reward is None
+    assert metrics["turns"] == 2  # the episode itself completed; only scoring failed
 
 
 # --- sandbox-create throttling ----------------------------------------------

@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any
 
 import openenv_agent_function as oaf
+import tb2_sandbox_daytona
 
 logger = logging.getLogger(__name__)
 
@@ -82,14 +83,13 @@ _create_sem: asyncio.Semaphore | None = None
 def _is_throttle_error(exc: BaseException) -> bool:
     """True when a sandbox create failed only because Daytona rate-limited it.
 
-    The daytona SDK is a lazy dependency of this module only (shared-server
-    users don't install it), so its exception classes cannot be imported at
-    module scope -- but by the time a create has FAILED, daytona has
-    necessarily been imported, so the typed check happens here. The SDK
-    normalizes HTTP 429 to DaytonaRateLimitError; keep the text match as a
+    The SDK normalizes HTTP 429 to DaytonaRateLimitError; the text match is a
     fallback for older SDKs and server messages that only surface as text
     (e.g. "ThrottlerException: Too Many Requests").
     """
+    # In-function import, deliberately: this is the class's only use site, it
+    # only runs on the failure path (where daytona is already in sys.modules,
+    # having just raised `exc`), and older SDKs lack the class entirely.
     try:
         from daytona.common.errors import DaytonaRateLimitError
 
@@ -109,8 +109,6 @@ def _get_create_sem() -> asyncio.Semaphore:
 
 
 def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
-    import tb2_sandbox_daytona
-
     daytona = tb2_sandbox_daytona.make_daytona()
     sandbox, url = tb2_sandbox_daytona.create_task_sandbox(
         daytona,
