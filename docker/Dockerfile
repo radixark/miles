@@ -174,18 +174,17 @@ RUN cd /sgl-workspace/sglang && \
 
 # =========================== Mooncake structured object store wheel ===========================
 
-# miles' mooncake rollout-data backend needs the structured object store API, merged upstream
-# (kvcache-ai/Mooncake#2907/#3013/#3023) but in no released wheel (<= 0.3.12). Until a release
-# ships it, install the pinned-commit build from the wheels release (miles-wheels `mooncake`
-# step) over the base image's mooncake.
-RUN set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
-    if [ -e "$1" ]; then \
-      pip install --force-reinstall --no-deps "$@" && \
+# Miles' Mooncake backend requires the structured object store API. Install the pinned
+# CUDA 13 wheel as one coherent Python/native package; CUDA 12 keeps its base Mooncake.
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
+      if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then \
+        echo "expected exactly one mooncake wheel for cu13/${TARGETARCH}" >&2; exit 1; \
+      fi && \
+      pip install --force-reinstall --no-deps "$1" && \
       python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"; \
-    elif [ "${ENABLE_CUDA_13}" = "1" ] && [ "${TARGETARCH}" = "amd64" ]; then \
-      echo "mooncake wheel missing from the wheels release for cu13/amd64" >&2; exit 1; \
     else \
-      echo "no mooncake wheel for this variant; keeping the base image's mooncake (no structured object store API)"; \
+      echo "CUDA 12 variant: keeping the base image's mooncake"; \
     fi
 
 # ====================================== Install main package ============================================

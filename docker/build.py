@@ -46,6 +46,7 @@ VARIANTS = {
         "build_args": {
             "ENABLE_CUDA_13": "0",
             "SGLANG_IMAGE_TAG": "v0.5.15-cu129",
+            # Keep the torch 2.11.0 ABI-matched release; cu129 rolling predates that rebuild.
             "WHEELS_TAG_X86": "cu129-x86_64-v0.5.12",
         },
     },
