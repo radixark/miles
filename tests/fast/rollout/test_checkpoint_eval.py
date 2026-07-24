@@ -707,8 +707,8 @@ def external_fn_env(monkeypatch):
     mod = importlib.import_module("examples.fully_async.external_eval_fn")
     calls = []
 
-    async def fake_pin(targets, hf_dir, weight_version):
-        calls.append(("pin", targets[0]._url, hf_dir, weight_version))
+    async def fake_pin(loads, reads, hf_dir, weight_version):
+        calls.append(("pin", hf_dir, weight_version))
         return not getattr(fake_pin, "fail", False)
 
     async def fake_run_eval(state, cache):
@@ -741,8 +741,9 @@ async def test_external_eval_fn_waits_pins_then_evals(external_fn_env):
 
     output = await fn(RolloutFnEvalInput(rollout_id=5, weight_version="5", hf_dir="/snap/step_5"))
 
+    assert fn._url == "http://eval-host:31000"
     assert external_fn_env.calls[0] == ("health", "http://eval-host:31000/health_generate")
-    assert external_fn_env.calls[1] == ("pin", "http://eval-host:31000", "/snap/step_5", "5")
+    assert external_fn_env.calls[1] == ("pin", "/snap/step_5", "5")
     assert external_fn_env.calls[2][0] == "eval"
     # The eval state targets the external server, built from the real training args.
     state = external_fn_env.calls[2][1]
@@ -787,74 +788,78 @@ def test_external_eval_fn_launches_own_server(external_fn_env, monkeypatch):
 
 
 class FakeTarget:
-    """Records calls; ``versions`` gives the version reported by read_version()
+    """Records calls; ``versions`` gives the version reported by read()
     on each successive call (repeats the last entry once exhausted)."""
 
     def __init__(self, versions, *, fail_loads: int = 0, hang: bool = False):
         self.versions = list(versions)
         self.fail_loads = fail_loads
         self.hang = hang
-        self.loads: list[tuple[str, str]] = []
+        self.load_calls = 0
         self._reads = 0
 
-    async def load_from_disk(self, hf_dir, weight_version):
+    async def load(self):
         if self.hang:
-            import asyncio
-
             await asyncio.sleep(10)
         if self.fail_loads > 0:
             self.fail_loads -= 1
             raise RuntimeError("transient load failure")
-        self.loads.append((hf_dir, weight_version))
+        self.load_calls += 1
 
-    async def read_version(self):
+    async def read(self):
         idx = min(self._reads, len(self.versions) - 1)
         self._reads += 1
         return self.versions[idx]
 
 
+async def pin_targets(targets, weight_version, **kwargs):
+    return await pin_and_verify(
+        [t.load for t in targets], [t.read for t in targets], "/snap", weight_version, **kwargs
+    )
+
+
 async def test_pin_and_verify_succeeds_first_try():
     target = FakeTarget(versions=["5"])
-    ok = await pin_and_verify([target], "/snap", "5")
+    ok = await pin_targets([target], "5")
     assert ok
-    assert target.loads == [("/snap", "5")]
+    assert target.load_calls == 1
 
 
 async def test_pin_and_verify_all_targets_must_match():
     a, b = FakeTarget(versions=["5"]), FakeTarget(versions=["4"])
-    ok = await pin_and_verify([a, b], "/snap", "5", retries=1)
+    ok = await pin_targets([a, b], "5", retries=1)
     assert not ok
 
 
 async def test_pin_and_verify_retries_on_version_mismatch_then_succeeds():
     # First read reports stale "4", second read (after a re-load) reports "5".
     target = FakeTarget(versions=["4", "5"])
-    ok = await pin_and_verify([target], "/snap", "5", retries=2)
+    ok = await pin_targets([target], "5", retries=2)
     assert ok
-    assert len(target.loads) == 2  # one load per attempt
+    assert target.load_calls == 2  # one load per attempt
 
 
 async def test_pin_and_verify_exhausts_retries_and_returns_false():
     target = FakeTarget(versions=["999"])
-    ok = await pin_and_verify([target], "/snap", "5", retries=2)
+    ok = await pin_targets([target], "5", retries=2)
     assert not ok
-    assert len(target.loads) == 2
+    assert target.load_calls == 2
 
 
 async def test_pin_and_verify_transient_load_error_is_retried():
     target = FakeTarget(versions=["5"], fail_loads=1)
-    ok = await pin_and_verify([target], "/snap", "5", retries=2)
+    ok = await pin_targets([target], "5", retries=2)
     assert ok
-    assert target.loads == [("/snap", "5")]  # the failed attempt logged nothing
+    assert target.load_calls == 1  # the failed attempt loaded nothing
 
 
 async def test_pin_and_verify_never_raises_on_timeout():
     target = FakeTarget(versions=["5"], hang=True)
-    ok = await pin_and_verify([target], "/snap", "5", timeout=0.05, retries=1)
+    ok = await pin_targets([target], "5", timeout=0.05, retries=1)
     assert not ok
 
 
 async def test_pin_and_verify_empty_targets_is_never_pinned():
     # No engines to confirm against: cannot claim the pin succeeded.
-    ok = await pin_and_verify([], "/snap", "5")
+    ok = await pin_targets([], "5")
     assert not ok

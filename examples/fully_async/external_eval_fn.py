@@ -27,10 +27,10 @@ import subprocess
 import sys
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnEvalOutput
-from miles.rollout.checkpoint_eval import CheckpointEvalFn, HttpServerTarget, pin_and_verify, retarget_args
+from miles.rollout.checkpoint_eval import CheckpointEvalFn, pin_and_verify, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
-from miles.utils.http_utils import wait_http_ok
+from miles.utils.http_utils import get, post, wait_http_ok
 
 
 class ExternalSglangEvalFn(CheckpointEvalFn):
@@ -83,7 +83,17 @@ class ExternalSglangEvalFn(CheckpointEvalFn):
         if not self._ready:
             await wait_http_ok(f"{self._url}/health_generate", timeout=1800.0)
             self._ready = True
-        if not await pin_and_verify([HttpServerTarget(self._url)], checkpoint_dir, input.weight_version):
+
+        async def load():
+            await post(
+                f"{self._url}/update_weights_from_disk",
+                {"model_path": checkpoint_dir, "weight_version": input.weight_version},
+            )
+
+        async def read_version():
+            return (await get(f"{self._url}/model_info")).get("weight_version")
+
+        if not await pin_and_verify([load], [read_version], checkpoint_dir, input.weight_version):
             raise RuntimeError(f"weight_version pin failed for {checkpoint_dir} (expected {input.weight_version})")
         if self._state is None:
             self._state = GenerateState(self._eval_args)

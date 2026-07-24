@@ -14,7 +14,6 @@ import copy
 import inspect
 import logging
 from argparse import Namespace
-from typing import Protocol
 
 import ray
 
@@ -29,9 +28,6 @@ __all__ = [
     "CheckpointEvalFn",
     "FleetEvalFn",
     "resolve_checkpoint_eval_fn",
-    "WeightTarget",
-    "RayEngineTarget",
-    "HttpServerTarget",
     "pin_and_verify",
 ]
 
@@ -130,9 +126,16 @@ class FleetEvalFn(CheckpointEvalFn):
             logger.warning(f"Eval fleet unhealthy at rollout {input.rollout_id}: {e}")
             raise EvalSkip("unhealthy") from e
 
-        targets = [RayEngineTarget(e.actor_handle) for e in self._srv.engines]
+        actors = [e.actor_handle for e in self._srv.engines]
         if not await pin_and_verify(
-            targets, checkpoint_dir, input.weight_version, timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS
+            [
+                lambda a=a: a.update_weights_from_disk.remote(checkpoint_dir, weight_version=input.weight_version)
+                for a in actors
+            ],
+            [lambda a=a: a.get_weight_version.remote() for a in actors],
+            checkpoint_dir,
+            input.weight_version,
+            timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
         ):
             raise EvalSkip("pin_violation")
 
@@ -206,48 +209,9 @@ def resolve_checkpoint_eval_fn(args: Namespace, eval_fn, servers) -> CheckpointE
     return None
 
 
-class WeightTarget(Protocol):
-    """Something that can load an HF snapshot from disk and report the
-    weight_version it currently has loaded."""
-
-    async def load_from_disk(self, hf_dir: str, weight_version: str) -> None: ...
-
-    async def read_version(self) -> str | None: ...
-
-
-class RayEngineTarget:
-    """Adapts a Ray sglang engine actor handle to ``WeightTarget``."""
-
-    def __init__(self, actor_handle):
-        self._actor = actor_handle
-
-    async def load_from_disk(self, hf_dir: str, weight_version: str) -> None:
-        await self._actor.update_weights_from_disk.remote(hf_dir, weight_version=weight_version)
-
-    async def read_version(self) -> str | None:
-        return await self._actor.get_weight_version.remote()
-
-
-class HttpServerTarget:
-    """Adapts a bare sglang HTTP server to ``WeightTarget``."""
-
-    def __init__(self, base_url: str):
-        self._url = base_url
-
-    async def load_from_disk(self, hf_dir: str, weight_version: str) -> None:
-        from miles.utils.http_utils import post
-
-        await post(f"{self._url}/update_weights_from_disk", {"model_path": hf_dir, "weight_version": weight_version})
-
-    async def read_version(self) -> str | None:
-        from miles.utils.http_utils import get
-
-        info = await get(f"{self._url}/model_info")
-        return info.get("weight_version")
-
-
 async def pin_and_verify(
-    targets: list[WeightTarget],
+    loads: list,
+    reads: list,
     hf_dir: str,
     weight_version: str,
     *,
@@ -256,6 +220,10 @@ async def pin_and_verify(
 ) -> bool:
     """Load ``hf_dir`` into every target and confirm all report ``weight_version``.
 
+    ``loads``/``reads`` are per-target zero-arg callables returning awaitables,
+    re-invoked on every attempt: load the snapshot into the target, and read back
+    the weight_version it actually has loaded (Ray actor calls, HTTP requests, ...).
+
     Never raises: transient failures (timeout, RPC error, mismatched version)
     are retried up to ``retries`` times, then this returns ``False`` so the
     caller can decide what a failed pin means for it (skip a point, raise, ...).
@@ -263,10 +231,8 @@ async def pin_and_verify(
     versions: list = []
     for attempt in range(retries):
         try:
-            await asyncio.wait_for(
-                asyncio.gather(*[t.load_from_disk(hf_dir, weight_version) for t in targets]), timeout=timeout
-            )
-            versions = await asyncio.wait_for(asyncio.gather(*[t.read_version() for t in targets]), timeout=timeout)
+            await asyncio.wait_for(asyncio.gather(*[load() for load in loads]), timeout=timeout)
+            versions = await asyncio.wait_for(asyncio.gather(*[read() for read in reads]), timeout=timeout)
         except Exception as e:
             logger.warning(f"Weight pin to {hf_dir} failed (attempt {attempt + 1}/{retries}): {e}")
             continue
