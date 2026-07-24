@@ -172,19 +172,25 @@ RUN cd /sgl-workspace/sglang && \
     fi && \
     pip install -e "python[all]" --no-deps
 
-# =========================== Mooncake structured object store overlay ===========================
+# =========================== Mooncake structured object store wheel ===========================
 
 # miles' mooncake rollout-data backend needs the structured object store API (FieldSchema,
 # export_ref/import_ref, unified put/get, release_result) merged upstream in
 # kvcache-ai/Mooncake#2907/#3013/#3023 but not present in any released wheel (<= 0.3.12,
-# whose release branch was cut before those merges). The API is a single pure-Python module
-# compatible with the C++ core the base image already ships, so overlay just that module.
-# Drop this layer once a mooncake release contains the API.
-ARG MOONCAKE_SOS_COMMIT=4dbe5a4c194669850e9abad61172e9878b245b15
-RUN MOONCAKE_DIR=$(python3 -c "import mooncake, os; print(os.path.dirname(mooncake.__file__))") && \
-    curl -fsSL --retry 3 "https://raw.githubusercontent.com/kvcache-ai/Mooncake/${MOONCAKE_SOS_COMMIT}/mooncake-wheel/mooncake/structured_object_store.py" \
-      -o "${MOONCAKE_DIR}/structured_object_store.py" && \
-    python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"
+# whose release branch was cut before those merges). The wheels release carries mooncake
+# built from a pinned master commit (the miles-wheels `mooncake` step); install it over the
+# base image's identically named dist. Wheels exist per (cuda, arch) release tag — cu13/amd64
+# is required, other variants keep the base image's mooncake until their wheel is built.
+# Drop this layer for a plain pip pin once a mooncake release contains the API.
+RUN set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
+    if [ -e "$1" ]; then \
+      pip install --force-reinstall --no-deps "$@" && \
+      python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"; \
+    elif [ "${ENABLE_CUDA_13}" = "1" ] && [ "${TARGETARCH}" = "amd64" ]; then \
+      echo "mooncake wheel missing from the wheels release for cu13/amd64" >&2; exit 1; \
+    else \
+      echo "no mooncake wheel for this variant; keeping the base image's mooncake (no structured object store API)"; \
+    fi
 
 # ====================================== Install main package ============================================
 
