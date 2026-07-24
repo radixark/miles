@@ -74,8 +74,10 @@ so they can be stored narrower than the fp32 tensors the optimizer computes on:
 ```
 
 `bf16` cuts streaming volume by a third (12 bytes per parameter to 8) and is the
-recommended setting when the step time matters. `fp32` is the default and is
-bit-identical to keeping the state on GPU. The fp8 options exist but are not recommended:
+recommended setting when the step time matters: on Qwen3.5-35B-A3B it took the state from
+46.1 GB to 30.8 GB per rank and the step from ~44s to ~24s, with rollout-vs-train logprob
+agreement unchanged. `fp32` is the default and is bit-identical to keeping the state on
+GPU. The fp8 options exist but are not recommended:
 `exp_avg_sq` needs per-block scaling to survive 8-bit storage, which this does not
 implement yet.
 
