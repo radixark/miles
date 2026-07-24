@@ -97,12 +97,7 @@ def execute():
     #     "--max-tokens-per-gpu 2048 "
     # )
 
-    true_on_policy_args = (
-        "--sglang-enable-deterministic-inference "
-        "--sglang-rl-on-policy-target fsdp "
-        "--deterministic-mode "
-        "--true-on-policy-mode "
-    )
+    true_on_policy_args = "--sglang-enable-deterministic-inference " "--deterministic-mode " "--true-on-policy-mode "
     true_on_policy_envs = {
         # TODO note: "Ring" in original RL PR, "allreduce:tree" in SGLang
         # "NCCL_ALGO": "Ring",
