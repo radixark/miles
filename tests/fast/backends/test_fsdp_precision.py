@@ -70,6 +70,7 @@ def test_qwen3_formal_true_on_policy_resolves_fp32_params_with_bf16_autocast():
     assert policy.reduce_dtype is torch.float32
     assert policy.autocast_dtype is torch.bfloat16
     assert policy.keep_fp32_master
+    assert policy.sync_dtype_resolver is not None
 
 
 @pytest.mark.parametrize(
@@ -93,6 +94,7 @@ def test_qwen3_formal_precision_does_not_leak_to_other_modes(model_type, true_on
 
     assert policy.param_dtype is torch.bfloat16
     assert policy.autocast_dtype is None
+    assert policy.sync_dtype_resolver is None
 
 
 def test_qwen3_formal_true_on_policy_rejects_fp16():
@@ -146,17 +148,17 @@ def test_precision_forward_context_uses_policy_autocast(monkeypatch):
     assert entered == [("cuda", torch.bfloat16)]
 
 
-def test_apply_fp32_master_records_on_disk_dtypes_before_cast():
+def test_apply_fp32_master_records_sync_dtypes_before_cast():
     m = torch.nn.Linear(4, 4).to(torch.bfloat16)
-    # an fp32-on-disk param (e.g. glm's e_score_correction_bias) must be recorded as fp32 so the
-    # weight-sync downcast keeps it fp32 -- casting it to bf16 would flip MoE routing.
     m.register_parameter("score_bias", torch.nn.Parameter(torch.zeros(4, dtype=torch.float32)))
 
-    m = apply_fp32_master(m)
+    m = apply_fp32_master(
+        m,
+        lambda name, checkpoint_dtype: torch.float32 if name == "weight" else checkpoint_dtype,
+    )
 
-    # the master is fully fp32...
     assert all(p.dtype == torch.float32 for p in m.parameters())
-    # ...but the recorded on-disk dtypes are the pre-cast ones (bf16 weight/bias, fp32 score_bias)
-    od = m._fsdp_sync_orig_dtypes
-    assert od["weight"] == torch.bfloat16 and od["bias"] == torch.bfloat16
-    assert od["score_bias"] == torch.float32
+    sync_dtypes = m._fsdp_sync_dtypes
+    assert sync_dtypes["weight"] == torch.float32
+    assert sync_dtypes["bias"] == torch.bfloat16
+    assert sync_dtypes["score_bias"] == torch.float32

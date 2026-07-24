@@ -32,11 +32,11 @@ from .adaptations.weight_bridge import get_param_transform
 from .dtensor import gather_full_param
 
 
-def _iter_sync_named_params(name, param, model_type, model, orig_dtypes=None):
+def _iter_sync_named_params(name, param, model_type, model, sync_dtypes=None):
     """Yield (name, tensor) pairs for the rollout engine, applying the registered WeightBridge transform
     for this model_type (e.g. unfusing batched MoE experts); params with no transform stream unchanged.
     ``model`` is the HF module the params came from (transforms resolve its checkpoint-conversion mapping);
-    ``orig_dtypes`` downcasts an fp32 master tensor back to its on-disk dtype."""
+    ``sync_dtypes`` casts an fp32 master tensor to the rollout contract's target dtype."""
     expand = get_param_transform(name, param, model_type)
     if expand is None:
         yield name, param
@@ -44,8 +44,8 @@ def _iter_sync_named_params(name, param, model_type, model, orig_dtypes=None):
 
     # Materialize the full (unsharded) tensor before the transform slices it.
     full = gather_full_param(param)
-    if orig_dtypes is not None:
-        target = orig_dtypes.get(name)
+    if sync_dtypes is not None:
+        target = sync_dtypes.get(name)
         if target is not None and full.dtype != target:
             full = full.to(target)
     yield from expand(name, full, model)
@@ -80,10 +80,9 @@ class UpdateWeight(abc.ABC):
         bucket = []
         bucket_size = 0
         model_type = getattr(getattr(self.model, "config", None), "model_type", "")
-        # FP32 masters are streamed in each parameter's original on-disk dtype.
-        orig_dtypes = getattr(self.model, "_fsdp_sync_orig_dtypes", None)
+        sync_dtypes = getattr(self.model, "_fsdp_sync_dtypes", None)
         for raw_name, raw_param in self.model.state_dict().items():
-            for name, param in _iter_sync_named_params(raw_name, raw_param, model_type, self.model, orig_dtypes):
+            for name, param in _iter_sync_named_params(raw_name, raw_param, model_type, self.model, sync_dtypes):
                 param_size = param.numel() * param.element_size()
                 if bucket and bucket_size + param_size >= self.args.update_weight_buffer_size:
                     self.wait_and_update_bucket_weights(bucket)
@@ -92,7 +91,7 @@ class UpdateWeight(abc.ABC):
                     bucket_size = 0
 
                 # passthrough params only (split experts are pre-cast); the target_dtype cast is deferred to post-wait
-                target_dtype = orig_dtypes.get(name) if orig_dtypes is not None else None
+                target_dtype = sync_dtypes.get(name) if sync_dtypes is not None else None
                 param = gather_full_param(param, async_op=True)
                 bucket.append((name, param, target_dtype))
                 bucket_size += param_size
@@ -114,7 +113,6 @@ class UpdateWeight(abc.ABC):
         for name, param, target_dtype in bucket:
             if hasattr(param, "wait"):
                 param = param.wait()
-            # downcast the fp32 master to its on-disk dtype (round-to-nearest-even reproduces disk bf16); None = no cast
             if target_dtype is not None and param.dtype != target_dtype:
                 param = param.to(target_dtype)
             resolved.append((name, param))

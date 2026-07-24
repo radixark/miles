@@ -27,7 +27,18 @@ def _resolve_precision(base_policy, hf_config, args):
         raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires bf16 training")
     if not base_policy.keep_fp32_master:
         raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires fp32 master weights")
-    return replace(base_policy, param_dtype=torch.float32, autocast_dtype=torch.bfloat16)
+    return replace(
+        base_policy,
+        param_dtype=torch.float32,
+        autocast_dtype=torch.bfloat16,
+        sync_dtype_resolver=_resolve_sync_dtype,
+    )
+
+
+def _resolve_sync_dtype(name, checkpoint_dtype):
+    from ...models.qwen3 import resolve_qwen3_dense_sync_dtype
+
+    return resolve_qwen3_dense_sync_dtype(name, checkpoint_dtype)
 
 
 def _instance_patch_applies(hf_config, args) -> bool:

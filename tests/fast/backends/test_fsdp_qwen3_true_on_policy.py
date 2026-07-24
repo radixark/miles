@@ -10,34 +10,18 @@ from miles.backends.experimental.fsdp_utils.adaptations.class_patches import (
     _MODEL_INSTANCE_PATCH_HOOKS,
     apply_model_instance_patches,
 )
-from miles.backends.experimental.fsdp_utils.adaptations.precision import apply_fp32_master
+from miles.backends.experimental.fsdp_utils.adaptations.precision import apply_fp32_master, resolve_precision_policy
 from miles.backends.experimental.fsdp_utils.models.qwen3 import (
-    Qwen3Attention,
-    Qwen3DecoderLayer,
     Qwen3FinalRMSNorm,
-    Qwen3RMSNorm,
-    Qwen3RotaryEmbedding,
-    _fp32_rms_norm,
     apply_qwen3_dense_true_on_policy_patch,
+    resolve_qwen3_dense_sync_dtype,
 )
-from miles.backends.experimental.fsdp_utils.update_weight_utils import UpdateWeight
 from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
 
 
-def _contract_fp32_param_names():
-    return {
-        "model.embed_tokens.weight",
-        "model.layers.0.input_layernorm.weight",
-        "model.layers.0.post_attention_layernorm.weight",
-        "model.layers.0.self_attn.q_norm.weight",
-        "model.layers.0.self_attn.k_norm.weight",
-    }
-
-
-@pytest.mark.parametrize("tie_word_embeddings", [False, True])
-def test_qwen3_patch_applies_contract_storage_dtypes_and_is_idempotent(tie_word_embeddings):
-    config = _tiny_config(tie_word_embeddings=tie_word_embeddings)
-    model = modeling_qwen3.Qwen3ForCausalLM(config).to(torch.bfloat16)
+def test_qwen3_patch_changes_only_final_norm_and_is_idempotent():
+    config = _tiny_config()
+    model = modeling_qwen3.Qwen3ForCausalLM(config)
     final_norm = model.model.norm
     final_norm_weight = final_norm.weight
 
@@ -47,27 +31,16 @@ def test_qwen3_patch_applies_contract_storage_dtypes_and_is_idempotent(tie_word_
     assert model.model.norm is final_norm
     assert model.model.norm.weight is final_norm_weight
     assert isinstance(model.model.norm, Qwen3FinalRMSNorm)
-    assert isinstance(model.model.rotary_emb, Qwen3RotaryEmbedding)
-    assert isinstance(model.model.layers[0], Qwen3DecoderLayer)
-    assert isinstance(model.model.layers[0].self_attn, Qwen3Attention)
-    assert isinstance(model.model.layers[0].input_layernorm, Qwen3RMSNorm)
-    assert isinstance(model.model.layers[0].post_attention_layernorm, Qwen3RMSNorm)
-    assert isinstance(model.model.layers[0].self_attn.q_norm, Qwen3RMSNorm)
-    assert isinstance(model.model.layers[0].self_attn.k_norm, Qwen3RMSNorm)
+    assert type(model.model.layers[0].input_layernorm) is modeling_qwen3.Qwen3RMSNorm
+    assert type(model.model.layers[0].post_attention_layernorm) is modeling_qwen3.Qwen3RMSNorm
+    assert type(model.model.layers[0].self_attn.q_norm) is modeling_qwen3.Qwen3RMSNorm
     assert "model.norm.weight" in model.state_dict()
-    assert (model.model.embed_tokens.weight is model.lm_head.weight) is tie_word_embeddings
-    for name, param in model.named_parameters():
-        expected_dtype = torch.float32 if name in _contract_fp32_param_names() else torch.bfloat16
-        assert param.dtype is expected_dtype, name
 
-    later_nonformal_model = modeling_qwen3.Qwen3ForCausalLM(config).to(torch.bfloat16)
+    later_nonformal_model = modeling_qwen3.Qwen3ForCausalLM(config)
     assert type(later_nonformal_model.model.norm) is modeling_qwen3.Qwen3RMSNorm
-    assert type(later_nonformal_model.model.layers[0]) is modeling_qwen3.Qwen3DecoderLayer
-    assert type(later_nonformal_model.model.layers[0].self_attn) is modeling_qwen3.Qwen3Attention
-    assert {param.dtype for param in later_nonformal_model.parameters()} == {torch.bfloat16}
 
 
-def _tiny_config(*, tie_word_embeddings=True):
+def _tiny_config():
     return Qwen3Config(
         vocab_size=32,
         hidden_size=16,
@@ -76,7 +49,6 @@ def _tiny_config(*, tie_word_embeddings=True):
         num_attention_heads=2,
         num_key_value_heads=1,
         head_dim=8,
-        tie_word_embeddings=tie_word_embeddings,
     )
 
 
@@ -137,119 +109,62 @@ def test_qwen3_final_norm_uses_contract_rounding_order():
     assert not torch.equal(output, cast_after_fp32_multiply)
 
 
-def test_qwen3_contract_rms_norm_cast_order():
-    norm = Qwen3RMSNorm(4, eps=1e-6).to(torch.float32)
-    norm.weight.data.copy_(torch.tensor([0.5, 1.0, 1.5, 2.0]))
-    bf16_hidden_states = torch.tensor([[0.25, -0.5, 1.0, -2.0]], dtype=torch.bfloat16)
-
-    variance = bf16_hidden_states.float().pow(2).mean(-1, keepdim=True)
-    normalized = bf16_hidden_states.float() * torch.rsqrt(variance + norm.variance_epsilon)
-    expected_qk = norm.weight * normalized.to(torch.bfloat16)
-    qk_output = norm(bf16_hidden_states)
-
-    assert qk_output.dtype is torch.float32
-    torch.testing.assert_close(qk_output, expected_qk, rtol=0, atol=0)
-
-    fp32_hidden_states = bf16_hidden_states.float() + 0.0001
-    decoder_output = _fp32_rms_norm(norm, fp32_hidden_states)
-    variance = fp32_hidden_states.pow(2).mean(-1, keepdim=True)
-    expected_decoder = norm.weight * (fp32_hidden_states * torch.rsqrt(variance + norm.variance_epsilon))
-
-    assert decoder_output.dtype is torch.float32
-    torch.testing.assert_close(decoder_output, expected_decoder, rtol=0, atol=0)
+@pytest.mark.parametrize(
+    "name",
+    [
+        "model.embed_tokens.weight",
+        "model.layers.0.input_layernorm.weight",
+        "model.layers.0.post_attention_layernorm.weight",
+        "model.layers.0.self_attn.q_norm.weight",
+        "model.layers.0.self_attn.k_norm.weight",
+    ],
+)
+def test_qwen3_formal_sync_preserves_fp32_contract_parameters(name):
+    assert resolve_qwen3_dense_sync_dtype(name, torch.bfloat16) is torch.float32
 
 
-class _CapturingUpdater(UpdateWeight):
-    def connect_rollout_engines(
-        self,
-        rollout_engines,
-        rollout_engine_lock,
-        engine_gpu_counts=None,
-        engine_gpu_offsets=None,
-    ):
-        pass
+@pytest.mark.parametrize(
+    "name",
+    [
+        "model.layers.0.self_attn.q_proj.weight",
+        "model.layers.0.mlp.gate_proj.weight",
+        "model.norm.weight",
+        "lm_head.weight",
+    ],
+)
+def test_qwen3_formal_sync_keeps_bf16_math_parameters_at_checkpoint_dtype(name):
+    assert resolve_qwen3_dense_sync_dtype(name, torch.bfloat16) is torch.bfloat16
 
-    def update_bucket_weights(self, named_tensors, weight_version=None):
-        self.sent = dict(named_tensors)
 
-
-@pytest.mark.parametrize("tie_word_embeddings", [False, True])
-def test_qwen3_fp32_master_sync_preserves_contract_weight_updates(tie_word_embeddings):
-    model = modeling_qwen3.Qwen3ForCausalLM(_tiny_config(tie_word_embeddings=tie_word_embeddings)).to(torch.bfloat16)
-    apply_qwen3_dense_true_on_policy_patch(model)
-    apply_fp32_master(model)
-
-    sync_dtypes = model._fsdp_sync_orig_dtypes
-    for name in _contract_fp32_param_names():
-        assert sync_dtypes[name] is torch.float32
-    assert sync_dtypes["model.layers.0.self_attn.q_proj.weight"] is torch.bfloat16
-    assert sync_dtypes["model.norm.weight"] is torch.bfloat16
-    assert sync_dtypes["lm_head.weight"] is torch.bfloat16
-
-    fp32_value = torch.tensor(0.9898309112)
-    embed_weight = model.model.embed_tokens.weight
-    norm_weight = model.model.layers[0].input_layernorm.weight
-    dense_weight = model.model.layers[0].self_attn.q_proj.weight
-    lm_head_weight = model.lm_head.weight
-    with torch.no_grad():
-        embed_weight.flatten()[0].copy_(fp32_value)
-        norm_weight.flatten()[0].copy_(fp32_value)
-        dense_weight.flatten()[0].copy_(fp32_value)
-        lm_head_weight.flatten()[0].copy_(fp32_value)
-
-    updater = _CapturingUpdater(SimpleNamespace(), model)
-    updater.wait_and_update_bucket_weights(
-        [
-            ("model.embed_tokens.weight", embed_weight, sync_dtypes["model.embed_tokens.weight"]),
-            (
-                "model.layers.0.input_layernorm.weight",
-                norm_weight,
-                sync_dtypes["model.layers.0.input_layernorm.weight"],
-            ),
-            (
-                "model.layers.0.self_attn.q_proj.weight",
-                dense_weight,
-                sync_dtypes["model.layers.0.self_attn.q_proj.weight"],
-            ),
-            ("lm_head.weight", lm_head_weight, sync_dtypes["lm_head.weight"]),
-        ]
+def test_qwen3_formal_sync_preserves_post_update_fp32_values():
+    model = modeling_qwen3.Qwen3ForCausalLM(_tiny_config()).to(torch.bfloat16)
+    policy = resolve_precision_policy(
+        model.config,
+        SimpleNamespace(
+            fp16=False,
+            keep_fp32_master=True,
+            true_on_policy_mode=True,
+            sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+        ),
     )
+    model = apply_fp32_master(model, policy.sync_dtype_resolver)
 
-    assert updater.sent["model.embed_tokens.weight"].dtype is torch.float32
-    assert updater.sent["model.embed_tokens.weight"].flatten()[0] == fp32_value
-    assert updater.sent["model.layers.0.input_layernorm.weight"].dtype is torch.float32
-    assert updater.sent["model.layers.0.input_layernorm.weight"].flatten()[0] == fp32_value
-    assert updater.sent["lm_head.weight"].dtype is torch.bfloat16
-    assert updater.sent["lm_head.weight"].flatten()[0].float() != fp32_value
-    assert updater.sent["model.layers.0.self_attn.q_proj.weight"].dtype is torch.bfloat16
-    assert updater.sent["model.layers.0.self_attn.q_proj.weight"].flatten()[0].float() != fp32_value
-
-
-def test_qwen3_ref_update_preserves_actor_master_weights():
-    actor = modeling_qwen3.Qwen3ForCausalLM(_tiny_config()).to(torch.bfloat16)
-    apply_qwen3_dense_true_on_policy_patch(actor)
-    apply_fp32_master(actor)
-
-    fp32_value = torch.tensor(0.9898309112)
+    fp32_name = "model.layers.0.input_layernorm.weight"
+    bf16_name = "model.norm.weight"
+    params = dict(model.named_parameters())
     with torch.no_grad():
-        actor.model.embed_tokens.weight.flatten()[0].copy_(fp32_value)
-        actor.model.layers[0].input_layernorm.weight.flatten()[0].copy_(fp32_value)
-        actor.model.layers[0].self_attn.q_proj.weight.flatten()[0].copy_(fp32_value)
+        params[fp32_name].add_(1e-6)
+        params[bf16_name].add_(1e-6)
 
-    ref = modeling_qwen3.Qwen3ForCausalLM(_tiny_config()).to(torch.bfloat16)
-    apply_qwen3_dense_true_on_policy_patch(ref)
-    apply_fp32_master(ref)
-    ref.load_state_dict(actor.state_dict())
+    sync_dtypes = model._fsdp_sync_dtypes
+    fp32_synced = params[fp32_name].to(sync_dtypes[fp32_name])
+    bf16_synced = params[bf16_name].to(sync_dtypes[bf16_name])
 
-    assert ref.model.embed_tokens.weight.dtype is torch.float32
-    assert ref.model.embed_tokens.weight.flatten()[0] == fp32_value
-    assert ref.model.layers[0].input_layernorm.weight.dtype is torch.float32
-    assert ref.model.layers[0].input_layernorm.weight.flatten()[0] == fp32_value
-    assert ref.model.layers[0].self_attn.q_proj.weight.dtype is torch.float32
-    assert ref.model.layers[0].self_attn.q_proj.weight.flatten()[0] == fp32_value
+    assert torch.equal(fp32_synced, params[fp32_name])
+    assert not torch.equal(bf16_synced.to(torch.float32), params[bf16_name])
 
 
-def test_qwen3_ref_model_has_uniform_fp32_storage_before_fsdp(monkeypatch):
+def test_qwen3_ref_model_uses_fp32_master_storage(monkeypatch):
     from miles.backends.experimental.fsdp_utils import actor as actor_module
 
     config = _tiny_config()
@@ -263,11 +178,7 @@ def test_qwen3_ref_model_has_uniform_fp32_storage_before_fsdp(monkeypatch):
     actor = object.__new__(actor_module.FSDPTrainRayActor)
     actor.args = args
     actor.hf_config = config
-    actor.precision_policy = SimpleNamespace(
-        keep_fp32_master=True,
-        param_dtype=torch.float32,
-        reduce_dtype=torch.float32,
-    )
+    actor.precision_policy = resolve_precision_policy(config, args)
     actor._get_init_weight_context_manager = lambda: nullcontext
     actor.get_model_cls = lambda: SimpleNamespace(
         from_pretrained=lambda *args, **kwargs: modeling_qwen3.Qwen3ForCausalLM(config).to(torch.bfloat16)
@@ -279,7 +190,7 @@ def test_qwen3_ref_model_has_uniform_fp32_storage_before_fsdp(monkeypatch):
 
     def capture_apply_fsdp2(model, **kwargs):
         captured["dtypes"] = {param.dtype for param in model.parameters()}
-        captured["sync_dtypes"] = model._fsdp_sync_orig_dtypes
+        captured["sync_dtypes"] = model._fsdp_sync_dtypes
         return model
 
     monkeypatch.setattr(actor_module.os.path, "isdir", lambda path: True)
