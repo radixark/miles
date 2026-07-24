@@ -702,15 +702,12 @@ def move_torch_optimizer(optimizer, device):
     torch.cuda.synchronize()
 
 
-def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
-    """Apply FSDP v2 to the model.
+def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None, reduce_dtype=None):
+    """Apply FSDP2 (fully_shard) to the model.
 
-    Args:
-        model: The model to wrap with FSDP
-        mesh: Optional DeviceMesh for FSDP. If None, uses all ranks.
-        cpu_offload: If True, offload parameters, gradients, and optimizer states
-            to CPU. The optimizer step will run on CPU. (Default: False)
-        args: Arguments containing precision settings (fp16/bf16)
+    ``cpu_offload`` offloads params/grads/optimizer to CPU (the optimizer step runs on CPU).
+    ``param_dtype``/``reduce_dtype`` are the MixedPrecisionPolicy dtypes; None falls back to the
+    args-based default (bf16 / fp32, or fp16 param when args.fp16).
 
     Ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py
     """
@@ -728,12 +725,10 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
         or (isinstance(module, torch.nn.Embedding) and not model.config.tie_word_embeddings)
     ]
 
-    # Determine precision policy based on args
-    param_dtype = torch.bfloat16  # Default to bf16 as before
-    reduce_dtype = torch.float32
-
-    if args.fp16:
-        param_dtype = torch.float16
+    if param_dtype is None:
+        param_dtype = torch.float16 if args.fp16 else torch.bfloat16
+    if reduce_dtype is None:
+        reduce_dtype = torch.float32
 
     logger.info(f"FSDP MixedPrecision Policy: param_dtype={param_dtype}, reduce_dtype={reduce_dtype}")
 
@@ -746,11 +741,9 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None):
         "mesh": mesh,
     }
 
-    # Apply FSDP to each module (offload_policy=None is equivalent to not passing it)
+    # fully_shard each layer first, then the root model
     for module in modules:
         fully_shard(module, **fsdp_kwargs)
-
-    # Apply FSDP to the top-level model
     fully_shard(model, **fsdp_kwargs)
 
     return model
