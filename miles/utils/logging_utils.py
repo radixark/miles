@@ -3,6 +3,8 @@ import os
 import re
 import sys
 import warnings
+from miles.utils.audit_utils.event_logger.logger import EventLogger, is_event_logger_initialized, set_event_logger
+from miles.utils.audit_utils.process_identity import ProcessIdentity
 
 _LOGGER_CONFIGURED = False
 
@@ -11,8 +13,17 @@ logger = logging.getLogger(__name__)
 _FATAL_ASYNC_PATTERN = "coroutine .* was never awaited"
 
 
+def configure_logger(args, *, source: ProcessIdentity) -> None:
+    name = source.to_name()
+    configure_logger_raw(name)
+
+    if (event_dir := getattr(args, "save_debug_event_data", None)) is not None:
+        if not is_event_logger_initialized():
+            set_event_logger(EventLogger(log_dir=event_dir, file_name=f"{name}.jsonl", source=source))
+
+
 # ref: SGLang
-def configure_logger(prefix: str = ""):
+def configure_logger_raw(name: str = "") -> None:
     global _LOGGER_CONFIGURED
     if _LOGGER_CONFIGURED:
         return
@@ -21,7 +32,7 @@ def configure_logger(prefix: str = ""):
 
     logging.basicConfig(
         level=logging.INFO,
-        format=f"[%(asctime)s{prefix}] %(filename)s:%(lineno)d - %(message)s",
+        format=f"[%(asctime)s.%(msecs)03d {name}] %(filename)s:%(lineno)d - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         force=True,
     )

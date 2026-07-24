@@ -14,12 +14,13 @@ from miles.rollout.generate_utils.openai_endpoint_utils import (
     compute_samples_from_openai_records,
 )
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.rollout.session.session_types import SessionRecord
+from miles.rollout.session.types import SessionRecord
 from miles.utils.types import Sample
 
 # ── helpers ──────────────────────────────────────────────────────────
 
-_ARGS = SimpleNamespace()
+_ARGS = SimpleNamespace(save_debug_trajectory_data=None)
+_ARGS_RECORDING = SimpleNamespace(save_debug_trajectory_data="/unused/{rollout_id}.jsonl")
 
 
 def _mock_tokenizer():
@@ -92,30 +93,81 @@ def _make_record(
 
 
 @pytest.mark.asyncio
-async def test_create_fetches_session_server_instance_id(monkeypatch):
+async def test_create_reads_session_server_instance_id_from_args(monkeypatch):
     calls: list[tuple[str, str]] = []
 
     async def fake_post(url: str, payload: dict, action: str = "post"):
         calls.append((action, url))
-        if action == "get":
-            assert url == "http://127.0.0.1:12345/health"
-            return {"status": "ok", "session_server_instance_id": "server-instance-123"}
         assert action == "post"
         assert url == "http://127.0.0.1:12345/sessions"
         return {"session_id": "session-123"}
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
 
-    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_port=12345)
+    args = SimpleNamespace(
+        session_server_ip="127.0.0.1",
+        session_server_ports=[12345],
+        session_server_instance_ids={12345: "server-instance-123"},
+    )
     tracer = await OpenAIEndpointTracer.create(args)
 
     assert tracer.base_url == "http://127.0.0.1:12345/sessions/session-123"
+    assert tracer.session_server_id == "127.0.0.1:12345"
     assert tracer.session_server_instance_id == "server-instance-123"
-    assert args.session_server_instance_id == "server-instance-123"
-    assert calls == [
-        ("get", "http://127.0.0.1:12345/health"),
-        ("post", "http://127.0.0.1:12345/sessions"),
-    ]
+    # No /health probe: the id is read locally, create() issues only the POST.
+    assert calls == [("post", "http://127.0.0.1:12345/sessions")]
+
+
+@pytest.mark.asyncio
+async def test_create_without_instance_id_on_args(monkeypatch):
+    async def fake_post(url: str, payload: dict, action: str = "post"):
+        return {"session_id": "session-123"}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_ports=[12345])
+    tracer = await OpenAIEndpointTracer.create(args)
+
+    assert tracer.session_server_instance_id is None
+
+
+@pytest.mark.asyncio
+async def test_create_distributes_sessions_across_port_range(monkeypatch):
+    """With a multi-port range, sessions land on more than one instance, and every
+    request of a session (create, chat, GET, DELETE) hits the port chosen
+    at create time — the URL is the router."""
+    calls: list[tuple[str, str]] = []
+
+    async def fake_post(url: str, payload: dict, action: str = "post"):
+        calls.append((action, url))
+        if action == "post" and url.endswith("/sessions"):
+            return {"session_id": f"session-{len(calls)}"}
+        return {"session_id": url.rsplit("/", 1)[1], "records": [], "metadata": {}}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    ports = [12345, 12346, 12347, 12348]
+    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_ports=ports)
+
+    chosen_ports = set()
+    for _ in range(32):
+        calls.clear()
+        tracer = await OpenAIEndpointTracer.create(args)
+        port = int(tracer.session_server_id.rsplit(":", 1)[1])
+        assert port in ports
+        chosen_ports.add(port)
+
+        await tracer.collect_records()
+        prefix = f"http://127.0.0.1:{port}"
+        assert [url for _, url in calls] == [
+            f"{prefix}/sessions",
+            tracer.base_url,
+            tracer.base_url,
+        ]
+        assert tracer.base_url.startswith(f"{prefix}/sessions/")
+
+    # 32 uniform picks over 4 ports miss a given port with p = (3/4)^32 ≈ 1e-4.
+    assert len(chosen_ports) > 1
 
 
 # ── test: compute_samples_from_openai_records ────────────────────────
@@ -154,6 +206,32 @@ class TestComputeSamplesFromRecords:
         assert len(samples) == 2
         assert samples[0].tokens == [1, 2, 10]
         assert samples[1].tokens == [1, 2, 10, 20, 30]
+
+    def test_last_sample_carries_raw_conversation(self):
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(prompt_token_ids=[1, 2], output_token_ids=[10]),
+            _make_record(prompt_token_ids=[1, 2, 10, 20], output_token_ids=[30]),
+        ]
+
+        samples = compute_samples_from_openai_records(_ARGS_RECORDING, _make_input_sample(), records, tok)
+
+        assert "messages" not in (samples[0].metadata or {})
+        assert samples[1].metadata["messages"] == records[1].request["messages"] + [
+            records[1].response["choices"][0]["message"]
+        ]
+
+    def test_merge_keeps_last_conversation_snapshot(self):
+        tok = _mock_tokenizer()
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11]),
+            _make_record(prompt_token_ids=[1, 2, 3, 10, 11, 20, 21], output_token_ids=[30, 31]),
+        ]
+
+        samples = compute_samples_from_openai_records(_ARGS_RECORDING, _make_input_sample(), records, tok)
+        merged = merge_samples(samples, tok)
+
+        assert merged.metadata["messages"] == samples[-1].metadata["messages"]
 
     def test_finish_reason_length_gives_truncated(self):
         tok = _mock_tokenizer()

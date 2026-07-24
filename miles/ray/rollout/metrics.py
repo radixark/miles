@@ -3,7 +3,6 @@ from typing import Any
 
 import numpy as np
 
-from miles.utils import tracking_utils
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
     compute_pass_rate,
@@ -13,8 +12,8 @@ from miles.utils.metric_utils import (
     has_repetition,
 )
 from miles.utils.misc import load_function
+from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
-
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +27,15 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
     log_dict = extra_metrics or {}
     for key in data.keys():
         rewards = data[key]["rewards"]
-        log_dict[f"eval/{key}"] = sum(rewards) / len(rewards)
+        num_none = sum(1 for r in rewards if r is None)
+        log_dict[f"eval/{key}-none_reward_ratio"] = num_none / len(rewards) if len(rewards) > 0 else 0.0
+        if num_none:
+            logger.warning(
+                f"eval/{key}: {num_none}/{len(rewards)} samples have reward=None "
+                "(likely errored/aborted trials); treating as 0.0 for metrics."
+            )
+            rewards = [0.0 if r is None else r for r in rewards]
+        log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
         if (samples := data[key].get("samples")) is not None:
             log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), f"eval/{key}/")
         if "truncated" in data[key]:
@@ -47,7 +54,7 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
 
     step = compute_rollout_step(args, rollout_id)
     log_dict["eval/step"] = step
-    tracking_utils.log(args, log_dict, step_key="eval/step")
+    tracking.log(args, log_dict, step_key="eval/step")
 
     return log_dict
 
@@ -64,10 +71,15 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
     log_dict = {**(rollout_extra_metrics or {})}
     log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), "rollout/")
     log_dict |= dict_add_prefix(_compute_perf_metrics_from_samples(args, samples, rollout_time), "perf/")
+    if args.log_passrate:
+        log_dict |= dict_add_prefix(
+            _compute_passrate_from_samples(args, samples),
+            "passrate/",
+        )
     logger.info(f"perf {rollout_id}: {log_dict}")
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step
-    tracking_utils.log(args, log_dict, step_key="rollout/step")
+    tracking.log(args, log_dict, step_key="rollout/step")
 
 
 def _compute_metrics_from_samples(args, samples):
@@ -200,3 +212,38 @@ def _compute_reward_cat_metrics(args, all_samples: list[Sample]):
     samples_of_reward_cat = group_by(all_samples, lambda s: s.reward[reward_cat_key])
 
     return {f"error_cat/{reward_cat}": len(s) / len(all_samples) for reward_cat, s in samples_of_reward_cat.items()}
+
+
+def _compute_passrate_from_samples(args, all_samples: list[Sample]) -> dict[str, float]:
+    """Compute pass@k metrics from samples using group_index for correct grouping.
+
+    Unlike the trainer-side log_passrate (which assumed a flat reward array with
+    contiguous groups of n_samples_per_prompt), this groups samples by their
+    group_index field and computes pass@k over complete groups only. This is
+    robust to filtering that may remove individual samples from a group —
+    incomplete groups are excluded from the estimate rather than skewing it
+    or crashing the reshape.
+
+    Called on the rollout side (before convert_samples_to_train_data), so
+    normally all samples are present and every group is complete.
+    """
+    group_size = args.n_samples_per_prompt
+    if group_size <= 1:
+        return {}
+
+    groups = group_by(all_samples, lambda s: s.group_index)
+    completed_groups = [g for g in groups.values() if len(g) == group_size]
+    if len(completed_groups) < len(groups):
+        logger.warning(
+            f"pass@k: excluding {len(groups) - len(completed_groups)}/{len(groups)} incomplete "
+            f"groups (fewer than n_samples_per_prompt={group_size} samples)."
+        )
+    if not completed_groups:
+        return {}
+
+    flat_rewards = [sample.get_reward_value(args) for group in completed_groups for sample in group]
+
+    return compute_pass_rate(
+        flat_rewards=flat_rewards,
+        group_size=group_size,
+    )

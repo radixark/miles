@@ -5,16 +5,10 @@
 assistant's generated token sequence, then merges them with the pretokenized
 prefix — handling model-specific boundary tokens at the junction.
 
-The default implementation incrementally tokenizes appended non-assistant turns
-with role-specific synthetic prefixes:
-
-- contiguous ``tool`` runs use ``[dummy_system, dummy_assistant]``
-- each ``user`` or ``system`` message uses ``[dummy_system]``
-
-The appended suffix is processed left-to-right, then the generation prompt for
-the next assistant turn is appended once at the end.  Model-specific
-subclasses only override ``merge_tokens`` for boundary quirks at the prefix
-junction.
+The default implementation renders the complete appended non-assistant suffix
+and the next generation prompt once under a synthetic
+``[dummy_system, dummy_assistant]`` prefix.  Model-specific subclasses only
+override ``merge_tokens`` for boundary quirks at the prefix junction.
 """
 
 from __future__ import annotations
@@ -30,7 +24,8 @@ except ImportError:
 from pathlib import Path
 from typing import Any
 
-from miles.utils.chat_template_utils.template import apply_chat_template, assert_messages_append_only_with_allowed_role
+from miles.utils.chat_template_utils import deepseek, template
+from miles.utils.chat_template_utils.template import assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 logger = logging.getLogger(__name__)
@@ -60,24 +55,13 @@ class FixedTemplateRow:
     extra_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
-def _build_dummy_assistant(tool_responses: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build a dummy assistant message with tool_calls matching *tool_responses*,
-    so the template correctly renders the subsequent tool-response turn boundaries."""
+def _build_dummy_assistant(stored_assistant: dict[str, Any]) -> dict[str, Any]:
+    """Build a dummy assistant that preserves the stored turn's tool calls."""
     return {
         "role": "assistant",
         "content": "",
         "reasoning_content": " ",
-        "tool_calls": [
-            {
-                "id": resp.get("tool_call_id") or f"call0000{i}",
-                "type": "function",
-                "function": {
-                    "name": resp.get("name") or "dummy_func",
-                    "arguments": {},
-                },
-            }
-            for i, resp in enumerate(tool_responses)
-        ],
+        "tool_calls": stored_assistant.get("tool_calls") or [],
     }
 
 
@@ -127,7 +111,7 @@ class TITOTokenizer:
             trim_trailing_ids=self.trailing_token_ids or None,
         )
 
-    def render_messages(
+    def apply_chat_template(
         self,
         messages: list[dict[str, Any]],
         *,
@@ -135,7 +119,7 @@ class TITOTokenizer:
         tools: list[dict[str, Any]] | None = None,
         tokenize: bool = False,
     ) -> str | list[int]:
-        return apply_chat_template(
+        return template.apply_chat_template(
             messages,
             tokenizer=self.tokenizer,
             tokenize=tokenize,
@@ -146,28 +130,6 @@ class TITOTokenizer:
 
     def _encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
-
-    def _split_appended_segments(self, appended_messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-        segments: list[list[dict[str, Any]]] = []
-        i = 0
-        while i < len(appended_messages):
-            role = appended_messages[i]["role"]
-            # Many templates wrap a contiguous tool-response run as one logical
-            # block, so tool messages are diffed together instead of one-by-one.
-            if role == "tool":
-                j = i + 1
-                while j < len(appended_messages) and appended_messages[j]["role"] == "tool":
-                    j += 1
-                segments.append(appended_messages[i:j])
-                i = j
-                continue
-            if role in {"user", "system"}:
-                segments.append([appended_messages[i]])
-                i += 1
-                continue
-            raise ValueError(f"unsupported appended role for TITO segmentation: {role}")
-
-        return segments
 
     def _tokenize_rendered_suffix(
         self,
@@ -183,8 +145,8 @@ class TITOTokenizer:
         When *add_generation_prompt* is True and *appended_messages* is empty,
         this computes the generation-prompt suffix (the assistant opener tokens).
         """
-        text_without = self.render_messages(base_messages, add_generation_prompt=False, tools=tools)
-        text_with = self.render_messages(
+        text_without = self.apply_chat_template(base_messages, add_generation_prompt=False, tools=tools)
+        text_with = self.apply_chat_template(
             base_messages + appended_messages,
             add_generation_prompt=add_generation_prompt,
             tools=tools,
@@ -193,30 +155,6 @@ class TITOTokenizer:
             roles = [msg["role"] for msg in appended_messages] if appended_messages else ["generation_prompt"]
             raise ValueError(f"rendered suffix diff failed for {roles}")
         return self._encode_text(text_with[len(text_without) :])
-
-    def _tokenize_tool_segment(
-        self,
-        appended_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-    ) -> list[int]:
-        # No dummy user to avoid cut think issues.
-        return self._tokenize_rendered_suffix(
-            [_DUMMY_SYSTEM, _build_dummy_assistant(appended_messages)],
-            appended_messages,
-            tools=tools,
-        )
-
-    def _tokenize_user_and_system_segment(
-        self,
-        appended_message: dict[str, Any],
-        tools: list[dict[str, Any]] | None = None,
-    ) -> list[int]:
-        # User/system single-message appends share one synthetic context.
-        return self._tokenize_rendered_suffix(
-            [_DUMMY_SYSTEM],
-            [appended_message],
-            tools=tools,
-        )
 
     def tokenize_additional_non_assistant(
         self,
@@ -245,25 +183,9 @@ class TITOTokenizer:
         """
         assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
         appended_messages = new_messages[len(old_messages) :]
-        incremental: list[int] = []
-
-        # Incremental non-assistant content is assembled segment-by-segment
-        # using the smallest synthetic context that preserves each role's
-        # boundary tokens.
-        for segment in self._split_appended_segments(appended_messages):
-            role = segment[0]["role"]
-            if role == "tool":
-                incremental.extend(self._tokenize_tool_segment(segment, tools))
-            elif role == "user" or role == "system":
-                incremental.extend(self._tokenize_user_and_system_segment(segment[0], tools))
-            else:
-                raise ValueError(f"unsupported appended role for TITO tokenization: {role}")
-
-        # The next assistant opener depends on the full post-append history, so
-        # it is derived from the real messages once and appended only at the end.
-        return incremental + self._tokenize_rendered_suffix(
-            new_messages,
-            [],
+        return self._tokenize_rendered_suffix(
+            [_DUMMY_SYSTEM, _build_dummy_assistant(old_messages[-1])],
+            appended_messages,
             tools=tools,
             add_generation_prompt=True,
         )
@@ -723,7 +645,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
 
     V3.2 ships no jinja chat_template; sglang renders prompts through
     ``encoding_dsv32.encode_messages``, and miles' ``apply_chat_template`` routes
-    any V3.2 tokenizer to the thin ``chat_template_utils.deepseek_v32`` bridge.
+    any V3.2 tokenizer to the thin ``chat_template_utils.deepseek`` bridge.
     TITO incremental tokenization rides that same bridge so it stays
     byte-aligned with what the runtime serves.
 
@@ -778,11 +700,9 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     """DeepSeek V4 — official encoder via sglang's ``encoding_dsv4``.
 
     Like V3.2, V4 ships no jinja chat_template; miles' ``apply_chat_template``
-    routes any V4 tokenizer to the ``chat_template_utils.deepseek_v4`` bridge, and
+    routes any V4 tokenizer to the ``chat_template_utils.deepseek`` bridge, and
     TITO incremental tokenization rides that same bridge to stay byte-aligned
-    with what the runtime serves.  Only the ``{tool}`` surface is registered, so
-    the base ``_split_appended_segments`` (contiguous tool runs) covers it
-    without a custom override.
+    with what the runtime serves.
     """
 
     reasoning_parser = "deepseek-v4"
@@ -792,6 +712,11 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
             template=None,
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template=None,
+            extra_kwargs={"drop_thinking": False},
         ),
     )
 
@@ -814,6 +739,37 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
             },
             allowed_append_roles=allowed_append_roles,
         )
+        self._assistant_id: int = tokenizer.convert_tokens_to_ids("<｜Assistant｜>")
+        self._think_bracket_ids: set[int] = {
+            tokenizer.convert_tokens_to_ids("<think>"),
+            tokenizer.convert_tokens_to_ids("</think>"),
+        }
+        self.trailing_token_ids = frozenset({self._assistant_id} | self._think_bracket_ids)
+        # sglang's dsv4 parser separates reasoning only when the request carries
+        # `thinking` (DeepSeek-V3.1's template kwarg, kept for the V4 family);
+        # make the effective render mode explicit so the session server forwards it.
+        if "thinking" not in self.chat_template_kwargs:
+            self.chat_template_kwargs = {
+                **self.chat_template_kwargs,
+                "thinking": deepseek.V4.render_thinking_enabled(self.chat_template_kwargs),
+            }
+
+    def tokenize_additional_non_assistant(
+        self,
+        old_messages: list[dict[str, Any]],
+        new_messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> list[int]:
+        """Diff real-history renders because V4 folds adjacent ``tool``/``user`` turns."""
+        assert_messages_append_only_with_allowed_role(old_messages, new_messages, self.allowed_append_roles)
+        text_old = self.apply_chat_template(old_messages, add_generation_prompt=False, tools=tools)
+        text_new = self.apply_chat_template(new_messages, add_generation_prompt=True, tools=tools)
+        if not text_new.startswith(text_old):
+            raise ValueError(
+                "deepseek_v4 render is not append-only for the appended messages "
+                "(prefix render changed; check drop_thinking and tool-result ordering)"
+            )
+        return self._encode_text(text_new[len(text_old) :])
 
 
 # ---------------------------------------------------------------------------
@@ -880,7 +836,7 @@ def get_tito_tokenizer(
         tokenizer: HuggingFace tokenizer object.
         tokenizer_type: Explicit type (string or enum).  Corresponds to the
             ``--tito-model`` CLI argument.
-        chat_template_kwargs: Extra kwargs forwarded to ``apply_chat_template``.
+        chat_template_kwargs: Extra kwargs forwarded to ``template.apply_chat_template``.
         assistant_start_str: Decoded text prefix identifying assistant content
             segments (e.g. ``"<|im_start|>assistant"``).  Auto-detected from
             the chat template by default; pass explicitly to override.
@@ -918,7 +874,7 @@ def resolve_fixed_chat_template(
       when the matched row registers HF-native (kwargs-only fix) or when no
       row matches at all.
     - ``extra_kwargs``: kwargs the caller should merge into
-      ``apply_chat_template`` (caller's explicit user kwargs win on conflict).
+      ``template.apply_chat_template`` (caller's explicit user kwargs win on conflict).
       Empty when no row matches or the matched row needs none.
 
     Raises ``ValueError`` on equally-minimal supersets — register a stricter

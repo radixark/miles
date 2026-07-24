@@ -11,10 +11,9 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.lora import is_lora_enabled
 
 logger = logging.getLogger(__name__)
-
-LORA_ADAPTER_NAME = "miles_lora"
 
 # ---------------------------------------------------------------------------
 # Unified HF <-> Megatron module name mappings
@@ -29,6 +28,9 @@ _STANDARD_LORA_HF_TO_MEGATRON = {
     "gate_proj": "linear_fc1",
     "up_proj": "linear_fc1",
     "down_proj": "linear_fc2",
+    # GDN (Qwen3.5/Qwen3-Next): both slices live in the single fused megatron in_proj
+    "in_proj_qkvz": "in_proj",
+    "in_proj_ba": "in_proj",
 }
 
 _STANDARD_LORA_ALL_MODULES = ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]
@@ -42,6 +44,8 @@ _CANONICAL_LORA_HF_TO_MEGATRON = {
     "gate_proj": "linear_fc1_gate",
     "up_proj": "linear_fc1_up",
     "down_proj": "linear_fc2",
+    "in_proj_qkvz": "in_proj",
+    "in_proj_ba": "in_proj",
 }
 
 _CANONICAL_LORA_ALL_MODULES = [
@@ -68,9 +72,21 @@ _MEGATRON_TO_HF_MODULES = {
     "linear_v": ["v_proj"],
     "linear_fc1_gate": ["gate_proj"],
     "linear_fc1_up": ["up_proj"],
+    # GDN linear attention: SGLang serves the fused in_proj as two modules
+    "in_proj": ["in_proj_qkvz", "in_proj_ba"],
 }
 
-_HF_MODULE_NAMES = {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
+_HF_MODULE_NAMES = {
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+    "in_proj_qkvz",
+    "in_proj_ba",
+}
 
 # DeepSeek / Kimi MLA (HF names on checkpoint; Megatron uses linear_* from Megatron-Bridge mappings).
 _MLA_HF_TO_MEGATRON = {
@@ -78,22 +94,20 @@ _MLA_HF_TO_MEGATRON = {
     "kv_a_proj_with_mqa": "linear_kv_down_proj",
     "q_b_proj": "linear_q_up_proj",
     "kv_b_proj": "linear_kv_up_proj",
+    # DSA indexer (GLM-5 / DeepSeek-V3.2): HF/SGLang leaf names vs Megatron-Bridge linear_* names.
+    "wq_b": "linear_wq_b",
+    "wk": "linear_wk",
+    "weights_proj": "linear_weights_proj",
 }
 _MEGATRON_MLA_TO_HF = {v: k for k, v in _MLA_HF_TO_MEGATRON.items()}
 
-# SGLang default get_hidden_dim (lora/utils.py) handles fused_qkv_a_proj_with_mqa via q_a / kv_a mapping,
-# but not separate q_b_proj / kv_b_proj yet — omit from rollout adapter config to avoid init crashes.
-_SGLANG_UNSUPPORTED_HF_TARGETS = frozenset({"q_b_proj", "kv_b_proj"})
+# Empty: dropping a module here makes sglang silently skip its shipped adapter tensors.
+_SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
 
 
 # ---------------------------------------------------------------------------
 # Core helpers
 # ---------------------------------------------------------------------------
-
-
-def is_lora_enabled(args: Namespace) -> bool:
-    """Check if LoRA is enabled based on arguments."""
-    return getattr(args, "lora_rank", 0) > 0 or getattr(args, "lora_adapter_path", None) is not None
 
 
 def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
@@ -238,13 +252,14 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
         megatron_modules = list(megatron_modules)
     hf_modules: list[str] = []
     for module in megatron_modules:
-        lookup_key = module.rsplit(".", 1)[-1] if "*" in module else module
+        lookup_key = module.rsplit(".", 1)[-1] if "." in module else module
         if lookup_key in _MEGATRON_MLA_TO_HF:
             hf_modules.append(_MEGATRON_MLA_TO_HF[lookup_key])
         elif lookup_key in _MEGATRON_TO_HF_MODULES:
             hf_modules.extend(_MEGATRON_TO_HF_MODULES[lookup_key])
         else:
-            hf_modules.append(module)
+            # same-name passthrough; SGLang needs the leaf, not a path or pattern
+            hf_modules.append(lookup_key)
     seen: set[str] = set()
     unique: list[str] = []
     for m in hf_modules:
@@ -255,7 +270,7 @@ def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
 
 
 def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
-    """HF target_modules for SGLang LoRA init/sync, with MLA q_b/kv_b dropped (unsupported)."""
+    """HF target_modules for SGLang LoRA init/sync (minus _SGLANG_UNSUPPORTED_HF_TARGETS, currently empty)."""
     raw = list(args.target_modules) if args.target_modules else []
     hf = convert_target_modules_to_hf(raw)
     out = [m for m in hf if m not in _SGLANG_UNSUPPORTED_HF_TARGETS]
@@ -315,9 +330,9 @@ def create_lora_instance(args: Namespace):
         lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
-    # Opt-in to SGLang PR #21466's shared-outer grouped-expert LoRA. Only the
-    # standard ``LoRA`` class supports the flag today.
-    if lora_cls is LoRA and getattr(args, "experts_shared_outer_loras", False):
+    # shared-outer grouped-expert LoRA (SGLang PR #21466); per-expert is the default
+    if getattr(args, "experts_shared_outer_loras", False):
+        assert lora_cls is LoRA, "--experts-shared-outer-loras requires the standard LoRA adapter type"
         lora_kwargs["experts_shared_outer_loras"] = True
 
     lora = lora_cls(**lora_kwargs)
@@ -368,18 +383,19 @@ def save_lora_checkpoint(
     from miles.utils import megatron_bridge_utils
 
     save_path = Path(save_dir)
-    is_dp_rank_0 = get_parallel_state().intra_dp.rank == 0
-    tp_rank = get_parallel_state().tp.rank
-    pp_rank = get_parallel_state().pp.rank
+    parallel_state = get_parallel_state()
+    is_dp_cp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0
+    tp_rank = parallel_state.tp.rank
+    pp_rank = parallel_state.pp.rank
 
     # Create directory on dp_rank=0, then synchronize
-    if is_dp_rank_0:
+    if is_dp_cp_rank_0:
         save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
         dist.barrier()
 
     # ---- Megatron-native format (per TP/PP rank, fast resume) ----
-    if is_dp_rank_0:
+    if is_dp_cp_rank_0:
         adapter_state: dict[str, torch.Tensor] = {}
         for model_chunk in model:
             for name, param in model_chunk.named_parameters():
@@ -404,8 +420,8 @@ def save_lora_checkpoint(
         ):
             lora_state_dict[hf_name] = weight
 
-    # Only one rank writes the HF PEFT files (bridge already gathered across TP)
-    if is_dp_rank_0 and tp_rank == 0:
+    # Only one rank writes the HF PEFT files (bridge already gathered across TP/PP)
+    if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
         torch.save(lora_state_dict, save_path / "adapter_model.bin")
 
         target_modules_hf = (

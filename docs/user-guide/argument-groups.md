@@ -120,7 +120,7 @@ more than one dimension.
 | Algorithm | `--advantage-estimator` |
 | KL | `--use-kl-loss`, `--kl-loss-coef`, `--kl-loss-type` |
 | Clipping | `--eps-clip`, `--eps-clip-high` |
-| Entropy | `--entropy-coef` |
+| Entropy | `--entropy-coef`, `--observe-training-entropy` |
 | Loss reduction | `--calculate-per-token-loss` |
 | Precision/off-policy safety | `--use-tis` |
 

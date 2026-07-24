@@ -14,7 +14,7 @@ import pytest
 import requests
 
 from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
-from miles.rollout.session.session_server import SessionServer
+from miles.rollout.session.server import SessionServer
 from miles.router.router import MilesRouter
 from miles.utils.arguments import parse_args
 from miles.utils.http_utils import find_available_port, init_http_client
@@ -117,7 +117,7 @@ def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornT
     try:
         server.start()
         args.session_server_ip = "127.0.0.1"
-        args.session_server_port = port
+        args.session_server_ports = [port]
         yield server
     finally:
         server.stop()

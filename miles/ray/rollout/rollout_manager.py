@@ -6,8 +6,9 @@ from dataclasses import dataclass
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
+from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.addr_allocator import PortCursors
-from miles.ray.rollout.debug_data import load_debug_rollout_data, save_debug_rollout_data
+from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
@@ -22,13 +23,18 @@ from miles.rollout.base_types import (
     call_rollout_fn,
 )
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
+from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
+from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
+from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdentity
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
-from miles.utils.tracking_utils import init_tracking
+from miles.utils.ray_utils import Box
+from miles.utils.timer import timer
+from miles.utils.tracking_utils.tracking import init_tracking
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -42,7 +48,8 @@ class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
 
     def __init__(self, args, pg):
-        configure_logger()
+        event_logger_checkpoint.restore(args)
+        configure_logger(args, source=RolloutManagerProcessIdentity())
 
         self.pg = pg
         self.args = args
@@ -75,6 +82,7 @@ class RolloutManager:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
             start_session_server(args)
+            dashboard_hooks.register_router(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
@@ -88,12 +96,18 @@ class RolloutManager:
                     monitor = RolloutHealthMonitor(group, args)
                     monitor.start()
                     self._health_monitors.append(monitor)
-            self._ci_fault_injection_pending = self.args.ci_test  # Flag for CI fault injection
+            self._ci_fault_injection_pending = self.args.ci_test and "rollout" in self.args.ft_components
 
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
 
+    def get_router_address(self) -> tuple[str, int]:
+        return self.args.sglang_router_ip, self.args.sglang_router_port
+
     def dispose(self):
+        if (close := getattr(self.data_source, "close", None)) is not None:
+            close()
+        event_analyzer.run_analysis_from_args(self.args)
         if self._metric_checker is not None:
             self._metric_checker.dispose()
         for monitor in self._health_monitors:
@@ -107,8 +121,12 @@ class RolloutManager:
         self._health_monitoring_resume()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
-        data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
-        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False)
+        dashboard_hooks.register_engines(self.servers)
+        if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
+            dashboard_hooks.report_data_buffer(get_buffer_length())
+        with timer("rollout"):
+            data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
+        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
         log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = convert_samples_to_train_data(
             self.args,
@@ -117,7 +135,12 @@ class RolloutManager:
             custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
             custom_reward_post_process_func=self.custom_reward_post_process_func,
         )
-        return split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
+        sample_indices = data.get("sample_indices")
+        if self.args.delay_split_train_data_by_dp:
+            data_ref = Box(ray.put(data))
+        else:
+            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
+        return dict(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(self, rollout_id):
         if self.args.debug_train_only:
@@ -125,14 +148,20 @@ class RolloutManager:
             return
         self._health_monitoring_resume()
 
-        if self.use_experimental_refactor:
-            result = await asyncio.to_thread(
-                call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
-            )
-        else:
-            result = await asyncio.to_thread(
-                call_rollout_fn, self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True
-            )
+        with timer("eval_rollout"):
+            if self.use_experimental_refactor:
+                result = await asyncio.to_thread(
+                    call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
+                )
+            else:
+                result = await asyncio.to_thread(
+                    call_rollout_fn,
+                    self.eval_generate_rollout,
+                    self.args,
+                    rollout_id,
+                    self.data_source,
+                    evaluation=True,
+                )
         data = result.data
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
@@ -141,8 +170,7 @@ class RolloutManager:
 
     async def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:
-            data = load_debug_rollout_data(self.args, rollout_id=rollout_id)
-            metadata = {}  # save/load metadata into debug rollout data as well
+            data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
             metrics = None
         else:
             if self.use_experimental_refactor:
@@ -158,13 +186,22 @@ class RolloutManager:
             data, metadata = postprocess_rollout_data(
                 self.args, data, train_parallel_config=self.train_parallel_config
             )
+            if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
+                generated_data = data
+                data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)
+                RolloutDataInjectionUtil.assert_matches_generated(
+                    self.args, generated=generated_data, injected=data, rollout_id=rollout_id
+                )
+                metrics = None
 
         return data, metadata, metrics
 
     # -------------------------- checkpointing -----------------------------
 
     def save(self, rollout_id):
-        self.data_source.save(rollout_id)
+        if self.args.rollout_global_dataset:
+            self.data_source.save(rollout_id)
+        event_logger_checkpoint.snapshot(self.args, rollout_id)
 
     def load(self, rollout_id=None):
         self.data_source.load(rollout_id)
@@ -173,7 +210,7 @@ class RolloutManager:
 
     # TODO may parallelly execute offload/onload across services
     async def offload(self, tags: list[str] | None = None):
-        self._health_monitoring_pause()
+        self.health_monitoring_pause()
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
@@ -222,7 +259,7 @@ class RolloutManager:
         Recovers the updatable model (the one that receives weight
         updates from training).
         """
-        self._health_monitoring_pause()
+        self.health_monitoring_pause()
         srv = self._get_updatable_server()
         if self.rollout_id == -1 or srv is None:
             return
@@ -261,19 +298,23 @@ class RolloutManager:
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
-    async def check_weights(self, action: str, allow_quant_error: bool = False):
+    async def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
         # Only the updatable model is re-synced; a frozen model would always mismatch.
         srv = self._get_updatable_server()
         if srv is None:
             return []
-        return await srv.check_weights(action=action, allow_quant_error=allow_quant_error)
+        return await srv.check_weights(
+            action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+        )
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
 
     # -------------------------- utils -----------------------------
 
-    def _health_monitoring_pause(self) -> None:
+    def health_monitoring_pause(self) -> None:
         for monitor in self._health_monitors:
             monitor.pause()
 

@@ -1,0 +1,17 @@
+# Held-out DAPO eval (disjoint from the training split, see README "Data split").
+# Scored by the example's format-agnostic reward (--custom-rm-path ...rm.reward_func),
+# which reports accuracy. max_response_len 24576 must exceed the model's reasoning
+# length (~14-17k for the base 35B) or accuracy is suppressed by truncation.
+eval:
+  defaults:
+    temperature: 0.6
+    top_p: 0.95
+  datasets:
+    - name: dapo_heldout
+      path: ${DATA_DIR}/dapo_eval.jsonl     # rendered by the launch scripts via envsubst
+      input_key: prompt
+      label_key: label                       # REQUIRED: without it Sample.label=None -> eval reads 0
+      n_samples_per_eval_prompt: 1
+      max_response_len: 24576
+      metadata_overrides:
+        opd_reward_mode: eval_math            # tags eval samples for reward_func_pure_opd

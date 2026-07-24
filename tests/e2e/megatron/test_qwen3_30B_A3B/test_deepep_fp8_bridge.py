@@ -1,10 +1,17 @@
 import os
 
 from tests.ci.ci_register import register_cuda_ci
+from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, prepare
 
 # Limited by host memory
-register_cuda_ci(est_time=900, suite="stage-c-8-gpu-h100", labels=["megatron"])
+register_cuda_ci(est_time=800, suite="stage-c-8-gpu-h100", labels=["megatron"])
+
+register_ci_gate(metric_key="train/grad_norm")
+register_ci_gate(metric_key="train/ppo_kl")
+register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
+register_ci_gate(metric_key="train/train_rollout_kl")
+register_ci_gate(metric_key="rollout/raw_reward")
 
 CASE = CaseConfig(
     use_deepep=True,
@@ -15,6 +22,9 @@ CASE = CaseConfig(
     num_gpus_per_node=8,
     cp_size=1,
     pp_size=2,
+    tp_size=4,
+    ep_size=4,
+    rollout_num_gpus_per_engine=8,
     sglang_ep_size=8,
     max_tokens_per_gpu=2048,
 )

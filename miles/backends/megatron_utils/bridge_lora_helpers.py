@@ -12,8 +12,9 @@ from dataclasses import dataclass
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.utils.hf_config import load_hf_config
+from miles.utils.multi_lora import is_multi_lora_enabled
 
-from .lora_utils import create_lora_instance, patch_param_grad_buffer_for_colocate_mode_lora
+from .lora_utils import patch_param_grad_buffer_for_colocate_mode_lora
 
 
 @dataclass
@@ -95,6 +96,11 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
     provider.context_parallel_size = args.context_parallel_size
     provider.gradient_accumulation_fusion = args.gradient_accumulation_fusion
+    provider.recompute_granularity = args.recompute_granularity
+    provider.recompute_method = args.recompute_method
+    provider.recompute_num_layers = args.recompute_num_layers
+    provider.recompute_modules = args.recompute_modules
+    provider.distribute_saved_activations = args.distribute_saved_activations
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
@@ -102,9 +108,18 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
     if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+    if hasattr(provider, "dsa_attention_backend"):
+        provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
     provider.finalize()
 
-    lora = create_lora_instance(args)
+    if is_multi_lora_enabled(args):
+        from miles.backends.megatron_utils.multi_lora_utils import create_multi_lora_instance
+
+        lora = create_multi_lora_instance(args)
+    else:
+        from .lora_utils import create_lora_instance
+
+        lora = create_lora_instance(args)
 
     def apply_lora_hook(model_chunks):
         transformed = lora(model_chunks, training=True)
@@ -122,7 +137,14 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size, provider.sequence_parallel))
 
     use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
-    ddp_config = DistributedDataParallelConfig(use_distributed_optimizer=use_distributed_optimizer)
+    if is_multi_lora_enabled(args):
+        # Per-slot LayerWise optimizers: plain DDP all-reduce keeps full grads on
+        # every rank (whole-param sharding + retained-gradient idempotency).
+        use_distributed_optimizer = False
+    ddp_config = DistributedDataParallelConfig(
+        use_distributed_optimizer=use_distributed_optimizer,
+        grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
+    )
     ddp_config.finalize()
 
     if args.offload_train:

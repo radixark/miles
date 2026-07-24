@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
@@ -10,13 +11,13 @@ from ray import ObjectRef
 from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.lora_utils import (
-    LORA_ADAPTER_NAME,
     build_lora_sync_config,
     is_lora_weight_name,
     lora_base_cpu_backup_enabled,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update
@@ -80,6 +81,15 @@ class UpdateWeightFromTensor:
                 self._ipc_gather_src = start_rank
 
         self._model_update_groups = None
+        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self._connection_stale: bool = False
+
+    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
+    def is_rollout_engines_fresh(self) -> bool:
+        return self.rollout_engines is not None and not self._connection_stale
+
+    def mark_engine_connection_stale(self) -> None:
+        self._connection_stale = True
 
     def connect_rollout_engines(
         self,
@@ -93,6 +103,7 @@ class UpdateWeightFromTensor:
         for distributed. Map ranks to colocated IPC engines.
         """
         self.rollout_engines = rollout_engines
+        self._connection_stale = False
 
         if engine_gpu_counts is None:
             engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
@@ -172,6 +183,12 @@ class UpdateWeightFromTensor:
             if start <= dist.get_rank() < end:
                 self._ipc_engine = engine
 
+    def pop_metrics(self) -> dict[str, float]:
+        """Return and clear ``update_weight_metrics``. Empty under colocate today; kept symmetric
+        with the distributed updaters so the actor can drain unconditionally."""
+        out = self.__dict__.pop("update_weight_metrics", {})
+        return out
+
     @torch.no_grad()
     def update_weights(self) -> None:
         """
@@ -186,7 +203,12 @@ class UpdateWeightFromTensor:
         # a host mirror across pause/resume), we can skip the base sync entirely
         # and the surrounding restore_weights_before_load / post_process_quantization
         # calls that would otherwise prep / re-quantize fresh base bytes.
-        skip_base_sync = self.is_lora and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
+        # TODO: implement lora weight checker
+        skip_base_sync = (
+            self.is_lora
+            and (self.use_distribute or lora_base_cpu_backup_enabled(self.args))
+            and not getattr(self.args, "check_weight_update_equal", False)
+        )
 
         if rank == 0:
             mode = self.args.pause_generation_mode
@@ -278,6 +300,7 @@ class UpdateWeightFromTensor:
                 lora_config=self._lora_config,
                 lora_name=LORA_ADAPTER_NAME,
                 lora_loaded=self._lora_loaded,
+                check_equal=getattr(self.args, "check_lora_weight_equal", False),
             )
             self._lora_loaded = True
             return refs or [], long_lived_tensors
@@ -293,6 +316,7 @@ def _send_to_colocated_engine(
     lora_config: dict | None = None,
     lora_name: str | None = None,
     lora_loaded: bool = False,
+    check_equal: bool = False,
 ) -> tuple[list[ObjectRef], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
@@ -342,6 +366,15 @@ def _send_to_colocated_engine(
             # Thus, we need to apply the same way as `ipc_engine.update_weights_from_tensor` in future
             # (Yusheng) to-do-2: need to add ci test acc here - now it will pass but fail to update lora weights
 
+            expected_checksums = None
+            if check_equal:
+                expected_checksums = {
+                    n: hashlib.sha256(
+                        t.detach().cpu().contiguous().flatten().view(torch.uint8).numpy().tobytes()
+                    ).hexdigest()
+                    for n, t in hf_named_tensors
+                }
+
             refs.append(
                 ipc_engine.load_lora_adapter_from_tensors.remote(
                     lora_name=lora_name,
@@ -350,6 +383,7 @@ def _send_to_colocated_engine(
                         per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
                     ],
                     load_format="flattened_bucket",
+                    expected_checksums=expected_checksums,
                 )
             )
 

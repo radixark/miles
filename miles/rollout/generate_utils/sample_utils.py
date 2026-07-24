@@ -6,6 +6,9 @@ from miles.utils.types import Sample
 _OPD_STUDENT_TOP_LOGPROBS_KEY = "opd_student_top_logprobs"
 
 
+_REPLAY_FIELDS = ("rollout_routed_experts", "rollout_indexer_topk")
+
+
 def merge_samples(samples: list[Sample], tokenizer) -> Sample:
     acc = samples[0]
     for sample in samples[1:]:
@@ -14,8 +17,18 @@ def merge_samples(samples: list[Sample], tokenizer) -> Sample:
         # TODO (shi.dong): figure out how in-turn truncation should be handled.
         if acc.status != Sample.Status.COMPLETED:
             break
+        # An aborted/truncated turn omits the routing-replay payloads
+        # (routed_experts / indexer_topk). Replay requires every training sample
+        # to carry these end-to-end, so stop at the last fully-captured turn
+        # instead of extending into a turn with a routing gap.
+        if _introduces_replay_gap(acc, sample):
+            break
         acc = _merge_sample_pair(acc, sample, tokenizer=tokenizer)
     return acc
+
+
+def _introduces_replay_gap(a: Sample, b: Sample) -> bool:
+    return any(getattr(a, field) is not None and getattr(b, field) is None for field in _REPLAY_FIELDS)
 
 
 def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
@@ -70,9 +83,25 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         )
         return av + [[] for _ in range(obs_len)] + bv
 
+    def _pop_lifecycle(metadata):
+        if not metadata or "lifecycle" not in metadata:
+            return metadata, []
+        value = metadata["lifecycle"]
+        rest = {k: v for k, v in metadata.items() if k != "lifecycle"}
+        return rest, value if isinstance(value, list) else [value]
+
+    def _pop_messages(metadata):
+        if not metadata or "messages" not in metadata:
+            return metadata, None
+        return {k: v for k, v in metadata.items() if k != "messages"}, metadata["messages"]
+
     def _merge_metadata():
         a_metadata, a_top_logprobs = _pop_opd_student_top_logprobs(a.metadata)
         b_metadata, b_top_logprobs = _pop_opd_student_top_logprobs(b.metadata)
+        a_metadata, a_lifecycle = _pop_lifecycle(a_metadata)
+        b_metadata, b_lifecycle = _pop_lifecycle(b_metadata)
+        a_metadata, a_messages = _pop_messages(a_metadata)
+        b_metadata, b_messages = _pop_messages(b_metadata)
         assert a_metadata == b_metadata, f"metadata mismatch: a.metadata={a.metadata}, b.metadata={b.metadata}"
 
         merged_metadata = deepcopy(a_metadata)
@@ -81,6 +110,14 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             if merged_metadata is None:
                 merged_metadata = {}
             merged_metadata[_OPD_STUDENT_TOP_LOGPROBS_KEY] = merged_top_logprobs
+        if a_lifecycle or b_lifecycle:
+            if merged_metadata is None:
+                merged_metadata = {}
+            merged_metadata["lifecycle"] = a_lifecycle + b_lifecycle
+        if (messages := b_messages or a_messages) is not None:
+            if merged_metadata is None:
+                merged_metadata = {}
+            merged_metadata["messages"] = messages
         return merged_metadata
 
     _fill_defaults(a)
@@ -98,8 +135,10 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         assert _startswith(short=a.tokens, long=b.tokens), "b.tokens must start with a.tokens"
         assert obs_len > 0, f"obs_len must be > 0, got {obs_len}"
         if a.rollout_routed_experts is not None:
+            assert b.rollout_routed_experts is not None, "cannot merge: a has rollout_routed_experts but b does not"
             assert a.rollout_routed_experts.shape[0] <= b.rollout_routed_experts.shape[0]
         if a.rollout_indexer_topk is not None:
+            assert b.rollout_indexer_topk is not None, "cannot merge: a has rollout_indexer_topk but b does not"
             assert a.rollout_indexer_topk.shape[0] <= b.rollout_indexer_topk.shape[0]
         assert a.status == Sample.Status.COMPLETED, f"a.status must be COMPLETED, got {a.status}"
 
@@ -127,7 +166,9 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             metadata=_merge_metadata(),
             generate_function_path=_merge_equal_value("generate_function_path"),
             train_metadata=_merge_equal_value("train_metadata"),
-            session_id=_merge_equal_value("session_id"),
+            adapter=_merge_equal_value("adapter"),
+            reward_spec=_merge_equal_value("reward_spec"),
+            routing_key=_merge_equal_value("routing_key"),
             non_generation_time=_merge_equal_value("non_generation_time"),
             spec_info=_merge_spec_info(a.spec_info, b.spec_info),
             prefix_cache_info=_merge_prefix_cache_info(a.prefix_cache_info, b.prefix_cache_info),

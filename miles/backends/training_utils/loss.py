@@ -10,6 +10,9 @@ from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
+from miles.utils.audit_utils.event_logger.models import TrainAdvantageComputationEvent
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.types import RolloutBatch
 
 
@@ -152,6 +155,11 @@ def loss_function(
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
     assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in batch)
     global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
+    # Multi-LoRA: samples enter the gradient buffers with weight 1; per-adapter
+    # normalization (1/adapter_global_batch_size, a constant known in advance)
+    # is applied to the accumulated slot gradient at optimizer-step time.
+    if is_multi_lora_enabled(args):
+        global_batch_size = 1
     if not args.calculate_per_token_loss:
         if apply_megatron_loss_scaling:
             loss_parallel_size = (
@@ -179,4 +187,23 @@ def loss_function(
                 device=logits.device,
             ),
         },
+    )
+
+
+def log_train_advantage_computation_event(rollout_data: RolloutBatch) -> None:
+    if not is_event_logger_initialized():
+        return
+
+    advantages = rollout_data.get("advantages")
+    witness_ids = rollout_data.get("witness_ids")
+    if advantages is None or witness_ids is None:
+        return
+
+    get_event_logger().log(
+        TrainAdvantageComputationEvent,
+        dict(
+            advantages=[x.tolist() for x in advantages],
+            witness_ids=[x.tolist() for x in witness_ids],
+        ),
+        print_log=False,
     )

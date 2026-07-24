@@ -127,9 +127,9 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
         # Session server populates diagnostic metadata (token IDs,
-        # trim config, mismatch analysis) that varies with mock setup.
-        # Strip these before comparing sample structure.
-        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens"):
+        # trim config, mismatch analysis, dashboard lifecycle timing) that
+        # varies with mock setup. Strip these before comparing structure.
+        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens", "lifecycle"):
             actual_partial.metadata.pop(key, None)
         assert actual_partial == expected_item.partial_sample
 
@@ -272,6 +272,26 @@ class TestBasicMultiTurn:
 
 
 class TestExitConditions:
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"extra_argv": ["--save-debug-trajectory-data", "/unused/{rollout_id}.jsonl"]}}],
+        indirect=True,
+    )
+    def test_conversation_metadata_records_turns(self, variant, generation_env):
+        if variant != "multi_turn_single_sample":
+            pytest.skip("conversation recording asserted once, on the engine multi-turn path")
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        S = TwoTurnStub
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        messages = result.sample.metadata["messages"]
+        # prompt message + turn-1 assistant + its two tool results + turn-2 assistant
+        assert [m["role"] for m in messages] == ["user", "assistant", "tool", "tool", "assistant"]
+        assert messages[1]["content"] == S.FIRST_RESPONSE
+        assert {m["name"] for m in messages[2:4]} == {"get_year", "get_temperature"}
+        assert messages[4]["content"] == S.SECOND_RESPONSE
+
     def test_partial_rollout_not_supported(self, variant, generation_env):
         if is_agentic_variant(variant):
             pytest.skip("agentic_tool_call does not check partial_rollout flag")
@@ -575,13 +595,13 @@ class TestRoutedExpertsMultiTurn:
                 tokenizer_type=TITOTokenizerType.QWEN3,
                 allowed_append_roles=["tool"],
             )
-            first_prompt_token_ids = tito.render_messages(
+            first_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_FIRST_TURN,
                 tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
                 tokenize=True,
             )
-            second_prompt_token_ids = tito.render_messages(
+            second_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT,
                 tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
@@ -714,7 +734,8 @@ class TestAgentMetadata:
             mock_tools.AGENTIC_RETURN_METADATA = None
 
         samples = listify(result.sample)
-        expected_session_server_id = f"127.0.0.1:{generation_env.args.session_server_port}"
+        (session_server_port,) = generation_env.args.session_server_ports
+        expected_session_server_id = f"127.0.0.1:{session_server_port}"
         for s in samples:
             assert s.metadata["session_server_id"] == expected_session_server_id
             assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
@@ -753,7 +774,7 @@ class TestAgentNoRecords:
             )
             with with_session_server(mock_server.url, args, port=session_port):
                 args.session_server_ip = "127.0.0.1"
-                args.session_server_port = session_port
+                args.session_server_ports = [session_port]
                 env = GenerateEnv(args=args, mock_server=mock_server)
                 result = _run_generate(agentic_variant, env, make_sample(prompt=TwoTurnStub.PROMPT))
 

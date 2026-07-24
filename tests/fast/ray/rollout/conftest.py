@@ -42,8 +42,10 @@ def make_args(**overrides: Any) -> Namespace:
         # batch / training
         global_batch_size=8,
         use_dynamic_global_batch_size=False,
+        wandb_always_use_train_step=False,
         disable_rollout_trim_samples=False,
         balance_data=False,
+        delay_split_train_data_by_dp=False,
         # advantage / reward
         advantage_estimator="grpo",
         rewards_normalization=True,
@@ -95,8 +97,16 @@ def make_args(**overrides: Any) -> Namespace:
         custom_eval_rollout_log_function_path=None,
         # debug data
         save_debug_rollout_data=None,
+        save_debug_trajectory_data=None,
         load_debug_rollout_data=None,
         load_debug_rollout_data_subsample=None,
+        ci_inject_rollout_data_path=None,
+        ci_inject_rollout_data_start_rollout_id=None,
+        ci_inject_rollout_data_min_match_ratio=0.9,
+        # event checkpointing (event_logger.restore/snapshot in RolloutManager)
+        save_debug_event_data=None,
+        load=None,
+        save=None,
         # CI
         ci_test=False,
         # dumper (sglang debug dumper integration)
@@ -208,7 +218,7 @@ def ray_actor_baseline(ray_local_mode):
 
 @pytest.fixture(autouse=True)
 def _autouse_subprocess_leak_check():
-    """Catch leaked router / session_server multiprocessing children."""
+    """Catch leaked router / session-server multiprocessing children."""
     import multiprocessing
 
     before = {p.pid for p in multiprocessing.active_children()}

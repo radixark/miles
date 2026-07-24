@@ -5,6 +5,7 @@ import torch
 
 from miles.utils.ray_utils import Box
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
+from miles.utils.timer import Timer
 from miles.utils.types import Sample
 
 
@@ -22,7 +23,10 @@ def convert_samples_to_train_data(
         return f(args, samples)
 
     raw_rewards, rewards = _post_process_rewards(
-        args, samples, custom_reward_post_process_func=custom_reward_post_process_func
+        args,
+        samples,
+        custom_reward_post_process_func=custom_reward_post_process_func,
+        prompt_group_sizes=metadata.get("prompt_group_sizes"),
     )
 
     assert len(raw_rewards) == len(samples)
@@ -85,6 +89,24 @@ def convert_samples_to_train_data(
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
+    if any(sample.adapter is not None for sample in samples):
+        assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
+        train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
+        # Slots whose adapter batch completes with this batch: the trainer scales their
+        # accumulated gradients by 1/adapter-batch-size and advances the LR schedule.
+        step_slots = sorted(metadata.get("step_slots", []))
+        train_data["step_slots"] = step_slots
+        train_data["step_adapter_names"] = sorted(metadata.get("step_adapter_names", []))
+        step_slot_set = set(step_slots)
+        train_data["step_adapter_batch_sizes"] = {
+            sample.adapter.slot: sample.metadata["adapter_global_batch_size"]
+            for sample in samples
+            if sample.adapter.slot in step_slot_set
+        }
+
+    if (prompt_group_sizes := metadata.get("prompt_group_sizes")) is not None:
+        train_data["prompt_group_sizes"] = prompt_group_sizes
+
     if samples[0].opd_reverse_kl is not None:
         train_data["opd_reverse_kl"] = [sample.opd_reverse_kl for sample in samples]
 
@@ -96,7 +118,12 @@ def convert_samples_to_train_data(
     return train_data
 
 
-def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], custom_reward_post_process_func):
+def _post_process_rewards(
+    args,
+    samples: list[Sample] | list[list[Sample]],
+    custom_reward_post_process_func,
+    prompt_group_sizes: list[int] | None = None,
+):
     if (f := custom_reward_post_process_func) is not None:
         return f(args, samples)
 
@@ -104,6 +131,23 @@ def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], cust
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
         # group norm
         rewards = torch.tensor(raw_rewards, dtype=torch.float)
+        if prompt_group_sizes is not None:
+            # Multi-LoRA: groups may have heterogeneous sizes (per-adapter
+            # n_samples_per_prompt), so normalize within explicit boundaries.
+            assert sum(prompt_group_sizes) == len(
+                raw_rewards
+            ), f"prompt group sizes sum to {sum(prompt_group_sizes)}, but got {len(raw_rewards)} rewards"
+            normalized_groups = []
+            for group_rewards in rewards.split(prompt_group_sizes):
+                centered = group_rewards - group_rewards.mean()
+                if (
+                    args.advantage_estimator in ["grpo", "gspo"]
+                    and args.grpo_std_normalization
+                    and group_rewards.numel() > 1
+                ):
+                    centered = centered / (group_rewards.std() + 1e-6)
+                normalized_groups.append(centered)
+            return raw_rewards, torch.cat(normalized_groups).tolist()
         if rewards.shape[-1] == args.n_samples_per_prompt * args.rollout_batch_size:
             rewards = rewards.reshape(-1, args.n_samples_per_prompt)
         else:
@@ -123,11 +167,12 @@ def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], cust
 
 def split_train_data_by_dp(args, data, dp_size):
     """Split the train data by data parallel size."""
-    rollout_data = {}
+    rollout_data_list = split_train_data_by_dp_raw(args, data, dp_size=dp_size)
+    return [Box(ray.put(rollout_data)) for rollout_data in rollout_data_list]
 
-    if "prompt" in data:
-        rollout_data["prompt"] = data["prompt"]
 
+def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> list[dict[str, Any]]:
+    """Split the train data by data parallel size."""
     total_lengths = [len(t) for t in data["tokens"]]
     data["total_lengths"] = total_lengths
 
@@ -136,7 +181,13 @@ def split_train_data_by_dp(args, data, dp_size):
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
 
-    rollout_data_refs = []
+    # Multi-LoRA: sort partitions by adapter slot so each microbatch is
+    # contiguous-by-slot (required by the per-adapter token-count math).
+    adapter_slots = data.get("adapter_slots")
+    if adapter_slots is not None:
+        partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
+
+    shards = []
 
     for i in range(dp_size):
         rollout_data = {}
@@ -157,7 +208,9 @@ def split_train_data_by_dp(args, data, dp_size):
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
+            "seq_witness_ids",
             "weight_versions",
+            "adapter_slots",
         ]:
             if key not in data:
                 continue
@@ -168,9 +221,28 @@ def split_train_data_by_dp(args, data, dp_size):
             "raw_reward",
             "total_lengths",
             "dynamic_global_batch_size",
+            "step_slots",
+            "step_adapter_names",
+            "step_adapter_batch_sizes",
+            "prompt_group_sizes",
         ]:
             if key not in data:
                 continue
             rollout_data[key] = data[key]
-        rollout_data_refs.append(Box(ray.put(rollout_data)))
-    return rollout_data_refs
+        if "adapter_slots" in rollout_data:
+            rollout_data["n_adapters"] = args.multi_lora_n_adapters
+        shards.append(rollout_data)
+    return shards
+
+
+def process_rollout_data_shard(args, rollout_data):
+    """Train-side completion of the DP split: drop the ``partition`` key and
+    reorder the batch-global ``total_lengths`` into this shard's row order."""
+    partition = rollout_data.pop("partition")
+    total_lengths = rollout_data["total_lengths"]
+
+    # save the seqlen of the whole rollout batch
+    Timer().seq_lens = total_lengths
+    rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
+
+    return rollout_data

@@ -4,8 +4,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from miles.rollout.session.session_errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.rollout.session.session_types import SessionRecord
+from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils import assert_messages_append_only_with_allowed_role, message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
@@ -62,7 +62,7 @@ class LinearTrajectory:
         Must be called under ``self.lock``.
         """
         if not self.token_ids:
-            return tito_tokenizer.render_messages(
+            return tito_tokenizer.apply_chat_template(
                 request_messages,
                 tools=tools,
                 add_generation_prompt=True,
@@ -273,7 +273,7 @@ class SessionRegistry:
             return None
         try:
             tools = session.records[-1].request.get("tools") if session.records else None
-            expected_ids = self.tito_tokenizer.render_messages(
+            expected_ids = self.tito_tokenizer.apply_chat_template(
                 session.messages,
                 tools=tools,
                 add_generation_prompt=False,

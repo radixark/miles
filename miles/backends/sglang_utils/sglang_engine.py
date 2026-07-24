@@ -13,15 +13,12 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
-from miles.backends.megatron_utils.lora_utils import (
-    LORA_ADAPTER_NAME,
-    convert_target_modules_to_hf,
-    is_lora_enabled,
-    lora_base_cpu_backup_enabled,
-)
+from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, lora_base_cpu_backup_enabled
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +52,18 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
         f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
         f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
     )
+
+
+def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+    """Best-effort NVML UUIDs so the dashboard can reconcile GPU index
+    spaces across processes; None entries when NVML is unavailable."""
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        return [str(pynvml.nvmlDeviceGetUUID(pynvml.nvmlDeviceGetHandleByIndex(i))) for i in gpu_ids]
+    except Exception:
+        return [None] * len(gpu_ids)
 
 
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
@@ -129,6 +138,25 @@ class SGLangEngine(RayActor):
         self.base_gpu_id = base_gpu_id
         self.sglang_overrides = sglang_overrides or {}
         self.num_gpus_per_engine = num_gpus_per_engine
+
+    def get_topology_info(self) -> dict:
+        """Placement facts for the dashboard timeline. ``base_gpu_id`` is
+        node-physical, so these ids match the NVML order the GPU sampler uses."""
+        from miles.utils.misc import get_current_node_ip
+
+        if self.base_gpu_id is None:  # external engines: placement unknown
+            gpu_ids = []
+        else:
+            gpus_on_node = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
+            gpu_ids = list(range(self.base_gpu_id, self.base_gpu_id + gpus_on_node))
+        return dict(
+            url=f"http://{self.server_host}:{self.server_port}",
+            node_ip=get_current_node_ip(),
+            gpu_ids=gpu_ids,
+            gpu_uuids=_get_gpu_uuids(gpu_ids),
+            worker_type=self.worker_type,
+            node_rank=self.node_rank,
+        )
 
     def init(
         self,
@@ -345,18 +373,25 @@ class SGLangEngine(RayActor):
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        upsert: bool = False,
+        expected_checksums: dict | None = None,
     ):
-        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
+        """Load a LoRA adapter; ``serialized_named_tensors[tp_rank]`` is bytes for that TP rank.
+        With ``upsert``, the already-loaded ``lora_name`` is overwritten in place (no unload/register)."""
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
             "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
+        if upsert:
+            payload["upsert"] = True
         if load_format is not None:
             payload["load_format"] = load_format
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
+        if expected_checksums is not None:
+            payload["expected_checksums"] = expected_checksums
 
         return self._make_request(
             "load_lora_adapter_from_tensors",
@@ -373,14 +408,10 @@ class SGLangEngine(RayActor):
         group_name: str,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        upsert: bool = False,
     ):
-        """Load a LoRA adapter whose weights are broadcast over ``group_name``.
-
-        Mirrors ``update_weights_from_distributed``: only metadata is sent here;
-        the tensors arrive via NCCL broadcast (src=0), so no CUDA IPC is used and
-        this works across nodes. ``init_weights_update_group`` must have created
-        ``group_name`` already.
-        """
+        """Load a LoRA adapter: only metadata is sent; weights arrive via NCCL broadcast over ``group_name``.
+        With ``upsert``, the already-loaded ``lora_name`` is overwritten in place (no unload/register)."""
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
@@ -389,6 +420,7 @@ class SGLangEngine(RayActor):
             "shapes": shapes,
             "group_name": group_name,
             "pinned": pinned,
+            "upsert": upsert,
         }
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
@@ -402,20 +434,21 @@ class SGLangEngine(RayActor):
         """Flush the cache of the server."""
         if self.node_rank != 0:
             return
-        # flush cache will not return status_code 200 when there are pending requests
+        last_message = None
         for _ in range(60):
             try:
                 response = requests.get(f"http://{self.server_host}:{self.server_port}/flush_cache")
                 if response.status_code == 200:
                     break
+                last_message = response.text
             except NewConnectionError as e:
                 raise e
             except Exception as e:
                 logger.info(f"Error flushing cache: {e}")
-                time.sleep(1)
-                continue
+                last_message = str(e)
+            time.sleep(1)
         else:
-            raise TimeoutError("Timeout while flushing cache.")
+            raise TimeoutError(f"Timeout while flushing cache: {last_message}")
 
     def shutdown(self):
         if self.args.rollout_external:
@@ -486,18 +519,43 @@ class SGLangEngine(RayActor):
             {"tags": tags},
         )
 
-    def check_weights(self, action: str, allow_quant_error: bool = False):
-        return self._make_request("weights_checker", {"action": action, "allow_quant_error": allow_quant_error})
+    def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
+        payload = {"action": action, "allow_quant_error": allow_quant_error, "selector": selector}
+        if skip_list is not None:
+            # sglang's CheckWeightsReqInput names this field `skip_tensor_list`.
+            payload["skip_tensor_list"] = skip_list
+        return self._make_request("weights_checker", payload)
 
-    def update_weights_from_disk(self, model_path: str, load_format: str | None = None):
+    def pull_weights(self, target_version: int):
+        """Have the engine sync every host it spans to target_version: each host pulls the
+        published weights (a full checkpoint copied as-is, or deltas verified per-tensor and
+        applied onto the local checkpoint) into its local checkpoint dir. The engine reloads
+        it afterwards via update_weights_from_disk."""
+        return self._make_request(
+            "pull_weights",
+            {
+                "local_checkpoint_dir": self.args.update_weight_local_checkpoint_dir,
+                "source_dir": self.args.update_weight_disk_dir,
+                "target_version": target_version,
+            },
+        )
+
+    def update_weights_from_disk(
+        self, model_path: str, load_format: str | None = None, weight_version: str | None = None
+    ):
         """Reload weights from *model_path* without restarting the engine.
 
-        Used for non-updatable (frozen) models that overlap with megatron:
-        after offload, weights are restored from disk instead of CPU cache.
+        Used for non-updatable (frozen) models that overlap with megatron (after offload,
+        weights are restored from disk instead of CPU cache), and by disk-delta weight sync
+        to reload the patched host-local checkpoint.
         """
         payload = {"model_path": model_path}
         if load_format is not None:
             payload["load_format"] = load_format
+        if weight_version is not None:
+            payload["weight_version"] = weight_version
         return self._make_request("update_weights_from_disk", payload)
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
@@ -686,7 +744,12 @@ def _compute_server_args(
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
     external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
-    if is_lora_enabled(args):
+    if is_multi_lora_enabled(args):
+        kwargs["enable_lora"] = True
+        kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
+        kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
+        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+    elif is_lora_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)

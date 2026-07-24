@@ -347,7 +347,7 @@ collision produces an OOM before training ever starts. Drop
 
 - `--offload-train` — train state offloads to CPU between phases
 - `--offload-rollout` — rollout state offloads to CPU between phases
-- `--sglang-disable-piecewise-cuda-graph` — avoids NVLS OOM in colocate mode
+- `--sglang-cuda-graph-backend-prefill=disabled` — avoids NVLS OOM in colocate mode
 
 </Note>
 
@@ -390,6 +390,16 @@ not a stuck trainer.
 
 Dynamic sampling implies that *some* in-flight generations will be abandoned. Without
 care, the compute invested in those half-finished trajectories is lost.
+
+<Note>
+
+**Agentic rollouts.** When an external agent drives generation, aborting SGLang
+doesn't stop the agent — it keeps issuing requests until its own limit. Define an
+optional [`abort` hook](/user-guide/rollout-endpoints#optional-teardown-the-abort-hook)
+in your `--custom-agent-function-path` module so Miles can tell the agent backend
+to tear down its in-flight trials at abort time.
+
+</Note>
 
 `--partial-rollout` flips on a buffer that retains partial samples and resumes their
 generation during the next rollout. The buffer dequeue policy is itself pluggable via
