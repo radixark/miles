@@ -1,7 +1,6 @@
 import os
 
 import torch
-from transformer_engine.pytorch.tensor.nvfp4_tensor import NVFP4Quantizer
 
 FP4_E2M1_MAX = 6.0
 FP8_E4M3_MAX = 448.0
@@ -66,6 +65,8 @@ def _pad_rows_for_te_quantizer(weight: torch.Tensor) -> torch.Tensor:
 def nvfp4_quantize_1d(
     weight: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    from transformer_engine.pytorch.tensor.nvfp4_tensor import NVFP4Quantizer
+
     weight = weight.contiguous()
     num_rows, num_cols = weight.shape
     nvfp4_e4m3_max = nvfp4_weight_e4m3_max()
