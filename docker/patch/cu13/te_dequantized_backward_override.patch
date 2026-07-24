@@ -1,0 +1,22 @@
+--- a/pytorch/module/grouped_linear.py
++++ b/pytorch/module/grouped_linear.py
+@@ -431,6 +431,8 @@
+             backward_override = None
+         if backward_override == "high_precision":
+             save_original_input = True
++        elif backward_override == "dequantized":
++            save_original_input = False
+ 
+         num_gemms = len(m_splits)
+         weights = weights_and_biases[:num_gemms]
+--- a/pytorch/module/linear.py
++++ b/pytorch/module/linear.py
+@@ -285,6 +285,8 @@
+     is_fsdp2 = args.is_fsdp2
+     if backward_override == "high_precision":
+         save_original_input = True
++    elif backward_override == "dequantized":
++        save_original_input = False
+ 
+     # NVTX label for profiling
+     nvtx_label = "transformer_engine._Linear.forward"
