@@ -25,6 +25,21 @@ from miles.utils.multi_lora import is_multi_lora_enabled
 logger = logging.getLogger(__name__)
 
 
+def _sglang_http_route_exists(endpoint: str) -> bool | None:
+    """Return whether the imported SGLang HTTP app declares an endpoint.
+
+    ``None`` means the route table could not be inspected, so callers should
+    fall back to probing the HTTP server.
+    """
+    try:
+        from sglang.srt.entrypoints.http_server import app
+    except Exception:
+        return None
+
+    path = f"/{endpoint.lstrip('/')}"
+    return any(getattr(route, "path", None) == path for route in getattr(app, "routes", []))
+
+
 def get_base_gpu_id(args, rank):
     num_gpus = min(args.num_gpus_per_node, args.rollout_num_gpus_per_engine)
     if args.colocate:
@@ -285,6 +300,41 @@ class SGLangEngine(RayActor):
 
         url = f"http://{self.server_host}:{self.server_port}/{endpoint}"
         response = requests.post(url, json=payload or {})
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            if hasattr(e, "add_note"):
+                e.add_note(f"{response.text=}")
+            raise
+        return response.json()
+
+    def _make_optional_request(self, endpoint: str, payload: dict | None = None):
+        """Make a POST request to an optional SGLang endpoint.
+
+        Some SGLang versions do not expose weight-update lifecycle hooks such
+        as /begin_weight_update and /end_weight_update. Treat 404 as a
+        capability miss and keep all other HTTP failures strict.
+        """
+        if self.node_rank != 0:
+            return
+
+        if _sglang_http_route_exists(endpoint) is False:
+            logger.warning(
+                "SGLang endpoint /%s is not declared by the installed SGLang HTTP app; skipping optional request.",
+                endpoint,
+            )
+            return {"success": True, "skipped": True, "endpoint": endpoint}
+
+        url = f"http://{self.server_host}:{self.server_port}/{endpoint}"
+        response = requests.post(url, json=payload or {})
+        if response.status_code == 404:
+            logger.warning(
+                "SGLang endpoint /%s is not available at %s; skipping optional request.",
+                endpoint,
+                url,
+            )
+            return {"success": True, "skipped": True, "endpoint": endpoint}
+
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -617,11 +667,11 @@ class SGLangEngine(RayActor):
 
     def begin_weight_update(self):
         """Open a weight-update session on the engine (restores packed weights for loading)."""
-        return self._make_request("begin_weight_update", {})
+        return self._make_optional_request("begin_weight_update", {})
 
     def end_weight_update(self):
         """Close the weight-update session (post-load + quant post-process on the full model)."""
-        return self._make_request("end_weight_update", {})
+        return self._make_optional_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
         return self._make_request(

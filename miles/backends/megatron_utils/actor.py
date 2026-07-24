@@ -58,7 +58,6 @@ from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
-from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 if TYPE_CHECKING:
@@ -230,6 +229,14 @@ class MegatronTrainRayActor(TrainRayActor):
 
                 update_weight_cls = UpdateWeightFromDiskDelta
             else:
+                try:
+                    from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
+                except ImportError as exc:
+                    raise ImportError(
+                        "P2P weight transfer is not available with the current SGLang installation. "
+                        "Use --update-weight-transfer-mode broadcast, or switch to an SGLang version "
+                        "that provides the P2P update dependencies."
+                    ) from exc
                 update_weight_cls = UpdateWeightP2P
         self.weight_updater = update_weight_cls(
             self.args,

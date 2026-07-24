@@ -19,7 +19,6 @@ from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
-from megatron.core.optimizer.muon import get_megatron_muon_optimizer
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
@@ -57,6 +56,11 @@ from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
 logger = logging.getLogger(__name__)
+
+try:
+    from megatron.core.optimizer.muon import get_megatron_muon_optimizer
+except ModuleNotFoundError:
+    get_megatron_muon_optimizer = None
 
 
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
@@ -167,6 +171,12 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        if get_megatron_muon_optimizer is None:
+            raise ModuleNotFoundError(
+                "Megatron Muon optimizer is not available in the current MEGATRON_PATH. "
+                "Use --optimizer adam/sgd, or switch MEGATRON_PATH to a Megatron version "
+                "that provides megatron.core.optimizer.muon."
+            )
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
