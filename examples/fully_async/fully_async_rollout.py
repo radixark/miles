@@ -82,10 +82,14 @@ class AsyncRolloutWorker:
 
     def __init__(self, args, data_buffer: DataSource):
         if args.async_max_concurrent_samples is not None:
-            assert args.async_max_concurrent_samples <= args.sglang_server_concurrency, (
-                f"--async-max-concurrent-samples ({args.async_max_concurrent_samples}) must not exceed "
-                f"--sglang-server-concurrency ({args.sglang_server_concurrency})"
+            client_capacity = (
+                args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
             )
+            if args.async_max_concurrent_samples > client_capacity:
+                print(
+                    f"--async-max-concurrent-samples ({args.async_max_concurrent_samples}) exceeds the "
+                    f"client concurrency cap ({client_capacity}); the excess queues on the semaphore"
+                )
         self.args = args
         self.data_buffer = data_buffer  # Directly save data_buffer reference
         self.running = True

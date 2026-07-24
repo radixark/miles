@@ -2665,6 +2665,13 @@ def miles_validate_args(args):
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
 
+    if args.async_max_concurrent_samples is not None:
+        assert args.async_max_concurrent_samples >= args.n_samples_per_prompt, (
+            f"--async-max-concurrent-samples ({args.async_max_concurrent_samples}) must be at least "
+            f"--n-samples-per-prompt ({args.n_samples_per_prompt}): the worker submits whole groups, "
+            f"so one group already puts n_samples_per_prompt trajectories in flight"
+        )
+
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
 
