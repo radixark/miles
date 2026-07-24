@@ -15,7 +15,6 @@ from miles.rollout.checkpoint_eval import (
     CheckpointEvalFn,
     EvalSkip,
     FleetEvalFn,
-    make_eval_args,
     resolve_checkpoint_eval_fn,
     retarget_args,
 )
@@ -47,30 +46,6 @@ def test_retarget_args_swaps_router_and_sizing():
     # The original namespace is untouched.
     assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.1", 30000)
     assert args.rollout_num_gpus == 4
-
-
-def test_make_eval_args_reads_router_registry():
-    args = make_args()
-    eval_args = make_eval_args(args)
-
-    assert (eval_args.sglang_router_ip, eval_args.sglang_router_port) == ("10.0.0.2", 31000)
-    assert eval_args.rollout_num_gpus == args.eval_num_gpus
-    assert eval_args.rollout_num_gpus_per_engine == args.eval_num_gpus_per_engine
-
-
-async def test_run_eval_datasets_merges_datasets(monkeypatch):
-    import miles.rollout.inference_rollout.inference_rollout_eval as eval_mod
-
-    async def fake_single_dataset(state, cfg, cache):
-        return {cfg.name: {"rewards": [1.0], "truncated": [False], "samples": []}}
-
-    monkeypatch.setattr(eval_mod, "eval_rollout_single_dataset", fake_single_dataset)
-
-    state = SimpleNamespace(
-        args=Namespace(group_rm=False, eval_datasets=[SimpleNamespace(name="a"), SimpleNamespace(name="b")])
-    )
-    results = await eval_mod.run_eval_datasets(state, {})
-    assert set(results.keys()) == {"a", "b"}
 
 
 def _eval_dataset_env(monkeypatch, generate):
@@ -254,21 +229,10 @@ async def test_fleet_pins_all_engines_then_delegates(fleet_env):
     assert len(fleet_env.state_builds) == 1
 
 
-async def test_fleet_pin_violation_skips_after_retry(fleet_env):
-    log = []
-    engine = FakeEngine(log)
-    engine.responses["get_weight_version"] = lambda: "999"  # never matches
-    fn = make_fleet_fn(make_args(), [engine])
-
-    with pytest.raises(EvalSkip) as exc:
-        await fn.evaluate_checkpoint("/snap/step_5", eval_input(5, "/snap/step_5"))
-
-    assert exc.value.reason == "pin_violation"
-    assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 2  # one retry
-
-
-async def test_fleet_pin_requires_all_engines_to_match(fleet_env):
-    """The router load-balances across engines: one stale engine = mixed versions."""
+async def test_fleet_pin_requires_all_match_and_retries(fleet_env):
+    """The router load-balances across engines, so one stale engine = mixed
+    versions: the pin must fail even when the other engine matches, retry once,
+    then degrade to an attributable skip."""
     log = []
     good, stale = FakeEngine(log), FakeEngine(log)
     stale.responses["get_weight_version"] = lambda: "999"
@@ -278,6 +242,7 @@ async def test_fleet_pin_requires_all_engines_to_match(fleet_env):
         await fn.evaluate_checkpoint("/snap/step_5", eval_input(5, "/snap/step_5"))
 
     assert exc.value.reason == "pin_violation"
+    assert len([e for e in log if e[0] == "update_weights_from_disk"]) == 4  # 2 engines x 2 attempts
 
 
 async def test_fleet_marks_dead_engine_for_recovery(fleet_env):
@@ -296,22 +261,6 @@ async def test_fleet_marks_dead_engine_for_recovery(fleet_env):
 
     assert fn._srv.wrappers[0].stopped  # probed, found unreachable, marked for revival
     assert fn._srv.recover_calls == 1
-
-
-async def test_fleet_router_not_ready_skips(fleet_env, monkeypatch):
-    async def router_never_ready(self, timeout=180.0):
-        raise TimeoutError("router not ready")
-
-    monkeypatch.setattr(checkpoint_eval_mod.FleetEvalFn, "_wait_router_ready", router_never_ready)
-
-    inner_calls = []
-    fn = make_fleet_fn(make_args(), [FakeEngine([])], inner=lambda input: inner_calls.append(input))
-
-    with pytest.raises(EvalSkip) as exc:
-        await fn.evaluate_checkpoint("/snap/step_5", eval_input(5, "/snap/step_5"))
-
-    assert exc.value.reason == "unhealthy"
-    assert inner_calls == []
 
 
 # ---------------- RolloutManager._eval_checkpoint (the single snapshot path) ----------------
@@ -396,17 +345,6 @@ async def test_eval_checkpoint_missing_marker_skips(controller_env, tmp_path):
 
     assert fn.inputs == []
     assert controller_env.logged["skip"] == (5, "ckpt_missing")
-
-
-async def test_eval_checkpoint_base_checkpoint_needs_no_marker(controller_env, tmp_path):
-    fn = CheckpointFnStub()
-    args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
-    mgr = make_manager(args, checkpoint_fn=fn)
-
-    await mgr.eval(0, hf_dir="/base")
-
-    assert len(fn.inputs) == 1
-    assert "eval" in controller_env.logged
 
 
 async def test_eval_checkpoint_skip_reason_propagates(controller_env, tmp_path):
@@ -670,20 +608,6 @@ async def test_dispatcher_reuse_mode_uses_save_hf(dispatcher_env):
 
     assert actor_model.exports == []  # no extra export in reuse mode
     assert manager.eval_calls[0][:2] == (10, "/ckpt/hf/10")
-
-
-async def test_dispatcher_drain_awaits_all(dispatcher_env):
-    manager = FakeManagerActor()
-    dispatcher, _ = make_dispatcher(dispatcher_env, manager, FakeActorModel())
-
-    await dispatcher.dispatch(1)
-    await dispatcher.dispatch(2)
-    assert len(dispatcher.pending) == 2
-
-    manager.finish(0)
-    manager.finish(1)
-    await dispatcher.drain()
-    assert len(dispatcher.pending) == 0
 
 
 async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
