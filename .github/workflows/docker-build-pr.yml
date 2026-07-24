@@ -9,6 +9,9 @@ on:
       - 'requirements.txt'
       - '.github/workflows/docker-build-pr.yml'
 
+permissions:
+  contents: read
+
 concurrency:
   group: docker-build-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
