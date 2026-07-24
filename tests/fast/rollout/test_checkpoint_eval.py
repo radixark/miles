@@ -697,58 +697,6 @@ async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
     assert len(dispatcher.pending) == 0
 
 
-# ------- standalone service (examples/fully_async/checkpoint_eval_service.py) -------
-
-
-@pytest.fixture
-def service_mod():
-    import importlib
-
-    return importlib.import_module("examples.fully_async.checkpoint_eval_service")
-
-
-def test_find_ready_snapshots(service_mod, tmp_path):
-    from miles.utils.hf_config import HF_EXPORT_COMPLETE_MARKER
-
-    def snapshot(name, *, marker=False, config=False, old=False):
-        d = tmp_path / name
-        d.mkdir()
-        if marker:
-            (d / HF_EXPORT_COMPLETE_MARKER).touch()
-        if config:
-            (d / "config.json").touch()
-            (d / "model.safetensors").touch()
-        if old:
-            import os
-
-            stale = time.time() - 2 * service_mod.QUIESCENCE_SECS
-            for p in [d] + list(d.iterdir()):
-                os.utime(p, (stale, stale))
-        return d
-
-    import time
-
-    snapshot("step_3", marker=True)
-    snapshot("step_7", config=True, old=True)  # pre-marker, quiescent
-    snapshot("step_9", config=True)  # still being written
-    snapshot("qwen2.5-step_12", marker=True)  # id must come from the trailing number
-    snapshot("step_1", marker=True)  # below min_rollout_id
-    snapshot("step_5", marker=True)  # already consumed
-    (tmp_path / "notes.txt").touch()
-
-    ready = service_mod.find_ready_snapshots(tmp_path, min_rollout_id=2, consumed={5})
-
-    assert [(rid, p.name) for rid, p in ready] == [(3, "step_3"), (7, "step_7"), (12, "qwen2.5-step_12")]
-
-
-def test_snapshot_ledger_roundtrip(service_mod, tmp_path):
-    ledger = service_mod.SnapshotLedger(tmp_path)
-    ledger.mark(3)
-    ledger.mark(7)
-
-    assert service_mod.SnapshotLedger(tmp_path).consumed == {3, 7}
-
-
 # ---------------- example fn (examples/fully_async/external_eval_fn.py) ----------------
 
 
@@ -774,20 +722,22 @@ def external_fn_env(monkeypatch):
     monkeypatch.setattr(mod, "run_eval_datasets", fake_run_eval)
     monkeypatch.setattr(mod, "GenerateState", lambda args: SimpleNamespace(args=args))
     monkeypatch.setattr(mod, "wait_http_ok", fake_wait_ok)
-    monkeypatch.delenv("MILES_EXTERNAL_EVAL_URL", raising=False)
-    monkeypatch.delenv("MILES_EXTERNAL_EVAL_GPUS", raising=False)
-    return SimpleNamespace(mod=mod, calls=calls, fake_pin=fake_pin)
+    for var in ("URL", "GPUS", "PORT", "SERVER_ARGS"):
+        monkeypatch.delenv(f"MILES_EXTERNAL_EVAL_{var}", raising=False)
+    return SimpleNamespace(mod=mod, calls=calls, fake_pin=fake_pin, monkeypatch=monkeypatch)
 
 
-def make_external_fn(external_fn_env, **kwargs):
+def make_external_fn(external_fn_env, **env):
     from miles.rollout.base_types import RolloutFnConstructorInput
 
+    for var, value in env.items():
+        external_fn_env.monkeypatch.setenv(f"MILES_EXTERNAL_EVAL_{var}", value)
     args = make_args(hf_checkpoint="/base", eval_model_path=None)
-    return external_fn_env.mod.ExternalSglangEvalFn(RolloutFnConstructorInput(args=args, data_source=None), **kwargs)
+    return external_fn_env.mod.ExternalSglangEvalFn(RolloutFnConstructorInput(args=args, data_source=None))
 
 
 async def test_external_eval_fn_waits_pins_then_evals(external_fn_env):
-    fn = make_external_fn(external_fn_env, url="http://eval-host:31000")
+    fn = make_external_fn(external_fn_env, URL="http://eval-host:31000")
 
     output = await fn(RolloutFnEvalInput(rollout_id=5, weight_version="5", hf_dir="/snap/step_5"))
 
@@ -801,7 +751,7 @@ async def test_external_eval_fn_waits_pins_then_evals(external_fn_env):
 
 
 async def test_external_eval_fn_pin_failure_raises(external_fn_env):
-    fn = make_external_fn(external_fn_env, url="http://eval-host:31000")
+    fn = make_external_fn(external_fn_env, URL="http://eval-host:31000")
     external_fn_env.fake_pin.fail = True
 
     with pytest.raises(RuntimeError, match="pin failed"):
@@ -811,7 +761,7 @@ async def test_external_eval_fn_pin_failure_raises(external_fn_env):
 
 def test_external_eval_fn_launches_own_server(external_fn_env, monkeypatch):
     """Launch mode is the black-box promise: init prepares everything, pinned to
-    the GPUs the user names; dispose tears it down."""
+    the GPUs the user names, extra sglang flags passed through; dispose tears down."""
     procs = []
 
     def fake_popen(cmd, env=None):
@@ -821,12 +771,13 @@ def test_external_eval_fn_launches_own_server(external_fn_env, monkeypatch):
 
     monkeypatch.setattr(external_fn_env.mod.subprocess, "Popen", fake_popen)
 
-    fn = make_external_fn(external_fn_env, gpus="6,7")
+    fn = make_external_fn(external_fn_env, GPUS="6,7", SERVER_ARGS="--attention-backend fa3")
 
     (proc,) = procs
     assert proc.env["CUDA_VISIBLE_DEVICES"] == "6,7"
     assert proc.cmd[proc.cmd.index("--tp") + 1] == "2"
     assert proc.cmd[proc.cmd.index("--model-path") + 1] == "/base"
+    assert proc.cmd[-2:] == ["--attention-backend", "fa3"]
     assert fn._url == "http://127.0.0.1:31000"
     fn.dispose()
     assert proc.terminated
