@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 
 import ray
@@ -6,6 +7,8 @@ from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+
+logger = logging.getLogger(__name__)
 
 
 class RayTrainGroup:
@@ -136,6 +139,7 @@ class RayTrainGroup:
         info = await self.rollout_manager.get_updatable_engines_and_lock.remote()
 
         if not should_update and not info.has_new_engines:
+            logger.info("Skipping weight update: weights unchanged since the last update and no new engines")
             return
 
         await self._broadcast("update_weights", info=info)
