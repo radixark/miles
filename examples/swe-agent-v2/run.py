@@ -1,8 +1,8 @@
-"""Agent V2 launcher (GLM-4.7-Flash): Miles <-> Harbor agent orchestration.
+"""SWE-Agent V2 launcher (GLM-4.7-Flash): Miles <-> Harbor orchestration.
 
 Supports any task type (SWE-bench, Terminal-Bench, custom) via Harbor.
 
-Python equivalent of run.sh. Usage:
+Usage:
     python run.py
     python run.py --mode normal
     python run.py --base-dir /my/models --prompt-data /my/data.jsonl
@@ -41,10 +41,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     prompt_data: str = "/root/swe_train.jsonl"
 
     # Training settings
-    max_seq_len: int = 16384
+    max_seq_len: int = 65536
+    num_rollout: int = 3000
     rollout_batch_size: int = 2
     n_samples_per_prompt: int = 4
     global_batch_size: int = 8
+    save_interval: int = 100
+    save_traces_dir: str = ""
 
     # Agent settings
     agent_server_url: str = os.environ.get(
@@ -53,7 +56,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
-    miles_host_ip: str = os.environ.get("MILES_HOST_IP", socket.gethostname())  # cluster/pod IP
+    miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
 
     # W&B settings
     wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
@@ -100,7 +103,7 @@ def execute(args: ScriptArgs):
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
         f"--save {args.save_dir} "
-        "--save-interval 100 "
+        f"--save-interval {args.save_interval} "
     )
 
     rollout_args = (
@@ -108,7 +111,7 @@ def execute(args: ScriptArgs):
         "--input-key prompt "
         "--metadata-key metadata "
         "--rollout-shuffle "
-        "--num-rollout 3000 "
+        f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
@@ -159,7 +162,6 @@ def execute(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
-        "--use-miles-router "
         "--sglang-router-port 31000 "
         # TODO: speculative decoding has issue, need to fix later
     )
@@ -191,6 +193,10 @@ def execute(args: ScriptArgs):
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
 
+    trace_args = ""
+    if args.save_traces_dir:
+        trace_args = f"--dump-details {args.save_traces_dir} "
+
     wandb_args = ""
     if args.wandb_key:
         wandb_args = (
@@ -217,6 +223,7 @@ def execute(args: ScriptArgs):
         f"{grpo_args}"
         f"{wandb_args}"
         f"{prometheus_args}"
+        f"{trace_args}"
         f"{perf_args}"
         f"{sglang_args}"
         f"{agent_args}"
@@ -233,8 +240,9 @@ def execute(args: ScriptArgs):
         "AGENT_MODEL_NAME": args.agent_model_name,
         "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
-        "MILES_HOST_IP": args.miles_host_ip,
     }
+    if args.miles_host_ip:
+        extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 
     U.execute_train(
         train_args=train_args,
