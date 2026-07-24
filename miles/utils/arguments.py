@@ -460,6 +460,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "You could use `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std` as an example."
                 ),
             )
+            parser.add_argument(
+                "--rollout-sample-completion-backfill",
+                action="store_true",
+                default=False,
+                help=(
+                    "If set, training rollout replenishes one new prompt group after "
+                    "n_samples_per_prompt individual samples complete, instead of waiting "
+                    "for a full group task to return. Disabled by default to preserve the "
+                    "legacy group-level scheduling behavior."
+                ),
+            )
 
             # partial rollout
             parser.add_argument(
