@@ -26,26 +26,25 @@ TestMergeTokensBoundary
     - Default: plain concatenation (no boundary handling).
 
 TestTokenizeAdditional
-    Behavioral tests for tokenize_additional_non_assistant — the role-segmented
-    synthetic-prefix diff that computes incremental token IDs for appended
-    non-assistant messages.
+    Behavioral tests for tokenize_additional_non_assistant — the single
+    synthetic-prefix diff that computes incremental token IDs for the complete
+    appended non-assistant suffix.
 
     ``test_produces_nonempty_incremental`` is parametrized over:
       _TOOL_TRAJECTORIES (trajectory classes) × _TITO_MODELS (qwen3, glm47)
     Split points are auto-detected by _find_tito_splits from message structure,
     so adding a trajectory to _TOOL_TRAJECTORIES automatically extends coverage.
 
-    Remaining tests cover segmentation logic, generation-prompt timing,
-    reasoning-content shape, merge structure preservation, and append-only
-    validation (reject prefix mutation, fewer messages, or forbidden roles).
+    Remaining tests cover complete-appendix rendering, generation-prompt
+    timing, stored tool-call preservation, merge structure preservation, and
+    append-only validation (reject prefix mutation, fewer messages, or
+    forbidden roles).
 
 TestFactory
     get_tito_tokenizer factory: string/enum dispatch, invalid input handling.
 """
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 from transformers import AutoTokenizer
@@ -111,13 +110,18 @@ _ALLOWED_APPEND_ROLES = ["tool", "user", "system"]
 @pytest.fixture(params=list(_TITO_MODELS.keys()))
 def tito(request) -> TITOTokenizer:
     model_id, cls, tito_type = _TITO_MODELS[request.param]
-    return cls(_get_tokenizer(model_id, tito_type), allowed_append_roles=_ALLOWED_APPEND_ROLES)
+    return cls(
+        _get_tokenizer(model_id, tito_type),
+        chat_template_kwargs={"clear_thinking": False},
+        allowed_append_roles=_ALLOWED_APPEND_ROLES,
+    )
 
 
 @pytest.fixture
 def qwen3_tito() -> Qwen3TITOTokenizer:
     return Qwen3TITOTokenizer(
         _get_tokenizer("Qwen/Qwen3-4B", TITOTokenizerType.QWEN3),
+        chat_template_kwargs={"clear_thinking": False},
         allowed_append_roles=_ALLOWED_APPEND_ROLES,
     )
 
@@ -126,6 +130,7 @@ def qwen3_tito() -> Qwen3TITOTokenizer:
 def glm47_tito() -> GLM47TITOTokenizer:
     return GLM47TITOTokenizer(
         _get_tokenizer("zai-org/GLM-4.7-Flash", TITOTokenizerType.GLM47),
+        chat_template_kwargs={"clear_thinking": False},
         allowed_append_roles=_ALLOWED_APPEND_ROLES,
     )
 
@@ -296,7 +301,7 @@ class TestMergeTokensBoundary:
 
 
 # ---------------------------------------------------------------------------
-# TestTokenizeAdditional — incremental tokenization via role-segmented synthetic diff
+# TestTokenizeAdditional — one synthetic diff for the complete appended suffix
 #
 # test_produces_nonempty_incremental is the scalable core: parametrized over
 # _TRAJ_CASES (trajectories × split points) × tito fixture (models).
@@ -321,35 +326,39 @@ class TestTokenizeAdditional:
         incremental = tito.tokenize_additional_non_assistant(old_msgs, new_msgs, tools)
         assert len(incremental) > 0
 
-    def test_contiguous_tool_segment_is_tokenized_together(self, qwen3_tito: Qwen3TITOTokenizer):
-        old_msgs, new_msgs, tools = _split_at(MultiToolSingleTurnTrajectory, 3)
-        appended = new_msgs[len(old_msgs) :]
-
-        segments = qwen3_tito._split_appended_segments(appended)
-        assert len(segments) == 1
-        assert [msg["role"] for msg in segments[0]] == ["tool", "tool"]
-
-        incremental = qwen3_tito.tokenize_additional_non_assistant(old_msgs, new_msgs, tools)
-        decoded = qwen3_tito.tokenizer.decode(incremental)
-        assert MultiToolSingleTurnTrajectory.MESSAGES[3]["content"] in decoded
-        assert MultiToolSingleTurnTrajectory.MESSAGES[4]["content"] in decoded
-
-    def test_user_and_system_segments_are_singletons(self, default_tito: TITOTokenizer):
+    def test_complete_appendix_reaches_renderer_and_its_error_propagates(
+        self, qwen3_tito: Qwen3TITOTokenizer, monkeypatch
+    ):
+        old_msgs = list(SingleToolTrajectory.MESSAGES[:3])
         appended = [
-            {"role": "system", "content": "Use JSON."},
-            {"role": "user", "content": "Hello"},
-            {"role": "tool", "tool_call_id": "call_1", "content": '{"ok": true}'},
-            {"role": "tool", "tool_call_id": "call_2", "content": '{"ok": false}'},
-            {"role": "user", "content": "Try again"},
+            SingleToolTrajectory.MESSAGES[3],
+            {"role": "user", "content": "Try another route."},
+            {"role": "tool", "tool_call_id": "call_1", "content": '{"ok": false}'},
         ]
+        calls = []
 
-        segments = default_tito._split_appended_segments(appended)
-        assert [[msg["role"] for msg in segment] for segment in segments] == [
-            ["system"],
-            ["user"],
-            ["tool", "tool"],
-            ["user"],
-        ]
+        def reject_invalid_order(base_messages, appended_messages, *, tools=None, add_generation_prompt=False):
+            calls.append((base_messages, appended_messages, tools, add_generation_prompt))
+            if [message["role"] for message in appended_messages] == ["tool", "user", "tool"]:
+                raise ValueError("invalid tool ordering")
+            return [1]
+
+        monkeypatch.setattr(qwen3_tito, "_tokenize_rendered_suffix", reject_invalid_order)
+
+        with pytest.raises(ValueError, match="invalid tool ordering"):
+            qwen3_tito.tokenize_additional_non_assistant(
+                old_msgs,
+                old_msgs + appended,
+                SingleToolTrajectory.TOOLS,
+            )
+
+        assert len(calls) == 1
+        base_messages, rendered_appendix, tools, add_generation_prompt = calls[0]
+        assert [message["role"] for message in base_messages] == ["system", "assistant"]
+        assert base_messages[-1]["tool_calls"] == old_msgs[-1]["tool_calls"]
+        assert rendered_appendix == appended
+        assert tools == SingleToolTrajectory.TOOLS
+        assert add_generation_prompt is True
 
     def test_generation_prompt_is_appended_once_for_full_suffix(self, qwen3_tito: Qwen3TITOTokenizer):
         old_msgs = list(SingleToolThinkingTrajectory.MESSAGES[:3])
@@ -368,31 +377,14 @@ class TestTokenizeAdditional:
             )
         )
 
-    def test_qwen3_tool_dummy_assistant_preserves_reasoning_shape(self):
-        thinking_template_path = (
-            Path(__file__).resolve().parents[4]
-            / "miles/utils/chat_template_utils/templates/qwen3_thinking_2507_and_next_fixed.jinja"
-        )
-        thinking_tito = Qwen3TITOTokenizer(
-            load_tokenizer(
-                "Qwen/Qwen3-4B-Instruct-2507",
-                chat_template_path=str(thinking_template_path),
-                trust_remote_code=True,
-            ),
-            allowed_append_roles=_ALLOWED_APPEND_ROLES,
-        )
-        tool_messages = [SingleToolThinkingTrajectory.MESSAGES[3]]
-        dummy_assistant = _build_dummy_assistant(tool_messages)
-        rendered = thinking_tito.render_messages(
-            [{"role": "system", "content": "dummy system"}, dummy_assistant],
-            add_generation_prompt=False,
-            tools=SingleToolThinkingTrajectory.TOOLS,
-        )
+    def test_dummy_assistant_preserves_parallel_tool_calls(self):
+        stored_assistant = MultiToolSingleTurnTrajectory.MESSAGES[2]
+        dummy_assistant = _build_dummy_assistant(stored_assistant)
 
+        assert dummy_assistant["content"] == ""
         assert dummy_assistant["reasoning_content"] == " "
-        assert rendered.endswith(
-            '<|im_start|>assistant\n<tool_call>\n{"name": "dummy_func", "arguments": {}}\n</tool_call><|im_end|>\n'
-        )
+        assert dummy_assistant["tool_calls"] == stored_assistant["tool_calls"]
+        assert [call["id"] for call in dummy_assistant["tool_calls"]] == ["call_1", "call_2"]
 
     @pytest.mark.parametrize(
         "traj_cls, pos",

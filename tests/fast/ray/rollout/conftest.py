@@ -42,6 +42,7 @@ def make_args(**overrides: Any) -> Namespace:
         # batch / training
         global_batch_size=8,
         use_dynamic_global_batch_size=False,
+        wandb_always_use_train_step=False,
         disable_rollout_trim_samples=False,
         balance_data=False,
         delay_split_train_data_by_dp=False,
@@ -96,6 +97,7 @@ def make_args(**overrides: Any) -> Namespace:
         custom_eval_rollout_log_function_path=None,
         # debug data
         save_debug_rollout_data=None,
+        save_debug_trajectory_data=None,
         load_debug_rollout_data=None,
         load_debug_rollout_data_subsample=None,
         ci_inject_rollout_data_path=None,

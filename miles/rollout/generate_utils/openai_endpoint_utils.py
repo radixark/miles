@@ -14,6 +14,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
 )
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.http_utils import post
+from miles.utils.lifecycle import attach_lifecycle_metadata
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -153,6 +154,9 @@ def compute_samples_from_openai_records(
             cursor += matched
 
         sample = _compute_sample_from_openai_record(args, input_sample, record, tokenizer, trim_count)
+        attach_lifecycle_metadata(sample, record, records[i - 1] if i else None, turn=i + 1)
+        if is_last and args.save_debug_trajectory_data is not None:
+            sample.metadata["messages"] = record.request["messages"] + [record.response["choices"][0]["message"]]
         samples.append(sample)
 
     if accumulated_token_ids is not None:

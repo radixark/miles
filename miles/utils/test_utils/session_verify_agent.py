@@ -22,6 +22,7 @@ import httpx
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.agentic_tool_call import generate as _base_generate
+from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,11 @@ def build_initial_messages() -> list[dict]:
 
 async def _chat(client, base_url, messages, request_kwargs, *, label):
     payload = {"messages": messages, "tools": TOOLS, **request_kwargs}
+    # Streaming is the e2e default: black-box agent harnesses mostly consume
+    # chat completions as SSE, so exercise the session server's fake-streaming
+    # path unless the caller opts out with stream=False in request_kwargs.
+    if payload.pop("stream", True):
+        return await stream_chat_completions(client, f"{base_url}/v1/chat/completions", payload, label=label)
     resp = await client.post(f"{base_url}/v1/chat/completions", json=payload)
     assert resp.status_code == 200, f"{label} failed ({resp.status_code}): {resp.text}"
     return resp.json()

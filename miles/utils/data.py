@@ -17,10 +17,8 @@ except ImportError:
     pq = None
 
 from miles.utils import chat_template_utils
-from miles.utils.processing_utils import call_processor
 from miles.utils.types import MultimodalTypes, Sample
 
-from .timer import Timer
 
 __all__ = ["Dataset"]
 
@@ -85,24 +83,39 @@ def _parse_generalized_path(s: str):
 
 def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_length: int | None) -> list[Sample]:
     if max_length is None:
-        return False
+        return origin_samples
 
     if not isinstance(origin_samples[0].prompt, str):
         logger.warning(
             "Skipping max_length check for list prompt. Set apply_chat_template=True to enable length filtering."
         )
-        return False
+        return origin_samples
 
     if processor:
-        filtered_samples = []
+        # Use processor only for samples with actual multimodal content; use batched tokenizer for text-only.
+        text_only = []
+        multimodal = []
         for sample in origin_samples:
+            if sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
+                multimodal.append(sample)
+            else:
+                text_only.append(sample)
+        filtered_samples = []
+        if text_only:
+            prompts = [s.prompt for s in text_only]
+            input_ids_list = tokenizer(prompts, add_special_tokens=False)["input_ids"]
+            for sample, input_ids in zip(text_only, input_ids_list, strict=True):
+                if len(input_ids) <= max_length:
+                    filtered_samples.append(sample)
+        if multimodal:
             from miles.utils.processing_utils import process_vision_info
 
-            multimodal_inputs = process_vision_info(sample.prompt, processor)
-            processor_output = call_processor(processor, sample.prompt, multimodal_inputs)
-            input_ids = processor_output["input_ids"][0]
-            if len(input_ids) <= max_length:
-                filtered_samples.append(sample)
+            for sample in multimodal:
+                multimodal_inputs = process_vision_info(sample.prompt, processor)
+                processor_output = processor(text=sample.prompt, **multimodal_inputs)
+                input_ids = processor_output["input_ids"][0]
+                if len(input_ids) <= max_length:
+                    filtered_samples.append(sample)
     else:
         prompts = [sample.prompt for sample in origin_samples]
         input_ids_list = tokenizer(prompts, add_special_tokens=False)["input_ids"]
@@ -282,6 +295,8 @@ def process_rollout_data(
     dp_size,
     witness_info: WitnessInfo | None,
 ):
+    from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
+
     if args.delay_split_train_data_by_dp:
         raw = ray.get(rollout_data_ref.inner)
         if (x := witness_info) is not None:
@@ -293,11 +308,4 @@ def process_rollout_data(
         assert witness_info is None
         rollout_data = ray.get(rollout_data_ref[dp_rank].inner)
 
-    partition = rollout_data.pop("partition")
-    total_lengths = rollout_data["total_lengths"]
-
-    # save the seqlen of the whole rollout batch
-    Timer().seq_lens = total_lengths
-    rollout_data["total_lengths"] = [total_lengths[i] for i in partition]
-
-    return rollout_data
+    return process_rollout_data_shard(args, rollout_data)

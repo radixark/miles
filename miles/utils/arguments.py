@@ -9,6 +9,7 @@ from sglang_router.launch_router import RouterArgs
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
+from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
@@ -524,6 +525,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--async-max-concurrent-samples",
+                type=int,
+                default=None,
+                help=(
+                    "Maximum number of concurrently generating trajectories in fully async mode, "
+                    "decoupling generation concurrency from the training batch size. None (default) "
+                    "keeps the legacy bound of one training batch worth of trajectories "
+                    "(rollout_batch_size groups, i.e. rollout_batch_size * n_samples_per_prompt)."
+                ),
+            )
+            parser.add_argument(
                 "--custom-generate-function-path",
                 type=str,
                 default=None,
@@ -570,7 +582,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=512 * 1024**2,
                 help=(
                     "buffer size for update weight, in bytes. "
-                    "This is used for updating weights by chunk and should be useful for MoE models."
+                    "This is used for updating weights by batch and should be useful for MoE models."
                 ),
             )
             parser.add_argument(
@@ -1432,6 +1444,84 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "down lora_B shared across experts, expert_dim=1). Matches SGLang "
                 "PR #21466's experts_shared_outer_loras=True serving contract.",
             )
+            parser.add_argument(
+                "--multi-lora-n-adapters",
+                type=int,
+                default=0,
+                help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
+            )
+            parser.add_argument(
+                "--multi-lora-adapter",
+                nargs=2,
+                action="append",
+                type=str,
+                dest="multi_lora_adapters",
+                default=[],
+            )
+            parser.add_argument(
+                "--multi-lora-idle-poll-s",
+                type=float,
+                default=5.0,
+                help="When no adapter is RUNNING, the trainer polls for new registrations every this many seconds (default: 5.0)",
+            )
+            parser.add_argument(
+                "--multi-lora-http-server-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted path to a MultiLoRAHTTPServer subclass to use for the multi-LoRA "
+                    "controller's HTTP server (default: MultiLoRAHTTPServer)"
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-backend-path",
+                type=str,
+                default=None,
+                help=(
+                    "Dotted path to a MultiLoRABackend subclass for the multi-LoRA controller, "
+                    "e.g. to add custom adapter validation via validate_adapter (default: MultiLoRABackend)"
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-api-port",
+                type=int,
+                default=8068,
+                help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
+            )
+            parser.add_argument(
+                "--multi-lora-disable-service-mode",
+                action="store_false",
+                dest="multi_lora_service_mode",
+                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
+            )
+            parser.add_argument(
+                "--multi-lora-max-adapter-global-batch-size",
+                type=int,
+                default=None,
+                help=(
+                    "Registration-time upper bound on an adapter's samples per optimizer "
+                    "step (rollout_batch_size x n_samples_per_prompt). Defaults to 4x "
+                    "--global-batch-size."
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-max-coalesce-wait-s",
+                type=float,
+                default=0.5,
+                help=(
+                    "Maximum time ready groups wait for the batch to fill toward "
+                    "--global-batch-size before training starts on what is ready (default: 0.5)."
+                ),
+            )
+            parser.add_argument(
+                "--multi-lora-max-empty-wait-s",
+                type=float,
+                default=30.0,
+                help=(
+                    "How long a generate call waits for the first poppable group before "
+                    "failing with an empty-batch timeout (default: 30)."
+                ),
+            )
             return parser
 
         def add_router_arguments(parser):
@@ -1605,6 +1695,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--save-debug-trajectory-data",
+                type=str,
+                default=None,
+                help=(
+                    "Save per-sample role-tagged trajectory text (JSONL) next to the rollout "
+                    "dump. The file will be saved to `save_debug_trajectory_data.format(rollout_id)`."
+                ),
+            )
+            parser.add_argument(
                 "--load-debug-rollout-data",
                 type=str,
                 default=None,
@@ -1748,6 +1847,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 help="When comparing weights after update, allow quantized tensors to differ "
                 "by up to 1 ULP of the quantized dtype per side (compared in dequantized space).",
+            )
+            parser.add_argument(
+                "--check-lora-weight-equal",
+                action="store_true",
+                default=False,
+                help=(
+                    "Verify the megatron->sglang LoRA adapter weight-sync on the colocated "
+                    "(from_tensors) path: on every sync the trainer ships a per-tensor sha256 "
+                    "manifest of the adapter it sends, and each rollout engine hashes the "
+                    "tensors it received and fails the load on any mismatch/missing/extra "
+                    "name. The LoRA analogue of --check-weight-update-equal, which only "
+                    "covers base weights."
+                ),
             )
             parser.add_argument(
                 "--save-local-weight-checksum",
@@ -2131,6 +2243,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)
         parser = add_prometheus_arguments(parser)
+        add_dashboard_arguments(parser)
         parser = add_router_arguments(parser)
         parser = add_debug_arguments(parser)
         parser = add_sglang_arguments(parser)
@@ -2309,6 +2422,8 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
 
 
 def miles_validate_args(args):
+    validate_dashboard_args(args)
+
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
 
@@ -2551,6 +2666,12 @@ def miles_validate_args(args):
                 "shared-outer" if args.experts_shared_outer_loras else "per-expert",
             )
 
+    # Sets args.multi_lora, then validates/defaults the multi-LoRA arg surface
+    # (adapter configs themselves are loaded later by the controller).
+    from miles.utils.multi_lora import validate_multi_lora_args
+
+    validate_multi_lora_args(args)
+
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
     if args.advantage_estimator in ["reinforce_plus_plus", "reinforce_plus_plus_baseline"]:
@@ -2586,6 +2707,7 @@ def miles_validate_args(args):
     if args.dump_details is not None:
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
+        args.save_debug_trajectory_data = f"{args.dump_details}/trajectory/{{rollout_id}}.jsonl"
         args.save_debug_event_data = f"{args.dump_details}/events"
 
     if args.load_debug_rollout_data is not None:
@@ -2727,6 +2849,13 @@ def miles_validate_args(args):
             f"chunk={args.offload_train_disk_chunk_mb}MB"
         )
 
+    if args.async_max_concurrent_samples is not None:
+        assert args.async_max_concurrent_samples >= args.n_samples_per_prompt, (
+            f"--async-max-concurrent-samples ({args.async_max_concurrent_samples}) must be at least "
+            f"--n-samples-per-prompt ({args.n_samples_per_prompt}): the worker submits whole groups, "
+            f"so one group already puts n_samples_per_prompt trajectories in flight"
+        )
+
     if args.eval_function_path is None:
         args.eval_function_path = args.rollout_function_path
 
@@ -2740,7 +2869,9 @@ def miles_validate_args(args):
             )
         args.global_batch_size = global_batch_size
 
-    if args.n_samples_per_prompt == 1:
+    # Multi-LoRA adapters carry their own n_samples_per_prompt; the per-group
+    # normalization path already skips std for singleton groups.
+    if args.n_samples_per_prompt == 1 and not args.multi_lora:
         args.grpo_std_normalization = False
         logger.info("n_samples_per_prompt is set to 1, grpo_std_normalization will be set to False.")
 

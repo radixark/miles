@@ -12,7 +12,12 @@ logger = logging.getLogger(__name__)
 def set_default_megatron_args(args):
     # Muon currently owns its sharding path, and Megatron's distributed optimizer
     # only supports Adam-family optimizers.
-    args.use_distributed_optimizer = args.optimizer is None or args.optimizer.lower() == "adam"
+    args.use_distributed_optimizer = (args.optimizer is None or args.optimizer.lower() == "adam") and not getattr(
+        args, "debug_disable_optimizer", False
+    )
+    # Multi-LoRA: per-slot LayerWise optimizers require plain DDP all-reduce.
+    if getattr(args, "multi_lora_n_adapters", 0) > 0:
+        args.use_distributed_optimizer = False
     # TODO: maybe change this after megatron has good fp8 support
     args.bf16 = not args.fp16
     # placeholders

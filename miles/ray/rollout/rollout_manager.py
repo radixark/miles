@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
+from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
@@ -32,6 +33,7 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
 from miles.utils.ray_utils import Box
+from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -80,6 +82,7 @@ class RolloutManager:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
             start_session_server(args)
+            dashboard_hooks.register_router(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
@@ -98,7 +101,12 @@ class RolloutManager:
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
 
+    def get_router_address(self) -> tuple[str, int]:
+        return self.args.sglang_router_ip, self.args.sglang_router_port
+
     def dispose(self):
+        if (close := getattr(self.data_source, "close", None)) is not None:
+            close()
         event_analyzer.run_analysis_from_args(self.args)
         if self._metric_checker is not None:
             self._metric_checker.dispose()
@@ -113,7 +121,11 @@ class RolloutManager:
         self._health_monitoring_resume()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
-        data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
+        dashboard_hooks.register_engines(self.servers)
+        if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
+            dashboard_hooks.report_data_buffer(get_buffer_length())
+        with timer("rollout"):
+            data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
         log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = convert_samples_to_train_data(
@@ -136,14 +148,20 @@ class RolloutManager:
             return
         self._health_monitoring_resume()
 
-        if self.use_experimental_refactor:
-            result = await asyncio.to_thread(
-                call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
-            )
-        else:
-            result = await asyncio.to_thread(
-                call_rollout_fn, self.eval_generate_rollout, self.args, rollout_id, self.data_source, evaluation=True
-            )
+        with timer("eval_rollout"):
+            if self.use_experimental_refactor:
+                result = await asyncio.to_thread(
+                    call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
+                )
+            else:
+                result = await asyncio.to_thread(
+                    call_rollout_fn,
+                    self.eval_generate_rollout,
+                    self.args,
+                    rollout_id,
+                    self.data_source,
+                    evaluation=True,
+                )
         data = result.data
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)

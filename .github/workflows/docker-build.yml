@@ -144,7 +144,7 @@ jobs:
     if: |
       always() &&
       (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
-    runs-on: self-hosted
+    runs-on: ["h200", "2gpu"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
