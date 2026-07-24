@@ -230,6 +230,21 @@ def test_fsdp_true_on_policy_uses_fsdp_attention_without_megatron_backend_flags(
     assert "ROW_LINEAR_ENABLE_INV" not in plan.env_vars
 
 
+def test_fsdp_e2e_uses_current_true_on_policy_contract(monkeypatch):
+    from tests.e2e.fsdp import test_qwen3_4B_fsdp_true_on_policy as fsdp_e2e
+
+    captured = {}
+    monkeypatch.setattr(fsdp_e2e.U, "get_default_wandb_args", lambda *args, **kwargs: "")
+    monkeypatch.setattr(fsdp_e2e.U, "execute_train", lambda **kwargs: captured.update(kwargs))
+
+    fsdp_e2e.execute()
+
+    train_args = captured["train_args"]
+    assert "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1" in train_args
+    assert "--recompute-logprobs-via-prefill" in train_args
+    assert "--sglang-rl-on-policy-target" not in train_args
+
+
 def test_off_policy_builds_empty_launch_plan_and_does_not_mutate_args():
     args = _args(true_on_policy=False, use_sequence_parallel=True)
 

@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import torch
 
 from miles.backends.experimental.fsdp_utils.adaptations.precision import apply_fp32_master, resolve_precision_policy
-from miles.backends.experimental.fsdp_utils.arguments import parse_fsdp_cli
+from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args, parse_fsdp_cli
+from miles.backends.training_utils.data import _rollout_logprob_dtype
 
 
 def test_resolve_precision_policy_uses_independent_fp32_master_switch_and_dtypes():
@@ -35,6 +36,17 @@ def test_fp32_master_cli_defaults_enabled_and_can_be_disabled(monkeypatch):
 
     monkeypatch.setattr(sys, "argv", ["miles", "--disable-fp32-master"])
     assert not parse_fsdp_cli().keep_fp32_master
+
+
+def test_fsdp_args_expose_effective_compute_precision(monkeypatch):
+    for cli_args, expected_dtype in (([], torch.bfloat16), (["--fp16"], torch.float16)):
+        monkeypatch.setattr(sys, "argv", ["miles", *cli_args])
+        args = load_fsdp_args()
+        args.true_on_policy_mode = True
+
+        assert args.bf16 == (not args.fp16)
+        assert resolve_precision_policy(None, args).param_dtype is expected_dtype
+        assert _rollout_logprob_dtype(args) is expected_dtype
 
 
 def test_apply_fp32_master_records_on_disk_dtypes_before_cast():
