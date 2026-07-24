@@ -294,6 +294,10 @@ def forward_only(
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
+            pad_to_ep_max=(
+                getattr(args, "moe_token_dispatcher_type", None) == "flex"
+                and getattr(args, "moe_flex_dispatcher_backend", None) == "hybridep"
+            ),
         )
         unconcat_tokens = batch["unconcat_tokens"]
         tokens = batch["tokens"]
@@ -473,6 +477,10 @@ def train_one_step(
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
+            pad_to_ep_max=(
+                getattr(args, "moe_token_dispatcher_type", None) == "flex"
+                and getattr(args, "moe_flex_dispatcher_backend", None) == "hybridep"
+            ),
         )
 
         if "adapter_token_counts" in batch:

@@ -63,6 +63,7 @@ MODEL_ARGS=(
    --untie-embeddings-and-output-weights --vocab-size 248320 --rotary-base 10000000
    --moe-ffn-hidden-size 512 --moe-shared-expert-intermediate-size 512
    --moe-router-score-function softmax --moe-token-dispatcher-type flex
+   --moe-flex-dispatcher-backend hybridep
    --moe-router-topk 8
    --moe-layer-freq "[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]"
    --num-experts 256 --moe-grouped-gemm --moe-token-drop-policy probs --moe-router-dtype fp32
@@ -99,7 +100,7 @@ PERF_ARGS=(
    --tensor-model-parallel-size 2 --sequence-parallel --pipeline-model-parallel-size 1
    --context-parallel-size 2 --expert-model-parallel-size 8 --expert-tensor-parallel-size 1
    --recompute-granularity full --recompute-method uniform --recompute-num-layers 1
-   --use-dynamic-batch-size --max-tokens-per-gpu 16384 --log-probs-chunk-size 4096
+   --use-dynamic-batch-size --max-tokens-per-gpu 8192 --log-probs-chunk-size 4096
 )
 # Blackwell (GB200 sm100 / B300 sm103) backends, per scripts/run_qwen3_5_35b_a3b_mtp_cp2_ep8.py:
 # - moe-runner-backend flashinfer_cutlass: the default triton fused-MoE mis-shards
@@ -110,6 +111,9 @@ SGLANG_ARGS=(
    --sglang-watchdog-timeout 1800 --sglang-enable-metrics
    --sglang-moe-runner-backend flashinfer_cutlass --sglang-attention-backend trtllm_mha
    --sglang-cuda-graph-bs 1 2 4 8 16 32 --use-rollout-routing-replay
+   # Hybrid linear-attention CUDA graphs keep reading shared recurrent state
+   # during replay. Disable overlap so the next batch cannot overwrite it early.
+   --sglang-disable-overlap-schedule
    --sglang-mamba-scheduler-strategy extra_buffer
 )
 MISC_ARGS=(
