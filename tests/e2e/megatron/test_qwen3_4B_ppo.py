@@ -9,17 +9,12 @@ register_cuda_ci(
     est_time=1500,
     suite="stage-c-4-gpu-h200",
     labels=["megatron"],
-    disabled="PPO placement group has conflict on port, need fix later.",
 )
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "0")))
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
-# PPO allocates critic on separate placement-group bundles from actor (even with
-# --colocate, which only shares rollout with actor), so total GPUs needed is
-# actor_world + critic_world. Keep actor_world = TP * CP = 2 (TP=1, CP=2) so
-# actor (2) + critic (2) fits the 4-GPU suite.
 NUM_GPUS = 4
 
 
@@ -61,7 +56,7 @@ def execute():
 
     perf_args = (
         "--tensor-model-parallel-size 1 "
-        "--pipeline-model-parallel-size 1 "
+        "--pipeline-model-parallel-size 2 "
         "--context-parallel-size 2 "
         "--recompute-granularity full "
         "--recompute-method uniform "

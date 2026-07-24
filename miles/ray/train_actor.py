@@ -156,7 +156,7 @@ class TrainRayActor(RayActor):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def train(self, rollout_id, rollout_data_ref):
+    def train(self, rollout_id, rollout_data_ref, external_data=None):
         raise NotImplementedError
 
     @abc.abstractmethod
@@ -165,10 +165,6 @@ class TrainRayActor(RayActor):
 
     @abc.abstractmethod
     def update_weights(self, info: "EnginesAndLock") -> None:
-        raise NotImplementedError
-
-    @abc.abstractmethod
-    def connect_actor_critic(self, critic_group):
         raise NotImplementedError
 
     @abc.abstractmethod

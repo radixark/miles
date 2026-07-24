@@ -6,7 +6,6 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils.arguments import parse_args
-from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.ft_utils.control_server.server import start_control_server
@@ -64,13 +63,10 @@ async def train(args):
         await rollout_manager.eval.remote(rollout_id=0)
 
     async def offload_train():
+        if args.use_critic:
+            return
         if args.offload_train:
-            if args.use_critic:
-                await critic_model.offload()
-                if rollout_id >= args.num_critic_only_steps:
-                    await actor_model.offload()
-            else:
-                await actor_model.offload()
+            await actor_model.offload()
         else:
             await actor_model.clear_memory()
 
@@ -88,7 +84,7 @@ async def train(args):
         if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
             await rollout_manager.eval.remote(rollout_id)
 
-        rollout_data_ref = await rollout_manager.generate.remote(rollout_id)
+        rollout_data_pack = await rollout_manager.generate.remote(rollout_id)
 
         if args.offload_rollout:
             offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
@@ -98,13 +94,13 @@ async def train(args):
                 offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
             await rollout_manager.offload.remote(tags=offload_tags)
 
+        actor_trains = (not args.use_critic) or rollout_id >= args.num_critic_only_steps
         if args.use_critic:
-            critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_ref))
-            if rollout_id >= args.num_critic_only_steps:
-                await actor_model.train(rollout_id, rollout_data_ref)
-            await critic_task
+            values = await critic_model.train(rollout_id, rollout_data_pack)
+            if actor_trains:
+                await actor_model.train(rollout_id, rollout_data_pack, external_data=values)
         else:
-            await actor_model.train(rollout_id, rollout_data_ref)
+            await actor_model.train(rollout_id, rollout_data_pack)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(

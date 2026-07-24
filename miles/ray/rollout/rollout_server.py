@@ -131,8 +131,6 @@ def _compute_rollout_offset(args) -> int:
     if getattr(args, "critic_train_only", False):
         return args.critic_num_nodes * args.critic_num_gpus_per_node
     offset = args.actor_num_nodes * args.actor_num_gpus_per_node
-    if getattr(args, "use_critic", False):
-        offset += args.critic_num_nodes * args.critic_num_gpus_per_node
     return offset
 
 
@@ -143,8 +141,6 @@ def _compute_megatron_num_gpus(args) -> int:
     if getattr(args, "critic_train_only", False):
         return args.critic_num_nodes * args.critic_num_gpus_per_node
     num = args.actor_num_nodes * args.actor_num_gpus_per_node
-    if getattr(args, "use_critic", False):
-        num += args.critic_num_nodes * args.critic_num_gpus_per_node
     return num
 
 

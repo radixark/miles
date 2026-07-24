@@ -2684,10 +2684,18 @@ def miles_validate_args(args):
         )
 
     args.use_critic = args.advantage_estimator == "ppo"
-    if args.critic_num_gpus_per_node is None:
+    if args.use_critic:
+        assert args.train_backend == "megatron", "Shared Actor/Critic PPO requires the Megatron backend"
+        assert (
+            args.megatron_to_hf_mode != "bridge"
+        ), "Critic models are not supported with --megatron-to-hf-mode bridge"
         args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
-    if args.critic_num_nodes is None:
         args.critic_num_nodes = args.actor_num_nodes
+    else:
+        if args.critic_num_gpus_per_node is None:
+            args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
+        if args.critic_num_nodes is None:
+            args.critic_num_nodes = args.actor_num_nodes
     if args.critic_load is None:
         args.critic_load = args.load
     if args.critic_lr is None:
@@ -2773,13 +2781,14 @@ def miles_validate_args(args):
                 f"* actor_num_nodes {args.actor_num_nodes}, overriding rollout_num_gpus to match actor_num_gpus_per_node * actor_num_nodes."
             )
             args.rollout_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
-            if args.use_critic:
-                args.rollout_num_gpus += args.critic_num_gpus_per_node * args.critic_num_nodes
 
     if args.offload_train is None:
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
+
+    if args.use_critic and not args.debug_rollout_only:
+        args.offload_train = True
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True

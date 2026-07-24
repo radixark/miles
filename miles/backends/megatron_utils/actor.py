@@ -1,6 +1,5 @@
 import logging
 import random
-import socket
 from argparse import Namespace
 from contextlib import nullcontext
 from typing import TYPE_CHECKING
@@ -8,7 +7,6 @@ from typing import TYPE_CHECKING
 import ray
 import torch
 import torch.distributed as dist
-from ray.actor import ActorHandle
 from torch_memory_saver import torch_memory_saver
 
 from miles.dashboard import hooks as dashboard_hooks
@@ -18,7 +16,7 @@ from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.context_utils import with_defer
-from miles.utils.distributed_utils import get_gloo_group, init_process_group
+from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
@@ -35,7 +33,7 @@ from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
+from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import (
     compute_advantages_and_returns,
@@ -181,12 +179,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
         verify_megatron_parallel_state(self.model)
 
+        start_rollout_id = loaded_rollout_id + 1
+
         if role == "critic":
             if self.args.offload_train:
                 self.sleep()
-            return
-
-        start_rollout_id = loaded_rollout_id + 1
+            return start_rollout_id
 
         self.weights_backuper = TensorBackuper.create(
             source_getter=lambda: named_params_and_buffers(
@@ -333,15 +331,18 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @event_logger_context(
-        lambda _self, rollout_id, rollout_data_ref, witness_info, attempt: dict(rollout_id=rollout_id, attempt=attempt)
+        lambda _self, rollout_id, rollout_data_ref, witness_info=None, attempt=0, external_data=None: dict(
+            rollout_id=rollout_id, attempt=attempt
+        )
     )
     def train(
         self,
         rollout_id: int,
         rollout_data_ref: Box,
-        witness_info: WitnessInfo | None,
-        attempt: int,
-    ) -> TrainStepOutcome:
+        witness_info: WitnessInfo | None = None,
+        attempt: int = 0,
+        external_data=None,
+    ):
         self._heartbeat.bump()
         self._last_rollout_id = rollout_id
         if self.args.offload_train:
@@ -354,12 +355,25 @@ class MegatronTrainRayActor(TrainRayActor):
                 return TrainStepOutcome.NORMAL
 
         if self.role == "critic":
-            return self.train_critic(rollout_id, rollout_data)
+            with timer("critic_train"):
+                result = self.train_critic(rollout_id, rollout_data)
         else:
-            return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
+            result = self.train_actor(
+                rollout_id,
+                rollout_data,
+                external_data=external_data,
+                witness_info=witness_info,
+                attempt=attempt,
+            )
+
+        if self.args.use_critic and self.args.offload_train:
+            del rollout_data
+            self.sleep()
+
+        return result
 
     @with_logs
-    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutcome:
+    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> dict:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         rollout_data.update(
@@ -372,9 +386,6 @@ class MegatronTrainRayActor(TrainRayActor):
                 rollout_id=rollout_id,
             )
         )
-
-        if rollout_id >= self.args.num_critic_only_steps:
-            sync_actor_critic_data(self.args, rollout_data, self._actor_critic_groups)
 
         compute_advantages_and_returns(self.args, rollout_data)
 
@@ -391,14 +402,23 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
         self._heartbeat.bump()
-        return train_step_outcome
+        result = {"train_step_outcome": train_step_outcome}
+        if get_parallel_state().is_pp_last_stage and "values" in rollout_data:
+            result["values"] = [value.detach().cpu() for value in rollout_data["values"]]
+        return result
 
     def _use_rollout_replay(self, m) -> bool:
         return getattr(self.args, f"use_rollout_{m.name}_replay", False)
 
     @with_logs
     def train_actor(
-        self, rollout_id: int, rollout_data: RolloutBatch, *, witness_info: WitnessInfo | None, attempt: int
+        self,
+        rollout_id: int,
+        rollout_data: RolloutBatch,
+        external_data=None,
+        *,
+        witness_info: WitnessInfo | None,
+        attempt: int,
     ) -> TrainStepOutcome:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
@@ -464,11 +484,12 @@ class MegatronTrainRayActor(TrainRayActor):
                             m.clear_all_forward()
 
                 if self.args.use_critic:
-                    sync_actor_critic_data(
-                        self.args,
-                        rollout_data,
-                        self._actor_critic_groups,
-                    )
+                    if external_data is not None and get_parallel_state().is_pp_last_stage:
+                        values = external_data.get("values")
+                        if values is not None:
+                            rollout_data["values"] = [
+                                value.to(device=torch.cuda.current_device(), non_blocking=True) for value in values
+                            ]
                 if self._active_model_tag != "actor":
                     self._switch_model("actor")
 
@@ -590,7 +611,10 @@ class MegatronTrainRayActor(TrainRayActor):
             return
 
         # torch dist may trigger nccl communication during saving.
-        if self.args.offload_train:
+        auto_offload = self.args.use_critic and self.args.offload_train
+        if auto_offload:
+            self.wake_up()
+        elif self.args.offload_train:
             reload_process_groups()
 
         if self.args.async_save:
@@ -633,7 +657,9 @@ class MegatronTrainRayActor(TrainRayActor):
             post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
             post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
 
-        if self.args.offload_train:
+        if auto_offload:
+            self.sleep()
+        elif self.args.offload_train:
             destroy_process_groups()
 
     @with_logs
@@ -747,30 +773,6 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.weights_backuper.backup(model_tag)
         self._active_model_tag = model_tag
-
-    @with_logs
-    def connect_actor_critic(
-        self,
-        actor_handle: ActorHandle | None = None,
-        master_address: str | None = None,
-        master_port: int | None = None,
-    ) -> None:
-        if self.role == "actor":
-            master_address = ray.util.get_node_ip_address()
-            with socket.socket() as sock:
-                sock.bind(("", 0))
-                master_port = sock.getsockname()[1]
-            actor_handle.connect_actor_critic.remote(master_address=master_address, master_port=master_port)
-
-        group_name = "actor_critic"
-        world_size = 2
-        self._actor_critic_groups = init_process_group(
-            backend="nccl",
-            init_method=f"tcp://{master_address}:{master_port}",
-            world_size=world_size,
-            rank=0 if self.role == "actor" else 1,
-            group_name=group_name,
-        )
 
     @with_logs
     def send_ckpt(self, dst_rank: int) -> None:

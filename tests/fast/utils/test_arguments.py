@@ -172,6 +172,30 @@ def test_custom_megatron_post_save_hook_path_requires_save():
         miles_validate_args(args)
 
 
+def test_bridge_mode_rejects_critic(tmp_path):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--advantage-estimator",
+            "ppo",
+            "--megatron-to-hf-mode",
+            "bridge",
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(
+        AssertionError,
+        match="Critic models are not supported with --megatron-to-hf-mode bridge",
+    ):
+        miles_validate_args(args)
+
+
 class TestMultiLoRAValidation:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
