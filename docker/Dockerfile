@@ -174,7 +174,7 @@ RUN cd /sgl-workspace/sglang && \
 
 # =========================== Mooncake structured object store wheel ===========================
 
-# Miles' Mooncake backend requires the structured object store API. Install the pinned
+# Miles' Mooncake backend requires the structured object store API. Install the selected
 # CUDA 13 wheel as one coherent Python/native package; CUDA 12 keeps its base Mooncake.
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
