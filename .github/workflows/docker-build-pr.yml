@@ -1,0 +1,38 @@
+name: Docker Build (PR check)
+
+on:
+  pull_request:
+    paths:
+      - 'docker/Dockerfile'
+      - 'docker/build.py'
+      - 'docker/patch/**'
+      - 'requirements.txt'
+      - '.github/workflows/docker-build-pr.yml'
+
+concurrency:
+  group: docker-build-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build-only:
+    runs-on: ["h200", "2gpu"]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Install Python + dependencies
+        run: |
+          apt-get update && apt-get install -y python3 python3-pip
+          pip3 install --break-system-packages typer
+
+      - name: Build (no push)
+        run: |
+          python3 docker/build.py --variant cu13-x86 --image-tag dev
