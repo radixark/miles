@@ -1,13 +1,20 @@
 """Unit tests for the FSDP precision policy (CPU-only)."""
 
 import sys
+from contextlib import contextmanager
 from types import SimpleNamespace
 
+import pytest
 import torch
 
-from miles.backends.experimental.fsdp_utils.adaptations.precision import apply_fp32_master, resolve_precision_policy
+from miles.backends.experimental.fsdp_utils.adaptations.precision import (
+    apply_fp32_master,
+    precision_forward_context,
+    resolve_precision_policy,
+)
 from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args, parse_fsdp_cli
 from miles.backends.training_utils.data import _rollout_logprob_dtype
+from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
 
 
 def test_resolve_precision_policy_uses_independent_fp32_master_switch_and_dtypes():
@@ -47,6 +54,83 @@ def test_fsdp_args_expose_effective_compute_precision(monkeypatch):
         assert args.bf16 == (not args.fp16)
         assert resolve_precision_policy(None, args).param_dtype is expected_dtype
         assert _rollout_logprob_dtype(args) is expected_dtype
+
+
+def test_qwen3_formal_true_on_policy_resolves_fp32_params_with_bf16_autocast():
+    args = SimpleNamespace(
+        fp16=False,
+        keep_fp32_master=True,
+        true_on_policy_mode=True,
+        sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+    )
+
+    policy = resolve_precision_policy(SimpleNamespace(model_type="qwen3"), args)
+
+    assert policy.param_dtype is torch.float32
+    assert policy.reduce_dtype is torch.float32
+    assert policy.autocast_dtype is torch.bfloat16
+    assert policy.keep_fp32_master
+
+
+@pytest.mark.parametrize(
+    ("model_type", "true_on_policy_mode", "contract"),
+    [
+        ("qwen3", False, QWEN3_DENSE_TRUE_ON_POLICY_V1.name),
+        ("qwen3", True, None),
+        ("qwen3_moe", True, QWEN3_DENSE_TRUE_ON_POLICY_V1.name),
+    ],
+)
+def test_qwen3_formal_precision_does_not_leak_to_other_modes(model_type, true_on_policy_mode, contract):
+    policy = resolve_precision_policy(
+        SimpleNamespace(model_type=model_type),
+        SimpleNamespace(
+            fp16=False,
+            keep_fp32_master=True,
+            true_on_policy_mode=true_on_policy_mode,
+            sglang_true_on_policy_contract=contract,
+        ),
+    )
+
+    assert policy.param_dtype is torch.bfloat16
+    assert policy.autocast_dtype is None
+
+
+def test_qwen3_formal_true_on_policy_rejects_fp16():
+    with pytest.raises(ValueError, match="requires bf16 training"):
+        resolve_precision_policy(
+            SimpleNamespace(model_type="qwen3"),
+            SimpleNamespace(
+                fp16=True,
+                keep_fp32_master=True,
+                true_on_policy_mode=True,
+                sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+            ),
+        )
+
+
+def test_precision_forward_context_uses_policy_autocast(monkeypatch):
+    entered = []
+
+    @contextmanager
+    def fake_autocast(*, device_type, dtype):
+        entered.append((device_type, dtype))
+        yield
+
+    monkeypatch.setattr(torch, "autocast", fake_autocast)
+    policy = resolve_precision_policy(
+        SimpleNamespace(model_type="qwen3"),
+        SimpleNamespace(
+            fp16=False,
+            keep_fp32_master=True,
+            true_on_policy_mode=True,
+            sglang_true_on_policy_contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name,
+        ),
+    )
+
+    with precision_forward_context(policy):
+        pass
+
+    assert entered == [("cuda", torch.bfloat16)]
 
 
 def test_apply_fp32_master_records_on_disk_dtypes_before_cast():

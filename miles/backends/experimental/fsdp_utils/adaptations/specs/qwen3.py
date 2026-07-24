@@ -1,25 +1,44 @@
-"""Qwen3 dense adaptations."""
+"""Qwen3 dense adaptations for the formal true-on-policy precision contract."""
 
-from ..class_patches import ModelPatchHook, register_model_patch
+from dataclasses import replace
 
+import torch
 
-_TRUE_ON_POLICY_CONTRACT = "qwen3_dense_true_on_policy_v1"
+from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
+
+from ..class_patches import ModelInstancePatchHook, register_model_instance_patch
+from ..precision import PrecisionPolicyHook, register_precision_policy
 
 
 def _is_qwen3(hf_config) -> bool:
     return str(getattr(hf_config, "model_type", "") or "") == "qwen3"
 
 
-def _apply_true_on_policy_patch(hf_config, args) -> None:
-    if not getattr(args, "true_on_policy_mode", False):
-        return
-    if getattr(args, "sglang_true_on_policy_contract", None) != _TRUE_ON_POLICY_CONTRACT:
-        return
+def _uses_formal_contract(hf_config, args) -> bool:
+    return (
+        _is_qwen3(hf_config)
+        and getattr(args, "true_on_policy_mode", False)
+        and getattr(args, "sglang_true_on_policy_contract", None) == QWEN3_DENSE_TRUE_ON_POLICY_V1.name
+    )
+
+
+def _resolve_precision(base_policy, hf_config, args):
     if getattr(args, "fp16", False):
-        raise ValueError(f"{_TRUE_ON_POLICY_CONTRACT} requires FSDP bf16 compute; --fp16 is unsupported")
-    from ...models.qwen3 import apply_true_on_policy_patch_for_qwen3
-
-    apply_true_on_policy_patch_for_qwen3()
+        raise ValueError(f"{QWEN3_DENSE_TRUE_ON_POLICY_V1.name} requires bf16 training")
+    return replace(base_policy, param_dtype=torch.float32, autocast_dtype=torch.bfloat16)
 
 
-register_model_patch(ModelPatchHook("qwen3_true_on_policy_precision", _is_qwen3, _apply_true_on_policy_patch))
+def _instance_patch_applies(hf_config, args) -> bool:
+    return _uses_formal_contract(hf_config, args) and not getattr(args, "fp16", False)
+
+
+def _apply_model_patch(model) -> None:
+    from ...models.qwen3 import apply_qwen3_dense_true_on_policy_patch
+
+    apply_qwen3_dense_true_on_policy_patch(model)
+
+
+register_precision_policy(PrecisionPolicyHook("qwen3_dense_true_on_policy", _uses_formal_contract, _resolve_precision))
+register_model_instance_patch(
+    ModelInstancePatchHook("qwen3_dense_true_on_policy", _instance_patch_applies, _apply_model_patch)
+)

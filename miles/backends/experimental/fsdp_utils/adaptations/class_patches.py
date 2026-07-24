@@ -60,6 +60,22 @@ def register_model_patch(hook: ModelPatchHook) -> None:
     _MODEL_PATCH_HOOKS.append(hook)
 
 
+class ModelInstancePatchHook:
+    """A post-construction patch applied only to matching model instances."""
+
+    def __init__(self, name, applies_to, apply):
+        self.name = name
+        self.applies_to = applies_to
+        self.apply = apply
+
+
+_MODEL_INSTANCE_PATCH_HOOKS: list[ModelInstancePatchHook] = []
+
+
+def register_model_instance_patch(hook: ModelInstancePatchHook) -> None:
+    _MODEL_INSTANCE_PATCH_HOOKS.append(hook)
+
+
 def _has_config(hf_config) -> bool:
     return hf_config is not None
 
@@ -76,3 +92,10 @@ def apply_class_patches(hf_config=None, args=None) -> None:
     for hook in _MODEL_PATCH_HOOKS:
         if hook.applies_to(hf_config):
             hook.apply(hf_config, args)
+
+
+def apply_model_instance_patches(model, hf_config=None, args=None) -> None:
+    """Apply matching instance-local patches after model construction."""
+    for hook in _MODEL_INSTANCE_PATCH_HOOKS:
+        if hook.applies_to(hf_config, args):
+            hook.apply(model)

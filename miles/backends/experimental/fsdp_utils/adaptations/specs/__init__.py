@@ -5,8 +5,10 @@ arch, create ``specs/<arch>.py`` registering only the hooks it needs and add it 
 
   * register_param_transform    [weight_bridge]    — train->rollout param rename/reshape at weight sync
   * register_model_patch        [class_patches]    — config-time patch of transformers classes
+  * register_model_instance_patch [class_patches]  — post-construction patch of one model instance
   * register_packing_patch      [packing.registry] — per-document state reset under THD packing
   * register_post_load_fixup    [post_load_fixups] — correct weights from_pretrained clobbered
+  * register_precision_policy   [precision]        — model-specific FSDP compute/autocast policy
 
 An arch that needs none of these registers nothing. See the existing specs for examples.
 """

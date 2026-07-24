@@ -33,10 +33,10 @@ from ...training_utils.log_utils import (
 from ...training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from ...training_utils.parallel import get_parallel_state, set_parallel_state
 from . import checkpoint
-from .adaptations.class_patches import apply_class_patches
+from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
 from .adaptations.packing import apply_packing
 from .adaptations.post_load_fixups import apply_post_load_fixups
-from .adaptations.precision import apply_fp32_master, resolve_precision_policy
+from .adaptations.precision import apply_fp32_master, precision_forward_context, resolve_precision_policy
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
@@ -113,6 +113,8 @@ class FSDPTrainRayActor(TrainRayActor):
                     self.processor = load_processor(self.args.hf_checkpoint, trust_remote_code=True)
             dist.barrier(group=get_gloo_group())
 
+        self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
+
         # FSDP trains stock HF modeling: HF-compat patches + config-lifetime packing, before construction.
         apply_class_patches(self.hf_config, self.args)
         apply_packing(None, self.hf_config, "config")
@@ -129,8 +131,8 @@ class FSDPTrainRayActor(TrainRayActor):
                 attn_implementation=self.args.attn_implementation,
             )
 
-        precision = resolve_precision_policy(self.hf_config, self.args)
-        if precision.keep_fp32_master:
+        apply_model_instance_patches(model, self.hf_config, self.args)
+        if self.precision_policy.keep_fp32_master:
             model = apply_fp32_master(model)
 
         # re-assert the checkpoint over any param from_pretrained clobbered post-load (arch-gated, else no-op)
@@ -148,8 +150,8 @@ class FSDPTrainRayActor(TrainRayActor):
             mesh=get_parallel_state().dp_mesh,
             cpu_offload=self.fsdp_cpu_offload,
             args=self.args,
-            param_dtype=precision.param_dtype,
-            reduce_dtype=precision.reduce_dtype,
+            param_dtype=self.precision_policy.param_dtype,
+            reduce_dtype=self.precision_policy.reduce_dtype,
         )
 
         model = self._fsdp2_load_full_state_dict(
@@ -360,7 +362,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
                         model_args = self._get_model_inputs_args(batch)
                         # keep logits in native bf16 (chunks upcast to fp32 downstream); avoids a full-vocab fp32 tensor (~5GB)
-                        logits = active_model(**model_args).logits
+                        with precision_forward_context(self.precision_policy):
+                            logits = active_model(**model_args).logits
 
                         result = get_log_probs_and_entropy(
                             logits=logits,
@@ -533,7 +536,8 @@ class FSDPTrainRayActor(TrainRayActor):
     def _train_step(self, batch, step_id, num_microbatches):
         model_args = self._get_model_inputs_args(batch)
         # bf16 logits (see log_probs phase); per-response chunks are upcast to fp32 in the loss path.
-        logits = self.model(**model_args).logits
+        with precision_forward_context(self.precision_policy):
+            logits = self.model(**model_args).logits
 
         loss, normalizer, log_dict = loss_function(
             args=self.args,
@@ -601,10 +605,18 @@ class FSDPTrainRayActor(TrainRayActor):
                     attn_implementation=self.args.attn_implementation,
                 )
 
+            apply_model_instance_patches(ref_model, self.hf_config, self.args)
             full_state = ref_model.state_dict()
 
             # Always use CPUOffloadPolicy for reference, let FSDP2 handle the offload. It is faster than model.cpu().
-            ref_model = apply_fsdp2(ref_model, mesh=get_parallel_state().dp_mesh, cpu_offload=True, args=self.args)
+            ref_model = apply_fsdp2(
+                ref_model,
+                mesh=get_parallel_state().dp_mesh,
+                cpu_offload=True,
+                args=self.args,
+                param_dtype=self.precision_policy.param_dtype,
+                reduce_dtype=self.precision_policy.reduce_dtype,
+            )
             ref_model = self._fsdp2_load_full_state_dict(
                 ref_model, full_state, get_parallel_state().dp_mesh, cpu_offload=True
             )
@@ -689,29 +701,18 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None
 
     logger.info(f"FSDP MixedPrecision Policy: param_dtype={param_dtype}, reduce_dtype={reduce_dtype}")
 
-    default_mp_policy = MixedPrecisionPolicy(
-        param_dtype=param_dtype,
-        reduce_dtype=reduce_dtype,
-    )
     fsdp_kwargs = {
-        "mp_policy": default_mp_policy,
+        "mp_policy": MixedPrecisionPolicy(
+            param_dtype=param_dtype,
+            reduce_dtype=reduce_dtype,
+        ),
         "offload_policy": offload_policy,
         "mesh": mesh,
     }
 
     # fully_shard each layer first, then the root model
     for module in modules:
-        module_fsdp_kwargs = fsdp_kwargs
-        if getattr(module, "_fsdp_preserve_forward_input_dtype", False):
-            module_fsdp_kwargs = {
-                **fsdp_kwargs,
-                "mp_policy": MixedPrecisionPolicy(
-                    param_dtype=param_dtype,
-                    reduce_dtype=reduce_dtype,
-                    cast_forward_inputs=False,
-                ),
-            }
-        fully_shard(module, **module_fsdp_kwargs)
+        fully_shard(module, **fsdp_kwargs)
     fully_shard(model, **fsdp_kwargs)
 
     return model
