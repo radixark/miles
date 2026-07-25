@@ -70,7 +70,60 @@ jobs:
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: python -m tests.ci.ci_policy
 
+  docker-paths:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: diff
+        shell: bash
+        run: |
+          git fetch --depth 1 origin "${{ github.event.pull_request.base.sha }}"
+          # Dockerfile.rocm doesn't feed the cu13-x86 build this pipeline produces.
+          if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
+              | grep -v '^docker/Dockerfile\.rocm$' \
+              | grep -qE '^(docker/(Dockerfile|build\.py|patch/)|requirements\.txt)'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Docker PRs: build the image first and run every suite inside it.
+  docker-build:
+    needs: [docker-paths]
+    if: needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ["h200", "2gpu"]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+      - name: Install Python + dependencies
+        run: |
+          apt-get update && apt-get install -y python3 python3-pip
+          pip3 install --break-system-packages typer
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push PR tag
+        run: |
+          python3 docker/build.py --variant cu13-x86 --image-tag custom \
+            --custom-tag pr-${{ github.event.pull_request.number }} --push
+
   resolve-ci-image:
+    needs: [docker-paths, docker-build]
+    if: always() && !cancelled() && (needs.docker-build.result == 'success' || needs.docker-build.result == 'skipped')
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
@@ -81,8 +134,11 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body || '' }}
           INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+          DOCKER_BUILT: ${{ needs.docker-build.result == 'success' }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
           CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
+          [ -z "$CI_IMAGE_TAG" ] && [ "$DOCKER_BUILT" = "true" ] && CI_IMAGE_TAG="pr-${PR_NUMBER}"
           if [ -n "$PR_BODY" ]; then
             PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
             [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"

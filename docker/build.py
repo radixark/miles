@@ -46,7 +46,7 @@ VARIANTS = {
         "build_args": {
             "ENABLE_CUDA_13": "0",
             "SGLANG_IMAGE_TAG": "v0.5.15-cu129",
-            "WHEELS_TAG_X86": "cu129-x86_64-v0.5.12",
+            "WHEELS_TAG_X86": "cu129-x86_64",
         },
     },
     "rocm700-mi35x": {
