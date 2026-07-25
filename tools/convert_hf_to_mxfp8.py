@@ -24,6 +24,8 @@ import torch
 from sglang.srt.layers.quantization.fp8_utils import block_quant_dequant
 from tqdm import tqdm
 
+from miles.utils import accelerator
+
 try:
     from flashinfer import mxfp8_quantize as flashinfer_mxfp8_quantize
 
@@ -350,8 +352,7 @@ def convert_mxfp8(
             source_scale_index,
         )
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        accelerator.empty_cache()
 
     quantization_config = {
         "activation_scheme": "dynamic",
@@ -382,8 +383,7 @@ def convert_mxfp8(
     json.dump(index_dict, open(os.path.join(output_path, "model.safetensors.index.json"), "w"), indent=2)
 
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    accelerator.empty_cache()
 
 
 def main() -> None:
@@ -393,8 +393,8 @@ def main() -> None:
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda",
-        help="Torch device to run quantization on (default: cuda).",
+        default=accelerator.device_name(0),
+        help="Torch device to run quantization on (default: current accelerator).",
     )
     parser.add_argument(
         "--num-layers-at-start-in-bf16",
@@ -417,20 +417,20 @@ def main() -> None:
     )
     args, _ = parser.parse_known_args()
 
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available, cannot run MXFP8 quantization.")
+    if accelerator.device_type() == "cpu":
+        raise RuntimeError("No accelerator is available, cannot run MXFP8 quantization.")
 
     if isinstance(args.device, str) and args.device.isdigit():
-        device = torch.device(f"cuda:{args.device}")
+        device = accelerator.device(int(args.device))
     else:
         device = torch.device(args.device)
 
-    if device.type != "cuda":
-        raise RuntimeError("MXFP8 quantization requires a CUDA device.")
+    if device.type != accelerator.device_type():
+        raise RuntimeError(f"MXFP8 quantization requires a {accelerator.device_type()} device.")
     if device.index is None:
-        device = torch.device("cuda:0")
+        device = accelerator.device(0)
 
-    torch.cuda.set_device(device)
+    accelerator.set_device(device)
 
     if not os.path.exists(args.save_dir):
         print(f"Creating directory {args.save_dir}")

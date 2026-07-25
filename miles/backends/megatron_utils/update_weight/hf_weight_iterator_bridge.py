@@ -3,6 +3,7 @@ import json
 import os
 
 from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
+from miles.utils import accelerator
 from miles.utils import megatron_bridge_utils
 
 from ..megatron_to_hf import postprocess_hf_param
@@ -157,7 +158,7 @@ def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):
             # buffer-like params (Gemma-4 layer_scalar/scale) aren't in optimizer state; keep as-is
             return task
         new_param_weight = new_weight_dict[weight_dict_key]
-        new_param_weight = new_param_weight.cuda()
+        new_param_weight = new_param_weight.to(accelerator.device())
         return dataclasses.replace(task, param_weight=new_param_weight)
 
     return _MapWithLen(_handle_one, vanilla_conversion_tasks)

@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
+from miles.utils import accelerator
 from miles.utils.memory_utils import print_memory
 
 logger = logging.getLogger(__name__)
@@ -25,9 +26,17 @@ def monkey_patch_torch_dist():
     dist.old_new_group = old_new_group
 
     def new_group(*args, **kwargs):
+        backend = args[2] if len(args) >= 3 else kwargs.get("backend")
+        normalized_backend = accelerator.process_group_backend(backend) if backend is not None else backend
+        if normalized_backend != backend:
+            if len(args) >= 3:
+                args = (*args[:2], normalized_backend, *args[3:])
+            else:
+                kwargs = {**kwargs, "backend": normalized_backend}
+
         group = old_new_group(*args, **kwargs)
-        # skip none nccl group.
-        if len(args) >= 3 and args[2] == "gloo" or "backend" in kwargs and kwargs["backend"] == "gloo":
+        # skip non-accelerator group.
+        if normalized_backend == "gloo":
             return group
 
         # Get ranks from arguments
@@ -41,12 +50,20 @@ def monkey_patch_torch_dist():
         if len(ranks) == 1:
             return group
 
-        group = ReloadableProcessGroup(group, inner_args=args, inner_kwargs=kwargs)
+        group = ReloadableProcessGroup(group, inner_args=args, inner_kwargs=kwargs, backend=normalized_backend)
         return group
 
     dist.new_group = new_group
 
-    def get_new_function(func):
+    def get_new_query_function(func):
+        def new_function(*args, **kwargs):
+            args = tuple(arg.group if isinstance(arg, ReloadableProcessGroup) else arg for arg in args)
+            kwargs = {k: (v.group if isinstance(v, ReloadableProcessGroup) else v) for k, v in kwargs.items()}
+            return func(*args, **kwargs)
+
+        return new_function
+
+    def get_new_comm_function(func):
         def new_function(*args, **kwargs):
             args = tuple([arg.group if isinstance(arg, ReloadableProcessGroup) else arg for arg in args])
             kwargs = {k: (v.group if isinstance(v, ReloadableProcessGroup) else v) for k, v in kwargs.items()}
@@ -55,37 +72,37 @@ def monkey_patch_torch_dist():
 
         return new_function
 
-    dist.get_rank = get_new_function(dist.get_rank)
-    dist.get_world_size = get_new_function(dist.get_world_size)
-    dist.get_backend = get_new_function(dist.get_backend)
-    dist.get_global_rank = get_new_function(dist.get_global_rank)
-    dist.get_group_rank = get_new_function(dist.get_group_rank)
-    dist.get_process_group_ranks = get_new_function(dist.get_process_group_ranks)
+    dist.get_rank = get_new_query_function(dist.get_rank)
+    dist.get_world_size = get_new_query_function(dist.get_world_size)
+    dist.get_backend = get_new_query_function(dist.get_backend)
+    dist.get_global_rank = get_new_query_function(dist.get_global_rank)
+    dist.get_group_rank = get_new_query_function(dist.get_group_rank)
+    dist.get_process_group_ranks = get_new_query_function(dist.get_process_group_ranks)
 
-    dist.all_reduce = get_new_function(dist.all_reduce)
-    dist.all_gather = get_new_function(dist.all_gather)
-    dist.all_gather_into_tensor = get_new_function(dist.all_gather_into_tensor)
-    dist.all_gather_object = get_new_function(dist.all_gather_object)
-    dist.all_to_all = get_new_function(dist.all_to_all)
-    dist.all_to_all_single = get_new_function(dist.all_to_all_single)
-    dist.broadcast = get_new_function(dist.broadcast)
-    dist.broadcast_object_list = get_new_function(dist.broadcast_object_list)
-    dist.reduce = get_new_function(dist.reduce)
-    dist.reduce_scatter = get_new_function(dist.reduce_scatter)
-    dist.reduce_scatter_tensor = get_new_function(dist.reduce_scatter_tensor)
-    dist.scatter = get_new_function(dist.scatter)
-    dist.gather = get_new_function(dist.gather)
-    dist.barrier = get_new_function(dist.barrier)
-    dist.send = get_new_function(dist.send)
-    dist.recv = get_new_function(dist.recv)
-    dist._coalescing_manager = get_new_function(dist._coalescing_manager)
+    dist.all_reduce = get_new_comm_function(dist.all_reduce)
+    dist.all_gather = get_new_comm_function(dist.all_gather)
+    dist.all_gather_into_tensor = get_new_comm_function(dist.all_gather_into_tensor)
+    dist.all_gather_object = get_new_comm_function(dist.all_gather_object)
+    dist.all_to_all = get_new_comm_function(dist.all_to_all)
+    dist.all_to_all_single = get_new_comm_function(dist.all_to_all_single)
+    dist.broadcast = get_new_comm_function(dist.broadcast)
+    dist.broadcast_object_list = get_new_comm_function(dist.broadcast_object_list)
+    dist.reduce = get_new_comm_function(dist.reduce)
+    dist.reduce_scatter = get_new_comm_function(dist.reduce_scatter)
+    dist.reduce_scatter_tensor = get_new_comm_function(dist.reduce_scatter_tensor)
+    dist.scatter = get_new_comm_function(dist.scatter)
+    dist.gather = get_new_comm_function(dist.gather)
+    dist.barrier = get_new_comm_function(dist.barrier)
+    dist.send = get_new_comm_function(dist.send)
+    dist.recv = get_new_comm_function(dist.recv)
+    dist._coalescing_manager = get_new_comm_function(dist._coalescing_manager)
 
     # p2p
     old_isend = dist.isend
     old_irecv = dist.irecv
 
-    dist.isend = get_new_function(dist.isend)
-    dist.irecv = get_new_function(dist.irecv)
+    dist.isend = get_new_comm_function(dist.isend)
+    dist.irecv = get_new_comm_function(dist.irecv)
 
     def get_new_p2pop_function(func):
         def new_function(*args, **kwargs):
@@ -111,7 +128,7 @@ def monkey_patch_torch_dist():
 class ReloadableProcessGroup(torch.distributed.ProcessGroup):
     GROUPS = {}
 
-    def __init__(self, group, inner_args, inner_kwargs):
+    def __init__(self, group, inner_args, inner_kwargs, backend=None):
         super().__init__(
             rank=dist.get_rank(group),
             size=dist.get_world_size(group),
@@ -119,6 +136,7 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         self.group = group
         self.inner_args = inner_args
         self.inner_kwargs = inner_kwargs
+        self.backend = backend
         pid = os.getpid()
         if pid not in ReloadableProcessGroup.GROUPS:
             ReloadableProcessGroup.GROUPS[pid] = []
@@ -153,7 +171,17 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
         for reloadable_group in reloadable_groups:
             if reloadable_group.group is not None:
                 continue
-            group = old_new_group(*reloadable_group.inner_args, **reloadable_group.inner_kwargs)
+            inner_kwargs = dict(reloadable_group.inner_kwargs)
+            backend = reloadable_group.backend
+            if backend is not None:
+                if len(reloadable_group.inner_args) >= 3:
+                    args = (*reloadable_group.inner_args[:2], backend, *reloadable_group.inner_args[3:])
+                    group = old_new_group(*args, **inner_kwargs)
+                else:
+                    inner_kwargs["backend"] = backend
+                    group = old_new_group(*reloadable_group.inner_args, **inner_kwargs)
+            else:
+                group = old_new_group(*reloadable_group.inner_args, **inner_kwargs)
             reloadable_group.group = group
 
     def rank(self) -> int:

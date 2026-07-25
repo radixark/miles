@@ -10,6 +10,9 @@ import torch.distributed as dist
 from ray.actor import ActorHandle
 from torch.distributed.tensor import DTensor, Replicate
 
+from miles.utils import accelerator
+
+
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions  # type: ignore[import]
 except ImportError:
@@ -64,7 +67,7 @@ class UpdateWeight(abc.ABC):
                 bucket = []
                 bucket_size = 0
 
-            param = param.cuda()
+            param = param.to(accelerator.device())
             if isinstance(param, DTensor):
                 # async version of param.full_tensor
                 param = param.redistribute(
@@ -234,12 +237,12 @@ class UpdateWeightFromDistributed(UpdateWeight):
                     i * self.args.rollout_num_gpus_per_engine + 1,
                     world_size,
                     self._group_name,
-                    backend="nccl",
+                    backend=accelerator.process_group_backend("nccl"),
                 )
                 for i, engine in enumerate(self.rollout_engines)
             ]
             self._model_update_groups = init_process_group(
-                backend="nccl",
+                backend=accelerator.process_group_backend("nccl"),
                 init_method=f"tcp://{master_address}:{master_port}",
                 world_size=world_size,
                 rank=0,
@@ -270,7 +273,7 @@ class UpdateWeightFromDistributed(UpdateWeight):
         handles = []
         # Broadcast parameters one by one with memory management
         for _name, param in named_tensors:
-            torch.cuda.empty_cache()
+            accelerator.empty_cache()
             # Ensure tensor is contiguous and on the right device
             param_data = param.data.contiguous()
 

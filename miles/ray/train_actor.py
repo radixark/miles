@@ -11,6 +11,7 @@ import torch.distributed as dist
 
 import miles.utils.eval_config
 from miles.ray.ray_actor import RayActor
+from miles.utils import accelerator
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.env_report import collect_and_print_node_env_report
@@ -28,11 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_local_gpu_id():
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
-    if not cvd:
-        return ray.get_gpu_ids()[0]
-    else:
-        return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
+    return accelerator.resolve_visible_device_id(ray.get_gpu_ids()[0])
 
 
 class TrainRayActor(RayActor):
@@ -89,7 +86,7 @@ class TrainRayActor(RayActor):
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
 
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        torch.cuda.set_device(f"cuda:{local_rank}")
+        accelerator.set_device(accelerator.device_name(local_rank))
 
         if args.debug_deterministic_collective:
             register_det_nccl_backend()
@@ -97,10 +94,11 @@ class TrainRayActor(RayActor):
             logger.info("Deterministic collectives: training world uses the det_nccl backend")
 
         # Use hybrid backend when FSDP CPU offload is enabled with a CPU backend
-        backend = args.distributed_backend
+        backend = accelerator.process_group_backend(args.distributed_backend)
         if getattr(args, "fsdp_cpu_offload", False) and getattr(args, "fsdp_cpu_backend", None):
             cpu_backend = args.fsdp_cpu_backend
-            backend = f"cpu:{cpu_backend},cuda:{args.distributed_backend}"
+            device_backend = accelerator.process_group_backend(args.distributed_backend)
+            backend = f"cpu:{cpu_backend},{accelerator.device_type()}:{device_backend}"
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
         dist.init_process_group(

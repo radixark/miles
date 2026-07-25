@@ -136,6 +136,11 @@ def add_sglang_arguments(parser):
 
 def validate_args(args):
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
+    args.sglang_dp_size = getattr(args, "sglang_data_parallel_size", getattr(args, "sglang_dp_size", 1))
+    args.sglang_pp_size = getattr(args, "sglang_pipeline_parallel_size", getattr(args, "sglang_pp_size", 1))
+    args.sglang_ep_size = getattr(args, "sglang_expert_parallel_size", getattr(args, "sglang_ep_size", 1))
+    if hasattr(args, "sglang_attention_context_parallel_size"):
+        args.sglang_attn_cp_size = args.sglang_attention_context_parallel_size
 
     if args.true_on_policy_mode:
         args.sglang_enable_deterministic_inference = True

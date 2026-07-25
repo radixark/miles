@@ -13,6 +13,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.train_actor import TrainRayActor
+from miles.utils import accelerator
 from miles.utils import train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
@@ -57,7 +58,6 @@ from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
-from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 if TYPE_CHECKING:
@@ -229,6 +229,14 @@ class MegatronTrainRayActor(TrainRayActor):
 
                 update_weight_cls = UpdateWeightFromDiskDelta
             else:
+                try:
+                    from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
+                except ImportError as exc:
+                    raise ImportError(
+                        "P2P weight transfer is not available with the current SGLang installation. "
+                        "Use --update-weight-transfer-mode broadcast, or switch to an SGLang version "
+                        "that provides the P2P update dependencies."
+                    ) from exc
                 update_weight_cls = UpdateWeightP2P
         self.weight_updater = update_weight_cls(
             self.args,
@@ -510,7 +518,7 @@ class MegatronTrainRayActor(TrainRayActor):
             if self._enable_weight_backup:
                 self.weights_backuper.backup("actor")
             else:
-                torch.cuda.synchronize()
+                accelerator.synchronize()
 
             # Update ref model if needed
             if (
@@ -765,7 +773,7 @@ class MegatronTrainRayActor(TrainRayActor):
         group_name = "actor_critic"
         world_size = 2
         self._actor_critic_groups = init_process_group(
-            backend="nccl",
+            backend=accelerator.process_group_backend("nccl"),
             init_method=f"tcp://{master_address}:{master_port}",
             world_size=world_size,
             rank=0 if self.role == "actor" else 1,

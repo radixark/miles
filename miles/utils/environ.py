@@ -1,5 +1,7 @@
 import os
 
+from miles.utils import accelerator
+
 _printed_experimental_rollout_refactor = False
 
 
@@ -20,11 +22,9 @@ def default_fp8_block_scaling_fp32_scales() -> str:
     On Blackwell (SM100+), TE emulates the blockwise FP8 recipe with MXFP8,
     which requires power-of-two scales, so FP32 scales must stay disabled.
     """
-    import torch
-
-    if not torch.cuda.is_available():
+    if not accelerator.is_cuda_available() or accelerator.is_musa_available():
         return "1"
-    major, _minor = torch.cuda.get_device_capability()
+    major, _minor = accelerator.accelerator_module().get_device_capability()
     return "0" if major >= 10 else "1"
 
 

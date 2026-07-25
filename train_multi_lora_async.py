@@ -4,6 +4,8 @@ import asyncio
 import logging
 from pathlib import Path
 
+from miles.utils import accelerator as _accelerator
+
 import ray
 
 from miles.ray.multi_lora.controller import create_multilora_controller, get_multi_lora_controller

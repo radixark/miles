@@ -11,6 +11,7 @@ import torch
 from megatron.core.distributed import DistributedDataParallel as DDP
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils import accelerator
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +170,7 @@ def check_peak_gpu_memory_after_load(args) -> None:
         return
 
     # Threshold 20 GB is midpoint between ~16.9 GB (with) and ~22.4 GB (without) on 8xH200.
-    peak_gpu_gb = torch.cuda.max_memory_allocated() / (1024**3)
+    peak_gpu_gb = accelerator.max_memory_allocated() / (1024**3)
     rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
     logger.info(f"[CI low-memory-resume] Rank {rank} peak GPU memory: {peak_gpu_gb:.2f} GB")
 

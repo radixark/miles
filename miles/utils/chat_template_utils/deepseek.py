@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import copy
 import functools
+import importlib
 import json
 import os
 from typing import Any
 
-from sglang.srt.entrypoints.openai import encoding_dsv4, encoding_dsv32
 from sglang.srt.entrypoints.openai.protocol import Tool
 
 _ASSISTANT_SP_TOKEN = "<｜Assistant｜>"
@@ -57,7 +57,18 @@ def _inject_tools_into_system(messages: list[dict[str, Any]], tools: list[dict[s
 class DeepSeekFamily:
     """Shared behavior for the DeepSeek official-encoder families."""
 
-    template: Any
+    encoder_module: str
+
+    @functools.cached_property
+    def template(self) -> Any:
+        module_name = f"sglang.srt.entrypoints.openai.{self.encoder_module}"
+        try:
+            return importlib.import_module(module_name)
+        except ImportError as exc:
+            raise ImportError(
+                f"{self.encoder_module} is required only for {self.encoder_module.removeprefix('encoding_')} "
+                f"chat rendering, but is unavailable in the installed SGLang version"
+            ) from exc
 
     def _build_encode_config(self, kwargs: dict) -> dict:
         kwargs = dict(kwargs)
@@ -112,7 +123,7 @@ class DeepSeekFamily:
 
 
 class DeepSeekV32Family(DeepSeekFamily):
-    template = encoding_dsv32
+    encoder_module = "encoding_dsv32"
 
     def _generation_prompt_suffix(self, tail_role: str | None, thinking_token: str) -> str | None:
         if tail_role in {"user", "developer"}:
@@ -123,7 +134,7 @@ class DeepSeekV32Family(DeepSeekFamily):
 
 
 class DeepSeekV4Family(DeepSeekFamily):
-    template = encoding_dsv4
+    encoder_module = "encoding_dsv4"
 
     def _generation_prompt_suffix(self, tail_role: str | None, thinking_token: str) -> str | None:
         if tail_role in {"user", "developer", "tool"}:

@@ -1,4 +1,4 @@
-import socket
+import os
 import time
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
@@ -11,11 +11,49 @@ from ray.actor import ActorHandle
 from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils import accelerator
 from miles.utils.distributed_utils import init_process_group
+from miles.utils.http_utils import is_port_available
 
 from miles.utils.lora import LORA_ADAPTER_NAME
 from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
+
+
+def _get_update_weight_group_index(group_name: str) -> int:
+    prefix = "miles-pp_"
+    if group_name.startswith(prefix):
+        suffix = group_name[len(prefix) :]
+        if suffix.isdigit():
+            return int(suffix)
+        if "-engine_" in suffix:
+            pp_rank, engine_rank = suffix.split("-engine_", maxsplit=1)
+            if pp_rank.isdigit() and engine_rank.isdigit():
+                return int(pp_rank) * 32 + int(engine_rank)
+    return sum(ord(char) for char in group_name) % 32
+
+
+def _get_update_weight_master_port(args: Namespace, group_name: str, consecutive: int = 8) -> int:
+    base = args.update_weight_master_port_base
+    stride = args.update_weight_master_port_stride
+    retries = args.update_weight_master_port_retries
+    group_index = _get_update_weight_group_index(group_name)
+    start_port = base + group_index * stride
+    scan_window = min(retries, stride)
+    if scan_window < consecutive:
+        raise RuntimeError(
+            f"Invalid update-weight port config for {group_name}: "
+            f"base={base}, stride={stride}, retries={retries}, consecutive={consecutive}"
+        )
+
+    for master_port in range(start_port, start_port + scan_window - consecutive + 1):
+        if all(is_port_available(master_port + offset) for offset in range(consecutive)):
+            return master_port
+    raise RuntimeError(
+        f"Failed to find update-weight master port for {group_name}: "
+        f"base={base}, stride={stride}, retries={retries}, start_port={start_port}, "
+        f"scan_window={scan_window}, consecutive={consecutive}"
+    )
 
 
 class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
@@ -43,6 +81,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
+        self._weight_update_connections: list[tuple[str, dist.ProcessGroup, Sequence[ActorHandle]]] = []
         self.rollout_engines: Sequence[ActorHandle] | None = None
         self._connection_stale: bool = False
         self._init_lora(
@@ -83,12 +122,42 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             self._group_name = f"miles-pp_{pp_rank}"
 
         if self._is_source:
-            disconnect_rollout_engines_from_distributed(
-                self.args, self._group_name, self._model_update_groups, self.rollout_engines
+            for group_name, process_group, engines in self._weight_update_connections:
+                disconnect_rollout_engines_from_distributed(self.args, group_name, process_group, engines)
+
+            if engine_gpu_counts is None:
+                engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
+            if len(engine_gpu_counts) != len(rollout_engines):
+                raise ValueError(
+                    f"engine_gpu_counts has {len(engine_gpu_counts)} entries for {len(rollout_engines)} engines"
+                )
+
+            update_mode = os.environ.get("UPDATE_MODE", "broadcast")
+            split_engines = update_mode in {"p2p-broadcast", "gloo-broadcast"} or (
+                accelerator.is_musa_environment() and update_mode == "sync-broadcast"
             )
-            self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.args, self._group_name, rollout_engines
-            )
+            if split_engines and len(rollout_engines) > 1 and not self.is_lora:
+                self._weight_update_connections = []
+                for engine_index, (engine, gpu_count) in enumerate(zip(rollout_engines, engine_gpu_counts)):
+                    group_name = f"{self._group_name}-engine_{engine_index}"
+                    process_group = connect_rollout_engines_from_distributed(
+                        self.args,
+                        group_name,
+                        [engine],
+                        engine_gpu_counts=[gpu_count],
+                    )
+                    self._weight_update_connections.append((group_name, process_group, [engine]))
+            else:
+                process_group = connect_rollout_engines_from_distributed(
+                    self.args,
+                    self._group_name,
+                    rollout_engines,
+                    engine_gpu_counts=engine_gpu_counts,
+                )
+                self._weight_update_connections = [(self._group_name, process_group, rollout_engines)]
+
+            groups = [connection[1] for connection in self._weight_update_connections]
+            self._model_update_groups = groups[0] if len(groups) == 1 else groups
 
     @property
     def _is_source(self):
@@ -109,16 +178,19 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         # lock the rollout engines to prevent dead lock on broadcast.
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
-        refs = update_weights_from_distributed(
-            self._group_name,
-            self._model_update_groups,
-            self.weight_version,
-            self.rollout_engines,
-            converted_named_tensors,
-        )
-        ray.get(refs)
-        converted_named_tensors.clear()
-        ray.get(self.rollout_engine_lock.release.remote())
+        try:
+            for group_name, process_group, engines in self._weight_update_connections:
+                refs = update_weights_from_distributed(
+                    group_name,
+                    process_group,
+                    self.weight_version,
+                    engines,
+                    converted_named_tensors,
+                )
+                ray.get(refs)
+            converted_named_tensors.clear()
+        finally:
+            ray.get(self.rollout_engine_lock.release.remote())
         if pbar:
             pbar.update(1)
 
@@ -135,27 +207,26 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         dtypes = [param.dtype for _, param in named_tensors]
         shapes = [list(param.shape) for _, param in named_tensors]
 
-        refs = [
-            engine.load_lora_adapter_from_distributed.remote(
-                lora_name=LORA_ADAPTER_NAME,
-                config_dict=self._lora_config,
-                names=names,
-                dtypes=dtypes,
-                shapes=shapes,
-                group_name=self._group_name,
-            )
-            for engine in self.rollout_engines
-        ]
         contiguous_tensors = [
             param.data if param.data.is_contiguous() else param.data.contiguous() for _, param in named_tensors
         ]
-        handles = [
-            dist.broadcast(tensor, 0, group=self._model_update_groups, async_op=True) for tensor in contiguous_tensors
-        ]
-        for handle in handles:
-            handle.wait()
+        for group_name, process_group, engines in self._weight_update_connections:
+            refs = [
+                engine.load_lora_adapter_from_distributed.remote(
+                    lora_name=LORA_ADAPTER_NAME,
+                    config_dict=self._lora_config,
+                    names=names,
+                    dtypes=dtypes,
+                    shapes=shapes,
+                    group_name=group_name,
+                )
+                for engine in engines
+            ]
+            handles = [dist.broadcast(tensor, 0, group=process_group, async_op=True) for tensor in contiguous_tensors]
+            for handle in handles:
+                handle.wait()
 
-        _check_weight_sync_results(ray.get(refs), is_lora=True)
+            _check_weight_sync_results(ray.get(refs), is_lora=True)
 
     def _update_multi_lora_weight_implementation(
         self,
@@ -170,28 +241,27 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         dtypes = [param.dtype for _, param in named_tensors]
         shapes = [list(param.shape) for _, param in named_tensors]
 
-        refs = [
-            engine.load_lora_adapter_from_distributed.remote(
-                lora_name=lora_name,
-                config_dict=lora_config,
-                names=names,
-                dtypes=dtypes,
-                shapes=shapes,
-                group_name=self._group_name,
-                upsert=True,
-            )
-            for engine in self.rollout_engines
-        ]
         # NCCL needs contiguous buffers (lora_B slices are strided); the list keeps them alive
         # until the async broadcasts complete.
         broadcast_tensors = [param.data.contiguous() for _, param in named_tensors]
-        handles = [
-            dist.broadcast(tensor, 0, group=self._model_update_groups, async_op=True) for tensor in broadcast_tensors
-        ]
-        for handle in handles:
-            handle.wait()
+        for group_name, process_group, engines in self._weight_update_connections:
+            refs = [
+                engine.load_lora_adapter_from_distributed.remote(
+                    lora_name=lora_name,
+                    config_dict=lora_config,
+                    names=names,
+                    dtypes=dtypes,
+                    shapes=shapes,
+                    group_name=group_name,
+                    upsert=True,
+                )
+                for engine in engines
+            ]
+            handles = [dist.broadcast(tensor, 0, group=process_group, async_op=True) for tensor in broadcast_tensors]
+            for handle in handles:
+                handle.wait()
 
-        _check_weight_sync_results(ray.get(refs), is_lora=True)
+            _check_weight_sync_results(ray.get(refs), is_lora=True)
 
 
 def connect_rollout_engines_from_distributed(
@@ -210,10 +280,9 @@ def connect_rollout_engines_from_distributed(
     if engine_gpu_counts is None:
         engine_gpu_counts = [args.rollout_num_gpus_per_engine] * len(rollout_engines)
     master_address = ray._private.services.get_node_ip_address()
-    with socket.socket() as sock:
-        sock.bind(("", 0))
-        master_port = sock.getsockname()[1]
+    master_port = _get_update_weight_master_port(args, group_name)
     world_size = sum(engine_gpu_counts) + 1
+    backend = accelerator.weight_update_backend()
 
     refs = []
     rank_cursor = 1
@@ -225,12 +294,12 @@ def connect_rollout_engines_from_distributed(
                 rank_cursor,
                 world_size,
                 group_name,
-                backend="nccl",
+                backend=backend,
             )
         )
         rank_cursor += engine_gpu_counts[i]
     model_update_groups = init_process_group(
-        backend="nccl",
+        backend=backend,
         init_method=f"tcp://{master_address}:{master_port}",
         world_size=world_size,
         rank=0,
@@ -260,8 +329,9 @@ def update_weights_from_distributed(
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
 ) -> list[ObjectRef]:
     """
-    Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
+    Send metadata over Ray, then transfer tensors according to UPDATE_MODE.
     """
+    update_mode = os.environ.get("UPDATE_MODE", "broadcast")
     refs = [
         engine.update_weights_from_distributed.remote(
             names=[name for name, _ in converted_named_tensors],
@@ -272,14 +342,24 @@ def update_weights_from_distributed(
         )
         for engine in rollout_engines
     ]
-
-    contiguous_tensors = [
-        param.data if param.data.is_contiguous() else param.data.contiguous() for _, param in converted_named_tensors
-    ]
-    handles = []
-    for tensor in contiguous_tensors:
-        handles.append(dist.broadcast(tensor, 0, group=group, async_op=True))
-    for handle in handles:
-        handle.wait()
+    if update_mode == "p2p-broadcast":
+        for i, (_, param) in enumerate(converted_named_tensors):
+            dist.send(param.data, dst=1, group=group, tag=i)
+    elif update_mode == "gloo-broadcast":
+        for _, param in converted_named_tensors:
+            dist.broadcast(param.data.cpu(), 0, group=group, async_op=False)
+    elif update_mode == "sync-broadcast":
+        for _, param in converted_named_tensors:
+            dist.broadcast(param.data, 0, group=group, async_op=False)
+    else:
+        contiguous_tensors = [
+            param.data if param.data.is_contiguous() else param.data.contiguous()
+            for _, param in converted_named_tensors
+        ]
+        handles = []
+        for tensor in contiguous_tensors:
+            handles.append(dist.broadcast(tensor, 0, group=group, async_op=True))
+        for handle in handles:
+            handle.wait()
 
     return refs

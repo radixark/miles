@@ -11,13 +11,14 @@ from functools import partial
 from pathlib import Path
 
 import torch
+from miles.utils import accelerator
+
 from megatron.core import mpu
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
-from megatron.core.optimizer.muon import get_megatron_muon_optimizer
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
@@ -55,6 +56,11 @@ from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
 logger = logging.getLogger(__name__)
+
+try:
+    from megatron.core.optimizer.muon import get_megatron_muon_optimizer
+except ModuleNotFoundError:
+    get_megatron_muon_optimizer = None
 
 
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
@@ -165,6 +171,12 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        if get_megatron_muon_optimizer is None:
+            raise ModuleNotFoundError(
+                "Megatron Muon optimizer is not available in the current MEGATRON_PATH. "
+                "Use --optimizer adam/sgd, or switch MEGATRON_PATH to a Megatron version "
+                "that provides megatron.core.optimizer.muon."
+            )
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
@@ -622,8 +634,8 @@ def train_one_step(
 
 def finalize_model_grads_with_empty_cache(*args, **kwargs):
     # TODO: this is an ad-hoc method and we should figure out why the oom happens in the first place.
-    device = torch.cuda.current_device()
-    free, total = torch.cuda.mem_get_info(device)
+    device = accelerator.current_device()
+    free, total = accelerator.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
     return finalize_model_grads(*args, **kwargs)

@@ -9,10 +9,17 @@ try:
     mxfp8_quantize = partial(flashinfer_mxfp8_quantize, is_sf_swizzled_layout=False)
 except ImportError:
     logger = logging.getLogger(__name__)
-    logger.warning("FlashInfer mxfp8_quantize not available; falling back to Triton.")
-    from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
+    try:
+        from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
 
-    mxfp8_quantize = mxfp8_group_quantize
+        logger.warning("FlashInfer mxfp8_quantize not available; falling back to SGLang mxfp8_group_quantize.")
+        mxfp8_quantize = mxfp8_group_quantize
+    except ImportError:
+        logger.warning(
+            "MXFP8 quantization kernels are not available in this SGLang/FlashInfer environment; "
+            "imports will continue, but MXFP8 conversion will fail if used."
+        )
+        mxfp8_quantize = None
 
 
 def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config):
@@ -112,6 +119,11 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
 
 
 def _quantize_param(name, weight):
+    if mxfp8_quantize is None:
+        raise RuntimeError(
+            "MXFP8 quantization requested, but neither flashinfer.mxfp8_quantize nor "
+            "sglang.srt.layers.quantization.fp8_utils.mxfp8_group_quantize is available."
+        )
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
     weight = weight.contiguous()
     k = weight.shape[-1]

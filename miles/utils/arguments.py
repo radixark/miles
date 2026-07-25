@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 import yaml
+
 from sglang_router.launch_router import RouterArgs
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments
@@ -558,6 +559,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=1,
                 help="Interval for updating the weights",
+            )
+            parser.add_argument(
+                "--update-weight-master-port-base",
+                type=int,
+                default=23000,
+                help="Base port for update-weight distributed rendezvous. Use a non-ephemeral range.",
+            )
+            parser.add_argument(
+                "--update-weight-master-port-stride",
+                type=int,
+                default=100,
+                help="Port range stride reserved for each update-weight process group.",
+            )
+            parser.add_argument(
+                "--update-weight-master-port-retries",
+                type=int,
+                default=100,
+                help="Maximum number of update-weight rendezvous ports to scan per process group.",
             )
             parser.add_argument(
                 "--pause-generation-mode",
@@ -2939,6 +2958,13 @@ def hf_validate_args(args, hf_config):
     def equal(x, y):
         return x == y
 
+    def get_megatron_config_value(name):
+        if hasattr(args, name):
+            return getattr(args, name)
+        if name == "layernorm_epsilon" and hasattr(args, "norm_epsilon"):
+            return getattr(args, "norm_epsilon")
+        return getattr(args, name)
+
     errors = []
 
     # multimodal models have different config structure
@@ -2979,10 +3005,11 @@ def hf_validate_args(args, hf_config):
         if getattr(hf_config, "model_type", "") == "deepseek_v4" and hf_config_name == "intermediate_size":
             continue
         if hasattr(hf_config, hf_config_name):
-            if not compare_fn(getattr(hf_config, hf_config_name), getattr(args, megatron_config_name)):
+            megatron_config_value = get_megatron_config_value(megatron_config_name)
+            if not compare_fn(getattr(hf_config, hf_config_name), megatron_config_value):
                 errors.append(
                     f"{hf_config_name} in hf config {getattr(hf_config, hf_config_name)} is not equal to "
-                    f"{megatron_config_name} {getattr(args, megatron_config_name)}, please check the config."
+                    f"{megatron_config_name} {megatron_config_value}, please check the config."
                 )
 
     if len(errors) > 0:
