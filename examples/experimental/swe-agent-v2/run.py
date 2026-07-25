@@ -52,6 +52,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     )
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
+    # Per-trial wall-clock cap (seconds) for the agent-server call. Trials that
+    # exceed this are marked aborted in miles and filtered from GRPO groups, so
+    # raise it when p90 trial duration > default (e.g. SWE-bench Verified).
+    agent_trial_timeout: int = 3600
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", socket.gethostname())  # cluster/pod IP
 
@@ -233,6 +237,7 @@ def execute(args: ScriptArgs):
         "AGENT_MODEL_NAME": args.agent_model_name,
         "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
+        "AGENT_TRIAL_TIMEOUT": str(args.agent_trial_timeout),
         "MILES_HOST_IP": args.miles_host_ip,
     }
 
