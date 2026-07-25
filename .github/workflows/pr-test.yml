@@ -83,7 +83,9 @@ jobs:
         shell: bash
         run: |
           git fetch --depth 1 origin "${{ github.event.pull_request.base.sha }}"
+          # Dockerfile.rocm doesn't feed the cu13-x86 build this pipeline produces.
           if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
+              | grep -v '^docker/Dockerfile\.rocm$' \
               | grep -qE '^(docker/(Dockerfile|build\.py|patch/)|requirements\.txt)'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
