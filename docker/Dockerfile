@@ -230,6 +230,22 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
     fi
 
+# ==================== Reconcile apache-tvm-ffi with sglang's pin ====================
+# sglang v0.5.16 bumped nvidia-cutlass-dsl 4.5.2 -> 4.6.0 while leaving its
+# apache-tvm-ffi pin at 0.1.11. cutlass-dsl 4.6.0's tvm_ffi provider calls
+#   tvm_ffi.utils.kwargs_wrapper.make_kwargs_wrapper(..., map_dataclass_to_tuple=...)
+# and that parameter only exists in apache-tvm-ffi >= 0.1.10. An earlier install in
+# this file drags in an older apache-tvm-ffi, so flashinfer's CuTe rmsnorm path dies
+# during CUDA-graph capture with
+#   TypeError: make_kwargs_wrapper() got an unexpected keyword argument 'map_dataclass_to_tuple'
+# Restore sglang's own pin after every other install, and fail the build loudly if it
+# does not take effect rather than shipping an image that only breaks under CI.
+RUN pip install --force-reinstall --no-deps "apache-tvm-ffi==0.1.11" && \
+    python3 -c "import inspect; from tvm_ffi.utils import kwargs_wrapper as k; \
+p = inspect.signature(k.make_kwargs_wrapper).parameters; \
+assert 'map_dataclass_to_tuple' in p, \
+  'apache-tvm-ffi resolves to a build too old for nvidia-cutlass-dsl 4.6.0: %s' % list(p)"
+
 RUN rm -rf /tmp/wheels
 
 # The cu130 sglang base ships its baked Rust toolchain outside the default PATH.
