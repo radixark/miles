@@ -119,11 +119,17 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
 # te_dequantized_backward_override.patch is a hot fix from
 # https://github.com/NVIDIA/TransformerEngine/pull/3141; drop it after TE v2.18.
 COPY docker/patch/ /tmp/patches/
+# A `for` loop exits with the status of its LAST iteration, so a patch that fails
+# to apply here used to be swallowed whenever a later one succeeded -- the image
+# shipped with TE silently unpatched. Fail the build instead.
 RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
       TE_DIR=$(python -c 'import importlib.util; print(importlib.util.find_spec("transformer_engine").submodule_search_locations[0])') && \
       for p in /tmp/patches/cu13/*.patch; do \
-        echo "Applying $(basename $p) to $TE_DIR" && \
-        patch -d "$TE_DIR" -p1 < "$p"; \
+        echo "Applying $(basename $p) to $TE_DIR"; \
+        patch -d "$TE_DIR" -p1 < "$p" || { \
+          echo "TE patch $(basename $p) did not apply cleanly against the installed transformer_engine" >&2; \
+          exit 1; \
+        }; \
       done; \
     fi && rm -rf /tmp/patches
 
