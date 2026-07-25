@@ -67,6 +67,11 @@ def _make_serving(tokenizer) -> OpenAIServingChat:
     serving.is_gemma4 = False
     serving.tool_call_parser = None
     serving.reasoning_parser = None
+    # sglang v0.5.16 added server-level default chat-template kwargs, merged into
+    # the request's chat_template_kwargs at the top of _process_messages.
+    # __init__ always sets it (to `... or {}`); mirror the empty default so the
+    # request's own kwargs are the only ones applied.
+    serving.default_chat_template_kwargs = {}
     # sglang v0.5.13 probes whether the tokenizer auto-adds special tokens
     # (encode("") non-empty) to decide add_special_tokens at the chat-template
     # encode site. __init__ always sets this; mirror it here so _process_messages
