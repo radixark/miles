@@ -2911,12 +2911,11 @@ def miles_validate_args(args):
             "--save-local-weight-checksum reads param.main_param, whose storage the NVMe store "
             "resizes to 0 between steps"
         )
-        assert not args.enable_witness, (
-            "--enable-witness reads the master optimizer's per-param state, which the NVMe store owns"
-        )
+        assert (
+            not args.enable_witness
+        ), "--enable-witness reads the master optimizer's per-param state, which the NVMe store owns"
         assert args.offload_train_target == "disk", (
-            "--stream-optimizer-state-to-disk is only supported alongside "
-            "--offload-train-target=disk; pass both."
+            "--stream-optimizer-state-to-disk is only supported alongside " "--offload-train-target=disk; pass both."
         )
         logger.info(
             f"Streaming optimizer state to disk, dir={args.offload_train_disk_dir}, "
