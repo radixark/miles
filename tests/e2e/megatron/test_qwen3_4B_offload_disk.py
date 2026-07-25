@@ -17,12 +17,12 @@ import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
-NUM_GPUS = 2
+NUM_GPUS = 4
 OFFLOAD_DIR = "/root/train_offload_disk"
 
 register_cuda_ci(
     est_time=600,
-    suite="stage-c-2-gpu-h200",
+    suite="stage-c-4-gpu-h200",
     labels=["megatron"],
 )
 
@@ -83,7 +83,7 @@ def execute():
     )
 
     perf_args = (
-        "--tensor-model-parallel-size 1 "
+        "--tensor-model-parallel-size 2 "
         "--sequence-parallel "
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
@@ -121,7 +121,7 @@ def execute():
         "--offload-train-disk-chunk-mb 64 "
     )
 
-    sglang_args = f"--rollout-num-gpus-per-engine {NUM_GPUS} " "--sglang-mem-fraction-static 0.6 "
+    sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.6 "
 
     ci_args = "--ci-test "
 
