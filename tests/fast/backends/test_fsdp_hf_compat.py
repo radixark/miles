@@ -360,6 +360,36 @@ def test_nemotron_attention_reuses_precomputed_max_seqlen(monkeypatch):
     assert flash_calls["max_seqlen_k"] == 3
 
 
+def test_nemotron_pattern_to_list_repair():
+    # sglang's import monkeypatches NemotronHConfig._pattern_to_list to drop unmapped chars, deleting
+    # every '-' (MLP) layer; the config-time repair must restore the full mapping, and must leave a
+    # healthy implementation untouched.
+    from types import SimpleNamespace
+
+    from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
+
+    from miles.backends.experimental.fsdp_utils.adaptations.specs.nemotron_h import _repair_pattern_to_list
+
+    hf_config = SimpleNamespace(model_type="nemotron_h")
+    original = NemotronHConfig.__dict__["_pattern_to_list"]
+    healthy = staticmethod(
+        lambda pattern: [{"M": "mamba", "E": "moe", "*": "attention", "-": "mlp"}[c] for c in pattern]
+    )
+    broken = staticmethod(
+        lambda pattern: [{"M": "mamba", "E": "moe", "*": "attention"}[c] for c in pattern if c in "ME*"]
+    )
+    try:
+        NemotronHConfig._pattern_to_list = healthy
+        _repair_pattern_to_list(hf_config, None)
+        assert NemotronHConfig.__dict__["_pattern_to_list"] is healthy
+
+        NemotronHConfig._pattern_to_list = broken
+        _repair_pattern_to_list(hf_config, None)
+        assert NemotronHConfig._pattern_to_list("M-*E") == ["mamba", "mlp", "attention", "moe"]
+    finally:
+        NemotronHConfig._pattern_to_list = original
+
+
 def test_packing_registry():
     # The unified packing registry dispatches per (model_type, lifetime); GDN is config-lifetime,
     # NemotronH is post-load-lifetime, and archs that pack natively / don't pack match nothing.

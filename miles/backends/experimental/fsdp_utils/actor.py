@@ -218,8 +218,16 @@ class FSDPTrainRayActor(TrainRayActor):
 
             return AutoModelForImageTextToText
         else:
+            import transformers
             from transformers import AutoModelForCausalLM
+            from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING_NAMES
 
+            # Resolve natively-supported archs by model_type string: AutoConfig/AutoModel registries can
+            # be re-registered at runtime (sglang vendors a nemotron_h config whose hybrid_override_pattern
+            # parsing mis-places the attention layers), which would silently train a mis-shaped model.
+            native_cls_name = MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.get(getattr(self.hf_config, "model_type", ""))
+            if native_cls_name is not None:
+                return getattr(transformers, native_cls_name)
             return AutoModelForCausalLM
 
     def _enable_true_on_policy_optimizations(self, args):
