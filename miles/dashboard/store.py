@@ -151,7 +151,7 @@ class TopologySnapshot(Record):
 class DataBufferSample(Record):
     """One report of ``RolloutDataSourceWithBuffer.get_buffer_length()``
     (design doc's "show the data status in databuffer" ask). Appended once
-    per ``RolloutManager.generate()`` call — a no-op for plain
+    per ``RolloutExecutor.generate()`` call — a no-op for plain
     ``RolloutDataSource`` runs, which never buffer samples across steps.
     Low-rate and unpartitioned like ``TopologySnapshot``: only the latest
     value matters for display."""

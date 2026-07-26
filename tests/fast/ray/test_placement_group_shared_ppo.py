@@ -1,4 +1,5 @@
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -40,6 +41,10 @@ def test_external_rollout_only_reserves_no_local_bundles():
     assert _get_placement_group_layout(_layout_args(debug_rollout_only=True, rollout_external=True)) == (0, 0)
 
 
+async def _noop_remote(*_args, **_kwargs):
+    return None
+
+
 async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypatch):
     groups = []
 
@@ -52,7 +57,7 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
         async def init(self):
             return [0]
 
-        async def set_rollout_manager(self):
+        async def set_rollout_executor(self):
             return None
 
     def _allocate_train_group(*, args, role, with_ref, **_kwargs):
@@ -79,7 +84,8 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
     await placement_group_module.create_training_models(
         args,
         pgs={"actor": object(), "critic": object()},
-        rollout_manager=object(),
+        inference_controller=object(),
+        rollout_executor=SimpleNamespace(load=SimpleNamespace(remote=_noop_remote)),
     )
 
     actor, critic = groups
