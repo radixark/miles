@@ -574,6 +574,33 @@ class TestRecoverUpdatableEngines:
 
 
 @pytest.mark.asyncio
+class TestPrepareRollout:
+    async def test_prepare_advances_the_rollout_id_and_generate_does_not(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """The driver owns the ordering now: recovery is gated on the id prepare recorded, not on generate."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        args.global_batch_size = 4
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        manager.train_parallel_config = {"dp_size": 1}
+        manager.generate_rollout = lambda input: RolloutFnTrainOutput(
+            samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
+        )
+
+        await manager.generate(rollout_id=9)
+        assert manager.rollout_id == -1
+
+        manager.prepare_rollout(9)
+        assert manager.rollout_id == 9
+
+
+@pytest.mark.asyncio
 class TestGenerate:
     """``generate(rollout_id)`` is the trainer's per-iteration rollout entry
     point. It must (1) advance ``self.rollout_id``, (2) call the rollout
@@ -607,6 +634,7 @@ class TestGenerate:
 
         manager.generate_rollout = fake_rollout_fn
 
+        manager.prepare_rollout(42)
         result = await manager.generate(rollout_id=42)
 
         assert manager.rollout_id == 42
