@@ -84,6 +84,21 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     return p
 
 
+def format_v6_uri(addr: str | None) -> str | None:
+    if not addr or addr.startswith("["):
+        return addr
+    try:
+        if ipaddress.ip_address(addr).version == 6:
+            return f"[{addr}]"
+    except ValueError:
+        pass
+    return addr
+
+
+def build_server_url(host: str, port: int) -> str:
+    return f"http://{format_v6_uri(host)}:{port}"
+
+
 def _use_legacy_router_api(args) -> bool:
     return parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router
 
@@ -147,19 +162,10 @@ class SGLangEngine(RayActor):
 
         host = host or get_host_info()[1]
 
-        def _format_v6_uri(addr):
-            if not addr or addr.startswith("["):
-                return addr
-            try:
-                if ipaddress.ip_address(addr).version == 6:
-                    return f"[{addr}]"
-            except ValueError:
-                pass
-            return addr
-
-        host = _format_v6_uri(host)
+        host = format_v6_uri(host)
         ip_part, port_part = dist_init_addr.rsplit(":", 1)
-        dist_init_addr = f"{_format_v6_uri(ip_part)}:{port_part}"
+        dist_init_addr = f"{format_v6_uri(ip_part)}:{port_part}"
+
         server_args_dict, external_engine_need_check_fields = _compute_server_args(
             self.args,
             self.rank,
@@ -179,7 +185,7 @@ class SGLangEngine(RayActor):
         self.server_host = server_args_dict["host"]  # with [] if ipv6
         self.server_port = server_args_dict["port"]
 
-        self.server_url = f"http://{self.server_host}:{self.server_port}"
+        self.server_url = build_server_url(self.server_host, self.server_port)
         self.api_client = SGLangApiClient(server_url=self.server_url)
         self.router_api_client = SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")
 
