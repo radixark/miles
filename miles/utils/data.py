@@ -91,7 +91,7 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
         logger.warning(
             "Skipping max_length check for list prompt. Set apply_chat_template=True to enable length filtering."
         )
-        return False
+        return origin_samples
 
     if processor:
         filtered_samples = []
