@@ -49,10 +49,10 @@ Each loop iteration does:
 ## Engine recovery
 
 When `--use-fault-tolerance` is on, `MegatronActor.update_weights` calls
-`rollout_manager.recover_updatable_engines` on rank 0 before each weight
+`inference_controller.recover_updatable_engines` before each weight
 update (`miles/backends/megatron_utils/actor.py`).
 
-`recover_updatable_engines` (`miles/ray/rollout/rollout_manager.py`):
+`recover_updatable_engines` (`miles/ray/rollout/inference_controller.py`):
 
 1. Pauses health monitoring.
 2. Calls `srv.recover()` on the updatable server.

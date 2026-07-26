@@ -13,7 +13,6 @@ from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.utils import Lock
 from miles.utils.health_monitor import RolloutHealthMonitor
-from miles.utils.http_utils import init_http_client
 
 
 logger = logging.getLogger(__name__)
@@ -29,7 +28,6 @@ class InferenceController:
         else:
             self.servers = start_rollout_servers(args, pg)
             dashboard_hooks.register_router(args)
-            init_http_client(args)
             start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
@@ -56,10 +54,10 @@ class InferenceController:
             await self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
 
-    def prepare_eval(self):
+    async def prepare_eval(self):
         self._health_monitoring_resume()
 
-    def dispose(self):
+    async def dispose(self):
         for monitor in self._health_monitors:
             monitor.stop()
 
@@ -67,7 +65,7 @@ class InferenceController:
 
     # TODO may parallelly execute offload/onload across services
     async def offload(self, tags: list[str] | None = None):
-        self.health_monitoring_pause()
+        await self.health_monitoring_pause()
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
@@ -117,7 +115,7 @@ class InferenceController:
             engine_gpu_offsets=srv.engine_gpu_offsets,
         )
 
-    def clear_updatable_has_new_engines(self):
+    async def clear_updatable_has_new_engines(self):
         # when fault tolerance is not enabled, we need to manually clear has_new_engines after update_weights
         srv = self._get_updatable_server()
         if srv:
@@ -129,7 +127,7 @@ class InferenceController:
         Recovers the updatable model (the one that receives weight
         updates from training).
         """
-        self.health_monitoring_pause()
+        await self.health_monitoring_pause()
         srv = self._get_updatable_server()
         if self.rollout_id == -1 or srv is None:
             return
@@ -177,7 +175,7 @@ class InferenceController:
 
     # -------------------------- utils -----------------------------
 
-    def health_monitoring_pause(self) -> None:
+    async def health_monitoring_pause(self) -> None:
         for monitor in self._health_monitors:
             monitor.pause()
 

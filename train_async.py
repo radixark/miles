@@ -2,10 +2,11 @@ import asyncio
 import logging
 import os
 
-from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.ray.placement_group import create_placement_groups, create_rollout_components, create_training_models
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
 from miles.utils import object_store
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
+from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
@@ -31,15 +32,17 @@ async def train(args):
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
+        args, pgs["rollout"]
+    )
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, pgs, rollout_manager)
+    actor_model, critic_model = await create_training_models(args, pgs, inference_controller, rollout_executor)
 
     if args.control_server_port:
         start_control_server(
             actor_model=actor_model,
-            rollout_manager=rollout_manager,
+            inference_controller=inference_controller,
             port=args.control_server_port,
             ft_components=args.ft_components,
         )
@@ -50,17 +53,17 @@ async def train(args):
     await actor_model.update_weights()
 
     if args.check_weight_update_equal:
-        await rollout_manager.check_weights.remote(
+        await inference_controller.check_weights(
             action="compare",
             allow_quant_error=args.check_weight_update_allow_quant_error,
             selector=args.check_weight_update_selector,
             skip_list=args.check_weight_update_skip_list,
         )
 
-    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_manager)
+    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor)
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
-        await rollout_manager.prepare_eval.remote()
+        await inference_controller.prepare_eval()
         await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
     async def save_training_model(model, rollout_id, force_sync):
@@ -71,8 +74,8 @@ async def train(args):
             await model.offload()
 
     async def prepare_and_generate(rollout_id):
-        await rollout_manager.prepare_rollout.remote(rollout_id)
-        return await rollout_manager.generate.remote(rollout_id)
+        await inference_controller.prepare_rollout(rollout_id)
+        return await rollout_executor.generate.remote(rollout_id)
 
     # async train loop.
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
@@ -105,7 +108,7 @@ async def train(args):
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
-            await rollout_manager.save.remote(rollout_id)
+            await rollout_executor.save.remote(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
@@ -116,7 +119,7 @@ async def train(args):
             await actor_model.update_weights(rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
-            await rollout_manager.prepare_eval.remote()
+            await inference_controller.prepare_eval()
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 
         if (
@@ -131,7 +134,8 @@ async def train(args):
             break
 
     await eval_dispatcher.drain()
-    await rollout_manager.dispose.remote()
+    await rollout_executor.dispose.remote()
+    await inference_controller.dispose()
 
 
 if __name__ == "__main__":

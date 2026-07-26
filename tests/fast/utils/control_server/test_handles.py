@@ -8,7 +8,7 @@ from miles.ray.train.group import RayTrainGroup
 from miles.utils.ft_utils.control_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
 from miles.utils.test_utils.fault_injector import FailureMode
 
-from .conftest import MockRayTrainCell, MockRolloutManager, make_mock_group
+from .conftest import MockInferenceController, MockRayTrainCell, make_mock_group
 
 
 class TestActorCellHandle:
@@ -89,9 +89,9 @@ class TestActorCellHandle:
 
 class TestRolloutCellHandle:
     @pytest.mark.asyncio
-    async def test_get_cell_delegates_to_manager(self) -> None:
-        manager = MockRolloutManager()
-        handle = _RolloutCellHandle(rollout_manager=manager, cell_index=0)
+    async def test_get_cell_delegates_to_controller(self) -> None:
+        controller = MockInferenceController()
+        handle = _RolloutCellHandle(inference_controller=controller, cell_index=0)
         cell = await handle.get_cell()
 
         assert cell.metadata.name == "rollout-0"
@@ -100,21 +100,21 @@ class TestRolloutCellHandle:
         assert cell.spec.suspend is False
 
     @pytest.mark.asyncio
-    async def test_suspend_delegates_to_manager(self) -> None:
-        manager = MockRolloutManager()
-        handle = _RolloutCellHandle(rollout_manager=manager, cell_index=0)
+    async def test_suspend_delegates_to_controller(self) -> None:
+        controller = MockInferenceController()
+        handle = _RolloutCellHandle(inference_controller=controller, cell_index=0)
         await handle.suspend()
-        assert manager.stop_cell.calls == [((0,), {})]
+        assert controller.stopped_cells == [0]
 
     @pytest.mark.asyncio
-    async def test_resume_delegates_to_manager(self) -> None:
-        manager = MockRolloutManager()
-        handle = _RolloutCellHandle(rollout_manager=manager, cell_index=0)
+    async def test_resume_delegates_to_controller(self) -> None:
+        controller = MockInferenceController()
+        handle = _RolloutCellHandle(inference_controller=controller, cell_index=0)
         await handle.resume()
-        assert manager.start_cell.calls == [((0,), {})]
+        assert controller.started_cells == [0]
 
     def test_cell_type_is_rollout(self) -> None:
-        handle = _RolloutCellHandle(rollout_manager=object(), cell_index=0)
+        handle = _RolloutCellHandle(inference_controller=object(), cell_index=0)
         assert handle.cell_type == "rollout"
         assert handle.cell_id == "rollout-0"
 
