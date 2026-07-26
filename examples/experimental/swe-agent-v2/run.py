@@ -173,8 +173,6 @@ def execute(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
-        # This is required by terminus-2 harness
-        "--tito-allowed-append-roles user tool "
     )
 
     misc_args = (

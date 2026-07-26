@@ -2191,14 +2191,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Controls how token IDs are computed for messages appended after "
                 "the pretokenized prefix in multi-turn agentic sessions.",
             )
-            parser.add_argument(
-                "--tito-allowed-append-roles",
-                nargs="+",
-                default=["tool"],
-                choices=["tool", "user", "system"],
-                help="Message roles allowed to be appended after the pretokenized "
-                "assistant prefix in TITO sessions (default: tool).",
-            )
             return parser
 
         def add_user_provided_function_arguments(parser):
@@ -2450,25 +2442,18 @@ def miles_validate_args(args):
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
 
-    # Normalize --tito-allowed-append-roles: lowercase + deduplicate.
-    raw_roles = getattr(args, "tito_allowed_append_roles", ["tool"])
-    args.tito_allowed_append_roles = sorted(set(r.lower() for r in raw_roles))
+    if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
+        raise ValueError(
+            f"--tito-model={args.tito_model} requires --use-session-server; "
+            "this flag only configures the session-server TITO middleware."
+        )
 
-    if not args.use_session_server:
-        misconfigured = []
-        if args.tito_model != TITOTokenizerType.DEFAULT.value:
-            misconfigured.append(f"--tito-model={args.tito_model}")
-        if args.tito_allowed_append_roles != ["tool"]:
-            misconfigured.append(f"--tito-allowed-append-roles={args.tito_allowed_append_roles}")
-        if misconfigured:
-            raise ValueError(
-                f"{', '.join(misconfigured)} require --use-session-server; "
-                "these flags only configure the session-server TITO middleware."
-            )
-
-    if "user" in args.tito_allowed_append_roles:
+    # DEFAULT uses the checkpoint's native or caller-provided template.  Its
+    # maximal four-role surface is best-effort rather than a Miles-verified
+    # FixedTemplate contract.
+    if args.use_session_server and args.tito_model == TITOTokenizerType.DEFAULT.value:
         logger.warning(
-            "--tito-allowed-append-roles includes 'user'. "
+            "--tito-model=default uses a best-effort four-role append surface. "
             "Incremental tokenization assumes appended messages do not change how "
             "earlier turns render, which may not hold for user messages on "
             "context-sensitive chat templates (e.g. last_query_index logic, "
@@ -2485,7 +2470,7 @@ def miles_validate_args(args):
     if args.chat_template_path == "autofix":
         logger.warning(
             "--chat-template-path=autofix is deprecated; remove the flag and rely "
-            "on --tito-model + --tito-allowed-append-roles to auto-resolve. The "
+            "on --tito-model to auto-resolve. The "
             "alias will be removed in a future release."
         )
         args.chat_template_path = None

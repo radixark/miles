@@ -67,7 +67,6 @@ def router_env():
                 chat_template_path=None,
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
-                tito_allowed_append_roles=["tool"],
                 trajectory_manager="linear_trajectory",
                 session_server_instance_id=uuid.uuid4().hex,
             )

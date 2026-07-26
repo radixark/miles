@@ -64,7 +64,6 @@ def _router_env(process_fn, *, latency: float = 0.0):
                 hf_checkpoint=HF_CHECKPOINT,
                 chat_template_path=None,
                 trajectory_manager="linear_trajectory",
-                tito_allowed_append_roles=["tool", "system"],
             )
             server_obj = SessionServer(args, backend_url=backend.url)
 

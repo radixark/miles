@@ -9,7 +9,6 @@ CONFIG = ModelConfig(
     reasoning_parser="qwen3",
     tool_call_parser="qwen3_coder",
     tito_model="qwen35",
-    allowed_append_roles=("tool", "user"),
     tp_size=2,
     cycles=2,
     tool_call_failure_mode="append_tool",
