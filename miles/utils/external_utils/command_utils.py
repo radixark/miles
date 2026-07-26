@@ -75,8 +75,10 @@ def convert_checkpoint(
     )
 
 
-def rsync_simple(path_src: str, path_dst: str):
-    exec_command_all_ray_node(f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}")
+def rsync_simple(path_src: str, path_dst: str, num_nodes: int | None = None):
+    exec_command_all_ray_node(
+        f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}", num_nodes=num_nodes
+    )
 
 
 def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
@@ -341,6 +343,8 @@ NUM_GPUS_OF_HARDWARE = {
     "H100": 8,
     "GB200": 4,
     "GB300": 4,
+    "MI350X": 8,
+    "MI355X": 8,
 }
 
 GENERATION_HARDWARE = {

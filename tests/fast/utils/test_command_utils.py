@@ -149,3 +149,19 @@ def test_start_mooncake_master_reports_log_when_startup_fails(monkeypatch, tmp_p
 
     assert len(commands) == 2
     assert all("pkill -x mooncake_master" in command for command in commands)
+
+
+@pytest.mark.parametrize("hardware", ["H100", "GB200", "GB300", "MI350X", "MI355X"])
+def test_every_supported_hardware_declares_its_gpus_per_node(hardware):
+    """A launcher whose default hardware is missing here raises KeyError before doing anything."""
+    assert command_utils.NUM_GPUS_OF_HARDWARE[hardware] > 0
+
+
+def test_rsync_simple_limits_itself_to_the_requested_node_count(monkeypatch):
+    """prepare_cp asks for the training node count; forwarding it is the whole point of the argument."""
+    calls = []
+    monkeypatch.setattr(command_utils, "exec_command_all_ray_node", lambda cmd, **kwargs: calls.append(kwargs))
+
+    command_utils.rsync_simple("/src", "/dst", num_nodes=4)
+
+    assert calls == [{"num_nodes": 4}]
