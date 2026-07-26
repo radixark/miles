@@ -162,8 +162,10 @@ RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 # TEMPORARY: validating radixark/Megatron-Bridge#24 (TE 2.17 grouped-linear contract).
-# Point back at @bridge -- ideally pinned to the merged SHA -- once that PR lands.
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@radixark/bridge/te-grouped-linear-2.17 --no-deps --no-build-isolation
+# Point back at @bridge -- pinned to the merged SHA -- once that PR lands.
+# Pinned by SHA, not branch: buildkit caches this layer on the instruction text,
+# so a branch that moves leaves the old revision baked into the image.
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@36d20288b9f064b329cbbe49ee27f85454453668 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
