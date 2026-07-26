@@ -34,6 +34,17 @@ def placement_group_factory(ray_local_mode):
 
 
 @pytest.fixture
+def mock_engine_http_servers():
+    """One mock HTTP server per engine rank. ``patched_sglang_engine`` hands out
+    their real ports, so ServerGroup's direct HTTP calls land here."""
+    from miles.utils.test_utils.mock_sglang_http_server import MockSGLangHttpServerPool
+
+    pool = MockSGLangHttpServerPool()
+    yield pool
+    pool.close()
+
+
+@pytest.fixture
 def mock_engine_class(ray_local_mode):
     """Unwrapped MockSGLangEngine class.
 
@@ -46,10 +57,13 @@ def mock_engine_class(ray_local_mode):
 
 
 @pytest.fixture
-def patched_sglang_engine(monkeypatch, mock_engine_class):
+def patched_sglang_engine(monkeypatch, mock_engine_class, mock_engine_http_servers):
     """Replace SGLangEngine with the mock + stub the addr allocator with a
     deterministic dict. The real allocator path is exercised separately by
-    ``patched_sglang_engine_real_allocator`` and ``test_addr_allocator.py``."""
+    ``patched_sglang_engine_real_allocator`` and ``test_addr_allocator.py``.
+
+    ``port`` is the port of this rank's mock HTTP server, so the urls
+    ServerGroup derives from the allocator actually serve requests."""
     import miles.ray.rollout.server_group as mod
 
     monkeypatch.setattr(mod, "SGLangEngine", mock_engine_class)
@@ -60,9 +74,10 @@ def patched_sglang_engine(monkeypatch, mock_engine_class):
         engines = kwargs["rollout_engines"]
         addr_and_ports = {}
         for rank, _ in engines:
+            server = mock_engine_http_servers.new_for_rank(rank)
             addr_and_ports[rank] = dict(
-                host="127.0.0.1",
-                port=30000 + rank,
+                host=server.host,
+                port=server.port,
                 nccl_port=31000 + rank,
                 engine_info_bootstrap_port=32000 + rank,
                 dist_init_addr=f"127.0.0.1:{33000 + rank}",
