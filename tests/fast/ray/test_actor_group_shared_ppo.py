@@ -96,5 +96,5 @@ async def test_train_only_ft_does_not_recover_rollout_engines():
 
     await group.update_weights(rollout_id=1)
 
-    assert [name for name, _, _ in calls] == ["get_engines", "pause", "clear"]
+    assert [name for name, _, _ in calls] == ["pause", "get_engines", "clear"]
     group._broadcast.assert_awaited_once_with("update_weights", info="info")
