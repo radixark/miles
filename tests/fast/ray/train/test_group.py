@@ -193,6 +193,83 @@ class TestExecuteFirstAlive:
             assert any(c[0] == "update_weights" for c in calls)
 
 
+def _make_weight_update_group(*, events: list[str], use_fault_tolerance: bool) -> RayTrainGroup:
+    info = SimpleNamespace(rollout_engine_generation_ids=["engine-generation-id"])
+
+    def remote_call(name: str, result: object = None) -> MagicMock:
+        async def record(**kwargs: object) -> object:
+            events.append(name)
+            if name == "register":
+                assert kwargs == {"rollout_engine_generation_ids": ["engine-generation-id"]}
+            else:
+                assert kwargs == {}
+            return result
+
+        call = MagicMock()
+        call.remote = AsyncMock(side_effect=record)
+        return call
+
+    group = RayTrainGroup.__new__(RayTrainGroup)
+    group.args = SimpleNamespace(use_fault_tolerance=use_fault_tolerance)
+    group._rollout_manager = SimpleNamespace(
+        recover_updatable_engines=remote_call("recover"),
+        get_updatable_engines_and_lock=remote_call("get_engines", info),
+        health_monitoring_pause=remote_call("pause"),
+        register_recovered_updatable_engines=remote_call("register"),
+    )
+
+    async def transfer(method_name: str, *, info: object) -> None:
+        assert method_name == "update_weights"
+        assert info == SimpleNamespace(rollout_engine_generation_ids=["engine-generation-id"])
+        events.append("transfer")
+
+    async def checksum(*, rollout_id: int | None) -> None:
+        assert rollout_id == 7
+        events.append("checksum")
+
+    group._execute_first_alive = AsyncMock(side_effect=transfer)
+    group._maybe_log_inference_engine_weight_checksums = AsyncMock(side_effect=checksum)
+    return group
+
+
+class TestUpdateWeights:
+    async def test_recovers_before_transfer_and_registers_before_checksum(self):
+        events: list[str] = []
+        group = _make_weight_update_group(events=events, use_fault_tolerance=True)
+
+        await group.update_weights(rollout_id=7)
+
+        assert events == ["recover", "get_engines", "pause", "transfer", "register", "checksum"]
+
+    async def test_failed_transfer_does_not_register_or_checksum(self):
+        events: list[str] = []
+        group = _make_weight_update_group(events=events, use_fault_tolerance=True)
+
+        async def failed_transfer(method_name: str, *, info: object) -> None:
+            assert method_name == "update_weights"
+            assert info == SimpleNamespace(rollout_engine_generation_ids=["engine-generation-id"])
+            events.append("transfer")
+            raise RuntimeError("transfer failed")
+
+        group._execute_first_alive = AsyncMock(side_effect=failed_transfer)
+
+        with (
+            patch("miles.ray.train.group._RETRY_MAX_ATTEMPTS", 1),
+            pytest.raises(RuntimeError, match="transfer failed"),
+        ):
+            await group.update_weights(rollout_id=7)
+
+        assert events == ["recover", "get_engines", "pause", "transfer"]
+
+    async def test_non_fault_tolerant_transfer_still_publishes_pending_engines(self):
+        events: list[str] = []
+        group = _make_weight_update_group(events=events, use_fault_tolerance=False)
+
+        await group.update_weights(rollout_id=7)
+
+        assert events == ["get_engines", "pause", "transfer", "register", "checksum"]
+
+
 class TestComputeIndepDPInfo:
     def test_all_alive(self):
         group = _make_group(num_cells=3)

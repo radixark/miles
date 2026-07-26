@@ -188,12 +188,13 @@ class TestStartStopCell:
         tmp_path,
         patch_low_level,
     ):
-        """stop_cell(0) → start_cell(0) drives a real ``recover()`` that spawns
-        a fresh mock actor in place of the killed one."""
+        """start_cell() restores an updatable actor without routing it early."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
         manager = _make_manager(args, pg)
+        assert manager.args._sglang_default_model_name == "actor"
+        assert manager.args._sglang_published_model_names == set()
         eal_before = await manager.get_updatable_engines_and_lock()
         actor0_before = eal_before.rollout_engines[0]
 
@@ -205,6 +206,8 @@ class TestStartStopCell:
 
         assert actor0_after is not actor0_before, "start_cell must produce a fresh actor"
         assert ray.get(actor0_after.health_generate.remote(timeout=1.0)) is True
+        calls = ray.get(actor0_after.get_calls.remote())
+        assert [call[0] for call in calls] == ["init", "health_generate"]
 
     async def test_stop_cell_targets_high_id_correctly(
         self,
@@ -474,6 +477,20 @@ class TestRecoverUpdatableEngines:
         assert slot0.is_allocated
         assert slot0.actor_handle is not actor0_before
         assert ray.get(slot0.actor_handle.health_generate.remote(timeout=1.0)) is True
+        calls_before_registration = ray.get(slot0.actor_handle.get_calls.remote())
+        assert [call[0] for call in calls_before_registration] == ["init", "health_generate"]
+
+        await manager.register_recovered_updatable_engines(
+            rollout_engine_generation_ids=[slot0.generation_id],
+        )
+
+        assert manager.args._sglang_published_model_names == {"actor"}
+        calls_after_registration = ray.get(slot0.actor_handle.get_calls.remote())
+        assert [call[0] for call in calls_after_registration] == [
+            "init",
+            "health_generate",
+            "register_with_router",
+        ]
 
 
 @pytest.mark.asyncio
