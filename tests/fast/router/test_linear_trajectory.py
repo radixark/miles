@@ -14,7 +14,7 @@ import pytest
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.types import SessionRecord
-from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
+from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES, FixedTemplate, TITOTokenizer
 
 _MOCK_FIRST_TURN_TOKENS = [0]
 
@@ -56,30 +56,45 @@ class _MockTITOTokenizer(TITOTokenizer):
         return list(pretokenized_token_ids)
 
 
-def _make_registry(allowed_append_roles: list[str] | None = None) -> SessionRegistry:
+def _make_registry(allowed_append_roles: frozenset[str] = ALL_APPEND_ROLES) -> SessionRegistry:
     args = SimpleNamespace()
-    mock_tito = _MockTITOTokenizer(
-        tokenizer=None, assistant_start_str="<|im_start|>assistant", allowed_append_roles=allowed_append_roles
+    configured_mock_type = type(
+        "_ConfiguredMockTITOTokenizer",
+        (_MockTITOTokenizer,),
+        {"FIXED_TEMPLATE": FixedTemplate(allowed_append_roles=allowed_append_roles)},
     )
+    mock_tito = configured_mock_type(tokenizer=None, assistant_start_str="<|im_start|>assistant")
     return SessionRegistry(args, tokenizer=None, tito_tokenizer=mock_tito)
 
 
 @pytest.fixture
 def registry():
-    """Default registry: only tool messages allowed after assistant."""
+    """Default FixedTemplate supports the maximal four-role surface."""
     return _make_registry()
 
 
 @pytest.fixture
+def registry_tool_only():
+    """Registry whose test FixedTemplate is restricted to tool messages."""
+    return _make_registry(frozenset({"tool"}))
+
+
+@pytest.fixture
 def registry_with_system():
-    """Registry that allows both tool and system in appended messages."""
-    return _make_registry(allowed_append_roles=["tool", "system"])
+    """Registry whose test FixedTemplate supports tool and system."""
+    return _make_registry(frozenset({"tool", "system"}))
 
 
 @pytest.fixture
 def registry_with_user():
-    """Registry that allows tool and user in appended messages."""
-    return _make_registry(allowed_append_roles=["tool", "user"])
+    """Registry whose test FixedTemplate supports tool and user."""
+    return _make_registry(frozenset({"tool", "user"}))
+
+
+@pytest.fixture
+def registry_with_assistant():
+    """Registry whose test FixedTemplate supports injected assistant input."""
+    return _make_registry(frozenset({"tool", "user", "assistant"}))
 
 
 class TestSessionCRUD:
@@ -244,14 +259,14 @@ class TestSingleUserTurnPretokenized:
                 max_trim_tokens=0,
             )
 
-    def test_not_append_only_raises(self, registry: SessionRegistry):
+    def test_modified_prefix_raises(self, registry: SessionRegistry):
         """prepare raises when new messages modify stored prefix."""
         sid = registry.create_session()
         session = registry.get_session(sid)
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
 
-        bad_messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, {"role": "assistant", "content": "oops"}]
-        with pytest.raises(MessageValidationError, match="role=.assistant.*allowed="):
+        bad_messages = [SYS_MSG, {"role": "user", "content": "different"}]
+        with pytest.raises(MessageValidationError, match="rollback failed"):
             session.prepare_pretokenized(bad_messages, tito_tokenizer=registry.tito_tokenizer)
 
     def test_session_not_found_raises(self, registry: SessionRegistry):
@@ -287,47 +302,91 @@ class TestSingleUserTurnPretokenized:
 
 
 # ---------------------------------------------------------------------------
-# TestAppendRole* — allowed_append_roles policy tests
+# TestAppendRole* — FixedTemplate capability tests
 #
-# Each class tests one configuration: tool-only (default), tool+system,
-# tool+user.  Tests verify which appended roles are accepted or rejected
-# under each allowed_append_roles setting.
+# Each class exercises an actual append behavior against either the default
+# four-role template capability or a synthetic restricted template.
 # ---------------------------------------------------------------------------
 
 
-class TestAppendRoleToolOnly:
-    """Default config: allowed_append_roles=['tool']."""
+class TestAppendRoleDefault:
+    """The default FixedTemplate supports all four roles."""
 
-    def test_tool_append_allowed(self, registry: SessionRegistry):
-        sid = registry.create_session()
-        session = registry.get_session(sid)
-        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
-
-        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
-        result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
-        assert isinstance(result, list)
-
-    def test_system_append_rejected(self, registry: SessionRegistry):
-        sid = registry.create_session()
-        session = registry.get_session(sid)
-        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
-
-        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
-        with pytest.raises(MessageValidationError, match="role='system'.*allowed="):
-            session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
-
-    def test_user_append_rejected(self, registry: SessionRegistry):
+    def test_default_template_allows_user_append(self, registry: SessionRegistry):
         sid = registry.create_session()
         session = registry.get_session(sid)
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
 
         messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "extra"}]
+        result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+        assert isinstance(result, list)
+
+    def test_default_template_allows_assistant_append(self, registry: SessionRegistry):
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "assistant", "content": "injected"}]
+        result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+        assert isinstance(result, list)
+
+
+class TestAppendRoleToolOnly:
+    """A template explicitly restricted to tool appends."""
+
+    def test_tool_append_allowed(self, registry_tool_only: SessionRegistry):
+        sid = registry_tool_only.create_session()
+        session = registry_tool_only.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1]
+        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_tool_only.tito_tokenizer)
+        assert isinstance(result, list)
+
+    def test_system_append_rejected(self, registry_tool_only: SessionRegistry):
+        sid = registry_tool_only.create_session()
+        session = registry_tool_only.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, RETRY_SYS_MSG]
+        with pytest.raises(MessageValidationError, match="role='system'.*allowed="):
+            session.prepare_pretokenized(messages, tito_tokenizer=registry_tool_only.tito_tokenizer)
+
+    def test_user_append_rejected(self, registry_tool_only: SessionRegistry):
+        sid = registry_tool_only.create_session()
+        session = registry_tool_only.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, {"role": "user", "content": "extra"}]
         with pytest.raises(MessageValidationError, match="role='user'.*allowed="):
-            session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
+            session.prepare_pretokenized(messages, tito_tokenizer=registry_tool_only.tito_tokenizer)
+
+
+class TestAppendRoleAssistant:
+    """A template supporting tool, user, and injected assistant appends.
+
+    Injected assistant input joins the prompt region of the next sample (the
+    loss mask only ever covers generated response tokens)."""
+
+    def test_assistant_append_allowed(self, registry_with_assistant: SessionRegistry):
+        sid = registry_with_assistant.create_session()
+        session = registry_with_assistant.get_session(sid)
+        session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        messages = [
+            SYS_MSG,
+            USER_MSG,
+            ASSISTANT_MSG_1,
+            TOOL_MSG_1,
+            {"role": "assistant", "content": "injected"},
+            {"role": "user", "content": "next"},
+        ]
+        result = session.prepare_pretokenized(messages, tito_tokenizer=registry_with_assistant.tito_tokenizer)
+        assert isinstance(result, list)
 
 
 class TestAppendRoleToolSystem:
-    """Config: allowed_append_roles=['tool', 'system']."""
+    """A template supporting tool and system appends."""
 
     def test_tool_append_allowed(self, registry_with_system: SessionRegistry):
         sid = registry_with_system.create_session()
@@ -379,7 +438,7 @@ class TestAppendRoleToolSystem:
 
 
 class TestAppendRoleToolUser:
-    """Config: allowed_append_roles=['tool', 'user']; user follow-ups are allowed here."""
+    """A template supporting tool and user appends."""
 
     def test_tool_append_allowed(self, registry_with_user: SessionRegistry):
         sid = registry_with_user.create_session()

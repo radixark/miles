@@ -78,7 +78,9 @@ class LinearTrajectory:
                 self.messages, request_messages, tito_tokenizer.allowed_append_roles
             )
         except ValueError as e:
-            raise MessageValidationError(f"{e}; to allow more roles use --tito-allowed-append-roles") from e
+            raise MessageValidationError(
+                f"{e}; the selected TITO fixed template does not support appending this role"
+            ) from e
 
         return tito_tokenizer.merge_tokens(
             old_messages=self.messages,

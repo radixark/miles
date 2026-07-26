@@ -163,6 +163,7 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "logprobs": True,
         "return_meta_info": True,
         "no_stop_trim": False,
+        "chat_template_kwargs": {"clear_thinking": False},
         **extra,
     }
 
@@ -593,7 +594,6 @@ class TestRoutedExpertsMultiTurn:
                 TOKENIZER,
                 # Note: tokenizer_type needs to match MODEL_NAME
                 tokenizer_type=TITOTokenizerType.QWEN3,
-                allowed_append_roles=["tool"],
             )
             first_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_FIRST_TURN,
