@@ -233,23 +233,27 @@ class ServerGroup:
         for engine_index in engine_indices:
             self.all_engines[engine_index].mark_alive()
 
-    def offload(self, tags: list[str] | None = None):
+    async def offload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
-        return [
-            engine.actor_handle.release_memory_occupation.remote(tags=tags)
-            for engine in self.engines
-            if engine.is_allocated
-        ]
+        return await asyncio.gather(
+            *[
+                engine.actor_handle.release_memory_occupation.remote(tags=tags)
+                for engine in self.engines
+                if engine.is_allocated
+            ]
+        )
 
-    def onload(self, tags: list[str] | None = None):
+    async def onload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
-        return [
-            engine.actor_handle.resume_memory_occupation.remote(tags=tags)
-            for engine in self.engines
-            if engine.is_allocated
-        ]
+        return await asyncio.gather(
+            *[
+                engine.actor_handle.resume_memory_occupation.remote(tags=tags)
+                for engine in self.engines
+                if engine.is_allocated
+            ]
+        )
 
     def onload_weights_from_disk(self):
         """Reload weights from ``model_path`` for non-updatable groups."""
