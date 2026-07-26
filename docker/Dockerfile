@@ -73,11 +73,11 @@ RUN case "${TARGETARCH}" in \
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
 # flash-attn hopper (FA3): Hopper-only (sm_90a). Coexists with FA2.
-RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
-    python_path=$(python -c "import site; print(site.getsitepackages()[0])") && \
-    mkdir -p $python_path/flash_attn_3 && \
-    curl -fSL https://raw.githubusercontent.com/Dao-AILab/flash-attention/fbf24f67cf7f6442c5cfb2c1057f4bfc57e72d89/hopper/flash_attn_interface.py \
-      -o $python_path/flash_attn_3/flash_attn_interface.py
+# The wheel ships flash_attn_interface top-level (what transformer_engine imports)
+# plus a flash_attn_3.flash_attn_interface re-export shim, so there is nothing to
+# fetch separately. Do not overwrite the shim with a copy of the full module: it
+# re-runs @torch.library.custom_op("flash_attn_3::...") and double-registers.
+RUN pip install /tmp/wheels/flash_attn_3-*.whl
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
