@@ -365,12 +365,12 @@ class SGLangEngine(RayActor):
             )
         )
 
-    def pull_weights(self, target_version: int):
+    def pull_weights(self, target_version: int, local_checkpoint_dir: str, source_dir: str):
         return async_utils.run(
             self.api_client.pull_weights(
                 target_version=target_version,
-                local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
-                source_dir=self.args.update_weight_disk_dir,
+                local_checkpoint_dir=local_checkpoint_dir,
+                source_dir=source_dir,
             )
         )
 
