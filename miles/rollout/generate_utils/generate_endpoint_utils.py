@@ -2,6 +2,7 @@
 Utils to integrate SGLang's `/generate` endpoint with RL things like Sample.
 """
 
+from argparse import Namespace
 from copy import deepcopy
 from typing import Any
 
@@ -11,6 +12,43 @@ import pybase64
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
+
+
+_DEFAULT_MODEL_ROUTE = "default"
+_UNPUBLISHED_WEIGHT_VERSION = "default"
+
+
+def validate_weight_version(args: Namespace, meta_info: dict[str, Any], *, model_name: str | None) -> None:
+    """Reject an initial checkpoint version from a published, updatable route.
+
+    Args:
+        args: Rollout arguments containing model publication state.
+        meta_info: JSON metadata returned by the inference endpoint.
+        model_name: Explicit routed model, or None/"default" for the default route.
+
+    Raises:
+        RuntimeError: If a published model returns its initial weight version.
+    """
+    if meta_info.get("weight_version") != _UNPUBLISHED_WEIGHT_VERSION:
+        return
+    if (
+        getattr(args, "debug_rollout_only", False)
+        or getattr(args, "debug_skip_weight_update", False)
+        or is_lora_enabled(args)
+    ):
+        return
+
+    published_model_names = getattr(args, "_sglang_published_model_names", None)
+    if published_model_names is None:
+        return
+    route_model_name = (
+        getattr(args, "_sglang_default_model_name", None) if model_name in {None, _DEFAULT_MODEL_ROUTE} else model_name
+    )
+    if route_model_name in published_model_names:
+        raise RuntimeError(
+            f"Received weight_version='default' from updatable model '{route_model_name}' "
+            "after actor weights were published"
+        )
 
 
 # Make this an isolated function because users may want to compute their own
@@ -82,6 +120,8 @@ def compute_request_payload(
 async def update_sample_from_response(
     args, sample: Sample, payload: dict, output: dict, update_loss_mask: bool = False
 ):
+    validate_weight_version(args, output["meta_info"], model_name=None)
+
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and not sample.tokens:
         sample.tokens = payload["input_ids"]

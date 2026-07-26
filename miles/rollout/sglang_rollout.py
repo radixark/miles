@@ -37,6 +37,7 @@ from .generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
     get_indexer_topk_from_response,
     policy_uses_routing_key,
+    validate_weight_version,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
@@ -216,6 +217,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     headers = compute_routing_headers(args, sample)
 
     output = await post(url, payload, headers=headers)
+    validate_weight_version(args, output["meta_info"], model_name=None)
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
         if output_top_logprobs is not None:

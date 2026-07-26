@@ -1,3 +1,5 @@
+from argparse import Namespace
+
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=220, suite="stage-b-cpu", labels=[])
@@ -10,6 +12,7 @@ from PIL import Image
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 from transformers import AutoProcessor
 
+from miles.rollout.generate_utils.generate_endpoint_utils import validate_weight_version
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample
@@ -239,6 +242,29 @@ class TestRoutedExperts:
 
 
 class TestMetaInfo:
+    def test_explicit_model_route_scopes_publication(self):
+        args = Namespace(
+            _sglang_default_model_name="actor",
+            _sglang_published_model_names={"actor"},
+            debug_rollout_only=False,
+            debug_skip_weight_update=False,
+            lora_rank=0,
+            lora_adapter_path=None,
+        )
+        meta_info = {"weight_version": "default"}
+
+        assert validate_weight_version(args, meta_info, model_name="ref") is None
+        with pytest.raises(
+            RuntimeError,
+            match="Received weight_version='default' from updatable model 'actor' after actor weights were published",
+        ):
+            validate_weight_version(args, meta_info, model_name="actor")
+        with pytest.raises(
+            RuntimeError,
+            match="Received weight_version='default' from updatable model 'actor' after actor weights were published",
+        ):
+            validate_weight_version(args, meta_info, model_name="default")
+
     @pytest.mark.parametrize(
         "generation_env", [{"process_fn_kwargs": {"cached_tokens": 3, "weight_version": "v1.0"}}], indirect=True
     )
@@ -246,6 +272,33 @@ class TestMetaInfo:
         result = _run_generate(variant, generation_env)
         assert result.requests == [expected_request(variant)]
         assert listify(result.sample) == [expected_sample(variant, cached_tokens=3, weight_versions=["v1.0"])]
+
+    @pytest.mark.parametrize("generation_env", [{"process_fn_kwargs": {"weight_version": "default"}}], indirect=True)
+    def test_default_weight_version_rejected_after_publication(self, variant, generation_env):
+        generation_env.args._sglang_default_model_name = "actor"
+        generation_env.args._sglang_published_model_names = {"actor"}
+
+        with pytest.raises(
+            RuntimeError,
+            match="Received weight_version='default' from updatable model 'actor' after actor weights were published",
+        ):
+            _run_generate(variant, generation_env)
+
+    @pytest.mark.parametrize("generation_env", [{"process_fn_kwargs": {"weight_version": "default"}}], indirect=True)
+    @pytest.mark.parametrize(
+        "mode", ["unpublished", "frozen-route", "debug-rollout-only", "debug-skip-weight-update", "lora"]
+    )
+    def test_default_weight_version_allowed_without_published_actor_contract(self, variant, generation_env, mode):
+        generation_env.args._sglang_default_model_name = "ref" if mode == "frozen-route" else "actor"
+        generation_env.args._sglang_published_model_names = set() if mode == "unpublished" else {"actor"}
+        generation_env.args.debug_rollout_only = mode == "debug-rollout-only"
+        generation_env.args.debug_skip_weight_update = mode == "debug-skip-weight-update"
+        if mode == "lora":
+            generation_env.args.lora_rank = 8
+
+        result = _run_generate(variant, generation_env)
+
+        assert listify(result.sample) == [expected_sample(variant, weight_versions=["default"])]
 
     @pytest.mark.parametrize(
         "generation_env",
