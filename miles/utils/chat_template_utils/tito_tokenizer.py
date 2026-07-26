@@ -114,6 +114,23 @@ class TITOTokenizer:
         self.allowed_append_roles = self.FIXED_TEMPLATE.allowed_append_roles
         self.special_token_ids: set[int] = special_token_ids
 
+    def clone_with_chat_template_kwargs(self, request_kwargs: dict[str, Any]) -> TITOTokenizer:
+        """A request-scoped copy over the same HF tokenizer.
+
+        *request_kwargs* win over this instance's construction-time kwargs;
+        running the family constructor again re-validates fixed-template
+        conflicts (``ValueError``) and re-derives dependent kwargs such as
+        DeepSeek's effective ``thinking``, so a stale derived value never
+        survives the override.  Family-owned state (``special_token_ids``,
+        default ``assistant_start_str``) is re-pinned by the constructor,
+        mirroring ``get_tito_tokenizer`` construction.
+        """
+        return type(self)(
+            self.tokenizer,
+            chat_template_kwargs={**self.chat_template_kwargs, **request_kwargs},
+            assistant_start_str=self._assistant_start_str,
+        )
+
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
         tokenizer's model-specific settings."""

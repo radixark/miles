@@ -226,20 +226,46 @@ class SessionCore:
             # Must be False so stop-token text is trimmed from assistant content;
             # token IDs still come from logprobs below.
             request_body["no_stop_trim"] = False
-            # Chat template kwargs should also be forwarded to sglang to make sure
-            # parsers work correctly.
-            server_ctk = self.registry.tito_tokenizer.chat_template_kwargs
-            if server_ctk:
-                request_body["chat_template_kwargs"] = {
-                    **server_ctk,
-                    **(request_body.get("chat_template_kwargs") or {}),
-                }
+            # Keep request's chat_template_kwargs and override some key fields by tito tokenizer chat template kwargs.
+            # FIXME(session): 1) only the nested "chat_template_kwargs" object
+            # is read — top-level "reasoning"/"reasoning_effort" request fields
+            # (and the kwargs spelling SGLang promotes to top level) never
+            # reach the local render, so those spellings still diverge;
+            # 2) mid-session mode-change safety is a per-family property and
+            # is not guarded yet:
+            #    - DeepSeek V3.2/V4: unsafe — history think blocks and the
+            #      prompt-head reasoning_effort marker render under one mode,
+            #      so a flip strands old-mode prefix tokens and the history no
+            #      longer matches the requested mode;
+            #    - Nemotron 3: safe — the template writes the reasoning
+            #      setting into every turn, so history keeps each turn's own
+            #      value;
+            #    - Qwen3/Qwen3.5: safe — the toggle only affects the
+            #      generation prompt, never rendered history;
+            #    - newer models treat effort as a per-turn control (OpenAI /
+            #      Anthropic style), so the guard belongs on FixedTemplate,
+            #      defaulting to allow;
+            # 3) compute_session_mismatch still renders with the startup
+            # tokenizer, so non-default-mode sessions log spurious mismatches.
+            request_ctk = request_body.get("chat_template_kwargs")
+            if request_ctk is not None and not isinstance(request_ctk, dict):
+                raise MessageValidationError("chat_template_kwargs must be an object")
+            tito_tokenizer = self.registry.tito_tokenizer
+            if request_ctk:
+                try:
+                    tito_tokenizer = tito_tokenizer.clone_with_chat_template_kwargs(request_ctk)
+                except ValueError as e:
+                    raise MessageValidationError(str(e)) from e
+            if tito_tokenizer.chat_template_kwargs:
+                request_body["chat_template_kwargs"] = dict(tito_tokenizer.chat_template_kwargs)
+            else:
+                request_body.pop("chat_template_kwargs", None)
 
             request_messages = request_body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(
                 request_messages,
                 tools=request_body.get("tools"),
-                tito_tokenizer=self.registry.tito_tokenizer,
+                tito_tokenizer=tito_tokenizer,
             )
             request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
