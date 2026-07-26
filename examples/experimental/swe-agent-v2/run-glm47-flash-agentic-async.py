@@ -81,6 +81,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
+    randomize_agent_names: bool = False  # per-request pick between mini-swe-agent and terminus-2
 
     # Disaggregated fully-async settings
     train_num_nodes: int = 1
@@ -355,6 +356,7 @@ def execute(args: ScriptArgs):
         "AGENT_SERVER_URL": args.agent_server_url,
         "AGENT_MODEL_NAME": args.agent_model_name,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
+        "MILES_SWE_AGENT_RANDOMIZE_NAMES": "1" if args.randomize_agent_names else "0",
         **sglang_extra_env_vars,
     }
     if args.router_external_host:

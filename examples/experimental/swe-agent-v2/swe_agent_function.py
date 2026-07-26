@@ -13,12 +13,15 @@ differentiation (environment, grading harness, agent selection).
 import asyncio
 import logging
 import os
+import random
 from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunparse
 
 from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
+
+_RANDOMIZE_AGENT_CHOICES = ("mini-swe-agent", "terminus-2")
 
 
 async def run(
@@ -55,6 +58,9 @@ async def run(
         "model": f"openai/{model_name}",
         "sampling_params": request_kwargs,
     }
+
+    if os.getenv("MILES_SWE_AGENT_RANDOMIZE_NAMES", "").lower() in ("1", "true", "yes"):
+        request["agent_name"] = random.choice(_RANDOMIZE_AGENT_CHOICES)
 
     max_seq_len = metadata.get("max_seq_len")
     if max_seq_len is not None:
