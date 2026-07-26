@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 import ray
 
-from miles.ray.rollout.server_engine import ServerEngine
+from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 
 
 def _fake_actor_handle() -> MagicMock:
@@ -22,7 +22,7 @@ def test_api_client_is_unavailable_before_the_url_is_known():
 def test_api_client_targets_the_assigned_url():
     engine = ServerEngine()
     engine.mark_allocated_uninitialized(_fake_actor_handle())
-    engine.set_server_url("http://10.0.0.1:30000")
+    engine.set_addressing(AddrInfo(server_url="http://10.0.0.1:30000"))
 
     assert engine.api_client.server_url == "http://10.0.0.1:30000"
 
@@ -31,7 +31,7 @@ def test_mark_alive_keeps_the_url():
     """Going alive keeps the assigned url."""
     engine = ServerEngine()
     engine.mark_allocated_uninitialized(_fake_actor_handle())
-    engine.set_server_url("http://10.0.0.1:30000")
+    engine.set_addressing(AddrInfo(server_url="http://10.0.0.1:30000"))
     engine.mark_alive()
 
     assert engine.is_alive
@@ -51,7 +51,7 @@ def test_restart_replaces_the_url():
     """A restarted engine takes the new url."""
     engine = ServerEngine()
     engine.mark_allocated_uninitialized(_fake_actor_handle())
-    engine.set_server_url("http://10.0.0.1:30000")
+    engine.set_addressing(AddrInfo(server_url="http://10.0.0.1:30000"))
     engine.mark_alive()
 
     engine.mark_stopped()
@@ -60,6 +60,6 @@ def test_restart_replaces_the_url():
         _ = engine.api_client
 
     engine.mark_allocated_uninitialized(_fake_actor_handle())
-    engine.set_server_url("http://10.0.0.1:31000")
+    engine.set_addressing(AddrInfo(server_url="http://10.0.0.1:31000"))
 
     assert engine.api_client.server_url == "http://10.0.0.1:31000"
