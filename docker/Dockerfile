@@ -105,6 +105,10 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
     fi
 
 # transformer_engine
+# --no-deps pins the three TE dists to exactly the wheels above, so pip cannot
+# pull a conflicting core dist. That also drops transformer_engine_torch's own
+# runtime deps, which still have to be installed: transformer_engine.pytorch
+# imports onnxscript unconditionally (module/_common -> export -> onnx_extensions).
 RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
     if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       TE_CORE_DIST=transformer_engine_cu13; \
@@ -120,6 +124,7 @@ RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/ver
     fi && \
     pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch && \
     pip install --force-reinstall --no-deps "$@" && \
+    pip install einops onnx onnxscript pydantic nvdlfw-inspect && \
     python3 /tmp/verify_transformer_engine.py "${TE_CORE_DIST}"
 
 # TE patches (cu13): B300/GB300 FA2 and backward override fixes
