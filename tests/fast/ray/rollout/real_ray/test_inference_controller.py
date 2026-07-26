@@ -1,14 +1,3 @@
-"""``RolloutManager`` cell dispatch + ``EnginesAndLock`` flow driven through
-the production ``RolloutManager`` class.
-
-We instantiate ``RolloutManager.__ray_actor_class__`` directly (the raw Python
-class behind ``@ray.remote``) — that keeps the manager in the test process so
-``monkeypatch`` reaches its dependencies, while the engines it spawns are
-still real Ray actors (mocks). Methods are ``async`` and called with ``await``.
-
-Pure routing/flag-flip helpers without Ray content live in
-``tests/fast/ray/rollout/test_rollout_manager.py``."""
-
 from __future__ import annotations
 
 import asyncio
@@ -17,21 +6,14 @@ import time
 
 import pytest
 import ray
-from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
+from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.rollout_manager import RolloutManager
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainInput, RolloutFnTrainOutput
+from miles.ray.rollout.inference_controller import InferenceController
 
 
 @pytest.fixture
 def patch_low_level(monkeypatch):
-    """Replace, in the test process:
-    - ``SGLangEngine`` → ``MockSGLangEngine`` so created actors are mocks.
-    - addr allocator → deterministic stub.
-    - ``init_tracking`` / ``init_http_client`` / ``start_session_server`` /
-      ``load_function`` / ``load_rollout_function`` → no-ops (the production
-      defaults touch wandb / network / not-importable default function paths)."""
-    import miles.ray.rollout.rollout_manager as rmgr
+    import miles.ray.rollout.inference_controller as ictl
     import miles.ray.rollout.rollout_server as rsrv
     import miles.ray.rollout.server_group as sg
     from miles.ray.rollout.addr_allocator import PortCursors
@@ -63,19 +45,11 @@ def patch_low_level(monkeypatch):
         )
 
     monkeypatch.setattr(sg, "allocate_rollout_engine_addr_and_ports_normal", _fake_alloc)
-    monkeypatch.setattr(rmgr, "init_tracking", lambda *a, **kw: None)
-    monkeypatch.setattr(rmgr, "init_http_client", lambda args: None)
-    monkeypatch.setattr(rmgr, "start_session_server", lambda args: None)
-    monkeypatch.setattr(rmgr, "load_function", lambda path: lambda *a, **kw: None)
-    monkeypatch.setattr(rmgr, "load_rollout_function", lambda input, path: lambda *a, **kw: None)
-    # generate()/eval() drive these — production hits wandb / tensorboard.
-    monkeypatch.setattr(rmgr, "log_rollout_data", lambda *a, **kw: None)
-    monkeypatch.setattr(rmgr, "log_eval_rollout_data", lambda *a, **kw: None)
-    monkeypatch.setattr(rmgr, "save_debug_rollout_data", lambda *a, **kw: None)
+    monkeypatch.setattr(ictl, "start_session_server", lambda args: None)
 
 
-def _make_manager(args, pg):
-    return RolloutManager.__ray_actor_class__(args, pg)
+def _make_controller(args, pg):
+    return InferenceController(args, pg)
 
 
 def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
@@ -100,7 +74,7 @@ def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
 
 
 def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
-    """Build args that drive ``RolloutManager.__init__`` →
+    """Build args that drive ``InferenceController.__init__`` →
     ``start_rollout_servers`` → N model servers each with 1 group of 2 mock
     engines."""
     cfg = _write_sglang_config(tmp_path, models=models)
@@ -137,7 +111,7 @@ async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_in
 
 
 @pytest.mark.asyncio
-class TestRolloutManagerInit:
+class TestInferenceControllerInit:
     @pytest.mark.parametrize(
         ("ft_components", "expected_monitor_count", "expected_injection_pending"),
         [
@@ -156,7 +130,7 @@ class TestRolloutManagerInit:
         expected_monitor_count,
         expected_injection_pending,
     ):
-        import miles.ray.rollout.rollout_manager as rmgr
+        import miles.ray.rollout.inference_controller as ictl
 
         started_monitors = []
 
@@ -170,70 +144,18 @@ class TestRolloutManagerInit:
             def stop(self):
                 pass
 
-        monkeypatch.setattr(rmgr, "RolloutHealthMonitor", FakeMonitor)
+        monkeypatch.setattr(ictl, "RolloutHealthMonitor", FakeMonitor)
         args = _make_test_args(tmp_path, models=[("actor", True)])
         args.use_fault_tolerance = True
         args.ft_components = ft_components
         args.ci_test = True
-        args.ci_metric_checker_key = None
         pg = placement_group_factory(2)
 
-        manager = _make_manager(args, pg)
+        controller = _make_controller(args, pg)
 
         assert len(started_monitors) == expected_monitor_count
-        assert len(manager._health_monitors) == expected_monitor_count
-        assert manager._ci_fault_injection_pending is expected_injection_pending
-
-    async def test_debug_rollout_replay_skips_class_based_rollout_construction(
-        self,
-        ray_local_mode,
-        tmp_path,
-        patch_low_level,
-        monkeypatch,
-    ):
-        import miles.ray.rollout.rollout_manager as rmgr
-
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        args.debug_train_only = True
-        args.load_debug_rollout_data = str(tmp_path / "rollout-{rollout_id}.pt")
-        args.rollout_num_gpus = None
-        monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
-
-        def fail_if_loaded(*args, **kwargs):
-            pytest.fail("debug rollout replay must not construct rollout functions")
-
-        monkeypatch.setattr(rmgr, "load_rollout_function", fail_if_loaded)
-
-        manager = _make_manager(args, pg=None)
-
-        assert manager.generate_rollout is None
-        assert manager.eval_generate_rollout is None
-
-    async def test_debug_train_only_without_replay_constructs_rollout_function(
-        self,
-        ray_local_mode,
-        tmp_path,
-        patch_low_level,
-        monkeypatch,
-    ):
-        import miles.ray.rollout.rollout_manager as rmgr
-
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        args.debug_train_only = True
-        monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
-        loaded_paths: list[str] = []
-
-        def record_load(input, path):
-            loaded_paths.append(path)
-            return lambda *args, **kwargs: None
-
-        monkeypatch.setattr(rmgr, "load_rollout_function", record_load)
-
-        manager = _make_manager(args, pg=None)
-
-        assert loaded_paths == [args.rollout_function_path, args.eval_function_path]
-        assert manager.generate_rollout is not None
-        assert manager.eval_generate_rollout is not None
+        assert len(controller._health_monitors) == expected_monitor_count
+        assert controller._ci_fault_injection_pending is expected_injection_pending
 
     async def test_init_creates_live_mock_engines_via_real_start_rollout_servers(
         self,
@@ -248,8 +170,8 @@ class TestRolloutManagerInit:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        manager = _make_manager(args, pg)
-        eal = await manager.get_updatable_engines_and_lock()
+        controller = _make_controller(args, pg)
+        eal = await controller.get_updatable_engines_and_lock()
         assert len(eal.rollout_engines) == 2
         for h in eal.rollout_engines:
             assert isinstance(h, ray.actor.ActorHandle)
@@ -269,11 +191,11 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        manager = _make_manager(args, pg)
-        eal = await manager.get_updatable_engines_and_lock()
+        controller = _make_controller(args, pg)
+        eal = await controller.get_updatable_engines_and_lock()
         actor0, actor1 = eal.rollout_engines
 
-        await manager.stop_cell(0)
+        await controller.stop_cell(0)
 
         await _assert_engine_dies(actor0)
         assert ray.get(actor1.health_generate.remote(timeout=1.0)) is True
@@ -290,14 +212,14 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        manager = _make_manager(args, pg)
-        eal_before = await manager.get_updatable_engines_and_lock()
+        controller = _make_controller(args, pg)
+        eal_before = await controller.get_updatable_engines_and_lock()
         actor0_before = eal_before.rollout_engines[0]
 
-        await manager.stop_cell(0)
-        await manager.start_cell(0)
+        await controller.stop_cell(0)
+        await controller.start_cell(0)
 
-        eal_after = await manager.get_updatable_engines_and_lock()
+        eal_after = await controller.get_updatable_engines_and_lock()
         actor0_after = eal_after.rollout_engines[0]
 
         assert actor0_after is not actor0_before, "start_cell must produce a fresh actor"
@@ -315,11 +237,11 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        manager = _make_manager(args, pg)
-        eal = await manager.get_updatable_engines_and_lock()
+        controller = _make_controller(args, pg)
+        eal = await controller.get_updatable_engines_and_lock()
         actor0, actor1 = eal.rollout_engines
 
-        await manager.stop_cell(1)
+        await controller.stop_cell(1)
 
         assert ray.get(actor0.health_generate.remote(timeout=1.0)) is True
         await _assert_engine_dies(actor1)
@@ -336,11 +258,11 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        manager = _make_manager(args, pg)
-        await manager.get_updatable_engines_and_lock()  # ensure engines are alive
+        controller = _make_controller(args, pg)
+        await controller.get_updatable_engines_and_lock()  # ensure engines are alive
 
-        await manager.stop_cell(0)
-        await manager.stop_cell(0)  # must not raise
+        await controller.stop_cell(0)
+        await controller.stop_cell(0)  # must not raise
 
 
 @pytest.mark.asyncio
@@ -358,11 +280,11 @@ class TestCellDispatchAcrossModels:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
-        manager = _make_manager(args, pg)
-        actor_handles = [e.actor_handle for e in manager.servers["actor"].server_groups[0].engines]
-        ref_handles = [e.actor_handle for e in manager.servers["ref"].server_groups[0].engines]
+        controller = _make_controller(args, pg)
+        actor_handles = [e.actor_handle for e in controller.servers["actor"].server_groups[0].engines]
+        ref_handles = [e.actor_handle for e in controller.servers["ref"].server_groups[0].engines]
 
-        await manager.stop_cell(2)
+        await controller.stop_cell(2)
 
         # actor untouched
         for h in actor_handles:
@@ -386,8 +308,8 @@ class TestGetUpdatableEnginesAndLock:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
-        manager = _make_manager(args, pg)
-        eal = await manager.get_updatable_engines_and_lock()
+        controller = _make_controller(args, pg)
+        eal = await controller.get_updatable_engines_and_lock()
         assert len(eal.rollout_engines) == 2  # actor's 2, not ref's 2
         assert eal.engine_gpu_counts == [1, 1]
         assert all(isinstance(h, ray.actor.ActorHandle) for h in eal.rollout_engines)
@@ -406,8 +328,8 @@ class TestGetUpdatableEnginesAndLock:
         args = _make_test_args(tmp_path, models=[("ref", False)])
         pg = placement_group_factory(2)
 
-        manager = _make_manager(args, pg)
-        eal = await manager.get_updatable_engines_and_lock()
+        controller = _make_controller(args, pg)
+        eal = await controller.get_updatable_engines_and_lock()
         assert eal.rollout_engines == []
         assert eal.engine_gpu_counts == []
         assert eal.has_new_engines is False
@@ -426,17 +348,17 @@ class TestGetUpdatableEnginesAndLock:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        manager = _make_manager(args, pg)
-        eal_init = await manager.get_updatable_engines_and_lock()
+        controller = _make_controller(args, pg)
+        eal_init = await controller.get_updatable_engines_and_lock()
         assert eal_init.has_new_engines is True
 
-        manager.clear_updatable_has_new_engines()
-        eal_cleared = await manager.get_updatable_engines_and_lock()
+        await controller.clear_updatable_has_new_engines()
+        eal_cleared = await controller.get_updatable_engines_and_lock()
         assert eal_cleared.has_new_engines is False
 
-        await manager.stop_cell(0)
-        await manager.start_cell(0)
-        eal_recovered = await manager.get_updatable_engines_and_lock()
+        await controller.stop_cell(0)
+        await controller.start_cell(0)
+        eal_recovered = await controller.get_updatable_engines_and_lock()
         assert eal_recovered.has_new_engines is True
 
     async def test_clear_does_not_affect_non_updatable_server(
@@ -451,14 +373,14 @@ class TestGetUpdatableEnginesAndLock:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
-        manager = _make_manager(args, pg)
+        controller = _make_controller(args, pg)
         # Force ref's flag True so we can detect any erroneous clear.
-        manager.servers["ref"].server_groups[0].has_new_engines = True
+        controller.servers["ref"].server_groups[0].has_new_engines = True
 
-        manager.clear_updatable_has_new_engines()
+        await controller.clear_updatable_has_new_engines()
 
-        assert manager.servers["ref"].server_groups[0].has_new_engines is True
-        assert manager.servers["actor"].server_groups[0].has_new_engines is False
+        assert controller.servers["ref"].server_groups[0].has_new_engines is True
+        assert controller.servers["actor"].server_groups[0].has_new_engines is False
 
     async def test_multiple_updatable_servers_raises_assertion(
         self,
@@ -472,9 +394,9 @@ class TestGetUpdatableEnginesAndLock:
         args = _make_test_args(tmp_path, models=[("actor1", True), ("actor2", True)])
         pg = placement_group_factory(4)
 
-        manager = _make_manager(args, pg)
+        controller = _make_controller(args, pg)
         with pytest.raises(ValueError, match="Multiple servers"):
-            await manager.get_updatable_engines_and_lock()
+            await controller.get_updatable_engines_and_lock()
 
 
 @pytest.mark.asyncio
@@ -492,10 +414,10 @@ class TestCheckWeights:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
-        manager = _make_manager(args, pg)
-        await manager.get_updatable_engines_and_lock()  # wait for engines to be alive
+        controller = _make_controller(args, pg)
+        await controller.get_updatable_engines_and_lock()  # wait for engines to be alive
 
-        results = await manager.check_weights(action="pre_update")
+        results = await controller.check_weights(action="pre_update")
 
         # Updatable server only: nested gather is [group][engine]; 1 group × 2 engines.
         assert len(results) == 1
@@ -505,7 +427,7 @@ class TestCheckWeights:
                 assert engine_result == {"_mock": True}
 
         # Frozen (non-updatable) servers must not have been touched.
-        for srv in manager.servers.values():
+        for srv in controller.servers.values():
             if srv.update_weights:
                 continue
             for group in srv.server_groups:
@@ -527,23 +449,23 @@ class TestRecoverUpdatableEngines:
     ):
         """``recover_updatable_engines`` is a no-op while ``rollout_id == -1``
         (initial state) — the trainer hasn't issued a rollout yet, so even if
-        a slot looks dead the manager must not pre-emptively recover."""
+        a slot looks dead the controller must not pre-emptively recover."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        manager = _make_manager(args, pg)
-        eal_before = await manager.get_updatable_engines_and_lock()
+        controller = _make_controller(args, pg)
+        eal_before = await controller.get_updatable_engines_and_lock()
         actor0_before = eal_before.rollout_engines[0]
 
         # Kill engine 0 directly + mark stopped (simulates a fault before any
         # rollout). recover_updatable_engines must not bring it back yet.
         ray.kill(actor0_before)
-        manager.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
+        controller.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
 
-        await manager.recover_updatable_engines()
+        await controller.recover_updatable_engines()
 
         # Slot 0 is still de-allocated; recovery skipped because rollout_id=-1.
-        assert not manager.servers["actor"].server_groups[0].all_engines[0].is_allocated
+        assert not controller.servers["actor"].server_groups[0].all_engines[0].is_allocated
 
     async def test_recovers_dead_engine_after_rollout_started(
         self,
@@ -557,154 +479,17 @@ class TestRecoverUpdatableEngines:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
-        manager = _make_manager(args, pg)
-        eal_before = await manager.get_updatable_engines_and_lock()
+        controller = _make_controller(args, pg)
+        eal_before = await controller.get_updatable_engines_and_lock()
         actor0_before = eal_before.rollout_engines[0]
 
         ray.kill(actor0_before)
-        manager.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
+        controller.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
 
-        manager.rollout_id = 0  # simulates "rollout has started"
-        await manager.recover_updatable_engines()
+        await controller.prepare_rollout(0)
+        await controller.recover_updatable_engines()
 
-        slot0 = manager.servers["actor"].server_groups[0].all_engines[0]
+        slot0 = controller.servers["actor"].server_groups[0].all_engines[0]
         assert slot0.is_allocated
         assert slot0.actor_handle is not actor0_before
         assert ray.get(slot0.actor_handle.health_generate.remote(timeout=1.0)) is True
-
-
-@pytest.mark.asyncio
-class TestPrepareRollout:
-    async def test_prepare_advances_the_rollout_id_and_generate_does_not(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """The driver owns the ordering now: recovery is gated on the id prepare recorded, not on generate."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        args.global_batch_size = 4
-        pg = placement_group_factory(2)
-
-        manager = _make_manager(args, pg)
-        manager.train_parallel_config = {"dp_size": 1}
-        manager.generate_rollout = lambda input: RolloutFnTrainOutput(
-            samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
-        )
-
-        await manager.generate(rollout_id=9)
-        assert manager.rollout_id == -1
-
-        await manager.prepare_rollout(9)
-        assert manager.rollout_id == 9
-
-
-@pytest.mark.asyncio
-class TestGenerate:
-    """``generate(rollout_id)`` is the trainer's per-iteration rollout entry
-    point. It must (1) advance ``self.rollout_id``, (2) call the rollout
-    function with ``RolloutFnTrainInput(rollout_id=N)``, (3) postprocess +
-    convert + DP-split the returned samples. Nothing else covers this path."""
-
-    async def test_invokes_rollout_fn_with_correct_input_and_returns_dp_split(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        # global_batch_size = number of samples we'll produce (postprocess
-        # trims to a multiple, so equality avoids losing samples).
-        args.global_batch_size = 8
-        pg = placement_group_factory(2)
-
-        manager = _make_manager(args, pg)
-        manager.train_parallel_config = {"dp_size": 2}
-
-        captured: list = []
-
-        def fake_rollout_fn(input):
-            captured.append(input)
-            return RolloutFnTrainOutput(
-                samples=[make_samples_grouped(n_groups=2, group_size=4)],
-                metrics={"my_metric": 1.23},
-            )
-
-        manager.generate_rollout = fake_rollout_fn
-
-        await manager.prepare_rollout(42)
-        result = await manager.generate(rollout_id=42)
-
-        assert manager.rollout_id == 42
-        assert len(captured) == 1
-        assert isinstance(captured[0], RolloutFnTrainInput)
-        assert captured[0].rollout_id == 42
-        # generate returns {"sample_indices": ..., "data_ref": ...};
-        # split_train_data_by_dp returns Box(ObjectRef) per dp rank
-        assert set(result) == {"sample_indices", "data_ref"}
-        data_refs = result["data_ref"]
-        assert len(data_refs) == 2
-        partitions = ray.get([box.inner for box in data_refs])
-        for partition in partitions:
-            assert "tokens" in partition
-            assert "rewards" in partition
-            assert "loss_masks" in partition
-            # 8 samples / 2 dp = 4 per rank
-            assert len(partition["tokens"]) == 4
-
-
-@pytest.mark.asyncio
-class TestEval:
-    async def test_invokes_eval_fn_with_eval_input(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        manager = _make_manager(args, pg)
-
-        captured: list = []
-
-        def fake_eval_fn(input):
-            captured.append(input)
-            return RolloutFnEvalOutput(
-                data={"my_dataset": {"rewards": [0.5, 1.0]}},
-                metrics={},
-            )
-
-        manager.eval_generate_rollout = fake_eval_fn
-
-        await manager.eval(rollout_id=10)
-
-        assert len(captured) == 1
-        assert isinstance(captured[0], RolloutFnEvalInput)
-        assert captured[0].rollout_id == 10
-
-    async def test_skipped_in_debug_train_only_mode(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """``debug_train_only=True`` must short-circuit ``eval`` before the
-        rollout function is invoked — used by trainer-only debug runs that
-        have no rollout cluster."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        args.debug_train_only = True
-        pg = placement_group_factory(2)
-
-        manager = _make_manager(args, pg)
-
-        called: list = []
-        manager.eval_generate_rollout = lambda inp: called.append(inp)
-
-        await manager.eval(rollout_id=10)
-
-        assert called == []

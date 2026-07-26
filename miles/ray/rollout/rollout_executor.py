@@ -25,9 +25,10 @@ from miles.rollout.inference_rollout.compatibility import call_rollout_function,
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
-from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdentity
+from miles.utils.audit_utils.process_identity import RolloutExecutorProcessIdentity
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.hf_config import is_complete_hf_export
+from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
@@ -47,7 +48,7 @@ class RolloutExecutor:
 
     def __init__(self, args):
         event_logger_checkpoint.restore(args)
-        configure_logger(args, source=RolloutManagerProcessIdentity())
+        configure_logger(args, source=RolloutExecutorProcessIdentity())
 
         self.args = args
         # set by the training actor after each weight update
@@ -55,6 +56,9 @@ class RolloutExecutor:
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
+
+        if not self.args.debug_train_only:
+            init_http_client(args)
 
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
@@ -94,9 +98,6 @@ class RolloutExecutor:
 
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
-
-    def get_router_address(self) -> tuple[str, int]:
-        return self.args.sglang_router_ip, self.args.sglang_router_port
 
     def dispose(self):
         if (close := getattr(self.data_source, "close", None)) is not None:

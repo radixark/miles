@@ -60,7 +60,7 @@ from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.rollout_manager import EnginesAndLock
+    from miles.ray.rollout.inference_controller import EnginesAndLock
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
