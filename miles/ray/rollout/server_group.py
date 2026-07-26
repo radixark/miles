@@ -9,14 +9,15 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url
+from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.addr_allocator import (
     PortCursors,
     allocate_rollout_engine_addr_and_ports_external,
     allocate_rollout_engine_addr_and_ports_normal,
 )
-from miles.ray.rollout.server_engine import ServerEngine
+from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
-from miles.utils import dumper_utils
+from miles.utils import async_utils, dumper_utils
 
 logger = logging.getLogger(__name__)
 
@@ -173,19 +174,56 @@ class ServerGroup:
 
         for index, _ in new_engines:
             engine_addr_and_ports = addr_and_ports[index]
-            self.all_engines[index - self.rank_offset].set_server_url(
-                build_server_url(host=engine_addr_and_ports["host"], port=engine_addr_and_ports["port"])
+            self.all_engines[index - self.rank_offset].set_addressing(
+                AddrInfo(
+                    server_url=build_server_url(
+                        host=engine_addr_and_ports["host"], port=engine_addr_and_ports["port"]
+                    ),
+                    bootstrap_port=engine_addr_and_ports.get("disaggregation_bootstrap_port"),
+                )
             )
 
-        init_handles = [
-            engine.init.remote(
-                **addr_and_ports[index],
-                router_ip=self.router_ip,
-                router_port=self.router_port,
-            )
-            for index, engine in new_engines
-        ]
+        init_handles = [engine.init.remote(**addr_and_ports[index]) for index, engine in new_engines]
         return init_handles, new_engine_indices
+
+    async def register_workers(self, engine_indices: list[int]) -> None:
+        if self.args.rollout_external or not (self.router_ip and self.router_port):
+            return
+        await asyncio.gather(
+            *[
+                self._router_api_client.add_worker(
+                    worker_url=engine.addr_info.server_url,
+                    worker_type=self.worker_type,
+                    use_legacy_api=use_legacy_router_api(self.args),
+                    bootstrap_port=engine.addr_info.bootstrap_port,
+                )
+                for engine in self._primary_engines_of(engine_indices)
+            ]
+        )
+
+    async def unregister_workers(self, engine_indices: list[int]) -> None:
+        if self.args.rollout_external or not (self.router_ip and self.router_port):
+            return
+        await asyncio.gather(
+            *[
+                self._router_api_client.remove_worker(
+                    worker_url=engine.addr_info.server_url,
+                    use_legacy_api=use_legacy_router_api(self.args),
+                )
+                for engine in self._primary_engines_of(engine_indices)
+            ]
+        )
+
+    def _primary_engines_of(self, engine_indices: list[int]) -> list[ServerEngine]:
+        return [
+            self.all_engines[index]
+            for index in engine_indices
+            if index % self.nodes_per_engine == 0 and self.all_engines[index].is_allocated
+        ]
+
+    @property
+    def _router_api_client(self) -> SGLangRouterApiClient:
+        return SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")
 
     # Called from InferenceController.stop_cell (main thread, async): deliberately non-async here
     # to avoid introducing two states like "stopping (but not stopped)" vs "stopped", since
@@ -194,6 +232,10 @@ class ServerGroup:
     # moving `shutdown` mainly to local code
     def stop_engines(self, engine_indices: list[int]):
         logger.info(f"Killing server {engine_indices=}...")
+        try:
+            async_utils.run(asyncio.wait_for(self.unregister_workers(engine_indices), timeout=_SHUTDOWN_TIMEOUT))
+        except Exception as e:
+            logger.warning(f"Unregistering {engine_indices=} from the router failed, tearing down anyway (e: {e})")
         for i in engine_indices:
             engine = self.all_engines[i]
             if engine.is_allocated:
@@ -242,6 +284,7 @@ class ServerGroup:
                 )
 
         self.mark_alive(engine_indices=new_engine_indices)
+        await self.register_workers(new_engine_indices)
 
     def mark_alive(self, engine_indices: list[int]):
         for engine_index in engine_indices:

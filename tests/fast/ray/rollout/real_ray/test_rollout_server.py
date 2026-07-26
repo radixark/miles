@@ -82,7 +82,7 @@ class TestCheckWeightsAggregation:
                 for rank in range(5)
             }
             for engine in all_engines:
-                server = url_to_server[engine.server_url]
+                server = url_to_server[engine.addr_info.server_url]
                 payloads = server.payloads_of("/weights_checker")
                 assert payloads == [{"action": "report", "allow_quant_error": False, "selector": "all"}]
         finally:
