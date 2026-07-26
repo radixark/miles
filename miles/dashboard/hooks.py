@@ -306,9 +306,11 @@ def register_router(args) -> None:
     """Called by the rollout manager AFTER start_rollout_servers: only then are
     ``args.sglang_router_ip/port`` filled in. init_tracking runs earlier in
     __init__, so the backend cannot register the router at init time."""
+    if not args.use_miles_dashboard:
+        return
     from miles.dashboard import backend
 
-    handle = backend.current_collector()
+    handle = backend.resolve_collector()
     if handle is None:
         return
     # a None ip here is a wiring-order bug, not runtime flakiness: fail loud

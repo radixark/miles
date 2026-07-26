@@ -122,10 +122,10 @@ class RayTrainGroup:
             return
 
         if self.args.use_fault_tolerance and "rollout" in self.args.ft_components:
-            await self.rollout_manager.recover_updatable_engines.remote()
+            await self._rollout_manager.recover_updatable_engines.remote()
 
-        info = await self.rollout_manager.get_updatable_engines_and_lock.remote()
-        await self.rollout_manager.health_monitoring_pause.remote()
+        info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
+        await self._rollout_manager.health_monitoring_pause.remote()
 
         await self._broadcast("update_weights", info=info)
 
@@ -144,7 +144,6 @@ class RayTrainGroup:
         await self._broadcast("clear_memory")
 
     async def set_rollout_manager(self):
-        self.rollout_manager = self._rollout_manager
         await self._broadcast("set_rollout_manager", self._rollout_manager)
 
     async def _broadcast(self, method_name: str, *args, **kwargs) -> list:

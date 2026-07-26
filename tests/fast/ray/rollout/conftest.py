@@ -82,6 +82,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_model_routers=None,
         prefill_num_servers=None,
         # routers / session server
+        use_miles_dashboard=False,
         use_miles_router=False,
         use_session_server=False,
         session_server_ip=None,
