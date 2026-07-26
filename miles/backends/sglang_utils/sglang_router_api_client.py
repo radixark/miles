@@ -2,9 +2,10 @@ import dataclasses
 import logging
 from urllib.parse import quote
 
-import requests
 import sglang_router
 from packaging.version import parse
+
+from miles.utils.http_utils import GeneralHttpClientProvider
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 class SGLangRouterApiClient:
     router_url: str
 
-    def add_worker(
+    async def add_worker(
         self,
         worker_url: str,
         worker_type: str,
@@ -22,7 +23,7 @@ class SGLangRouterApiClient:
     ):
         if use_legacy_api:
             assert worker_type == "regular", "pd disaggregation is not supported in old router or miles router."
-            response = requests.post(f"{self.router_url}/add_worker?url={worker_url}")
+            response = await GeneralHttpClientProvider.client().post(f"{self.router_url}/add_worker?url={worker_url}")
         else:
             payload = {
                 "url": worker_url,
@@ -30,26 +31,34 @@ class SGLangRouterApiClient:
             }
             if worker_type == "prefill":
                 payload["bootstrap_port"] = bootstrap_port
-            response = requests.post(
+            response = await GeneralHttpClientProvider.client().post(
                 f"{self.router_url}/workers",
                 json=payload,
             )
         response.raise_for_status()
 
-    def remove_worker(self, worker_url: str, use_legacy_api: bool):
+    async def remove_worker(self, worker_url: str, use_legacy_api: bool):
         response = None
         if use_legacy_api:
-            response = requests.post(f"{self.router_url}/remove_worker?url={worker_url}")
+            response = await GeneralHttpClientProvider.client().post(
+                f"{self.router_url}/remove_worker?url={worker_url}"
+            )
         elif parse(sglang_router.__version__) < parse("0.3.0"):
             quoted_worker_url = quote(worker_url, safe="")
-            response = requests.delete(f"{self.router_url}/workers/{quoted_worker_url}")
+            response = await GeneralHttpClientProvider.client().delete(
+                f"{self.router_url}/workers/{quoted_worker_url}"
+            )
         else:
             try:
-                all_workers = requests.get(f"{self.router_url}/workers").json()["workers"]
+                all_workers = (await GeneralHttpClientProvider.client().get(f"{self.router_url}/workers")).json()[
+                    "workers"
+                ]
                 for worker in all_workers:
                     if worker["url"] == worker_url:
                         worker_id = worker["id"]
-                        response = requests.delete(f"{self.router_url}/workers/{worker_id}")
+                        response = await GeneralHttpClientProvider.client().delete(
+                            f"{self.router_url}/workers/{worker_id}"
+                        )
                         break
                 else:
                     logger.warning(f"Worker {worker_url} not found in router during shutdown.")

@@ -8,7 +8,7 @@ class _RecordingApiClient:
         self.calls: list[tuple[str, dict]] = []
 
     def __getattr__(self, name: str):
-        def method(**kwargs):
+        async def method(**kwargs):
             self.calls.append((name, kwargs))
             return {"called": name}
 
@@ -63,6 +63,15 @@ def test_shell_forwards_every_argument_verbatim(method_name):
     getattr(engine, method_name)(**kwargs)
 
     assert engine.api_client.calls == [(method_name, kwargs)]
+
+
+@pytest.mark.parametrize("method_name", _forwarding_method_names())
+def test_every_shell_stays_synchronous(method_name):
+    """Ray actor methods must stay sync: the client's coroutine is driven by the background loop."""
+    pytest.importorskip("sglang")
+    from miles.backends.sglang_utils.sglang_engine import SGLangEngine
+
+    assert not inspect.iscoroutinefunction(getattr(SGLangEngine, method_name))
 
 
 def test_pull_weights_supplies_the_checkpoint_dirs_from_args():
