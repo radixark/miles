@@ -20,6 +20,8 @@ from miles.utils import dumper_utils
 
 logger = logging.getLogger(__name__)
 
+_SHUTDOWN_TIMEOUT = 30
+
 
 @dataclasses.dataclass
 class ServerGroup:
@@ -186,7 +188,10 @@ class ServerGroup:
             if engine.is_allocated:
                 logger.info(f"Shutting down and killing engine at index {i}")
                 try:
-                    ray.get(engine.actor_handle.shutdown.remote())
+                    ray.get(engine.actor_handle.shutdown.remote(), timeout=_SHUTDOWN_TIMEOUT)
+                except Exception as e:
+                    logger.warning(f"Graceful shutdown of engine at index {i} failed, killing anyway (e: {e})")
+                try:
                     ray.kill(engine.actor_handle)
                     logger.info(f"Successfully killed engine at index {i}")
                 except Exception as e:
