@@ -5,7 +5,6 @@ from argparse import Namespace
 from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
-import ray
 import torch
 import torch.distributed as dist
 from tqdm import tqdm
@@ -22,7 +21,7 @@ from miles.backends.training_utils.log_utils import (
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import train_dump_utils, train_metric_utils
+from miles.utils import async_utils, train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
@@ -632,7 +631,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         if self.args.ci_test and len(rollout_engines) > 0:
             engine = random.choice(rollout_engines)
-            engine_version = ray.get(engine.get_weight_version.remote())
+            engine_version = async_utils.run(engine.get_weight_version())
             if str(engine_version) != str(self.weight_updater.weight_version):
                 raise RuntimeError(
                     f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"

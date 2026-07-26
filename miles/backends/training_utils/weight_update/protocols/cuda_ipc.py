@@ -1,19 +1,21 @@
+import asyncio
 import logging
 from argparse import Namespace
 from collections.abc import Sequence
+from concurrent.futures import Future
 from typing import Any
 
-import ray
 import torch
 import torch.distributed as dist
-from ray import ObjectRef
 from ray.actor import ActorHandle
 from sglang.srt.utils import MultiprocessingSerializer
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
+from miles.utils import async_utils
 from miles.utils.lora import lora_base_cpu_backup_enabled, lora_rollout_enabled
 
 try:
@@ -60,7 +62,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
 
     def connect(
         self,
-        rollout_engines: Sequence[ActorHandle],
+        rollout_engines: Sequence[SGLangApiClient],
         rollout_engine_lock: ActorHandle | None,
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
@@ -169,7 +171,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         self.needs_base_resync_for_lora = self.args.check_weight_update_equal or not base_persists
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
-        refs, long_lived_tensors = _send_to_colocated_engine(
+        futures, long_lived_tensors = _send_to_colocated_engine(
             hf_named_tensors=bucket,
             ipc_engine=self._ipc_engine,
             ipc_gather_src=self._ipc_gather_src,
@@ -177,16 +179,16 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             selector=self._selector,
         )
         if self.use_distribute and self._is_distributed_src_rank:
-            refs_distributed = update_weights_from_distributed(
+            futures_distributed = update_weights_from_distributed(
                 self.group_name,
                 self._model_update_groups,
                 self.distributed_rollout_engines,
                 bucket,
                 selector=self._selector,
             )
-            if refs_distributed:
-                refs = (refs or []) + refs_distributed
-        check_weight_sync_results(ray.get(refs or []), is_lora=False)
+            if futures_distributed:
+                futures = (futures or []) + futures_distributed
+        check_weight_sync_results(async_utils.wait_futures(futures or []), is_lora=False)
         del long_lived_tensors
 
 
@@ -197,7 +199,7 @@ def _send_to_colocated_engine(
     ipc_gather_src,
     ipc_gather_group,
     selector: str = "all",
-) -> tuple[list[ObjectRef], Any]:
+) -> tuple[list[Future], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
     if ipc_gather_group is None:
@@ -234,15 +236,23 @@ def _send_to_colocated_engine(
         group=ipc_gather_group,
     )
 
-    refs = []
+    futures: list[Future] = []
     if is_gather_src:
         num_dtypes = len(serialized_named_tensors[0])
+        ipc_gate = asyncio.Lock()
         for i in range(num_dtypes):
             kwargs = {
                 "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
                 "load_format": "flattened_bucket",
                 "selector": selector,
             }
-            refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
+            futures.append(async_utils.submit(_update_weights_from_tensor_gated(ipc_gate, ipc_engine, kwargs)))
 
-    return refs, long_live_tensors
+    return futures, long_live_tensors
+
+
+async def _update_weights_from_tensor_gated(
+    gate: asyncio.Lock, api_client: SGLangApiClient, kwargs: dict[str, Any]
+) -> Any:
+    async with gate:
+        return await api_client.update_weights_from_tensor(**kwargs)

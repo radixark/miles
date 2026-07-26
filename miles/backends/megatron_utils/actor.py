@@ -15,7 +15,7 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import train_dump_utils
+from miles.utils import async_utils, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -831,7 +831,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
                 engine = random.choice(rollout_engines)
-                engine_version = ray.get(engine.get_weight_version.remote())
+                engine_version = async_utils.run(engine.get_weight_version())
                 if str(engine_version) != str(self.weight_updater.weight_version):
                     raise RuntimeError(
                         f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"

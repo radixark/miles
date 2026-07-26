@@ -151,6 +151,9 @@ class TestKillAndRecover:
 
             from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
+            # Recovery releases everything, not just the weights: an engine that kept its kv cache
+            # would leave the trainer short of GPU memory when it takes the device back.
+            assert server.payloads_of("/release_memory_occupation") == [{"tags": None}]
             assert server.payloads_of("/resume_memory_occupation") == [{"tags": [GPU_MEMORY_TYPE_WEIGHTS]}]
         finally:
             _kill_all(group)
@@ -224,7 +227,7 @@ class TestSimulateCrashKeepsActorReachable:
         try:
             ray.get(actor.simulate_crash.remote())
             # Actor handle still reachable at Ray level — follow-up returns.
-            ray.get(actor.health_generate.remote(timeout=1.0), timeout=10.0)
+            ray.get(actor.get_calls.remote(), timeout=10.0)
         finally:
             _kill_all(group)
 
