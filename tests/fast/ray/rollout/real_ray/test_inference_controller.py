@@ -112,51 +112,6 @@ async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_in
 
 @pytest.mark.asyncio
 class TestInferenceControllerInit:
-    @pytest.mark.parametrize(
-        ("ft_components", "expected_monitor_count", "expected_injection_pending"),
-        [
-            (["train"], 0, False),
-            (["rollout"], 1, True),
-        ],
-    )
-    async def test_rollout_ft_lifecycle_follows_selected_component(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-        monkeypatch,
-        ft_components,
-        expected_monitor_count,
-        expected_injection_pending,
-    ):
-        import miles.ray.rollout.inference_controller as ictl
-
-        started_monitors = []
-
-        class FakeMonitor:
-            def __init__(self, group, args):
-                self.group = group
-
-            def start(self):
-                started_monitors.append(self)
-
-            def stop(self):
-                pass
-
-        monkeypatch.setattr(ictl, "RolloutHealthMonitor", FakeMonitor)
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        args.use_fault_tolerance = True
-        args.ft_components = ft_components
-        args.ci_test = True
-        pg = placement_group_factory(2)
-
-        controller = _make_controller(args, pg)
-
-        assert len(started_monitors) == expected_monitor_count
-        assert len(controller._health_monitors) == expected_monitor_count
-        assert controller._ci_fault_injection_pending is expected_injection_pending
-
     async def test_init_creates_live_mock_engines_via_real_start_rollout_servers(
         self,
         ray_local_mode,
@@ -493,3 +448,76 @@ class TestRecoverUpdatableEngines:
         assert slot0.is_allocated
         assert slot0.actor_handle is not actor0_before
         assert ray.get(slot0.actor_handle.health_generate.remote(timeout=1.0)) is True
+
+
+@pytest.mark.asyncio
+class TestRolloutFaultToleranceIsUnsupported:
+    async def test_health_monitoring_hooks_are_noops_without_fault_tolerance(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """A plain run never asked for fault tolerance, so the hooks stay out of its way."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+
+        await controller.health_monitoring_pause()
+        await controller.health_monitoring_resume()
+
+    async def test_health_monitoring_hooks_refuse_to_run_under_fault_tolerance(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """Asking for fault tolerance must fail loudly, not run unmonitored."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+        controller.args.use_fault_tolerance = True
+        controller.args.ft_components = ["rollout"]
+
+        with pytest.raises(NotImplementedError):
+            await controller.health_monitoring_pause()
+        with pytest.raises(NotImplementedError):
+            await controller.health_monitoring_resume()
+
+    async def test_health_monitoring_hooks_are_noops_when_fault_tolerance_skips_rollout(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """Fault tolerance limited to training never monitored the engines, so nothing is lost."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+        controller.args.use_fault_tolerance = True
+        controller.args.ft_components = ["train"]
+
+        await controller.health_monitoring_pause()
+        await controller.health_monitoring_resume()
+
+    async def test_fault_injection_refuses_to_run(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """The injector depended on the deleted monitor to observe the crash."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+
+        with pytest.raises(NotImplementedError):
+            await controller._try_ci_fault_injection()

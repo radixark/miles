@@ -169,17 +169,11 @@ class ServerGroup:
         ]
         return init_handles, new_engine_indices
 
-    # There are two callers, only one of them will exist in a running system
-    # 1. For new callers (InferenceController.stop_cell, main thread, async),
-    #    deliberately make this function non-async here to avoid introducing two states
-    #    like "stopping (but not stopped)" vs "stopped", since single-thread async code will not yield
-    #    without an await point
-    #    it has the drawback of freezing the whole async thread, which may be avoided later by
-    #    moving `shutdown` mainly to local code
-    # 2. For legacy callers (RolloutHealthMonitor, another thread, sync)
-    #    it is still unsafe to be called in another thread
-    #    because engine may be observed as non-stopped while being shutdown,
-    #    but that is same as the original code
+    # Called from InferenceController.stop_cell (main thread, async): deliberately non-async here
+    # to avoid introducing two states like "stopping (but not stopped)" vs "stopped", since
+    # single-thread async code will not yield without an await point
+    # it has the drawback of freezing the whole async thread, which may be avoided later by
+    # moving `shutdown` mainly to local code
     def stop_engines(self, engine_indices: list[int]):
         logger.info(f"Killing server {engine_indices=}...")
         for i in engine_indices:
