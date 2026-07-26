@@ -94,6 +94,7 @@ def make_args(**overrides: Any) -> Namespace:
         # offload / fault tolerance
         offload_rollout=False,
         use_fault_tolerance=False,
+        ft_components=[],
         rollout_health_check_interval=10.0,
         rollout_health_check_timeout=30.0,
         # checkpoint / data source
