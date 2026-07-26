@@ -232,7 +232,6 @@ def test_init_brackets_bare_ipv6_inputs_and_keeps_the_allocated_port():
 
     assert forwarded == {"dist_init_addr": "[fd00::1]:15003", "host": "[fd00::2]"}
     assert engine.server_url == "http://[fd00::2]:31007"
-    assert engine.api_client.server_url == "http://[fd00::2]:31007"
     assert recorder.calls[0][1]["worker_url"] == "http://[fd00::2]:31007"
 
 

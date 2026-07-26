@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 import ray
-from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
@@ -108,21 +107,16 @@ class TestRealRayActorLifecycle:
         )
         try:
             ray.get(actor.init.remote(host="127.0.0.1", port=20000))
-            ray.get(actor.health_generate.remote(timeout=1.0))
-            ray.get(actor.release_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
-            ray.get(actor.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
-            ray.get(actor.update_weights_from_disk.remote(model_path="/fake"))
-            ray.get(actor.check_weights.remote(action="pre_update"))
+            ray.get(actor._get_current_node_ip_and_free_port.remote(start_port=20100))
+            ray.get(actor.simulate_crash.remote())
 
             calls = ray.get(actor.get_calls.remote())
             method_names = [name for name, _, _ in calls]
             assert method_names == [
                 "init",
-                "health_generate",
-                "release_memory_occupation",
-                "resume_memory_occupation",
-                "update_weights_from_disk",
-                "check_weights",
+                "_get_current_node_ip_and_free_port",
+                "simulate_crash",
+                "shutdown",
             ]
         finally:
             try:
@@ -143,10 +137,10 @@ class TestRealRayActorLifecycle:
             num_gpus_per_engine=1,
         )
         try:
-            ray.get(actor.set_fault.remote("health_generate", RuntimeError("boom")))
+            ray.get(actor.set_fault.remote("shutdown", RuntimeError("boom")))
             with pytest.raises(ray.exceptions.RayTaskError, match="boom"):
-                ray.get(actor.health_generate.remote(timeout=1.0))
+                ray.get(actor.shutdown.remote())
             # Fault is one-shot — second call must succeed.
-            assert ray.get(actor.health_generate.remote(timeout=1.0)) is True
+            assert ray.get(actor.shutdown.remote()) is True
         finally:
             ray.kill(actor)

@@ -1,5 +1,5 @@
 from argparse import Namespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -49,3 +49,44 @@ async def test_v2_pauses_health_checks_before_snapshotting_the_engines():
     await group.update_weights()
 
     assert order[:2] == ["health_monitoring_pause", "get_updatable_engines_and_lock"]
+
+
+def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
+    """Every engine is paused before any engine is flushed."""
+    from unittest.mock import patch
+
+    from miles.backends.experimental.fsdp_utils.update_weight_utils import UpdateWeightFromTensor
+
+    order: list[str] = []
+    pause_modes: list[str] = []
+
+    class _Client:
+        def __init__(self, index: int):
+            self._index = index
+
+        async def pause_generation(self, *, mode: str = "retract"):
+            order.append(f"pause-{self._index}")
+            pause_modes.append(mode)
+
+        async def flush_cache(self):
+            order.append(f"flush-{self._index}")
+
+        async def continue_generation(self):
+            order.append(f"continue-{self._index}")
+
+    updater = UpdateWeightFromTensor.__new__(UpdateWeightFromTensor)
+    updater.args = Namespace(update_weight_buffer_size=1 << 30)
+    updater.weight_version = 0
+    updater.model = MagicMock()
+    updater.model.state_dict.return_value = {}
+    updater.rollout_engines = [_Client(0), _Client(1)]
+
+    module = "miles.backends.experimental.fsdp_utils.update_weight_utils"
+    with patch(f"{module}.dist") as dist_mock, patch(f"{module}.get_gloo_group", return_value=MagicMock()):
+        dist_mock.get_rank.return_value = 0
+        updater.update_weights()
+
+    assert set(order[:2]) == {"pause-0", "pause-1"}
+    assert set(order[2:4]) == {"flush-0", "flush-1"}
+    assert set(order[4:]) == {"continue-0", "continue-1"}
+    assert pause_modes == ["retract", "retract"]

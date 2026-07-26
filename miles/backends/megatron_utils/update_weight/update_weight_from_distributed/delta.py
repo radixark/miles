@@ -9,22 +9,26 @@ from argparse import Namespace
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING
 
 import numpy as np
-import ray
 import safetensors.numpy
 import torch
 import torch.distributed as dist
 import zstandard
-from ray.actor import ActorHandle
 from tqdm import tqdm
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils import async_utils
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
 
 from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
+
+if TYPE_CHECKING:
+    from ray.actor import ActorHandle
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +58,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self.model_name = model_name
         self.quantization_config = quantization_config
         self.weight_version = 0
-        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self.rollout_engines: Sequence[SGLangApiClient] | None = None
         self._connection_stale: bool = False
         self.delta_dir = args.update_weight_disk_dir
         os.makedirs(self.delta_dir, exist_ok=True)
@@ -86,7 +90,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
 
     def connect_rollout_engines(
         self,
-        rollout_engines: Sequence[ActorHandle],
+        rollout_engines: Sequence[SGLangApiClient],
         rollout_engine_lock: ActorHandle,
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
@@ -131,12 +135,14 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             if self._post_write_hook is not None:
                 self._post_write_hook(self.args, self.delta_dir, list(self.rollout_engines))
             pulls = [
-                engine.pull_weights.remote(
-                    target_version=0,
-                    local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
-                    source_dir=self.args.update_weight_disk_dir,
+                async_utils.submit(
+                    client.pull_weights(
+                        target_version=0,
+                        local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
+                        source_dir=self.args.update_weight_disk_dir,
+                    )
                 )
-                for engine in self.rollout_engines
+                for client in self.rollout_engines
             ]
         dist.barrier(group=get_gloo_group())
 
@@ -152,19 +158,21 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
 
         self._for_each_hf_bucket(seed_bucket)
         if dist.get_rank() == 0:
-            _check_weight_sync_results(ray.get(pulls), is_lora=False)
+            _check_weight_sync_results(async_utils.wait_futures(pulls), is_lora=False)
             if self.args.check_weight_update_equal:
                 # The weights checker resets engine tensors at startup and compares after the
                 # first sync, expecting it to rewrite every tensor. The baseline publishes
                 # nothing, so reload the just-pulled base checkpoint to restore engine state
                 # (and set the engine weight version the CI equality check expects).
-                results = ray.get(
+                results = async_utils.wait_futures(
                     [
-                        engine.update_weights_from_disk.remote(
-                            model_path=self.args.update_weight_local_checkpoint_dir,
-                            weight_version=str(self.weight_version),
+                        async_utils.submit(
+                            client.update_weights_from_disk(
+                                model_path=self.args.update_weight_local_checkpoint_dir,
+                                weight_version=str(self.weight_version),
+                            )
                         )
-                        for engine in self.rollout_engines
+                        for client in self.rollout_engines
                     ]
                 )
                 _check_weight_sync_results(results, is_lora=False)
@@ -254,32 +262,40 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             self._post_write_hook(self.args, self._version_dir, list(self.rollout_engines))
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
-            pulls = ray.get(
+            pulls = async_utils.wait_futures(
                 [
-                    engine.pull_weights.remote(
-                        target_version=self.weight_version,
-                        local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
-                        source_dir=self.args.update_weight_disk_dir,
+                    async_utils.submit(
+                        client.pull_weights(
+                            target_version=self.weight_version,
+                            local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
+                            source_dir=self.args.update_weight_disk_dir,
+                        )
                     )
-                    for engine in self.rollout_engines
+                    for client in self.rollout_engines
                 ]
             )
             _check_weight_sync_results(pulls, is_lora=False)
             mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
+            async_utils.wait_futures(
+                [async_utils.submit(client.pause_generation(mode=mode)) for client in self.rollout_engines]
+            )
             if mode != "in_place":
-                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
-            results = ray.get(
+                async_utils.wait_futures([async_utils.submit(client.flush_cache()) for client in self.rollout_engines])
+            results = async_utils.wait_futures(
                 [
-                    engine.update_weights_from_disk.remote(
-                        model_path=self.args.update_weight_local_checkpoint_dir,
-                        weight_version=str(self.weight_version),
+                    async_utils.submit(
+                        client.update_weights_from_disk(
+                            model_path=self.args.update_weight_local_checkpoint_dir,
+                            weight_version=str(self.weight_version),
+                        )
                     )
-                    for engine in self.rollout_engines
+                    for client in self.rollout_engines
                 ]
             )
             _check_weight_sync_results(results, is_lora=False)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            async_utils.wait_futures(
+                [async_utils.submit(client.continue_generation()) for client in self.rollout_engines]
+            )
         dist.barrier(group=get_gloo_group())
 
     def _encode_delta(self) -> None:

@@ -4,52 +4,9 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
-from typing import Any
-
 import ray
 
 logger = logging.getLogger(__name__)
-
-
-# Methods that just ``_record + _maybe_fault + return X``. The value is the
-# return value (no test asserts on its shape — sentinels keep the mock close
-# to what the real method's HTTP response shape returns).
-_RECORDING_METHODS: dict[str, Any] = {
-    "health_generate": True,
-    "release_memory_occupation": True,
-    "resume_memory_occupation": True,
-    "update_weights_from_disk": True,
-    "update_weights_from_tensor": True,
-    "flush_cache": True,
-    "pause_generation": None,
-    "continue_generation": None,
-    "update_weight_version": None,
-    "begin_weight_update": None,
-    "end_weight_update": None,
-    "init_weights_update_group": None,
-    "destroy_weights_update_group": None,
-    "update_weights_from_distributed": None,
-    "load_lora_adapter_from_tensors": None,
-    "unload_lora_adapter": None,
-    "start_profile": None,
-    "stop_profile": None,
-    "check_weights": {"_mock": True},
-    "get_server_info": {"_mock": True},
-    "get_weight_version": "mock-v0",
-    "get_parallelism_info": {"_mock": True},
-    "get_remote_instance_transfer_engine_info": {"_mock": True},
-}
-
-
-def _make_recorder(name: str, return_value: Any) -> Callable:
-    def method(self, *args, **kwargs):
-        self._record(name, args, kwargs)
-        self._maybe_fault(name)
-        return return_value
-
-    method.__name__ = name
-    return method
 
 
 class MockSGLangEngine:
@@ -125,10 +82,6 @@ class MockSGLangEngine:
         exc = self._faults.pop(method, None)
         if exc is not None:
             raise exc
-
-
-for _name, _retval in _RECORDING_METHODS.items():
-    setattr(MockSGLangEngine, _name, _make_recorder(_name, _retval))
 
 
 MockSGLangEngine = ray.remote(MockSGLangEngine)

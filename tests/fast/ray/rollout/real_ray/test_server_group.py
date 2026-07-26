@@ -148,7 +148,7 @@ class TestStopEnginesRealKill:
         # RayActorError, not silently return.
         for actor in actors:
             with pytest.raises((ray.exceptions.RayActorError, ray.exceptions.RayTaskError)):
-                ray.get(actor.health_generate.remote(timeout=1.0), timeout=10.0)
+                ray.get(actor.get_calls.remote(), timeout=10.0)
 
     def test_stop_handles_shutdown_failure_gracefully(self, patched_sglang_engine, placement_group_factory):
         """If ``shutdown`` raises on the actor, ``stop_engines`` must still
