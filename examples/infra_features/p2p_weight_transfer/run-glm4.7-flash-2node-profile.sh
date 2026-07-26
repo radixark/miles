@@ -79,7 +79,7 @@ MODEL_NAME="GLM-4.7-Flash"
 MODEL_TYPE="glm4.7-flash"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-MILES_ROOT="/root/miles"
+MILES_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"
 source "${MILES_ROOT}/scripts/models/${MODEL_TYPE}.sh"
 
 # ---------------------------------------------------------------------------

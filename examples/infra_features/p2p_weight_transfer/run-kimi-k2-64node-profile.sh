@@ -84,7 +84,7 @@ MODEL_NAME="Kimi-K2-Instruct"
 MODEL_TYPE="kimi-k2"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-MILES_ROOT="/root/miles"
+MILES_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"
 source "${MILES_ROOT}/scripts/models/${MODEL_TYPE}.sh"
 
 

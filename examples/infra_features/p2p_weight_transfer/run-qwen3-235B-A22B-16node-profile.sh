@@ -80,7 +80,7 @@ MODEL_NAME="Qwen3-235B-A22B-Instruct-2507"
 MODEL_TYPE="qwen3-235B-A22B"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-MILES_ROOT="/root/miles"
+MILES_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"
 export MODEL_ARGS_ROTARY_BASE=5000000
 source "${MILES_ROOT}/scripts/models/${MODEL_TYPE}.sh"
 

@@ -83,7 +83,7 @@ MODEL_NAME="Qwen3-30B-A3B"
 MODEL_TYPE="qwen3-30B-A3B"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-MILES_ROOT="/root/miles"
+MILES_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"
 source "${MILES_ROOT}/scripts/models/${MODEL_TYPE}.sh"
 
 # Rotary base override
