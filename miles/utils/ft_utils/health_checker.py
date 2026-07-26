@@ -83,8 +83,7 @@ class BaseHealthChecker(abc.ABC):
 class SimpleHealthChecker(BaseHealthChecker):
     """Periodic async health checker. Calls *check_fn*; reports result via *on_result*.
 
-    After each ``resume()``, waits ``first_wait`` seconds before the first check
-    (matching ``RolloutHealthMonitor._need_first_wait`` semantics).
+    After each ``resume()``, waits ``first_wait`` seconds before the first check.
     """
 
     def __init__(
