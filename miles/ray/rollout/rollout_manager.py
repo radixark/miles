@@ -139,15 +139,22 @@ class RolloutManager:
         for monitor in self._health_monitors:
             monitor.stop()
 
-    # -------------------------- data generation -----------------------------
+    # -------------------------- rollout lifecycle hooks -----------------------------
 
-    async def generate(self, rollout_id):
-        start_time = time.time()
+    def prepare_rollout(self, rollout_id):
         self.rollout_id = rollout_id
         self._health_monitoring_resume()
         if self.args.ci_test and self._rollout_ft_enabled and rollout_id >= 2:
             self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
+
+    def prepare_eval(self):
+        self._health_monitoring_resume()
+
+    # -------------------------- data generation -----------------------------
+
+    async def generate(self, rollout_id):
+        start_time = time.time()
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout"):
@@ -178,7 +185,6 @@ class RolloutManager:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
-        self._health_monitoring_resume()
 
         if self.args.eval_uses_snapshots:
             return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
