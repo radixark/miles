@@ -51,15 +51,9 @@ def _make_updater(lock_state: _LockState) -> UpdateWeightFromDistributed:
     return updater
 
 
-def _passthrough_ray_get(mock_ray, fail_on=None):
-    """ray.get returns its argument, or raises when handed the sentinel."""
-
-    def _get(ref):
-        if fail_on is not None and ref is fail_on:
-            raise RuntimeError("engine died during broadcast")
-        return ref
-
-    mock_ray.get.side_effect = _get
+def _passthrough_ray_get(mock_ray):
+    """ray.get returns its argument (the lock actor is the only remaining Ray call)."""
+    mock_ray.get.side_effect = lambda ref: ref
 
 
 def _named_tensors() -> list[tuple[str, torch.Tensor]]:
@@ -126,9 +120,10 @@ def test_broadcast_failure_releases_lock_and_propagates(mock_ray, mock_update):
 @patch(f"{_MODULE}.ray")
 def test_engine_failure_on_refs_releases_lock_and_propagates(mock_ray, mock_update):
     lock_state = _LockState()
-    failing_refs = [MagicMock()]
-    _passthrough_ray_get(mock_ray, fail_on=failing_refs)
-    mock_update.return_value = failing_refs
+    _passthrough_ray_get(mock_ray)
+    failing_future = MagicMock()
+    failing_future.result.side_effect = RuntimeError("engine died during broadcast")
+    mock_update.return_value = [failing_future]
     updater = _make_updater(lock_state)
 
     with pytest.raises(RuntimeError, match="engine died during broadcast"):
