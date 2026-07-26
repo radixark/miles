@@ -105,15 +105,22 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
     fi
 
 # transformer_engine
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install --no-deps transformer_engine==2.17.0 && \
-      pip install transformer_engine_cu13==2.17.0 && \
-      rm -f /tmp/wheels/transformer_engine*.whl && \
-      pip install nvidia-mathdx==25.6.0 && \
-      pip -v install --no-build-isolation transformer_engine_torch==2.17.0; \
+RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
+    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      TE_CORE_DIST=transformer_engine_cu13; \
     else \
-      pip -v install --no-build-isolation "transformer_engine[pytorch]==2.17.0"; \
-    fi
+      TE_CORE_DIST=transformer_engine_cu12; \
+    fi && \
+    set -- \
+      /tmp/wheels/transformer_engine-2.17.0-py3-none-any.whl \
+      /tmp/wheels/${TE_CORE_DIST}-2.17.0-py3-none-manylinux_2_28_*.whl \
+      /tmp/wheels/transformer_engine_torch-2.17.0-cp312-cp312-linux_*.whl; \
+    if [ "$#" -ne 3 ] || [ ! -f "$1" ] || [ ! -f "$2" ] || [ ! -f "$3" ]; then \
+      echo "expected exactly one TransformerEngine 2.17 wheel for each component (${TE_CORE_DIST})" >&2; exit 1; \
+    fi && \
+    pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch && \
+    pip install --force-reinstall --no-deps "$@" && \
+    python3 /tmp/verify_transformer_engine.py "${TE_CORE_DIST}"
 
 # TE patches (cu13): B300/GB300 FA2 and backward override fixes
 # te_dequantized_backward_override.patch is a hot fix from

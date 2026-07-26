@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
+      - 'docker/verify_transformer_engine.py'
       - 'requirements.txt'
 
   schedule:
