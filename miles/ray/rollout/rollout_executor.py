@@ -110,7 +110,7 @@ class RolloutExecutor:
 
     # -------------------------- data generation -----------------------------
 
-    async def generate(self, rollout_id):
+    async def get(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:

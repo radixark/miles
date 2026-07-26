@@ -141,7 +141,7 @@ class TestGenerate:
 
         executor.generate_rollout = fake_rollout_fn
 
-        result = await executor.generate(rollout_id=42)
+        result = await executor.get(rollout_id=42)
 
         assert len(captured) == 1
         assert isinstance(captured[0], RolloutFnTrainInput)
@@ -167,7 +167,7 @@ class TestGenerate:
             samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
         )
 
-        await executor.generate(rollout_id=7)
+        await executor.get(rollout_id=7)
 
         assert not hasattr(executor, "servers")
         assert not hasattr(executor, "_health_monitors")
