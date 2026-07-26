@@ -99,7 +99,7 @@ Where to look:
 | Component | Path |
 |---|---|
 | Trainer stdout | wherever you redirected `ray job submit` |
-| SGLang | `/tmp/sglang/*.log` (or `--sglang-log-dir`) |
+| SGLang | inside the Ray worker logs (`~/.ray/session_latest/logs/worker-*.{out,err}`); control verbosity with `--sglang-log-level` |
 | Ray workers | `~/.ray/session_latest/logs/worker-*.{out,err}` |
 | NCCL | `NCCL_DEBUG=INFO NCCL_DEBUG_FILE=/tmp/nccl_%h_%p.log` |
 
