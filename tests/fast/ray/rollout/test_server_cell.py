@@ -21,6 +21,7 @@ def _build_servers(
             engines = [ServerEngine() for _ in range(engines_per_group)]
             for e in engines:
                 e.mark_allocated_uninitialized(fake_actor_handle())
+                e.set_server_url("http://127.0.0.1:30000")
                 e.mark_alive()
             groups.append(
                 ServerGroup(

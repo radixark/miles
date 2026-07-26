@@ -61,7 +61,9 @@ class TestStartEnginesRealActors:
     real Ray actors (via ``get_calls()`` round-trip) and that ``init`` was
     invoked with the addr/port kwargs from the allocator."""
 
-    def test_creates_real_actors_and_init_runs(self, patched_sglang_engine, placement_group_factory):
+    def test_creates_real_actors_and_init_runs(
+        self, patched_sglang_engine, placement_group_factory, mock_engine_http_servers
+    ):
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
 
@@ -78,7 +80,8 @@ class TestStartEnginesRealActors:
             assert "init" in method_names
             init_kwargs = ray.get(e.actor_handle.get_init_kwargs.remote())
             assert init_kwargs["host"] == "127.0.0.1"
-            assert init_kwargs["port"] == 30000 + i
+            assert init_kwargs["port"] == mock_engine_http_servers.for_rank(i).port
+            assert e.server_url == mock_engine_http_servers.for_rank(i).url
 
         # Cleanup: kill the actors we created.
         for e in group.all_engines:
@@ -291,3 +294,14 @@ class TestNodeZeroDetectionPrecondition:
             worker_type="placeholder",
             rank_offset=1,
         )
+
+
+class TestRejectedConfigurations:
+    @pytest.mark.parametrize("overrides", [{"port": 40000}, {"host": "10.9.9.9"}, {"host": "10.9.9.9", "port": 40000}])
+    def test_host_or_port_override_is_rejected(self, patched_sglang_engine, placement_group_factory, overrides):
+        """An override of host or port would make the rollout process address the wrong endpoint."""
+        group = _build_group(pg_tuple=placement_group_factory(1), num_engines=1)
+        group.sglang_overrides = overrides
+
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            group.start_engines(PortCursors.empty())
