@@ -625,8 +625,6 @@ class FSDPTrainRayActor(TrainRayActor):
                 engine_gpu_offsets=engine_gpu_offsets,
             )
             dist.barrier(group=get_gloo_group())
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
         self.weight_updater.update_weights()
         if dist.get_rank() == 0:
