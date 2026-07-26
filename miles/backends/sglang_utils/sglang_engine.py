@@ -15,7 +15,7 @@ from miles.backends.megatron_utils.lora_utils import (
     lora_base_cpu_backup_enabled,
     sglang_lora_target_all_sentinel,
 )
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
+from miles.backends.sglang_utils.sglang_api_client import wait_server_healthy
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.ray_actor import RayActor
 from miles.utils import async_utils
@@ -190,7 +190,6 @@ class SGLangEngine(RayActor):
         self.server_port = server_args_dict["port"]
 
         self.server_url = build_server_url(self.server_host, self.server_port)
-        self.api_client = SGLangApiClient(server_url=self.server_url)
         self.router_api_client = SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")
 
         if self.args.rollout_external:
@@ -262,195 +261,6 @@ class SGLangEngine(RayActor):
 
         logger.info(f"Simulating crash on engine {self.server_host}:{self.server_port}...")
         self.shutdown()
-
-    def health_generate(self, timeout: float = 5.0) -> bool:
-        return async_utils.run(self.api_client.health_generate(timeout=timeout))
-
-    def update_weights_from_tensor(
-        self,
-        serialized_named_tensors: list[str],
-        load_format: str | None = None,
-        flush_cache: bool = False,
-        weight_version: str | None = None,
-    ):
-        return async_utils.run(
-            self.api_client.update_weights_from_tensor(
-                serialized_named_tensors=serialized_named_tensors,
-                load_format=load_format,
-                flush_cache=flush_cache,
-                weight_version=weight_version,
-            )
-        )
-
-    def get_remote_instance_transfer_engine_info(self, rank: int):
-        return async_utils.run(self.api_client.get_remote_instance_transfer_engine_info(rank=rank))
-
-    def get_parallelism_info(self, rank: int):
-        return async_utils.run(self.api_client.get_parallelism_info(rank=rank))
-
-    def get_server_info(self):
-        return async_utils.run(self.api_client.get_server_info())
-
-    def load_lora_adapter_from_tensors(
-        self,
-        lora_name: str,
-        config_dict: dict,
-        serialized_named_tensors: list,
-        load_format: str | None = None,
-        pinned: bool = False,
-        added_tokens_config: dict | None = None,
-        upsert: bool = False,
-        expected_checksums: dict | None = None,
-    ):
-        return async_utils.run(
-            self.api_client.load_lora_adapter_from_tensors(
-                lora_name=lora_name,
-                config_dict=config_dict,
-                serialized_named_tensors=serialized_named_tensors,
-                load_format=load_format,
-                pinned=pinned,
-                added_tokens_config=added_tokens_config,
-                upsert=upsert,
-                expected_checksums=expected_checksums,
-            )
-        )
-
-    def load_lora_adapter_from_distributed(
-        self,
-        lora_name: str,
-        config_dict: dict,
-        names: list,
-        dtypes: list,
-        shapes: list,
-        group_name: str,
-        pinned: bool = False,
-        added_tokens_config: dict | None = None,
-        upsert: bool = False,
-    ):
-        return async_utils.run(
-            self.api_client.load_lora_adapter_from_distributed(
-                lora_name=lora_name,
-                config_dict=config_dict,
-                names=names,
-                dtypes=dtypes,
-                shapes=shapes,
-                group_name=group_name,
-                pinned=pinned,
-                added_tokens_config=added_tokens_config,
-                upsert=upsert,
-            )
-        )
-
-    def flush_cache(self):
-        return async_utils.run(self.api_client.flush_cache())
-
-    def get_weight_version(self):
-        return async_utils.run(self.api_client.get_weight_version())
-
-    def unload_lora_adapter(self, lora_name: str):
-        return async_utils.run(self.api_client.unload_lora_adapter(lora_name=lora_name))
-
-    def release_memory_occupation(self, tags: list[str] = None):
-        return async_utils.run(self.api_client.release_memory_occupation(tags=tags))
-
-    def resume_memory_occupation(self, tags: list[str] = None):
-        return async_utils.run(self.api_client.resume_memory_occupation(tags=tags))
-
-    def check_weights(
-        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
-    ):
-        return async_utils.run(
-            self.api_client.check_weights(
-                action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
-            )
-        )
-
-    def pull_weights(self, target_version: int, local_checkpoint_dir: str, source_dir: str):
-        return async_utils.run(
-            self.api_client.pull_weights(
-                target_version=target_version,
-                local_checkpoint_dir=local_checkpoint_dir,
-                source_dir=source_dir,
-            )
-        )
-
-    def update_weights_from_disk(
-        self, model_path: str, load_format: str | None = None, weight_version: str | None = None
-    ):
-        return async_utils.run(
-            self.api_client.update_weights_from_disk(
-                model_path=model_path, load_format=load_format, weight_version=weight_version
-            )
-        )
-
-    def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
-        return async_utils.run(
-            self.api_client.init_weights_update_group(
-                master_address=master_address,
-                master_port=master_port,
-                rank_offset=rank_offset,
-                world_size=world_size,
-                group_name=group_name,
-                backend=backend,
-            )
-        )
-
-    def destroy_weights_update_group(self, group_name):
-        return async_utils.run(self.api_client.destroy_weights_update_group(group_name=group_name))
-
-    def update_weights_from_distributed(
-        self, names, dtypes, shapes, group_name, flush_cache=False, weight_version: str | None = None
-    ):
-        return async_utils.run(
-            self.api_client.update_weights_from_distributed(
-                names=names,
-                dtypes=dtypes,
-                shapes=shapes,
-                group_name=group_name,
-                flush_cache=flush_cache,
-                weight_version=weight_version,
-            )
-        )
-
-    def pause_generation(self, mode: str = "retract"):
-        return async_utils.run(self.api_client.pause_generation(mode=mode))
-
-    def continue_generation(self):
-        return async_utils.run(self.api_client.continue_generation())
-
-    def begin_weight_update(self):
-        return async_utils.run(self.api_client.begin_weight_update())
-
-    def end_weight_update(self):
-        return async_utils.run(self.api_client.end_weight_update())
-
-    def update_weight_version(self, weight_version: str):
-        return async_utils.run(self.api_client.update_weight_version(weight_version=weight_version))
-
-    def start_profile(
-        self,
-        output_dir: str | None = None,
-        start_step: int | None = None,
-        num_steps: int | None = None,
-        activities: list[str] | None = None,
-        profile_by_stage: bool = False,
-        with_stack: bool | None = None,
-        record_shapes: bool | None = None,
-    ):
-        return async_utils.run(
-            self.api_client.start_profile(
-                output_dir=output_dir,
-                start_step=start_step,
-                num_steps=num_steps,
-                activities=activities,
-                profile_by_stage=profile_by_stage,
-                with_stack=with_stack,
-                record_shapes=record_shapes,
-            )
-        )
-
-    def stop_profile(self):
-        return async_utils.run(self.api_client.stop_profile())
 
 
 def _compute_server_args(
