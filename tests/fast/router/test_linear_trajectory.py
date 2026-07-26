@@ -708,6 +708,111 @@ class TestRollback:
         assert len(session.records) == 1
         assert session.records[0].timestamp == 1.0
 
+    def test_injected_assistants_are_not_generated_checkpoints(self, registry_with_assistant: SessionRegistry):
+        """Only backend-generated responses create checkpoints: injected
+        assistants are prompt history, and rollback counts generated
+        checkpoints, never assistant roles."""
+        sid = registry_with_assistant.create_session()
+        session = registry_with_assistant.get_session(sid)
+
+        first_request = [SYS_MSG, USER_MSG]
+        first_tokens = [1, 2, 3, 10, 11]
+        session.update_pretokenized_state(
+            first_request,
+            ASSISTANT_MSG_1,
+            prompt_token_ids=[1, 2, 3],
+            completion_token_ids=[10, 11],
+            max_trim_tokens=0,
+        )
+        first_record = SessionRecord(
+            timestamp=1.0,
+            method="POST",
+            path="/v1/chat/completions",
+            status_code=200,
+            request={"messages": first_request},
+            response={"message": ASSISTANT_MSG_1},
+        )
+        session.append_record(first_record)
+
+        injected_assistant_1 = {"role": "assistant", "content": "Injected context one."}
+        injected_assistant_2 = {"role": "assistant", "content": "Injected context two."}
+        follow_up = {"role": "user", "content": "Use both injected facts."}
+        injected_request = [
+            SYS_MSG,
+            USER_MSG,
+            ASSISTANT_MSG_1,
+            injected_assistant_1,
+            injected_assistant_2,
+            follow_up,
+        ]
+        second_prompt_tokens = first_tokens + [20, 21, 22]
+        session.prepare_pretokenized(
+            injected_request,
+            tito_tokenizer=registry_with_assistant.tito_tokenizer,
+        )
+        session.update_pretokenized_state(
+            injected_request,
+            ASSISTANT_MSG_2,
+            prompt_token_ids=second_prompt_tokens,
+            completion_token_ids=[30, 31],
+            max_trim_tokens=0,
+        )
+        second_record = SessionRecord(
+            timestamp=2.0,
+            method="POST",
+            path="/v1/chat/completions",
+            status_code=200,
+            request={"messages": injected_request},
+            response={"message": ASSISTANT_MSG_2},
+        )
+        session.append_record(second_record)
+
+        assert session.messages == injected_request + [ASSISTANT_MSG_2]
+        assert session.trajectory_token_ids == [first_tokens, second_prompt_tokens + [30, 31]]
+        assert session.records == [first_record, second_record]
+        assert session.generated_checkpoint_message_ends == [3, 7]
+        assert session.num_assistant == 2
+
+        # Resend the exact request that produced assistant2. The absent generated
+        # response is one rollback step; the two injected assistants are prompt
+        # history, not additional checkpoints.
+        session.prepare_pretokenized(
+            injected_request,
+            tito_tokenizer=registry_with_assistant.tito_tokenizer,
+        )
+
+        assert session.messages == first_request + [ASSISTANT_MSG_1]
+        assert session.trajectory_token_ids == [first_tokens]
+        assert session.records == [first_record]
+        assert session.generated_checkpoint_message_ends == [3]
+        assert session.num_assistant == 1
+
+        regenerated_assistant = {"role": "assistant", "content": "Regenerated response."}
+        regenerated_tokens = second_prompt_tokens + [40, 41]
+        session.update_pretokenized_state(
+            injected_request,
+            regenerated_assistant,
+            prompt_token_ids=second_prompt_tokens,
+            completion_token_ids=[40, 41],
+            max_trim_tokens=0,
+        )
+        regenerated_record = SessionRecord(
+            timestamp=3.0,
+            method="POST",
+            path="/v1/chat/completions",
+            status_code=200,
+            request={"messages": injected_request},
+            response={"message": regenerated_assistant},
+        )
+        session.append_record(regenerated_record)
+
+        assert session.messages == injected_request + [regenerated_assistant]
+        assert session.trajectory_token_ids == [first_tokens, regenerated_tokens]
+        assert session.token_ids == regenerated_tokens
+        assert session.records == [first_record, regenerated_record]
+        assert session.generated_checkpoint_message_ends == [3, 7]
+        assert session.num_assistant == 2
+
 
 class TestUpdatePretokenizedStateMissingSession:
     """update_pretokenized_state raises SessionNotFoundError for unknown session."""
