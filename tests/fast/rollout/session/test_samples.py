@@ -4,6 +4,7 @@ Validates the contract between session records, sample construction,
 and merge_samples — the core of the TITO (Token In Token Out) pipeline.
 """
 
+from argparse import Namespace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -93,6 +94,55 @@ def _make_record(
 
 
 class TestComputeSamplesFromRecords:
+    def test_weight_version_validation_uses_serving_route(self):
+        tok = _mock_tokenizer()
+        record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11])
+        record.response["choices"][0]["meta_info"]["weight_version"] = "default"
+        args = Namespace(
+            _sglang_default_model_name="actor",
+            _sglang_published_model_names={"actor"},
+            debug_rollout_only=False,
+            debug_skip_weight_update=False,
+            lora_rank=0,
+            lora_adapter_path=None,
+            save_debug_trajectory_data=None,
+        )
+
+        record.request["model"] = "ref"
+        samples = compute_samples_from_openai_records(args, _make_input_sample(), [record], tok)
+
+        assert len(samples) == 1
+        assert samples[0].weight_versions == ["default"]
+
+        record.request["model"] = "actor"
+        with pytest.raises(
+            RuntimeError,
+            match="Received weight_version='default' from updatable model 'actor' after actor weights were published",
+        ):
+            compute_samples_from_openai_records(args, _make_input_sample(), [record], tok)
+
+        record.request["model"] = "default"
+        with pytest.raises(
+            RuntimeError,
+            match="Received weight_version='default' from updatable model 'actor' after actor weights were published",
+        ):
+            compute_samples_from_openai_records(args, _make_input_sample(), [record], tok)
+
+        del record.request["model"]
+        with pytest.raises(
+            RuntimeError,
+            match="Received weight_version='default' from updatable model 'actor' after actor weights were published",
+        ):
+            compute_samples_from_openai_records(args, _make_input_sample(), [record], tok)
+
+    def test_weight_version_validation_rejects_non_string_model(self):
+        tok = _mock_tokenizer()
+        record = _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11])
+        record.request["model"] = ["actor"]
+
+        with pytest.raises(TypeError, match="Session request model must be a string"):
+            compute_samples_from_openai_records(_ARGS, _make_input_sample(), [record], tok)
+
     def test_single_record_builds_correct_sample(self):
         tok = _mock_tokenizer()
         record = _make_record(
