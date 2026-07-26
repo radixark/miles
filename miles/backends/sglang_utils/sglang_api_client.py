@@ -1,54 +1,55 @@
+import asyncio
 import dataclasses
 import logging
-import time
 
-import requests
-from urllib3.exceptions import NewConnectionError
+import httpx
+
+from miles.utils.http_utils import GeneralHttpClientProvider
 
 logger = logging.getLogger(__name__)
 
 
-def wait_server_healthy(server_url, api_key, is_process_alive):
+async def wait_server_healthy(server_url, api_key, is_process_alive):
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "Authorization": f"Bearer {api_key}",
     }
 
-    with requests.Session() as session:
-        while True:
-            try:
-                response = session.get(f"{server_url}/health_generate", headers=headers)
-                if response.status_code == 200:
-                    break
-            except requests.RequestException:
-                pass
+    http_client = GeneralHttpClientProvider.client()
+    while True:
+        try:
+            response = await http_client.get(f"{server_url}/health_generate", headers=headers)
+            if response.status_code == 200:
+                break
+        except httpx.HTTPError:
+            pass
 
-            if not is_process_alive():
-                raise Exception("Server process terminated unexpectedly.")
+        if not is_process_alive():
+            raise Exception("Server process terminated unexpectedly.")
 
-            time.sleep(2)
+        await asyncio.sleep(2)
 
-        # use flush_cache to make sure the working queue is empty, so that we can do offload
-        while True:
-            try:
-                response = session.get(f"{server_url}/flush_cache", headers=headers)
-                if response.status_code == 200:
-                    break
+    # use flush_cache to make sure the working queue is empty, so that we can do offload
+    while True:
+        try:
+            response = await http_client.get(f"{server_url}/flush_cache", headers=headers)
+            if response.status_code == 200:
+                break
 
-            except requests.RequestException:
-                pass
+        except httpx.HTTPError:
+            pass
 
-            if not is_process_alive():
-                raise Exception("Server process terminated unexpectedly.")
+        if not is_process_alive():
+            raise Exception("Server process terminated unexpectedly.")
 
-            time.sleep(2)
+        await asyncio.sleep(2)
 
 
 @dataclasses.dataclass(frozen=True)
 class SGLangApiClient:
     server_url: str
 
-    def _make_request(self, endpoint: str, payload: dict | None = None):
+    async def _make_request(self, endpoint: str, payload: dict | None = None):
         """Make a POST request to the specified endpoint with the given payload.
 
         Args:
@@ -59,16 +60,16 @@ class SGLangApiClient:
             The JSON response from the server
         """
         url = f"{self.server_url}/{endpoint}"
-        response = requests.post(url, json=payload or {})
+        response = await GeneralHttpClientProvider.client().post(url, json=payload or {})
         try:
             response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             if hasattr(e, "add_note"):
                 e.add_note(f"{response.text=}")
             raise
         return response.json()
 
-    def health_generate(self, timeout: float = 5.0) -> bool:
+    async def health_generate(self, timeout: float = 5.0) -> bool:
         """Run /health_generate on the underlying SGLang HTTP server.
 
         Args:
@@ -78,16 +79,16 @@ class SGLangApiClient:
             True if the server responds with HTTP 200.
 
         Raises:
-            requests.RequestException: If the request fails for any reason, including timeout.
+            httpx.HTTPError: If the request fails for any reason, including timeout.
         """
-        response = requests.get(
+        response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/health_generate",
             timeout=timeout,
         )
         response.raise_for_status()
         return True
 
-    def update_weights_from_tensor(
+    async def update_weights_from_tensor(
         self,
         serialized_named_tensors: list[str],
         load_format: str | None = None,
@@ -109,14 +110,14 @@ class SGLangApiClient:
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
-        return self._make_request(
+        return await self._make_request(
             "update_weights_from_tensor",
             payload,
         )
 
-    def get_remote_instance_transfer_engine_info(self, rank: int):
+    async def get_remote_instance_transfer_engine_info(self, rank: int):
         # TODO: will be changed to `remote_instance_transfer_engine_info` when the sglang side is ready.
-        response = requests.get(
+        response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/get_remote_instance_transfer_engine_info",
             params={"rank": rank},
             timeout=5.0,
@@ -124,8 +125,8 @@ class SGLangApiClient:
         response.raise_for_status()
         return response.json()["remote_instance_transfer_engine_info"]
 
-    def get_parallelism_info(self, rank: int):
-        response = requests.get(
+    async def get_parallelism_info(self, rank: int):
+        response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/parallelism_config",
             params={"rank": rank},
             timeout=5.0,
@@ -133,15 +134,15 @@ class SGLangApiClient:
         response.raise_for_status()
         return response.json()
 
-    def get_server_info(self):
-        response = requests.get(
+    async def get_server_info(self):
+        response = await GeneralHttpClientProvider.client().get(
             f"{self.server_url}/server_info",
             timeout=5.0,
         )
         response.raise_for_status()
         return response.json()
 
-    def load_lora_adapter_from_tensors(
+    async def load_lora_adapter_from_tensors(
         self,
         lora_name: str,
         config_dict: dict,
@@ -179,12 +180,12 @@ class SGLangApiClient:
         if expected_checksums is not None:
             payload["expected_checksums"] = expected_checksums
 
-        return self._make_request(
+        return await self._make_request(
             "load_lora_adapter_from_tensors",
             payload,
         )
 
-    def load_lora_adapter_from_distributed(
+    async def load_lora_adapter_from_distributed(
         self,
         lora_name: str,
         config_dict: dict,
@@ -211,76 +212,74 @@ class SGLangApiClient:
         if added_tokens_config is not None:
             payload["added_tokens_config"] = added_tokens_config
 
-        return self._make_request(
+        return await self._make_request(
             "load_lora_adapter_from_distributed",
             payload,
         )
 
-    def flush_cache(self):
+    async def flush_cache(self):
         """Flush the cache of the server."""
         last_message = None
         for _ in range(60):
             try:
-                response = requests.get(f"{self.server_url}/flush_cache")
+                response = await GeneralHttpClientProvider.client().get(f"{self.server_url}/flush_cache")
                 if response.status_code == 200:
                     break
                 last_message = response.text
-            except NewConnectionError as e:
-                raise e
             except Exception as e:
                 logger.info(f"Error flushing cache: {e}")
                 last_message = str(e)
-            time.sleep(1)
+            await asyncio.sleep(1)
         else:
             raise TimeoutError(f"Timeout while flushing cache: {last_message}")
 
-    def get_weight_version(self):
+    async def get_weight_version(self):
         # new sglang change api from /get_weight_version to /model_info
         for endpoint in ("/model_info", "/get_weight_version"):
-            response = requests.get(f"{self.server_url}{endpoint}")
+            response = await GeneralHttpClientProvider.client().get(f"{self.server_url}{endpoint}")
             if response.status_code == 200:
                 return response.json()["weight_version"]
         response.raise_for_status()
 
-    def unload_lora_adapter(self, lora_name: str):
+    async def unload_lora_adapter(self, lora_name: str):
         """Unload LoRA adapter."""
-        return self._make_request(
+        return await self._make_request(
             "unload_lora_adapter",
             {"lora_name": lora_name},
         )
 
-    def release_memory_occupation(self, tags: list[str] = None):
+    async def release_memory_occupation(self, tags: list[str] = None):
         """Release memory occupation. Available tags: weights, kv_cache."""
-        self.flush_cache()
-        return self._make_request(
+        await self.flush_cache()
+        return await self._make_request(
             "release_memory_occupation",
             {"tags": tags},
         )
 
-    def resume_memory_occupation(self, tags: list[str] = None):
+    async def resume_memory_occupation(self, tags: list[str] = None):
         """
         Available tags for multi-stage resume: weights, kv_cache
         """
-        return self._make_request(
+        return await self._make_request(
             "resume_memory_occupation",
             {"tags": tags},
         )
 
-    def check_weights(
+    async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
     ):
         payload = {"action": action, "allow_quant_error": allow_quant_error, "selector": selector}
         if skip_list is not None:
             # sglang's CheckWeightsReqInput names this field `skip_tensor_list`.
             payload["skip_tensor_list"] = skip_list
-        return self._make_request("weights_checker", payload)
+        return await self._make_request("weights_checker", payload)
 
-    def pull_weights(self, target_version: int, local_checkpoint_dir: str, source_dir: str):
+    async def pull_weights(self, target_version: int, local_checkpoint_dir: str, source_dir: str):
         """Have the engine sync every host it spans to target_version: each host pulls the
         published weights (a full checkpoint copied as-is, or deltas verified per-tensor and
         applied onto the local checkpoint) into its local checkpoint dir. The engine reloads
         it afterwards via update_weights_from_disk."""
-        return self._make_request(
+        return await self._make_request(
             "pull_weights",
             {
                 "local_checkpoint_dir": local_checkpoint_dir,
@@ -289,7 +288,7 @@ class SGLangApiClient:
             },
         )
 
-    def update_weights_from_disk(
+    async def update_weights_from_disk(
         self, model_path: str, load_format: str | None = None, weight_version: str | None = None
     ):
         """Reload weights from *model_path* without restarting the engine.
@@ -303,10 +302,12 @@ class SGLangApiClient:
             payload["load_format"] = load_format
         if weight_version is not None:
             payload["weight_version"] = weight_version
-        return self._make_request("update_weights_from_disk", payload)
+        return await self._make_request("update_weights_from_disk", payload)
 
-    def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
-        return self._make_request(
+    async def init_weights_update_group(
+        self, master_address, master_port, rank_offset, world_size, group_name, backend
+    ):
+        return await self._make_request(
             "init_weights_update_group",
             {
                 "master_address": master_address,
@@ -318,19 +319,19 @@ class SGLangApiClient:
             },
         )
 
-    def destroy_weights_update_group(self, group_name):
+    async def destroy_weights_update_group(self, group_name):
         try:
-            return self._make_request(
+            return await self._make_request(
                 "destroy_weights_update_group",
                 {
                     "group_name": group_name,
                 },
             )
-        except requests.exceptions.RequestException:
+        except httpx.HTTPError:
             # catch the case there the engine is just created and does not have the group.
             pass
 
-    def update_weights_from_distributed(
+    async def update_weights_from_distributed(
         self,
         names,
         dtypes,
@@ -350,39 +351,39 @@ class SGLangApiClient:
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
-        return self._make_request(
+        return await self._make_request(
             "update_weights_from_distributed",
             payload,
         )
 
-    def pause_generation(self, mode: str = "retract"):
-        response = requests.post(
+    async def pause_generation(self, mode: str = "retract"):
+        response = await GeneralHttpClientProvider.client().post(
             f"{self.server_url}/pause_generation",
             json={"mode": mode},
         )
         response.raise_for_status()
         return response
 
-    def continue_generation(self):
-        response = requests.post(f"{self.server_url}/continue_generation", json={})
+    async def continue_generation(self):
+        response = await GeneralHttpClientProvider.client().post(f"{self.server_url}/continue_generation", json={})
         response.raise_for_status()
         return response
 
-    def begin_weight_update(self, selector: str = "all"):
+    async def begin_weight_update(self, selector: str = "all"):
         """Open a weight-update session on the engine (restores packed weights for loading)."""
-        return self._make_request("begin_weight_update", {"selector": selector})
+        return await self._make_request("begin_weight_update", {"selector": selector})
 
-    def end_weight_update(self):
+    async def end_weight_update(self):
         """Close the weight-update session (post-load + quant post-process on the full model)."""
-        return self._make_request("end_weight_update", {})
+        return await self._make_request("end_weight_update", {})
 
-    def update_weight_version(self, weight_version: str):
-        return self._make_request(
+    async def update_weight_version(self, weight_version: str):
+        return await self._make_request(
             "update_weight_version",
             {"new_version": weight_version, "abort_all_requests": False},
         )
 
-    def start_profile(
+    async def start_profile(
         self,
         # The output directory
         output_dir: str | None = None,
@@ -396,7 +397,7 @@ class SGLangApiClient:
         with_stack: bool | None = None,
         record_shapes: bool | None = None,
     ):
-        response = requests.post(
+        response = await GeneralHttpClientProvider.client().post(
             f"{self.server_url}/start_profile",
             json={
                 "output_dir": output_dir,
@@ -411,7 +412,7 @@ class SGLangApiClient:
         response.raise_for_status()
         return response
 
-    def stop_profile(self):
-        response = requests.post(f"{self.server_url}/stop_profile", json={})
+    async def stop_profile(self):
+        response = await GeneralHttpClientProvider.client().post(f"{self.server_url}/stop_profile", json={})
         response.raise_for_status()
         return response

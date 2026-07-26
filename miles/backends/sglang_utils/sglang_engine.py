@@ -4,7 +4,7 @@ import logging
 import multiprocessing
 import os
 
-import requests
+import httpx
 import sglang_router
 from packaging.version import parse
 from sglang.srt.server_args import ServerArgs
@@ -18,6 +18,7 @@ from miles.backends.megatron_utils.lora_utils import (
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.ray_actor import RayActor
+from miles.utils import async_utils
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
@@ -76,10 +77,12 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     if server_args.node_rank != 0:
         return
 
-    wait_server_healthy(
-        server_url=server_args.url(),
-        api_key=server_args.api_key,
-        is_process_alive=lambda: p.is_alive(),
+    async_utils.run(
+        wait_server_healthy(
+            server_url=server_args.url(),
+            api_key=server_args.api_key,
+            is_process_alive=lambda: p.is_alive(),
+        )
     )
 
     return p
@@ -193,7 +196,7 @@ class SGLangEngine(RayActor):
         logger.info(f"Use external SGLang engine (rank={self.rank}, expect_server_args={expect_server_args})")
 
         def _get_actual_server_args():
-            response = requests.get(f"{self.server_url}/get_server_info")
+            response = httpx.get(f"{self.server_url}/get_server_info", timeout=None)
             response.raise_for_status()
             return response.json()
 
@@ -205,11 +208,7 @@ class SGLangEngine(RayActor):
                     actual_value == expect_value
                 ), f"{name=} {expect_value=} {actual_value=} {expect_server_args=} {actual_server_args=}"
 
-        wait_server_healthy(
-            server_url=self.server_url,
-            api_key=None,
-            is_process_alive=lambda: True,
-        )
+        async_utils.run(wait_server_healthy(server_url=self.server_url, api_key=None, is_process_alive=lambda: True))
         actual_server_args = _get_actual_server_args()
         _sanity_check_server_args(actual_server_args, expect_server_args)
 
@@ -222,13 +221,15 @@ class SGLangEngine(RayActor):
         self.process = launch_server_process(server_args)
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
-            self.router_api_client.add_worker(
-                worker_url=self.server_url,
-                worker_type=self.worker_type,
-                use_legacy_api=_use_legacy_router_api(self.args),
-                bootstrap_port=(
-                    server_args_dict["disaggregation_bootstrap_port"] if self.worker_type == "prefill" else None
-                ),
+            async_utils.run(
+                self.router_api_client.add_worker(
+                    worker_url=self.server_url,
+                    worker_type=self.worker_type,
+                    use_legacy_api=_use_legacy_router_api(self.args),
+                    bootstrap_port=(
+                        server_args_dict["disaggregation_bootstrap_port"] if self.worker_type == "prefill" else None
+                    ),
+                )
             )
 
     def shutdown(self):
@@ -237,9 +238,11 @@ class SGLangEngine(RayActor):
 
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
         if self.node_rank == 0:
-            self.router_api_client.remove_worker(
-                worker_url=self.server_url,
-                use_legacy_api=_use_legacy_router_api(self.args),
+            async_utils.run(
+                self.router_api_client.remove_worker(
+                    worker_url=self.server_url,
+                    use_legacy_api=_use_legacy_router_api(self.args),
+                )
             )
         kill_process_tree(self.process.pid)
 
@@ -255,7 +258,7 @@ class SGLangEngine(RayActor):
         self.shutdown()
 
     def health_generate(self, timeout: float = 5.0) -> bool:
-        return self.api_client.health_generate(timeout=timeout)
+        return async_utils.run(self.api_client.health_generate(timeout=timeout))
 
     def update_weights_from_tensor(
         self,
@@ -264,21 +267,23 @@ class SGLangEngine(RayActor):
         flush_cache: bool = False,
         weight_version: str | None = None,
     ):
-        return self.api_client.update_weights_from_tensor(
-            serialized_named_tensors=serialized_named_tensors,
-            load_format=load_format,
-            flush_cache=flush_cache,
-            weight_version=weight_version,
+        return async_utils.run(
+            self.api_client.update_weights_from_tensor(
+                serialized_named_tensors=serialized_named_tensors,
+                load_format=load_format,
+                flush_cache=flush_cache,
+                weight_version=weight_version,
+            )
         )
 
     def get_remote_instance_transfer_engine_info(self, rank: int):
-        return self.api_client.get_remote_instance_transfer_engine_info(rank=rank)
+        return async_utils.run(self.api_client.get_remote_instance_transfer_engine_info(rank=rank))
 
     def get_parallelism_info(self, rank: int):
-        return self.api_client.get_parallelism_info(rank=rank)
+        return async_utils.run(self.api_client.get_parallelism_info(rank=rank))
 
     def get_server_info(self):
-        return self.api_client.get_server_info()
+        return async_utils.run(self.api_client.get_server_info())
 
     def load_lora_adapter_from_tensors(
         self,
@@ -291,15 +296,17 @@ class SGLangEngine(RayActor):
         upsert: bool = False,
         expected_checksums: dict | None = None,
     ):
-        return self.api_client.load_lora_adapter_from_tensors(
-            lora_name=lora_name,
-            config_dict=config_dict,
-            serialized_named_tensors=serialized_named_tensors,
-            load_format=load_format,
-            pinned=pinned,
-            added_tokens_config=added_tokens_config,
-            upsert=upsert,
-            expected_checksums=expected_checksums,
+        return async_utils.run(
+            self.api_client.load_lora_adapter_from_tensors(
+                lora_name=lora_name,
+                config_dict=config_dict,
+                serialized_named_tensors=serialized_named_tensors,
+                load_format=load_format,
+                pinned=pinned,
+                added_tokens_config=added_tokens_config,
+                upsert=upsert,
+                expected_checksums=expected_checksums,
+            )
         )
 
     def load_lora_adapter_from_distributed(
@@ -314,93 +321,105 @@ class SGLangEngine(RayActor):
         added_tokens_config: dict | None = None,
         upsert: bool = False,
     ):
-        return self.api_client.load_lora_adapter_from_distributed(
-            lora_name=lora_name,
-            config_dict=config_dict,
-            names=names,
-            dtypes=dtypes,
-            shapes=shapes,
-            group_name=group_name,
-            pinned=pinned,
-            added_tokens_config=added_tokens_config,
-            upsert=upsert,
+        return async_utils.run(
+            self.api_client.load_lora_adapter_from_distributed(
+                lora_name=lora_name,
+                config_dict=config_dict,
+                names=names,
+                dtypes=dtypes,
+                shapes=shapes,
+                group_name=group_name,
+                pinned=pinned,
+                added_tokens_config=added_tokens_config,
+                upsert=upsert,
+            )
         )
 
     def flush_cache(self):
-        return self.api_client.flush_cache()
+        return async_utils.run(self.api_client.flush_cache())
 
     def get_weight_version(self):
-        return self.api_client.get_weight_version()
+        return async_utils.run(self.api_client.get_weight_version())
 
     def unload_lora_adapter(self, lora_name: str):
-        return self.api_client.unload_lora_adapter(lora_name=lora_name)
+        return async_utils.run(self.api_client.unload_lora_adapter(lora_name=lora_name))
 
     def release_memory_occupation(self, tags: list[str] = None):
-        return self.api_client.release_memory_occupation(tags=tags)
+        return async_utils.run(self.api_client.release_memory_occupation(tags=tags))
 
     def resume_memory_occupation(self, tags: list[str] = None):
-        return self.api_client.resume_memory_occupation(tags=tags)
+        return async_utils.run(self.api_client.resume_memory_occupation(tags=tags))
 
     def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
     ):
-        return self.api_client.check_weights(
-            action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+        return async_utils.run(
+            self.api_client.check_weights(
+                action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+            )
         )
 
     def pull_weights(self, target_version: int):
-        return self.api_client.pull_weights(
-            target_version=target_version,
-            local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
-            source_dir=self.args.update_weight_disk_dir,
+        return async_utils.run(
+            self.api_client.pull_weights(
+                target_version=target_version,
+                local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
+                source_dir=self.args.update_weight_disk_dir,
+            )
         )
 
     def update_weights_from_disk(
         self, model_path: str, load_format: str | None = None, weight_version: str | None = None
     ):
-        return self.api_client.update_weights_from_disk(
-            model_path=model_path, load_format=load_format, weight_version=weight_version
+        return async_utils.run(
+            self.api_client.update_weights_from_disk(
+                model_path=model_path, load_format=load_format, weight_version=weight_version
+            )
         )
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
-        return self.api_client.init_weights_update_group(
-            master_address=master_address,
-            master_port=master_port,
-            rank_offset=rank_offset,
-            world_size=world_size,
-            group_name=group_name,
-            backend=backend,
+        return async_utils.run(
+            self.api_client.init_weights_update_group(
+                master_address=master_address,
+                master_port=master_port,
+                rank_offset=rank_offset,
+                world_size=world_size,
+                group_name=group_name,
+                backend=backend,
+            )
         )
 
     def destroy_weights_update_group(self, group_name):
-        return self.api_client.destroy_weights_update_group(group_name=group_name)
+        return async_utils.run(self.api_client.destroy_weights_update_group(group_name=group_name))
 
     def update_weights_from_distributed(
         self, names, dtypes, shapes, group_name, flush_cache=False, weight_version: str | None = None
     ):
-        return self.api_client.update_weights_from_distributed(
-            names=names,
-            dtypes=dtypes,
-            shapes=shapes,
-            group_name=group_name,
-            flush_cache=flush_cache,
-            weight_version=weight_version,
+        return async_utils.run(
+            self.api_client.update_weights_from_distributed(
+                names=names,
+                dtypes=dtypes,
+                shapes=shapes,
+                group_name=group_name,
+                flush_cache=flush_cache,
+                weight_version=weight_version,
+            )
         )
 
     def pause_generation(self, mode: str = "retract"):
-        return self.api_client.pause_generation(mode=mode)
+        return async_utils.run(self.api_client.pause_generation(mode=mode))
 
     def continue_generation(self):
-        return self.api_client.continue_generation()
+        return async_utils.run(self.api_client.continue_generation())
 
     def begin_weight_update(self):
-        return self.api_client.begin_weight_update()
+        return async_utils.run(self.api_client.begin_weight_update())
 
     def end_weight_update(self):
-        return self.api_client.end_weight_update()
+        return async_utils.run(self.api_client.end_weight_update())
 
     def update_weight_version(self, weight_version: str):
-        return self.api_client.update_weight_version(weight_version=weight_version)
+        return async_utils.run(self.api_client.update_weight_version(weight_version=weight_version))
 
     def start_profile(
         self,
@@ -412,18 +431,20 @@ class SGLangEngine(RayActor):
         with_stack: bool | None = None,
         record_shapes: bool | None = None,
     ):
-        return self.api_client.start_profile(
-            output_dir=output_dir,
-            start_step=start_step,
-            num_steps=num_steps,
-            activities=activities,
-            profile_by_stage=profile_by_stage,
-            with_stack=with_stack,
-            record_shapes=record_shapes,
+        return async_utils.run(
+            self.api_client.start_profile(
+                output_dir=output_dir,
+                start_step=start_step,
+                num_steps=num_steps,
+                activities=activities,
+                profile_by_stage=profile_by_stage,
+                with_stack=with_stack,
+                record_shapes=record_shapes,
+            )
         )
 
     def stop_profile(self):
-        return self.api_client.stop_profile()
+        return async_utils.run(self.api_client.stop_profile())
 
 
 def _compute_server_args(
