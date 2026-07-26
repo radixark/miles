@@ -47,7 +47,7 @@ def _forwarding_method_names() -> list[str]:
     from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 
     client_methods = {name for name in vars(SGLangApiClient) if not name.startswith("_")}
-    return sorted(name for name in vars(SGLangEngine) if name in client_methods and name != "pull_weights")
+    return sorted(name for name in vars(SGLangEngine) if name in client_methods)
 
 
 @pytest.mark.parametrize("method_name", _forwarding_method_names())
@@ -72,17 +72,3 @@ def test_every_shell_stays_synchronous(method_name):
     from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 
     assert not inspect.iscoroutinefunction(getattr(SGLangEngine, method_name))
-
-
-def test_pull_weights_supplies_the_checkpoint_dirs_from_args():
-    """The client is args-free, so the engine shell resolves both dirs before delegating."""
-    engine = _make_engine()
-    engine.args = type(
-        "Args", (), {"update_weight_local_checkpoint_dir": "/local", "update_weight_disk_dir": "/shared"}
-    )()
-
-    engine.pull_weights(target_version=5)
-
-    assert engine.api_client.calls == [
-        ("pull_weights", {"target_version": 5, "local_checkpoint_dir": "/local", "source_dir": "/shared"}),
-    ]
