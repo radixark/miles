@@ -170,7 +170,7 @@ class ServerGroup:
         return init_handles, new_engine_indices
 
     # There are two callers, only one of them will exist in a running system
-    # 1. For new callers (RolloutManager.stop_cell, main thread, async),
+    # 1. For new callers (InferenceController.stop_cell, main thread, async),
     #    deliberately make this function non-async here to avoid introducing two states
     #    like "stopping (but not stopped)" vs "stopped", since single-thread async code will not yield
     #    without an await point

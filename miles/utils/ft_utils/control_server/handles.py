@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import abc
-import asyncio
 
 from miles.ray.train.group import RayTrainGroup
 from miles.utils.ft_utils.control_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
@@ -82,8 +81,8 @@ class _ActorCellHandle(_CellHandle):
 
 # TODO the code will NOT work before implementing rollout ft
 class _RolloutCellHandle(_CellHandle):
-    def __init__(self, *, rollout_manager: object, cell_index: int) -> None:
-        self._rollout_manager = rollout_manager
+    def __init__(self, *, inference_controller: object, cell_index: int) -> None:
+        self._inference_controller = inference_controller
         self._cell_index = cell_index
 
     @property
@@ -95,11 +94,9 @@ class _RolloutCellHandle(_CellHandle):
         return self._cell_index
 
     async def get_cell(self) -> Cell:
-        phase, conditions_raw, is_suspended = await asyncio.gather(
-            self._rollout_manager.get_cell_phase.remote(self._cell_index),
-            self._rollout_manager.get_cell_conditions.remote(self._cell_index),
-            self._rollout_manager.get_cell_is_suspended.remote(self._cell_index),
-        )
+        phase = self._inference_controller.get_cell_phase(self._cell_index)
+        conditions_raw = self._inference_controller.get_cell_conditions(self._cell_index)
+        is_suspended = self._inference_controller.get_cell_is_suspended(self._cell_index)
         return Cell(
             metadata=CellMetadata(
                 name=self.cell_id,
@@ -116,7 +113,7 @@ class _RolloutCellHandle(_CellHandle):
         )
 
     async def suspend(self) -> None:
-        await self._rollout_manager.stop_cell.remote(self._cell_index)
+        await self._inference_controller.stop_cell(self._cell_index)
 
     async def resume(self) -> None:
-        await self._rollout_manager.start_cell.remote(self._cell_index)
+        await self._inference_controller.start_cell(self._cell_index)
