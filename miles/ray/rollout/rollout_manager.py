@@ -141,11 +141,11 @@ class RolloutManager:
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
-    def prepare_rollout(self, rollout_id):
+    async def prepare_rollout(self, rollout_id):
         self.rollout_id = rollout_id
         self._health_monitoring_resume()
         if self.args.ci_test and self._rollout_ft_enabled and rollout_id >= 2:
-            self._try_ci_fault_injection()
+            await self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
 
     def prepare_eval(self):
@@ -431,7 +431,7 @@ class RolloutManager:
         return next(iter(self.servers.values()))
 
     # TODO will be replaced by full ft, thus temporarily leave it without modifications
-    def _try_ci_fault_injection(self):
+    async def _try_ci_fault_injection(self):
         """Try to inject fault during generate (when health monitor is running)."""
         if not self._ci_fault_injection_pending:
             return
@@ -452,7 +452,7 @@ class RolloutManager:
                 # health_check_interval + health_check_timeout + buffer
                 wait_time = self.args.rollout_health_check_interval + self.args.rollout_health_check_timeout + 5
                 logger.info(f"CI Fault Injection: Waiting {wait_time}s for health monitor to detect crash")
-                time.sleep(wait_time)
+                await asyncio.sleep(wait_time)
             except Exception as e:
                 logger.warning(f"CI Fault Injection failed: {e}")
 

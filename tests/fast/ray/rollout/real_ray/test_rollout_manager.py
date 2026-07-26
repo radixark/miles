@@ -596,7 +596,7 @@ class TestPrepareRollout:
         await manager.generate(rollout_id=9)
         assert manager.rollout_id == -1
 
-        manager.prepare_rollout(9)
+        await manager.prepare_rollout(9)
         assert manager.rollout_id == 9
 
 
@@ -634,7 +634,7 @@ class TestGenerate:
 
         manager.generate_rollout = fake_rollout_fn
 
-        manager.prepare_rollout(42)
+        await manager.prepare_rollout(42)
         result = await manager.generate(rollout_id=42)
 
         assert manager.rollout_id == 42
