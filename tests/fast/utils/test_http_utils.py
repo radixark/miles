@@ -21,15 +21,17 @@ delays (5s / 10s / 20s) without actually waiting.  The trick:
 This lets us simulate 20 seconds of polling in <1ms of real time.
 """
 
+import asyncio
 import multiprocessing
 import socket
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 import pytest
 
-from miles.utils.http_utils import wait_for_server_ready
+from miles.utils.http_utils import GeneralHttpClientProvider, wait_for_server_ready
 
 
 def _find_free_port() -> int:
@@ -194,3 +196,112 @@ class TestWaitForServerReadySimulatedDelays:
 
         # The fake clock should have advanced past the timeout
         assert fake_time[0] >= timeout
+
+
+class TestGeneralHttpClientProvider:
+    """The provider hands out one httpx client per event loop."""
+
+    async def test_the_same_loop_gets_the_same_client(self):
+        """Two calls on one loop must share one connection pool."""
+        assert GeneralHttpClientProvider.client() is GeneralHttpClientProvider.client()
+
+    async def test_a_different_loop_gets_a_different_client(self):
+        """A client's connections belong to the loop that opened them; reusing it elsewhere fails."""
+        mine = GeneralHttpClientProvider.client()
+        others: list[object] = []
+
+        async def _on_the_other_loop():
+            return GeneralHttpClientProvider.client()
+
+        thread = threading.Thread(target=lambda: others.append(asyncio.run(_on_the_other_loop())))
+        thread.start()
+        thread.join(timeout=10)
+
+        assert others and others[0] is not mine
+
+    def test_calling_it_off_loop_fails_loudly(self):
+        """Building the client outside a loop would bind it to whichever loop ran next."""
+        with pytest.raises(RuntimeError):
+            GeneralHttpClientProvider.client()
+
+    async def test_the_client_has_no_read_timeout_but_a_short_connect_timeout(self):
+        """A weight-update request blocks until the collective forms; an unreachable host must not."""
+        timeout = GeneralHttpClientProvider.client().timeout
+
+        assert timeout.read is None
+        assert timeout.write is None
+        assert timeout.pool is None
+        assert timeout.connect == 10.0
+
+    async def test_the_pool_is_configured_without_a_connection_cap(self):
+        """A capped pool queues the last requests behind the collective waiting for them."""
+        assert GeneralHttpClientProvider._LIMITS.max_connections is None
+        assert GeneralHttpClientProvider._LIMITS.max_keepalive_connections is None
+
+    async def test_more_requests_than_httpxs_default_cap_reach_the_server_at_once(self):
+        """101 engines must all arrive before the caller joins the collective, and httpx caps
+        connections at 100 by default."""
+        num_requests = 101
+        arrived = _ArrivalGate()
+        server = _BlockingHttpServer(arrived)
+
+        try:
+            client = GeneralHttpClientProvider.client()
+            requests = [asyncio.create_task(client.get(server.url)) for _ in range(num_requests)]
+
+            deadline = time.monotonic() + 60
+            while arrived.count < num_requests:
+                assert time.monotonic() < deadline, (
+                    f"only {arrived.count}/{num_requests} requests reached the server; the rest are "
+                    "queued behind the connection cap"
+                )
+                await asyncio.sleep(0.01)
+
+            arrived.release()
+            assert [response.status_code for response in await asyncio.gather(*requests)] == [200] * num_requests
+        finally:
+            arrived.release()
+            server.close()
+
+
+class _ArrivalGate:
+    def __init__(self):
+        self.count = 0
+        self._lock = threading.Lock()
+        self._released = threading.Event()
+
+    def wait_for_release(self) -> None:
+        with self._lock:
+            self.count += 1
+        self._released.wait(timeout=60)
+
+    def release(self) -> None:
+        self._released.set()
+
+
+class _BlockingHttpServer:
+    def __init__(self, gate: _ArrivalGate):
+        handler = self._make_handler(gate)
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}/health_generate"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+    @staticmethod
+    def _make_handler(gate: _ArrivalGate):
+        class _Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                gate.wait_for_release()
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        return _Handler
