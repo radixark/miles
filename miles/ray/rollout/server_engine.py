@@ -27,18 +27,18 @@ class ServerEngine:
     def mark_allocated_uninitialized(self, actor_handle: ray.actor.ActorHandle):
         self._change_state("mark_allocated", _StateStopped, _StateAllocatedUninitialized(actor_handle=actor_handle))
 
-    def set_server_url(self, server_url: str) -> None:
+    def set_addressing(self, addr_info: AddrInfo) -> None:
         self._change_state(
-            "set_server_url",
+            "set_addressing",
             _StateAllocatedUninitialized,
-            _StateAllocatedUninitialized(actor_handle=self.actor_handle, server_url=server_url),
+            _StateAllocatedUninitialized(actor_handle=self.actor_handle, addr_info=addr_info),
         )
 
     def mark_alive(self):
         self._change_state(
             "mark_alive",
             _StateAllocatedUninitialized,
-            _StateAllocatedAlive(actor_handle=self.actor_handle, server_url=self.server_url),
+            _StateAllocatedAlive(actor_handle=self.actor_handle, addr_info=self.addr_info),
         )
 
     def mark_stopped(self):
@@ -50,14 +50,14 @@ class ServerEngine:
         return self._state.actor_handle
 
     @property
-    def server_url(self) -> str:
+    def addr_info(self) -> AddrInfo:
         assert isinstance(self._state, _StateAllocatedBase)
-        assert self._state.server_url is not None, f"{self._state=}"
-        return self._state.server_url
+        assert self._state.addr_info is not None, f"{self._state=}"
+        return self._state.addr_info
 
     @property
     def api_client(self) -> SGLangApiClient:
-        return SGLangApiClient(server_url=self.server_url)
+        return SGLangApiClient(server_url=self.addr_info.server_url)
 
     @property
     def is_allocated(self) -> bool:
@@ -80,6 +80,13 @@ class ServerEngine:
         logger.info(f"{debug_name} end new={self._state}")
 
 
+class AddrInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    server_url: str
+    bootstrap_port: int | None = None
+
+
 # ------------------------- states -----------------------------
 
 
@@ -93,7 +100,7 @@ class _StateStopped(_StateBase):
 
 class _StateAllocatedBase(_StateBase):
     actor_handle: ray.actor.ActorHandle
-    server_url: str | None = None
+    addr_info: AddrInfo | None = None
 
 
 class _StateAllocatedUninitialized(_StateAllocatedBase):
