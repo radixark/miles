@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable, Coroutine
 from typing import Any
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.utils.ft_utils.control_server.models import TriState
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.test_utils.clock import Clock, RealClock
@@ -217,21 +218,21 @@ class NoopHealthChecker(BaseHealthChecker):
 def create_rollout_cell_health_checker(
     *,
     cell_id: str,
-    get_engines: Callable[[], list[Any]],
+    get_api_clients: Callable[[], list[SGLangApiClient]],
     config: SimpleHealthCheckerConfig,
     on_result: Callable[[bool], None] | None = None,
 ) -> SimpleHealthChecker:
 
     async def _check() -> None:
-        engines = get_engines()
-        if not engines:
+        api_clients = get_api_clients()
+        if not api_clients:
             raise RuntimeError("No engines")
 
-        lead_engine = engines[0]
-        if lead_engine is None:
+        lead_api_client = api_clients[0]
+        if lead_api_client is None:
             raise RuntimeError("Lead engine is None")
 
-        await lead_engine.health_generate.remote()
+        await lead_api_client.health_generate()
 
     # Preserve the pre-debounce rollout semantics for now: a single failed check
     # reports unhealthy immediately. The trainer cell checker uses the default
