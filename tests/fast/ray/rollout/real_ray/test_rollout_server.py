@@ -89,3 +89,90 @@ class TestCheckWeightsAggregation:
         finally:
             _kill_group(a)
             _kill_group(b)
+
+
+# ----------------------------- offload / onload -----------------------------
+
+
+@pytest.mark.asyncio
+class TestOffloadOnloadAggregation:
+    async def test_offload_and_onload_reach_every_engine_of_every_group(
+        self,
+        patched_sglang_engine,
+        placement_group_factory,
+    ):
+        """Both fan out across groups and return one flat result per engine."""
+        pg_a = placement_group_factory(2)
+        pg_b = placement_group_factory(3)
+        a = _build_group(pg_tuple=pg_a, num_engines=2, needs_offload=True)
+        b = _build_group(pg_tuple=pg_b, num_engines=3, needs_offload=True)
+        _start_group(a)
+        _start_group(b)
+        a.mark_alive([0, 1])
+        b.mark_alive([0, 1, 2])
+
+        srv = RolloutServer(server_groups=[a, b])
+        try:
+            offload_results = await srv.offload(tags=["weights"])
+            onload_results = await srv.onload(["weights"])
+
+            assert len(offload_results) == 5
+            assert len(onload_results) == 5
+
+            all_engines = [e for g in (a, b) for e in g.engines]
+            all_calls = ray.get([e.actor_handle.get_calls.remote() for e in all_engines])
+            for calls in all_calls:
+                assert [name for name, _args, _kwargs in calls if name.endswith("_memory_occupation")] == [
+                    "release_memory_occupation",
+                    "resume_memory_occupation",
+                ]
+                assert [kwargs for name, _args, kwargs in calls if name.endswith("_memory_occupation")] == [
+                    {"tags": ["weights"]},
+                    {"tags": ["weights"]},
+                ]
+        finally:
+            _kill_group(a)
+            _kill_group(b)
+
+    async def test_a_group_that_does_not_need_offload_is_skipped(
+        self,
+        patched_sglang_engine,
+        placement_group_factory,
+    ):
+        """Only the groups colocated with megatron give their memory back."""
+        pg_a = placement_group_factory(2)
+        pg_b = placement_group_factory(2)
+        offloading = _build_group(pg_tuple=pg_a, num_engines=2, needs_offload=True)
+        resident = _build_group(pg_tuple=pg_b, num_engines=2, needs_offload=False)
+        _start_group(offloading)
+        _start_group(resident)
+        offloading.mark_alive([0, 1])
+        resident.mark_alive([0, 1])
+
+        srv = RolloutServer(server_groups=[offloading, resident])
+        try:
+            assert len(await srv.offload(tags=None)) == 2
+
+            resident_calls = ray.get([e.actor_handle.get_calls.remote() for e in resident.engines])
+            assert all(not [c for c in calls if c[0] == "release_memory_occupation"] for calls in resident_calls)
+        finally:
+            _kill_group(offloading)
+            _kill_group(resident)
+
+    async def test_a_dead_engine_is_not_addressed(
+        self,
+        patched_sglang_engine,
+        placement_group_factory,
+    ):
+        """Offload must not block forever on an engine the group already gave up on."""
+        pg = placement_group_factory(2)
+        group = _build_group(pg_tuple=pg, num_engines=2, needs_offload=True)
+        _start_group(group)
+        group.mark_alive([0, 1])
+        group.all_engines[1].mark_stopped()
+
+        srv = RolloutServer(server_groups=[group])
+        try:
+            assert len(await srv.offload(tags=None)) == 1
+        finally:
+            _kill_group(group)
