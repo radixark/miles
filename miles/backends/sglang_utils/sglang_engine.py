@@ -277,9 +277,6 @@ class SGLangEngine(RayActor):
         Returns:
             The JSON response from the server
         """
-        if self.node_rank != 0:
-            return
-
         url = f"http://{self.server_host}:{self.server_port}/{endpoint}"
         response = requests.post(url, json=payload or {})
         try:
@@ -302,9 +299,6 @@ class SGLangEngine(RayActor):
         Raises:
             requests.RequestException: If the request fails for any reason, including timeout.
         """
-        if self.node_rank != 0:
-            return True
-
         response = requests.get(
             f"http://{self.server_host}:{self.server_port}/health_generate",
             timeout=timeout,
@@ -443,8 +437,6 @@ class SGLangEngine(RayActor):
 
     def flush_cache(self):
         """Flush the cache of the server."""
-        if self.node_rank != 0:
-            return
         last_message = None
         for _ in range(60):
             try:
@@ -496,8 +488,6 @@ class SGLangEngine(RayActor):
         kill_process_tree(self.process.pid)
 
     def get_weight_version(self):
-        if self.node_rank != 0:
-            return
         base = f"http://{self.server_host}:{self.server_port}"
         # new sglang change api from /get_weight_version to /model_info
         for endpoint in ("/model_info", "/get_weight_version"):

@@ -46,6 +46,11 @@ class ServerGroup:
     router_port: int | None = None
     update_weights: bool = True
 
+    def __post_init__(self):
+        assert (
+            not self.all_engines or self.rank_offset % self.nodes_per_engine == 0
+        ), f"{self.rank_offset=} must be a multiple of {self.nodes_per_engine=}"
+
     @property
     def nodes_per_engine(self):
         return max(1, self.num_gpus_per_engine // self.args.num_gpus_per_node)
@@ -205,10 +210,12 @@ class ServerGroup:
             start_indices
         ), "curr_num_new_engines does not match start_indices length"
         if self.needs_offload and start_indices:
-            new_engines = [self.all_engines[i] for i in start_indices]
-            release_handles.extend(engine.actor_handle.release_memory_occupation.remote() for engine in new_engines)
+            new_primary_engines = [self.all_engines[i] for i in start_indices if i % self.nodes_per_engine == 0]
+            release_handles.extend(
+                engine.actor_handle.release_memory_occupation.remote() for engine in new_primary_engines
+            )
             if self.update_weights or self.model_path:
-                all_resume_engines.extend(new_engines)
+                all_resume_engines.extend(new_primary_engines)
 
         if release_handles:
             await asyncio.gather(*release_handles)
