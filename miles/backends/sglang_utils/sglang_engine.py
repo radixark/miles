@@ -5,14 +5,11 @@ import multiprocessing
 import os
 
 import httpx
-import sglang_router
-from packaging.version import parse
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 
 from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
 from miles.backends.sglang_utils.sglang_api_client import wait_server_healthy
-from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.ray_actor import RayActor
 from miles.utils import async_utils
 from miles.utils.env_report import collect_and_print_node_env_report
@@ -99,10 +96,6 @@ def build_server_url(host: str, port: int) -> str:
     return f"http://{format_v6_uri(host)}:{port}"
 
 
-def _use_legacy_router_api(args) -> bool:
-    return parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router
-
-
 class SGLangEngine(RayActor):
     def __init__(
         self,
@@ -146,8 +139,6 @@ class SGLangEngine(RayActor):
         nccl_port,
         host=None,
         disaggregation_bootstrap_port=None,
-        router_ip=None,
-        router_port=None,
         engine_info_bootstrap_port=None,
     ):
         if env_report := self.args.env_report:
@@ -156,9 +147,6 @@ class SGLangEngine(RayActor):
                 rank=self.rank,
                 partial_env_report=env_report,
             )
-
-        self.router_ip = router_ip if router_ip is not None else self.args.sglang_router_ip
-        self.router_port = router_port if router_port is not None else self.args.sglang_router_port
 
         host = host or get_host_info()[1]
 
@@ -186,7 +174,6 @@ class SGLangEngine(RayActor):
         self.server_port = server_args_dict["port"]
 
         self.server_url = build_server_url(self.server_host, self.server_port)
-        self.router_api_client = SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")
 
         if self.args.rollout_external:
             self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)
@@ -221,30 +208,11 @@ class SGLangEngine(RayActor):
         server_args = ServerArgs(**{**server_args_dict, "host": server_args_dict["host"].strip("[]")})
         self.process = launch_server_process(server_args)
 
-        if self.node_rank == 0 and self.router_ip and self.router_port:
-            async_utils.run(
-                self.router_api_client.add_worker(
-                    worker_url=self.server_url,
-                    worker_type=self.worker_type,
-                    use_legacy_api=_use_legacy_router_api(self.args),
-                    bootstrap_port=(
-                        server_args_dict["disaggregation_bootstrap_port"] if self.worker_type == "prefill" else None
-                    ),
-                )
-            )
-
     def shutdown(self):
         if self.args.rollout_external:
             return
 
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
-        if self.node_rank == 0:
-            async_utils.run(
-                self.router_api_client.remove_worker(
-                    worker_url=self.server_url,
-                    use_legacy_api=_use_legacy_router_api(self.args),
-                )
-            )
         kill_process_tree(self.process.pid)
 
     def simulate_crash(self):

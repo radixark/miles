@@ -113,6 +113,42 @@ class TestKillAndRecover:
         finally:
             _kill_all(group)
 
+    async def test_recover_publishes_the_new_url_to_the_router(
+        self,
+        patched_sglang_engine,
+        placement_group_factory,
+        mock_engine_http_servers,
+    ):
+        """A recovered engine gets a fresh port, so the router must be told the new url."""
+        from unittest.mock import patch
+
+        from miles.ray.rollout.server_group import ServerGroup
+
+        events: list[dict] = []
+
+        class _Recorder:
+            async def add_worker(self, **kwargs):
+                events.append(kwargs)
+
+            async def remove_worker(self, **kwargs):
+                events.append(kwargs)
+
+        pg = placement_group_factory(1)
+        group = _build_group(pg_tuple=pg, num_engines=1)
+        group.router_ip, group.router_port = "10.0.0.9", 9000
+        _start(group)
+        ray.kill(group.all_engines[0].actor_handle)
+        group.all_engines[0].mark_stopped()
+
+        try:
+            with patch.object(ServerGroup, "_router_api_client", property(lambda self: _Recorder())):
+                await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
+
+            assert [event["worker_url"] for event in events] == [group.all_engines[0].addr_info.server_url]
+            assert group.all_engines[0].is_alive
+        finally:
+            _kill_all(group)
+
     async def test_recover_with_offload_calls_release_then_resume(
         self,
         patched_sglang_engine,
