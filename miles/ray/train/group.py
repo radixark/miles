@@ -265,6 +265,7 @@ class RayTrainGroup:
             lambda _: self._execute_first_alive("update_weights", info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
+        await self._rollout_manager.clear_updatable_has_new_engines.remote()
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
 

@@ -94,10 +94,11 @@ async def test_train_only_ft_does_not_recover_rollout_engines():
         recover_updatable_engines=_RemoteCall("recover", calls),
         get_updatable_engines_and_lock=_RemoteCall("get_engines", calls, result="info"),
         health_monitoring_pause=_RemoteCall("pause", calls),
+        clear_updatable_has_new_engines=_RemoteCall("clear", calls),
     )
     group._broadcast = AsyncMock()
 
     await group.update_weights(rollout_id=1)
 
-    assert [name for name, _, _ in calls] == ["get_engines", "pause"]
+    assert [name for name, _, _ in calls] == ["get_engines", "pause", "clear"]
     group._broadcast.assert_awaited_once_with("update_weights", info="info")
