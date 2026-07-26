@@ -8,7 +8,7 @@ from urllib3.exceptions import NewConnectionError
 logger = logging.getLogger(__name__)
 
 
-def _wait_server_healthy(base_url, api_key, is_process_alive):
+def wait_server_healthy(server_url, api_key, is_process_alive):
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "Authorization": f"Bearer {api_key}",
@@ -17,7 +17,7 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
     with requests.Session() as session:
         while True:
             try:
-                response = session.get(f"{base_url}/health_generate", headers=headers)
+                response = session.get(f"{server_url}/health_generate", headers=headers)
                 if response.status_code == 200:
                     break
             except requests.RequestException:
@@ -31,7 +31,7 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
         # use flush_cache to make sure the working queue is empty, so that we can do offload
         while True:
             try:
-                response = session.get(f"{base_url}/flush_cache", headers=headers)
+                response = session.get(f"{server_url}/flush_cache", headers=headers)
                 if response.status_code == 200:
                     break
 
@@ -58,7 +58,7 @@ class SGLangApiClient:
         Returns:
             The JSON response from the server
         """
-        url = f"http://{self.server_host}:{self.server_port}/{endpoint}"
+        url = f"{self.server_url}/{endpoint}"
         response = requests.post(url, json=payload or {})
         try:
             response.raise_for_status()
@@ -81,7 +81,7 @@ class SGLangApiClient:
             requests.RequestException: If the request fails for any reason, including timeout.
         """
         response = requests.get(
-            f"http://{self.server_host}:{self.server_port}/health_generate",
+            f"{self.server_url}/health_generate",
             timeout=timeout,
         )
         response.raise_for_status()
@@ -117,7 +117,7 @@ class SGLangApiClient:
     def get_remote_instance_transfer_engine_info(self, rank: int):
         # TODO: will be changed to `remote_instance_transfer_engine_info` when the sglang side is ready.
         response = requests.get(
-            f"http://{self.server_host}:{self.server_port}/get_remote_instance_transfer_engine_info",
+            f"{self.server_url}/get_remote_instance_transfer_engine_info",
             params={"rank": rank},
             timeout=5.0,
         )
@@ -126,7 +126,7 @@ class SGLangApiClient:
 
     def get_parallelism_info(self, rank: int):
         response = requests.get(
-            f"http://{self.server_host}:{self.server_port}/parallelism_config",
+            f"{self.server_url}/parallelism_config",
             params={"rank": rank},
             timeout=5.0,
         )
@@ -135,7 +135,7 @@ class SGLangApiClient:
 
     def get_server_info(self):
         response = requests.get(
-            f"http://{self.server_host}:{self.server_port}/server_info",
+            f"{self.server_url}/server_info",
             timeout=5.0,
         )
         response.raise_for_status()
@@ -221,7 +221,7 @@ class SGLangApiClient:
         last_message = None
         for _ in range(60):
             try:
-                response = requests.get(f"http://{self.server_host}:{self.server_port}/flush_cache")
+                response = requests.get(f"{self.server_url}/flush_cache")
                 if response.status_code == 200:
                     break
                 last_message = response.text
@@ -235,10 +235,9 @@ class SGLangApiClient:
             raise TimeoutError(f"Timeout while flushing cache: {last_message}")
 
     def get_weight_version(self):
-        base = f"http://{self.server_host}:{self.server_port}"
         # new sglang change api from /get_weight_version to /model_info
         for endpoint in ("/model_info", "/get_weight_version"):
-            response = requests.get(f"{base}{endpoint}")
+            response = requests.get(f"{self.server_url}{endpoint}")
             if response.status_code == 200:
                 return response.json()["weight_version"]
         response.raise_for_status()
@@ -276,7 +275,7 @@ class SGLangApiClient:
             payload["skip_tensor_list"] = skip_list
         return self._make_request("weights_checker", payload)
 
-    def pull_weights(self, target_version: int):
+    def pull_weights(self, target_version: int, local_checkpoint_dir: str, source_dir: str):
         """Have the engine sync every host it spans to target_version: each host pulls the
         published weights (a full checkpoint copied as-is, or deltas verified per-tensor and
         applied onto the local checkpoint) into its local checkpoint dir. The engine reloads
@@ -284,8 +283,8 @@ class SGLangApiClient:
         return self._make_request(
             "pull_weights",
             {
-                "local_checkpoint_dir": self.args.update_weight_local_checkpoint_dir,
-                "source_dir": self.args.update_weight_disk_dir,
+                "local_checkpoint_dir": local_checkpoint_dir,
+                "source_dir": source_dir,
                 "target_version": target_version,
             },
         )
@@ -358,14 +357,14 @@ class SGLangApiClient:
 
     def pause_generation(self, mode: str = "retract"):
         response = requests.post(
-            f"http://{self.server_host}:{self.server_port}/pause_generation",
+            f"{self.server_url}/pause_generation",
             json={"mode": mode},
         )
         response.raise_for_status()
         return response
 
     def continue_generation(self):
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/continue_generation", json={})
+        response = requests.post(f"{self.server_url}/continue_generation", json={})
         response.raise_for_status()
         return response
 
@@ -400,7 +399,7 @@ class SGLangApiClient:
         record_shapes: bool | None = None,
     ):
         response = requests.post(
-            f"http://{self.server_host}:{self.server_port}/start_profile",
+            f"{self.server_url}/start_profile",
             json={
                 "output_dir": output_dir,
                 "start_step": start_step,
@@ -415,6 +414,6 @@ class SGLangApiClient:
         return response
 
     def stop_profile(self):
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/stop_profile", json={})
+        response = requests.post(f"{self.server_url}/stop_profile", json={})
         response.raise_for_status()
         return response
