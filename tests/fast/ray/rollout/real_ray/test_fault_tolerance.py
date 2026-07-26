@@ -117,10 +117,11 @@ class TestKillAndRecover:
         self,
         patched_sglang_engine,
         placement_group_factory,
+        mock_engine_http_servers,
     ):
         """``needs_offload=True`` + ``update_weights=True`` means recover()
         must release_memory_occupation, then resume with WEIGHTS tag.
-        Verify by reading the new actor's call log."""
+        Verify by reading the recovered engine's mock HTTP server log."""
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2, needs_offload=True, update_weights=True)
         _start(group)
@@ -132,25 +133,25 @@ class TestKillAndRecover:
         try:
             await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
             calls = ray.get(group.all_engines[0].actor_handle.get_calls.remote())
-            method_names = [c[0] for c in calls]
-            # init → release → resume(tags=[WEIGHTS])
-            assert "init" in method_names
-            assert "release_memory_occupation" in method_names
-            assert "resume_memory_occupation" in method_names
+            assert "init" in [c[0] for c in calls]
+
+            server = mock_engine_http_servers.for_rank(0)
+            paths = server.paths
+            assert "/release_memory_occupation" in paths
+            assert "/resume_memory_occupation" in paths
 
             # Ordering claim: release must precede resume — otherwise GPU
             # memory would be re-occupied before being released, defeating
             # the offload. Use the first occurrence of each.
-            release_idx = method_names.index("release_memory_occupation")
-            resume_idx = method_names.index("resume_memory_occupation")
-            assert release_idx < resume_idx, f"release must precede resume; saw order {method_names}"
+            release_idx = paths.index("/release_memory_occupation")
+            resume_idx = paths.index("/resume_memory_occupation")
+            assert release_idx < resume_idx, f"release must precede resume; saw order {paths}"
+            # The client drains the working queue before releasing.
+            assert paths.index("/flush_cache") < release_idx
 
-            # Find the resume call and confirm WEIGHTS tag
-            resume_calls = [c for c in calls if c[0] == "resume_memory_occupation"]
-            assert len(resume_calls) == 1
             from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-            assert resume_calls[0][2] == {"tags": [GPU_MEMORY_TYPE_WEIGHTS]}
+            assert server.payloads_of("/resume_memory_occupation") == [{"tags": [GPU_MEMORY_TYPE_WEIGHTS]}]
         finally:
             _kill_all(group)
 
@@ -234,6 +235,7 @@ class TestRecoverMultiNodeEngine:
         self,
         patched_sglang_engine,
         placement_group_factory,
+        mock_engine_http_servers,
     ):
         """Recovering a 2-node engine must not send release/resume to node 1."""
         pg = placement_group_factory(16)
@@ -243,13 +245,11 @@ class TestRecoverMultiNodeEngine:
         try:
             await group.recover(port_cursors=PortCursors.empty())
 
-            node0_calls, node1_calls = ray.get([e.actor_handle.get_calls.remote() for e in group.all_engines])
-            node0_methods = [name for name, _args, _kwargs in node0_calls]
-            node1_methods = [name for name, _args, _kwargs in node1_calls]
+            node0_paths = mock_engine_http_servers.for_rank(0).paths
+            node1_paths = mock_engine_http_servers.for_rank(1).paths
 
-            assert "release_memory_occupation" in node0_methods
-            assert "resume_memory_occupation" in node0_methods
-            assert "release_memory_occupation" not in node1_methods
-            assert "resume_memory_occupation" not in node1_methods
+            assert "/release_memory_occupation" in node0_paths
+            assert "/resume_memory_occupation" in node0_paths
+            assert node1_paths == []
         finally:
             _kill_all(group)

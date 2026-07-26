@@ -8,7 +8,7 @@ import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_engine import SGLangEngine
+from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url
 from miles.ray.rollout.addr_allocator import (
     PortCursors,
     allocate_rollout_engine_addr_and_ports_external,
@@ -72,6 +72,11 @@ class ServerGroup:
         of Ray ObjectRefs (one per newly created engine) and *new_engine_indices* is
         the list of indices into ``self.all_engines`` that were just allocated.
         """
+        assert not ({"host", "port"} & set(self.sglang_overrides)), (
+            f"sglang_overrides must not override host/port ({self.sglang_overrides=}): the rollout process derives "
+            f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
+        )
+
         if self.args.debug_train_only or self.worker_type == "placeholder":
             self.has_new_engines = False
             return [], []
@@ -166,6 +171,12 @@ class ServerGroup:
             )
             port_cursors.assign(next_port_cursors)
 
+        for index, _ in new_engines:
+            engine_addr_and_ports = addr_and_ports[index]
+            self.all_engines[index - self.rank_offset].set_server_url(
+                build_server_url(host=engine_addr_and_ports["host"], port=engine_addr_and_ports["port"])
+            )
+
         init_handles = [
             engine.init.remote(
                 **addr_and_ports[index],
@@ -216,9 +227,7 @@ class ServerGroup:
         ), "curr_num_new_engines does not match start_indices length"
         if self.needs_offload and start_indices:
             new_primary_engines = [self.all_engines[i] for i in start_indices if i % self.nodes_per_engine == 0]
-            release_handles.extend(
-                engine.actor_handle.release_memory_occupation.remote() for engine in new_primary_engines
-            )
+            release_handles.extend(engine.api_client.release_memory_occupation() for engine in new_primary_engines)
             if self.update_weights or self.model_path:
                 all_resume_engines.extend(new_primary_engines)
 
@@ -227,7 +236,7 @@ class ServerGroup:
             if all_resume_engines:
                 await asyncio.gather(
                     *[
-                        engine.actor_handle.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+                        engine.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
                         for engine in all_resume_engines
                     ]
                 )
@@ -242,22 +251,14 @@ class ServerGroup:
         if not self.needs_offload:
             return []
         return await asyncio.gather(
-            *[
-                engine.actor_handle.release_memory_occupation.remote(tags=tags)
-                for engine in self.engines
-                if engine.is_allocated
-            ]
+            *[engine.api_client.release_memory_occupation(tags=tags) for engine in self.engines if engine.is_allocated]
         )
 
     async def onload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
         return await asyncio.gather(
-            *[
-                engine.actor_handle.resume_memory_occupation.remote(tags=tags)
-                for engine in self.engines
-                if engine.is_allocated
-            ]
+            *[engine.api_client.resume_memory_occupation(tags=tags) for engine in self.engines if engine.is_allocated]
         )
 
     def onload_weights_from_disk(self):
@@ -275,7 +276,7 @@ class ServerGroup:
     ):
         return await asyncio.gather(
             *[
-                engine.actor_handle.check_weights.remote(
+                engine.api_client.check_weights(
                     action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
                 )
                 for engine in self.engines
