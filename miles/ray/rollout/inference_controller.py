@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.eval_fleet import EvalFleet
@@ -80,7 +81,7 @@ class InferenceController:
 
         await srv.wait_all_engines_alive()
         return EnginesAndLock(
-            rollout_engines=[e.actor_handle for e in srv.engines],
+            rollout_engines=[e.api_client for e in srv.engines],
             rollout_engine_lock=self.rollout_engine_lock,
             has_new_engines=srv.has_new_engines,
             engine_gpu_counts=srv.engine_gpu_counts,
@@ -177,7 +178,7 @@ class InferenceController:
 
 @dataclass(frozen=True)
 class EnginesAndLock:
-    rollout_engines: list[ray.actor.ActorHandle]
+    rollout_engines: list[SGLangApiClient]
     rollout_engine_lock: ray.actor.ActorHandle
     has_new_engines: bool
     engine_gpu_counts: list[int]

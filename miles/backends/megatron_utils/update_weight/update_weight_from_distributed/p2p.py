@@ -1,10 +1,10 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
+from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
-from ray.actor import ActorHandle
 from sglang.srt import server_args as server_args_module
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
@@ -18,6 +18,8 @@ from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.server_args import ServerArgs
 from tqdm import tqdm
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group
 
 from .mixin import DistBucketedWeightUpdateMixin
@@ -29,6 +31,9 @@ from .p2p_transfer_utils import (
     query_remote_weight_infos,
     register_cpu_memory,
 )
+
+if TYPE_CHECKING:
+    from ray.actor import ActorHandle
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +65,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
-        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self.rollout_engines: Sequence[SGLangApiClient] | None = None
         self._connection_stale: bool = False
         assert not is_lora, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
         self.is_lora = False
@@ -173,8 +178,8 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
 
     def connect_rollout_engines(
         self,
-        rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle,
+        rollout_engines: Sequence[SGLangApiClient],
+        rollout_engine_lock: "ActorHandle",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
