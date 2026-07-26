@@ -83,16 +83,15 @@ jobs:
         shell: bash
         run: |
           git fetch --depth 1 origin "${{ github.event.pull_request.base.sha }}"
-          # Dockerfile.rocm doesn't feed the cu13-x86 build this pipeline produces.
+          # Dockerfile.rocm doesn't feed the cu13 multi-arch build this pipeline produces.
           if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD \
-              | grep -v '^docker/Dockerfile\.rocm$' \
-              | grep -qE '^(docker/(Dockerfile|build\.py|patch/)|requirements\.txt)'; then
+              | grep -qE '^(docker/(Dockerfile|build\.py|verify_transformer_engine\.py)|requirements\.txt)$|^docker/patch/'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Docker PRs: build the image first and run every suite inside it.
+  # Docker PRs: build the multi-arch image first and run every suite inside it.
   docker-build:
     needs: [docker-paths]
     if: needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
@@ -118,7 +117,7 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build and push PR tag
         run: |
-          python3 docker/build.py --variant cu13-x86 --image-tag custom \
+          python3 docker/build.py --variant cu13 --image-tag custom \
             --custom-tag pr-${{ github.event.pull_request.number }} --push
 
   resolve-ci-image:

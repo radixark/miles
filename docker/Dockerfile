@@ -105,7 +105,8 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
     fi
 
 # transformer_engine
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
+    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       TE_CORE_DIST=transformer_engine_cu13; \
     else \
       TE_CORE_DIST=transformer_engine_cu12; \
@@ -119,7 +120,7 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
     fi && \
     pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch && \
     pip install --force-reinstall --no-deps "$@" && \
-    python3 -c 'import importlib.metadata as m, importlib.util as u, sys; core = sys.argv[1].replace("_", "-"); expected = {"transformer-engine": "2.17.0", core: "2.17.0", "transformer-engine-torch": "2.17.0"}; actual = {name: m.version(name) for name in expected}; requires = {r.lower().replace("_", "-").replace(" ", "") for r in (m.requires("transformer-engine-torch") or [])}; assert actual == expected, f"unexpected TransformerEngine versions: {actual}"; assert f"{core}==2.17.0" in requires, f"unexpected TransformerEngine torch requirements: {requires}"; assert u.find_spec("transformer_engine") is not None, "transformer_engine package not found"' "${TE_CORE_DIST}"
+    python3 /tmp/verify_transformer_engine.py "${TE_CORE_DIST}"
 
 # TE patches (cu13): B300/GB300 FA2 and backward override fixes
 # te_dequantized_backward_override.patch is a hot fix from
