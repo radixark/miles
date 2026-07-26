@@ -89,7 +89,7 @@ class RolloutExecutor:
 
     # -------------------------- data generation -----------------------------
 
-    async def generate(self, rollout_id):
+    async def get(self, rollout_id):
         start_time = time.time()
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
