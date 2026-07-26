@@ -4,7 +4,6 @@ import logging
 import multiprocessing
 import os
 import time
-from urllib.parse import quote
 
 import requests
 import sglang_router
@@ -14,6 +13,7 @@ from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
 from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
+from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
@@ -80,6 +80,10 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     )
 
     return p
+
+
+def _use_legacy_router_api(args) -> bool:
+    return parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router
 
 
 def _wait_server_healthy(base_url, api_key, is_process_alive):
@@ -209,6 +213,8 @@ class SGLangEngine(RayActor):
         self.server_host = server_args_dict["host"]  # with [] if ipv6
         self.server_port = server_args_dict["port"]
 
+        self.router_api_client = SGLangRouterApiClient(router_url=f"http://{self.router_ip}:{self.router_port}")
+
         if self.args.rollout_external:
             self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)
         else:
@@ -247,25 +253,14 @@ class SGLangEngine(RayActor):
         self.process = launch_server_process(server_args)
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
-            if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
-                assert (
-                    self.worker_type == "regular"
-                ), "pd disaggregation is not supported in old router or miles router."
-                response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/add_worker?url=http://{self.server_host}:{self.server_port}"
-                )
-            else:
-                payload = {
-                    "url": f"http://{self.server_host}:{self.server_port}",
-                    "worker_type": self.worker_type,
-                }
-                if self.worker_type == "prefill":
-                    payload["bootstrap_port"] = server_args_dict["disaggregation_bootstrap_port"]
-                response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/workers",
-                    json=payload,
-                )
-            response.raise_for_status()
+            self.router_api_client.add_worker(
+                worker_url=f"http://{self.server_host}:{self.server_port}",
+                worker_type=self.worker_type,
+                use_legacy_api=_use_legacy_router_api(self.args),
+                bootstrap_port=(
+                    server_args_dict["disaggregation_bootstrap_port"] if self.worker_type == "prefill" else None
+                ),
+            )
 
     def _make_request(self, endpoint: str, payload: dict | None = None):
         """Make a POST request to the specified endpoint with the given payload.
@@ -459,32 +454,10 @@ class SGLangEngine(RayActor):
 
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
         if self.node_rank == 0:
-            worker_url = f"http://{self.server_host}:{self.server_port}"
-            response = None
-            if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
-                response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/remove_worker?url=http://{self.server_host}:{self.server_port}"
-                )
-            elif parse(sglang_router.__version__) < parse("0.3.0"):
-                worker_url = quote(worker_url, safe="")
-                response = requests.delete(f"http://{self.router_ip}:{self.router_port}/workers/{worker_url}")
-            else:
-                try:
-                    all_workers = requests.get(f"http://{self.router_ip}:{self.router_port}/workers").json()["workers"]
-                    for worker in all_workers:
-                        if worker["url"] == worker_url:
-                            worker_id = worker["id"]
-                            response = requests.delete(
-                                f"http://{self.router_ip}:{self.router_port}/workers/{worker_id}"
-                            )
-                            break
-                    else:
-                        logger.warning(f"Worker {worker_url} not found in router during shutdown.")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch workers list or remove worker: {e}")
-
-            if response is not None:
-                response.raise_for_status()
+            self.router_api_client.remove_worker(
+                worker_url=f"http://{self.server_host}:{self.server_port}",
+                use_legacy_api=_use_legacy_router_api(self.args),
+            )
         kill_process_tree(self.process.pid)
 
     def get_weight_version(self):
