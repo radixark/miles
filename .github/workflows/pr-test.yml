@@ -102,8 +102,8 @@ jobs:
   # GPU fleet.
   docker-build:
     needs: [docker-paths]
-    if: always() && !cancelled() && needs.docker-paths.result == 'success'
-    runs-on: ${{ (needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["h200", "2gpu"]') || 'ubuntu-latest' }}
+    if: always() && !cancelled()
+    runs-on: ${{ fromJSON((needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository) && '["h200", "2gpu"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 180
     outputs:
       built: ${{ steps.build.outputs.built || 'false' }}
@@ -146,7 +146,7 @@ jobs:
   # No `if:` guard: a real build failure must stop the suites rather than run them
   # against a stale image.
   resolve-ci-image:
-    needs: [docker-paths, docker-build]
+    needs: [docker-build]
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
