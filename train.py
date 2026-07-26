@@ -110,7 +110,7 @@ async def train(args):
             await rollout_executor.eval.remote(rollout_id)
 
         await inference_controller.prepare_rollout(rollout_id)
-        rollout_data_pack = await rollout_executor.generate.remote(rollout_id)
+        rollout_data_pack = await rollout_executor.get.remote(rollout_id)
 
         if args.offload_rollout:
             if args.colocate_memory_peak_device == "gpu":
