@@ -90,7 +90,7 @@ async def test_train_only_ft_does_not_recover_rollout_engines():
         use_fault_tolerance=True,
         ft_components=["train"],
     )
-    group.rollout_manager = SimpleNamespace(
+    group._rollout_manager = SimpleNamespace(
         recover_updatable_engines=_RemoteCall("recover", calls),
         get_updatable_engines_and_lock=_RemoteCall("get_engines", calls, result="info"),
         health_monitoring_pause=_RemoteCall("pause", calls),

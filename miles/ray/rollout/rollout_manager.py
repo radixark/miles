@@ -99,10 +99,10 @@ class RolloutManager:
         if self.args.debug_train_only:
             self.servers: dict[str, RolloutServer] = {}
         else:
-            init_http_client(args)
             self.servers = start_rollout_servers(args, pg)
-            start_session_server(args)
             dashboard_hooks.register_router(args)
+            init_http_client(args)
+            start_session_server(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
