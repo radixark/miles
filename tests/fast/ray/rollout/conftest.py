@@ -258,6 +258,15 @@ def dedent(s: str) -> str:
     return textwrap.dedent(s).lstrip("\n")
 
 
+def chunk_engines_into_cells(engines, *, num_gpus_per_engine: int, num_gpus_per_node: int):
+    """Group a flat engine list the way production lays cells out."""
+    from miles.ray.rollout.server_cell import ServerCell
+
+    nodes_per_engine = max(1, num_gpus_per_engine // num_gpus_per_node)
+    assert len(engines) % nodes_per_engine == 0, f"{len(engines)=} must be a multiple of {nodes_per_engine=}"
+    return [ServerCell(engines=engines[i : i + nodes_per_engine]) for i in range(0, len(engines), nodes_per_engine)]
+
+
 def make_dataclass_group(
     *,
     num_engines: int = 2,
@@ -274,7 +283,7 @@ def make_dataclass_group(
     return ServerGroup(
         args=args,
         pg=None,
-        all_engines=engines,
+        cells=chunk_engines_into_cells(engines, num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8),
         num_gpus_per_engine=num_gpus_per_engine,
         has_new_engines=False,
         gpu_offset=gpu_offset,
