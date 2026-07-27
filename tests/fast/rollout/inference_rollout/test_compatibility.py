@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from miles.rollout.base_types import (
+    BaseRolloutFn,
     GenerateFnInput,
     GenerateFnOutput,
     RolloutFnConstructorInput,
@@ -92,7 +93,7 @@ class TestSupportedRolloutFormats:
 
     @pytest.mark.parametrize("evaluation", [False, True])
     def test_format_3_sync_class(self, constructor_input, evaluation):
-        class SyncRolloutFn:
+        class SyncRolloutFn(BaseRolloutFn):
             def __init__(self, input: RolloutFnConstructorInput):
                 pass
 
@@ -113,7 +114,7 @@ class TestSupportedRolloutFormats:
 
     @pytest.mark.parametrize("evaluation", [False, True])
     def test_format_4_async_class(self, constructor_input, evaluation):
-        class AsyncRolloutFn:
+        class AsyncRolloutFn(BaseRolloutFn):
             def __init__(self, input: RolloutFnConstructorInput):
                 pass
 
@@ -132,6 +133,114 @@ class TestSupportedRolloutFormats:
             assert isinstance(fn, AsyncRolloutFn)
             expected_type = RolloutFnEvalOutput if evaluation else RolloutFnTrainOutput
             assert isinstance(result, expected_type)
+
+
+class TestRolloutFnCheckpointing:
+    def test_base_save_and_load_default_to_no_ops(self, constructor_input):
+        """A rollout function that keeps no state inherits save/load and needs no code."""
+
+        class StatelessRolloutFn(BaseRolloutFn):
+            def __call__(self, input):
+                return RolloutFnTrainOutput(samples=[])
+
+        with function_registry.temporary("test:stateless", StatelessRolloutFn):
+            fn = load_rollout_function(constructor_input, "test:stateless")
+
+            assert fn.save(1) is None
+            assert fn.load(1) is None
+
+    def test_legacy_function_gets_no_op_save_and_load(self, constructor_input):
+        """Plain slime-style rollout functions stay usable: the adapter supplies the new methods."""
+
+        def legacy_rollout_fn(args, rollout_id, data_source, evaluation=False):
+            return [[{"text": "sample"}]]
+
+        with function_registry.temporary("test:legacy_checkpoint", legacy_rollout_fn):
+            fn = load_rollout_function(constructor_input, "test:legacy_checkpoint")
+
+            assert isinstance(fn, LegacyRolloutFnAdapter)
+            assert fn.save(1) is None
+            assert fn.load(None) is None
+
+    def test_legacy_adapter_exposes_the_constructor_input(self, constructor_input):
+        """The base class promises constructor_input, so the framework's own subclasses must set it too."""
+
+        def legacy_rollout_fn(args, rollout_id, data_source, evaluation=False):
+            return [[{"text": "sample"}]]
+
+        with function_registry.temporary("test:legacy_constructor_input", legacy_rollout_fn):
+            fn = load_rollout_function(constructor_input, "test:legacy_constructor_input")
+
+            assert fn.constructor_input is constructor_input
+
+    def test_custom_save_and_load_are_used(self, constructor_input):
+        """A stateful rollout function checkpoints through its own save/load."""
+
+        class StatefulRolloutFn(BaseRolloutFn):
+            def __init__(self, input: RolloutFnConstructorInput):
+                self.calls = []
+
+            def __call__(self, input):
+                return RolloutFnTrainOutput(samples=[])
+
+            def save(self, rollout_id):
+                self.calls.append(("save", rollout_id))
+
+            def load(self, rollout_id):
+                self.calls.append(("load", rollout_id))
+
+        with function_registry.temporary("test:stateful", StatefulRolloutFn):
+            fn = load_rollout_function(constructor_input, "test:stateful")
+            fn.save(4)
+            fn.load(4)
+
+            assert fn.calls == [("save", 4), ("load", 4)]
+
+    def test_same_path_loaded_twice_yields_independent_instances(self, constructor_input):
+        """--eval-function-path defaults to --rollout-function-path, and each load builds its own object."""
+
+        class StatefulRolloutFn(BaseRolloutFn):
+            def __init__(self, input: RolloutFnConstructorInput):
+                self.calls = []
+
+            def __call__(self, input):
+                return RolloutFnTrainOutput(samples=[])
+
+            def save(self, rollout_id):
+                self.calls.append(rollout_id)
+
+        with function_registry.temporary("test:same_path", StatefulRolloutFn):
+            train_fn = load_rollout_function(constructor_input, "test:same_path")
+            eval_fn = load_rollout_function(constructor_input, "test:same_path")
+
+            train_fn.save(2)
+
+            assert train_fn is not eval_fn
+            assert eval_fn.calls == []
+
+    def test_subclass_without_call_cannot_be_instantiated(self, constructor_input):
+        """__call__ is abstract, so a missing implementation fails at load, not mid-run."""
+
+        class MissingCall(BaseRolloutFn):
+            pass
+
+        with function_registry.temporary("test:missing_call", MissingCall):
+            with pytest.raises(TypeError, match="abstract"):
+                load_rollout_function(constructor_input, "test:missing_call")
+
+    def test_class_not_subclassing_base_is_rejected(self, constructor_input):
+        """Rejected at load time, not at the first checkpoint hours into a run."""
+
+        class NotARolloutFn:
+            def __init__(self, input: RolloutFnConstructorInput):
+                pass
+
+            def __call__(self, input):
+                return RolloutFnTrainOutput(samples=[])
+
+        with function_registry.temporary("test:not_a_rollout_fn", NotARolloutFn):
+            with pytest.raises(TypeError, match="must subclass"):
+                load_rollout_function(constructor_input, "test:not_a_rollout_fn")
 
 
 class TestSupportedGenerateFormats:

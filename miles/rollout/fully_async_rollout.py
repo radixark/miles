@@ -20,6 +20,7 @@ import asyncio
 import logging
 
 from miles.rollout.base_types import (
+    BaseRolloutFn,
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnEvalOutput,
@@ -48,7 +49,7 @@ logger = logging.getLogger(__name__)
 NO_PROGRESS_WARN_SECS = 30.0
 
 
-class FullyAsyncRolloutFn:
+class FullyAsyncRolloutFn(BaseRolloutFn):
     """Continuous rollout generation decoupled from training steps.
 
     The worker runs as a long-lived task on the shared rollout event loop, created
@@ -58,6 +59,7 @@ class FullyAsyncRolloutFn:
     """
 
     def __init__(self, input: RolloutFnConstructorInput):
+        super().__init__(input)
         self.args = input.args
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
