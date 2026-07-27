@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
+from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, fake_actor_handle, make_args
 
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
@@ -27,7 +27,9 @@ def _build_servers(
                 ServerGroup(
                     args=args,
                     pg=None,
-                    all_engines=engines,
+                    cells=chunk_engines_into_cells(
+                        engines, num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8
+                    ),
                     num_gpus_per_engine=num_gpus_per_engine,
                     has_new_engines=False,
                     update_weights=True,
