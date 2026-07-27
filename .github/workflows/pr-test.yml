@@ -5,9 +5,6 @@ name: PR Test
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
-  # Serves only `approve-held-runs`; every test job skips this event.
-  pull_request_target:
-    types: [opened, synchronize, reopened, labeled]
   schedule:
     # Nightly CI on main runs every enabled tag except ft-long, with fast-fail disabled.
     # 15:00 UTC = 08:00 PDT / 07:00 PST (cron is UTC, no DST).
@@ -41,9 +38,7 @@ permissions:
 concurrency:
   # PR updates supersede their previous run; distinct cron schedules and
   # manual operations must not cancel one another on the default branch.
-  # The event name keeps `approve-held-runs` out of the test-run group it
-  # approves, so the approver is never cancelled by that run.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
   cancel-in-progress: true
 
 # `resolve-ci-policy` passes trigger-specific facts to `ci_policy.py`, which
@@ -57,7 +52,6 @@ concurrency:
 
 jobs:
   resolve-ci-policy:
-    if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     outputs:
       cadence: ${{ steps.resolve.outputs.cadence }}
@@ -77,7 +71,6 @@ jobs:
         run: python -m tests.ci.ci_policy
 
   docker-paths:
-    if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
@@ -109,8 +102,7 @@ jobs:
   # GPU fleet.
   docker-build:
     needs: [docker-paths]
-    # `always()` survives upstream skips, so this needs its own event guard.
-    if: github.event_name != 'pull_request_target' && always() && !cancelled()
+    if: always() && !cancelled()
     runs-on: ${{ fromJSON((needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository) && '["h200", "2gpu"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 180
     outputs:
@@ -323,38 +315,3 @@ jobs:
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
     secrets: inherit
-
-  # A maintainer-applied `run-ci*` label doubles as the "Approve and run"
-  # decision for fork PRs: approve the held runs on this and later pushes.
-  # Runs base-branch code only; checks out nothing from the fork.
-  approve-held-runs:
-    if: >-
-      github.event_name == 'pull_request_target' &&
-      github.event.pull_request.head.repo.full_name != github.repository &&
-      contains(join(github.event.pull_request.labels.*.name, ' '), 'run-ci')
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Approve held runs on the PR head
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-        run: |
-          # job-level contains() is substring-only; re-check the exact prefix
-          if ! echo "${LABELS_JSON}" | jq -e 'any(.[]; startswith("run-ci"))' >/dev/null; then
-            echo "no run-ci* label; not approving"
-            exit 0
-          fi
-          # held runs appear around the same time this event fires; poll so
-          # none are missed
-          for attempt in 1 2 3 4 5; do
-            sleep 15
-            run_ids=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&status=action_required" --jq '.workflow_runs[].id')
-            for run_id in ${run_ids}; do
-              echo "approving run ${run_id}"
-              gh api -X POST "repos/${REPO}/actions/runs/${run_id}/approve" || true
-            done
-          done
