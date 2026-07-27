@@ -150,7 +150,7 @@ def test_stop_engines_unregisters_before_killing_the_actor():
     ):
         ray_mock.get.side_effect = lambda *args, **kwargs: events.append(("shutdown", {}))
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        group.stop_engines(engine_indices=[0])
+        group.stop_engines(cell_indices=[0])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "shutdown", "kill"]
     assert events[0][1] == {"worker_url": "http://10.0.0.1:30000", "use_legacy_api": False}
@@ -171,7 +171,7 @@ def test_a_router_that_rejects_the_unregister_still_kills_the_actor():
     ):
         ray_mock.get.side_effect = lambda *args, **kwargs: events.append(("shutdown", {}))
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        group.stop_engines(engine_indices=[0])
+        group.stop_engines(cell_indices=[0])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "shutdown", "kill"]
     assert not flatten_cells(group.cells)[0].is_allocated
@@ -192,7 +192,7 @@ def test_a_router_that_never_answers_the_unregister_does_not_block_teardown():
         patch(f"{_CELL_MODULE}.ray") as ray_mock,
     ):
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
-        group.stop_engines(engine_indices=[0])
+        group.stop_engines(cell_indices=[0])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "kill"]
     assert not flatten_cells(group.cells)[0].is_allocated
@@ -208,6 +208,6 @@ def test_use_miles_router_reaches_both_router_calls():
         patch(f"{_CELL_MODULE}.ray"),
     ):
         async_utils.run(group.register_workers([0]))
-        group.stop_engines(engine_indices=[0])
+        group.stop_engines(cell_indices=[0])
 
     assert [kwargs["use_legacy_api"] for _name, kwargs in events] == [True, True]
