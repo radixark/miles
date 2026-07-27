@@ -17,10 +17,12 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from miles.utils.chat_template_utils import TITOTokenizerType
 from miles.utils.chat_template_utils.template import apply_chat_template_from_str
+from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES
 
 if TYPE_CHECKING:
-    from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, TITOTokenizerType
+    from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 
 def simulate_pretokenized_path(
@@ -374,8 +376,6 @@ def run_all_checks(
     through the CLI.
     """
     if allowed_append_roles is None:
-        from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES
-
         allowed_append_roles = ALL_APPEND_ROLES
     if thinking not in THINKING_MODES:
         raise ValueError(f"thinking must be one of {THINKING_MODES}; got {thinking!r}")
@@ -565,8 +565,6 @@ def run_all_checks_via_tito(
     if thinking not in THINKING_MODES:
         raise ValueError(f"thinking must be one of {THINKING_MODES}; got {thinking!r}")
     extra = extra_template_kwargs or {}
-
-    from miles.utils.chat_template_utils import TITOTokenizerType
 
     if isinstance(tito_model, str):
         tito_model = TITOTokenizerType(tito_model)
