@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -18,12 +19,13 @@ class RecordedRequest:
 
 
 class MockSGLangHttpServer:
-    def __init__(self, response_payload: dict[str, Any] | None = None):
+    def __init__(self, response_payload: dict[str, Any] | None = None, port: int = 0):
         self._response_payload = response_payload if response_payload is not None else {"mock": True}
         self._requests: list[RecordedRequest] = []
         self._lock = threading.Lock()
+        self._connections: set[socket.socket] = set()
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
+        self._server = ThreadingHTTPServer(("127.0.0.1", port), self._make_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
@@ -54,17 +56,45 @@ class MockSGLangHttpServer:
     def close(self) -> None:
         self._server.shutdown()
         self._server.server_close()
+        for connection in self._drain_connections():
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                logger.debug("mock sglang http server: connection was already down", exc_info=True)
+            connection.close()
         self._thread.join(timeout=5)
 
     def _record(self, method: str, path: str, payload: dict[str, Any] | None) -> None:
         with self._lock:
             self._requests.append(RecordedRequest(method=method, path=path.split("?")[0], payload=payload))
 
+    def _register_connection(self, connection: socket.socket) -> None:
+        with self._lock:
+            self._connections.add(connection)
+
+    def _unregister_connection(self, connection: socket.socket) -> None:
+        with self._lock:
+            self._connections.discard(connection)
+
+    def _drain_connections(self) -> list[socket.socket]:
+        with self._lock:
+            connections = list(self._connections)
+            self._connections.clear()
+        return connections
+
     def _make_handler(self) -> type[BaseHTTPRequestHandler]:
         server = self
 
         class _Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
+
+            def setup(self):
+                super().setup()
+                server._register_connection(self.connection)
+
+            def finish(self):
+                server._unregister_connection(self.connection)
+                super().finish()
 
             def do_GET(self):
                 server._record("GET", self.path, None)
@@ -89,31 +119,3 @@ class MockSGLangHttpServer:
                 self.wfile.write(body)
 
         return _Handler
-
-
-class MockSGLangHttpServerPool:
-    def __init__(self):
-        self._servers: dict[int, MockSGLangHttpServer] = {}
-        self._lock = threading.Lock()
-
-    def for_rank(self, rank: int) -> MockSGLangHttpServer:
-        with self._lock:
-            if rank not in self._servers:
-                self._servers[rank] = MockSGLangHttpServer()
-            return self._servers[rank]
-
-    def new_for_rank(self, rank: int) -> MockSGLangHttpServer:
-        with self._lock:
-            previous = self._servers.pop(rank, None)
-            server = MockSGLangHttpServer()
-            self._servers[rank] = server
-        if previous is not None:
-            previous.close()
-        return server
-
-    def close(self) -> None:
-        with self._lock:
-            servers = list(self._servers.values())
-            self._servers.clear()
-        for server in servers:
-            server.close()

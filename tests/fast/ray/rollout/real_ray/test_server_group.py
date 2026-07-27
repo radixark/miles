@@ -4,6 +4,7 @@ import pytest
 import ray
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
+from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.server_cell import flatten_cells
 from miles.ray.rollout.server_engine import ServerEngine
@@ -62,9 +63,7 @@ class TestStartEnginesRealActors:
     real Ray actors (via ``get_calls()`` round-trip) and that ``init`` was
     invoked with the addr/port kwargs from the allocator."""
 
-    def test_creates_real_actors_and_init_runs(
-        self, patched_sglang_engine, placement_group_factory, mock_engine_http_servers
-    ):
+    def test_creates_real_actors_and_init_runs(self, patched_sglang_engine, placement_group_factory):
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
 
@@ -74,15 +73,14 @@ class TestStartEnginesRealActors:
         # Wait for init.remote() to actually complete on each actor.
         ray.get(handles)
 
-        for i, e in enumerate(flatten_cells(group.cells)):
+        for e in flatten_cells(group.cells):
             assert e.is_allocated
             calls = ray.get(e.actor_handle.get_calls.remote())
             method_names = [name for name, _, _ in calls]
             assert "init" in method_names
             init_kwargs = ray.get(e.actor_handle.get_init_kwargs.remote())
             assert init_kwargs["host"] == "127.0.0.1"
-            assert init_kwargs["port"] == mock_engine_http_servers.for_rank(i).port
-            assert e.addr_info.server_url == mock_engine_http_servers.for_rank(i).url
+            assert e.addr_info.server_url == build_server_url(host=init_kwargs["host"], port=init_kwargs["port"])
 
         # Cleanup: kill the actors we created.
         for e in flatten_cells(group.cells):
@@ -178,16 +176,11 @@ class TestStartEnginesRealAllocator:
     """Drive ``start_engines`` with the real
     ``allocate_rollout_engine_addr_and_ports_normal`` (no stub) so that the
     actor → driver port round-trip via
-    ``_get_current_node_ip_and_free_port.remote`` actually runs.
-
-    The deterministic-port stub used by other tests bypasses this whole code
-    path; without a real-allocator test, a regression in either side of that
-    interface (mock_engine return shape vs. allocator's per-node cursor
-    bookkeeping) would silently slip past the suite."""
+    ``_get_current_node_ip_and_free_port.remote`` actually runs."""
 
     def test_real_allocator_assigns_distinct_ports_via_remote_calls(
         self,
-        patched_sglang_engine_real_allocator,
+        patched_sglang_engine,
         placement_group_factory,
     ):
         pg = placement_group_factory(2)
@@ -237,7 +230,7 @@ class TestStartEnginesRealAllocator:
 
     def test_real_allocator_advances_cursor_across_sequential_groups(
         self,
-        patched_sglang_engine_real_allocator,
+        patched_sglang_engine,
         placement_group_factory,
     ):
         """Two sequentially-started groups on independent PGs both invoke the
