@@ -69,8 +69,6 @@ def patched_sglang_engine(monkeypatch, mock_engine_class, mock_engine_http_serve
 
     monkeypatch.setattr(cell_mod, "SGLangEngine", mock_engine_class)
 
-    from miles.ray.rollout.addr_allocator import PortAllocator
-
     def _fake_alloc(*args, **kwargs):
         engines = kwargs["rollout_engines"]
         addr_and_ports = {}
@@ -83,7 +81,7 @@ def patched_sglang_engine(monkeypatch, mock_engine_class, mock_engine_http_serve
                 engine_info_bootstrap_port=32000 + rank,
                 dist_init_addr=f"127.0.0.1:{33000 + rank}",
             )
-        return addr_and_ports, PortAllocator(_values={"127.0.0.1": 34000})
+        return addr_and_ports
 
     monkeypatch.setattr(mod, "allocate_rollout_engine_addr_and_ports_normal", _fake_alloc)
 
