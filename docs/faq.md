@@ -126,7 +126,7 @@ then go investigate the data + model alignment that caused it.
 | What | Path |
 |---|---|
 | Trainer stdout | wherever you redirected `ray job submit` |
-| SGLang server | stdout/stderr captured by Ray under `~/.ray/session_latest/logs/`; pass `--sglang-log-dir <path>` to write to a chosen directory instead |
+| SGLang server | stdout/stderr captured by Ray under `~/.ray/session_latest/logs/`; control verbosity with `--sglang-log-level` |
 | Ray workers | `~/.ray/session_latest/logs/` |
 | wandb | `wandb/` in your run dir, plus the cloud UI |
 

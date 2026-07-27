@@ -104,7 +104,7 @@ Miles fills in whichever side you leave unset.
 | Is the policy learning? | `loss` and `reward` columns in stdout, or wandb |
 | Rollout or train bottleneck? | `rollout=` vs. `train=` timings per iteration |
 | Are GPUs saturated? | `nvidia-smi dmon -s u` |
-| SGLang internals? | `tail -f /tmp/sglang/*.log` |
+| SGLang internals? | Ray worker logs under `~/.ray/session_latest/logs/`; raise verbosity with `--sglang-log-level` |
 | Ranks crashing? | `~/.ray/session_latest/logs/worker-*.err` |
 
 ## Next steps

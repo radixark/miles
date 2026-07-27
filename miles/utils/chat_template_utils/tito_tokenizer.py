@@ -641,20 +641,20 @@ class MinimaxM27TITOTokenizer(MinimaxM25TITOTokenizer):
 
 
 class DeepSeekV32TITOTokenizer(TITOTokenizer):
-    """DeepSeek V3.2 — official encoder via sglang's ``encoding_dsv32``.
+    """DeepSeek V3.2 — miles' vendored copy of the official ``encoding_dsv32``.
 
-    V3.2 ships no jinja chat_template; sglang renders prompts through
-    ``encoding_dsv32.encode_messages``, and miles' ``apply_chat_template`` routes
-    any V3.2 tokenizer to the thin ``chat_template_utils.deepseek`` bridge.
-    TITO incremental tokenization rides that same bridge so it stays
-    byte-aligned with what the runtime serves.
+    V3.2 ships no jinja chat_template; prompts render through
+    ``templates.encoding_dsv32.encode_messages``, and miles'
+    ``apply_chat_template`` routes any V3.2 tokenizer to the thin
+    ``chat_template_utils.deepseek`` bridge.  TITO incremental tokenization
+    rides that same bridge.
 
-    Only the ``{tool}`` surface is registered.  DeepSeek's official
-    ``encoding_dsv32`` gates an assistant's thinking block on
-    ``index > last_user_idx``: appending a *user* turn re-classifies every prior
-    assistant as "before last user" and strips its thinking block, which is not
-    append-only.  Tool-only append is safe because ``find_last_user_index``
-    ignores tool roles, so the last-user position never moves.
+    Upstream ``encoding_dsv32`` gates every thinking block on
+    ``last_user_idx``: appending a *user* turn re-classifies every prior
+    assistant as "before last user" and strips its thinking block, which is
+    not append-only.  The vendored copy honors ``drop_thinking=False`` at the
+    render level (like ``encoding_dsv4``), so every surface pins it and the
+    ``{tool, user}`` surface becomes legal.
     """
 
     reasoning_parser = "deepseek-v3"
@@ -664,6 +664,12 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
         FixedTemplateRow(
             allowed_roles=frozenset({"tool"}),
             template=None,
+            extra_kwargs={"drop_thinking": False},
+        ),
+        FixedTemplateRow(
+            allowed_roles=frozenset({"tool", "user"}),
+            template=None,
+            extra_kwargs={"drop_thinking": False},
         ),
     )
 
@@ -689,6 +695,10 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
             },
             allowed_append_roles=allowed_append_roles,
         )
+        self.chat_template_kwargs = {
+            **self.chat_template_kwargs,
+            "thinking": deepseek.V32.render_thinking_enabled(self.chat_template_kwargs),
+        }
 
 
 # ---------------------------------------------------------------------------
