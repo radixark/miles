@@ -362,18 +362,15 @@ def report_data_buffer(length: int | None) -> None:
 
 
 def _alive_engine_chunks(servers) -> list[list]:
-    """Multi-node engines occupy ``nodes_per_engine`` consecutive entries of
-    ``group.all_engines``; only the first (master) owns the router-visible
-    URL. Chunks with any dead member are skipped until recovery completes."""
+    """A multi-node engine's cell holds ``nodes_per_engine`` entries; only the
+    first (master) owns the router-visible URL. Cells with any dead member are
+    skipped until recovery completes."""
     chunks = []
     for server in servers.values():
         for group in server.server_groups:
-            stride = group.nodes_per_engine
-            engines = group.all_engines
-            for i in range(0, len(engines), stride):
-                chunk = engines[i : i + stride]
-                if all(engine.is_allocated and engine.is_alive for engine in chunk):
-                    chunks.append(chunk)
+            for cell in group.cells:
+                if all(engine.is_allocated and engine.is_alive for engine in cell.engines):
+                    chunks.append(cell.engines)
     return chunks
 
 
