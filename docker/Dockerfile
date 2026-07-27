@@ -73,11 +73,11 @@ RUN case "${TARGETARCH}" in \
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
 # flash-attn hopper (FA3): Hopper-only (sm_90a). Coexists with FA2.
-RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
-    python_path=$(python -c "import site; print(site.getsitepackages()[0])") && \
-    mkdir -p $python_path/flash_attn_3 && \
-    curl -fSL https://raw.githubusercontent.com/Dao-AILab/flash-attention/fbf24f67cf7f6442c5cfb2c1057f4bfc57e72d89/hopper/flash_attn_interface.py \
-      -o $python_path/flash_attn_3/flash_attn_interface.py
+# The wheel ships flash_attn_interface top-level (what transformer_engine imports)
+# plus a flash_attn_3.flash_attn_interface re-export shim, so there is nothing to
+# fetch separately. Do not overwrite the shim with a copy of the full module: it
+# re-runs @torch.library.custom_op("flash_attn_3::...") and double-registers.
+RUN pip install /tmp/wheels/flash_attn_3-*.whl
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
@@ -105,6 +105,10 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
     fi
 
 # transformer_engine
+# --no-deps pins the three TE dists to exactly the wheels above, so pip cannot
+# pull a conflicting core dist. That also drops transformer_engine_torch's own
+# runtime deps, which still have to be installed: transformer_engine.pytorch
+# imports onnxscript unconditionally (module/_common -> export -> onnx_extensions).
 RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
     if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       TE_CORE_DIST=transformer_engine_cu13; \
@@ -120,6 +124,7 @@ RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/ver
     fi && \
     pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch && \
     pip install --force-reinstall --no-deps "$@" && \
+    pip install einops onnx onnxscript pydantic nvdlfw-inspect && \
     python3 /tmp/verify_transformer_engine.py "${TE_CORE_DIST}"
 
 # TE patches (cu13): B300/GB300 FA2 and backward override fixes
