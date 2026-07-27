@@ -1,6 +1,15 @@
-from typing import NamedTuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, NamedTuple
 
-from miles.ray.rollout.rollout_server import RolloutServer
+from miles.ray.rollout.server_engine import ServerEngine
+
+if TYPE_CHECKING:
+    from miles.ray.rollout.rollout_server import RolloutServer
+
+
+@dataclass
+class ServerCell:
+    engines: list[ServerEngine]
 
 
 class CellIndexer(NamedTuple):
@@ -9,7 +18,7 @@ class CellIndexer(NamedTuple):
     engine_indices: list[int]
 
 
-def get_cell_indexer_of_id_map(servers: dict[str, RolloutServer]) -> list[CellIndexer]:
+def get_cell_indexer_of_id_map(servers: dict[str, "RolloutServer"]) -> list[CellIndexer]:
     """Flatten ``servers`` into a list whose position is the cell id.
 
     A cell is one node-0 engine; ``engine_indices`` covers its ``nodes_per_engine``

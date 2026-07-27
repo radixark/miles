@@ -15,6 +15,7 @@ from miles.ray.rollout.addr_allocator import (
     allocate_rollout_engine_addr_and_ports_external,
     allocate_rollout_engine_addr_and_ports_normal,
 )
+from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import async_utils, dumper_utils
@@ -35,7 +36,7 @@ class ServerGroup:
 
     args: Any
     pg: Any  # (placement_group, reordered_bundle_indices, reordered_gpu_ids)
-    all_engines: list[ServerEngine]
+    cells: list[ServerCell]
     num_gpus_per_engine: int
     # NOTE: this may have risk when recovering engines parallelly; may use source of truth (all_engines) later
     has_new_engines: bool
@@ -53,6 +54,10 @@ class ServerGroup:
         assert (
             not self.all_engines or self.rank_offset % self.nodes_per_engine == 0
         ), f"{self.rank_offset=} must be a multiple of {self.nodes_per_engine=}"
+
+    @property
+    def all_engines(self) -> list[ServerEngine]:
+        return [engine for cell in self.cells for engine in cell.engines]
 
     @property
     def nodes_per_engine(self):
