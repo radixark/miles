@@ -5,7 +5,6 @@ import os
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
-from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
@@ -71,10 +70,9 @@ async def train(args):
             rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
 
         if args.use_critic:
-            critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_curr_ref))
+            values = await critic_model.train(rollout_id, rollout_data_curr_ref)
             if rollout_id >= args.num_critic_only_steps:
-                await actor_model.train(rollout_id, rollout_data_curr_ref)
-            await critic_task
+                await actor_model.train(rollout_id, rollout_data_curr_ref, external_data=values)
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
         remove_rollout_data_refs(args, rollout_data_curr_ref)
