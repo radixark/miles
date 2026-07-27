@@ -76,7 +76,7 @@ class TestKillAndRecover:
         flatten_cells(group.cells)[0].mark_stopped()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
+            await group.recover(port_cursors=PortCursors.empty(), filter_cell_indices=[0])
             # New actor for slot 0
             assert flatten_cells(group.cells)[0].is_allocated
             assert flatten_cells(group.cells)[0].actor_handle is not original_handles[0]
@@ -93,7 +93,7 @@ class TestKillAndRecover:
         patched_sglang_engine,
         placement_group_factory,
     ):
-        """When ``filter_indices=None``, recover picks every slot whose
+        """When ``filter_cell_indices=None``, recover picks every slot whose
         ``is_allocated`` is False. We kill 0 and 2, leave 1 alive, expect
         only 0 and 2 to be re-created."""
         pg = placement_group_factory(3)
@@ -143,7 +143,7 @@ class TestKillAndRecover:
 
         try:
             with patch.object(ServerGroup, "_router_api_client", property(lambda self: _Recorder())):
-                await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
+                await group.recover(port_cursors=PortCursors.empty(), filter_cell_indices=[0])
 
             assert [event["worker_url"] for event in events] == [flatten_cells(group.cells)[0].addr_info.server_url]
             assert flatten_cells(group.cells)[0].is_alive
@@ -168,7 +168,7 @@ class TestKillAndRecover:
         flatten_cells(group.cells)[0].mark_stopped()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
+            await group.recover(port_cursors=PortCursors.empty(), filter_cell_indices=[0])
             calls = ray.get(flatten_cells(group.cells)[0].actor_handle.get_calls.remote())
             assert "init" in [c[0] for c in calls]
 
@@ -231,8 +231,8 @@ class TestConcurrentRecover:
         try:
             # Real concurrent recover via asyncio.gather
             await asyncio.gather(
-                a.recover(port_cursors=PortCursors.empty(), filter_indices=[0]),
-                b.recover(port_cursors=PortCursors.empty(), filter_indices=[0]),
+                a.recover(port_cursors=PortCursors.empty(), filter_cell_indices=[0]),
+                b.recover(port_cursors=PortCursors.empty(), filter_cell_indices=[0]),
             )
             assert flatten_cells(a.cells)[0].is_allocated
             assert flatten_cells(b.cells)[0].is_allocated

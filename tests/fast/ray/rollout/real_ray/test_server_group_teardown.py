@@ -54,7 +54,7 @@ class TestTeardownIsTerminal:
         actor_handle = flatten_cells(group.cells)[0].actor_handle
         ray.get(actor_handle.set_fault.remote("shutdown", RuntimeError("shutdown blew up")))
 
-        group.stop_engines(engine_indices=[0])
+        group.stop_engines(cell_indices=[0])
 
         assert _is_dead(actor_handle)
         assert not flatten_cells(group.cells)[0].is_allocated
@@ -67,7 +67,7 @@ class TestTeardownIsTerminal:
         flatten_cells(group.cells)[0].mark_allocated_uninitialized(actor_handle)
 
         finished = threading.Event()
-        thread = threading.Thread(target=lambda: (group.stop_engines(engine_indices=[0]), finished.set()), daemon=True)
+        thread = threading.Thread(target=lambda: (group.stop_engines(cell_indices=[0]), finished.set()), daemon=True)
         thread.start()
         thread.join(timeout=30)
 
