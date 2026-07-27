@@ -238,8 +238,7 @@ class RolloutExecutor:
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
     def save(self, rollout_id):
-        if self.args.rollout_global_dataset:
-            self.data_source.save(rollout_id)
+        self.data_source.save(rollout_id)
         if not self.use_legacy_rollout_v1:
             if self.generate_rollout is not None:
                 self.generate_rollout.save(rollout_id)
