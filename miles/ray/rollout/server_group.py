@@ -214,8 +214,8 @@ class ServerGroup:
         assert len(new_engine_indices) == len(
             start_indices
         ), "curr_num_new_engines does not match start_indices length"
-        if self.needs_offload and start_indices:
-            new_primary_engines = [all_engines[i] for i in start_indices if i % self.nodes_per_engine == 0]
+        if self.needs_offload and new_engine_indices:
+            new_primary_engines = [all_engines[i] for i in new_engine_indices if i % self.nodes_per_engine == 0]
             release_handles.extend(engine.api_client.release_memory_occupation() for engine in new_primary_engines)
             if self.update_weights or self.model_path:
                 all_resume_engines.extend(new_primary_engines)
