@@ -1,6 +1,6 @@
 # Fork PRs from first-time contributors need a maintainer to press "Approve and
 # run" after every push (repo Actions policy: first_time_contributors). Applying
-# the `ci-trusted` label is that approval made once per PR: this workflow then
+# the `run-ci` label is that approval made once per PR: this workflow then
 # auto-approves the pending runs for the current and every subsequent push.
 # Removing the label revokes it.
 #
@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   approve:
-    if: contains(github.event.pull_request.labels.*.name, 'ci-trusted')
+    if: contains(github.event.pull_request.labels.*.name, 'run-ci')
     runs-on: ubuntu-latest
     steps:
       - name: Approve pending runs on the PR head

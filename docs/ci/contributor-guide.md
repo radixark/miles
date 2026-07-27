@@ -65,7 +65,7 @@ So if your test is gated and you don't see it run, add the matching `run-ci-<lab
 
 ### First PR from a fork: CI waits for approval
 
-If this is your first merged contribution and your PR comes from a fork, GitHub holds every CI run until a maintainer presses "Approve and run" — after **every** push, not just the first. To lift that per-push friction, a maintainer can add the `ci-trusted` label to your PR: the `Approve Trusted CI` workflow then auto-approves the held runs for each subsequent push. The label is a per-PR trust decision; removing it restores manual approval. This resolves itself permanently once your first PR merges.
+If this is your first merged contribution and your PR comes from a fork, GitHub holds every CI run until a maintainer presses "Approve and run" — after **every** push, not just the first. To lift that per-push friction, a maintainer can add the `run-ci` label to your PR: the `Approve Trusted CI` workflow then auto-approves the held runs for each subsequent push. The label is a per-PR trust decision; removing it restores manual approval. This resolves itself permanently once your first PR merges.
 
 ## When CI fails: yours or the infra?
 
