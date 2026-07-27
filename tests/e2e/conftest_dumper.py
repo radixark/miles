@@ -147,8 +147,6 @@ patches:
         append: |
           dumper.dump('pre_mlp_residual', residual, dims='t h # tp:replicated dp:=attn_dp')
           dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h # tp:replicated')
-      # v0.5.16 moved should_allreduce_fusion/use_reduce_scatter out of the call
-      # args and into the surrounding get_forward().scoped(...) context manager.
       - match: "hidden_states = self.mlp(hidden_states, forward_batch)"
         append: "dumper.dump('mlp_output', hidden_states, dims='t h # tp:replicated')"
 
