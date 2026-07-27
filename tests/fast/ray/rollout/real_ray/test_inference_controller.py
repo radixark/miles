@@ -39,7 +39,7 @@ def patch_low_level(monkeypatch, mock_engine_http_servers):
     import miles.ray.rollout.rollout_server as rsrv
     import miles.ray.rollout.server_cell as scell
     import miles.ray.rollout.server_group as sg
-    from miles.ray.rollout.addr_allocator import PortCursors
+    from miles.ray.rollout.addr_allocator import PortAllocator
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
     monkeypatch.setattr(scell, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
@@ -64,7 +64,7 @@ def patch_low_level(monkeypatch, mock_engine_http_servers):
                 )
                 for rank, _ in engines
             },
-            PortCursors(_values={0: 34000}),
+            PortAllocator(_values={"127.0.0.1": 34000}),
         )
 
     monkeypatch.setattr(sg, "allocate_rollout_engine_addr_and_ports_normal", _fake_alloc)

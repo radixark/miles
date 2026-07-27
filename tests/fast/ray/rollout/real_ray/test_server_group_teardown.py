@@ -7,7 +7,7 @@ import ray
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
 import miles.ray.rollout.server_cell as server_cell_module
-from miles.ray.rollout.addr_allocator import PortCursors
+from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.server_cell import flatten_cells
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
@@ -49,7 +49,7 @@ class TestTeardownIsTerminal:
     def test_a_failing_shutdown_still_kills_the_actor(self, patched_sglang_engine, placement_group_factory):
         """A graceful shutdown that raises must not leave the actor and its server process behind."""
         group = _build_group(pg_tuple=placement_group_factory(1))
-        handles, _ = group.start_engines(PortCursors.empty())
+        handles, _ = group.start_engines(PortAllocator.empty())
         ray.get(handles)
         actor_handle = flatten_cells(group.cells)[0].actor_handle
         ray.get(actor_handle.set_fault.remote("shutdown", RuntimeError("shutdown blew up")))

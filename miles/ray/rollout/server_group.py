@@ -8,7 +8,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.addr_allocator import (
-    PortCursors,
+    PortAllocator,
     allocate_rollout_engine_addr_and_ports_external,
     allocate_rollout_engine_addr_and_ports_normal,
 )
@@ -59,11 +59,11 @@ class ServerGroup:
         return [cell.engines[0] for cell in self.cells]
 
     def start_engines(
-        self, port_cursors: PortCursors, start_cell_indices: list[int] | None = None
+        self, port_allocator: PortAllocator, start_cell_indices: list[int] | None = None
     ) -> tuple[list, list[int]]:
         """Create Ray actors, allocate ports, and fire ``engine.init()`` without waiting.
 
-        Mutates ``port_cursors`` in place to advance past any newly assigned ports.
+        Mutates ``port_allocator`` in place to advance past any newly assigned ports.
         Returns ``(init_handles, new_engine_indices)`` where *init_handles* is a list
         of Ray ObjectRefs (one per newly created engine) and *new_engine_indices* is
         the list of indices into the group's flat engine list that were just allocated.
@@ -121,8 +121,8 @@ class ServerGroup:
                 args=self.args, rollout_engines=new_engines
             )
         else:
-            base_port = port_cursors.next_base_port()
-            addr_and_ports, next_port_cursors = allocate_rollout_engine_addr_and_ports_normal(
+            base_port = port_allocator.next_base_port()
+            addr_and_ports, next_port_allocator = allocate_rollout_engine_addr_and_ports_normal(
                 args=self.args,
                 rollout_engines=new_engines,
                 worker_type=self.worker_type,
@@ -130,7 +130,7 @@ class ServerGroup:
                 rank_offset=self.rank_offset,
                 base_port=base_port,
             )
-            port_cursors.assign(next_port_cursors)
+            port_allocator.assign(next_port_allocator)
 
         for index, _ in new_engines:
             engine_addr_and_ports = addr_and_ports[index]
@@ -204,7 +204,7 @@ class ServerGroup:
         for cell_index in sorted(set(cell_indices)):
             self.cells[cell_index].stop()
 
-    async def recover(self, port_cursors: PortCursors, filter_cell_indices: list[int] | None = None):
+    async def recover(self, port_allocator: PortAllocator, filter_cell_indices: list[int] | None = None):
         if filter_cell_indices is None:
             filter_cell_indices = [
                 cell_index
@@ -212,7 +212,7 @@ class ServerGroup:
                 if any(not engine.is_allocated for engine in cell.engines)
             ]
 
-        handles, new_engine_indices = self.start_engines(port_cursors, start_cell_indices=filter_cell_indices)
+        handles, new_engine_indices = self.start_engines(port_allocator, start_cell_indices=filter_cell_indices)
         await asyncio.gather(*handles)
 
         all_engines = flatten_cells(self.cells)
