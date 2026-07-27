@@ -611,7 +611,7 @@ def get_advantages_and_returns_batch(
     """
     Batched GAE with CP support, computed over trainable tokens only.
 
-    Semantics (PPO-002):
+    Semantics:
       - Masked tokens (`loss_mask == 0`, e.g. tool/env observations in
         multi-turn rollouts) are not MDP transitions. GAE runs on the
         subsequence of trainable tokens, so masked tokens carry no reward
