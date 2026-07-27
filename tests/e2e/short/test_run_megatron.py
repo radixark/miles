@@ -23,7 +23,7 @@ from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS, clear_proxy_env
 
 import miles.utils.external_utils.command_utils as U
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
-from miles.utils.misc import exec_command_cpu, exec_command_gpu
+from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu
 
 app: typer.Typer = typer.Typer()
 
