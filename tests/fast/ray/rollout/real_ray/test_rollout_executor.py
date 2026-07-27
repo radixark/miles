@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 import ray
 from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
 
 from miles.ray.rollout.rollout_executor import RolloutExecutor
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainInput, RolloutFnTrainOutput
+from miles.rollout.base_types import (
+    BaseRolloutFn,
+    RolloutFnEvalInput,
+    RolloutFnEvalOutput,
+    RolloutFnTrainInput,
+    RolloutFnTrainOutput,
+)
 
 
 @pytest.fixture
@@ -171,6 +179,122 @@ class TestGenerate:
 
         assert not hasattr(executor, "servers")
         assert not hasattr(executor, "_health_monitors")
+
+
+class _RecordingRolloutFn(BaseRolloutFn):
+    def __init__(self, name: str, log: list[tuple[str, str, object]]) -> None:
+        self._name = name
+        self._log = log
+
+    def __call__(self, input):
+        raise AssertionError("not exercised by the checkpointing tests")
+
+    def save(self, rollout_id: int) -> None:
+        self._log.append((self._name, "save", rollout_id))
+
+    def load(self, rollout_id: int | None) -> None:
+        self._log.append((self._name, "load", rollout_id))
+
+
+@pytest.mark.asyncio
+class TestCheckpointing:
+    async def test_save_and_load_reach_only_the_train_rollout_function(
+        self,
+        ray_local_mode,
+        patch_low_level,
+        monkeypatch,
+    ):
+        """One checkpoint is enough: the train and eval instances are becoming a single object."""
+        import miles.ray.rollout.rollout_executor as rexec
+
+        monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
+        args = _make_test_args(rollout_global_dataset=False)
+
+        executor = _make_executor(args)
+        executor.use_legacy_rollout_v1 = False
+        calls: list[tuple[str, str, object]] = []
+        executor.generate_rollout = _RecordingRolloutFn("train", calls)
+        executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
+        executor.data_source = MagicMock()
+
+        executor.save(rollout_id=7)
+        executor.load(rollout_id=7)
+
+        assert calls == [
+            ("train", "save", 7),
+            ("train", "load", 7),
+        ]
+
+    async def test_save_forwards_to_the_data_source_for_a_global_dataset(
+        self,
+        ray_local_mode,
+        patch_low_level,
+        monkeypatch,
+    ):
+        """With a global dataset both the data source and the rollout functions are checkpointed."""
+        import miles.ray.rollout.rollout_executor as rexec
+
+        monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
+        args = _make_test_args(rollout_global_dataset=True)
+
+        executor = _make_executor(args)
+        executor.use_legacy_rollout_v1 = False
+        calls: list[tuple[str, str, object]] = []
+        executor.generate_rollout = _RecordingRolloutFn("train", calls)
+        executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
+        executor.data_source = MagicMock()
+
+        executor.save(rollout_id=5)
+
+        executor.data_source.save.assert_called_once_with(5)
+        assert ("train", "save", 5) in calls
+
+    async def test_save_forwards_to_the_data_source_only_for_a_global_dataset(
+        self,
+        ray_local_mode,
+        patch_low_level,
+        monkeypatch,
+    ):
+        """The data source is checkpointed only when it owns a global dataset; the rollout functions always are."""
+        import miles.ray.rollout.rollout_executor as rexec
+
+        monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
+        args = _make_test_args(rollout_global_dataset=False)
+
+        executor = _make_executor(args)
+        executor.use_legacy_rollout_v1 = False
+        calls: list[tuple[str, str, object]] = []
+        executor.generate_rollout = _RecordingRolloutFn("train", calls)
+        executor.eval_generate_rollout = _RecordingRolloutFn("eval", calls)
+        executor.data_source = MagicMock()
+
+        executor.save(rollout_id=3)
+
+        executor.data_source.save.assert_not_called()
+        assert ("train", "save", 3) in calls
+
+    async def test_legacy_function_path_does_not_get_save_load(
+        self,
+        ray_local_mode,
+        patch_low_level,
+        monkeypatch,
+    ):
+        """Without the experimental flag the rollout functions are bare callables, so they are not checkpointed."""
+        import miles.ray.rollout.rollout_executor as rexec
+
+        monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
+        args = _make_test_args(rollout_global_dataset=False)
+
+        executor = _make_executor(args)
+        executor.use_legacy_rollout_v1 = True
+        executor.generate_rollout = lambda *a, **kw: None
+        executor.eval_generate_rollout = lambda *a, **kw: None
+        executor.data_source = MagicMock()
+
+        executor.save(rollout_id=1)
+        executor.load(rollout_id=1)
+
+        executor.data_source.load.assert_called_once_with(1)
 
 
 @pytest.mark.asyncio
