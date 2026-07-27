@@ -6,7 +6,7 @@ import time
 import ray
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
-import miles.ray.rollout.server_group as server_group_module
+import miles.ray.rollout.server_cell as server_cell_module
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.server_cell import flatten_cells
 from miles.ray.rollout.server_engine import ServerEngine
@@ -61,7 +61,7 @@ class TestTeardownIsTerminal:
 
     def test_a_hanging_shutdown_does_not_block_teardown(self, monkeypatch, ray_local_mode):
         """A wedged engine must not stall teardown forever, since teardown is how a wedged engine is reclaimed."""
-        monkeypatch.setattr(server_group_module, "_SHUTDOWN_TIMEOUT", 0.5)
+        monkeypatch.setattr(server_cell_module, "SHUTDOWN_TIMEOUT", 0.5)
         group = _build_group(pg_tuple=(None, [], []))
         actor_handle = _HangingEngine.remote()
         flatten_cells(group.cells)[0].mark_allocated_uninitialized(actor_handle)

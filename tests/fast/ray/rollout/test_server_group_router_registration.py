@@ -12,6 +12,7 @@ from miles.ray.rollout.server_group import ServerGroup
 from miles.utils import async_utils
 
 _MODULE = "miles.ray.rollout.server_group"
+_CELL_MODULE = "miles.ray.rollout.server_cell"
 
 
 class _RecordingRouterApiClient:
@@ -145,7 +146,7 @@ def test_stop_engines_unregisters_before_killing_the_actor():
 
     with (
         _with_recording_client(group),
-        patch(f"{_MODULE}.ray") as ray_mock,
+        patch(f"{_CELL_MODULE}.ray") as ray_mock,
     ):
         ray_mock.get.side_effect = lambda *args, **kwargs: events.append(("shutdown", {}))
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
@@ -166,7 +167,7 @@ def test_a_router_that_rejects_the_unregister_still_kills_the_actor():
 
     with (
         _with_recording_client(group),
-        patch(f"{_MODULE}.ray") as ray_mock,
+        patch(f"{_CELL_MODULE}.ray") as ray_mock,
     ):
         ray_mock.get.side_effect = lambda *args, **kwargs: events.append(("shutdown", {}))
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
@@ -187,8 +188,8 @@ def test_a_router_that_never_answers_the_unregister_does_not_block_teardown():
 
     with (
         _with_recording_client(group),
-        patch(f"{_MODULE}._SHUTDOWN_TIMEOUT", 0.1),
-        patch(f"{_MODULE}.ray") as ray_mock,
+        patch(f"{_MODULE}.SHUTDOWN_TIMEOUT", 0.1),
+        patch(f"{_CELL_MODULE}.ray") as ray_mock,
     ):
         ray_mock.kill.side_effect = lambda handle: events.append(("kill", {}))
         group.stop_engines(engine_indices=[0])
@@ -204,7 +205,7 @@ def test_use_miles_router_reaches_both_router_calls():
 
     with (
         _with_recording_client(group),
-        patch(f"{_MODULE}.ray"),
+        patch(f"{_CELL_MODULE}.ray"),
     ):
         async_utils.run(group.register_workers([0]))
         group.stop_engines(engine_indices=[0])
