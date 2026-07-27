@@ -162,11 +162,10 @@ RUN pip install multi-storage-client --no-deps
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
 
-# https://github.com/pytorch/pytorch/issues/168167
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-    pip install nvidia-cudnn-cu13==9.16.0.29; \
+    pip install nvidia-cudnn-cu13==9.22.0.52; \
   else \
-    pip install nvidia-cudnn-cu12==9.16.0.29; \
+    pip install nvidia-cudnn-cu12==9.22.0.52; \
   fi
 
 
