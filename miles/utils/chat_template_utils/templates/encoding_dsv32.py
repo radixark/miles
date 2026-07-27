@@ -282,9 +282,7 @@ def render_message(
 
         summary_content = content or ""
 
-        # Miles modification: only the upstream drop path enforces the
-        # reasoning-required invariant; drop_thinking=False accepts injected
-        # assistant input without reasoning_content (renders as `</think>`).
+        # Miles modification: TiTO disallows drop_thinking=True.
         if drop_thinking and thinking_mode == "thinking" and index > last_user_idx:
             if not (reasoning_content or tool_calls):
                 raise DS32EncodingError(
