@@ -39,7 +39,6 @@ def patch_low_level(monkeypatch, mock_engine_http_servers):
     import miles.ray.rollout.rollout_server as rsrv
     import miles.ray.rollout.server_cell as scell
     import miles.ray.rollout.server_group as sg
-    from miles.ray.rollout.addr_allocator import PortAllocator
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
     monkeypatch.setattr(scell, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
@@ -53,19 +52,16 @@ def patch_low_level(monkeypatch, mock_engine_http_servers):
 
     def _fake_alloc(*args, **kwargs):
         engines = kwargs["rollout_engines"]
-        return (
-            {
-                rank: dict(
-                    host=mock_engine_http_servers.new_for_rank(rank).host,
-                    port=mock_engine_http_servers.for_rank(rank).port,
-                    nccl_port=31000 + rank,
-                    engine_info_bootstrap_port=32000 + rank,
-                    dist_init_addr=f"127.0.0.1:{33000 + rank}",
-                )
-                for rank, _ in engines
-            },
-            PortAllocator(_values={"127.0.0.1": 34000}),
-        )
+        return {
+            rank: dict(
+                host=mock_engine_http_servers.new_for_rank(rank).host,
+                port=mock_engine_http_servers.for_rank(rank).port,
+                nccl_port=31000 + rank,
+                engine_info_bootstrap_port=32000 + rank,
+                dist_init_addr=f"127.0.0.1:{33000 + rank}",
+            )
+            for rank, _ in engines
+        }
 
     monkeypatch.setattr(sg, "allocate_rollout_engine_addr_and_ports_normal", _fake_alloc)
     monkeypatch.setattr(sg, "SGLangRouterApiClient", _NoopRouterApiClient)
