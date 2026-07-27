@@ -10,6 +10,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.rollout.server_cell import flatten_cells
 
 
 class _NoopRouterApiClient:
@@ -463,12 +464,12 @@ class TestRecoverUpdatableEngines:
         # Kill engine 0 directly + mark stopped (simulates a fault before any
         # rollout). recover_updatable_engines must not bring it back yet.
         ray.kill(actor0_before)
-        controller.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
+        flatten_cells(controller.servers["actor"].server_groups[0].cells)[0].mark_stopped()
 
         await controller.recover_updatable_engines()
 
         # Slot 0 is still de-allocated; recovery skipped because rollout_id=-1.
-        assert not controller.servers["actor"].server_groups[0].all_engines[0].is_allocated
+        assert not flatten_cells(controller.servers["actor"].server_groups[0].cells)[0].is_allocated
 
     async def test_recovers_dead_engine_after_rollout_started(
         self,
@@ -487,12 +488,12 @@ class TestRecoverUpdatableEngines:
         actor0_before = _engine_slots(controller)[0].actor_handle
 
         ray.kill(actor0_before)
-        controller.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
+        flatten_cells(controller.servers["actor"].server_groups[0].cells)[0].mark_stopped()
 
         await controller.prepare_rollout(0)
         await controller.recover_updatable_engines()
 
-        slot0 = controller.servers["actor"].server_groups[0].all_engines[0]
+        slot0 = flatten_cells(controller.servers["actor"].server_groups[0].cells)[0]
         assert slot0.is_allocated
         assert slot0.actor_handle is not actor0_before
         assert isinstance(ray.get(slot0.actor_handle.get_calls.remote()), list)

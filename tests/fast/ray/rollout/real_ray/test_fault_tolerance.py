@@ -10,6 +10,7 @@ import ray
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
 from miles.ray.rollout.addr_allocator import PortCursors
+from miles.ray.rollout.server_cell import flatten_cells
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
 
@@ -44,7 +45,7 @@ def _start(group: ServerGroup) -> None:
 
 
 def _kill_all(group: ServerGroup) -> None:
-    for e in group.all_engines:
+    for e in flatten_cells(group.cells):
         if e.is_allocated:
             try:
                 ray.kill(e.actor_handle)
@@ -68,22 +69,22 @@ class TestKillAndRecover:
         group = _build_group(pg_tuple=pg, num_engines=2)
         _start(group)
 
-        original_handles = [e.actor_handle for e in group.all_engines]
+        original_handles = [e.actor_handle for e in flatten_cells(group.cells)]
         # Real fault: kill engine 0 + mark its slot stopped (production code's
         # health monitor would do this; here we simulate it directly).
         ray.kill(original_handles[0])
-        group.all_engines[0].mark_stopped()
+        flatten_cells(group.cells)[0].mark_stopped()
 
         try:
             await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
             # New actor for slot 0
-            assert group.all_engines[0].is_allocated
-            assert group.all_engines[0].actor_handle is not original_handles[0]
-            calls = ray.get(group.all_engines[0].actor_handle.get_calls.remote())
+            assert flatten_cells(group.cells)[0].is_allocated
+            assert flatten_cells(group.cells)[0].actor_handle is not original_handles[0]
+            calls = ray.get(flatten_cells(group.cells)[0].actor_handle.get_calls.remote())
             assert "init" in [c[0] for c in calls]
 
             # Slot 1 untouched, still the same actor
-            assert group.all_engines[1].actor_handle is original_handles[1]
+            assert flatten_cells(group.cells)[1].actor_handle is original_handles[1]
         finally:
             _kill_all(group)
 
@@ -99,17 +100,17 @@ class TestKillAndRecover:
         group = _build_group(pg_tuple=pg, num_engines=3)
         _start(group)
 
-        old = [e.actor_handle for e in group.all_engines]
+        old = [e.actor_handle for e in flatten_cells(group.cells)]
         for i in (0, 2):
             ray.kill(old[i])
-            group.all_engines[i].mark_stopped()
+            flatten_cells(group.cells)[i].mark_stopped()
 
         try:
             await group.recover(port_cursors=PortCursors.empty())
             for i in (0, 2):
-                assert group.all_engines[i].is_allocated
-                assert group.all_engines[i].actor_handle is not old[i]
-            assert group.all_engines[1].actor_handle is old[1]
+                assert flatten_cells(group.cells)[i].is_allocated
+                assert flatten_cells(group.cells)[i].actor_handle is not old[i]
+            assert flatten_cells(group.cells)[1].actor_handle is old[1]
         finally:
             _kill_all(group)
 
@@ -137,15 +138,15 @@ class TestKillAndRecover:
         group = _build_group(pg_tuple=pg, num_engines=1)
         group.router_ip, group.router_port = "10.0.0.9", 9000
         _start(group)
-        ray.kill(group.all_engines[0].actor_handle)
-        group.all_engines[0].mark_stopped()
+        ray.kill(flatten_cells(group.cells)[0].actor_handle)
+        flatten_cells(group.cells)[0].mark_stopped()
 
         try:
             with patch.object(ServerGroup, "_router_api_client", property(lambda self: _Recorder())):
                 await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
 
-            assert [event["worker_url"] for event in events] == [group.all_engines[0].addr_info.server_url]
-            assert group.all_engines[0].is_alive
+            assert [event["worker_url"] for event in events] == [flatten_cells(group.cells)[0].addr_info.server_url]
+            assert flatten_cells(group.cells)[0].is_alive
         finally:
             _kill_all(group)
 
@@ -161,14 +162,14 @@ class TestKillAndRecover:
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2, needs_offload=True, update_weights=True)
         _start(group)
-        old = [e.actor_handle for e in group.all_engines]
+        old = [e.actor_handle for e in flatten_cells(group.cells)]
 
         ray.kill(old[0])
-        group.all_engines[0].mark_stopped()
+        flatten_cells(group.cells)[0].mark_stopped()
 
         try:
             await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
-            calls = ray.get(group.all_engines[0].actor_handle.get_calls.remote())
+            calls = ray.get(flatten_cells(group.cells)[0].actor_handle.get_calls.remote())
             assert "init" in [c[0] for c in calls]
 
             server = mock_engine_http_servers.for_rank(0)
@@ -223,9 +224,9 @@ class TestConcurrentRecover:
 
         # Kill one engine in each group
         for g in (a, b):
-            old = g.all_engines[0].actor_handle
+            old = flatten_cells(g.cells)[0].actor_handle
             ray.kill(old)
-            g.all_engines[0].mark_stopped()
+            flatten_cells(g.cells)[0].mark_stopped()
 
         try:
             # Real concurrent recover via asyncio.gather
@@ -233,8 +234,8 @@ class TestConcurrentRecover:
                 a.recover(port_cursors=PortCursors.empty(), filter_indices=[0]),
                 b.recover(port_cursors=PortCursors.empty(), filter_indices=[0]),
             )
-            assert a.all_engines[0].is_allocated
-            assert b.all_engines[0].is_allocated
+            assert flatten_cells(a.cells)[0].is_allocated
+            assert flatten_cells(b.cells)[0].is_allocated
         finally:
             _kill_all(a)
             _kill_all(b)
@@ -258,7 +259,7 @@ class TestSimulateCrashKeepsActorReachable:
         pg = placement_group_factory(1)
         group = _build_group(pg_tuple=pg, num_engines=1)
         _start(group)
-        actor = group.all_engines[0].actor_handle
+        actor = flatten_cells(group.cells)[0].actor_handle
 
         try:
             ray.get(actor.simulate_crash.remote())

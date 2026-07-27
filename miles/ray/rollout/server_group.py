@@ -15,7 +15,7 @@ from miles.ray.rollout.addr_allocator import (
     allocate_rollout_engine_addr_and_ports_external,
     allocate_rollout_engine_addr_and_ports_normal,
 )
-from miles.ray.rollout.server_cell import ServerCell
+from miles.ray.rollout.server_cell import ServerCell, flatten_cells
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import async_utils, dumper_utils
@@ -38,7 +38,7 @@ class ServerGroup:
     pg: Any  # (placement_group, reordered_bundle_indices, reordered_gpu_ids)
     cells: list[ServerCell]
     num_gpus_per_engine: int
-    # NOTE: this may have risk when recovering engines parallelly; may use source of truth (all_engines) later
+    # NOTE: this may have risk when recovering engines parallelly; may use source of truth (cells) later
     has_new_engines: bool
     worker_type: str = "regular"  # "regular", "prefill", or "decode"
     rank_offset: int = 0
@@ -52,12 +52,8 @@ class ServerGroup:
 
     def __post_init__(self):
         assert (
-            not self.all_engines or self.rank_offset % self.nodes_per_engine == 0
+            not self.cells or self.rank_offset % self.nodes_per_engine == 0
         ), f"{self.rank_offset=} must be a multiple of {self.nodes_per_engine=}"
-
-    @property
-    def all_engines(self) -> list[ServerEngine]:
-        return [engine for cell in self.cells for engine in cell.engines]
 
     @property
     def nodes_per_engine(self):
@@ -66,7 +62,7 @@ class ServerGroup:
     @property
     def engines(self) -> list[ServerEngine]:
         """Node-0 engines only (for multi-node serving)."""
-        return self.all_engines[:: self.nodes_per_engine]
+        return [cell.engines[0] for cell in self.cells]
 
     def start_engines(
         self, port_cursors: PortCursors, start_indices: list[int] | None = None
@@ -76,7 +72,7 @@ class ServerGroup:
         Mutates ``port_cursors`` in place to advance past any newly assigned ports.
         Returns ``(init_handles, new_engine_indices)`` where *init_handles* is a list
         of Ray ObjectRefs (one per newly created engine) and *new_engine_indices* is
-        the list of indices into ``self.all_engines`` that were just allocated.
+        the list of indices into the group's flat engine list that were just allocated.
         """
         assert not ({"host", "port"} & set(self.sglang_overrides)), (
             f"sglang_overrides must not override host/port ({self.sglang_overrides=}): the rollout process derives "
@@ -93,12 +89,14 @@ class ServerGroup:
 
         RolloutRayActor = ray.remote(SGLangEngine)
 
+        all_engines = flatten_cells(self.cells)
+
         new_engines = []
         new_engine_indices = []
-        for i in range(len(self.all_engines)):
+        for i in range(len(all_engines)):
             if (start_indices is not None) and (i not in start_indices):
                 continue
-            if self.all_engines[i].is_allocated:
+            if all_engines[i].is_allocated:
                 continue
 
             global_rank = self.rank_offset + i
@@ -153,7 +151,7 @@ class ServerGroup:
 
             new_engines.append((global_rank, rollout_engine))
             new_engine_indices.append(i)
-            self.all_engines[i].mark_allocated_uninitialized(rollout_engine)
+            all_engines[i].mark_allocated_uninitialized(rollout_engine)
 
         curr_num_new_engines = len(new_engines)
         self.has_new_engines |= curr_num_new_engines > 0
@@ -179,7 +177,7 @@ class ServerGroup:
 
         for index, _ in new_engines:
             engine_addr_and_ports = addr_and_ports[index]
-            self.all_engines[index - self.rank_offset].set_addressing(
+            all_engines[index - self.rank_offset].set_addressing(
                 AddrInfo(
                     server_url=build_server_url(
                         host=engine_addr_and_ports["host"], port=engine_addr_and_ports["port"]
@@ -220,10 +218,11 @@ class ServerGroup:
         )
 
     def _primary_engines_of(self, engine_indices: list[int]) -> list[ServerEngine]:
+        all_engines = flatten_cells(self.cells)
         return [
-            self.all_engines[index]
+            all_engines[index]
             for index in engine_indices
-            if index % self.nodes_per_engine == 0 and self.all_engines[index].is_allocated
+            if index % self.nodes_per_engine == 0 and all_engines[index].is_allocated
         ]
 
     @property
@@ -241,8 +240,9 @@ class ServerGroup:
             async_utils.run(asyncio.wait_for(self.unregister_workers(engine_indices), timeout=_SHUTDOWN_TIMEOUT))
         except Exception as e:
             logger.warning(f"Unregistering {engine_indices=} from the router failed, tearing down anyway (e: {e})")
+        all_engines = flatten_cells(self.cells)
         for i in engine_indices:
-            engine = self.all_engines[i]
+            engine = all_engines[i]
             if engine.is_allocated:
                 logger.info(f"Shutting down and killing engine at index {i}")
                 try:
@@ -256,12 +256,13 @@ class ServerGroup:
                     logger.warning(f"Fail to kill engine at index {i} (e: {e})")
             else:
                 logger.info(f"Engine at index {i} is already None")
-            self.all_engines[i].mark_stopped()
+            all_engines[i].mark_stopped()
 
     async def recover(self, port_cursors: PortCursors, filter_indices: list[int] | None = None):
+        all_engines = flatten_cells(self.cells)
         if filter_indices is None:
-            filter_indices = [i for i, engine in enumerate(self.all_engines) if not engine.is_allocated]
-        start_indices = [idx for idx in filter_indices if not self.all_engines[idx].is_allocated]
+            filter_indices = [i for i, engine in enumerate(all_engines) if not engine.is_allocated]
+        start_indices = [idx for idx in filter_indices if not all_engines[idx].is_allocated]
 
         handles, new_engine_indices = self.start_engines(port_cursors, start_indices=start_indices)
         await asyncio.gather(*handles)
@@ -273,7 +274,7 @@ class ServerGroup:
             start_indices
         ), "curr_num_new_engines does not match start_indices length"
         if self.needs_offload and start_indices:
-            new_primary_engines = [self.all_engines[i] for i in start_indices if i % self.nodes_per_engine == 0]
+            new_primary_engines = [all_engines[i] for i in start_indices if i % self.nodes_per_engine == 0]
             release_handles.extend(engine.api_client.release_memory_occupation() for engine in new_primary_engines)
             if self.update_weights or self.model_path:
                 all_resume_engines.extend(new_primary_engines)
@@ -292,8 +293,9 @@ class ServerGroup:
         await self.register_workers(new_engine_indices)
 
     def mark_alive(self, engine_indices: list[int]):
+        all_engines = flatten_cells(self.cells)
         for engine_index in engine_indices:
-            self.all_engines[engine_index].mark_alive()
+            all_engines[engine_index].mark_alive()
 
     async def offload(self, tags: list[str] | None = None):
         if not self.needs_offload:

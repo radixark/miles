@@ -80,14 +80,10 @@ class TestGetCellIndexerOfIdMap:
         assert cells[0].engine_indices == [0, 1]
 
     def test_placeholder_group_with_zero_engines_emits_zero_cells(self):
-        """``placeholder`` worker_type groups have empty all_engines/engines.
-        The internal assertion ``len(all_engines) == len(engines) *
-        nodes_per_engine`` still holds (0 == 0 * N)."""
+        """``placeholder`` worker_type groups have no cells, so no cell ids are emitted."""
         srv = MagicMock()
         group = MagicMock()
-        group.all_engines = []
-        group.engines = []
-        group.nodes_per_engine = 2
+        group.cells = []
         srv.server_groups = [group]
         out = get_cell_indexer_of_id_map({"only": srv})
         assert out == []
