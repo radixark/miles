@@ -1,0 +1,39 @@
+# Fork PRs from first-time contributors need a maintainer to press "Approve and
+# run" after every push (repo Actions policy: first_time_contributors). Applying
+# the `ci-trusted` label is that approval made once per PR: this workflow then
+# auto-approves the pending runs for the current and every subsequent push.
+# Removing the label revokes it.
+#
+# `pull_request_target` executes base-branch workflow code only and this job
+# never checks out the fork's code, so it is safe to run without approval.
+
+name: Approve Trusted CI
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled]
+
+permissions:
+  actions: write
+
+jobs:
+  approve:
+    if: contains(github.event.pull_request.labels.*.name, 'ci-trusted')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Approve pending runs on the PR head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # The gated pull_request runs are created around the same time as
+          # this event fires; poll for a while so none are missed.
+          for attempt in 1 2 3 4 5; do
+            sleep 15
+            run_ids=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&status=action_required" --jq '.workflow_runs[].id')
+            for run_id in ${run_ids}; do
+              echo "approving run ${run_id}"
+              gh api -X POST "repos/${REPO}/actions/runs/${run_id}/approve" || true
+            done
+          done
