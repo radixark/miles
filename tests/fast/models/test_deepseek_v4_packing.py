@@ -170,3 +170,108 @@ def test_indexer_workspace_padding_restores_logical_shape(monkeypatch):
     assert captured["cu_ks"][-1].item() == 257
     assert captured["cu_ke"][-1].item() == 257
     assert torch.count_nonzero(captured["kv"][257:]) == 0
+
+
+def test_indexer_query_chunk_size_bounds_fp32_workspace():
+    tilelang_indexer_fwd = pytest.importorskip(
+        "miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd"
+    )
+    max_workspace_bytes = 8192
+    chunk_size = tilelang_indexer_fwd._get_indexer_query_chunk_size(
+        seq_len=17,
+        seq_len_kv=257,
+        heads=64,
+        max_workspace_bytes=max_workspace_bytes,
+    )
+    _, padded_seq_len_kv = tilelang_indexer_fwd._get_indexer_padded_lengths(1, 257, 64)
+
+    assert chunk_size == 2
+    assert chunk_size % 2 == 0
+    assert chunk_size * padded_seq_len_kv * torch.float32.itemsize <= max_workspace_bytes
+
+
+def test_indexer_query_chunk_size_rejects_workspace_smaller_than_one_tile():
+    tilelang_indexer_fwd = pytest.importorskip(
+        "miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd"
+    )
+    _, padded_seq_len_kv = tilelang_indexer_fwd._get_indexer_padded_lengths(1, 257, 64)
+    minimum_workspace_bytes = 2 * padded_seq_len_kv * torch.float32.itemsize
+
+    with pytest.raises(ValueError, match="smaller than one TileLang query tile"):
+        tilelang_indexer_fwd._get_indexer_query_chunk_size(
+            seq_len=17,
+            seq_len_kv=257,
+            heads=64,
+            max_workspace_bytes=minimum_workspace_bytes - 1,
+        )
+
+
+def test_batched_indexer_topk_chunks_queries_without_full_logits(monkeypatch):
+    tilelang_indexer_fwd = pytest.importorskip(
+        "miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd"
+    )
+    seen_chunk_sizes = []
+
+    def fake_indexer(q, kv, weights, cu_ks, cu_ke):
+        seen_chunk_sizes.append(q.shape[0])
+        scores = torch.arange(kv.shape[0], dtype=torch.float32).expand(q.shape[0], -1).clone()
+        positions = torch.arange(kv.shape[0]).unsqueeze(0)
+        valid = (positions >= cu_ks.unsqueeze(1)) & (positions < cu_ke.unsqueeze(1))
+        return scores.masked_fill(~valid, float("-inf"))
+
+    def torch_topk_indices(logits, topk):
+        scores, indices = torch.topk(logits, topk, dim=-1)
+        return indices.to(torch.int32).masked_fill(scores == -torch.inf, -1)
+
+    monkeypatch.setattr(tilelang_indexer_fwd, "indexer_fwd_interface", fake_indexer)
+    q = torch.zeros(5, 2, 64, 1, dtype=torch.bfloat16)
+    k = torch.zeros(5, 2, 1, dtype=torch.bfloat16)
+    weights = torch.ones(5, 2, 64, dtype=torch.float32)
+    cu_ks = torch.zeros(5, dtype=torch.int32)
+    cu_ke = torch.full((5,), 5, dtype=torch.int32)
+
+    indices = tilelang_indexer_fwd.batched_indexer_topk(
+        q,
+        k,
+        weights,
+        cu_ks,
+        cu_ke,
+        topk=2,
+        topk_fn=torch_topk_indices,
+        max_workspace_bytes=4096,
+    )
+
+    assert indices.shape == (2, 5, 2)
+    assert torch.equal(indices, torch.tensor([[[4, 3]] * 5] * 2, dtype=torch.int32))
+    assert seen_chunk_sizes == [2, 2, 1, 2, 2, 1]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA TileLang kernel")
+def test_batched_indexer_topk_gpu_chunks_match_full_logits():
+    tilelang_indexer_fwd = pytest.importorskip(
+        "miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd"
+    )
+    from miles_plugins.models.dsa_topk import torch_dsa_topk
+
+    torch.manual_seed(1234)
+    device = torch.device("cuda")
+    q = torch.randn(16, 1, 64, 128, device=device, dtype=torch.bfloat16)
+    k = torch.randn(8, 1, 128, device=device, dtype=torch.bfloat16)
+    weights = torch.randn(16, 1, 64, device=device, dtype=torch.float32)
+    cu_ks = torch.zeros(16, device=device, dtype=torch.int32)
+    cu_ke = torch.full((16,), 8, device=device, dtype=torch.int32)
+
+    full_logits = tilelang_indexer_fwd.batched_indexer_fwd(q, k, weights, cu_ks, cu_ke)
+    expected = torch_dsa_topk(full_logits, 4)
+    actual = tilelang_indexer_fwd.batched_indexer_topk(
+        q,
+        k,
+        weights,
+        cu_ks,
+        cu_ke,
+        topk=4,
+        topk_fn=torch_dsa_topk,
+        max_workspace_bytes=4096,
+    )
+
+    assert torch.equal(actual, expected)

@@ -18,7 +18,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
 )
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
     _make_causal_cu_seqlens,
-    batched_indexer_fwd,
+    batched_indexer_topk,
 )
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
@@ -165,9 +165,14 @@ class V4Indexer(MegatronModule):
                 cp_rank = cp_group.rank()
                 cu_ks = cu_ks[cp_rank * seqlen : (cp_rank + 1) * seqlen]
                 cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
-        index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
-
-        topk_count = min(self.index_topk, index_scores.size(-1))
-        topk_indices = get_dsa_topk_fn(self.topk_backend)(index_scores, topk_count)
+        topk_indices = batched_indexer_topk(
+            q,
+            k,
+            weights.float(),
+            cu_ks,
+            cu_ke,
+            self.index_topk,
+            get_dsa_topk_fn(self.topk_backend),
+        )
 
         return topk_indices

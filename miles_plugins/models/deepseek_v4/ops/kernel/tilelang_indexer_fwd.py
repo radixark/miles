@@ -4,6 +4,8 @@
 #   - Operates on [seqlen, batch, heads, dim] (SBHD) layout, batch handled externally
 #   - Uses causal mask via cu_seqlens instead of variable-length packed sequences
 #   - Supports compressed KV (seq_len_kv = seq_len_q / compress_ratio)
+import os
+
 import tilelang
 import torch
 import torch.nn.functional as F
@@ -11,6 +13,8 @@ from tilelang import language as T
 
 
 _INDEXER_BLOCK_N = 256
+_DEFAULT_INDEXER_LOGITS_WORKSPACE_MB = 2048
+_INDEXER_LOGITS_WORKSPACE_MB_ENV = "MILES_DSV4_INDEXER_LOGITS_WORKSPACE_MB"
 
 
 def _get_indexer_padded_lengths(seq_len, seq_len_kv, heads, block_n=_INDEXER_BLOCK_N):
@@ -29,6 +33,45 @@ def _get_indexer_padded_lengths(seq_len, seq_len_kv, heads, block_n=_INDEXER_BLO
     padded_seq_len = ((seq_len + block_q - 1) // block_q) * block_q if seq_len else 0
     padded_seq_len_kv = ((seq_len_kv + block_n - 1) // block_n + 1) * block_n if seq_len_kv else 0
     return padded_seq_len, padded_seq_len_kv
+
+
+def _get_indexer_logits_workspace_bytes():
+    workspace_mb = os.environ.get(
+        _INDEXER_LOGITS_WORKSPACE_MB_ENV,
+        str(_DEFAULT_INDEXER_LOGITS_WORKSPACE_MB),
+    )
+    try:
+        workspace_mb = int(workspace_mb)
+    except ValueError as exc:
+        raise ValueError(
+            f"{_INDEXER_LOGITS_WORKSPACE_MB_ENV} must be an integer MiB value, got {workspace_mb!r}"
+        ) from exc
+    if workspace_mb <= 0:
+        raise ValueError(f"{_INDEXER_LOGITS_WORKSPACE_MB_ENV} must be positive, got {workspace_mb}")
+    return workspace_mb * 1024 * 1024
+
+
+def _get_indexer_query_chunk_size(seq_len, seq_len_kv, heads, max_workspace_bytes):
+    """Bound the FP32 logits workspace while preserving TileLang query tiles."""
+    if seq_len < 0 or seq_len_kv < 0:
+        raise ValueError(f"sequence lengths must be non-negative, got {seq_len=} {seq_len_kv=}")
+    if max_workspace_bytes <= 0:
+        raise ValueError(f"max_workspace_bytes must be positive, got {max_workspace_bytes}")
+    if seq_len == 0 or seq_len_kv == 0:
+        return seq_len
+
+    block_q = max(1, 128 // heads)
+    _, padded_seq_len_kv = _get_indexer_padded_lengths(1, seq_len_kv, heads)
+    bytes_per_query = padded_seq_len_kv * torch.float32.itemsize
+    minimum_workspace_bytes = block_q * bytes_per_query
+    if max_workspace_bytes < minimum_workspace_bytes:
+        raise ValueError(
+            "indexer logits workspace is smaller than one TileLang query tile: "
+            f"got {max_workspace_bytes} bytes, need at least {minimum_workspace_bytes}"
+        )
+    workspace_rows = max_workspace_bytes // bytes_per_query
+    chunk_size = (workspace_rows // block_q) * block_q
+    return min(seq_len, chunk_size)
 
 
 @tilelang.jit(
@@ -243,3 +286,51 @@ def batched_indexer_fwd(q, k, weights, cu_seqlen_ks, cu_seqlen_ke):
             cu_seqlen_ke,
         )
     return all_logits
+
+
+def batched_indexer_topk(
+    q,
+    k,
+    weights,
+    cu_seqlen_ks,
+    cu_seqlen_ke,
+    topk,
+    topk_fn,
+    max_workspace_bytes=None,
+):
+    """Compute exact per-query top-k indices without materializing full-sequence logits.
+
+    Chunking only the query dimension is exact because every query independently
+    scores the full compressed-KV dimension. The chunk size is aligned to the
+    TileLang query tile and caps the temporary FP32 logits allocation.
+    """
+    seqlen, batch, heads, _ = q.shape
+    seq_len_kv = k.shape[0]
+    topk_count = min(topk, seq_len_kv)
+    if seqlen == 0 or topk_count == 0:
+        return torch.empty((batch, seqlen, topk_count), device=q.device, dtype=torch.int32)
+
+    if max_workspace_bytes is None:
+        max_workspace_bytes = _get_indexer_logits_workspace_bytes()
+    query_chunk_size = _get_indexer_query_chunk_size(
+        seqlen,
+        seq_len_kv,
+        heads,
+        max_workspace_bytes,
+    )
+    topk_indices = torch.empty((batch, seqlen, topk_count), device=q.device, dtype=torch.int32)
+
+    for b in range(batch):
+        k_b = k[:, b, :].contiguous()
+        for start in range(0, seqlen, query_chunk_size):
+            end = min(start + query_chunk_size, seqlen)
+            chunk_logits = indexer_fwd_interface(
+                q[start:end, b, :, :].contiguous(),
+                k_b,
+                weights[start:end, b, :].contiguous(),
+                cu_seqlen_ks[start:end],
+                cu_seqlen_ke[start:end],
+            )
+            topk_indices[b, start:end].copy_(topk_fn(chunk_logits, topk_count))
+
+    return topk_indices
