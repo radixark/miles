@@ -56,6 +56,7 @@ def allocate_gpus_for_actor(
         from torch_memory_saver.utils import get_binary_path_from_package
 
         dynlib_path = str(get_binary_path_from_package("torch_memory_saver_hook_mode_preload"))
+        assert os.path.exists(dynlib_path), f"LD_PRELOAD so file {dynlib_path} does not exist."
 
         env_vars["LD_PRELOAD"] = dynlib_path
         env_vars["TMS_INIT_ENABLE"] = "1"

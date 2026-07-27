@@ -10,7 +10,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from miles.backends.megatron_utils.checkpoint import _is_megatron_checkpoint, save_checkpoint_with_lora
+from miles.backends.megatron_utils.checkpoint import (
+    _exclude_adapter_params_from_sharded_state_dict,
+    _is_megatron_checkpoint,
+    save_checkpoint_with_lora,
+)
 
 # ---------------------------------------------------------------------------
 # _is_megatron_checkpoint
@@ -92,3 +96,37 @@ class TestSaveCheckpointWithLoRA:
         save_checkpoint_with_lora(42, model, MagicMock(), MagicMock())
 
         mock_save_ckpt.assert_called_once()
+
+
+class TestExcludeAdapterParamsFromShardedStateDict:
+    def test_filters_adapters_and_restores_method(self):
+        """Loading a base checkpoint into a LoRA model must hide the adapter
+        params from Megatron's sharded state dict -- they are not in the
+        checkpoint. The wrapper patches a bound method per model chunk, so the
+        default-arg capture of ``original`` is load-bearing: a late-binding
+        closure would make every chunk call the last chunk's method. The
+        original must also come back on the error path, or a failed load leaves
+        the model permanently unable to save its adapters.
+        """
+        wrapped_model = MagicMock()
+        model = MagicMock()
+        original = MagicMock(
+            return_value={
+                "decoder.layers.0.mlp.linear_fc1.weight": object(),
+                "decoder.layers.0.mlp.linear_fc1.adapter.linear_in.weight": object(),
+                "decoder.layers.0.mlp.linear_fc1.adapter.linear_out.weight": object(),
+            }
+        )
+        model.sharded_state_dict = original
+
+        with patch(
+            "miles.backends.megatron_utils.checkpoint.unwrap_model", return_value=[model]
+        ), _exclude_adapter_params_from_sharded_state_dict([wrapped_model]):
+            assert list(model.sharded_state_dict(metadata={})) == ["decoder.layers.0.mlp.linear_fc1.weight"]
+
+        assert model.sharded_state_dict is original
+
+        with pytest.raises(RuntimeError), _exclude_adapter_params_from_sharded_state_dict([model]):
+            raise RuntimeError("load failed")
+
+        assert model.sharded_state_dict is original

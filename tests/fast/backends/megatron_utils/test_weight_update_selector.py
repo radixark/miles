@@ -17,7 +17,7 @@ class _Iterator(MegatronHfWeightIteratorBase):
     def _iter_hf_param_units(self, weights, *, materialize):
         return iter(())
 
-    def _export_pp_local_lora(self, adapter):
+    def _export_pp_local_lora(self, adapter, weights):
         return []
 
 

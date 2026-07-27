@@ -63,6 +63,7 @@ def _has_loadable_ckpt(load_dir: str | None) -> bool:
 
 
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
+from .fp32_param_utils import enforce_marked_param_dtypes
 
 
 def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer) -> OptimizerParamScheduler:
@@ -149,16 +150,22 @@ def setup_model_and_optimizer(
         is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge"
     ):
         model = _setup_lora_model_via_bridge(args)
+        enforce_marked_param_dtypes(model)
     else:
         provider_func = get_model_provider_func(args, role)
-        if (
-            is_lora_enabled(args)
-            and role == "actor"
-            and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
-        ):
-            from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
+        if is_lora_enabled(args) and role == "actor":
+            if "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
+                from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
 
-            provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
+                provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
+            elif "kimi_k3" in (args.model_name or "").lower():
+                from miles_plugins.models.kimi_k3.lora import wrap_model_provider_with_kimi_k3_lora
+
+                from .lora_utils import patch_param_grad_buffer_for_colocate_mode_lora
+
+                provider_func = wrap_model_provider_with_kimi_k3_lora(provider_func, args)
+                if args.offload_train:
+                    patch_param_grad_buffer_for_colocate_mode_lora()
         model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:

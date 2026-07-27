@@ -62,7 +62,7 @@ class _StubIterator(HfWeightIteratorBase):
         for pair in self._base:
             yield [pair]
 
-    def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
+    def _iter_hf_adapter_units(self, lora_name, adapter, *, weights, materialize):
         self.export_calls.append(adapter)
         for name, tensor in self._exported:
             yield [(f"{lora_name}:{name}", tensor)]

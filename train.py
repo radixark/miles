@@ -2,9 +2,8 @@ import asyncio
 import logging
 import os
 
-from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
-
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.ray.rollout.rollout_manager import get_rollout_offload_tags
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -61,12 +60,14 @@ async def train(args):
     await actor_model.update_weights()
 
     if args.check_weight_update_equal:
+        compare_action = "compare" if args.check_weight_update_allow_quant_error else "compare_checksum"
         await rollout_manager.check_weights.remote(
-            action="compare",
+            action=compare_action,
             allow_quant_error=args.check_weight_update_allow_quant_error,
             selector=args.check_weight_update_selector,
             skip_list=args.check_weight_update_skip_list,
         )
+        await rollout_manager.check_weights.remote(action="clear_snapshot")
 
     if args.offload_rollout:
         await rollout_manager.onload_kv.remote()
@@ -113,12 +114,7 @@ async def train(args):
                 await actor_model.onload()
                 await rollout_manager.offload_weights.remote()
             else:
-                offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
-                if "kv_cache" in args.offload_rollout_level:
-                    offload_tags.append(GPU_MEMORY_TYPE_KV_CACHE)
-                if "weight" in args.offload_rollout_level:
-                    offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
-                await rollout_manager.offload.remote(tags=offload_tags)
+                await rollout_manager.offload.remote(tags=get_rollout_offload_tags(args))
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_pack)
@@ -140,17 +136,22 @@ async def train(args):
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
-        if args.colocate_memory_peak_device == "gpu":
-            await actor_model.clear_memory()
-            await rollout_manager.onload_weights.remote()
-            await offload_train()
-        else:
-            await offload_train()
-            if args.offload_rollout:
+        # The engines never generate again after the last rollout; skip the
+        # final offload/reload/update unless a final eval consumes it.
+        if rollout_id + 1 < args.num_rollout or should_run_periodic_action(
+            rollout_id, args.eval_interval, num_rollout_per_epoch
+        ):
+            if args.colocate_memory_peak_device == "gpu":
+                await actor_model.clear_memory()
                 await rollout_manager.onload_weights.remote()
-        await actor_model.update_weights(rollout_id=rollout_id)
-        if args.offload_rollout:
-            await rollout_manager.onload_kv.remote()
+                await offload_train()
+            else:
+                await offload_train()
+                if args.offload_rollout:
+                    await rollout_manager.onload_weights.remote()
+            await actor_model.update_weights(rollout_id=rollout_id)
+            if args.offload_rollout:
+                await rollout_manager.onload_kv.remote()
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await rollout_manager.eval.remote(rollout_id)

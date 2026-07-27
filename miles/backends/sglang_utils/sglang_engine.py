@@ -434,7 +434,8 @@ class SGLangEngine(RayActor):
 
         ``serialized_named_tensors[tp_rank]`` is bytes for that TP rank; ``serialized_tensors``
         is the whole adapter. With ``upsert``, the already-loaded ``lora_name`` is overwritten
-        in place (no unload/register).
+        in place (no unload/register). The chunk flags are only sent for a multi-chunk
+        adapter; ``sglang-miles`` does not know them.
         """
         if (serialized_tensors is None) == (serialized_named_tensors is None):
             raise ValueError("pass exactly one of serialized_tensors / serialized_named_tensors")
