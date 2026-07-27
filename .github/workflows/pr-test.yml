@@ -5,9 +5,7 @@ name: PR Test
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
-  # Only `approve-held-runs` acts on this event; every test job is guarded to
-  # skip it. It exists so a maintainer-applied `run-ci*` label can approve the
-  # held `pull_request` runs of fork PRs from first-time contributors.
+  # Serves only `approve-held-runs`; every test job skips this event.
   pull_request_target:
     types: [opened, synchronize, reopened, labeled]
   schedule:
@@ -43,8 +41,8 @@ permissions:
 concurrency:
   # PR updates supersede their previous run; distinct cron schedules and
   # manual operations must not cancel one another on the default branch.
-  # The event name keeps the pull_request_target approval instance out of the
-  # pull_request test group, so approving a held run never cancels the approver.
+  # The event name keeps `approve-held-runs` out of the test-run group it
+  # approves, so the approver is never cancelled by that run.
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
   cancel-in-progress: true
 
@@ -326,12 +324,9 @@ jobs:
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
     secrets: inherit
 
-  # A maintainer applying any `run-ci*` label already proves a human reviewed
-  # this PR and wants its CI to run, so that same action doubles as the
-  # "Approve and run" decision GitHub demands for fork PRs from first-time
-  # contributors — for the current and every subsequent push. Runs only on
-  # `pull_request_target` (never held for approval), executes base-branch
-  # workflow code only, and checks out nothing from the fork.
+  # A maintainer-applied `run-ci*` label doubles as the "Approve and run"
+  # decision for fork PRs: approve the held runs on this and later pushes.
+  # Runs base-branch code only; checks out nothing from the fork.
   approve-held-runs:
     if: >-
       github.event_name == 'pull_request_target' &&
@@ -348,14 +343,13 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
-          # The job-level contains() is a coarse substring gate; re-check with
-          # an exact prefix match.
+          # job-level contains() is substring-only; re-check the exact prefix
           if ! echo "${LABELS_JSON}" | jq -e 'any(.[]; startswith("run-ci"))' >/dev/null; then
             echo "no run-ci* label; not approving"
             exit 0
           fi
-          # The held pull_request runs are created around the same time as
-          # this event fires; poll for a while so none are missed.
+          # held runs appear around the same time this event fires; poll so
+          # none are missed
           for attempt in 1 2 3 4 5; do
             sleep 15
             run_ids=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&status=action_required" --jq '.workflow_runs[].id')
