@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
+from miles.backends.sglang_utils.arguments import add_sglang_arguments
+from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
@@ -288,3 +290,69 @@ class TestResolveFtComponents:
 
         assert result == ["train", "rollout"]
         assert result is not components
+
+
+@pytest.mark.parametrize(
+    ("parallel_args", "expected"),
+    [
+        ([], (1, 1, 1, 1)),
+        (
+            [
+                "--sglang-tensor-parallel-size",
+                "2",
+                "--sglang-data-parallel-size",
+                "3",
+                "--sglang-pipeline-parallel-size",
+                "4",
+                "--sglang-expert-parallel-size",
+                "5",
+                "--sglang-enable-dp-attention",
+            ],
+            (2, 3, 4, 5),
+        ),
+        (
+            [
+                "--sglang-tp-size",
+                "2",
+                "--sglang-dp-size",
+                "3",
+                "--sglang-pp-size",
+                "4",
+                "--sglang-ep-size",
+                "5",
+                "--sglang-enable-dp-attention",
+            ],
+            (2, 3, 4, 5),
+        ),
+    ],
+)
+def test_sglang_parallel_sizes_use_short_namespace_fields(parallel_args, expected):
+    parser = argparse.ArgumentParser()
+    add_sglang_arguments(parser)
+    args = parser.parse_args(parallel_args)
+
+    assert (args.sglang_tp_size, args.sglang_dp_size, args.sglang_pp_size, args.sglang_ep_size) == expected
+    assert not hasattr(args, "sglang_tensor_parallel_size")
+    assert not hasattr(args, "sglang_data_parallel_size")
+    assert not hasattr(args, "sglang_pipeline_parallel_size")
+    assert not hasattr(args, "sglang_expert_parallel_size")
+
+    args.rollout_num_gpus_per_engine = 8
+    args.true_on_policy_mode = False
+    args.recompute_logprobs_via_prefill = False
+    args.sglang_router_policy = None
+    args.use_session_server = False
+
+    validate_sglang_args(args)
+
+    assert args.sglang_tp_size == 8
+    assert (args.sglang_dp_size, args.sglang_pp_size, args.sglang_ep_size) == expected[1:]
+
+
+def test_sglang_parallel_size_aliases_keep_last_value():
+    parser = argparse.ArgumentParser()
+    add_sglang_arguments(parser)
+
+    args = parser.parse_args(["--sglang-data-parallel-size", "2", "--sglang-dp-size", "3"])
+
+    assert args.sglang_dp_size == 3
