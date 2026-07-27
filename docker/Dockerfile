@@ -171,12 +171,23 @@ RUN pip install multi-storage-client --no-deps
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
 
+# The base image also carries cuDNN as apt packages, in /usr/lib/<triple> where
+# ldconfig finds it ahead of the pip copy. The two then get interleaved at dlopen
+# time -- libcudnn_heuristic.so.9 resolves to the apt build while libcudnn_graph.so.9
+# resolves to the pip one -- and transformer_engine dies either on import
+# (undefined symbol _ZTVN5cudnn7backend12OperationSetE) or inside fused attention.
+# The apt copy is held, so removing it needs --allow-change-held-packages; without
+# that flag apt skips it silently and the pip pin below stays inert.
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then CU=13; else CU=12; fi; \
+  apt-get remove -y --purge --allow-change-held-packages \
+    libcudnn9-cuda-${CU} libcudnn9-dev-cuda-${CU} libcudnn9-headers-cuda-${CU} \
+  && rm -rf /var/lib/apt/lists/*
+
 # transformer_engine 2.17's fused attention emits cudnn-frontend's
 # Reshape_attributes::set_reshape_mode, i.e. the backend attribute
 # CUDNN_ATTR_OPERATION_RESHAPE_MODE, which cuDNN only understands from 9.22.0.
 # torch 2.11 ships 9.19.0.56, so this has to raise it rather than just get out of
-# the way. pip reports a conflict against torch's exact ==9.19.0.56 pin and then
-# installs anyway; the previous pin here produced the same conflict downwards.
+# the way: with the apt copy gone, 9.19.0.56 still fails and 9.22.0.52 passes.
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
     pip install nvidia-cudnn-cu13==9.22.0.52; \
   else \
