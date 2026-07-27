@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
-import threading
 import ray
+
+from miles.utils.misc import get_free_port
+from miles.utils.test_utils.mock_sglang_http_server import MockSGLangHttpServer
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +34,7 @@ class MockSGLangEngine:
         self.initialized = False
         self.calls: list[tuple[str, tuple, dict]] = []
         self._faults: dict[str, BaseException] = {}
-        self._port_seq = 20000
-        self._lock = threading.Lock()
+        self._http_server: MockSGLangHttpServer | None = None
 
     def set_fault(self, method: str, exception: BaseException | None):
         if exception is None:
@@ -50,15 +51,24 @@ class MockSGLangEngine:
                 return dict(kwargs)
         return None
 
+    def get_http_paths(self) -> list[str]:
+        return self._http_server.paths if self._http_server is not None else []
+
+    def get_http_payloads_of(self, path: str) -> list[dict | None]:
+        return self._http_server.payloads_of(path) if self._http_server is not None else []
+
     def init(self, **kwargs):
         self._record("init", (), kwargs)
         self._maybe_fault("init")
+        self._http_server = MockSGLangHttpServer(port=kwargs["port"])
         self.initialized = True
         return None
 
     def shutdown(self):
         self._record("shutdown", (), {})
         self._maybe_fault("shutdown")
+        if self._http_server is not None:
+            self._http_server.close()
         self.initialized = False
         return True
 
@@ -70,10 +80,7 @@ class MockSGLangEngine:
 
     def _get_current_node_ip_and_free_port(self, start_port: int = 15000, consecutive: int = 1):
         self._record("_get_current_node_ip_and_free_port", (), {"start_port": start_port, "consecutive": consecutive})
-        with self._lock:
-            port = max(self._port_seq, start_port)
-            self._port_seq = port + consecutive
-            return ("127.0.0.1", port)
+        return ("127.0.0.1", get_free_port(start_port=start_port, consecutive=consecutive))
 
     def _record(self, name: str, args: tuple, kwargs: dict) -> None:
         self.calls.append((name, args, kwargs))
