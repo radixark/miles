@@ -2828,13 +2828,19 @@ def miles_validate_args(args):
             )
             args.rollout_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
 
+    if args.use_critic and not args.debug_rollout_only:
+        if args.offload_train is None:
+            args.offload_train = True
+        elif not args.offload_train:
+            logger.warning(
+                "--no-offload-train with shared Actor/Critic PPO is reserved for offload debugging: "
+                "both models stay resident on the shared train GPUs, so make sure they fit."
+            )
+
     if args.offload_train is None:
         args.offload_train = False
     if args.offload_rollout is None:
         args.offload_rollout = False
-
-    if args.use_critic and not args.debug_rollout_only:
-        args.offload_train = True
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
