@@ -420,6 +420,10 @@ class MegatronTrainRayActor(TrainRayActor):
     ) -> TrainStepOutcome:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+        if self.args.enable_pp_free_warmup:
+            from .pp_free_warmup import run_pp_free_warmup
+
+            run_pp_free_warmup(self.args, rollout_id, self.model, self.optimizer, data_iterator)
 
         for m in all_replay_managers:
             if self._use_rollout_replay(m):
