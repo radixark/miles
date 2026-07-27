@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, fake_actor_handle, make_args
 
+from miles.ray.rollout.server_cell import flatten_cells
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
 from miles.utils import async_utils
@@ -172,7 +173,7 @@ def test_a_router_that_rejects_the_unregister_still_kills_the_actor():
         group.stop_engines(engine_indices=[0])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "shutdown", "kill"]
-    assert not group.all_engines[0].is_allocated
+    assert not flatten_cells(group.cells)[0].is_allocated
 
 
 def test_a_router_that_never_answers_the_unregister_does_not_block_teardown():
@@ -193,7 +194,7 @@ def test_a_router_that_never_answers_the_unregister_does_not_block_teardown():
         group.stop_engines(engine_indices=[0])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "kill"]
-    assert not group.all_engines[0].is_allocated
+    assert not flatten_cells(group.cells)[0].is_allocated
 
 
 def test_use_miles_router_reaches_both_router_calls():
