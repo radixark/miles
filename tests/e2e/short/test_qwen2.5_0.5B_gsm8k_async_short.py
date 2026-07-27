@@ -1,28 +1,17 @@
-import json
 import os
-import shlex
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"])
-register_rocm_ci(est_time=240, suite="stage-c-8-gpu-mi350", labels=["short"])
+register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "mooncake"])
+register_rocm_ci(est_time=240, suite="stage-c-8-gpu-mi350", labels=["short", "mooncake"])
 
 FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4 if FEW_GPU else 8
-
-MOONCAKE_MASTER_PORT = 50051
-MOONCAKE_MASTER_METRICS_PORT = 50052
-MOONCAKE_STORE_INIT_KWARGS = {
-    "protocol": "tcp",
-    "master_server_address": f"127.0.0.1:{MOONCAKE_MASTER_PORT}",
-    "global_segment_size": "2gb",
-    "local_buffer_size": "2gb",
-}
 
 
 def prepare():
@@ -31,21 +20,10 @@ def prepare():
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
-def start_mooncake_master():
-    U.exec_command(
-        "pgrep -x mooncake_master >/dev/null || "
-        f"(setsid mooncake_master --rpc_port {MOONCAKE_MASTER_PORT} --metrics_port {MOONCAKE_MASTER_METRICS_PORT} "
-        "> /tmp/mooncake_master.log 2>&1 &)"
-    )
-
-
 def execute():
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
 
-    object_store_args = (
-        "--object-store-backend mooncake "
-        f"--mooncake-store-init-kwargs {shlex.quote(json.dumps(MOONCAKE_STORE_INIT_KWARGS))} "
-    )
+    object_store_args = U.get_mooncake_object_store_args()
 
     rollout_args = (
         "--prompt-data /root/datasets/gsm8k/train.parquet "
@@ -140,7 +118,7 @@ def execute():
         f"{misc_args} "
     )
 
-    start_mooncake_master()
+    U.start_mooncake_master()
 
     U.execute_train(
         train_args=train_args,

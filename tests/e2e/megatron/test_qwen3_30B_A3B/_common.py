@@ -25,6 +25,7 @@ class CaseConfig:
     use_int4_rollout: bool = False
     use_bridge: bool = False
     use_r3: bool = False
+    use_mooncake: bool = False
     max_tokens_per_gpu: int = 8192
     colocate: bool = True
     rollout_num_gpus: int = None
@@ -202,6 +203,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if case.use_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
 
+    if case.use_mooncake:
+        misc_args += U.get_mooncake_object_store_args()
+
     if case.use_deepep:
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
     else:
@@ -224,6 +228,9 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
 def execute(case: CaseConfig, *, wandb_file: str) -> None:
     train_args = build_train_args(case, wandb_file=wandb_file)
+
+    if case.use_mooncake:
+        U.start_mooncake_master()
 
     extra_env_vars = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
     if case.use_int4_rollout:
