@@ -118,7 +118,6 @@ class TestKillAndRecover:
         self,
         patched_sglang_engine,
         placement_group_factory,
-        mock_engine_http_servers,
     ):
         """A recovered engine gets a fresh port, so the router must be told the new url."""
         from unittest.mock import patch
@@ -154,7 +153,6 @@ class TestKillAndRecover:
         self,
         patched_sglang_engine,
         placement_group_factory,
-        mock_engine_http_servers,
     ):
         """``needs_offload=True`` + ``update_weights=True`` means recover()
         must release_memory_occupation, then resume with WEIGHTS tag.
@@ -169,11 +167,11 @@ class TestKillAndRecover:
 
         try:
             await group.recover(port_allocator=PortAllocator.empty(), filter_cell_indices=[0])
-            calls = ray.get(flatten_cells(group.cells)[0].actor_handle.get_calls.remote())
+            recovered_actor = flatten_cells(group.cells)[0].actor_handle
+            calls = ray.get(recovered_actor.get_calls.remote())
             assert "init" in [c[0] for c in calls]
 
-            server = mock_engine_http_servers.for_rank(0)
-            paths = server.paths
+            paths = ray.get(recovered_actor.get_http_paths.remote())
             assert "/release_memory_occupation" in paths
             assert "/resume_memory_occupation" in paths
 
@@ -190,8 +188,12 @@ class TestKillAndRecover:
 
             # Recovery releases everything, not just the weights: an engine that kept its kv cache
             # would leave the trainer short of GPU memory when it takes the device back.
-            assert server.payloads_of("/release_memory_occupation") == [{"tags": None}]
-            assert server.payloads_of("/resume_memory_occupation") == [{"tags": [GPU_MEMORY_TYPE_WEIGHTS]}]
+            assert ray.get(recovered_actor.get_http_payloads_of.remote("/release_memory_occupation")) == [
+                {"tags": None}
+            ]
+            assert ray.get(recovered_actor.get_http_payloads_of.remote("/resume_memory_occupation")) == [
+                {"tags": [GPU_MEMORY_TYPE_WEIGHTS]}
+            ]
         finally:
             _kill_all(group)
 
@@ -210,11 +212,11 @@ class TestConcurrentRecover:
         ``asyncio.gather`` must both complete — no deadlock, no exception
         leaking out of the gather chain.
 
-        We do not claim "no port collision" here because the deterministic
-        port stub from the conftest gives each group its own range (groups
-        don't see each other's ranks), so disjoint-port is trivially true.
-        The real-ray claim being verified is end-to-end gather completion
-        across two groups."""
+        The groups share one PortAllocator, as they do in production: each
+        group's ports are only bound once its engine inits, so concurrent
+        recovers with independent allocators could probe the same free port
+        twice. The real-ray claim being verified is end-to-end gather
+        completion across two groups."""
         pg_a = placement_group_factory(2)
         pg_b = placement_group_factory(2)
         a = _build_group(pg_tuple=pg_a, num_engines=2)
@@ -230,9 +232,10 @@ class TestConcurrentRecover:
 
         try:
             # Real concurrent recover via asyncio.gather
+            shared_allocator = PortAllocator.empty()
             await asyncio.gather(
-                a.recover(port_allocator=PortAllocator.empty(), filter_cell_indices=[0]),
-                b.recover(port_allocator=PortAllocator.empty(), filter_cell_indices=[0]),
+                a.recover(port_allocator=shared_allocator, filter_cell_indices=[0]),
+                b.recover(port_allocator=shared_allocator, filter_cell_indices=[0]),
             )
             assert flatten_cells(a.cells)[0].is_allocated
             assert flatten_cells(b.cells)[0].is_allocated
@@ -275,7 +278,6 @@ class TestRecoverMultiNodeEngine:
         self,
         patched_sglang_engine,
         placement_group_factory,
-        mock_engine_http_servers,
     ):
         """Recovering a 2-node engine must not send release/resume to node 1."""
         pg = placement_group_factory(16)
@@ -285,8 +287,9 @@ class TestRecoverMultiNodeEngine:
         try:
             await group.recover(port_allocator=PortAllocator.empty())
 
-            node0_paths = mock_engine_http_servers.for_rank(0).paths
-            node1_paths = mock_engine_http_servers.for_rank(1).paths
+            node0_actor, node1_actor = [e.actor_handle for e in flatten_cells(group.cells)]
+            node0_paths = ray.get(node0_actor.get_http_paths.remote())
+            node1_paths = ray.get(node1_actor.get_http_paths.remote())
 
             assert "/release_memory_occupation" in node0_paths
             assert "/resume_memory_occupation" in node0_paths
