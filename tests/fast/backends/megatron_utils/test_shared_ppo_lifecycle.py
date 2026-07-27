@@ -1,5 +1,5 @@
 from argparse import Namespace
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unittest.mock import Mock
 
 from miles.backends.megatron_utils import actor as actor_module
@@ -19,7 +19,9 @@ def _worker(role):
 def test_shared_critic_train_owns_wake_and_sleep(monkeypatch):
     worker = _worker("critic")
     worker.train_critic = Mock(return_value={"values": ["cpu-value"]})
-    monkeypatch.setattr(actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: {"tokens": []})
+    monkeypatch.setattr(
+        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+    )
     phases = []
 
     @contextmanager
@@ -41,7 +43,9 @@ def test_shared_critic_train_owns_wake_and_sleep(monkeypatch):
 def test_shared_actor_receives_critic_payload_between_wake_and_sleep(monkeypatch):
     worker = _worker("actor")
     worker.train_actor = Mock(return_value=None)
-    monkeypatch.setattr(actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: {"tokens": []})
+    monkeypatch.setattr(
+        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+    )
     values = {"values": ["cpu-value"]}
 
     result = worker.train(4, object(), external_data=values)
