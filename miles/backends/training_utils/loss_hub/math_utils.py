@@ -624,8 +624,15 @@ def get_advantages_and_returns_batch(
       - Truncated sequences use the same zero bootstrap as terminated ones:
         the value after the last trainable token is taken as 0 and the
         observed terminal reward is still applied.
-      - Advantages and returns at masked positions are 0; the policy and value
-        losses mask them out, so they are never trained.
+      - This function outputs zero advantages and returns at masked positions.
+        Downstream transforms may still shift these entries to nonzero values
+        (advantage whitening applies its affine transform to every position,
+        and the on-policy distillation KL penalty is added per token), but the
+        whitening statistics themselves are mask-weighted, so the injected
+        zeros do not bias them. Correctness relies on the policy and value
+        losses masking these positions out (the policy loss re-zeros
+        advantages at inactive tokens and all loss reducers weight by
+        `loss_mask`), so masked positions never receive gradient.
 
     C_i is the length of values_list[i] and rewards_list[i] on the current CP rank.
     Input:
