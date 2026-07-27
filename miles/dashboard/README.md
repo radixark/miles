@@ -13,10 +13,10 @@ python train.py ... \
 ```
 
 `--use-miles-dashboard` adds a named collector actor on the driver node, one
-NVML sampler per GPU node, per-rank phase interval sinks on the existing
-`Timer` instrumentation, and an sglang engine-metric scraper. Everything is
-appended under `{dump-details}/dashboard/` (append-only JSONL). Overhead on
-the training path is a few milliseconds per step; all pushes are
+NVML + host-memory sampler per GPU node, per-rank phase interval sinks on the
+existing `Timer` instrumentation, and an sglang engine-metric scraper.
+Everything is appended under `{dump-details}/dashboard/` (append-only JSONL).
+Overhead on the training path is a few milliseconds per step; all pushes are
 fire-and-forget and a dead collector never affects training.
 
 `--dump-details` alone (no `--use-miles-dashboard`) still writes the rollout
@@ -43,11 +43,12 @@ Views:
 - **Metrics** — a wandb-style category sidebar over every logged metric, plus
   an `sglang` category (scraped engine series) when present; hover for values,
   drag to zoom.
-- **Compute Utilization** — per-GPU lanes below 64 GPUs (phase band, NVML
-  utilization, sglang overlay, click-to-zoom bubble strip); above that, a
-  scale-invariant fleet overview (phase composition + utilization band) with a
-  lane-selection grammar (`g:` / `rank:` / `node:` / `every:`) and outlier
-  quick-picks.
+- **Compute Utilization** — one node-level CPU memory-pressure row plus per-GPU
+  lanes below 64 GPUs (phase band, NVML utilization, sglang overlay,
+  click-to-zoom bubble strip); hover CPU memory for used/available/total GiB.
+  Above that, a scale-invariant fleet overview (phase composition + utilization
+  band) with a lane-selection grammar (`g:` / `rank:` / `node:` / `every:`)
+  and outlier quick-picks.
 - **Rollouts** — per-step trajectory table and scatter, GRPO group degeneracy
   (`zero_std`), average weight-version staleness, eval tab.
 - **sample view** — a `conversation` tab (role-tagged turns with thinking /

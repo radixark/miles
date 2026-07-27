@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from miles.dashboard.store import (
+    CpuMemorySample,
     EngineInfo,
     EngineSample,
     GpuSample,
@@ -147,7 +148,23 @@ def dump_dummy_telemetry(
     def engine_b_addr(ts: float) -> str:
         return ENGINE_B_OLD if ts < truth.restart_ts else ENGINE_B_NEW
 
+    total_memory = 2 * 1024**4
+
+    def append_cpu_memory(ts: float, percent: float) -> None:
+        used = int(total_memory * percent / 100)
+        store.append(
+            CpuMemorySample(
+                ts=ts,
+                node=GPU_NODE,
+                used_bytes=used,
+                available_bytes=total_memory - used,
+                total_bytes=total_memory,
+                percent=percent,
+            )
+        )
+
     for offset in range(INIT_SECONDS):
+        append_cpu_memory(BASE_TS + offset, 25.0)
         for gpu in range(gpus):
             store.append(GpuSample(ts=BASE_TS + offset, node=GPU_NODE, gpu=gpu, util=20, mem_mb=30_000, power_w=300))
 
@@ -210,6 +227,7 @@ def dump_dummy_telemetry(
 
         for offset in range(STEP_SECONDS):
             ts = t + offset
+            append_cpu_memory(ts, 35.0 if offset < ROLLOUT_SECONDS else 70.0)
             for gpu in range(gpus):
                 drain = DRAIN_A if gpu < 2 else DRAIN_B
                 if offset < ROLLOUT_SECONDS:

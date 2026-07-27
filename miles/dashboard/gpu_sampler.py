@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import ClassVar
 
 from miles.dashboard.logging_utils import RateLimitedWarner
-from miles.dashboard.store import GpuProcessSample, GpuSample
+from miles.dashboard.store import CpuMemorySample, GpuProcessSample, GpuSample
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,8 @@ class GpuSampler:
         interval: float = 1.0,
         nvml=None,
         push_processes: Callable[[str, list[GpuProcessSample]], None] | None = None,
+        cpu_push: Callable[[str, list[CpuMemorySample]], None] | None = None,
+        psutil_module=None,
     ):
         assert interval > 0, f"{interval=}"
         self._push = push
@@ -51,14 +53,21 @@ class GpuSampler:
         self.node = node
         self.interval = interval
         self._nvml = nvml
+        self._cpu_push = cpu_push
+        self._psutil = psutil_module
         self._handles: list = []
         self._uuids: list[str] = []
         self._buffer: list[GpuSample] = []
         self._process_buffer: list[GpuProcessSample] = []
+        self._cpu_buffer: list[CpuMemorySample] = []
         self._buffer_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._warner = RateLimitedWarner(logger)
+        if self._cpu_push is not None and self._psutil is None:
+            import psutil
+
+            self._psutil = psutil
         self.available = self._init_nvml()
 
     def _init_nvml(self) -> bool:
@@ -129,6 +138,7 @@ class GpuSampler:
                     GpuSample(ts=ts, node=self.node, gpu=gpu, util=util, mem_mb=mem_mb, power_w=power_w)
                 )
             count += 1
+        self._sample_cpu_memory(ts)
         return count
 
     def sample_processes_once(self, ts: float) -> int:
@@ -166,11 +176,38 @@ class GpuSampler:
         except Exception:
             return f"pid {pid}"  # process exited between enumeration and lookup, or name unavailable
 
+    def _sample_cpu_memory(self, ts: float) -> None:
+        if self._cpu_push is None:
+            return
+        try:
+            memory = self._psutil.virtual_memory()
+            total = int(memory.total)
+            available = int(memory.available)
+            used = max(0, total - available)
+            percent = 100.0 * used / total if total else 0.0
+        except Exception:
+            self._warner.warn(f"CPU memory read failed on {self.node}; skipping this tick")
+            return
+        with self._buffer_lock:
+            self._cpu_buffer.append(
+                CpuMemorySample(
+                    ts=ts,
+                    node=self.node,
+                    used_bytes=used,
+                    available_bytes=available,
+                    total_bytes=total,
+                    percent=percent,
+                )
+            )
+
     def flush(self) -> None:
         with self._buffer_lock:
             batch, self._buffer = self._buffer, []
             process_batch, self._process_buffer = self._process_buffer, []
+            cpu_batch, self._cpu_buffer = self._cpu_buffer, []
         if batch:
             self._push(self.node, batch)
         if process_batch and self._push_processes is not None:
             self._push_processes(self.node, process_batch)
+        if cpu_batch and self._cpu_push is not None:
+            self._cpu_push(self.node, cpu_batch)

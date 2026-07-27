@@ -7,6 +7,7 @@ from tests.fast.dashboard.dummy_telemetry import BASE_TS, dump_dummy_telemetry
 from miles.dashboard.collector import CollectorConfig, DashboardCollector
 from miles.dashboard.sglang_scraper import ScrapeMode
 from miles.dashboard.store import (
+    CpuMemorySample,
     DataBufferSample,
     EngineInfo,
     GpuProcessSample,
@@ -55,6 +56,11 @@ def test_collector_satisfies_dummy_telemetry_contract(tmp_path):
         by_node.setdefault(sample.node, []).append(sample)
     for node, batch in by_node.items():
         collector.push_gpu_samples(node, batch)
+    by_node_cpu: dict[str, list[CpuMemorySample]] = {}
+    for sample in reference.iter_records(Stream.CPU_MEMORY):
+        by_node_cpu.setdefault(sample.node, []).append(sample)
+    for node, batch in by_node_cpu.items():
+        collector.push_cpu_memory_samples(node, batch)
     for sample in reference.iter_records(Stream.ENGINE_SERIES):
         collector._append(sample)  # the scraper sink path
     collector.flush()
@@ -64,6 +70,7 @@ def test_collector_satisfies_dummy_telemetry_contract(tmp_path):
     assert replayed.topology_windows() == reference.topology_windows()
     assert replayed.phases_by_lane() == reference.phases_by_lane()
     assert replayed.gpu_series() == reference.gpu_series()
+    assert replayed.cpu_memory_series() == reference.cpu_memory_series()
     assert replayed.engine_series("sglang_num_running_reqs") == reference.engine_series("sglang_num_running_reqs")
     assert replayed.bubbles() == reference.bubbles()
     assert replayed.meta.run_name == reference.meta.run_name
@@ -193,6 +200,19 @@ def test_prometheus_forwarding_snapshot(tmp_path):
     collector.push_gpu_samples(
         "10.0.0.1", [GpuSample(ts=1.0, node="10.0.0.1", gpu=0, util=87, mem_mb=1000, power_w=600)]
     )
+    collector.push_cpu_memory_samples(
+        "10.0.0.1",
+        [
+            CpuMemorySample(
+                ts=1.0,
+                node="10.0.0.1",
+                used_bytes=300,
+                available_bytes=700,
+                total_bytes=1000,
+                percent=30.0,
+            )
+        ],
+    )
     collector.push_phases(
         [PhaseEvent(name="actor_train", t0=1.0, t1=61.0, node="10.0.0.1", gpus=[0], rank=0, role=Role.TRAIN)]
     )
@@ -202,6 +222,8 @@ def test_prometheus_forwarding_snapshot(tmp_path):
     assert len(updates) == 2
     snapshot = updates[-1]
     assert snapshot["dashboard/gpu_10_0_0_1_0_util"] == 87.0
+    assert snapshot["dashboard/cpu_10_0_0_1_memory_percent"] == 30.0
+    assert snapshot["dashboard/cpu_10_0_0_1_memory_used_bytes"] == 300.0
     assert snapshot["dashboard/phase_actor_train_seconds"] == 60.0
     assert all("." not in k and ":" not in k for k in snapshot)
 

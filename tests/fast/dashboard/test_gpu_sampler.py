@@ -4,7 +4,7 @@ import time
 import pytest
 
 from miles.dashboard.gpu_sampler import GpuSampler
-from miles.dashboard.store import GpuProcessSample, GpuSample
+from miles.dashboard.store import CpuMemorySample, GpuProcessSample, GpuSample
 
 
 class FakeNvml:
@@ -64,6 +64,15 @@ class ProcessPushSpy:
         self.calls.append((node, batch))
 
 
+class FakePsutil:
+    calls = 0
+
+    @classmethod
+    def virtual_memory(cls):
+        cls.calls += 1
+        return type("Memory", (), {"total": 1000, "available": 250})()
+
+
 def test_sample_once_converts_units():
     push = PushSpy()
     sampler = GpuSampler(push, node="10.0.0.1", nvml=FakeNvml(count=2))
@@ -90,6 +99,35 @@ def test_flush_clears_buffer_and_skips_empty():
     sampler.flush()
     sampler.flush()  # cleared: no duplicate push
     assert len(push.calls) == 1
+
+
+def test_cpu_memory_sampled_once_per_node_tick_and_flushed_separately():
+    gpu_push = PushSpy()
+    cpu_push = PushSpy()
+    FakePsutil.calls = 0
+    sampler = GpuSampler(
+        gpu_push,
+        node="n",
+        nvml=FakeNvml(count=4),
+        cpu_push=cpu_push,
+        psutil_module=FakePsutil,
+    )
+
+    assert sampler.sample_once(ts=7.0) == 4
+    assert FakePsutil.calls == 1
+    sampler.flush()
+    [(node, batch)] = cpu_push.calls
+    assert node == "n"
+    assert batch == [
+        CpuMemorySample(
+            ts=7.0,
+            node="n",
+            used_bytes=750,
+            available_bytes=250,
+            total_bytes=1000,
+            percent=75.0,
+        )
+    ]
 
 
 def test_nvml_init_failure_disables_sampler(caplog):

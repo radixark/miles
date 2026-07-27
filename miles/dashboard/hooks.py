@@ -87,6 +87,9 @@ class PhaseSink:
                 if self._identity is None or (self._identity.rank < 0 and self.role == Role.TRAIN):
                     self._identity = _resolve_identity()
                 identity = self._identity
+                completed, self._buffer = self._buffer, []
+                if completed:
+                    self._last_flush = time.monotonic()
             event = PhaseEvent(
                 name=name,
                 t0=t0,
@@ -96,7 +99,7 @@ class PhaseSink:
                 rank=identity.rank,
                 role=self.role,
             )
-            self._handle.push_phases.remote([event])
+            self._handle.push_phases.remote([*completed, event])
         except Exception:
             self._warner.warn("dashboard phase sink failed; dropping events")
 

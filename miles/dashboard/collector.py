@@ -30,6 +30,7 @@ from typing import Any, ClassVar
 
 from miles.dashboard.sglang_scraper import DEFAULT_METRIC_WHITELIST, ScrapeMode, SglangScraper
 from miles.dashboard.store import (
+    CpuMemorySample,
     DataBufferSample,
     EngineInfo,
     EngineSample,
@@ -70,6 +71,14 @@ class _SelfGpuProcessPush:
         self._handle.push_gpu_processes.remote(node, batch)
 
 
+class _SelfCpuMemoryPush:
+    def __init__(self, handle):
+        self._handle = handle
+
+    def __call__(self, node: str, batch: list[CpuMemorySample]) -> None:
+        self._handle.push_cpu_memory_samples.remote(node, batch)
+
+
 def _default_list_gpu_nodes() -> list[tuple[str, str]]:
     # no initialized ray in this process = not running as the collector actor
     # (unit tests, tooling): nothing to reconcile, and never pay the import
@@ -91,6 +100,7 @@ def _default_spawn_sampler(node_id: str, node_ip: str, interval: float):
 
     from miles.dashboard.gpu_sampler import GpuSampler
 
+    collector_handle = ray.get_runtime_context().current_actor
     handle = (
         ray.remote(GpuSampler)
         .options(
@@ -98,10 +108,11 @@ def _default_spawn_sampler(node_id: str, node_ip: str, interval: float):
             scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=node_id, soft=False),
         )
         .remote(
-            _SelfGpuPush(ray.get_runtime_context().current_actor),
+            _SelfGpuPush(collector_handle),
             node=node_ip,
             interval=interval,
-            push_processes=_SelfGpuProcessPush(ray.get_runtime_context().current_actor),
+            push_processes=_SelfGpuProcessPush(collector_handle),
+            cpu_push=_SelfCpuMemoryPush(collector_handle),
         )
     )
     if ray.get(handle.start.remote()):
@@ -160,6 +171,7 @@ class DashboardCollector:
         # latest-value caches for the Prometheus forwarding snapshot; kept
         # separately because store buffers empty out on every flush
         self._latest_gpu: dict[tuple[str, int], GpuSample] = {}
+        self._latest_cpu_memory: dict[str, CpuMemorySample] = {}
         self._latest_running_reqs: dict[str, float] = {}
         self._latest_phase_seconds: dict[str, float] = {}
         self._scraped_engine_addrs: set[str] = set()
@@ -217,6 +229,10 @@ class DashboardCollector:
 
     def push_data_buffer(self, sample: DataBufferSample) -> None:
         self._append(sample)
+
+    def push_cpu_memory_samples(self, node: str, batch: list[CpuMemorySample]) -> None:
+        for sample in batch:
+            self._append(sample)
 
     def update_topology(self, snapshot: TopologySnapshot) -> None:
         # an addr the actor path ever registered must not be resurrected as
@@ -303,6 +319,8 @@ class DashboardCollector:
     def _update_latest(self, record: Record) -> None:
         if isinstance(record, GpuSample):
             self._latest_gpu[(record.node, record.gpu)] = record
+        elif isinstance(record, CpuMemorySample):
+            self._latest_cpu_memory[record.node] = record
         elif isinstance(record, EngineSample):
             self._scraped_engine_addrs.add(record.addr)
             if record.metric == "sglang_num_running_reqs":
@@ -375,6 +393,14 @@ class DashboardCollector:
             snapshot |= {
                 f"dashboard/gpu_{safe(node)}_{gpu}_mem_mb": float(sample.mem_mb)
                 for (node, gpu), sample in self._latest_gpu.items()
+            }
+            snapshot |= {
+                f"dashboard/cpu_{safe(node)}_memory_percent": float(sample.percent)
+                for node, sample in self._latest_cpu_memory.items()
+            }
+            snapshot |= {
+                f"dashboard/cpu_{safe(node)}_memory_used_bytes": float(sample.used_bytes)
+                for node, sample in self._latest_cpu_memory.items()
             }
             snapshot |= {
                 f"dashboard/engine_{safe(addr)}_running_reqs": value

@@ -49,6 +49,7 @@ class Stream(StrEnum):
     PHASES = "phases"
     TOPOLOGY = "topology"
     GPU_UTIL = "gpu_util"
+    CPU_MEMORY = "cpu_memory"
     ENGINE_SERIES = "engine_series"
     TRAJECTORIES = "trajectories"
     GPU_PROCESSES = "gpu_processes"
@@ -203,6 +204,17 @@ class GpuSample(Record):
 
 
 @dataclass
+class CpuMemorySample(Record):
+    stream: ClassVar[Stream] = Stream.CPU_MEMORY
+    ts: float
+    node: str
+    used_bytes: int
+    available_bytes: int
+    total_bytes: int
+    percent: float
+
+
+@dataclass
 class EngineSample(Record):
     """One scraped sglang engine metric value."""
 
@@ -237,6 +249,7 @@ _RECORD_TYPE_OF_STREAM: dict[Stream, type[Record]] = {
         PhaseEvent,
         TopologySnapshot,
         GpuSample,
+        CpuMemorySample,
         EngineSample,
         TrajectoryEvent,
         GpuProcessSample,
@@ -378,9 +391,14 @@ class _PartitionReader:
 
 
 class MetricStore:
-    COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (Stream.GPU_UTIL, Stream.ENGINE_SERIES)
+    COLUMNAR_STREAMS: ClassVar[tuple[Stream, ...]] = (
+        Stream.GPU_UTIL,
+        Stream.CPU_MEMORY,
+        Stream.ENGINE_SERIES,
+    )
     PARTITIONED_STREAMS: ClassVar[tuple[Stream, ...]] = (
         Stream.GPU_UTIL,
+        Stream.CPU_MEMORY,
         Stream.ENGINE_SERIES,
         Stream.PHASES,
         Stream.TRAJECTORIES,
@@ -392,6 +410,14 @@ class MetricStore:
     FRAME_SCHEMAS: ClassVar[dict[Stream, dict[str, Any]]] = {
         Stream.GPU_UTIL: dict(
             ts=pl.Float64, node=pl.String, gpu=pl.Int64, util=pl.Int64, mem_mb=pl.Int64, power_w=pl.Int64
+        ),
+        Stream.CPU_MEMORY: dict(
+            ts=pl.Float64,
+            node=pl.String,
+            used_bytes=pl.Int64,
+            available_bytes=pl.Int64,
+            total_bytes=pl.Int64,
+            percent=pl.Float64,
         ),
         # labels dicts are canonicalized to a JSON string column at parse time
         Stream.ENGINE_SERIES: dict(
@@ -737,6 +763,9 @@ class MetricStore:
         if stream is Stream.GPU_UTIL:
             frame = self._readers[stream].window(None, None)
             return [GpuSample(**row) for row in frame.iter_rows(named=True)]
+        if stream is Stream.CPU_MEMORY:
+            frame = self._readers[stream].window(None, None)
+            return [CpuMemorySample(**row) for row in frame.iter_rows(named=True)]
         if stream is Stream.ENGINE_SERIES:
             return [
                 EngineSample(
@@ -961,6 +990,32 @@ class MetricStore:
             for e in events
             if lanes is None or (e.node, e.gpu) in lanes
         ]
+
+    def cpu_memory_series(
+        self,
+        *,
+        t0: float | None = None,
+        t1: float | None = None,
+        max_points: int = 2000,
+        nodes: set[str] | None = None,
+    ) -> dict[str, dict]:
+        frame = self._window(self._readers[Stream.CPU_MEMORY].window(t0, t1), t0, t1)
+        out = {}
+        for key, part in sorted(frame.partition_by("node", as_dict=True).items()):
+            node = key[0] if isinstance(key, tuple) else key
+            if nodes is not None and node not in nodes:
+                continue
+            part = part.sort("ts")
+            percent = part["percent"].to_numpy()
+            indices, _ = minmax_downsample(np.arange(part.height), percent, max_points)
+            out[node] = dict(
+                ts=part["ts"].to_numpy()[indices].tolist(),
+                percent=percent[indices].tolist(),
+                used_bytes=part["used_bytes"].to_numpy()[indices].tolist(),
+                available_bytes=part["available_bytes"].to_numpy()[indices].tolist(),
+                total_bytes=part["total_bytes"].to_numpy()[indices].tolist(),
+            )
+        return out
 
     # cumulative engine families are stored raw; the catalog exposes them as
     # per-interval derived series instead

@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from miles.dashboard.store import (
+    CpuMemorySample,
     DataBufferSample,
     EngineInfo,
     EngineSample,
@@ -37,6 +38,14 @@ def _one_of_each() -> list:
             ],
         ),
         GpuSample(ts=10.5, node="10.0.0.2", gpu=0, util=87, mem_mb=61234, power_w=612),
+        CpuMemorySample(
+            ts=10.55,
+            node="10.0.0.2",
+            used_bytes=300,
+            available_bytes=700,
+            total_bytes=1000,
+            percent=30.0,
+        ),
         TrajectoryEvent(
             ts=10.7,
             kind=TrajectoryEventKind.GEN_START,

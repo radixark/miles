@@ -36,11 +36,17 @@ def add_dashboard_arguments(parser) -> None:
         "--use-miles-dashboard",
         action="store_true",
         default=False,
-        help="Collect dashboard telemetry (phases, GPU util, engine metrics) under {dump-details}/dashboard/. "
+        help="Collect dashboard telemetry (phases, GPU/CPU-memory util, engine metrics) under "
+        "{dump-details}/dashboard/. "
         "Requires --dump-details. View with `python -m miles.dashboard.serve`.",
     )
     group.add_argument("--dashboard-flush-interval", type=float, default=5.0, help="collector disk flush cadence (s)")
-    group.add_argument("--dashboard-gpu-sample-interval", type=float, default=1.0, help="NVML sampling cadence (s)")
+    group.add_argument(
+        "--dashboard-gpu-sample-interval",
+        type=float,
+        default=1.0,
+        help="Per-node NVML and CPU-memory sampling cadence (s)",
+    )
     group.add_argument("--dashboard-sglang-scrape-interval", type=float, default=2.0, help="engine scrape cadence (s)")
     group.add_argument(
         "--dashboard-sglang-scrape-mode",
