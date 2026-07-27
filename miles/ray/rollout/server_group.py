@@ -121,16 +121,14 @@ class ServerGroup:
                 args=self.args, rollout_engines=new_engines
             )
         else:
-            base_port = port_allocator.next_base_port()
-            addr_and_ports, next_port_allocator = allocate_rollout_engine_addr_and_ports_normal(
+            addr_and_ports = allocate_rollout_engine_addr_and_ports_normal(
                 args=self.args,
+                port_allocator=port_allocator,
                 rollout_engines=new_engines,
                 worker_type=self.worker_type,
                 num_gpus_per_engine=self.num_gpus_per_engine,
                 rank_offset=self.rank_offset,
-                base_port=base_port,
             )
-            port_allocator.assign(next_port_allocator)
 
         for index, _ in new_engines:
             engine_addr_and_ports = addr_and_ports[index]
