@@ -173,6 +173,6 @@ samples = 256 = one optimizer step at global batch size 256.
   dynamic sampling, partial rollout, and BF16+FP8 inference.
 - [Training backends](/user-guide/usage) — Megatron vs FSDP.
 - [Customization](/user-guide/customization) — plug in custom rollout / reward.
-- [Models](/models/index) — recipes for Qwen3.5, GLM4.5, DeepSeek V4, Kimi K2, and more.
+- [Models](/models/index) — recipes for Qwen3.5, GLM5.2, DeepSeek V4, Kimi K2.6, and more.
 
 If you hit issues, the [FAQ](/faq) covers the common ones.
