@@ -139,12 +139,12 @@ class InferenceController:
         port_cursors = PortCursors.empty()
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
         group = self.servers[idx.srv_key].server_groups[idx.group_index]
-        await group.recover(port_cursors=port_cursors, filter_indices=idx.engine_indices)
+        await group.recover(port_cursors=port_cursors, filter_cell_indices=[idx.cell_index])
 
     async def stop_cell(self, cell_id: int):
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
         group = self.servers[idx.srv_key].server_groups[idx.group_index]
-        group.stop_engines(engine_indices=idx.engine_indices)
+        group.stop_engines(cell_indices=[idx.cell_index])
 
     # -------------------------- misc APIs -----------------------------
 

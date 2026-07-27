@@ -88,11 +88,11 @@ class TestStartEnginesRealActors:
         for e in flatten_cells(group.cells):
             ray.kill(e.actor_handle)
 
-    def test_start_indices_filters_to_subset(self, patched_sglang_engine, placement_group_factory):
+    def test_start_cell_indices_filters_to_subset(self, patched_sglang_engine, placement_group_factory):
         pg = placement_group_factory(4)
         group = _build_group(pg_tuple=pg, num_engines=4)
 
-        handles, indices = group.start_engines(PortCursors.empty(), start_indices=[1, 3])
+        handles, indices = group.start_engines(PortCursors.empty(), start_cell_indices=[1, 3])
         assert sorted(indices) == [1, 3]
         ray.get(handles)
 
@@ -115,7 +115,7 @@ class TestStartEnginesRealActors:
         ray.get(handles)
         first_handles = [e.actor_handle for e in flatten_cells(group.cells)]
 
-        # Second call with no start_indices: should skip both.
+        # Second call with no start_cell_indices: should skip both.
         handles2, indices2 = group.start_engines(PortCursors.empty())
         assert handles2 == [] and indices2 == []
         for first, e in zip(first_handles, flatten_cells(group.cells), strict=True):
@@ -140,7 +140,7 @@ class TestStopEnginesRealKill:
         ray.get(handles)
 
         actors = [e.actor_handle for e in flatten_cells(group.cells)]
-        group.stop_engines(engine_indices=[0, 1])
+        group.stop_engines(cell_indices=[0, 1])
 
         for e in flatten_cells(group.cells):
             assert not e.is_allocated, "engine should be stopped"
@@ -169,7 +169,7 @@ class TestStopEnginesRealKill:
             )
         )
 
-        group.stop_engines(engine_indices=[0, 1])
+        group.stop_engines(cell_indices=[0, 1])
         for e in flatten_cells(group.cells):
             assert not e.is_allocated, "all engines must be stopped despite shutdown raise"
 
