@@ -1,13 +1,48 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, fake_actor_handle, make_args
 
 from miles.ray.rollout.rollout_server import RolloutServer
-from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
+from miles.ray.rollout.server_cell import ServerCell, get_cell_indexer_of_id_map
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
+
+
+class TestServerCellPrimaryEngine:
+    def test_primary_engine_is_the_first_engine(self):
+        """The node-0 engine of the cell owns the server url and receives per-cell calls."""
+        engines = [MagicMock(), MagicMock()]
+        assert ServerCell(engines=engines).primary_engine is engines[0]
+
+    async def test_offload_releases_memory_on_the_primary_engine_only(self):
+        """Non-primary engines are workers without their own HTTP endpoint."""
+        engines = [MagicMock(), MagicMock()]
+        engines[0].api_client.release_memory_occupation = AsyncMock(return_value="released")
+        assert await ServerCell(engines=engines).offload(tags=["weights"]) == "released"
+        engines[0].api_client.release_memory_occupation.assert_awaited_once_with(tags=["weights"])
+        engines[1].api_client.release_memory_occupation.assert_not_called()
+
+    async def test_onload_resumes_memory_on_the_primary_engine_only(self):
+        """Non-primary engines are workers without their own HTTP endpoint."""
+        engines = [MagicMock(), MagicMock()]
+        engines[0].api_client.resume_memory_occupation = AsyncMock(return_value="resumed")
+        assert await ServerCell(engines=engines).onload(tags=None) == "resumed"
+        engines[0].api_client.resume_memory_occupation.assert_awaited_once_with(tags=None)
+        engines[1].api_client.resume_memory_occupation.assert_not_called()
+
+    async def test_check_weights_forwards_all_arguments_to_the_primary_engine(self):
+        """The whole keyword set must reach the engine api unchanged."""
+        engines = [MagicMock()]
+        engines[0].api_client.check_weights = AsyncMock(return_value={"ok": True})
+        result = await ServerCell(engines=engines).check_weights(
+            action="report", allow_quant_error=True, selector="first", skip_list=["a"]
+        )
+        assert result == {"ok": True}
+        engines[0].api_client.check_weights.assert_awaited_once_with(
+            action="report", allow_quant_error=True, selector="first", skip_list=["a"]
+        )
 
 
 def _build_servers(
