@@ -52,7 +52,7 @@ import logging
 import sys
 
 from miles.utils.arguments import parse_args
-from miles.utils.test_utils.session_verify_agent import _fixed_template_append_roles, select_schedule
+from miles.utils.test_utils.session_verify_agent import fixed_template_append_roles, select_schedule
 from miles.utils.test_utils.session_verify_runner import run_session_verify, session_verify_extras
 
 
@@ -86,7 +86,7 @@ def main() -> int:
 
     # Resolve the family-owned capability before any GPU work starts so an
     # unsupported verifier schedule fails immediately.
-    allowed_roles = list(_fixed_template_append_roles(args.tito_model))
+    allowed_roles = list(fixed_template_append_roles(args.tito_model))
 
     print(f"Model:                  {args.hf_checkpoint}")
     print(f"TITO model family:      {args.tito_model}")

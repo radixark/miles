@@ -9,7 +9,7 @@ from miles.utils.test_utils.session_verify_agent import (
     ASSISTANT_INPUT_FOLLOWUP_TEXT,
     ASSISTANT_INPUT_TEXTS,
     DriverAction,
-    _fixed_template_append_roles,
+    fixed_template_append_roles,
     run_agent,
     select_schedule,
 )
@@ -31,7 +31,7 @@ def test_model_config_uses_family_fixed_template_capability():
         tito_model="qwen3",
     )
 
-    assert _fixed_template_append_roles(cfg.tito_model) == VALID_APPEND_ROLES
+    assert fixed_template_append_roles(cfg.tito_model) == VALID_APPEND_ROLES
 
 
 def test_assistant_input_appends_two_text_messages_then_user(monkeypatch):
@@ -94,7 +94,7 @@ def test_assistant_input_appends_two_text_messages_then_user(monkeypatch):
 
 
 def test_minimax_schedule_excludes_system_and_keeps_assistant_rollback():
-    roles = _fixed_template_append_roles("minimax_m27")
+    roles = fixed_template_append_roles("minimax_m27")
     schedule = select_schedule(roles, cycles=1)
 
     assert roles == ("tool", "user", "assistant")
@@ -104,7 +104,7 @@ def test_minimax_schedule_excludes_system_and_keeps_assistant_rollback():
 
 
 def test_qwen35_schedule_excludes_system_and_keeps_assistant_rollback():
-    roles = _fixed_template_append_roles("qwen35")
+    roles = fixed_template_append_roles("qwen35")
     schedule = select_schedule(roles, cycles=1)
 
     assert roles == ("tool", "user", "assistant")

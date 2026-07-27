@@ -93,7 +93,7 @@ _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
 DEFAULT_CYCLES = 3
 
 
-def _fixed_template_append_roles(tito_model: TITOTokenizerType | str) -> tuple[str, ...]:
+def fixed_template_append_roles(tito_model: TITOTokenizerType | str) -> tuple[str, ...]:
     """Return the selected family's fixed append capability in canonical order."""
     tokenizer_type = TITOTokenizerType(tito_model)
     supported = TITOTokenizerType.get_tokenizer_class(tokenizer_type).FIXED_TEMPLATE.allowed_append_roles
@@ -215,7 +215,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     tito_model = metadata.get("tito_model")
     if tito_model is None:
         raise ValueError("session_verify_agent.run_agent requires tito_model in metadata")
-    allowed_roles = _fixed_template_append_roles(tito_model)
+    allowed_roles = fixed_template_append_roles(tito_model)
     cycles = metadata.get("session_verify_cycles", DEFAULT_CYCLES)
     schedule = select_schedule(allowed_roles, cycles=cycles)
 
@@ -375,7 +375,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
       (model-dependent on emitting a tool_call).
     """
     tito_model = input.args.tito_model
-    allowed_roles = list(_fixed_template_append_roles(tito_model))
+    allowed_roles = list(fixed_template_append_roles(tito_model))
     cycles = getattr(input.args, "session_verify_cycles", DEFAULT_CYCLES)
     failure_mode = getattr(input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE)
     # Sample.metadata is mutable even when the outer dataclass is frozen.
