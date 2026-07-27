@@ -171,11 +171,16 @@ RUN pip install multi-storage-client --no-deps
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
 
-# https://github.com/pytorch/pytorch/issues/168167
+# transformer_engine 2.17's fused attention emits cudnn-frontend's
+# Reshape_attributes::set_reshape_mode, i.e. the backend attribute
+# CUDNN_ATTR_OPERATION_RESHAPE_MODE, which cuDNN only understands from 9.22.0.
+# torch 2.11 ships 9.19.0.56, so this has to raise it rather than just get out of
+# the way. pip reports a conflict against torch's exact ==9.19.0.56 pin and then
+# installs anyway; the previous pin here produced the same conflict downwards.
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-    pip install nvidia-cudnn-cu13==9.16.0.29; \
+    pip install nvidia-cudnn-cu13==9.22.0.52; \
   else \
-    pip install nvidia-cudnn-cu12==9.16.0.29; \
+    pip install nvidia-cudnn-cu12==9.22.0.52; \
   fi
 
 
