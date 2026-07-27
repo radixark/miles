@@ -1099,7 +1099,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--calculate-per-token-loss", action="store_true")
             reset_arg(parser, "--lr", type=float, default=1e-6)
 
-            parser.add_argument("--num-critic-only-steps", type=int, default=0, help="Number of critic only steps")
+            parser.add_argument(
+                "--num-critic-only-steps",
+                type=int,
+                default=0,
+                help="Number of initial rollout steps where only the critic trains (value-function warmup) "
+                "while the actor stays frozen. Only takes effect when --advantage-estimator is ppo.",
+            )
             parser.add_argument("--critic-load", type=str, default=None, help="The checkpoint for critic model.")
             parser.add_argument("--critic-save", type=str, default=None, help="The checkpoint for critic model.")
             parser.add_argument("--critic-lr", type=float, default=None, help="The lr for critic model")
