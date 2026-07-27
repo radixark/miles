@@ -3,9 +3,11 @@ import logging
 import os
 
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.ft_utils.control_server.server import start_control_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
@@ -23,6 +25,7 @@ async def train(args):
     maybe_start_periodic_pyspy_dump()
     # allocate the GPUs
     pgs = create_placement_groups(args)
+    object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
@@ -74,6 +77,7 @@ async def train(args):
             await critic_task
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
+        remove_rollout_data_refs(args, rollout_data_curr_ref)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(

@@ -1,14 +1,8 @@
 """TITO tokenizer — incremental tokenization for pretokenized prefix reuse.
 
-``TITOTokenizer`` computes incremental token IDs for non-assistant messages
-(tool responses, user follow-ups, system injections) that follow the
-assistant's generated token sequence, then merges them with the pretokenized
-prefix — handling model-specific boundary tokens at the junction.
+``TITOTokenizer`` computes incremental token IDs for messages appended after the assistant's generated token sequence, then merges them with the pretokenized prefix — handling model-specific boundary tokens at the junction.
 
-The default implementation renders the complete appended non-assistant suffix
-and the next generation prompt once under a synthetic
-``[dummy_system, dummy_assistant]`` prefix.  Model-specific subclasses only
-override ``merge_tokens`` for boundary quirks at the prefix junction.
+The default implementation renders the complete appended suffix and the next generation prompt once under a synthetic ``[dummy_system, dummy_assistant]`` prefix.  Model-specific subclasses only override ``merge_tokens`` for boundary quirks at the prefix junction.
 """
 
 from __future__ import annotations
@@ -165,10 +159,7 @@ class TITOTokenizer:
         """Compute incremental token IDs for messages appended after the
         pretokenized prefix.
 
-        Handles tool responses, user, and system messages —
-        never an assistant message.  Validates that *new_messages* is an
-        append-only extension of *old_messages* via
-        ``assert_messages_append_only_with_allowed_role``.
+        Appended roles must be listed in ``self.allowed_append_roles``.  The method validates that *new_messages* is an append-only extension of *old_messages* via ``assert_messages_append_only_with_allowed_role``.
 
         Args:
             old_messages: Previously stored messages (prefix).

@@ -270,6 +270,30 @@ def get_env_enable_infinite_run():
     return get_bool_env_var("MILES_TEST_ENABLE_INFINITE_RUN", "false")
 
 
+MOONCAKE_MASTER_PORT = 50051
+MOONCAKE_MASTER_METRICS_PORT = 50052
+
+
+def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT) -> str:
+    init_kwargs = {
+        "protocol": "tcp",
+        "master_server_address": f"127.0.0.1:{master_port}",
+        "global_segment_size": "2gb",
+        "local_buffer_size": "2gb",
+    }
+    return "--object-store-backend mooncake " f"--mooncake-store-init-kwargs {shlex.quote(json.dumps(init_kwargs))} "
+
+
+def start_mooncake_master(
+    rpc_port: int = MOONCAKE_MASTER_PORT, metrics_port: int = MOONCAKE_MASTER_METRICS_PORT
+) -> None:
+    exec_command(
+        "pgrep -x mooncake_master >/dev/null || "
+        f"(setsid mooncake_master --rpc_port {rpc_port} --metrics_port {metrics_port} "
+        "> /tmp/mooncake_master.log 2>&1 &)"
+    )
+
+
 def save_to_temp_file(text: str, ext: str):
     path = Path(f"/tmp/miles_temp_file_{time.time()}_{random.randrange(0, 10000000)}.{ext}")
     path.write_text(text)
