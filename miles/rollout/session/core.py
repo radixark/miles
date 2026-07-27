@@ -28,8 +28,11 @@ logger = logging.getLogger(__name__)
 JSON_MEDIA_TYPE = "application/json"
 
 # Hop-by-hop / length-framing headers dropped from the upstream response so the
-# transport layer recomputes them from the body we actually send.
-_DROP_RESPONSE_HEADERS = ("content-length", "transfer-encoding", "content-encoding")
+# transport layer recomputes them from the body we actually send. "server" and
+# "date" are dropped because our own ASGI server always emits them, so echoing
+# upstream's copy puts two of each on the wire; aiohttp's parser rejects that
+# outright with "Duplicate 'Server' header found" instead of reading the body.
+_DROP_RESPONSE_HEADERS = ("content-length", "transfer-encoding", "content-encoding", "server", "date")
 
 
 @dataclass
