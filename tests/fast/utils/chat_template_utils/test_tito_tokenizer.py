@@ -26,9 +26,7 @@ TestMergeTokensBoundary
     - Default: plain concatenation (no boundary handling).
 
 TestTokenizeAdditional
-    Behavioral tests for tokenize_additional_messages — the single
-    synthetic-prefix diff that computes incremental token IDs for the complete
-    appended non-assistant suffix.
+    Behavioral tests for tokenize_additional_messages — the single synthetic-prefix diff that computes incremental token IDs for the complete appended suffix.
 
     ``test_produces_nonempty_incremental`` is parametrized over:
       _TOOL_TRAJECTORIES (trajectory classes) × _TITO_MODELS (qwen3, glm47)
