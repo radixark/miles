@@ -50,7 +50,7 @@ def mock_engine_class(ray_local_mode):
 
     Production wraps via ``ray.remote(SGLangEngine)``; substituting the
     already-wrapped class would double-wrap, so callers monkeypatch the
-    unwrapped class inside ``miles.ray.rollout.server_group``."""
+    unwrapped class inside ``miles.ray.rollout.server_cell``."""
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
     return MockSGLangEngine.__ray_actor_class__
@@ -64,9 +64,10 @@ def patched_sglang_engine(monkeypatch, mock_engine_class, mock_engine_http_serve
 
     ``port`` is the port of this rank's mock HTTP server, so the urls
     ServerGroup derives from the allocator actually serve requests."""
+    import miles.ray.rollout.server_cell as cell_mod
     import miles.ray.rollout.server_group as mod
 
-    monkeypatch.setattr(mod, "SGLangEngine", mock_engine_class)
+    monkeypatch.setattr(cell_mod, "SGLangEngine", mock_engine_class)
 
     from miles.ray.rollout.addr_allocator import PortCursors
 
@@ -92,6 +93,6 @@ def patched_sglang_engine_real_allocator(monkeypatch, mock_engine_class):
     """Replace SGLangEngine with the mock but keep the real addr allocator,
     so the actor → driver port round-trip via
     ``_get_current_node_ip_and_free_port.remote`` runs end-to-end."""
-    import miles.ray.rollout.server_group as mod
+    import miles.ray.rollout.server_cell as cell_mod
 
-    monkeypatch.setattr(mod, "SGLangEngine", mock_engine_class)
+    monkeypatch.setattr(cell_mod, "SGLangEngine", mock_engine_class)
