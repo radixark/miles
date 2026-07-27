@@ -8,7 +8,11 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
-from miles.backends.training_utils.cp_utils import slice_loss_masks_for_local_cp
+from miles.backends.training_utils.cp_utils import (
+    all_gather_with_cp,
+    slice_log_prob_with_cp,
+    slice_loss_masks_for_local_cp,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 
 _LOG_RATIO_EXP_CLAMP = 20.0
@@ -474,8 +478,6 @@ def get_reinforce_plus_plus_returns(
 
         if cp_size > 1:
             # Step 1,2:Gather all chunks and token_offsets from all ranks and reconstruct the full response tensor by splitting and placing each part
-            from miles.backends.training_utils.cp_utils import all_gather_with_cp
-
             full_kl_response = all_gather_with_cp(local_kl_chunk, total_len, response_len)
         else:
             full_kl_response = local_kl_chunk
@@ -496,8 +498,6 @@ def get_reinforce_plus_plus_returns(
 
         # Step 4: Pick up the results corresponding to our local chunk's parts.
         if cp_size > 1:
-            from miles.backends.training_utils.cp_utils import slice_log_prob_with_cp
-
             local_returns_chunk = slice_log_prob_with_cp(returns_for_seq, total_len, response_len)
         else:
             local_returns_chunk = returns_for_seq
@@ -568,8 +568,6 @@ def get_advantages_and_returns(
 
     cp_size = get_parallel_state().cp.size
     if cp_size > 1:
-        from miles.backends.training_utils.cp_utils import all_gather_with_cp
-
         full_rewards = all_gather_with_cp(rewards, total_len, response_len)
         full_values = all_gather_with_cp(values, total_len, response_len)
     else:
@@ -588,8 +586,6 @@ def get_advantages_and_returns(
     full_returns = full_advantages + full_values
 
     if cp_size > 1:
-        from miles.backends.training_utils.cp_utils import slice_log_prob_with_cp
-
         advantages = slice_log_prob_with_cp(full_advantages, total_len, response_len)
         returns = slice_log_prob_with_cp(full_returns, total_len, response_len)
     else:
@@ -620,7 +616,7 @@ def get_advantages_and_returns_batch(
         values_list:       list[Tensor], each current-CP-rank tensor has shape [C_i]
         rewards_list:      list[Tensor], same shape as values_list
         terminal_rewards:  list[float], one scalar sequence reward per sample
-        qkv_format:        sequence layout used to split tensors across CP ranks
+        qkv_format:        str, sequence layout used to split tensors across CP ranks
         max_seq_lens:      list[int] of BSHD padded lengths, or None for THD
     Output:
         advantages_list:   list[Tensor], each current-CP-rank tensor has shape [C_i]
@@ -638,15 +634,13 @@ def get_advantages_and_returns_batch(
             assert max_seq_lens is not None, "max_seq_lens is required for BSHD with CP"
             assert B == len(max_seq_lens)
             max_seq_lens_per_sample = max_seq_lens
-        else:
+        else:  # qkv_format == "thd" or cp_size == 1
             max_seq_lens_per_sample = [None] * B
 
         device = values_list[0].device
         dtype = values_list[0].dtype
 
         if cp_size > 1:
-            from miles.backends.training_utils.cp_utils import all_gather_with_cp
-
             full_values_list = []
             full_rewards_list = []
 
@@ -700,8 +694,6 @@ def get_advantages_and_returns_batch(
         returns_list = []
 
         if cp_size > 1:
-            from miles.backends.training_utils.cp_utils import slice_log_prob_with_cp
-
             for total_len, resp_len, adv_row, ret_row, max_seq_len in zip(
                 total_lengths,
                 response_lengths,
