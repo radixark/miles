@@ -1,6 +1,6 @@
 import os
 
-import miles.utils.misc as U
+import miles.utils.external_utils.exec_command as U
 from miles.utils.external_utils.command_utils import execute_train
 
 MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-VL-2B-Instruct")

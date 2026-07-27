@@ -1,5 +1,4 @@
 import miles.utils.external_utils.command_utils as command_utils
-import miles.utils.misc as misc
 
 
 def record_commands(monkeypatch) -> list[str]:
@@ -16,9 +15,8 @@ def record_commands(monkeypatch) -> list[str]:
         commands.append(f"[multi_node num_nodes={num_nodes}] {cmd}")
         return ["0"]
 
-    for module in (command_utils, misc):
-        monkeypatch.setattr(module, "exec_command_cpu", fake_exec_command, raising=False)
-        monkeypatch.setattr(module, "exec_command_gpu", fake_exec_command, raising=False)
-        monkeypatch.setattr(module, "exec_command_multi_node", fake_exec_command_multi_node, raising=False)
+    monkeypatch.setattr(command_utils, "exec_command_cpu", fake_exec_command)
+    monkeypatch.setattr(command_utils, "exec_command_gpu", fake_exec_command)
+    monkeypatch.setattr(command_utils, "exec_command_multi_node", fake_exec_command_multi_node)
 
     return commands
