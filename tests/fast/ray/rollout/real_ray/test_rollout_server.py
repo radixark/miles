@@ -4,7 +4,7 @@ import pytest
 import ray
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
-from miles.ray.rollout.addr_allocator import PortCursors
+from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import flatten_cells
 from miles.ray.rollout.server_engine import ServerEngine
@@ -36,7 +36,7 @@ def _build_group(
 
 
 def _start_group(group: ServerGroup) -> None:
-    handles, _ = group.start_engines(PortCursors.empty())
+    handles, _ = group.start_engines(PortAllocator.empty())
     ray.get(handles)
 
 
