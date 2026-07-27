@@ -249,13 +249,13 @@ class TestCheckpointing:
         executor.data_source.save.assert_called_once_with(5)
         assert ("train", "save", 5) in calls
 
-    async def test_save_forwards_to_the_data_source_only_for_a_global_dataset(
+    async def test_save_forwards_to_the_data_source_without_a_global_dataset(
         self,
         ray_local_mode,
         patch_low_level,
         monkeypatch,
     ):
-        """The data source is checkpointed only when it owns a global dataset; the rollout functions always are."""
+        """A custom data source is saved as unconditionally as it is loaded, so its state can be restored."""
         import miles.ray.rollout.rollout_executor as rexec
 
         monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
@@ -269,8 +269,10 @@ class TestCheckpointing:
         executor.data_source = MagicMock()
 
         executor.save(rollout_id=3)
+        executor.load(rollout_id=3)
 
-        executor.data_source.save.assert_not_called()
+        executor.data_source.save.assert_called_once_with(3)
+        executor.data_source.load.assert_called_once_with(3)
         assert ("train", "save", 3) in calls
 
     async def test_legacy_function_path_does_not_get_save_load(
