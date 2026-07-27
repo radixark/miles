@@ -660,9 +660,10 @@ def get_advantages_and_returns_batch(
 
         for i in range(B):
             L = response_lengths[i]
-            full_values[i, :L] = full_values_list[i][:L]
-            full_rewards[i, :L] = full_rewards_list[i][:L]
-            full_rewards[i, L - 1] += terminal_rewards[i]
+            if L > 0:
+                full_values[i, :L] = full_values_list[i][:L]
+                full_rewards[i, :L] = full_rewards_list[i][:L]
+                full_rewards[i, L - 1] += terminal_rewards[i]
 
         if not chunked:
             full_advantages, full_returns = vanilla_gae(
