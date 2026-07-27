@@ -7,14 +7,14 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class PortCursors:
-    _values: dict[int, int]
+class PortAllocator:
+    _values: dict[str, int]
 
     @staticmethod
-    def empty() -> "PortCursors":
-        return PortCursors(_values={})
+    def empty() -> "PortAllocator":
+        return PortAllocator(_values={})
 
-    def assign(self, other: "PortCursors"):
+    def assign(self, other: "PortAllocator"):
         self._values = other._values.copy()
 
     def next_base_port(self) -> int:
@@ -43,7 +43,7 @@ def allocate_rollout_engine_addr_and_ports_normal(
 
     # Track per-node port cursors so that different server groups (called
     # sequentially) never race for the same ports on a given node.
-    node_port_cursor: dict[int, int] = {}
+    node_port_cursor: dict[str, int] = {}
 
     visited_nodes = set()
     for rank, engine in rollout_engines:
@@ -56,10 +56,10 @@ def allocate_rollout_engine_addr_and_ports_normal(
         # e.g. for 8 gpus, if we are restarting engine on gpu 3, we will set port for engine 3,4,5,6,7 on this node.
         num_engines_on_this_node = num_engines_per_node - (local_rank % num_engines_per_node)
 
-        def get_addr_and_ports(engine, node_idx):
+        def get_addr_and_ports(engine, node_ip):
             # use small ports to prevent ephemeral port between 32768 and 65536.
             # also, ray uses port 10002-19999, thus we avoid near-10002 to avoid racing condition
-            start_port = node_port_cursor.get(node_idx, base_port)
+            start_port = node_port_cursor.get(node_ip, base_port)
 
             def port(consecutive=1):
                 nonlocal start_port
@@ -70,7 +70,7 @@ def allocate_rollout_engine_addr_and_ports_normal(
                     )
                 )
                 start_port = port + consecutive
-                node_port_cursor[node_idx] = start_port
+                node_port_cursor[node_ip] = start_port
                 return port
 
             def addr():
@@ -79,7 +79,8 @@ def allocate_rollout_engine_addr_and_ports_normal(
 
             return addr, port
 
-        get_addr, get_port = get_addr_and_ports(engine, node_index)
+        node_ip, _ = ray.get(engine._get_current_node_ip_and_free_port.remote())
+        get_addr, get_port = get_addr_and_ports(engine, node_ip)
 
         for i in range(num_engines_on_this_node):
             current_rank = rank + i
@@ -109,7 +110,7 @@ def allocate_rollout_engine_addr_and_ports_normal(
             assert key in addr_and_ports[i], f"Engine {i} {key} is not set."
         logger.info(f"Ports for engine {i}: {addr_and_ports[i]}")
 
-    return addr_and_ports, PortCursors(_values=node_port_cursor)
+    return addr_and_ports, PortAllocator(_values=node_port_cursor)
 
 
 def allocate_rollout_engine_addr_and_ports_external(args, rollout_engines):

@@ -6,7 +6,7 @@ import ray
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
-from miles.ray.rollout.addr_allocator import PortCursors
+from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.rollout.server_engine import ServerEngine
@@ -43,7 +43,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
         server_groups: list[ServerGroup] = []
         all_init_handles: list = []
         new_engine_indices_per_group: list[list[int]] = []
-        port_cursors = PortCursors.empty()
+        port_allocator = PortAllocator.empty()
 
         for group_cfg in model_cfg.server_groups:
             gpus_per_engine = group_cfg.num_gpus_per_engine
@@ -84,7 +84,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 router_port=router_port,
                 update_weights=model_cfg.update_weights,
             )
-            handles, new_engine_indices = group.start_engines(port_cursors)
+            handles, new_engine_indices = group.start_engines(port_allocator)
             all_init_handles.extend(handles)
             server_groups.append(group)
             new_engine_indices_per_group.append(new_engine_indices)
@@ -271,8 +271,8 @@ class RolloutServer:
 
     async def recover(self):
         """Recover dead engines across all active groups, overlapping init."""
-        port_cursors = PortCursors.empty()
-        await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
+        port_allocator = PortAllocator.empty()
+        await asyncio.gather(*[g.recover(port_allocator=port_allocator) for g in self.server_groups])
 
     async def offload(self, tags: list[str] | None = None):
         per_group = await asyncio.gather(*[g.offload(tags=tags) for g in self.server_groups])
