@@ -16,6 +16,7 @@ CONFIG = ModelConfig(
     tp_size=4,
     # V4-Flash serving recipe (scripts/run_deepseek_v4.py): tp=4, ep=4.
     ep_size=4,
+    enable_spec=True,
     cycles=2,
     # V4 sorts tool_result blocks by the preceding assistant's tool_calls
     # order, so a sentinel tool_call_id would not roundtrip; use the

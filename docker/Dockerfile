@@ -73,11 +73,11 @@ RUN case "${TARGETARCH}" in \
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
 # flash-attn hopper (FA3): Hopper-only (sm_90a). Coexists with FA2.
-RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
-    python_path=$(python -c "import site; print(site.getsitepackages()[0])") && \
-    mkdir -p $python_path/flash_attn_3 && \
-    curl -fSL https://raw.githubusercontent.com/Dao-AILab/flash-attention/fbf24f67cf7f6442c5cfb2c1057f4bfc57e72d89/hopper/flash_attn_interface.py \
-      -o $python_path/flash_attn_3/flash_attn_interface.py
+# The wheel ships flash_attn_interface top-level (what transformer_engine imports)
+# plus a flash_attn_3.flash_attn_interface re-export shim, so there is nothing to
+# fetch separately. Do not overwrite the shim with a copy of the full module: it
+# re-runs @torch.library.custom_op("flash_attn_3::...") and double-registers.
+RUN pip install /tmp/wheels/flash_attn_3-*.whl
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
@@ -105,15 +105,27 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
     fi
 
 # transformer_engine
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install --no-deps transformer_engine==2.17.0 && \
-      pip install transformer_engine_cu13==2.17.0 && \
-      rm -f /tmp/wheels/transformer_engine*.whl && \
-      pip install nvidia-mathdx==25.6.0 && \
-      pip -v install --no-build-isolation transformer_engine_torch==2.17.0; \
+# --no-deps pins the three TE dists to exactly the wheels above, so pip cannot
+# pull a conflicting core dist. That also drops transformer_engine_torch's own
+# runtime deps, which still have to be installed: transformer_engine.pytorch
+# imports onnxscript unconditionally (module/_common -> export -> onnx_extensions).
+RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
+    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      TE_CORE_DIST=transformer_engine_cu13; \
     else \
-      pip -v install --no-build-isolation "transformer_engine[pytorch]==2.17.0"; \
-    fi
+      TE_CORE_DIST=transformer_engine_cu12; \
+    fi && \
+    set -- \
+      /tmp/wheels/transformer_engine-2.17.0-py3-none-any.whl \
+      /tmp/wheels/${TE_CORE_DIST}-2.17.0-py3-none-manylinux_2_28_*.whl \
+      /tmp/wheels/transformer_engine_torch-2.17.0-cp312-cp312-linux_*.whl; \
+    if [ "$#" -ne 3 ] || [ ! -f "$1" ] || [ ! -f "$2" ] || [ ! -f "$3" ]; then \
+      echo "expected exactly one TransformerEngine 2.17 wheel for each component (${TE_CORE_DIST})" >&2; exit 1; \
+    fi && \
+    pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch && \
+    pip install --force-reinstall --no-deps "$@" && \
+    pip install einops onnx onnxscript pydantic nvdlfw-inspect && \
+    python3 /tmp/verify_transformer_engine.py "${TE_CORE_DIST}"
 
 # TE patches (cu13): B300/GB300 FA2 and backward override fixes
 # te_dequantized_backward_override.patch is a hot fix from
