@@ -142,14 +142,14 @@ jobs:
           # back afterwards; --no-deps so nothing else in the resolved set moves.
           pinned=""
           for pkg in nvidia-cudnn-cu13 nvidia-cudnn-cu12; do
-            v=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}')
+            v=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}' || true)
             if [ -n "$v" ]; then pinned="$pinned $pkg==$v"; fi
           done
           python -m pip install -r "$GITHUB_WORKSPACE/requirements.txt" --break-system-packages
           for spec in $pinned; do
             pkg=${spec%%==*}
             want=${spec##*==}
-            got=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}')
+            got=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}' || true)
             if [ -n "$got" ] && [ "$got" != "$want" ]; then
               echo "Restoring image pin: $pkg $got -> $want"
               python -m pip install --no-deps --break-system-packages "$spec"
