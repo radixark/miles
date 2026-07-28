@@ -2,6 +2,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ _FROZEN_ENV = {
 _SHIMMED_COMMANDS = (
     "apt",
     "apt-get",
+    "awk",
     "curl",
     "date",
     "docker",
@@ -41,21 +43,44 @@ _SHIMMED_COMMANDS = (
     "pip",
     "pip3",
     "pkill",
+    "ps",
     "python",
     "python3",
     "ray",
     "rm",
     "rsync",
+    "scp",
     "sleep",
+    "ssh",
     "torchrun",
     "wget",
 )
 
+_GPU_COUNT_LARGER_THAN_ANY_WAIT_LOOP_EXPECTS = "1000000"
+
+_FROZEN_RAY_DASHBOARD_PROCESS = "root 1 0.0 0.0 ray dashboard --node-ip-address=10.0.0.1 --dashboard-port=8265"
+
 _SHIM_STDOUT = {
-    # large enough that "wait until this many GPUs joined the ray cluster" loops exit immediately
-    "python": "1000000",
-    "python3": "1000000",
     "date": "20260101_000000",
+    "ps": _FROZEN_RAY_DASHBOARD_PROCESS,
+}
+
+_PYTHON_SHIM_BODY = """case "${1:-}" in
+-c)
+    case "$2" in
+    *cluster_resources*) printf '%s\\n' 'REPLACE_GPU_COUNT' ;;
+    *import*) ;;
+    *) "$MILES_SH_HARNESS_REAL_PYTHON" "$@" ;;
+    esac
+    ;;
+esac
+""".replace(
+    "REPLACE_GPU_COUNT", _GPU_COUNT_LARGER_THAN_ANY_WAIT_LOOP_EXPECTS
+)
+
+_SHIM_BODY = {
+    "python": _PYTHON_SHIM_BODY,
+    "python3": _PYTHON_SHIM_BODY,
 }
 
 _SHIM_TEMPLATE = """#!/bin/bash
@@ -66,6 +91,13 @@ done
 printf '%s%s' "$record" "$MILES_SH_HARNESS_RECORD_SEP" >>"$MILES_SH_HARNESS_CAPTURE"
 {stdout_statement}exit 0
 """
+
+
+def iter_launch_scripts() -> list[Path]:
+    roots = [REPO_ROOT / "scripts", REPO_ROOT / "examples"]
+    return sorted(
+        path for root in roots for path in root.rglob("*.sh") if "ray job submit" in path.read_text(errors="replace")
+    )
 
 
 @dataclass(frozen=True)
@@ -87,6 +119,7 @@ class LaunchScriptRun:
 def run_launch_script(
     script: Path,
     sandbox: Path,
+    args: tuple[str, ...] = (),
     extra_env: dict[str, str] | None = None,
     timeout: float = 120.0,
 ) -> LaunchScriptRun:
@@ -104,12 +137,13 @@ def run_launch_script(
         "MILES_SH_HARNESS_CAPTURE": str(capture),
         "MILES_SH_HARNESS_ARG_SEP": _ARG_SEPARATOR,
         "MILES_SH_HARNESS_RECORD_SEP": _RECORD_SEPARATOR,
+        "MILES_SH_HARNESS_REAL_PYTHON": sys.executable,
     }
     _reject_unfreezing(extra_env or {}, frozen=frozen)
 
     deadline = time.monotonic() + timeout
     process = subprocess.Popen(
-        ["bash", str(script)],
+        ["bash", str(script), *args],
         cwd=workdir,
         env={**frozen, **(extra_env or {})},
         stdout=subprocess.PIPE,
@@ -133,6 +167,19 @@ def run_launch_script(
         stderr=_sanitize(stderr, sandbox=sandbox),
         returncode=process.returncode,
     )
+
+
+SNAPSHOT_UPDATE_ENV_VAR = "MILES_UPDATE_LAUNCH_SCRIPT_SNAPSHOTS"
+
+
+def assert_matches_snapshot(snapshot: Path, actual: str, subject: str) -> None:
+    if os.environ.get(SNAPSHOT_UPDATE_ENV_VAR):
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text(actual)
+        return
+
+    assert snapshot.exists(), f"missing snapshot for {subject}; regenerate with {SNAPSHOT_UPDATE_ENV_VAR}=1"
+    assert actual == snapshot.read_text()
 
 
 def format_invocations(invocations: list[list[str]]) -> str:
@@ -186,7 +233,7 @@ def _write_shims(fake_bin: Path) -> None:
         stdout = _SHIM_STDOUT.get(name)
         stdout_statement = "" if stdout is None else f"printf '%s\\n' {stdout!a}\n"
         shim = fake_bin / name
-        shim.write_text(_SHIM_TEMPLATE.format(name=name, stdout_statement=stdout_statement))
+        shim.write_text(_SHIM_TEMPLATE.format(name=name, stdout_statement=stdout_statement + _SHIM_BODY.get(name, "")))
         shim.chmod(0o755)
 
 
