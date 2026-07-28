@@ -270,9 +270,11 @@ def chunk_engines_into_cells(
     **cell_config,
 ):
     """Group a flat engine list the way production lays cells out."""
-    from miles.ray.rollout.server_cell import ServerCell
+    from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
 
-    nodes_per_engine = max(1, num_gpus_per_engine // num_gpus_per_node)
+    nodes_per_engine = compute_nodes_per_engine(
+        num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=num_gpus_per_node
+    )
     assert len(engines) % nodes_per_engine == 0, f"{len(engines)=} must be a multiple of {nodes_per_engine=}"
     num_gpu_per_engine_local = min(num_gpus_per_engine, num_gpus_per_node)
     return [
@@ -289,31 +291,31 @@ def chunk_engines_into_cells(
     ]
 
 
-def make_dataclass_group(
+def make_dataclass_cells(
     *,
-    num_engines: int = 2,
+    num_cells: int = 2,
     num_gpus_per_engine: int = 1,
     gpu_offset: int = 0,
 ):
-    """Build a ``ServerGroup`` whose cells have ``pg=None`` (no actor
-    scheduling). Each engine starts unallocated."""
+    """Build configured ``ServerCell``s with ``pg=None`` (no actor scheduling).
+    Each cell starts unallocated."""
+    from miles.ray.rollout.server_cell import compute_nodes_per_engine
     from miles.ray.rollout.server_engine import ServerEngine
-    from miles.ray.rollout.server_group import ServerGroup
 
     args = make_args(num_gpus_per_node=8)
-    engines = [ServerEngine() for _ in range(num_engines)]
-    return ServerGroup(
-        args=args,
-        cells=chunk_engines_into_cells(
-            engines,
-            num_gpus_per_engine=num_gpus_per_engine,
-            num_gpus_per_node=8,
-            args=args,
-            gpu_offset=gpu_offset,
-            update_weights=True,
-        ),
+    nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
+    return chunk_engines_into_cells(
+        [ServerEngine() for _ in range(num_cells * nodes_per_engine)],
         num_gpus_per_engine=num_gpus_per_engine,
+        num_gpus_per_node=8,
+        gpu_offset=gpu_offset,
+        args=args,
+        pg=None,
     )
+
+
+def flatten_cells(cells):
+    return [engine for cell in cells for engine in cell.engines]
 
 
 def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:

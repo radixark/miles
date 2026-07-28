@@ -151,21 +151,16 @@ class FakeServerEngine:
         self.is_alive = alive
 
 
-class FakeGroup:
-    def __init__(self, engines, nodes_per_engine=1):
-        self.cells = [
-            ServerCell(args=None, worker_type="regular", engines=engines[i : i + nodes_per_engine])
-            for i in range(0, len(engines), nodes_per_engine)
-        ]
-        self.nodes_per_engine = nodes_per_engine
+def _cells(engines, nodes_per_engine=1):
+    return [ServerCell(engines=engines[i : i + nodes_per_engine]) for i in range(0, len(engines), nodes_per_engine)]
 
 
 def _info(url, node, gpus):
     return dict(url=url, node_ip=node, gpu_ids=gpus, gpu_uuids=[None] * len(gpus), worker_type="regular", node_rank=0)
 
 
-def _servers(*groups):
-    server = type("FakeServer", (), {"server_groups": list(groups)})()
+def _servers(*cell_lists):
+    server = type("FakeServer", (), {"server_cells": [cell for cells in cell_lists for cell in cells]})()
     return {"default": server}
 
 
@@ -176,7 +171,7 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     master = FakeServerEngine(_info("http://a:1", "node-a", [0, 1]))
     worker = FakeServerEngine(_info("http://a-worker:1", "node-b", [0, 1]))
     single = FakeServerEngine(_info("http://b:1", "node-a", [2, 3]))
-    servers = _servers(FakeGroup([master, worker], nodes_per_engine=2), FakeGroup([single]))
+    servers = _servers(_cells([master, worker], nodes_per_engine=2), _cells([single]))
 
     hooks.register_engines(servers)
     [(args, _)] = handle.update_topology.calls
@@ -199,14 +194,14 @@ def test_register_engines_skips_dead_chunks(monkeypatch):
     monkeypatch.setattr(backend, "_handle", handle)
     alive = FakeServerEngine(_info("http://a:1", "n", [0]))
     dead = FakeServerEngine(_info("http://b:1", "n", [1]), alive=False)
-    hooks.register_engines(_servers(FakeGroup([alive]), FakeGroup([dead])))
+    hooks.register_engines(_servers(_cells([alive]), _cells([dead])))
 
     [(args, _)] = handle.update_topology.calls
     assert [e.addr for e in args[0].engines] == ["http://a:1"]
 
 
 def test_register_engines_without_collector_is_noop():
-    hooks.register_engines(_servers(FakeGroup([FakeServerEngine(_info("http://a:1", "n", [0]))])))
+    hooks.register_engines(_servers(_cells([FakeServerEngine(_info("http://a:1", "n", [0]))])))
     assert hooks._engines_fingerprint is None
 
 

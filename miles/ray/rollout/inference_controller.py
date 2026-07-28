@@ -7,9 +7,8 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleet
-from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
+from miles.ray.rollout.rollout_server import RolloutServer, get_cell_indexer_of_id_map, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
-from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.utils import Lock
 
 
@@ -136,11 +135,11 @@ class InferenceController:
 
     async def start_cell(self, cell_id: int):
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
-        await self.servers[idx.srv_key].recover_cell(group_index=idx.group_index, cell_index=idx.cell_index)
+        await self.servers[idx.srv_key].recover(cell_indices=[idx.cell_index])
 
     async def stop_cell(self, cell_id: int):
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
-        self.servers[idx.srv_key].stop_cell(group_index=idx.group_index, cell_index=idx.cell_index)
+        await self.servers[idx.srv_key].stop_cells([idx.cell_index])
 
     # -------------------------- misc APIs -----------------------------
 
