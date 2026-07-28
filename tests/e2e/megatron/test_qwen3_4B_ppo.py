@@ -106,7 +106,7 @@ def execute():
         # need to comment this when using model with MLA
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
+        f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
     )
 
