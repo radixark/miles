@@ -12,7 +12,7 @@ from copy import copy, deepcopy
 import numpy as np
 import safetensors.numpy
 
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionsPerCall
 
 
 @dataclasses.dataclass(frozen=True)
@@ -87,6 +87,8 @@ def encode_samples(samples: list[Sample], session_metadata: dict, empty_reason: 
             if spec.codec == "json":
                 if field == "status":
                     value = value.value
+                elif field == "weight_versions":
+                    value = [call.to_dicts() for call in value]
                 elif field == "prefix_cache_info":
                     value = value.to_dict()
                 sample_meta[field] = value
@@ -135,7 +137,7 @@ def decode_samples_and_merge_input_sample(payload: bytes, input_sample: Sample) 
                 if field == "status":
                     value = Sample.Status(value)
                 elif field == "weight_versions":
-                    value = list(value)
+                    value = [WeightVersionsPerCall.from_dicts(call) for call in value]
                 elif field == "prefix_cache_info":
                     value = Sample.PrefixCacheInfo.from_dict(value)
                 elif field == "metadata":

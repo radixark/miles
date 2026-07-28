@@ -12,7 +12,7 @@ from transformers import AutoProcessor
 
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 _ = generation_env
 
@@ -76,7 +76,7 @@ def expected_sample(
     status: Sample.Status = Sample.Status.COMPLETED,
     cached_tokens: int = 0,
     prompt_tokens: int = 7,
-    weight_versions: list[str] | None = None,
+    weight_versions: list[str | None] | None = None,
     rollout_routed_experts: np.ndarray | None = None,
     spec_info: Sample.SpecInfo | None = None,
     multimodal_inputs: dict | None = None,
@@ -86,12 +86,23 @@ def expected_sample(
     actual_response_length = response_length if response_length is not None else len(RESPONSE_TOKENS)
     if isinstance(loss_mask, _Unset):
         loss_mask = [1] * actual_response_length if variant == "multi_turn" else None
+    actual_tokens = PROMPT_TOKENS + RESPONSE_TOKENS if isinstance(tokens, _Unset) else tokens
+    expected_weight_versions = [
+        WeightVersionsPerCall(
+            spans=(
+                []
+                if version is None
+                else [WeightVersionSpan(version, len(actual_tokens) - actual_response_length, len(actual_tokens))]
+            )
+        )
+        for version in (weight_versions if weight_versions is not None else [None])
+    ]
 
     return Sample(
         group_index=None,
         index=None,
         prompt=prompt,
-        tokens=PROMPT_TOKENS + RESPONSE_TOKENS if isinstance(tokens, _Unset) else tokens,
+        tokens=actual_tokens,
         multimodal_inputs=multimodal_inputs,
         multimodal_train_inputs=multimodal_train_inputs,
         response=response,
@@ -99,7 +110,7 @@ def expected_sample(
         label=None,
         reward=None,
         loss_mask=loss_mask,
-        weight_versions=weight_versions or [],
+        weight_versions=expected_weight_versions,
         rollout_log_probs=RESPONSE_LOG_PROBS if isinstance(rollout_log_probs, _Unset) else rollout_log_probs,
         rollout_routed_experts=rollout_routed_experts,
         remove_sample=False,
@@ -180,6 +191,7 @@ class TestResumedSingleTurn:
             rollout_log_probs=partial_log_probs + remaining_log_probs,
             prompt_tokens=len(PROMPT_TOKENS) + len(tokens_after_turn1),
             status=Sample.Status.COMPLETED,
+            weight_versions=[None, None],
         )
 
 
@@ -309,6 +321,7 @@ class TestBoundaryConditions:
             rollout_log_probs=None,
             status=Sample.Status.TRUNCATED,
             prompt_tokens=0,
+            weight_versions=[],
         )
 
     @pytest.mark.parametrize("generation_env", [{"args_kwargs": {"rollout_max_context_len": 5}}], indirect=True)
@@ -328,6 +341,7 @@ class TestBoundaryConditions:
                 status=Sample.Status.TRUNCATED,
                 prompt_tokens=0,
                 loss_mask=None if variant == "multi_turn" else _UNSET,
+                weight_versions=[],
             )
         ]
 
@@ -370,6 +384,7 @@ class TestBoundaryConditions:
                 status=Sample.Status.TRUNCATED,
                 prompt_tokens=0,
                 loss_mask=None if variant == "multi_turn" else _UNSET,
+                weight_versions=[],
             )
         ]
 

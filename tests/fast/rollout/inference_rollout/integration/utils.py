@@ -9,7 +9,7 @@ from miles.rollout.base_types import (
 )
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionsPerCall
 
 
 def expected_sample(*, group_index: int | None) -> Sample:
@@ -25,7 +25,7 @@ def expected_sample(*, group_index: int | None) -> Sample:
         label="8",
         reward=1,
         loss_mask=None,
-        weight_versions=[],
+        weight_versions=[WeightVersionsPerCall(spans=[])],
         rollout_log_probs=[-0.0, -0.0078125, -0.015625, -0.0234375, -0.03125],
         rollout_routed_experts=None,
         remove_sample=False,

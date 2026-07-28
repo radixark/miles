@@ -4,7 +4,7 @@ from miles.dashboard import hooks
 from miles.dashboard.hooks import BATCH_MAX_EVENTS, TrajectorySink
 from miles.dashboard.store import Stream, TrajectoryEvent, TrajectoryEventKind
 from miles.utils.lifecycle import TrajectoryLifecycle
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 class FakeRemoteMethod:
@@ -31,7 +31,13 @@ def clean_sink():
 
 
 def _sample(index=7, group=2, versions=("3", "4")):
-    return Sample(index=index, group_index=group, weight_versions=list(versions))
+    return Sample(
+        index=index,
+        group_index=group,
+        weight_versions=[
+            WeightVersionsPerCall(spans=[WeightVersionSpan(version, i, i + 1)]) for i, version in enumerate(versions)
+        ],
+    )
 
 
 def _pushed(handle):
