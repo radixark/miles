@@ -10,7 +10,9 @@ from miles.ray.rollout.server_cell import ServerCell
 
 
 def _make_server(cells: list[ServerCell]) -> RolloutServer:
-    return RolloutServer(server_cells=cells, args=make_args(num_gpus_per_node=8))
+    return RolloutServer(
+        server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)}, args=make_args(num_gpus_per_node=8)
+    )
 
 
 # ----------------------------- check_weights -----------------------------

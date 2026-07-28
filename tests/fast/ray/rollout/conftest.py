@@ -272,9 +272,10 @@ def make_dataclass_cells(
     nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
     return [
         ServerCell(
-            num_nodes=nodes_per_engine,
             args=args,
             worker_type="regular",
+            cell_id=f"cell-{cell_index}",
+            num_nodes=nodes_per_engine,
             pg=None,
             num_gpus_per_engine=num_gpus_per_engine,
             rank_offset=cell_index * nodes_per_engine,
