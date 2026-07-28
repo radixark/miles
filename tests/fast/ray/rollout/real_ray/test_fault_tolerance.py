@@ -38,9 +38,8 @@ def _build_group(
     )
 
 
-def _start(group: ServerGroup) -> None:
-    handles, indices = group.start_engines(PortAllocator.empty())
-    ray.get(handles)
+async def _start(group: ServerGroup) -> None:
+    indices = await group.start_engines(PortAllocator.empty())
     group.mark_alive(indices)
 
 
@@ -67,7 +66,7 @@ class TestKillAndRecover:
         and the surviving engine is untouched."""
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
-        _start(group)
+        await _start(group)
 
         original_handles = [e.actor_handle for e in flatten_cells(group.cells)]
         # Real fault: kill engine 0 + mark its slot stopped (production code's
@@ -98,7 +97,7 @@ class TestKillAndRecover:
         only 0 and 2 to be re-created."""
         pg = placement_group_factory(3)
         group = _build_group(pg_tuple=pg, num_engines=3)
-        _start(group)
+        await _start(group)
 
         old = [e.actor_handle for e in flatten_cells(group.cells)]
         for i in (0, 2):
@@ -136,7 +135,7 @@ class TestKillAndRecover:
         pg = placement_group_factory(1)
         group = _build_group(pg_tuple=pg, num_engines=1)
         group.router_ip, group.router_port = "10.0.0.9", 9000
-        _start(group)
+        await _start(group)
         ray.kill(flatten_cells(group.cells)[0].actor_handle)
         flatten_cells(group.cells)[0].mark_stopped()
 
@@ -159,7 +158,7 @@ class TestKillAndRecover:
         Verify by reading the recovered engine's mock HTTP server log."""
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2, needs_offload=True, update_weights=True)
-        _start(group)
+        await _start(group)
         old = [e.actor_handle for e in flatten_cells(group.cells)]
 
         ray.kill(old[0])
@@ -221,8 +220,8 @@ class TestConcurrentRecover:
         pg_b = placement_group_factory(2)
         a = _build_group(pg_tuple=pg_a, num_engines=2)
         b = _build_group(pg_tuple=pg_b, num_engines=2)
-        _start(a)
-        _start(b)
+        await _start(a)
+        await _start(b)
 
         # Kill one engine in each group
         for g in (a, b):
@@ -261,7 +260,7 @@ class TestSimulateCrashKeepsActorReachable:
     ):
         pg = placement_group_factory(1)
         group = _build_group(pg_tuple=pg, num_engines=1)
-        _start(group)
+        await _start(group)
         actor = flatten_cells(group.cells)[0].actor_handle
 
         try:
