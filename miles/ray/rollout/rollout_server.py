@@ -60,23 +60,38 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 f"(abs={group_abs_start}): needs_offload={needs_offload}"
             )
 
+            cells: list[ServerCell] = []
+            if group_cfg.worker_type != "placeholder":
+                assert num_engines % nodes_per_engine == 0, (
+                    f"group '{group_cfg.worker_type}' has {num_engines=} which is not a whole number of "
+                    f"{nodes_per_engine=} engines; the trailing engine would have no node to run its remaining ranks"
+                )
+                assert engine_offset % nodes_per_engine == 0, (
+                    f"group '{group_cfg.worker_type}' starts at {engine_offset=}, which is not aligned to "
+                    f"{nodes_per_engine=}: sglang derives each engine's node_rank from its global rank, so a "
+                    f"misaligned start would make the cell's primary a worker node"
+                )
+
+                for cell_start in range(0, num_engines, nodes_per_engine):
+                    cells.append(
+                        ServerCell(
+                            args=args,
+                            worker_type=group_cfg.worker_type,
+                            engines=[ServerEngine() for _ in range(nodes_per_engine)],
+                            pg=pg,
+                            num_gpus_per_engine=gpus_per_engine,
+                            rank_offset=engine_offset + cell_start,
+                            gpu_offset=gpu_offset + cell_start * num_gpu_per_engine_local,
+                            sglang_overrides=overrides,
+                        )
+                    )
+
             group = ServerGroup(
                 args=args,
-                pg=pg,
-                cells=(
-                    [
-                        ServerCell(engines=[ServerEngine() for _ in range(nodes_per_engine)])
-                        for _ in range(num_engines // nodes_per_engine)
-                    ]
-                    if group_cfg.worker_type != "placeholder"
-                    else []
-                ),
+                cells=cells,
                 num_gpus_per_engine=gpus_per_engine,
                 has_new_engines=False,
                 worker_type=group_cfg.worker_type,
-                rank_offset=engine_offset,
-                gpu_offset=gpu_offset,
-                sglang_overrides=overrides,
                 needs_offload=needs_offload,
                 model_path=overrides.get("model_path", args.hf_checkpoint),
                 router_ip=router_ip,
@@ -229,15 +244,11 @@ class RolloutServer:
     @property
     def engine_gpu_counts(self) -> list[int]:
         """Per-engine GPU count for all node-0 engines, parallel to ``engines``."""
-        return [g.num_gpus_per_engine for g in self.server_groups for _ in g.engines]
+        return [cell.num_gpus_per_engine for g in self.server_groups for cell in g.cells]
 
     @property
     def engine_gpu_offsets(self) -> list[int]:
-        offsets = []
-        for g in self.server_groups:
-            for j in range(len(g.engines)):
-                offsets.append(g.gpu_offset + j * g.num_gpus_per_engine)
-        return offsets
+        return [cell.gpu_offset for g in self.server_groups for cell in g.cells]
 
     @property
     def nodes_per_engine(self):

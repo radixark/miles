@@ -3,14 +3,17 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_dataclass_group
+from tests.fast.ray.rollout.conftest import make_args, make_dataclass_group, make_sglang_config_yaml
 
+from miles.ray.rollout import rollout_server
 from miles.ray.rollout.rollout_server import (
     RolloutServer,
     _compute_megatron_num_gpus,
     _compute_rollout_offset,
     _resolve_sglang_config,
+    start_rollout_servers,
 )
+from miles.ray.rollout.server_group import ServerGroup
 
 
 class TestRolloutServerPureFunctions:
@@ -259,3 +262,51 @@ class TestRolloutServerNodesPerEngineHeterogeneity:
         srv = RolloutServer(server_groups=[a, b])
         with pytest.raises(ValueError, match="Heterogeneous nodes_per_engine"):
             _ = srv.nodes_per_engine
+
+
+class TestStartRolloutServersCellChunking:
+    @pytest.fixture
+    def stub_engine_startup(self, monkeypatch):
+        async def _no_engines(self, *args, **kwargs):
+            return []
+
+        monkeypatch.setattr(rollout_server, "start_router", lambda *args, **kwargs: ("127.0.0.1", 30000))
+        monkeypatch.setattr(ServerGroup, "start_engines", _no_engines)
+
+    def _servers_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[
+                    {"worker_type": "regular", "num_gpus": num_gpus, "num_gpus_per_engine": num_gpus_per_engine}
+                ]
+            )
+        )
+        args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
+        return start_rollout_servers(args, pg=None)
+
+    def test_a_single_node_engine_becomes_its_own_cell(self, stub_engine_startup, tmp_path):
+        """With one gpu per engine on 8-gpu nodes, every engine is a one-engine cell."""
+        servers = self._servers_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
+        (group,) = servers["default"].server_groups
+        assert group.nodes_per_engine == 1
+        assert [len(cell.engines) for cell in group.cells] == [1] * 8
+
+    def test_a_multi_node_engine_chunks_its_node_ranks_into_one_cell(self, stub_engine_startup, tmp_path):
+        """With 16 gpus per engine on 8-gpu nodes, each cell holds both node-ranks."""
+        servers = self._servers_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        (group,) = servers["default"].server_groups
+        assert group.nodes_per_engine == 2
+        assert [len(cell.engines) for cell in group.cells] == [2, 2]
+
+    def test_a_trailing_partial_multi_node_engine_is_rejected(self, stub_engine_startup, tmp_path):
+        """24 gpus do not divide into whole 2-node engines, so startup must fail fast."""
+        with pytest.raises(AssertionError, match="whole number of"):
+            self._servers_for(tmp_path, num_gpus=24, num_gpus_per_engine=16)
+
+    def test_cells_carry_contiguous_rank_and_gpu_offsets(self, stub_engine_startup, tmp_path):
+        """Each multi-node cell starts where the previous one ended, so node-0 detection stays valid."""
+        servers = self._servers_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        (group,) = servers["default"].server_groups
+        assert [cell.rank_offset for cell in group.cells] == [0, 2]
+        assert [cell.gpu_offset for cell in group.cells] == [0, 16]
