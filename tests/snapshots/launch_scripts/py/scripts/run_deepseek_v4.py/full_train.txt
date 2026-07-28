@@ -149,7 +149,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && source "<REPO_ROOT>/sc
   --bf16
   --fp8-format e4m3
   --fp8-recipe blockwise
-  --te-precision-config-file /frozen/pseudo_file_1.yaml   
+  --te-precision-config-file base64:<frozen-pseudo-file-1>   
 
 ### pseudo file 1
 configs:

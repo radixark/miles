@@ -250,7 +250,7 @@ def execute(args: ScriptArgs, *, wandb_file: str = __file__):
                 optimizer_args += (
                     "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
                 )
-                misc_args += f"--te-precision-config-file {U.save_to_temp_file(MXFP8_TE_PRECISION_CONFIG, 'yaml')} "
+                misc_args += f"--te-precision-config-file {U.encode_pseudo_file(MXFP8_TE_PRECISION_CONFIG)} "
             else:
                 sglang_args += "--rollout-num-gpus-per-engine 1 " "--sglang-cuda-graph-max-bs 256 "
         case _:
@@ -271,7 +271,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 

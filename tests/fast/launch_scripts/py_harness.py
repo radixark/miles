@@ -71,12 +71,12 @@ def freeze_environment(monkeypatch) -> None:
 def install_command_recorder(monkeypatch) -> Recording:
     recording = Recording(commands=record_commands(monkeypatch), pseudo_files=[])
 
-    def fake_save_to_temp_file(text: str, ext: str) -> str:
+    def fake_encode_pseudo_file(text: str) -> str:
         recording.pseudo_files.append(text)
-        return f"/frozen/pseudo_file_{len(recording.pseudo_files)}.{ext}"
+        return f"base64:<frozen-pseudo-file-{len(recording.pseudo_files)}>"
 
     monkeypatch.setattr(command_utils, "create_run_id", lambda: FROZEN_RUN_ID)
-    monkeypatch.setattr(command_utils, "save_to_temp_file", fake_save_to_temp_file)
+    monkeypatch.setattr(command_utils, "encode_pseudo_file", fake_encode_pseudo_file)
 
     return recording
 
