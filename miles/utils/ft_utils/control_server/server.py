@@ -41,12 +41,11 @@ def start_control_server(
 
     if "rollout" in ft_components:
         # TODO the code will NOT work before implementing rollout ft
-        num_rollout_cells = inference_controller.get_cell_count()
-        for i in range(num_rollout_cells):
+        for rollout_cell_id in inference_controller.list_cell_ids():
             registry.register(
                 _RolloutCellHandle(
                     inference_controller=inference_controller,
-                    cell_index=i,
+                    rollout_cell_id=rollout_cell_id,
                 )
             )
 

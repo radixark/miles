@@ -15,7 +15,7 @@ class MockHandle:
         self,
         cell_id: str,
         cell_type: str,
-        cell_index: int = 0,
+        cell_key: str = "0",
         phase: str = "Running",
         conditions: list[dict[str, str | None]] | None = None,
         is_suspended: bool = False,
@@ -24,7 +24,7 @@ class MockHandle:
     ) -> None:
         self.cell_id = cell_id
         self.cell_type = cell_type
-        self._cell_index = cell_index
+        self.cell_key = cell_key
         self._phase = phase
         self._conditions = conditions or [
             {"type": "Allocated", "status": "True"},
@@ -36,18 +36,11 @@ class MockHandle:
         self.suspend_calls: int = 0
         self.resume_calls: int = 0
 
-    @property
-    def cell_index(self) -> int:
-        return self._cell_index
-
     async def get_cell(self) -> Cell:
         return Cell(
             metadata=CellMetadata(
                 name=self.cell_id,
-                labels={
-                    "miles.io/cell-type": self.cell_type,
-                    "miles.io/cell-index": str(self._cell_index),
-                },
+                labels={"miles.io/cell-type": self.cell_type, "miles.io/cell-index": self.cell_key},
             ),
             spec=CellSpec(suspend=self._is_suspended),
             status=CellStatus(
@@ -106,23 +99,23 @@ class MockInferenceController:
             {"type": "Healthy", "status": "True"},
         ]
         self._is_suspended = is_suspended
-        self.stopped_cells: list[int] = []
-        self.started_cells: list[int] = []
+        self.stopped_cells: list[str] = []
+        self.started_cells: list[str] = []
 
-    def get_cell_phase(self, cell_index: int) -> str:
+    def get_cell_phase(self, cell_id: str) -> str:
         return self._phase
 
-    def get_cell_conditions(self, cell_index: int) -> list[dict[str, str | None]]:
+    def get_cell_conditions(self, cell_id: str) -> list[dict[str, str | None]]:
         return self._conditions
 
-    def get_cell_is_suspended(self, cell_index: int) -> bool:
+    def get_cell_is_suspended(self, cell_id: str) -> bool:
         return self._is_suspended
 
-    async def stop_cell(self, cell_index: int) -> None:
-        self.stopped_cells.append(cell_index)
+    async def stop_cell(self, cell_id: str) -> None:
+        self.stopped_cells.append(cell_id)
 
-    async def start_cell(self, cell_index: int) -> None:
-        self.started_cells.append(cell_index)
+    async def start_cell(self, cell_id: str) -> None:
+        self.started_cells.append(cell_id)
 
 
 class MockRayTrainCell:

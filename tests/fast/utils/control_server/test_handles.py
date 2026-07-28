@@ -91,10 +91,10 @@ class TestRolloutCellHandle:
     @pytest.mark.asyncio
     async def test_get_cell_delegates_to_controller(self) -> None:
         controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, cell_index=0)
+        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
         cell = await handle.get_cell()
 
-        assert cell.metadata.name == "rollout-0"
+        assert cell.metadata.name == "rollout-actor-0"
         assert cell.metadata.labels["miles.io/cell-type"] == "rollout"
         assert cell.status.phase == "Running"
         assert cell.spec.suspend is False
@@ -102,21 +102,21 @@ class TestRolloutCellHandle:
     @pytest.mark.asyncio
     async def test_suspend_delegates_to_controller(self) -> None:
         controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, cell_index=0)
+        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
         await handle.suspend()
-        assert controller.stopped_cells == [0]
+        assert controller.stopped_cells == ["actor-0"]
 
     @pytest.mark.asyncio
     async def test_resume_delegates_to_controller(self) -> None:
         controller = MockInferenceController()
-        handle = _RolloutCellHandle(inference_controller=controller, cell_index=0)
+        handle = _RolloutCellHandle(inference_controller=controller, rollout_cell_id="actor-0")
         await handle.resume()
-        assert controller.started_cells == [0]
+        assert controller.started_cells == ["actor-0"]
 
     def test_cell_type_is_rollout(self) -> None:
-        handle = _RolloutCellHandle(inference_controller=object(), cell_index=0)
+        handle = _RolloutCellHandle(inference_controller=object(), rollout_cell_id="actor-0")
         assert handle.cell_type == "rollout"
-        assert handle.cell_id == "rollout-0"
+        assert handle.cell_id == "rollout-actor-0"
 
 
 class _FakeRemoteMethod:
@@ -158,8 +158,8 @@ class _ConcreteCellHandle(_CellHandle):
         return "fake"
 
     @property
-    def cell_index(self) -> int:
-        return 0
+    def cell_key(self) -> str:
+        return "0"
 
     async def get_cell(self) -> object:
         raise NotImplementedError

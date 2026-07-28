@@ -54,13 +54,15 @@ class TestKillAndRecover:
         patched_sglang_engine,
         placement_group_factory,
     ):
-        """When ``cell_indices=None``, the server recovers every cell with a
+        """When ``cell_ids=None``, the server recovers every cell with a
         dead engine. We kill 0 and 2, leave 1 alive, expect only 0 and 2 to
         be re-created."""
         pg = placement_group_factory(3)
         cells = build_cells(pg_tuple=pg, num_cells=3)
         await start_cells(cells, mark_alive=True)
-        srv = RolloutServer(server_cells=cells, args=make_args(num_gpus_per_node=8))
+        srv = RolloutServer(
+            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)}, args=make_args(num_gpus_per_node=8)
+        )
 
         old = [cell.primary_actor_handle for cell in cells]
         for i in (0, 2):
@@ -96,7 +98,10 @@ class TestKillAndRecover:
         pg = placement_group_factory(1)
         cells = build_cells(pg_tuple=pg, num_cells=1)
         srv = RolloutServer(
-            server_cells=cells, args=make_args(num_gpus_per_node=8), router_ip="10.0.0.9", router_port=9000
+            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
+            args=make_args(num_gpus_per_node=8),
+            router_ip="10.0.0.9",
+            router_port=9000,
         )
         await start_cells(cells, mark_alive=True)
         ray.kill(cells[0].primary_actor_handle)
@@ -104,7 +109,7 @@ class TestKillAndRecover:
 
         try:
             with patch.object(RolloutServer, "_router_api_client", property(lambda self: _Recorder())):
-                await srv.recover(cell_indices=[0])
+                await srv.recover(cell_ids=["cell-0"])
 
             assert [event["worker_url"] for event in events] == [cells[0].addr_info.server_url]
             assert cells[0].is_alive

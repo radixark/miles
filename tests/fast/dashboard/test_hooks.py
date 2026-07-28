@@ -160,7 +160,8 @@ def _info(url, node, gpus):
 
 
 def _servers(*cell_lists):
-    server = type("FakeServer", (), {"server_cells": [cell for cells in cell_lists for cell in cells]})()
+    cells = [cell for cells in cell_lists for cell in cells]
+    server = type("FakeServer", (), {"server_cells": {f"cell-{i}": cell for i, cell in enumerate(cells)}})()
     return {"default": server}
 
 

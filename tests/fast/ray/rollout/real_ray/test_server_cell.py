@@ -23,7 +23,7 @@ class TestStartEnginesShortCircuits:
         """In debug_train_only the server schedules no actors at all."""
         pg = placement_group_factory(2)
         cells = build_cells(pg_tuple=pg, num_cells=2, debug_train_only=True)
-        srv = RolloutServer(server_cells=cells, args=cells[0].args)
+        srv = RolloutServer(server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)}, args=cells[0].args)
         await srv.start_all_cells(PortAllocator())
         assert srv.has_new_engines is False
         for cell in cells:
@@ -31,7 +31,7 @@ class TestStartEnginesShortCircuits:
 
     async def test_a_server_without_cells_starts_as_a_noop(self):
         """Placeholder groups produce no cells, so starting the server does nothing."""
-        srv = RolloutServer(server_cells=[], args=make_args(num_gpus_per_node=8))
+        srv = RolloutServer(server_cells={}, args=make_args(num_gpus_per_node=8))
         await srv.start_all_cells(PortAllocator())
         assert srv.has_new_engines is False
 
@@ -132,10 +132,10 @@ class TestStopCellsRealKill:
         pg = placement_group_factory(2)
         cells = build_cells(pg_tuple=pg, num_cells=2)
         await start_cells(cells)
-        srv = RolloutServer(server_cells=cells, args=cells[0].args)
+        srv = RolloutServer(server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)}, args=cells[0].args)
 
         actors = _all_actor_handles(cells)
-        await srv.stop_cells([0, 1])
+        await srv.stop_cells(["cell-0", "cell-1"])
 
         for cell in cells:
             assert not cell.is_allocated, "cell should be stopped"
@@ -154,12 +154,12 @@ class TestStopCellsRealKill:
         pg = placement_group_factory(2)
         cells = build_cells(pg_tuple=pg, num_cells=2)
         await start_cells(cells)
-        srv = RolloutServer(server_cells=cells, args=cells[0].args)
+        srv = RolloutServer(server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)}, args=cells[0].args)
 
         # Plant a one-shot shutdown failure on cell 1.
         ray.get(cells[1].primary_actor_handle.set_fault.remote("shutdown", RuntimeError("boom")))
 
-        await srv.stop_cells([0, 1])
+        await srv.stop_cells(["cell-0", "cell-1"])
         for cell in cells:
             assert not cell.is_allocated, "all cells must be stopped despite shutdown raise"
 

@@ -30,12 +30,11 @@ class TestGetCells:
     @pytest.mark.asyncio
     async def test_returns_all_cells_golden(self, registry: _CellRegistry, async_client: httpx.AsyncClient) -> None:
         """Golden test: full JSON response for GET /api/v1/cells with two cells."""
-        registry.register(MockHandle(cell_id="actor-0", cell_type="actor", cell_index=0, phase="Running"))
+        registry.register(MockHandle(cell_id="actor-0", cell_type="actor", phase="Running"))
         registry.register(
             MockHandle(
                 cell_id="rollout-0",
                 cell_type="rollout",
-                cell_index=0,
                 phase="Suspended",
                 is_suspended=True,
                 conditions=[
@@ -115,7 +114,7 @@ class TestGetCell:
     @pytest.mark.asyncio
     async def test_returns_single_cell_golden(self, registry: _CellRegistry, async_client: httpx.AsyncClient) -> None:
         """Golden test: full JSON response for GET /api/v1/cells/{name}."""
-        registry.register(MockHandle(cell_id="actor-0", cell_type="actor", cell_index=0, phase="Running"))
+        registry.register(MockHandle(cell_id="actor-0", cell_type="actor", phase="Running"))
 
         resp = await async_client.get("/api/v1/cells/actor-0")
         assert resp.status_code == 200
