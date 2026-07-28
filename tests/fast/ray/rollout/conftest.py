@@ -310,10 +310,10 @@ def make_dataclass_group(
             num_gpus_per_node=8,
             args=args,
             gpu_offset=gpu_offset,
+            update_weights=True,
         ),
         num_gpus_per_engine=num_gpus_per_engine,
         has_new_engines=False,
-        update_weights=True,
     )
 
 
