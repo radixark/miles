@@ -1,4 +1,3 @@
-import base64
 import os
 
 from scripts.run_qwen3_5_35b_a3b_lora import ScriptArgs, _prepare_download, _train
@@ -37,41 +36,8 @@ def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
     )
 
 
-# TEMPORARY diagnostic (revert with the one in tests/e2e/lora/test_lora_qwen2.5_0.5B.py).
-# This shard runs on the H100 hosts, so it gives the second host's driver/cuDNN facts to
-# compare against both the H200 shard and the devbox reproduction.
-_PROBE = r"""
-set +e
-echo '===== DIAG begin (h100 shard) ====='
-nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.used --format=csv 2>&1
-nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv 2>&1
-uname -a
-ldconfig -p | grep -i cudnn || echo '(none in ldconfig)'
-dpkg -l 2>/dev/null | grep -i cudnn || echo '(no cudnn apt package)'
-python -m pip list 2>/dev/null | grep -iE 'cudnn|^torch |transformer.engine|flash'
-python - <<'PY' 2>&1
-import ctypes, torch
-try:
-    print("torch", torch.__version__, "| cudnn.version() =", torch.backends.cudnn.version())
-except Exception as e:
-    print("torch cudnn init FAILED:", e)
-import transformer_engine.pytorch  # noqa: F401
-maps = sorted({l.split()[-1] for l in open("/proc/self/maps") if "libcudnn" in l})
-for m in maps:
-    print("  mapped:", m)
-    if "libcudnn.so" in m:
-        lib = ctypes.CDLL(m); lib.cudnnGetVersion.restype = ctypes.c_size_t
-        print("  cudnnGetVersion() =", lib.cudnnGetVersion())
-print("device", torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))
-PY
-env | sort
-echo '===== DIAG end (h100 shard) ====='
-"""
-
-
 def prepare(args: ScriptArgs):
     _prepare_download(args)
-    U.exec_command(f"echo {base64.b64encode(_PROBE.encode()).decode()} | base64 -d | bash")
 
 
 def execute(args: ScriptArgs):
