@@ -16,7 +16,7 @@ import pytest
 
 import miles.utils.http_utils as http_utils
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
-from miles.rollout.session.samples.codec import encode_samples_reply
+from miles.rollout.session.samples.codec import encode_samples
 from miles.utils.http_utils import post_bytes_no_retry
 from miles.utils.types import Sample
 
@@ -75,7 +75,7 @@ async def test_create_distributes_sessions_across_port_range(monkeypatch):
 
     async def fake_post_bytes(url, payload, *, timeout):
         calls.append(("post_bytes", url))
-        return encode_samples_reply([], {}, "no_records")
+        return encode_samples([], {}, "no_records")
 
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
     monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post_bytes_no_retry", fake_post_bytes)
@@ -119,7 +119,7 @@ def _computed_reply_payload() -> bytes:
     sample.loss_mask = [1]
     sample.rollout_log_probs = [-0.5]
     sample.status = Sample.Status.COMPLETED
-    return encode_samples_reply([sample], {"max_trim_tokens": 1}, None)
+    return encode_samples([sample], {"max_trim_tokens": 1}, None)
 
 
 class _CollectCalls:

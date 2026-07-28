@@ -1,27 +1,8 @@
-"""Wire codec for the `POST /sessions/{id}/samples` reply.
+"""Encode server-computed fields and merge them into driver input samples.
 
-The wire contract is the single table `SAMPLES_VALUE_SPEC`: every computed field
-maps to a `ValueSpec` naming its codec and wire dtype. Only these fields are
-assembled from the records on the server and cross the samples wire; every other
-`Sample` field never crosses — the driver overlay keeps its local deepcopy's
-value verbatim.
-
-Payload layout — one safetensors container:
-
-- Tensor codecs ("tensor", "tensor_list"): one tensor per sample per non-null
-  field, named `{field}.{sample_index}`. A null field carries no tensor and is
-  listed in that sample's `nulls` marker instead.
-- "json" fields ride `_samples_meta`, a rank-one uint8 tensor holding one UTF-8
-  JSON document: per-sample json fields and null markers, the session metadata,
-  and the empty-reason discriminator. (`safetensors.numpy.load` exposes no
-  header metadata and `__metadata__` is reserved by the format, hence the
-  tensor carrier; malformed payloads still fail inside safetensors' validated
-  parser instead of hand-rolled framing checks.)
-
-- Server: `encode_samples_reply(samples, session_metadata, empty_reason)`.
-- Driver: `decode_samples_reply(payload, input_sample)` — rebuilds each `Sample`
-  by overlaying the wire's computed fields onto a deepcopy of `input_sample`.
-  Server-produced metadata is a delta merged into the copied input metadata.
+Only fields in `SAMPLES_VALUE_SPEC` cross the wire. `encode_samples` packs them
+into safetensors; `decode_samples_and_merge_input_sample` overlays them onto a
+deepcopy of the input sample and merges server metadata.
 """
 
 import dataclasses
@@ -94,7 +75,7 @@ def _asarray_wire(field: str, value, dtype: np.dtype) -> np.ndarray:
     return converted
 
 
-def encode_samples_reply(samples: list[Sample], session_metadata: dict, empty_reason: str | None = None) -> bytes:
+def encode_samples(samples: list[Sample], session_metadata: dict, empty_reason: str | None = None) -> bytes:
     """Server side: pack assembled samples into one safetensors payload."""
     tensors: dict[str, np.ndarray] = {}
     sample_metas = []
@@ -131,7 +112,7 @@ def encode_samples_reply(samples: list[Sample], session_metadata: dict, empty_re
     return safetensors.numpy.save(tensors)
 
 
-def decode_samples_reply(payload: bytes, input_sample: Sample) -> SamplesReply:
+def decode_samples_and_merge_input_sample(payload: bytes, input_sample: Sample) -> SamplesReply:
     """Driver side: overlay each wire sample's computed fields onto a deepcopy of `input_sample`."""
     tensors = safetensors.numpy.load(payload)  # SafetensorError propagates: invalid container
     meta_arr = tensors.pop(_SAMPLES_META_KEY)  # KeyError propagates: missing meta is malformed
@@ -141,7 +122,7 @@ def decode_samples_reply(payload: bytes, input_sample: Sample) -> SamplesReply:
         )
     meta = json.loads(meta_arr.tobytes().decode("utf-8"))
     if meta["samples"]:
-        _assert_overlay_template_defaults(input_sample)
+        assert_input_sample_defaults(input_sample)
     samples = []
     for sample_index, sample_meta in enumerate(meta["samples"]):
         sample = deepcopy(input_sample)
@@ -177,18 +158,8 @@ def decode_samples_reply(payload: bytes, input_sample: Sample) -> SamplesReply:
     return SamplesReply(samples=samples, session_metadata=meta["session_metadata"], empty_reason=meta["empty_reason"])
 
 
-def _assert_overlay_template_defaults(input_sample: Sample) -> None:
-    """Overlay equivalence precondition (fail-loud).
-
-    The legacy driver-side pipeline EVOLVED some fields of the input sample in
-    place (`weight_versions` append, `prefix_cache_info` accumulate, merge sums
-    `spec_info` across turns, `strip_last_output_tokens` trims
-    `teacher_log_probs`/`opd_reverse_kl`/`metadata["opd_student_top_logprobs"]`),
-    while the overlay REPLACES the computed fields and carries the template
-    verbatim. The two agree exactly when the input sample holds dataclass
-    defaults on those fields — true for every sample fresh from the data loader
-    (and `reset_for_retry` restores it on framework retries).
-    """
+def assert_input_sample_defaults(input_sample: Sample) -> None:
+    """Require input-sample defaults; otherwise merging server fields can corrupt existing sample state."""
     assert input_sample.weight_versions == [], (
         f"input sample must not carry weight_versions (got {input_sample.weight_versions}); "
         "the legacy pipeline appended to it, the samples-wire overlay replaces it"

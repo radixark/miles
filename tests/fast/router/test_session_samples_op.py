@@ -7,7 +7,7 @@ HTTP surface (route registration order, 404 mapping) is exercised through the
 real `setup_session_routes` app with a `TestClient`.
 
 The golden tests assert the exact `Sample` field values derivable from the
-two-turn records fixture — through `collect_samples` → `decode_samples_reply`
+two-turn records fixture — through `collect_samples` → `decode_samples_and_merge_input_sample`
 overlay → the driver-side metadata application `agentic_tool_call.generate`
 performs — including the template-field overlay and the metadata application
 order (agent metadata overrides the input's keys; session metadata, applied
@@ -27,7 +27,7 @@ from tests.fast.rollout.session.test_samples import _make_record
 
 from miles.rollout.session.core import SessionCore
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.samples.codec import decode_samples_reply
+from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
@@ -148,7 +148,7 @@ async def _collect_via_op(core, sid, *, max_seq_len=None):
 
 def _new_pipeline(payload, input_sample):
     """What collect_samples() does after the cutover: overlay + driver-side metadata."""
-    reply = decode_samples_reply(payload, input_sample)
+    reply = decode_samples_and_merge_input_sample(payload, input_sample)
     samples = reply.samples
     for s in samples:
         s.metadata.update(_AGENT_METADATA)
@@ -222,7 +222,7 @@ async def test_debug_messages_cross_samples_wire(core, monkeypatch):
     records = _two_turn_records()
     sid = await _make_session(core, records, _ACCUMULATED)
     _, payload = await _collect_via_op(core, sid)
-    (sample,) = decode_samples_reply(payload, _input_sample()).samples
+    (sample,) = decode_samples_and_merge_input_sample(payload, _input_sample()).samples
 
     assert sample.metadata["messages"] == records[-1].request["messages"] + [
         records[-1].response["choices"][0]["message"]
@@ -234,7 +234,7 @@ async def test_session_metadata_matches_get_session(core):
     (both are built by the extracted _session_metadata helper)."""
     sid = await _make_session(core, _two_turn_records(), _ACCUMULATED)
     _, payload = await _collect_via_op(core, sid)
-    reply = decode_samples_reply(payload, Sample())
+    reply = decode_samples_and_merge_input_sample(payload, Sample())
 
     response = await core.get_session(sid)
     assert response.status_code == 200
@@ -249,7 +249,7 @@ async def test_no_records_reply(core):
     sid = await _make_session(core, [], None)
     status, payload = await _collect_via_op(core, sid)
     assert status == 200
-    reply = decode_samples_reply(payload, Sample())
+    reply = decode_samples_and_merge_input_sample(payload, Sample())
     assert reply.samples == [] and reply.empty_reason == "no_records"
 
 
@@ -261,7 +261,7 @@ async def test_all_truncated_reply(core):
     sid = await _make_session(core, records, _ACCUMULATED)
     status, payload = await _collect_via_op(core, sid, max_seq_len=2)
     assert status == 200
-    reply = decode_samples_reply(payload, Sample())
+    reply = decode_samples_and_merge_input_sample(payload, Sample())
     assert reply.samples == [] and reply.empty_reason == "all_truncated"
 
 
@@ -306,5 +306,5 @@ def test_samples_route_registered_before_catch_all_proxy(app_client):
     response = app_client.post(f"/sessions/{sid}/samples", content=b'{"max_seq_len":null}')
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/octet-stream"
-    reply = decode_samples_reply(response.content, Sample())
+    reply = decode_samples_and_merge_input_sample(response.content, Sample())
     assert reply.empty_reason == "no_records", "catch-all session_proxy swallowed the samples route"

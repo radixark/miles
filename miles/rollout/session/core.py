@@ -23,7 +23,7 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.samples.codec import encode_samples_reply
+from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 
@@ -204,7 +204,7 @@ class SessionCore:
         metadata = self._session_metadata(session_id, session)
         tokenizer = self.registry.tokenizer
         if not session.records:
-            return _samples_response(encode_samples_reply([], metadata, empty_reason="no_records"))
+            return _samples_response(encode_samples([], metadata, empty_reason="no_records"))
         try:
             samples = compute_samples_from_openai_records(
                 self.args,
@@ -216,11 +216,11 @@ class SessionCore:
             if max_seq_len is not None:
                 samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
             if not samples:
-                return _samples_response(encode_samples_reply([], metadata, empty_reason="all_truncated"))
+                return _samples_response(encode_samples([], metadata, empty_reason="all_truncated"))
             samples = [merge_samples(samples, tokenizer)]
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
-        return _samples_response(encode_samples_reply(samples, metadata))
+        return _samples_response(encode_samples(samples, metadata))
 
     async def delete_session(self, session_id: str) -> Response:
         session = self.registry.get_session(session_id)

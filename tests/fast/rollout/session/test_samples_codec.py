@@ -1,7 +1,7 @@
 """Tests for the samples wire codec: encode on the worker, overlay on the driver.
 
 Covers safetensors-tensor round-trips, malformed-payload rejection, and the
-overlay defaults guard (`_assert_overlay_template_defaults`).
+input-sample defaults guard (`assert_input_sample_defaults`).
 """
 
 import json
@@ -11,7 +11,7 @@ import pytest
 import safetensors.numpy
 from safetensors import SafetensorError
 
-from miles.rollout.session.samples.codec import decode_samples_reply, encode_samples_reply
+from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample, encode_samples
 from miles.utils.types import Sample
 
 
@@ -59,8 +59,8 @@ class TestSamplesWireCodec:
             routing_key="rk",
             train_metadata={"loss": "ppo"},
         )
-        payload = encode_samples_reply([_computed_sample()], {"max_trim_tokens": 1}, None)
-        reply = decode_samples_reply(payload, template)
+        payload = encode_samples([_computed_sample()], {"max_trim_tokens": 1}, None)
+        reply = decode_samples_and_merge_input_sample(payload, template)
 
         assert reply.empty_reason is None
         assert reply.session_metadata == {"max_trim_tokens": 1}
@@ -99,7 +99,7 @@ class TestSamplesWireCodec:
             metadata={"server_only": {"sample": "b"}},
         )
         template = Sample(metadata={"input_only": {"value": 1}})
-        reply = decode_samples_reply(encode_samples_reply([a, b], {}, None), template)
+        reply = decode_samples_and_merge_input_sample(encode_samples([a, b], {}, None), template)
         out_a, out_b = reply.samples
         assert out_a.tokens == a.tokens and out_b.tokens == b.tokens
         assert np.array_equal(out_a.rollout_routed_experts, a.rollout_routed_experts)
@@ -116,17 +116,21 @@ class TestSamplesWireCodec:
         # the overlay-defaults guard must not fire on it — even for an input
         # sample that would violate the guard.
         evolved = Sample(weight_versions=["stale"])
-        reply = decode_samples_reply(encode_samples_reply([], {"max_trim_tokens": 0}, "no_records"), evolved)
+        reply = decode_samples_and_merge_input_sample(
+            encode_samples([], {"max_trim_tokens": 0}, "no_records"), evolved
+        )
         assert reply.samples == [] and reply.empty_reason == "no_records"
 
     def test_defaults_guard_rejects_evolved_template(self):
-        payload = encode_samples_reply([_computed_sample()], {}, None)
+        payload = encode_samples([_computed_sample()], {}, None)
         with pytest.raises(AssertionError, match="weight_versions"):
-            decode_samples_reply(payload, Sample(weight_versions=["stale"]))
+            decode_samples_and_merge_input_sample(payload, Sample(weight_versions=["stale"]))
         with pytest.raises(AssertionError, match="teacher_log_probs"):
-            decode_samples_reply(payload, Sample(teacher_log_probs=[-1.0]))
+            decode_samples_and_merge_input_sample(payload, Sample(teacher_log_probs=[-1.0]))
         with pytest.raises(AssertionError, match="opd_student_top_logprobs"):
-            decode_samples_reply(payload, Sample(metadata={"opd_student_top_logprobs": [[[-0.1, 1]]]}))
+            decode_samples_and_merge_input_sample(
+                payload, Sample(metadata={"opd_student_top_logprobs": [[[-0.1, 1]]]})
+            )
 
     def test_safetensors_container_round_trips_non_contiguous_replay_tensors(self):
         routed = np.arange(24, dtype=np.int32).reshape(3, 4, 2).transpose(1, 0, 2)
@@ -134,7 +138,7 @@ class TestSamplesWireCodec:
         assert not routed.flags["C_CONTIGUOUS"] and not indexer.flags["C_CONTIGUOUS"]
         sample = _computed_sample(rollout_routed_experts=routed, rollout_indexer_topk=indexer)
 
-        payload = encode_samples_reply([sample], {}, None)
+        payload = encode_samples([sample], {}, None)
         # the reply is a plain safetensors buffer: no Miles framing needed to open it
         tensors = safetensors.numpy.load(payload)
         assert set(tensors) == {
@@ -148,7 +152,7 @@ class TestSamplesWireCodec:
         assert tensors["_samples_meta"].dtype == np.uint8 and tensors["_samples_meta"].ndim == 1
         assert tensors["loss_mask.0"].dtype == np.uint8
 
-        (out,) = decode_samples_reply(payload, Sample()).samples
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample()).samples
         assert out.tokens == sample.tokens and type(out.tokens) is list
         assert out.rollout_log_probs == sample.rollout_log_probs
         assert out.rollout_routed_experts.dtype == np.int32 and out.rollout_routed_experts.shape == (4, 3, 2)
@@ -159,7 +163,7 @@ class TestSamplesWireCodec:
         sample = _computed_sample(
             rollout_routed_experts=np.empty((0, 3, 2), dtype=np.int32), rollout_indexer_topk=None
         )
-        (out,) = decode_samples_reply(encode_samples_reply([sample], {}, None), Sample()).samples
+        (out,) = decode_samples_and_merge_input_sample(encode_samples([sample], {}, None), Sample()).samples
         assert isinstance(out.rollout_routed_experts, np.ndarray) and out.rollout_routed_experts.shape == (0, 3, 2)
         assert out.rollout_indexer_topk is None
 
@@ -170,21 +174,19 @@ class TestSamplesWireCodec:
                 sample_meta["nulls"].append("tokens")
                 del tensors[f"tokens.{index}"]
 
-        payload = _mutated_payload(
-            encode_samples_reply([_computed_sample(), _computed_sample()], {}, None), null_out_tokens
-        )
-        out_a, out_b = decode_samples_reply(payload, Sample()).samples
+        payload = _mutated_payload(encode_samples([_computed_sample(), _computed_sample()], {}, None), null_out_tokens)
+        out_a, out_b = decode_samples_and_merge_input_sample(payload, Sample()).samples
         assert out_a.tokens == [] and out_b.tokens == []
         assert out_a.tokens is not out_b.tokens
 
     def test_encode_rejects_non_int32_replay_dtype(self):
         sample = _computed_sample(rollout_routed_experts=np.arange(24, dtype=np.int64).reshape(4, 3, 2))
         with pytest.raises(ValueError, match="rollout_routed_experts must have dtype int32"):
-            encode_samples_reply([sample], {}, None)
+            encode_samples([sample], {}, None)
 
     def test_encode_rejects_loss_mask_values_that_wrap_in_uint8(self):
         with pytest.raises(ValueError, match="loss_mask values do not fit wire dtype uint8"):
-            encode_samples_reply([_computed_sample(loss_mask=[1, -1])], {}, None)
+            encode_samples([_computed_sample(loss_mask=[1, -1])], {}, None)
 
     @pytest.mark.parametrize(
         ("build_payload", "expected_error", "match"),
@@ -249,6 +251,6 @@ class TestSamplesWireCodec:
         ],
     )
     def test_malformed_safetensors_reply_fails_loudly(self, build_payload, expected_error, match):
-        valid = encode_samples_reply([_computed_sample()], {}, None)
+        valid = encode_samples([_computed_sample()], {}, None)
         with pytest.raises(expected_error, match=match):
-            decode_samples_reply(build_payload(valid), Sample())
+            decode_samples_and_merge_input_sample(build_payload(valid), Sample())

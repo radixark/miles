@@ -7,7 +7,7 @@ import logging
 import random
 from argparse import Namespace
 
-from miles.rollout.session.samples.codec import SamplesReply, decode_samples_reply
+from miles.rollout.session.samples.codec import SamplesReply, decode_samples_and_merge_input_sample
 from miles.utils.http_utils import post, post_bytes_no_retry
 from miles.utils.types import Sample
 
@@ -78,4 +78,4 @@ class OpenAIEndpointTracer:
             except Exception as e:
                 logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
 
-        return decode_samples_reply(payload, input_sample)
+        return decode_samples_and_merge_input_sample(payload, input_sample)
