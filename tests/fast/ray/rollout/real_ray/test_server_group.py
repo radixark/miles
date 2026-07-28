@@ -39,22 +39,22 @@ def _build_group(
 class TestStartEnginesShortCircuits:
     """Branches that bail before hitting the PG / actor creation path."""
 
-    def test_debug_train_only_returns_immediately(self, placement_group_factory):
+    async def test_debug_train_only_returns_immediately(self, placement_group_factory):
         # PG made but unused — start_engines should bail before scheduling.
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2, debug_train_only=True)
-        handles, indices = group.start_engines(PortAllocator.empty())
-        assert handles == [] and indices == []
+        indices = await group.start_engines(PortAllocator.empty())
+        assert indices == []
         assert group.has_new_engines is False
         for e in flatten_cells(group.cells):
             assert not e.is_allocated
 
-    def test_placeholder_worker_short_circuits(self, placement_group_factory):
+    async def test_placeholder_worker_short_circuits(self, placement_group_factory):
         # PG is unused in this short-circuit path; min size 1 keeps Ray happy.
         pg = placement_group_factory(1)
         group = _build_group(pg_tuple=pg, num_engines=0, worker_type="placeholder")
-        handles, indices = group.start_engines(PortAllocator.empty())
-        assert handles == [] and indices == []
+        indices = await group.start_engines(PortAllocator.empty())
+        assert indices == []
         assert group.has_new_engines is False
 
 
@@ -63,15 +63,13 @@ class TestStartEnginesRealActors:
     real Ray actors (via ``get_calls()`` round-trip) and that ``init`` was
     invoked with the addr/port kwargs from the allocator."""
 
-    def test_creates_real_actors_and_init_runs(self, patched_sglang_engine, placement_group_factory):
+    async def test_creates_real_actors_and_init_runs(self, patched_sglang_engine, placement_group_factory):
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
 
-        handles, indices = group.start_engines(PortAllocator.empty())
+        indices = await group.start_engines(PortAllocator.empty())
         assert sorted(indices) == [0, 1]
         assert group.has_new_engines is True
-        # Wait for init.remote() to actually complete on each actor.
-        ray.get(handles)
 
         for e in flatten_cells(group.cells):
             assert e.is_allocated
@@ -86,13 +84,12 @@ class TestStartEnginesRealActors:
         for e in flatten_cells(group.cells):
             ray.kill(e.actor_handle)
 
-    def test_start_cell_indices_filters_to_subset(self, patched_sglang_engine, placement_group_factory):
+    async def test_start_cell_indices_filters_to_subset(self, patched_sglang_engine, placement_group_factory):
         pg = placement_group_factory(4)
         group = _build_group(pg_tuple=pg, num_engines=4)
 
-        handles, indices = group.start_engines(PortAllocator.empty(), start_cell_indices=[1, 3])
+        indices = await group.start_engines(PortAllocator.empty(), start_cell_indices=[1, 3])
         assert sorted(indices) == [1, 3]
-        ray.get(handles)
 
         assert not flatten_cells(group.cells)[0].is_allocated
         assert flatten_cells(group.cells)[1].is_allocated
@@ -102,20 +99,19 @@ class TestStartEnginesRealActors:
         for i in (1, 3):
             ray.kill(flatten_cells(group.cells)[i].actor_handle)
 
-    def test_already_allocated_slot_is_skipped(self, patched_sglang_engine, placement_group_factory):
+    async def test_already_allocated_slot_is_skipped(self, patched_sglang_engine, placement_group_factory):
         """A second start_engines() call must NOT replace an already-allocated
         actor — the existing handle is preserved verbatim."""
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
 
         # First call: allocates both slots.
-        handles, _ = group.start_engines(PortAllocator.empty())
-        ray.get(handles)
+        await group.start_engines(PortAllocator.empty())
         first_handles = [e.actor_handle for e in flatten_cells(group.cells)]
 
         # Second call with no start_cell_indices: should skip both.
-        handles2, indices2 = group.start_engines(PortAllocator.empty())
-        assert handles2 == [] and indices2 == []
+        indices2 = await group.start_engines(PortAllocator.empty())
+        assert indices2 == []
         for first, e in zip(first_handles, flatten_cells(group.cells), strict=True):
             assert e.actor_handle is first  # still the same actor
 
@@ -131,11 +127,12 @@ class TestStopEnginesRealKill:
     """``ray.kill`` is the real thing here — we verify the actor is actually
     dead by issuing a follow-up ``.remote()`` and expecting RayActorError."""
 
-    def test_stop_marks_engines_stopped_and_actor_truly_dies(self, patched_sglang_engine, placement_group_factory):
+    async def test_stop_marks_engines_stopped_and_actor_truly_dies(
+        self, patched_sglang_engine, placement_group_factory
+    ):
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
-        handles, _ = group.start_engines(PortAllocator.empty())
-        ray.get(handles)
+        await group.start_engines(PortAllocator.empty())
 
         actors = [e.actor_handle for e in flatten_cells(group.cells)]
         group.stop_engines(cell_indices=[0, 1])
@@ -149,15 +146,14 @@ class TestStopEnginesRealKill:
             with pytest.raises((ray.exceptions.RayActorError, ray.exceptions.RayTaskError)):
                 ray.get(actor.get_calls.remote(), timeout=10.0)
 
-    def test_stop_handles_shutdown_failure_gracefully(self, patched_sglang_engine, placement_group_factory):
+    async def test_stop_handles_shutdown_failure_gracefully(self, patched_sglang_engine, placement_group_factory):
         """If ``shutdown`` raises on the actor, ``stop_engines`` must still
         mark the engine stopped (and ray.kill is still called).
 
         We use ``set_fault`` to make shutdown raise on its next invocation."""
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
-        handles, _ = group.start_engines(PortAllocator.empty())
-        ray.get(handles)
+        await group.start_engines(PortAllocator.empty())
 
         # Plant a one-shot shutdown failure on engine 1.
         ray.get(
@@ -176,7 +172,7 @@ class TestStartEnginesRealAllocator:
     """Drive ``start_engines`` with real actors so that the actor → driver port
     round-trip via ``_get_current_node_ip_and_free_port.remote`` actually runs."""
 
-    def test_real_allocator_assigns_distinct_ports_via_remote_calls(
+    async def test_real_allocator_assigns_distinct_ports_via_remote_calls(
         self,
         patched_sglang_engine,
         placement_group_factory,
@@ -184,9 +180,8 @@ class TestStartEnginesRealAllocator:
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
 
-        handles, indices = group.start_engines(PortAllocator.empty())
+        indices = await group.start_engines(PortAllocator.empty())
         assert sorted(indices) == [0, 1]
-        ray.get(handles)
 
         # init kwargs == the addr_and_ports map produced by the real allocator
         kwargs0, kwargs1 = ray.get(
@@ -226,14 +221,14 @@ class TestStartEnginesRealAllocator:
         for e in flatten_cells(group.cells):
             ray.kill(e.actor_handle)
 
-    def test_real_allocator_advances_cursor_across_sequential_groups(
+    async def test_real_allocator_advances_cursor_across_sequential_groups(
         self,
         patched_sglang_engine,
         placement_group_factory,
     ):
         """Two sequentially-started groups on independent PGs both invoke the
         real allocator. ``start_engines`` mutates the passed-in PortAllocator
-        in place (via ``assign``); reusing it for B must shift B's ports past
+        in place; reusing it for B must shift B's ports past
         A's — that's the cursor's job."""
         pg_a = placement_group_factory(2)
         pg_b = placement_group_factory(2)
@@ -241,12 +236,10 @@ class TestStartEnginesRealAllocator:
         b = _build_group(pg_tuple=pg_b, num_engines=2)
 
         cursors = PortAllocator.empty()
-        handles_a, _ = a.start_engines(cursors)
-        ray.get(handles_a)
+        await a.start_engines(cursors)
         # `cursors` now carries the next-free-port state from group A.
 
-        handles_b, _ = b.start_engines(cursors)
-        ray.get(handles_b)
+        await b.start_engines(cursors)
 
         kwargs_a = ray.get([e.actor_handle.get_init_kwargs.remote() for e in flatten_cells(a.cells)])
         kwargs_b = ray.get([e.actor_handle.get_init_kwargs.remote() for e in flatten_cells(b.cells)])
@@ -292,10 +285,10 @@ class TestNodeZeroDetectionPrecondition:
 
 class TestRejectedConfigurations:
     @pytest.mark.parametrize("overrides", [{"port": 40000}, {"host": "10.9.9.9"}, {"host": "10.9.9.9", "port": 40000}])
-    def test_host_or_port_override_is_rejected(self, patched_sglang_engine, placement_group_factory, overrides):
+    async def test_host_or_port_override_is_rejected(self, patched_sglang_engine, placement_group_factory, overrides):
         """An override of host or port would make the rollout process address the wrong endpoint."""
         group = _build_group(pg_tuple=placement_group_factory(1), num_engines=1)
         group.sglang_overrides = overrides
 
         with pytest.raises(AssertionError, match="must not override host/port"):
-            group.start_engines(PortAllocator.empty())
+            await group.start_engines(PortAllocator.empty())
