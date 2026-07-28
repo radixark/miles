@@ -108,7 +108,13 @@ class RayTrainCell:
     def stop(self) -> None:
         if self.is_stopped:
             log_structured(
-                logger.info, op="state", name="stop", cell=self.cell_index, skipped=True, reason="already_stopped"
+                logger.info,
+                tag="ft",
+                op="state",
+                name="stop",
+                cell=self.cell_index,
+                skipped=True,
+                reason="already_stopped",
             )
             return
 
@@ -125,11 +131,14 @@ class RayTrainCell:
         handles = self._get_actor_handles() if self.is_allocated else []
         self.stop()
 
-        log_structured(logger.info, op="confirm_dead", phase="start", cell=self.cell_index, n_actors=len(handles))
+        log_structured(
+            logger.info, tag="ft", op="confirm_dead", phase="start", cell=self.cell_index, n_actors=len(handles)
+        )
         start = time.monotonic()
         await asyncio.gather(*[_confirm_actor_dead(handle) for handle in handles])
         log_structured(
             logger.info,
+            tag="ft",
             op="confirm_dead",
             phase="end",
             cell=self.cell_index,
@@ -140,6 +149,7 @@ class RayTrainCell:
         if self.is_pending or self.is_allocated:
             log_structured(
                 logger.info,
+                tag="ft",
                 op="state",
                 name="mark_as_pending",
                 cell=self.cell_index,
@@ -191,6 +201,7 @@ class RayTrainCell:
     ) -> None:
         log_structured(
             logger.info,
+            tag="ft",
             op="state",
             phase="start",
             name=debug_name,
@@ -201,6 +212,7 @@ class RayTrainCell:
         self._state = new_state
         log_structured(
             logger.info,
+            tag="ft",
             op="state",
             phase="end",
             name=debug_name,
@@ -227,7 +239,7 @@ class RayTrainCell:
     ) -> list:
         handles = self._get_actor_handles()
         log_structured(
-            logger.info, op="execute", phase="start", cell=self.cell_index, fn=fn_name, n_actors=len(handles)
+            logger.info, tag="ft", op="execute", phase="start", cell=self.cell_index, fn=fn_name, n_actors=len(handles)
         )
         start = time.monotonic()
         try:
@@ -239,6 +251,7 @@ class RayTrainCell:
             )
             log_structured(
                 logger.info,
+                tag="ft",
                 op="execute",
                 phase="end",
                 cell=self.cell_index,
@@ -250,6 +263,7 @@ class RayTrainCell:
         except Exception:
             log_structured(
                 logger.error,
+                tag="ft",
                 op="execute",
                 phase="fail",
                 cell=self.cell_index,
