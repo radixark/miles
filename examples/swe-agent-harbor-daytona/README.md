@@ -4,8 +4,9 @@ This example trains GLM-4.7-Flash on agentic terminal and coding tasks, with
 task sandboxes hosted on [Daytona](https://www.daytona.io/) instead of local
 Docker. Miles runs synchronous GRPO and serves the policy through its session
 server; a Harbor agent server drives the agent and returns verifier rewards.
+It is meant to run on a single node of 8 H200 GPUs.
 
-It is the [`examples/swe-agent`](../swe-agent) pipeline with two changes:
+It is the `examples/swe-agent` pipeline with two changes:
 
 - **Daytona sandboxes.** The agent-server host needs outbound HTTPS but no
   Docker daemon, no local image builds, and no local disk for task images. This
@@ -84,8 +85,8 @@ python examples/swe-agent/download_and_process_data.py \
 
 ## 4. Launch training
 
-The shape below is what a multi-day Terminal-Bench 2 run used on one node of 8
-H200 GPUs, with the agent server colocated on the same host as the trainer:
+The shape below is what a multi-day Terminal-Bench 2 run used, with the agent
+server colocated on the same host as the trainer:
 
 ```bash
 export WANDB_API_KEY=<your-wandb-key>
@@ -131,8 +132,9 @@ trial and **none of that turn's tool calls are performed**, so the trial scores
 `SingleTurnMaxSeqLenExceededError` and `ContextLengthExceededError` in the trial
 exception files, with `rollout/truncated_ratio` well above 0.
 
-To size these, compare `rollout/response_len/mean` and `.../max` against the
-cap, and keep `AGENT_MAX_INPUT_TOKENS` above the largest observed context.
+To size these, compare `rollout/response_len/mean` and `rollout/response_len/max`
+against the cap, and keep `AGENT_MAX_INPUT_TOKENS` above the largest observed
+context.
 `--max-seq-len 65536` leaves plenty of headroom to raise both.
 
 ## Verify progress
