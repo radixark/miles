@@ -11,6 +11,7 @@ Requires: 8 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
 Triggered by label: run-ci-lora
 """
 
+import base64
 import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
@@ -91,7 +92,7 @@ def prepare():
     U.exec_command("mkdir -p /root/models /root/datasets")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.exec_command("hf download --repo-type dataset zhuzilin/gsm8k --local-dir /root/datasets/gsm8k")
-    U.exec_command(f"bash -c {_PROBE!r}")
+    U.exec_command(f"echo {base64.b64encode(_PROBE.encode()).decode()} | base64 -d | bash")
 
 
 def execute():

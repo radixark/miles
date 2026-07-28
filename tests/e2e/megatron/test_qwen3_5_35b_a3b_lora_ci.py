@@ -1,3 +1,4 @@
+import base64
 import os
 
 from scripts.run_qwen3_5_35b_a3b_lora import ScriptArgs, _prepare_download, _train
@@ -70,7 +71,7 @@ echo '===== DIAG end (h100 shard) ====='
 
 def prepare(args: ScriptArgs):
     _prepare_download(args)
-    U.exec_command(f"bash -c {_PROBE!r}")
+    U.exec_command(f"echo {base64.b64encode(_PROBE.encode()).decode()} | base64 -d | bash")
 
 
 def execute(args: ScriptArgs):
