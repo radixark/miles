@@ -43,9 +43,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # Training settings
     max_seq_len: int = 65536
     num_rollout: int = 3000
-    rollout_batch_size: int = 2
-    n_samples_per_prompt: int = 4
-    global_batch_size: int = 8
+    rollout_batch_size: int = 4
+    n_samples_per_prompt: int = 8
+    global_batch_size: int = 32
     save_interval: int = 100
     save_traces_dir: str = ""
 
