@@ -6,7 +6,6 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
@@ -136,15 +135,12 @@ class InferenceController:
     # -------------------------- external start/stop -----------------------------
 
     async def start_cell(self, cell_id: int):
-        port_allocator = PortAllocator.empty()
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
-        group = self.servers[idx.srv_key].server_groups[idx.group_index]
-        await group.recover(port_allocator=port_allocator, filter_cell_indices=[idx.cell_index])
+        await self.servers[idx.srv_key].recover_cell(group_index=idx.group_index, cell_index=idx.cell_index)
 
     async def stop_cell(self, cell_id: int):
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
-        group = self.servers[idx.srv_key].server_groups[idx.group_index]
-        group.stop_engines(cell_indices=[idx.cell_index])
+        self.servers[idx.srv_key].stop_cell(group_index=idx.group_index, cell_index=idx.cell_index)
 
     # -------------------------- misc APIs -----------------------------
 
