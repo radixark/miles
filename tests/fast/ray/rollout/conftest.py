@@ -290,9 +290,10 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
 
     Mocks ``_get_current_node_ip_and_free_port.remote(start_port, consecutive)``
     with a deterministic ``max(seq, start_port)`` counter so allocator tests
-    can predict and assert on port assignment. It also passes
-    ``isinstance(x, ray.actor.ActorHandle)`` so it can be handed to
-    ``ServerEngine.mark_allocated_uninitialized`` (see ``fake_actor_handle``)."""
+    can predict and assert on port assignment. The argument-less form is the
+    node-ip probe, which the cell awaits, so it returns an awaitable just like a
+    real ``ObjectRef``. It also passes ``isinstance(x, ray.actor.ActorHandle)``
+    so it can be handed to ``mark_allocated_uninitialized``."""
     e = MagicMock()
     e._spec_class = ray.actor.ActorHandle
     e._port_cursor = port_seed
@@ -302,7 +303,10 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
         e._port_cursor = port + consecutive
         return (host, port)
 
-    e._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: _alloc(**kw)
+    async def _probe():
+        return _alloc()
+
+    e._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: _alloc(**kw) if kw else _probe()
     return e
 
 
