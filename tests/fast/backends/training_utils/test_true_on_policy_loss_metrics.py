@@ -122,6 +122,52 @@ def test_train_rollout_logprob_abs_diff_uses_policy_loss_reference_logprobs(
     torch.testing.assert_close(metrics["train_rollout_logprob_abs_diff"], torch.tensor(expected_abs_diff))
 
 
+@pytest.mark.parametrize("use_rollout_logprobs", [False, True])
+def test_policy_loss_only_backpropagates_through_current_policy(monkeypatch, use_rollout_logprobs: bool):
+    args = _make_args(use_rollout_logprobs=use_rollout_logprobs)
+    old_source = torch.tensor([0.10, 0.20], requires_grad=True)
+    rollout_source = torch.tensor([0.12, 0.22], requires_grad=True)
+    advantage_source = torch.tensor([1.0, 2.0], requires_grad=True)
+    current_logits = torch.tensor([[[0.15], [0.25], [0.0]]], requires_grad=True)
+    batch = _make_batch(
+        old_log_probs=old_source.sin(),
+        rollout_log_probs=rollout_source.sin(),
+    )
+    if use_rollout_logprobs:
+        batch.pop("log_probs")
+    batch["advantages"] = [advantage_source.square()]
+
+    monkeypatch.setattr(
+        loss_utils,
+        "get_parallel_state",
+        lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
+    )
+    _patch_single_rank_loss_helpers(monkeypatch)
+
+    def fake_get_log_probs_and_entropy(logits, *args, **kwargs):
+        return {"log_probs": [logits.flatten()[:2].sin()]}
+
+    monkeypatch.setattr(
+        loss_utils,
+        "get_log_probs_and_entropy",
+        fake_get_log_probs_and_entropy,
+    )
+
+    loss, _ = loss_utils.policy_loss_function(
+        args,
+        batch,
+        logits=current_logits,
+        sum_of_sample_mean=lambda tensor: tensor.float().mean(),
+    )
+    loss.backward()
+
+    assert current_logits.grad is not None
+    assert torch.count_nonzero(current_logits.grad) > 0
+    assert old_source.grad is None
+    assert rollout_source.grad is None
+    assert advantage_source.grad is None
+
+
 def test_zero_weighted_entropy_nan_does_not_poison_policy_loss(monkeypatch):
     args = _make_args(use_rollout_logprobs=False)
     batch = _make_batch(
