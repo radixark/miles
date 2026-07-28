@@ -79,7 +79,7 @@ class InferenceController:
 
         await srv.wait_all_engines_alive()
         return EnginesAndLock(
-            rollout_engines=[e.api_client for e in srv.engines],
+            rollout_engines=srv.api_clients,
             rollout_engine_lock=self.rollout_engine_lock,
             has_new_engines=srv.has_new_engines,
             engine_gpu_counts=srv.engine_gpu_counts,
