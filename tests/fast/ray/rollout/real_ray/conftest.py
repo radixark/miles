@@ -87,7 +87,7 @@ async def start_cells(cells, allocator=None, *, mark_alive: bool = False):
     await asyncio.gather(*[cell.start_engines(allocator) for cell in cells])
     if mark_alive:
         for cell in cells:
-            cell.mark_alive()
+            cell._mark_alive()
 
 
 def kill_cells(cells) -> None:
