@@ -1,5 +1,5 @@
 ### 0
-[all_ray_node num_nodes=None] source <REPO_ROOT>/scripts/models/deepseek-v32.sh && PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+[multi_node num_nodes=None] source <REPO_ROOT>/scripts/models/deepseek-v32.sh && PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --nproc-per-node 8
   --master-addr {{master_addr}}
   --master-port 23456

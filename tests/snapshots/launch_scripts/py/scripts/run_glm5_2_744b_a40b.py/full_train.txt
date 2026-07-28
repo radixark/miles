@@ -11,7 +11,7 @@ hf download
   --local-dir /root/datasets/dapo-math-17k
 
 ### 3
-[all_ray_node num_nodes=None] source <REPO_ROOT>/scripts/models/glm5.2-744B-A40B.sh && PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+[multi_node num_nodes=None] source <REPO_ROOT>/scripts/models/glm5.2-744B-A40B.sh && PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --nproc-per-node 8
   --master-addr {{master_addr}}
   --master-port 23456
@@ -27,11 +27,11 @@ hf download
   --decoder-last-pipeline-num-layers 20 
 
 ### 4
-[all_ray_node num_nodes=None] mkdir -p /root/models/GLM-5.2_torch_dist && rsync -a
+[multi_node num_nodes=None] mkdir -p /root/models/GLM-5.2_torch_dist && rsync -a
   --info=progress2 <SANDBOX>/models/GLM-5.2_torch_dist/ /root/models/GLM-5.2_torch_dist
 
 ### 5
-[all_ray_node num_nodes=None] mkdir -p /root/models/GLM-5.2 && rsync -a
+[multi_node num_nodes=None] mkdir -p /root/models/GLM-5.2 && rsync -a
   --info=progress2 <SANDBOX>/models/GLM-5.2/ /root/models/GLM-5.2
 
 ### 6

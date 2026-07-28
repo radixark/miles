@@ -36,8 +36,8 @@ def _get_hf_num_layers(model_path: str) -> int:
 
 
 def prepare(mode: FTTestMode) -> None:
-    U.exec_command(f"mkdir -p {_MODEL_DIR} {_DATA_DIR}")
-    U.exec_command(f"hf download {mode.model_hf_repo} --local-dir {_MODEL_DIR}/{mode.model_name}")
+    U.exec_command_cpu(f"mkdir -p {_MODEL_DIR} {_DATA_DIR}")
+    U.exec_command_cpu(f"hf download {mode.model_hf_repo} --local-dir {_MODEL_DIR}/{mode.model_name}")
 
     hf_model_path = f"{_MODEL_DIR}/{mode.model_name}"
     num_layers = _get_hf_num_layers(hf_model_path)

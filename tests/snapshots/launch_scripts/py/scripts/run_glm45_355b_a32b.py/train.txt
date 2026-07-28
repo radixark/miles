@@ -21,7 +21,7 @@ hf download
   --local-dir /root/datasets/aime-2025
 
 ### 5
-[all_ray_node num_nodes=None] source <REPO_ROOT>/scripts/models/glm4.5-355B-A32B.sh && PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+[multi_node num_nodes=None] source <REPO_ROOT>/scripts/models/glm4.5-355B-A32B.sh && PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --nproc-per-node 4
   --master-addr {{master_addr}}
   --master-port 23456
@@ -31,11 +31,11 @@ hf download
   --save /root/models/GLM-4.5_torch_dist 
 
 ### 6
-[all_ray_node num_nodes=None] mkdir -p /root/local_data/GLM-4.5_torch_dist && rsync -a
+[multi_node num_nodes=None] mkdir -p /root/local_data/GLM-4.5_torch_dist && rsync -a
   --info=progress2 /root/models/GLM-4.5_torch_dist/ /root/local_data/GLM-4.5_torch_dist
 
 ### 7
-[all_ray_node num_nodes=None] mkdir -p /root/local_data/GLM-4.5 && rsync -a
+[multi_node num_nodes=None] mkdir -p /root/local_data/GLM-4.5 && rsync -a
   --info=progress2 /root/models/GLM-4.5/ /root/local_data/GLM-4.5
 
 ### 8
