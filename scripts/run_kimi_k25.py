@@ -84,8 +84,10 @@ def _bf16_ref_dir(args: ScriptArgs) -> str:
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     if args.enable_eval:
         U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
@@ -93,7 +95,7 @@ def _prepare_download(args: ScriptArgs):
 
 def _convert_to_bf16(args: ScriptArgs):
     """Dequantize the INT4 checkpoint to a BF16 reference for the Megatron bridge."""
-    U.exec_command(
+    U.exec_command_gpu(
         f"python {U.repo_base_dir}/tools/convert_kimi_int4_to_bf16.py "
         f"--model-dir {args.model_dir}/{args.model_name} "
         f"--output-dir {_bf16_ref_dir(args)} "

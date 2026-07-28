@@ -39,7 +39,7 @@ class TestConvertCheckpoint:
         """The converter runs out-of-process, so miles and megatron must be on its PYTHONPATH."""
         commands = []
         monkeypatch.setenv("PYTHONPATH", "/sglang:/existing")
-        monkeypatch.setattr(command_utils, "exec_command", commands.append)
+        monkeypatch.setattr(command_utils, "exec_command_gpu", commands.append)
 
         command_utils.convert_checkpoint(
             model_name="model",
@@ -99,7 +99,7 @@ class TestConvertCheckpoint:
         assert len(commands) == 1
 
     def test_multinode_uses_torchrun_rendezvous_placeholders(self, commands, tmp_path):
-        """Multi-node conversion must template the placeholders exec_command_all_ray_node substitutes."""
+        """Multi-node conversion must template the placeholders exec_command_multi_node substitutes."""
         command_utils.convert_checkpoint(
             model_name="Qwen3-4B",
             megatron_model_type="qwen3-4B",
@@ -128,7 +128,7 @@ class TestRsyncSimple:
     def test_limits_itself_to_the_requested_node_count(self, monkeypatch):
         """prepare_cp asks for the training node count; forwarding it is the whole point of the argument."""
         calls = []
-        monkeypatch.setattr(command_utils, "exec_command_all_ray_node", lambda cmd, **kwargs: calls.append(kwargs))
+        monkeypatch.setattr(command_utils, "exec_command_multi_node", lambda cmd, **kwargs: calls.append(kwargs))
 
         command_utils.rsync_simple("/src", "/dst", num_nodes=4)
 
@@ -138,7 +138,7 @@ class TestRsyncSimple:
         """rsync fails on a missing destination, so the mkdir has to precede it."""
         command_utils.rsync_simple("/src", "/dst")
 
-        assert commands == ["[all_ray_node num_nodes=None] mkdir -p /dst && rsync -a --info=progress2 /src/ /dst"]
+        assert commands == ["[multi_node num_nodes=None] mkdir -p /dst && rsync -a --info=progress2 /src/ /dst"]
 
 
 class TestHfDownloadDataset:
@@ -172,7 +172,7 @@ class TestStartMooncakeMaster:
         commands = []
         waits = []
         monkeypatch.setattr(command_utils, "_is_tcp_server_ready", lambda host, port: True)
-        monkeypatch.setattr(command_utils, "exec_command", commands.append)
+        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
         monkeypatch.setattr(
             command_utils, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs))
         )
@@ -188,7 +188,7 @@ class TestStartMooncakeMaster:
         waits = []
         log_path = tmp_path / "mooncake master.log"
         monkeypatch.setattr(command_utils, "_is_tcp_server_ready", lambda host, port: False)
-        monkeypatch.setattr(command_utils, "exec_command", commands.append)
+        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
         monkeypatch.setattr(
             command_utils, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs))
         )
@@ -207,7 +207,7 @@ class TestStartMooncakeMaster:
         log_path.write_text("bind failed\nfatal startup error\n")
         commands = []
         monkeypatch.setattr(command_utils, "_is_tcp_server_ready", lambda host, port: False)
-        monkeypatch.setattr(command_utils, "exec_command", commands.append)
+        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
 
         def fail_wait(*args, **kwargs):
             raise RuntimeError("not ready")
@@ -227,7 +227,7 @@ class TestExecuteTrain:
         commands = []
         monkeypatch.delenv("MILES_SCRIPT_EXTERNAL_RAY", raising=False)
         monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-        monkeypatch.setattr(command_utils, "exec_command", commands.append)
+        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
         monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
 
         command_utils.execute_train(
@@ -246,7 +246,7 @@ class TestExecuteTrain:
         commands = []
         monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
         monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-        monkeypatch.setattr(command_utils, "exec_command", commands.append)
+        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
         monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
 
         command_utils.execute_train(train_args="", num_gpus_per_node=1, megatron_model_type="model_type")
@@ -260,7 +260,7 @@ class TestExecuteTrain:
         monkeypatch.setenv("PYTHONPATH", "/sglang:/existing")
         monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
         monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-        monkeypatch.setattr(command_utils, "exec_command", commands.append)
+        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
         monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
 
         command_utils.execute_train(
@@ -474,7 +474,7 @@ class TestCheckHasNvlink:
                 captured.append(capture_output)
                 return output
 
-            monkeypatch.setattr(command_utils, "exec_command", fake_exec_command)
+            monkeypatch.setattr(command_utils, "exec_command_gpu", fake_exec_command)
             return captured
 
         return install

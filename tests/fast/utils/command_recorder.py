@@ -10,14 +10,15 @@ def record_commands(monkeypatch) -> list[str]:
         commands.append(cmd)
         return "0" if capture_output else None
 
-    def fake_exec_command_all_ray_node(
+    def fake_exec_command_multi_node(
         cmd: str, capture_output: bool = False, num_nodes: int | None = None
     ) -> list[str | None]:
-        commands.append(f"[all_ray_node num_nodes={num_nodes}] {cmd}")
+        commands.append(f"[multi_node num_nodes={num_nodes}] {cmd}")
         return ["0"]
 
     for module in (command_utils, misc):
-        monkeypatch.setattr(module, "exec_command", fake_exec_command, raising=False)
-        monkeypatch.setattr(module, "exec_command_all_ray_node", fake_exec_command_all_ray_node, raising=False)
+        monkeypatch.setattr(module, "exec_command_cpu", fake_exec_command, raising=False)
+        monkeypatch.setattr(module, "exec_command_gpu", fake_exec_command, raising=False)
+        monkeypatch.setattr(module, "exec_command_multi_node", fake_exec_command_multi_node, raising=False)
 
     return commands

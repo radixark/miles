@@ -364,7 +364,7 @@ index d016e01ac..08b4d6eff 100644
 +    train_backend_fsdp = "--train-backend fsdp" in train_args
 +    assert train_backend_fsdp == (megatron_model_type is None)
 +
-+    exec_command(
++    exec_command_cpu(
 +        "pkill -9 sglang; "
 +        "sleep 3; "
 +        f"{'' if external_ray else 'ray stop --force; '}"
@@ -381,7 +381,7 @@ index d016e01ac..08b4d6eff 100644
 +    )
 +
 +    if not external_ray:
-+        exec_command(
++        exec_command_cpu(
 +            # will prevent ray from buffering stdout/stderr
 +            f"export PYTHONUNBUFFERED=1 && "
 +            f"ray start --head --node-ip-address {master_addr} --disable-usage-stats "
@@ -439,7 +439,7 @@ index d016e01ac..08b4d6eff 100644
 +            if megatron_model_type is not None
 +            else ""
 +        )
-+        exec_command(
++        exec_command_cpu(
 +            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
 +            f"{cmd_megatron_model_source}"
 +            f'ray job submit --address="http://127.0.0.1:8265" '

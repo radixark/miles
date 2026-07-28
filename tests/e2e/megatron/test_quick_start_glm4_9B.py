@@ -16,8 +16,8 @@ NUM_GPUS = 4
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command("hf download zai-org/GLM-Z1-9B-0414 --local-dir /root/models/GLM-Z1-9B-0414")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu("hf download zai-org/GLM-Z1-9B-0414 --local-dir /root/models/GLM-Z1-9B-0414")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
 

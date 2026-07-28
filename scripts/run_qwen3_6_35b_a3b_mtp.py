@@ -48,18 +48,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     # model path is a symlink to /cluster_public; skip download if already present
-    U.exec_command(
+    U.exec_command_cpu(
         f"test -e {args.model_dir}/{args.model_name} || "
         f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
     )
     # datasets are symlinked; skip if present
-    U.exec_command(
+    U.exec_command_cpu(
         f"test -e {args.data_dir}/dapo-math-17k || "
         f"hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir {args.data_dir}/dapo-math-17k"
     )
-    U.exec_command(
+    U.exec_command_cpu(
         f"test -e {args.data_dir}/aime-2024 || "
         f"hf download --repo-type dataset zhuzilin/aime-2024 --local-dir {args.data_dir}/aime-2024"
     )

@@ -120,9 +120,9 @@ def _get_config(model_family: str) -> ModelConfig:
 
 def prepare(model_family: str) -> None:
     cfg = _get_config(model_family)
-    U.exec_command("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     if not Path(cfg.local_dir).exists():
-        U.exec_command(f"hf download {cfg.hf_repo} --local-dir {cfg.local_dir}")
+        U.exec_command_cpu(f"hf download {cfg.hf_repo} --local-dir {cfg.local_dir}")
     if not Path(PROMPT_DATA_PATH).exists():
         U.hf_download_dataset("zhuzilin/dapo-math-17k")
 

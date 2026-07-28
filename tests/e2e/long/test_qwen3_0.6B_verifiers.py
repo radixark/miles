@@ -24,14 +24,14 @@ ADAPTER_DIR = Path(U.repo_base_dir) / "examples" / "experimental" / "verifiers"
 
 
 def prepare():
-    U.exec_command(f"mkdir -p {MODEL_DIR} {RUN_DIR}")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
-    U.exec_command(
+    U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {RUN_DIR}")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
+    U.exec_command_cpu(
         f"{sys.executable} -m pip install -r {U.repo_base_dir}/examples/experimental/verifiers/requirements.txt"
     )
-    U.exec_command("uv tool install 'prime==0.6.19'")
+    U.exec_command_cpu("uv tool install 'prime==0.6.19'")
     if not VERIFIERS_DIR.exists():
-        U.exec_command(
+        U.exec_command_cpu(
             f"git clone --depth 1 --branch v0.2.0 "
             f"https://github.com/PrimeIntellect-ai/verifiers.git {VERIFIERS_DIR}"
         )
@@ -40,7 +40,7 @@ def prepare():
         RUN_DIR / "environments" / "code_golf_v1",
         dirs_exist_ok=True,
     )
-    U.exec_command(f"cd {RUN_DIR} && prime --plain env install code-golf-v1")
+    U.exec_command_cpu(f"cd {RUN_DIR} && prime --plain env install code-golf-v1")
     U.convert_checkpoint(
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,

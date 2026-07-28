@@ -25,11 +25,11 @@ def get_megatron_model_type(model_name: str) -> str:
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     data_missing = not os.path.exists(TRAIN_DATA_PATH)
     if data_missing:
-        U.exec_command(f"hf download --repo-type dataset {DATASET_NAME} --local-dir {DATA_ROOT}")
+        U.exec_command_cpu(f"hf download --repo-type dataset {DATASET_NAME} --local-dir {DATA_ROOT}")
     if not os.path.exists(TRAIN_DATA_PATH):
         raise FileNotFoundError(f"Dataset not found. Expected local dataset at {TRAIN_DATA_PATH}; ")
 

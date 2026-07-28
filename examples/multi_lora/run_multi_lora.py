@@ -75,8 +75,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.data_dir} {args.model_dir}")
-    U.exec_command(f"hf download Qwen/Qwen3-4B --local-dir {args.model_dir}/Qwen3-4B")
+    U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
+    U.exec_command_cpu(f"hf download Qwen/Qwen3-4B --local-dir {args.model_dir}/Qwen3-4B")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
 

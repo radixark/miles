@@ -19,7 +19,7 @@ from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
     build_worker_args,
 )
 from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
-from miles.utils.misc import exec_command
+from miles.utils.misc import exec_command_cpu, exec_command_gpu
 from miles.utils.typer_utils import dataclass_cli
 
 
@@ -83,7 +83,7 @@ def run_impl(args: RunArgs) -> None:
         nproc=parallel.nproc,
         worker_args=worker_args_str,
     )
-    exec_command(f"{env_exports} && {cmd}")
+    exec_command_gpu(f"{env_exports} && {cmd}")
     print(f"[cli] Run completed. Output: {args.output_dir}", flush=True)
 
 
@@ -97,7 +97,7 @@ def show_model_args(
     model_type: Annotated[str, typer.Option(help="Model type matching scripts/models/{model_type}.sh")],
 ) -> None:
     """Show the MODEL_ARGS for a given model type (debug helper)."""
-    output: str | None = exec_command(
+    output: str | None = exec_command_cpu(
         f'source "{resolve_model_script(model_type)}" && echo "${{MODEL_ARGS[@]}}"',
         capture_output=True,
     )

@@ -79,13 +79,15 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
     if args.rollout_mxfp8:
-        U.exec_command(
+        U.exec_command_gpu(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
             f"--num-layers-at-start-in-bf16 {args.mxfp8_num_layers_at_start_in_bf16} "
