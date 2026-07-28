@@ -170,6 +170,11 @@ class UpdateWeightFromTensor(UpdateWeight):
         )
 
         if dist.get_rank() == self._ipc_gather_src:
+            # sglang requires update_weights_from_tensor to run inside a weight-update
+            # session; it restores the packed weights on begin and runs the post-load /
+            # quant post-process on the full model at end.
+            ray.get(self._ipc_engine.begin_weight_update.remote())
+
             # Handle flattened bucket format (same as Megatron approach)
             # Each rank may have multiple dtype buckets
             # TODO: here we assume all ranks have the same number of dtypes
@@ -196,6 +201,7 @@ class UpdateWeightFromTensor(UpdateWeight):
                     )
 
         if dist.get_rank() == self._ipc_gather_src:
+            ray.get(self._ipc_engine.end_weight_update.remote())
             ref = self._ipc_engine.flush_cache.remote()
             ray.get(ref)
 
