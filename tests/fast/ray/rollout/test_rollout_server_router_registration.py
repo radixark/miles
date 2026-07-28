@@ -5,9 +5,10 @@ from unittest.mock import patch
 
 from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 
+from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
-from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
+from miles.ray.rollout.server_engine import ServerEngine
 
 _CELL_MODULE = "miles.ray.rollout.server_cell"
 
