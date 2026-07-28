@@ -1,10 +1,12 @@
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from tests.fast.launch_scripts.py_harness import (
+    CLEARED_ENV,
     call_entrypoint,
     format_recording,
     freeze_environment,
@@ -146,6 +148,19 @@ class TestDiscovery:
         """Once the NPU patch is upstreamed this fails, forcing the exclusion out instead of letting it rot."""
         with pytest.raises(ImportError, match="execute_train_npu"):
             import_launch_script(REPO_ROOT / rel)
+
+    def test_every_environment_knob_a_model_script_reads_is_frozen(self):
+        """The snapshots now pin expanded model args, so a developer's exported override would fail them."""
+        knobs = set()
+        for script in sorted((REPO_ROOT / "scripts" / "models").iterdir()):
+            if not script.is_file():
+                continue
+            text = script.read_text()
+            knobs |= set(re.findall(r"\$\{([A-Z][A-Z0-9_]*):-", text))
+            knobs |= set(re.findall(r"environ\.get\(\s*\"([A-Z][A-Z0-9_]*)\"", text))
+
+        assert knobs
+        assert knobs <= set(CLEARED_ENV)
 
     def test_execute_train_config_defaults_are_not_taken_from_a_slurm_allocation(self, monkeypatch):
         """SLURM_JOB_NUM_NODES is read at import time, so a stale allocation would skew every snapshot."""

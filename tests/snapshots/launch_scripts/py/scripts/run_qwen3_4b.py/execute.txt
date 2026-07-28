@@ -13,10 +13,25 @@ export PYTHONUNBUFFERED=1 && ray start
 nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
 
 ### 3
-export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && source "<REPO_ROOT>/scripts/models/qwen3-4B.sh" && ray job submit
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --address="http://127.0.0.1:8265"
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
-  -- python3 <REPO_ROOT>/train.py ${MODEL_ARGS[@]}
+  -- python3 <REPO_ROOT>/train.py
+  --swiglu
+  --num-layers 36
+  --hidden-size 2560
+  --ffn-hidden-size 9728
+  --num-attention-heads 32
+  --group-query-attention
+  --num-query-groups 8
+  --use-rotary-position-embeddings
+  --disable-bias-linear
+  --normalization RMSNorm
+  --norm-epsilon 1e-6
+  --rotary-base 1000000
+  --vocab-size 151936
+  --kv-channels 128
+  --qk-layernorm
   --hf-checkpoint /root/models/Qwen3-4B
   --save /root/shared_data/260101-000000-000/checkpoints
   --save-interval 20

@@ -13,10 +13,43 @@ export PYTHONUNBUFFERED=1 && ray start
 nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
 
 ### 3
-export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && source "<REPO_ROOT>/scripts/models/inkling.sh" && ray job submit
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --address="http://127.0.0.1:8265"
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "SGLANG_ENABLE_UNIFIED_RADIX_TREE": "1", "SGLANG_OPT_USE_INKLING_FUSED_AR_SCONV_NORM": "false", "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK": "1", "MILES_SGLANG_DUMMY_LOAD": "0", "SGLANG_SERVER_ENGINE_ROLLOUT_RETURN_LOGPROB": "1", "RAY_memory_monitor_refresh_ms": "0", "NCCL_MNNVL_ENABLE": "1", "NCCL_RAS_ENABLE": "0", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
-  -- python3 <REPO_ROOT>/train.py ${MODEL_ARGS[@]}
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --num-layers 4
+  --hidden-size 6144
+  --ffn-hidden-size 3072
+  --num-attention-heads 64
+  --group-query-attention
+  --num-query-groups 8
+  --kv-channels 128
+  --normalization RMSNorm
+  --norm-epsilon 1e-6
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 201024
+  --hidden-dropout 0.0
+  --attention-dropout 0.0
+  --attention-softmax-in-fp32
+  --position-embedding-type none
+  --no-rope-fusion
+  --no-masked-softmax-fusion
+  --max-position-embeddings 1048576
+  --num-experts 256
+  --moe-ffn-hidden-size 3072
+  --moe-router-topk 6
+  --moe-shared-expert-intermediate-size 3072
+  --moe-router-pre-softmax
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-aux-loss-coeff 0
+  --moe-grouped-gemm
+  --qk-layernorm
+  --custom-model-provider-path miles_plugins.models.inkling.model.inkling_model_provider
   --hf-checkpoint /root/models/Inkling-4layer
   --load /root/models/Inkling-4layer_torch_dist
   --model-name inkling
