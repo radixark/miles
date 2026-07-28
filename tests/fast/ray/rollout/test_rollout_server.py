@@ -1,12 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import (
-    fake_actor_handle,
-    make_args,
-    make_dataclass_cells,
-    make_sglang_config_yaml,
-)
+from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_dataclass_cells, make_sglang_config_yaml
 
 from miles.ray.rollout import rollout_server
 from miles.ray.rollout.cell_state import AddrInfo

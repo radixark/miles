@@ -260,9 +260,7 @@ class TestConcurrentNodeProbes:
                 events.append(("exit", index))
                 return alloc(start_port=15000, consecutive=1)
 
-            engine._get_current_node_ip_and_free_port.remote.side_effect = (
-                lambda **kw: alloc(**kw) if kw else _probe()
-            )
+            engine._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: alloc(**kw) if kw else _probe()
             return engine
 
         actors = {rank: _instrumented(rank) for rank in range(num_nodes)}
