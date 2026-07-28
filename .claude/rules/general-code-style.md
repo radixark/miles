@@ -28,7 +28,7 @@ deviations in review.
   point.
 - **Functions stay small.** Keep each function under roughly 100 lines; split
   larger functions into cohesive, well-named helpers.
-- **Files stay small.** Keep each file under roughly 2,000 lines; split larger
+- **Files stay small.** Keep each file under roughly 1,000 lines; split larger
   modules along cohesive boundaries.
 - **Core functions read like pseudocode.** Keep the main orchestration function
   of a unit short and make its algorithm obvious. Push details into well-named
