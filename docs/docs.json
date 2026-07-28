@@ -180,7 +180,8 @@
       "root": "user-guide/environments",
       "pages": [
        "user-guide/harbor",
-       "user-guide/openenv"
+       "user-guide/openenv",
+       "user-guide/nemo-gym"
       ]
      }
     ]

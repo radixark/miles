@@ -20,6 +20,7 @@ where the environment itself comes from:
 |---|---|
 | [Harbor](/user-guide/harbor) | agent function |
 | [OpenEnv](/user-guide/openenv) | agent function |
+| [NeMo-Gym](/user-guide/nemo-gym) | agent function |
 | [Strands Agents](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang) | generate function |
 | [τ-bench](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench) | generate function |
 
@@ -28,7 +29,7 @@ Sandbox providers are a different axis: they provision the task containers
 
 | Sandbox provider | Used within |
 |---|---|
-| [Daytona](https://www.daytona.io/) | OpenEnv, Harbor |
+| [Daytona](https://www.daytona.io/) | OpenEnv, Harbor, NeMo-Gym |
 
 All external ecosystem support is experimental.
 
