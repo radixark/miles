@@ -1,13 +1,48 @@
+import importlib
+import sys
 from argparse import Namespace
 from contextlib import contextmanager, nullcontext
+from types import ModuleType
 from unittest.mock import Mock
 
-from miles.backends.megatron_utils import actor as actor_module
-from miles.backends.megatron_utils.actor import MegatronTrainRayActor
+import pytest
 
 
-def _worker(role):
-    worker = object.__new__(MegatronTrainRayActor)
+@pytest.fixture(scope="module")
+def actor_module():
+    module_name = "miles.backends.megatron_utils.actor"
+    package = importlib.import_module("miles.backends.megatron_utils")
+    missing = object()
+    saved_module = sys.modules.get(module_name, missing)
+    saved_saver = sys.modules.get("torch_memory_saver", missing)
+    saved_package_attr = getattr(package, "actor", missing)
+
+    saver_module = ModuleType("torch_memory_saver")
+    saver_module.torch_memory_saver = Mock()
+    sys.modules["torch_memory_saver"] = saver_module
+    sys.modules.pop(module_name, None)
+    if saved_package_attr is not missing:
+        delattr(package, "actor")
+
+    try:
+        yield importlib.import_module(module_name)
+    finally:
+        sys.modules.pop(module_name, None)
+        if saved_module is not missing:
+            sys.modules[module_name] = saved_module
+        if saved_package_attr is missing:
+            if hasattr(package, "actor"):
+                delattr(package, "actor")
+        else:
+            package.actor = saved_package_attr
+        if saved_saver is missing:
+            sys.modules.pop("torch_memory_saver", None)
+        else:
+            sys.modules["torch_memory_saver"] = saved_saver
+
+
+def _worker(actor_module, role):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(offload_train=True, debug_rollout_only=False)
     worker.role = role
     worker._heartbeat = Mock()
@@ -16,8 +51,8 @@ def _worker(role):
     return worker
 
 
-def test_critic_train_wakes_on_config_and_sleeps_on_options(monkeypatch):
-    worker = _worker("critic")
+def test_critic_train_wakes_on_config_and_sleeps_on_options(actor_module, monkeypatch):
+    worker = _worker(actor_module, "critic")
     worker.train_critic = Mock(return_value={"values": ["cpu-value"]})
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
@@ -40,8 +75,8 @@ def test_critic_train_wakes_on_config_and_sleeps_on_options(monkeypatch):
     assert phases == ["data_preprocess", "critic_train"]
 
 
-def test_actor_receives_critic_payload_between_wake_and_sleep(monkeypatch):
-    worker = _worker("actor")
+def test_actor_receives_critic_payload_between_wake_and_sleep(actor_module, monkeypatch):
+    worker = _worker(actor_module, "actor")
     worker.train_actor = Mock(return_value=None)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
@@ -57,8 +92,8 @@ def test_actor_receives_critic_payload_between_wake_and_sleep(monkeypatch):
     assert result is None
 
 
-def test_train_without_options_keeps_model_resident(monkeypatch):
-    worker = _worker("actor")
+def test_train_without_options_keeps_model_resident(actor_module, monkeypatch):
+    worker = _worker(actor_module, "actor")
     worker.train_actor = Mock(return_value=None)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
@@ -70,8 +105,8 @@ def test_train_without_options_keeps_model_resident(monkeypatch):
     worker.sleep.assert_not_called()
 
 
-def _lifecycle_worker(monkeypatch, asleep):
-    worker = object.__new__(MegatronTrainRayActor)
+def _lifecycle_worker(actor_module, monkeypatch, asleep):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(offload_train=True)
     worker._asleep = asleep
     saver = Mock()
@@ -86,8 +121,8 @@ def _lifecycle_worker(monkeypatch, asleep):
     return worker, saver, reload_groups
 
 
-def test_sleep_is_idempotent(monkeypatch):
-    worker, saver, _ = _lifecycle_worker(monkeypatch, asleep=False)
+def test_sleep_is_idempotent(actor_module, monkeypatch):
+    worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
 
     worker.sleep()
     worker.sleep()
@@ -96,10 +131,10 @@ def test_sleep_is_idempotent(monkeypatch):
     assert worker._asleep is True
 
 
-def test_wake_up_when_resident_skips_resume_but_restores_groups(monkeypatch):
+def test_wake_up_when_resident_skips_resume_but_restores_groups(actor_module, monkeypatch):
     # A retried attempt can die between wake and sleep: memory stays resident but the
     # process groups may already be gone, so wake_up must restore groups without resuming.
-    worker, saver, reload_groups = _lifecycle_worker(monkeypatch, asleep=False)
+    worker, saver, reload_groups = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
 
     worker.wake_up()
 
@@ -108,8 +143,8 @@ def test_wake_up_when_resident_skips_resume_but_restores_groups(monkeypatch):
     assert worker._asleep is False
 
 
-def test_wake_up_resumes_offloaded_model_once(monkeypatch):
-    worker, saver, _ = _lifecycle_worker(monkeypatch, asleep=True)
+def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
+    worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=True)
 
     worker.wake_up()
     worker.wake_up()
