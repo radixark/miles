@@ -61,8 +61,9 @@ def build_cells(
     num_gpu_per_engine = min(num_gpus_per_engine, 8)
     return [
         ServerCell(
-            num_nodes=nodes_per_engine,
             args=args,
+            cell_id=f"cell-{cell_index}",
+            num_nodes=nodes_per_engine,
             pg=pg_tuple,
             num_gpus_per_engine=num_gpus_per_engine,
             worker_type=worker_type,
