@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import patch
 
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, fake_actor_handle, fake_engine, make_args
@@ -39,13 +40,15 @@ def _start_engines_and_collect_addressing(
     for index, slot in enumerate(slots):
         if rank_offset + index not in requested:
             slot.mark_allocated_uninitialized(fake_actor_handle())
+    for engine in requested.values():
+        engine.init.remote.side_effect = lambda **kwargs: asyncio.sleep(0)
     started_cell_indices = sorted({(rank - rank_offset) // nodes_per_engine for rank in requested})
 
     def _launch(*, global_rank, **kwargs):
         return requested[global_rank]
 
     with patch.object(server_group_module, "launch_sglang_ray_actor", side_effect=_launch):
-        group.start_engines(port_allocator, start_cell_indices=started_cell_indices)
+        asyncio.run(group.start_engines(port_allocator, start_cell_indices=started_cell_indices))
 
     return {rank: dict(engine.init.remote.call_args.kwargs) for rank, engine in requested.items()}
 
