@@ -8,7 +8,6 @@ from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
-from miles.ray.rollout.server_engine import ServerEngine
 
 _CELL_MODULE = "miles.ray.rollout.server_cell"
 
@@ -40,27 +39,28 @@ def _build_server(
     remove_worker_effect=None,
 ) -> RolloutServer:
     args = make_args(num_gpus_per_node=8, use_miles_router=use_miles_router)
-    engines = []
-    for index in range(num_engines):
-        engine = ServerEngine()
-        engine.mark_allocated_uninitialized(fake_actor_handle())
-        engine.set_addressing(
-            AddrInfo(server_url=f"http://10.0.0.{index + 1}:3000{index}", bootstrap_port=bootstrap_port)
-        )
-        engine.mark_alive()
-        engines.append(engine)
-
     nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
-    cells = [
-        ServerCell(
-            engines=engines[i : i + nodes_per_engine],
+    cells = []
+    for cell_start in range(0, num_engines, nodes_per_engine):
+        cell = ServerCell(
+            num_nodes=nodes_per_engine,
             args=args,
             num_gpus_per_engine=num_gpus_per_engine,
             worker_type=worker_type,
-            rank_offset=i,
+            rank_offset=cell_start,
         )
-        for i in range(0, len(engines), nodes_per_engine)
-    ]
+        cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(nodes_per_engine)])
+        cell._mark_addressing(
+            [
+                AddrInfo(
+                    server_url=f"http://10.0.0.{cell_start + i + 1}:3000{cell_start + i}",
+                    bootstrap_port=bootstrap_port,
+                )
+                for i in range(nodes_per_engine)
+            ]
+        )
+        cell._mark_alive()
+        cells.append(cell)
 
     srv = RolloutServer(
         server_cells=cells,
@@ -113,8 +113,7 @@ async def test_stopping_a_cell_that_never_started_publishes_nothing():
     """An unallocated cell has no url, so teardown must not try to unregister it."""
     events: list[tuple[str, dict]] = []
     srv = _build_server(events=events, num_engines=2)
-    for engine in srv.server_cells[0].engines:
-        engine.mark_stopped()
+    srv.server_cells[0]._mark_stopped()
 
     with (
         _with_recording_client(srv),
@@ -171,7 +170,7 @@ async def test_a_router_that_rejects_the_unregister_still_kills_the_actor():
         await srv.stop_cells([0])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "shutdown", "kill"]
-    assert not srv.server_cells[0].primary_engine.is_allocated
+    assert not srv.server_cells[0].is_allocated
 
 
 async def test_a_router_that_never_answers_the_unregister_does_not_block_teardown():
@@ -192,7 +191,7 @@ async def test_a_router_that_never_answers_the_unregister_does_not_block_teardow
         await srv.stop_cells([0])
 
     assert [name for name, _kwargs in events] == ["remove_worker", "kill"]
-    assert not srv.server_cells[0].primary_engine.is_allocated
+    assert not srv.server_cells[0].is_allocated
 
 
 async def test_use_miles_router_reaches_both_router_calls():

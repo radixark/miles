@@ -169,8 +169,7 @@ class TestRolloutExternalPath:
         """The external allocator was removed; starting engines must fail loudly until the replacement lands."""
         from miles.ray.rollout.addr_allocator import PortAllocator
         from miles.ray.rollout.server_cell import ServerCell
-        from miles.ray.rollout.server_engine import ServerEngine
 
-        cell = ServerCell(engines=[ServerEngine()], args=make_args(num_gpus_per_node=8, rollout_external=True))
+        cell = ServerCell(args=make_args(num_gpus_per_node=8, rollout_external=True), worker_type="regular")
         with pytest.raises(NotImplementedError):
             await cell.start_engines(PortAllocator())
