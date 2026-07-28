@@ -4,17 +4,13 @@ InferenceEngineChecksums = dict[str, str]
 
 
 def flatten_inference_engine_checksums(check_weights_result: Any) -> list[InferenceEngineChecksums]:
-    engine_bodies = _flatten_to_inference_engine_bodies(check_weights_result)
+    engine_bodies = list(check_weights_result)
     surviving = [body for body in engine_bodies if body is not None]
     assert surviving, (
         f"check_weights('checksum') returned no non-None engine bodies "
         f"(got {len(engine_bodies)} entries, all None): {check_weights_result!r}"
     )
     return [_merge_inference_engine_ranks(body) for body in surviving]
-
-
-def _flatten_to_inference_engine_bodies(check_weights_result: Any) -> list[Any]:
-    return [engine_body for server_group in check_weights_result for engine_body in server_group]
 
 
 def _merge_inference_engine_ranks(engine_body: dict[str, Any]) -> InferenceEngineChecksums:
