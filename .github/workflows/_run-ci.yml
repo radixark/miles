@@ -143,7 +143,7 @@ jobs:
           pinned=""
           for pkg in nvidia-cudnn-cu13 nvidia-cudnn-cu12; do
             v=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}')
-            [ -n "$v" ] && pinned="$pinned $pkg==$v"
+            if [ -n "$v" ]; then pinned="$pinned $pkg==$v"; fi
           done
           python -m pip install -r "$GITHUB_WORKSPACE/requirements.txt" --break-system-packages
           for spec in $pinned; do
