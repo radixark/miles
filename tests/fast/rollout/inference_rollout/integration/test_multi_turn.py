@@ -55,24 +55,10 @@ def test_rollout(rollout_env, variant, test_type):
 
 
 def _verify_samples(variant: str, samples: list[Any]):
-    if variant == "agentic_tool_call":
-        if len(samples) > 0 and isinstance(samples[0], list):
-            # Train mode: list[list[Sample]] — one singleton list (merged TITO sample) per generate
-            assert len(samples) == 2, f"n_samples_per_prompt=2, so group should have 2 samples, got {len(samples)}"
-            for group_sample in samples:
-                assert isinstance(group_sample, list), "agentic_tool_call returns list[Sample] per generate"
-                assert len(group_sample) == 1, "linear trajectory merges into exactly one sample"
-                _verify_sample(group_sample[0])
-        else:
-            # Eval mode: list[Sample], flattened (one merged sample per generate)
-            assert len(samples) == 2, f"n_samples_per_eval_prompt=2, so should have 2 samples, got {len(samples)}"
-            for sample in samples:
-                _verify_sample(sample)
-    else:
-        assert len(samples) == 2, f"n_samples_per_prompt=2, so group should have 2 samples, got {len(samples)}"
-        for sample in samples:
-            assert isinstance(sample, Sample), "multi_turn returns a scalar Sample per generate"
-            _verify_sample(sample)
+    assert len(samples) == 2, f"n_samples_per_prompt=2, so group should have 2 samples, got {len(samples)}"
+    for sample in samples:
+        assert isinstance(sample, Sample), f"{variant} returns a scalar Sample per generate"
+        _verify_sample(sample)
 
 
 def _verify_sample(sample: Sample, expected_reward: float = 1.0, expect_answer: bool = True):

@@ -705,7 +705,5 @@ class TestAgentNoRecords:
 
         SingletonMeta.clear_all_instances()
 
-        assert isinstance(result.sample, list)
-        samples = listify(result.sample)
-        assert len(samples) == 1
-        assert samples[0].status == Sample.Status.ABORTED
+        assert isinstance(result.sample, Sample)
+        assert result.sample.status == Sample.Status.ABORTED

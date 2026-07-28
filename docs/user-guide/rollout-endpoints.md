@@ -86,7 +86,7 @@ Helpers:
 
 - `compute_prompt_ids_from_sample` and `compute_request_payload` from
   `miles/rollout/generate_utils/generate_endpoint_utils.py` build `/generate` requests.
-- Returning a `list[Sample]` from a generate function is supported natively; no flag is needed.
+- A generate function can set `GenerateFnOutput.samples` to a `Sample` or `list[Sample]`.
 
 ### Reference generators
 
@@ -178,18 +178,6 @@ CUSTOM_ARGS=(
 
 **Don't apply chat template.** For OpenAI format, do **not** pass `--apply-chat-template`. The prompt must
 remain a `messages` list. SGLang handles templating server-side.
-
-</Warning>
-
-<Warning>
-
-**Agentic output is a `list[Sample]`.** `agentic_tool_call.generate` always returns a list
-(one merged TITO sample per linear run today). Consequences:
-
-- A custom reward model (`--custom-rm-path`) is called in batch form with a
-  `list[Sample]` argument; it must handle that shape.
-- `--group-rm`, `--partial-rollout`, and `--recompute-logprobs-via-prefill` are not
-  supported in combination with the agentic generator.
 
 </Warning>
 
