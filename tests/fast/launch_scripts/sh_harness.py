@@ -163,8 +163,8 @@ def run_launch_script(
 
     return LaunchScriptRun(
         invocations=invocations,
-        stdout=_sanitize(stdout, sandbox=sandbox),
-        stderr=_sanitize(stderr, sandbox=sandbox),
+        stdout=sanitize(stdout, sandbox=sandbox),
+        stderr=sanitize(stderr, sandbox=sandbox),
         returncode=process.returncode,
     )
 
@@ -241,8 +241,8 @@ def _parse_capture(raw: str, sandbox: Path) -> list[list[str]]:
     """Order by pid, not by append order: a `&` child appends whenever it gets scheduled."""
     records = [record.split(_ARG_SEPARATOR) for record in raw.split(_RECORD_SEPARATOR) if record != ""]
     records.sort(key=lambda record: int(record[0]))
-    return [[_sanitize(arg, sandbox=sandbox) for arg in record[1:]] for record in records]
+    return [[sanitize(arg, sandbox=sandbox) for arg in record[1:]] for record in records]
 
 
-def _sanitize(text: str, sandbox: Path) -> str:
+def sanitize(text: str, sandbox: Path) -> str:
     return text.replace(str(sandbox), SANDBOX_PLACEHOLDER).replace(str(REPO_ROOT), REPO_ROOT_PLACEHOLDER)

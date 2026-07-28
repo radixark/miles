@@ -1,0 +1,14 @@
+### 0
+[all_ray_node num_nodes=None] source <REPO_ROOT>/scripts/models/deepseek-v32.sh && PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 8
+  --master-addr {{master_addr}}
+  --master-port 23456
+  --nnodes={{nnodes}}
+  --node-rank {{node_rank}} <REPO_ROOT>/tools/convert_hf_to_torch_dist.py ${MODEL_ARGS[@]}
+  --hf-checkpoint /root/models/DeepSeek-V3.2-bf16
+  --save /root/models/DeepSeek-V3.2_torch_dist
+  --tensor-model-parallel-size 4
+  --expert-model-parallel-size 16
+  --pipeline-model-parallel-size 6
+  --decoder-last-pipeline-num-layers 13
+  --expert-tensor-parallel-size 1 
