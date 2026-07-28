@@ -220,7 +220,7 @@ class TrajectorySink:
 
     def _emit(self, kind: str, sample, *, ts: float | None = None, turn: int = -1, detail: str = "") -> None:
         try:
-            versions = getattr(sample, "weight_versions", None) or []
+            versions = [span.version for span in getattr(sample, "all_weight_version_spans", None) or []]
             event = TrajectoryEvent(
                 ts=time.time() if ts is None else ts,
                 kind=kind,

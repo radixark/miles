@@ -12,7 +12,14 @@ import safetensors.numpy
 from safetensors import SafetensorError
 
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample, encode_samples
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+
+
+def _per_call(*spans: tuple[str, int, int]) -> WeightVersionsPerCall:
+    """One generation call's weight-version spans, given as `(version, abs_start, abs_end)` triples."""
+    return WeightVersionsPerCall(
+        spans=[WeightVersionSpan(version=version, abs_start=start, abs_end=end) for version, start, end in spans]
+    )
 
 
 def _computed_sample(**overrides) -> Sample:
@@ -254,3 +261,45 @@ class TestSamplesWireCodec:
         valid = encode_samples([_computed_sample()], {}, None)
         with pytest.raises(expected_error, match=match):
             decode_samples_and_merge_input_sample(build_payload(valid), Sample())
+
+
+class TestWeightVersionsOnTheSamplesWire:
+    def test_weight_versions_round_trip_preserves_multiple_spans_per_call(self):
+        """A call whose weights changed mid-decode keeps all of its spans nested under that call."""
+        weight_versions = [_per_call(("w1", 0, 2), ("w2", 2, 3)), _per_call(("w3", 3, 5))]
+        payload = encode_samples([_computed_sample(weight_versions=weight_versions)], {}, None)
+
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample()).samples
+
+        assert out.weight_versions == weight_versions
+
+    def test_weight_versions_round_trip_preserves_empty_calls(self):
+        """Unstamped generation calls survive as empty entries so the call count is preserved."""
+        weight_versions = [_per_call(), _per_call(("w1", 3, 5)), _per_call()]
+        payload = encode_samples([_computed_sample(weight_versions=weight_versions)], {}, None)
+
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample()).samples
+
+        assert out.weight_versions == weight_versions
+
+    @pytest.mark.parametrize(
+        ("weight_versions", "match"),
+        [
+            pytest.param(["w1", "w2"], "must be a mapping", id="legacy-scalar-versions"),
+            pytest.param(
+                [{"version": "w1", "abs_start": 3, "abs_end": 5}],
+                "must be a mapping",
+                id="spans-not-nested-per-call",
+            ),
+            pytest.param([[{"version": "w1", "abs_start": 3}]], "abs_end", id="span-missing-field"),
+        ],
+    )
+    def test_malformed_weight_versions_shape_fails_loudly(self, weight_versions, match):
+        """A weight_versions payload that is not a per-call list of span mappings raises instead of decoding."""
+        valid = encode_samples([_computed_sample(weight_versions=[_per_call(("w1", 3, 5))])], {}, None)
+        payload = _mutated_payload(
+            valid, lambda meta, tensors: meta["samples"][0].update(weight_versions=weight_versions)
+        )
+
+        with pytest.raises(TypeError, match=match):
+            decode_samples_and_merge_input_sample(payload, Sample())
