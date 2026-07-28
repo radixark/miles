@@ -32,13 +32,13 @@ def _build_group(
             args=args,
             pg=pg_tuple,
             worker_type=worker_type,
+            needs_offload=needs_offload,
+            update_weights=update_weights,
+            model_path=model_path,
         ),
         num_gpus_per_engine=1,
         has_new_engines=False,
         worker_type=worker_type,
-        needs_offload=needs_offload,
-        update_weights=update_weights,
-        model_path=model_path,
     )
 
 
