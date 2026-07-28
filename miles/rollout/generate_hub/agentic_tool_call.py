@@ -89,7 +89,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         logger.warning("No model calls recorded for sample")
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
-        return GenerateFnOutput(samples=sample)
+        return GenerateFnOutput(samples=[sample])
 
     logger.debug(f"{log_prefix} Computing samples from {len(records)} records...")
     samples = compute_samples_from_openai_records(
@@ -123,19 +123,15 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         logger.warning("All samples truncated (prompt already exceeds max_seq_len)")
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
-        return GenerateFnOutput(samples=sample)
+        return GenerateFnOutput(samples=[sample])
 
-    if not input.args.generate_multi_samples:
-        samples = merge_samples(samples, input.state.tokenizer)
-        samples.metadata.update(session_metadata)
-    else:
-        samples[-1].metadata.update(session_metadata)
-    return GenerateFnOutput(samples=samples)
+    sample = merge_samples(samples, input.state.tokenizer)
+    sample.metadata.update(session_metadata)
+    return GenerateFnOutput(samples=[sample])
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--custom-agent-function-path", type=str)
-    parser.add_argument("--generate-multi-samples", action="store_true", default=False)
     parser.add_argument(
         "--max-seq-len",
         type=int,

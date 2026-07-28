@@ -86,14 +86,14 @@ Helpers:
 
 - `compute_prompt_ids_from_sample` and `compute_request_payload` from
   `miles/rollout/generate_utils/generate_endpoint_utils.py` build `/generate` requests.
-- For multi-sample outputs, set `--generate-multi-samples` and return a list.
+- Returning a `list[Sample]` from a generate function is supported natively; no flag is needed.
 
 ### Reference generators
 
 - **`single_turn.py`**: single-turn generation via `/generate`. Text or multimodal prompts.
 - **`multi_turn.py`**: multi-turn tool calling via `/generate`. Adds CLI flags
   `--generate-max-turns`, `--generate-tool-specs-path`, `--generate-tool-call-parser`,
-  `--generate-execute-tool-function-path`, `--generate-multi-samples`.
+  `--generate-execute-tool-function-path`.
 - **`benchmarkers.py`**: forces random output sequence length for benchmarking.
 
 ---
@@ -178,6 +178,18 @@ CUSTOM_ARGS=(
 
 **Don't apply chat template.** For OpenAI format, do **not** pass `--apply-chat-template`. The prompt must
 remain a `messages` list. SGLang handles templating server-side.
+
+</Warning>
+
+<Warning>
+
+**Agentic output is a `list[Sample]`.** `agentic_tool_call.generate` always returns a list
+(one merged TITO sample per linear run today). Consequences:
+
+- A custom reward model (`--custom-rm-path`) is called in batch form with a
+  `list[Sample]` argument; it must handle that shape.
+- `--group-rm`, `--partial-rollout`, and `--recompute-logprobs-via-prefill` are not
+  supported in combination with the agentic generator.
 
 </Warning>
 

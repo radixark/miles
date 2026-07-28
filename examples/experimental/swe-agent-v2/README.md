@@ -289,8 +289,6 @@ merge_samples() ->
   logprobs:  -------- [real]  [0.0] [real]
 ```
 
-Without TITO, use `--generate-multi-samples` to skip merge and train on per-turn samples instead (current default in `run.sh`).
-
 ## Troubleshooting
 
 ### Harbor containers can't reach Miles Router
@@ -312,7 +310,9 @@ The task directory for the given `instance_id` doesn't exist under `HARBOR_TASKS
 
 ### `b.tokens must start with a.tokens` assertion error
 
-Multi-turn merge fails due to BPE re-tokenization inconsistency. Use `--generate-multi-samples` (already default in `run.sh`) to skip merge and train on per-turn samples.
+Multi-turn merge fails due to BPE re-tokenization inconsistency. The session-server TITO path
+(pretokenized `input_ids`) avoids the re-tokenization entirely; check that the run goes through
+`--use-session-server` and that the chat template round-trips (see the TITO docs).
 
 ### Trace-viewer shows no trajectories
 

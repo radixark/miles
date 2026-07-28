@@ -11,12 +11,7 @@ from miles.utils.types import Sample
 
 TWO_TURN_DATA_ROWS = [{"input": [{"role": "user", "content": TwoTurnStub.USER_QUESTION}], "label": "2008"}]
 
-_VARIANT_NAMES = [
-    "multi_turn_single_sample",
-    "multi_turn_multi_samples",
-    "agentic_tool_call_single_sample",
-    "agentic_tool_call_multi_samples",
-]
+_VARIANT_NAMES = ["multi_turn", "agentic_tool_call"]
 
 _BASE_EXTRA_ARGV = [
     "--rollout-batch-size",
@@ -60,36 +55,24 @@ def test_rollout(rollout_env, variant, test_type):
 
 
 def _verify_samples(variant: str, samples: list[Any]):
-    is_multi_samples = variant in ("multi_turn_multi_samples", "agentic_tool_call_multi_samples")
-
-    if is_multi_samples:
+    if variant == "agentic_tool_call":
         if len(samples) > 0 and isinstance(samples[0], list):
-            # Train mode: list[list[Sample]], grouped by prompt
+            # Train mode: list[list[Sample]] — one singleton list (merged TITO sample) per generate
             assert len(samples) == 2, f"n_samples_per_prompt=2, so group should have 2 samples, got {len(samples)}"
             for group_sample in samples:
-                assert isinstance(group_sample, list), "multi_samples variant should return list[Sample] per generate"
-                _verify_group_samples(group_sample)
+                assert isinstance(group_sample, list), "agentic_tool_call returns list[Sample] per generate"
+                assert len(group_sample) == 1, "linear trajectory merges into exactly one sample"
+                _verify_sample(group_sample[0])
         else:
-            # Eval mode: list[Sample], flattened
-            # n_samples_per_eval_prompt=2, and each generate returns 2 turns, so 2*2=4 samples
-            assert (
-                len(samples) == 4
-            ), f"n_samples_per_eval_prompt=2, each generate returns 2 turns, so should have 4 samples, got {len(samples)}"
-            # Group samples by prompt (every 2 samples form a group)
-            group_samples_list = [samples[i : i + 2] for i in range(0, len(samples), 2)]
-            for group_samples in group_samples_list:
-                _verify_group_samples(group_samples)
+            # Eval mode: list[Sample], flattened (one merged sample per generate)
+            assert len(samples) == 2, f"n_samples_per_eval_prompt=2, so should have 2 samples, got {len(samples)}"
+            for sample in samples:
+                _verify_sample(sample)
     else:
         assert len(samples) == 2, f"n_samples_per_prompt=2, so group should have 2 samples, got {len(samples)}"
         for sample in samples:
-            assert isinstance(sample, Sample), "single_sample variant should return Sample, not list"
+            assert isinstance(sample, Sample), "multi_turn returns a scalar Sample per generate"
             _verify_sample(sample)
-
-
-def _verify_group_samples(group_samples: list[Sample], expected_count: int = 2):
-    assert len(group_samples) == expected_count, f"Group should have {expected_count} samples (one per turn)"
-    for i, sample in enumerate(group_samples):
-        _verify_sample(sample, expect_answer=(i == len(group_samples) - 1))
 
 
 def _verify_sample(sample: Sample, expected_reward: float = 1.0, expect_answer: bool = True):
@@ -101,13 +84,8 @@ def _verify_sample(sample: Sample, expected_reward: float = 1.0, expect_answer: 
 
 async def _simple_reward_function(args, samples: Sample | list[Sample]) -> float | list[float]:
     if isinstance(samples, list):
-        # For multi_samples variants, use the last sample's reward
-        if getattr(args, "generate_multi_samples", False):
-            return [_check_reward(samples[-1])] * len(samples)
-        else:
-            return [_check_reward(sample) for sample in samples]
-    else:
-        return _check_reward(samples)
+        return [_check_reward(sample) for sample in samples]
+    return _check_reward(samples)
 
 
 def _check_reward(sample: Sample) -> float:
