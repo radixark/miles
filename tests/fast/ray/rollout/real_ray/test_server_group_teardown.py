@@ -31,7 +31,6 @@ def _build_group(*, pg_tuple: tuple, num_engines: int = 1) -> ServerGroup:
             pg=pg_tuple,
         ),
         num_gpus_per_engine=1,
-        has_new_engines=False,
         worker_type="regular",
     )
 
