@@ -104,11 +104,11 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             engine_offset += num_engines
             gpu_offset += group_cfg.num_gpus
 
-        new_engine_indices_per_group = async_utils.wait_futures(start_futures)
+        new_cell_indices_per_group = async_utils.wait_futures(start_futures)
 
-        for group, new_engine_indices in zip(server_groups, new_engine_indices_per_group, strict=True):
-            group.mark_alive(engine_indices=new_engine_indices)
-            async_utils.run(group.register_workers(new_engine_indices))
+        for group, new_cell_indices in zip(server_groups, new_cell_indices_per_group, strict=True):
+            group.mark_alive(cell_indices=new_cell_indices)
+            async_utils.run(group.register_workers(new_cell_indices))
 
         servers[model_cfg.name] = RolloutServer(
             server_groups=server_groups,
