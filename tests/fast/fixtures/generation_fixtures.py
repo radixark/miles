@@ -67,7 +67,7 @@ def extra_argv_for_variant(
             argv.append("--generate-multi-samples")
     elif variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"):
         argv += ["--custom-agent-function-path", custom_agent_function_path]
-        argv += ["--use-session-server", "--tito-model", "qwen3", "--tito-allowed-append-roles", "tool"]
+        argv += ["--use-session-server", "--tito-model", "qwen3"]
         if variant == "agentic_tool_call_multi_samples":
             argv.append("--generate-multi-samples")
 
@@ -238,7 +238,6 @@ def with_session_server(
         hf_checkpoint=args.hf_checkpoint,
         chat_template_path=args.chat_template_path,
         tito_model=args.tito_model,
-        tito_allowed_append_roles=args.tito_allowed_append_roles,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
         session_server_instance_id=instance_id,
     )

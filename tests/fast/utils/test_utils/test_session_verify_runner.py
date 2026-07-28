@@ -15,7 +15,6 @@ def _build_args(**overrides) -> str:
         **SESSION_VERIFY_INVARIANT_ARGS,
         "hf_checkpoint": "/root/models/test-model",
         "tito_model": "qwen3",
-        "tito_allowed_append_roles": ["tool", "user"],
         "rollout_num_gpus_per_engine": 2,
         "actor_num_nodes": 1,
         "actor_num_gpus_per_node": 8,
@@ -46,6 +45,12 @@ def test_namespace_to_train_args_keeps_ci_test_enabled_for_fsdp_debug_rollout():
 
     assert "--train-backend fsdp" in train_args
     assert "--ci-test" in train_args
+
+
+def test_namespace_to_train_args_has_no_append_role_policy_flag():
+    train_args = _build_args()
+
+    assert "allowed-append-roles" not in train_args
 
 
 def test_namespace_to_train_args_omits_expert_parallel_for_single_expert():

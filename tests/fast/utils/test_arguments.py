@@ -151,6 +151,36 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     assert args.recompute_logprobs_via_prefill is True
 
 
+def test_sglang_parallel_sizes_keep_server_args_destinations():
+    parser = add_sglang_arguments(argparse.ArgumentParser())
+    args = parser.parse_args(
+        [
+            "--sglang-tp-size",
+            "6",
+            "--sglang-data-parallel-size",
+            "2",
+            "--sglang-pipeline-parallel-size",
+            "3",
+            "--sglang-expert-parallel-size",
+            "4",
+            "--sglang-attention-context-parallel-size",
+            "5",
+        ]
+    )
+    args.rollout_num_gpus_per_engine = 8
+    args.true_on_policy_mode = False
+    args.sglang_enable_dp_attention = True
+    args.use_session_server = False
+
+    validate_sglang_args(args)
+
+    assert args.sglang_tp_size == 8
+    assert args.sglang_dp_size == 2
+    assert args.sglang_pp_size == 3
+    assert args.sglang_ep_size == 4
+    assert args.sglang_attn_cp_size == 5
+
+
 def test_custom_megatron_post_save_hook_path_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
@@ -172,6 +202,91 @@ def test_custom_megatron_post_save_hook_path_requires_save():
         match="'--save' is required when custom_megatron_post_save_hook_path is set.",
     ):
         miles_validate_args(args)
+
+
+class TestTitoFixedTemplateConfiguration:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_removed_role_flag_is_rejected(self):
+        with pytest.raises(SystemExit):
+            self._parse(["--tito-allowed-append-roles", "tool"])
+
+    @pytest.mark.parametrize(
+        ("extra", "expect_warning"),
+        [
+            (["--use-session-server"], True),
+            ([], False),
+            (["--use-session-server", "--tito-model", "qwen3"], False),
+        ],
+    )
+    def test_warns_only_for_default_model_session(self, caplog, extra, expect_warning):
+        args = self._parse(extra)
+
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        target_records = [
+            record
+            for record in caplog.records
+            if record.getMessage().startswith("--tito-model=default uses a best-effort four-role append surface.")
+        ]
+        assert len(target_records) == int(expect_warning)
+
+    def test_named_family_requires_session_server(self):
+        args = self._parse(["--tito-model", "qwen3"])
+        with pytest.raises(ValueError, match="--tito-model=qwen3 requires --use-session-server"):
+            miles_validate_args(args)
+
+    def test_named_family_resolves_registered_template_and_kwargs(self):
+        args = self._parse(["--use-session-server", "--tito-model", "qwen3"])
+        miles_validate_args(args)
+        assert args.chat_template_path.endswith("/qwen3_fixed.jinja")
+        assert args.apply_chat_template_kwargs == {"clear_thinking": False}
+
+    def test_named_family_rejects_custom_template(self):
+        args = self._parse(
+            [
+                "--use-session-server",
+                "--tito-model",
+                "qwen3",
+                "--chat-template-path",
+                "/tmp/custom.jinja",
+            ]
+        )
+        with pytest.raises(ValueError, match="cannot override the template registered"):
+            miles_validate_args(args)
+
+    def test_named_family_rejects_conflicting_registered_kwarg(self):
+        args = self._parse(
+            [
+                "--use-session-server",
+                "--tito-model",
+                "qwen3",
+                "--apply-chat-template-kwargs",
+                '{"clear_thinking": true}',
+            ]
+        )
+        with pytest.raises(ValueError, match="clear_thinking=True conflicts"):
+            miles_validate_args(args)
+
+    def test_named_family_accepts_same_registered_and_additional_kwargs(self):
+        args = self._parse(
+            [
+                "--use-session-server",
+                "--tito-model",
+                "qwen3",
+                "--apply-chat-template-kwargs",
+                '{"clear_thinking": false, "enable_thinking": true}',
+            ]
+        )
+        miles_validate_args(args)
+        assert args.apply_chat_template_kwargs == {
+            "clear_thinking": False,
+            "enable_thinking": True,
+        }
 
 
 class TestMultiLoRAValidation:

@@ -46,7 +46,7 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    --save          /root/Qwen3-4B_torch_dist
 ```
 
-The converter auto-derives PP from `WORLD_SIZE`; for larger sizes drive it with `torchrun --nproc-per-node 8`. The FSDP launcher loads the HF checkpoint directly and skips this step.
+The converter auto-derives PP from `WORLD_SIZE`; for larger sizes drive it with `torchrun --nproc-per-node 8`. The FSDP launcher (`scripts/run_qwen3_0_6b_fsdp.py`) loads the HF checkpoint directly and skips this step.
 
 ## 4. Launch
 
@@ -57,7 +57,7 @@ cd /root/miles
 bash scripts/run-qwen3-4B.sh
 ```
 
-Other variants follow the same pattern — replace the script name (`run-qwen3-32B.sh`, `run-qwen3-4B-fsdp.sh`, etc.) and the `qwen3-XB.sh` model config.
+Other variants follow the same pattern — replace the script name (`run-qwen3-32B.sh`, etc.) and the `qwen3-XB.sh` model config.
 
 The Qwen3-4B-Instruct-2507 config (`scripts/models/qwen3-4B-Instruct-2507.sh`) just sets `MODEL_ARGS_ROTARY_BASE=5000000` and re-sources `qwen3-4B.sh` — source it when converting / launching the Instruct-2507 checkpoint.
 
@@ -117,7 +117,7 @@ The 4 B / 8 B / 14 B recipes leave Adam on GPU.
 ### 5.5 Notable quirks
 
 - **BF16 train + FP8 inference**: `run-qwen3-4B.sh` ships a commented `--hf-checkpoint /root/Qwen3-4B-FP8` alternative — uncomment it (and download `Qwen/Qwen3-4B-FP8`) to swap rollout to FP8 while keeping BF16 training. See [Low Precision RL](/advanced/fp8-low-precision).
-- **FSDP backend**: `run-qwen3-4B-fsdp.sh` runs the same recipe with `--train-backend fsdp`; no Megatron `torch_dist` conversion needed.
+- **FSDP backend**: `python3 scripts/run_qwen3_0_6b_fsdp.py` runs a Qwen3-0.6B recipe with `--train-backend fsdp` (downloads model + datasets itself); no Megatron `torch_dist` conversion needed.
 - **AMD ROCm**: `scripts/amd/run-qwen3-4B-amd.sh` mirrors the recipe with `${NUM_GPUS}` resolved from the AMD environment.
 
 ## 6. Pairs Well With

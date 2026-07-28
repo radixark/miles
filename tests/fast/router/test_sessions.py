@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import socket
 import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -67,7 +68,6 @@ def router_env():
                 chat_template_path=None,
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
-                tito_allowed_append_roles=["tool"],
                 trajectory_manager="linear_trajectory",
                 session_server_instance_id=uuid.uuid4().hex,
             )
@@ -161,6 +161,36 @@ class TestSessionProxy:
         record = records[0]
         assert record["path"] == "/v1/chat/completions"
         assert record["status_code"] == 200
+
+    def test_proxy_chat_response_has_no_duplicate_server_or_date_header(self, router_env):
+        # Both the backend and this server run under uvicorn, so each emits its own
+        # server/date. Echoing upstream's copy puts two of each on the wire, and
+        # aiohttp (the transport litellm uses) then refuses to read the body at all.
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        host, port = router_env.url.removeprefix("http://").split(":")
+        body = json.dumps({"messages": [{"role": "user", "content": "hi"}], "return_logprob": True})
+        request = (
+            f"POST /sessions/{session_id}/v1/chat/completions HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: close\r\n\r\n"
+            f"{body}"
+        )
+
+        with socket.create_connection((host, int(port)), timeout=10.0) as sock:
+            sock.sendall(request.encode())
+            raw = b""
+            while b"\r\n\r\n" not in raw:
+                chunk = sock.recv(4096)
+                assert chunk, "connection closed before response headers were complete"
+                raw += chunk
+
+        head = raw.split(b"\r\n\r\n", 1)[0].decode()
+        assert head.splitlines()[0].endswith("200 OK")
+        names = [line.split(":", 1)[0].lower() for line in head.splitlines()[1:]]
+        assert names.count("server") == 1
+        assert names.count("date") == 1
 
     def test_chat_malformed_json_body_returns_400(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]

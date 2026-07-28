@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Collection
 from typing import Any, Literal
 
 from huggingface_hub import hf_hub_download
@@ -198,19 +199,15 @@ def message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     return True
 
 
-_DEFAULT_APPEND_ROLES: list[str] = ["tool"]
-
-
 def assert_messages_append_only_with_allowed_role(
     stored_messages: list[dict[str, Any]],
     new_messages: list[dict[str, Any]],
-    allowed_append_roles: list[str] = _DEFAULT_APPEND_ROLES,
+    allowed_append_roles: Collection[str],
 ) -> None:
     """Assert *new_messages* is an append-only extension of *stored_messages*.
 
     The stored prefix must match exactly (compared by template-relevant keys),
-    and any appended messages must have a role in *allowed_append_roles*
-    (default: ``{'tool'}``).
+    and any appended messages must have a role in *allowed_append_roles*.
     """
     if not stored_messages:
         return

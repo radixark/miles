@@ -114,7 +114,6 @@ def agent_args(tito_model: str, daytona_sandboxes: bool = False) -> str:
         f"--tito-model {tito_model} "
         "--use-session-server "
         "--session-server-port 30000 "
-        "--tito-allowed-append-roles user tool "
     )
 
 

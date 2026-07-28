@@ -14,6 +14,7 @@ description: Concepts, launch script walkthrough, customization hooks, and a com
 | [Fully Async Rollout](/user-guide/fully-async) | Queue-backed rollout production, tuning knobs, and when to use `train_async.py`. |
 | [Agentic Chat Templates](/user-guide/agentic-chat-template) | Turning on and verifying TITO so multi-turn agentic rollout stays append-only. |
 | [CLI Reference](/user-guide/cli-reference) | Every flag Miles accepts, grouped by subsystem. |
+| [Environments](/user-guide/environments) | Supplying an environment: dataset + reward, your own env via the plug points, or an external ecosystem. |
 
 ## Which pages do I actually need?
 

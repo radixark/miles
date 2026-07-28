@@ -1,8 +1,11 @@
+import atexit
 import logging
+import os
 import random
+import shutil
 import socket
 from argparse import Namespace
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from typing import TYPE_CHECKING
 
 import ray
@@ -66,6 +69,15 @@ if TYPE_CHECKING:
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _setup_disk_offload_reclaim(disk_dir: str) -> None:
+    if not disk_dir:
+        return
+    shutil.rmtree(disk_dir, ignore_errors=True)
+    os.makedirs(disk_dir, exist_ok=True)
+    atexit.register(shutil.rmtree, disk_dir, ignore_errors=True)
+    logger.info(f"Train disk-offload reclaim armed for {disk_dir} (startup wipe + atexit)")
 
 
 class MegatronTrainRayActor(TrainRayActor):
@@ -138,6 +150,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 # --train-memory-margin-bytes can tune this
                 logger.info(f"Set torch_memory_saver.memory_margin_bytes to {x}")
                 torch_memory_saver.memory_margin_bytes = x
+            if args.offload_train_target == "disk":
+                _setup_disk_offload_reclaim(os.environ.get("TMS_DISK_BACKUP_DIR"))
 
         if self.args.debug_rollout_only:
             return 0
@@ -347,16 +361,20 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.offload_train:
             self.wake_up()
 
-        with timer("data_preprocess"):
-            rollout_data = get_rollout_data(self.args, rollout_data_ref, witness_info=witness_info)
-            if self.args.debug_rollout_only:
-                log_rollout_data(rollout_id, self.args, rollout_data)
-                return TrainStepOutcome.NORMAL
+        with ExitStack() as stack:
+            with timer("data_preprocess"):
+                rollout_data, store_get_result = get_rollout_data(
+                    self.args, rollout_data_ref, witness_info=witness_info
+                )
+                stack.enter_context(store_get_result)
+                if self.args.debug_rollout_only:
+                    log_rollout_data(rollout_id, self.args, rollout_data)
+                    return TrainStepOutcome.NORMAL
 
-        if self.role == "critic":
-            return self.train_critic(rollout_id, rollout_data)
-        else:
-            return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
+            if self.role == "critic":
+                return self.train_critic(rollout_id, rollout_data)
+            else:
+                return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
 
     @with_logs
     def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutcome:
