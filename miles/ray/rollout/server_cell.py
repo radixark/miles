@@ -4,7 +4,7 @@ import functools
 import logging
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import Any, Literal
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -16,9 +16,6 @@ from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import dumper_utils
-
-if TYPE_CHECKING:
-    from miles.ray.rollout.rollout_server import RolloutServer
 
 logger = logging.getLogger(__name__)
 
@@ -113,10 +110,12 @@ class ServerCell:
 
         await asyncio.gather(*init_handles)
 
-    async def recover(self, port_allocator: PortAllocator, router_api_client: SGLangRouterApiClient) -> None:
+    async def start(
+        self, port_allocator: PortAllocator, router_api_client: SGLangRouterApiClient, recover: bool = False
+    ) -> None:
         await self.start_engines(port_allocator)
 
-        if self.needs_offload:
+        if recover and self.needs_offload:
             await self.primary_engine.api_client.release_memory_occupation()
             if self.update_weights or self.model_path:
                 await self.primary_engine.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
@@ -129,7 +128,13 @@ class ServerCell:
         for engine in self.engines:
             engine.mark_alive()
 
-    def stop(self):
+    async def stop(self, router_api_client: SGLangRouterApiClient) -> None:
+        if self.is_allocated:
+            try:
+                await asyncio.wait_for(self.unregister(router_api_client), timeout=SHUTDOWN_TIMEOUT)
+            except Exception as e:
+                logger.warning(f"Unregistering {self=} from the router failed, tearing down anyway (e: {e})")
+
         for local_index, engine in enumerate(self.engines):
             if engine.is_allocated:
                 logger.info(f"Shutting down and killing engine at cell-local index {local_index}")
@@ -174,8 +179,8 @@ class ServerCell:
         )
 
 
-def flatten_cells(cells: list[ServerCell]) -> list[ServerEngine]:
-    return [engine for cell in cells for engine in cell.engines]
+def compute_nodes_per_engine(*, num_gpus_per_engine: int, num_gpus_per_node: int) -> int:
+    return max(1, num_gpus_per_engine // num_gpus_per_node)
 
 
 def launch_sglang_ray_actor(
@@ -237,31 +242,3 @@ def launch_sglang_ray_actor(
         sglang_overrides=sglang_overrides,
         num_gpus_per_engine=num_gpus_per_engine,
     )
-
-
-class CellIndexer(NamedTuple):
-    srv_key: str
-    group_index: int
-    cell_index: int
-
-
-def get_cell_indexer_of_id_map(servers: dict[str, "RolloutServer"]) -> list[CellIndexer]:
-    """Flatten ``servers`` into a list whose position is the cell id.
-
-    ``cell_index`` is the cell's position within its group. Order is sorted by
-    ``srv_key``, so cell ids are stable across calls when the topology is
-    unchanged.
-    """
-    result: list[CellIndexer] = []
-    for srv_key in sorted(servers):
-        srv = servers[srv_key]
-        for group_index, group in enumerate(srv.server_groups):
-            for cell_index in range(len(group.cells)):
-                result.append(
-                    CellIndexer(
-                        srv_key=srv_key,
-                        group_index=group_index,
-                        cell_index=cell_index,
-                    )
-                )
-    return result
