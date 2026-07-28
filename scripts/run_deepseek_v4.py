@@ -641,7 +641,7 @@ def _train(args: ScriptArgs):
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
 
     if (args.train_fp8 or args.train_mxfp8) and "--te-precision-config-file" not in args.extra_args:
-        misc_args += f"--te-precision-config-file " f"{U.save_to_temp_file(_DSV4_TE_PRECISION_CONFIG, 'yaml')} "
+        misc_args += f"--te-precision-config-file " f"{U.encode_pseudo_file(_DSV4_TE_PRECISION_CONFIG)} "
 
     train_args = (
         f"{ckpt_args} "

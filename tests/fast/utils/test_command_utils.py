@@ -6,6 +6,7 @@ import pytest
 from tests.fast.utils.command_recorder import record_commands
 
 import miles.utils.external_utils.command_utils as command_utils
+from miles.utils.file_arg_utils import resolve_file_arg
 
 
 @pytest.fixture
@@ -576,16 +577,22 @@ class TestGetEnvEnableInfiniteRun:
         assert command_utils.get_env_enable_infinite_run() is True
 
 
-class TestSaveToTempFile:
-    def test_writes_the_content_and_returns_a_unique_path(self):
-        """Config text handed to a subprocess has to exist on disk under a collision-free name."""
-        first = command_utils.save_to_temp_file("hello: world", "yaml")
-        second = command_utils.save_to_temp_file("hello: world", "yaml")
+class TestEncodePseudoFile:
+    def test_round_trips_through_resolve_file_arg(self):
+        """The encoded argument is what the training process will be asked to resolve."""
+        encoded = command_utils.encode_pseudo_file("hello: world")
 
-        assert first != second
-        assert first.endswith(".yaml")
-        with open(first) as f:
-            assert f.read() == "hello: world"
+        assert resolve_file_arg(encoded) == "hello: world"
+
+    def test_is_deterministic(self):
+        """A hot restart must recompute the identical launch command."""
+        assert command_utils.encode_pseudo_file("hello: world") == command_utils.encode_pseudo_file("hello: world")
+
+    def test_survives_a_command_line_round_trip(self):
+        """The value is interpolated into a shell command, so it must not need quoting."""
+        encoded = command_utils.encode_pseudo_file("a: 1\nb: 'two words'\n")
+
+        assert shlex.split(f"--custom-config-path {encoded}")[1] == encoded
 
 
 class TestHardwareTables:

@@ -10,6 +10,7 @@ from omegaconf import OmegaConf
 
 from miles.rollout.base_types import RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.sglang_rollout import generate_rollout as base_generate_rollout
+from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX, resolve_file_arg
 
 logger = logging.getLogger(__name__)
 
@@ -37,19 +38,22 @@ def _get_delegate_client(args) -> EvalDelegateClient | None:
     if not config_path:
         return None
 
+    if config_path.startswith(PSEUDO_FILE_PREFIX):
+        return _build_delegate_client(args, resolve_file_arg(config_path))
+
     config_path = str(Path(config_path).expanduser())
     cache_entry = _DELEGATE_CACHE.get(config_path)
     mtime = _safe_mtime(config_path)
     if cache_entry and cache_entry[0] == mtime:
         return cache_entry[1]
 
-    client = _build_delegate_client(args, config_path)
+    client = _build_delegate_client(args, resolve_file_arg(config_path))
     _DELEGATE_CACHE[config_path] = (mtime, client)
     return client
 
 
-def _build_delegate_client(args, config_path: str) -> EvalDelegateClient | None:
-    cfg = OmegaConf.load(config_path)
+def _build_delegate_client(args, config_text: str) -> EvalDelegateClient | None:
+    cfg = OmegaConf.create(config_text)
     cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     if not isinstance(cfg_dict, dict):
         logger.warning("--eval-config must contain a mapping at the root.")

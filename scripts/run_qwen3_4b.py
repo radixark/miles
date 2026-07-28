@@ -166,7 +166,7 @@ eval:
       rm_type: ifbench
       n_samples_per_eval_prompt: 1
 """.strip()
-            eval_args += f"--eval-config {U.save_to_temp_file(eval_config_text, 'yaml')} "
+            eval_args += f"--eval-config {U.encode_pseudo_file(eval_config_text)} "
         else:
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
@@ -283,7 +283,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
