@@ -25,8 +25,14 @@ def _build_group(
     engines = [ServerEngine() for _ in range(num_engines)] if worker_type != "placeholder" else []
     return ServerGroup(
         args=args,
-        pg=pg_tuple,
-        cells=chunk_engines_into_cells(engines, num_gpus_per_engine=1, num_gpus_per_node=8),
+        cells=chunk_engines_into_cells(
+            engines,
+            num_gpus_per_engine=1,
+            num_gpus_per_node=8,
+            args=args,
+            pg=pg_tuple,
+            worker_type=worker_type,
+        ),
         num_gpus_per_engine=1,
         has_new_engines=False,
         worker_type=worker_type,
@@ -255,31 +261,32 @@ class TestStartEnginesRealAllocator:
 
 class TestNodeZeroDetectionPrecondition:
     def test_misaligned_rank_offset_is_rejected(self, placement_group_factory):
-        """A multi-node group whose rank_offset is not a whole number of engines cannot identify its node-0 actors."""
+        """A multi-node cell whose rank_offset is not a whole number of engines cannot identify its node-0 actor."""
         pg = placement_group_factory(1)
         args = make_args(num_gpus_per_node=8)
         with pytest.raises(AssertionError, match="must be a multiple of"):
             ServerGroup(
                 args=args,
-                pg=pg,
                 cells=chunk_engines_into_cells(
-                    [ServerEngine() for _ in range(2)], num_gpus_per_engine=16, num_gpus_per_node=8
+                    [ServerEngine() for _ in range(2)],
+                    num_gpus_per_engine=16,
+                    num_gpus_per_node=8,
+                    args=args,
+                    pg=pg,
+                    rank_offset=1,
                 ),
                 num_gpus_per_engine=16,
                 has_new_engines=False,
-                rank_offset=1,
             )
 
     def test_an_engineless_group_is_exempt(self, placement_group_factory):
-        """A placeholder group holds no engines, so it has no node-0 actor to address."""
+        """A placeholder group holds no cells, so it has no node-0 actor to address."""
         ServerGroup(
             args=make_args(num_gpus_per_node=8),
-            pg=placement_group_factory(1),
             cells=[],
             num_gpus_per_engine=16,
             has_new_engines=False,
             worker_type="placeholder",
-            rank_offset=1,
         )
 
 
@@ -288,7 +295,8 @@ class TestRejectedConfigurations:
     async def test_host_or_port_override_is_rejected(self, patched_sglang_engine, placement_group_factory, overrides):
         """An override of host or port would make the rollout process address the wrong endpoint."""
         group = _build_group(pg_tuple=placement_group_factory(1), num_engines=1)
-        group.sglang_overrides = overrides
+        for cell in group.cells:
+            cell.sglang_overrides = overrides
 
         with pytest.raises(AssertionError, match="must not override host/port"):
             await group.start_engines(PortAllocator.empty())

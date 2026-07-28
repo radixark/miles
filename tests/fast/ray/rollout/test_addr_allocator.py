@@ -28,14 +28,17 @@ def _start_engines_and_collect_addressing(
     slots = [ServerEngine() for _ in range(max(requested) - rank_offset + 1)]
     group = ServerGroup(
         args=args,
-        pg=None,
         cells=chunk_engines_into_cells(
-            slots, num_gpus_per_engine=gpus_per_engine, num_gpus_per_node=args.num_gpus_per_node
+            slots,
+            num_gpus_per_engine=gpus_per_engine,
+            num_gpus_per_node=args.num_gpus_per_node,
+            args=args,
+            worker_type=worker_type,
+            rank_offset=rank_offset,
         ),
         num_gpus_per_engine=gpus_per_engine,
         has_new_engines=False,
         worker_type=worker_type,
-        rank_offset=rank_offset,
     )
     for index, slot in enumerate(slots):
         if rank_offset + index not in requested:
