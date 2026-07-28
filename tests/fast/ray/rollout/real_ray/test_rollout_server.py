@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 import ray
-from tests.fast.ray.rollout.conftest import flatten_cells, make_args
+from tests.fast.ray.rollout.conftest import make_args
 from tests.fast.ray.rollout.real_ray.conftest import build_cells, kill_cells, start_cells
 
 from miles.ray.rollout.rollout_server import RolloutServer
@@ -40,9 +40,8 @@ class TestCheckWeightsAggregation:
             # One flat entry per cell's primary engine.
             assert len(results) == 5
 
-            all_engines = [cell.primary_engine for cell in a + b]
-            for engine in all_engines:
-                payloads = ray.get(engine.actor_handle.get_http_payloads_of.remote("/weights_checker"))
+            for cell in a + b:
+                payloads = ray.get(cell.primary_actor_handle.get_http_payloads_of.remote("/weights_checker"))
                 assert payloads == [{"action": "report", "allow_quant_error": False, "selector": "all"}]
         finally:
             kill_cells(a)
@@ -75,21 +74,21 @@ class TestOffloadOnloadAggregation:
             assert len(offload_results) == 5
             assert len(onload_results) == 5
 
-            for engine in flatten_cells(a) + flatten_cells(b):
-                paths = ray.get(engine.actor_handle.get_http_paths.remote())
+            for actor_handle in [handle for cell in a + b for handle in cell.actor_handles]:
+                paths = ray.get(actor_handle.get_http_paths.remote())
                 assert [path for path in paths if path.endswith("_memory_occupation")] == [
                     "/release_memory_occupation",
                     "/resume_memory_occupation",
                 ]
-                assert ray.get(engine.actor_handle.get_http_payloads_of.remote("/release_memory_occupation")) == [
+                assert ray.get(actor_handle.get_http_payloads_of.remote("/release_memory_occupation")) == [
                     {"tags": ["weights"]}
                 ]
-                assert ray.get(engine.actor_handle.get_http_payloads_of.remote("/resume_memory_occupation")) == [
+                assert ray.get(actor_handle.get_http_payloads_of.remote("/resume_memory_occupation")) == [
                     {"tags": ["weights"]}
                 ]
 
-            for engine in flatten_cells(a) + flatten_cells(b):
-                method_names = {name for name, _args, _kwargs in ray.get(engine.actor_handle.get_calls.remote())}
+            for cell in a + b:
+                method_names = {name for name, _args, _kwargs in ray.get(cell.primary_actor_handle.get_calls.remote())}
                 assert not {"release_memory_occupation", "resume_memory_occupation"} & method_names
         finally:
             kill_cells(a)
@@ -112,8 +111,8 @@ class TestOffloadOnloadAggregation:
         try:
             assert len(await srv.offload(tags=None)) == 2
 
-            for engine in flatten_cells(resident):
-                assert "/release_memory_occupation" not in ray.get(engine.actor_handle.get_http_paths.remote())
+            for cell in resident:
+                assert "/release_memory_occupation" not in ray.get(cell.primary_actor_handle.get_http_paths.remote())
         finally:
             kill_cells(offloading)
             kill_cells(resident)
@@ -127,7 +126,7 @@ class TestOffloadOnloadAggregation:
         pg = placement_group_factory(2)
         cells = build_cells(pg_tuple=pg, num_cells=2, needs_offload=True)
         await start_cells(cells, mark_alive=True)
-        cells[1].primary_engine.mark_stopped()
+        cells[1].stop()
 
         srv = _make_server(cells)
         try:

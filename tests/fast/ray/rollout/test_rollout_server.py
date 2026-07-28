@@ -3,9 +3,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells, make_sglang_config_yaml
+from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_dataclass_cells, make_sglang_config_yaml
 
 from miles.ray.rollout import rollout_server
+from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import (
     RolloutServer,
     _compute_megatron_num_gpus,
@@ -228,10 +229,16 @@ class TestRolloutServerPureFunctions:
 
 
 class TestRolloutServerCrossCellProperties:
-    def test_engines_collects_primary_engines_from_each_cell(self):
+    def test_api_clients_expose_one_client_per_cell(self):
+        """Each cell is addressed through its primary (node-0) endpoint."""
         cells = make_dataclass_cells(num_cells=2, gpu_offset=0) + make_dataclass_cells(num_cells=2, gpu_offset=2)
+        for index, cell in enumerate(cells):
+            cell._mark_allocated_uninitialized([fake_actor_handle()])
+            cell._mark_addressing([AddrInfo(server_url=f"http://10.0.0.{index + 1}:30000")])
         srv = RolloutServer(server_cells=cells)
-        assert len(srv.engines) == 4
+        assert [client.server_url for client in srv.api_clients] == [
+            f"http://10.0.0.{index + 1}:30000" for index in range(4)
+        ]
 
     def test_engine_gpu_counts_parallel_to_engines(self):
         cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1) + make_dataclass_cells(
@@ -272,12 +279,12 @@ class TestStartRolloutServersCellChunking:
     def test_a_single_node_engine_becomes_its_own_cell(self, stub_engine_startup, tmp_path):
         """With one gpu per engine on 8-gpu nodes, every engine is a one-engine cell."""
         cells = self._cells_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
-        assert [len(cell.engines) for cell in cells] == [1] * 8
+        assert [cell.num_nodes for cell in cells] == [1] * 8
 
     def test_a_multi_node_engine_chunks_its_node_ranks_into_one_cell(self, stub_engine_startup, tmp_path):
         """With 16 gpus per engine on 8-gpu nodes, each cell holds both node-ranks."""
         cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
-        assert [len(cell.engines) for cell in cells] == [2, 2]
+        assert [cell.num_nodes for cell in cells] == [2, 2]
 
     def test_a_trailing_partial_multi_node_engine_is_rejected(self, stub_engine_startup, tmp_path):
         """24 gpus do not divide into whole 2-node engines, so startup must fail fast."""
@@ -294,7 +301,7 @@ class TestStartRolloutServersCellChunking:
         """sglang derives node_rank from the global rank, so a cell must not start mid-engine."""
         cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
         for cell in cells:
-            assert cell.rank_offset % len(cell.engines) == 0
+            assert cell.rank_offset % cell.num_nodes == 0
 
     def test_a_group_starting_at_a_misaligned_rank_is_rejected(self, stub_engine_startup, tmp_path):
         """One single-node engine ahead of a 2-node group leaves an odd engine_offset and must fail fast."""

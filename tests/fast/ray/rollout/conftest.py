@@ -258,39 +258,6 @@ def dedent(s: str) -> str:
     return textwrap.dedent(s).lstrip("\n")
 
 
-def chunk_engines_into_cells(
-    engines,
-    *,
-    num_gpus_per_engine: int,
-    num_gpus_per_node: int,
-    args=None,
-    worker_type: str = "regular",
-    rank_offset: int = 0,
-    gpu_offset: int = 0,
-    **cell_config,
-):
-    """Group a flat engine list the way production lays cells out."""
-    from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
-
-    nodes_per_engine = compute_nodes_per_engine(
-        num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=num_gpus_per_node
-    )
-    assert len(engines) % nodes_per_engine == 0, f"{len(engines)=} must be a multiple of {nodes_per_engine=}"
-    num_gpu_per_engine_local = min(num_gpus_per_engine, num_gpus_per_node)
-    return [
-        ServerCell(
-            args=args if args is not None else make_args(num_gpus_per_node=num_gpus_per_node),
-            worker_type=worker_type,
-            engines=engines[i : i + nodes_per_engine],
-            num_gpus_per_engine=num_gpus_per_engine,
-            rank_offset=rank_offset + i,
-            gpu_offset=gpu_offset + i * num_gpu_per_engine_local,
-            **cell_config,
-        )
-        for i in range(0, len(engines), nodes_per_engine)
-    ]
-
-
 def make_dataclass_cells(
     *,
     num_cells: int = 2,
@@ -299,23 +266,22 @@ def make_dataclass_cells(
 ):
     """Build configured ``ServerCell``s with ``pg=None`` (no actor scheduling).
     Each cell starts unallocated."""
-    from miles.ray.rollout.server_cell import compute_nodes_per_engine
-    from miles.ray.rollout.server_engine import ServerEngine
+    from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
 
     args = make_args(num_gpus_per_node=8)
     nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
-    return chunk_engines_into_cells(
-        [ServerEngine() for _ in range(num_cells * nodes_per_engine)],
-        num_gpus_per_engine=num_gpus_per_engine,
-        num_gpus_per_node=8,
-        gpu_offset=gpu_offset,
-        args=args,
-        pg=None,
-    )
-
-
-def flatten_cells(cells):
-    return [engine for cell in cells for engine in cell.engines]
+    return [
+        ServerCell(
+            num_nodes=nodes_per_engine,
+            args=args,
+            worker_type="regular",
+            pg=None,
+            num_gpus_per_engine=num_gpus_per_engine,
+            rank_offset=cell_index * nodes_per_engine,
+            gpu_offset=gpu_offset + cell_index * min(num_gpus_per_engine, 8),
+        )
+        for cell_index in range(num_cells)
+    ]
 
 
 def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:

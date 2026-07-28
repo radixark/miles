@@ -3,15 +3,13 @@ import dataclasses
 import logging
 from typing import Any, NamedTuple
 
-import ray
-
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
-from miles.ray.rollout.server_engine import ServerEngine
 from miles.utils import async_utils
 
 logger = logging.getLogger(__name__)
@@ -76,9 +74,9 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 for cell_start in range(0, num_engines, nodes_per_engine):
                     server_cells.append(
                         ServerCell(
+                            num_nodes=nodes_per_engine,
                             args=args,
                             worker_type=group_cfg.worker_type,
-                            engines=[ServerEngine() for _ in range(nodes_per_engine)],
                             pg=pg,
                             num_gpus_per_engine=gpus_per_engine,
                             rank_offset=engine_offset + cell_start,
@@ -219,9 +217,9 @@ class RolloutServer:
     _port_allocator: PortAllocator = dataclasses.field(default_factory=PortAllocator)
 
     @property
-    def engines(self) -> list[ServerEngine]:
-        """All node-0 engines across all cells."""
-        return [cell.primary_engine for cell in self.server_cells]
+    def api_clients(self) -> list[SGLangApiClient]:
+        """One client per cell, talking to its primary (node-0) engine."""
+        return [cell.api_client for cell in self.server_cells]
 
     def clear_has_new_engines(self):
         self.has_new_engines = False
@@ -236,23 +234,12 @@ class RolloutServer:
         return [cell.gpu_offset for cell in self.server_cells]
 
     async def probe_and_mark_dead(self):
-        """Mark unreachable engines stopped so ``recover`` restarts them.
+        """Mark unreachable cells stopped so ``recover`` restarts them.
 
         For servers without a ``RolloutHealthMonitor``, which does the same job.
         """
         for cell in self.server_cells:
-            for engine in cell.engines:
-                if not engine.is_allocated:
-                    continue
-                try:
-                    await asyncio.wait_for(engine.actor_handle.get_weight_version.remote(), timeout=60)
-                except Exception as e:
-                    logger.warning(f"Engine unreachable ({e!r}); marking stopped for recovery")
-                    try:
-                        ray.kill(engine.actor_handle)
-                    except Exception:
-                        pass
-                    engine.mark_stopped()
+            await cell.probe_and_mark_dead()
 
     async def start_all_cells(self, port_allocator: PortAllocator):
         if self.args.debug_train_only:
@@ -321,7 +308,7 @@ class RolloutServer:
         # picture of init/recovery upper bounds across model sizes
         sleep_time = 2
         for _ in range(int(timeout // sleep_time)):
-            if all(e.is_alive for cell in self.server_cells for e in cell.engines):
+            if all(cell.is_alive for cell in self.server_cells):
                 return
             await asyncio.sleep(sleep_time)
             logger.info("wait_all_engines_alive looping...")
