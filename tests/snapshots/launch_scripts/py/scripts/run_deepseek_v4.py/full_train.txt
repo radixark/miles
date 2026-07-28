@@ -61,7 +61,7 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --attention-softmax-in-fp32
   --no-rope-fusion
   --num-experts 256
-  --moe-layer-freq [1,1,1,1]
+  --moe-layer-freq '[1,1,1,1]'
   --moe-ffn-hidden-size 2048
   --moe-router-topk 6
   --moe-shared-expert-intermediate-size 2048
@@ -144,7 +144,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --attention-softmax-in-fp32
   --no-rope-fusion
   --num-experts 256
-  --moe-layer-freq [1,1,1,1]
+  --moe-layer-freq '[1,1,1,1]'
   --moe-ffn-hidden-size 2048
   --moe-router-topk 6
   --moe-shared-expert-intermediate-size 2048

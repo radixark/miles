@@ -54,7 +54,7 @@ hf download
   --moe-token-dispatcher-type alltoall
   --moe-router-topk 8
   --moe-router-topk-scaling-factor 2.5
-  --moe-layer-freq [0]*3+[1]*89
+  --moe-layer-freq '[0]*3+[1]*89'
   --num-experts 160
   --moe-grouped-gemm
   --moe-router-dtype fp32
@@ -117,7 +117,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-token-dispatcher-type alltoall
   --moe-router-topk 8
   --moe-router-topk-scaling-factor 2.5
-  --moe-layer-freq [0]*3+[1]*89
+  --moe-layer-freq '[0]*3+[1]*89'
   --num-experts 160
   --moe-grouped-gemm
   --moe-router-dtype fp32

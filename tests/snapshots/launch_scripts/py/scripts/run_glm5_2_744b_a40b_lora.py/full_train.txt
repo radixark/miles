@@ -30,7 +30,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1", "INDEXER_ROPE_NEOX_STYLE": "0", "SGLANG_NSA_FORCE_MLA": "1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
   -- python3 <REPO_ROOT>/train.py
   --spec miles_plugins.models.glm5.glm5 get_glm5_spec
-  --moe-layer-freq [0]*3+[1]*2
+  --moe-layer-freq '[0]*3+[1]*2'
   --num-experts 256
   --moe-shared-expert-intermediate-size 2048
   --moe-router-topk 8

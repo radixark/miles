@@ -1,4 +1,5 @@
 import importlib.util
+import shlex
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -24,6 +25,13 @@ def load_model_args(model_type: str, model_script_dir: Path | None = None, **kwa
 def load_sibling_model_args(model_script: str, model_type: str, **kwargs: object) -> str:
     """Load the model a variant is derived from, out of the same checkout as the variant itself."""
     return load_model_args(model_type, model_script_dir=Path(model_script).resolve().parent, **kwargs)
+
+
+def shell_safe_model_args(model_type: str | None) -> str:
+    """For callers splicing the args into a command line, where --moe-layer-freq [1,1,1] is a glob."""
+    if model_type is None:
+        return ""
+    return " ".join(shlex.quote(token) for token in load_model_args(model_type).split())
 
 
 # ==================== what a model script may call ====================

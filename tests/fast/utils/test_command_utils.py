@@ -6,6 +6,7 @@ import pytest
 from tests.fast.utils.command_recorder import record_commands
 
 import miles.utils.external_utils.command_utils as command_utils
+from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import resolve_file_arg
 
 
@@ -336,6 +337,23 @@ class TestExecuteTrain:
         assert "--num-layers 36 " in submit
         assert "source" not in submit
         assert submit.endswith("--x 1")
+
+    def test_quotes_the_model_args_the_shell_would_otherwise_reinterpret(self, commands):
+        """--moe-layer-freq [1,1,1] is a glob; an unquoted token expands against the launch directory."""
+        command_utils.execute_train(train_args="--x 1", num_gpus_per_node=8, megatron_model_type="deepseek-v3-5layer")
+
+        submit = commands[-1]
+        assert "--moe-layer-freq '[0,0,0,1,1]'" in submit
+        assert shlex.split(submit)[shlex.split(submit).index("--moe-layer-freq") + 1] == "[0,0,0,1,1]"
+
+    def test_model_args_survive_a_shell_round_trip_unchanged(self, commands):
+        """Quoting is only correct if the training process still receives exactly the declared argv."""
+        command_utils.execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="deepseek-v3-5layer")
+
+        declared = load_model_args("deepseek-v3-5layer").split()
+        submitted = shlex.split(commands[-1])
+
+        assert submitted[len(submitted) - len(declared) :] == declared
 
     def test_omits_the_model_args_for_fsdp(self, commands):
         """FSDP has no megatron model config to expand."""

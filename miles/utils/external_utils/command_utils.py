@@ -14,7 +14,7 @@ from functools import partial
 from pathlib import Path
 
 from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
-from miles.utils.external_utils.model_args_utils import load_model_args
+from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.http_utils import wait_for_server_ready
 from miles.utils.typer_utils import dataclass_cli
@@ -69,7 +69,7 @@ def convert_checkpoint(
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
         f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
-        f"{load_model_args(megatron_model_type)} "
+        f"{shell_safe_model_args(megatron_model_type)} "
         f"--hf-checkpoint {hf_checkpoint} "
         f"--save {path_dst} "
         f"{extra_args}"
@@ -195,7 +195,7 @@ def execute_train(
     runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
 
     if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
-        model_args = load_model_args(megatron_model_type) if megatron_model_type is not None else ""
+        model_args = shell_safe_model_args(megatron_model_type)
         exec_command_cpu(
             f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
             f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""

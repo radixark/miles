@@ -18,7 +18,7 @@ hf download
 ### 4
 PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --nproc-per-node 8 <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
-  --moe-layer-freq [0]*1+[1]*46
+  --moe-layer-freq '[0]*1+[1]*46'
   --num-experts 64
   --moe-shared-expert-intermediate-size 1536
   --moe-router-topk 4

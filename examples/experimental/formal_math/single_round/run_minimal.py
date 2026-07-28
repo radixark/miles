@@ -8,7 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from miles.utils.external_utils.model_args_utils import load_model_args
+from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[4]
 
@@ -136,7 +136,7 @@ cmd = (
     f'ray job submit --address="http://127.0.0.1:8265" '
     f"--runtime-env-json='{runtime_env_json}' "
     f"-- python3 train.py "
-    f"{load_model_args(MODEL_TYPE)} "
+    f"{shell_safe_model_args(MODEL_TYPE)} "
     f"{train_args}"
 )
 
