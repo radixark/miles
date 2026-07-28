@@ -426,6 +426,7 @@ def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id:
     if lr_by_slot := step_slot_schedulers(optimizer, step_batch_sizes):
         log_structured(
             logger.info,
+            tag="train",
             op="adapter_lr",
             rollout=rollout_id,
             step=step_id,

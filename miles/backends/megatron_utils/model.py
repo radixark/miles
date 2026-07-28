@@ -636,6 +636,7 @@ def train_one_step(
 
     log_structured(
         logger.info,
+        tag="train",
         op="train_step",
         rollout=rollout_id,
         step=step_id,
