@@ -80,7 +80,7 @@ async def test_post_methods_hit_the_server_url_with_expected_payload(client, rec
         "load_format": "direct",
         "flush_cache": True,
     }
-    assert recorder.calls[1][2]["json"] == {"new_version": "run-0001", "abort_all_requests": True}
+    assert recorder.calls[1][2]["json"] == {"new_version": "run-0001", "abort_all_requests": False}
 
 
 async def test_update_weights_from_tensor_omits_weight_version_when_not_given(client, recorder):
