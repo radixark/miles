@@ -21,13 +21,13 @@ the Harbor task.
 
 ## 1. Start the Harbor agent server
 
-Use the public Harbor repository and its Miles integration branch, not
-`harbor-private`:
+Use the `harbor-miles-v0.20.0` branch of the `harbor-framework/harbor`
+repository, which carries the Miles integration:
 
 ```bash
 git clone https://github.com/harbor-framework/harbor.git
 cd harbor
-git checkout harbor-miles-v0.13.1
+git checkout harbor-miles-v0.20.0
 uv sync
 
 HARBOR_TASKS_DIR=/path/to/harbor_tasks uv run python miles_agent_server.py \
@@ -48,11 +48,10 @@ generous — agentic trials routinely run past an hour, and a short timeout kill
 them mid-episode. Verify `http://<agent-server>:30000/health` before launching
 Miles.
 
-When the trainer reaches the machine through the Kubernetes Tailscale egress
-service, use its stable service name, for example
-`http://egress-agent-server.tailscale.svc.cluster.local:8080`. The rollout
-client enables TCP keepalive probes so long-running trials do not lose an idle
-connection while Harbor is working.
+If the trainer reaches the agent server through a proxy or an in-cluster service
+rather than directly, point `--agent-server-url` at that stable name rather than
+an ephemeral pod address. The rollout client enables TCP keepalive probes so
+long-running trials do not lose an idle connection while Harbor is working.
 
 ## 2. Prepare Terminal-Bench data
 
@@ -98,8 +97,8 @@ python examples/swe-agent-v2/run.py \
 ```
 
 For a smoke test, set `--num-rollout 1`. Expect roughly 10 minutes per step at
-this shape once the task pool is free of the stragglers described below; a step
-that draws a pathological task can take several times that.
+this shape; because synchronous rollout waits for the slowest trajectory in the
+batch, a step that draws an unusually slow task can take several times that.
 
 `--router-external-host` is the address Harbor sandboxes use to call the Miles
 session server and SGLang router. It must resolve and route from the agent-server
@@ -108,45 +107,13 @@ connections forwarded from another host. Ensure ports 30000 and 31000 are
 reachable end to end; Tailscale is one option when the machines are on different
 networks.
 
-## 4. Choose the task pool carefully
+## 4. Verify progress
 
-Two properties of the task pool dominate how useful the run is, and both are
-easy to get wrong.
+Check both layers:
 
-**Step time is set by the slowest trajectory.** Synchronous rollout submits
-`--over-sampling-batch-size` groups and waits until `--rollout-batch-size` of
-them pass the dynamic sampling filter; leftovers are aborted. Because that flag
-defaults to `--rollout-batch-size`, the default configuration submits exactly as
-many groups as it needs and therefore has to wait for every one of them. In the
-run above, the median trajectory took 3.5 minutes and the 90th percentile 10
-minutes, but two of the 17 tasks averaged 13 and 25 minutes — one of them
-looping for 300+ agent steps on a brute-force search. Drawing 4 prompts from a
-17-task pool hits at least one of those two about 43% of the time, and those
-steps took 35-60 minutes against 8-14 for the rest: a ~2.5x wall-clock tax. Drop
-tasks that are both slow and rarely solved, or raise
-`--over-sampling-batch-size` above `--rollout-batch-size` so a straggler group
-can be abandoned.
-
-**Tasks the model always or never solves teach it nothing.** GRPO normalizes
-advantages within a group, so a task with a uniform outcome across its
-`--n-samples-per-prompt` samples contributes no gradient. The pool above was
-selected as tasks the base model had already solved; its measured pass rates
-ranged from 0.00 to 0.94 and averaged 0.483, and `rollout/raw_reward` sat at
-0.486 for the whole run — the mean of a fixed task mix, not a learning curve.
-Prefer tasks the base model solves *sometimes*, and watch
-`rollout/zero_std/all_zero_percentage` and `rollout/zero_std/all_one_percentage`
-for the fraction of groups that carry no gradient. Swapping the dynamic sampling
-filter to `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std`
-discards those groups outright, at the cost of more rollouts per step.
-
-## 5. Verify progress
-
-Check all three layers:
-
-1. Harbor trial logs show increasing `mini-swe-agent (step N)` values.
-2. Miles logs emit rollout metrics and write `rollout_data/*.pt` under the trace
+1. Miles logs emit rollout metrics and write `rollout_data/*.pt` under the trace
    directory.
-3. Megatron logs emit `train/step` and the Ray job exits successfully.
+2. Megatron logs emit `train/step` and the Ray job exits successfully.
 
 Confirm a suspected stall on disk before believing a dashboard. W&B uploads can
 fail partway through a long run — dropping some metric rows while others keep
@@ -155,5 +122,4 @@ arriving — which looks exactly like a frozen reward curve. The per-step
 are written by the trainer itself and are the authoritative progress signal.
 
 The synchronous launcher uses GLM-4.7 tool-call and reasoning parsers, TITO,
-the Miles session server, and the Megatron backend. The asynchronous launcher is
-available for multi-node disaggregated runs but is not the one-node recipe above.
+the Miles session server, and the Megatron backend.

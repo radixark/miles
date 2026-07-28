@@ -20,7 +20,7 @@ Usage:
     python run-glm47-flash-agentic-async.py --num-nodes 8
     python run-glm47-flash-agentic-async.py --num-nodes 8 --train-num-nodes 1
     python run-glm47-flash-agentic-async.py --num-nodes 8 \\
-        --agent-server-url http://ts-egress-aws-agent-server:8080
+        --agent-server-url http://agent-server.example.com:8080
 """
 
 import os
@@ -76,7 +76,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_health_check_first_wait: int = 1800
 
     # Agent settings
-    agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://ts-egress-aws-agent-server:8080")
+    agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://localhost:8080")
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
