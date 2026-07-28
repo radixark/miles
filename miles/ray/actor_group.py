@@ -101,6 +101,11 @@ class RayTrainGroup:
 
         await self._broadcast("update_weights", info=info)
 
+    async def reconcile_adapters(self) -> None:
+        """Multi-LoRA: reconcile loaded adapters with the controller's active set
+        (load new, cleanup gone). Called by the trainer before generate."""
+        await self._broadcast("reconcile_adapters")
+
     async def onload(self):
         await self._broadcast("wake_up")
 

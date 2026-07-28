@@ -62,7 +62,7 @@ class LinearTrajectory:
         Must be called under ``self.lock``.
         """
         if not self.token_ids:
-            return tito_tokenizer.render_messages(
+            return tito_tokenizer.apply_chat_template(
                 request_messages,
                 tools=tools,
                 add_generation_prompt=True,
@@ -78,7 +78,9 @@ class LinearTrajectory:
                 self.messages, request_messages, tito_tokenizer.allowed_append_roles
             )
         except ValueError as e:
-            raise MessageValidationError(f"{e}; to allow more roles use --tito-allowed-append-roles") from e
+            raise MessageValidationError(
+                f"{e}; the selected TITO fixed template does not support appending this role"
+            ) from e
 
         return tito_tokenizer.merge_tokens(
             old_messages=self.messages,
@@ -273,7 +275,7 @@ class SessionRegistry:
             return None
         try:
             tools = session.records[-1].request.get("tools") if session.records else None
-            expected_ids = self.tito_tokenizer.render_messages(
+            expected_ids = self.tito_tokenizer.apply_chat_template(
                 session.messages,
                 tools=tools,
                 add_generation_prompt=False,

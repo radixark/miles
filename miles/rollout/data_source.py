@@ -39,6 +39,10 @@ class DataSource(abc.ABC):
         Load the state of the data source
         """
 
+    def get_buffer_length(self) -> int | None:
+        """Pending-sample backlog, or None for sources without a buffer."""
+        return None
+
 
 # TODO may further refactor data-loading part later
 class RolloutDataSource(DataSource):

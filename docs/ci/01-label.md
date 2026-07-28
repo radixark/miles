@@ -32,7 +32,7 @@ PR labels without the `run-ci-` prefix are ignored.
 
 ### The canonical label list
 
-Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it is a hard error. Current set: `megatron`, `model-scripts`, `sglang`, `fsdp`, `short`, `long`, `ckpt`, `lora`, `precision`, `ft-short`, `ft-long`, `weight-update`, `replay`, `qwen35`.
+Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it is a hard error. Current set: `megatron`, `model-scripts`, `sglang`, `fsdp`, `short`, `long`, `ckpt`, `lora`, `precision`, `ft-short`, `ft-long`, `weight-update`, `replay`, `qwen35`, `mooncake`.
 
 To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` label on the PR. No workflow edit needed.
 
@@ -86,3 +86,7 @@ The `bypass-fastfail` PR label turns both off so one run surfaces every failure:
 A resolved nightly cadence bypasses fast-fail on both levels because a nightly is meant to exercise every eligible test except `ft-long` and surface every failure (one datapoint per test), not stop at the first. This applies equally whether the cadence came from the PR `nightly` label or the explicitly mapped nightly cron. Local `--nightly` applies the same selection and within-stage behavior; cross-stage gating does not exist in a local invocation.
 
 Like the scope labels, `bypass-fastfail` is a workflow-only input and is not in `KNOWN_LABELS`.
+
+## Labels double as fork-PR CI approval
+
+GitHub holds a first-time contributor's fork-PR CI at "Approve and run" after every push. Any maintainer-applied `run-ci*` label is already that human decision, so the `Approve Trusted CI` workflow (on `pull_request_target`) auto-approves the held runs while such a label is present. Removing the labels restores manual approval; the friction ends permanently once the contributor's first PR merges.

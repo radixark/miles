@@ -33,10 +33,18 @@ class TrackingBackend(ABC):
     @abstractmethod
     def finish(self) -> None: ...
 
+    def define_step_key_metric_group(self, prefix: str, step_key: str) -> None:
+        """Declare that ``{prefix}/*`` metrics plot against ``step_key``; no-op for
+        backends that take the step numerically on every log call."""
+        return
+
 
 # Thin adapters for backwards compatibility to keep wandb_utils and tensorboard_utils untouched.
 class WandbBackend(TrackingBackend):
     # Delegates to the existing ``wandb_utils`` helpers.
+
+    def __init__(self) -> None:
+        self._defined_step_key_groups: set[tuple[str, str]] = set()
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
         from . import wandb_utils
@@ -50,6 +58,16 @@ class WandbBackend(TrackingBackend):
         import wandb
 
         wandb.log(metrics)
+
+    def define_step_key_metric_group(self, prefix: str, step_key: str) -> None:
+        # Call from the primary tracking process: definitions from secondary shared-mode writers are lost.
+        if (prefix, step_key) in self._defined_step_key_groups:
+            return
+        import wandb
+
+        wandb.define_metric(step_key)
+        wandb.define_metric(f"{prefix}/*", step_metric=step_key)
+        self._defined_step_key_groups.add((prefix, step_key))
 
     def finish(self) -> None:
         import wandb
@@ -121,6 +139,26 @@ class PrometheusBackend(TrackingBackend):
         return
 
 
+class MilesDashboardBackend(TrackingBackend):
+    # Live dashboard collection (see miles/dashboard). Lazy imports keep the
+    # dashboard package out of processes that never enable it.
+
+    def init(self, args, *, primary: bool = True, **kwargs) -> None:
+        from miles.dashboard.backend import init_dashboard
+
+        init_dashboard(args, primary=primary, **kwargs)
+
+    def log(self, metrics: dict[str, Any], step: int | None = None, *, step_key: str | None = None, **kwargs) -> None:
+        from miles.dashboard.backend import dashboard_log
+
+        dashboard_log(metrics, step=step, step_key=step_key)
+
+    def finish(self) -> None:
+        from miles.dashboard.backend import finish_dashboard
+
+        finish_dashboard()
+
+
 class TrackingManager:
     # Initializes and logs to every enabled backend; used internally by ``tracking_utils``.
 
@@ -139,6 +177,10 @@ class TrackingManager:
     def log(self, metrics: dict[str, Any], step: int | None = None, step_key: str | None = None) -> None:
         for backend in self._backends:
             backend.log(metrics, step=step, step_key=step_key)
+
+    def define_step_key_metric_group(self, prefix: str, step_key: str) -> None:
+        for backend in self._backends:
+            backend.define_step_key_metric_group(prefix, step_key)
 
     def finish(self) -> None:
         for backend in self._backends:

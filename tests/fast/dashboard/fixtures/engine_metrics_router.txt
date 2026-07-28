@@ -1,0 +1,17 @@
+# HELP sglang_num_running_reqs The number of running requests.
+# TYPE sglang_num_running_reqs gauge
+sglang_num_running_reqs{model_name="qwen3-30b",worker_addr="http://10.0.0.1:15000"} 42.0
+sglang_num_running_reqs{model_name="qwen3-30b",worker_addr="http://10.0.0.1:15004"} 7.0
+# HELP sglang_gen_throughput The generation throughput (token/s).
+# TYPE sglang_gen_throughput gauge
+sglang_gen_throughput{model_name="qwen3-30b",worker_addr="http://10.0.0.1:15000"} 2100.5
+sglang_gen_throughput{model_name="qwen3-30b",worker_addr="http://10.0.0.1:15004"} 350.25
+# HELP sglang_token_usage KV cache usage.
+# TYPE sglang_token_usage gauge
+sglang_token_usage{model_name="qwen3-30b",engine_type="prefill",worker_addr="http://10.0.0.1:15000"} 0.63
+# HELP sglang_uptime_seconds_total_unlisted Number of prefill tokens processed.
+# TYPE sglang_uptime_seconds_total_unlisted counter
+sglang_uptime_seconds_total_unlisted{model_name="qwen3-30b",worker_addr="http://10.0.0.1:15000"} 5.4321e+06
+# HELP sglang_uptime_seconds Not in the whitelist either.
+# TYPE sglang_uptime_seconds gauge
+sglang_uptime_seconds{model_name="qwen3-30b",worker_addr="http://10.0.0.1:15000"} 12345.0

@@ -32,12 +32,9 @@ from typing import Any
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
-from miles.rollout.generate_utils.openai_endpoint_utils import (
-    OpenAIEndpointTracer,
-    compute_samples_from_openai_records,
-    truncate_samples_by_total_tokens,
-)
+from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
 

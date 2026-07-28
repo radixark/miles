@@ -157,6 +157,42 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
 
         _check_weight_sync_results(ray.get(refs), is_lora=True)
 
+    def _update_multi_lora_weight_implementation(
+        self,
+        named_tensors: list[tuple[str, torch.Tensor]],
+        *,
+        lora_name: str,
+        lora_config: dict,
+    ) -> None:
+        """Multi-LoRA variant of ``_update_lora_weight_implementation``: same transport, but with a
+        per-adapter slot name/config and an upsert RPC (in-place insert-or-overwrite, no unload/register)."""
+        names = [name for name, _ in named_tensors]
+        dtypes = [param.dtype for _, param in named_tensors]
+        shapes = [list(param.shape) for _, param in named_tensors]
+
+        refs = [
+            engine.load_lora_adapter_from_distributed.remote(
+                lora_name=lora_name,
+                config_dict=lora_config,
+                names=names,
+                dtypes=dtypes,
+                shapes=shapes,
+                group_name=self._group_name,
+                upsert=True,
+            )
+            for engine in self.rollout_engines
+        ]
+        # NCCL needs contiguous buffers (lora_B slices are strided); the list keeps them alive
+        # until the async broadcasts complete.
+        broadcast_tensors = [param.data.contiguous() for _, param in named_tensors]
+        handles = [
+            dist.broadcast(tensor, 0, group=self._model_update_groups, async_op=True) for tensor in broadcast_tensors
+        ]
+        for handle in handles:
+            handle.wait()
+
+        _check_weight_sync_results(ray.get(refs), is_lora=True)
+
 
 def connect_rollout_engines_from_distributed(
     args: Namespace,

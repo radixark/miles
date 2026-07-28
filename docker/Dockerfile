@@ -27,8 +27,8 @@ ARG WHEELS_REPO=yueming-yuan/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
-ARG WHEELS_TAG_X86=cu130-x86_64-v0.5.12
-ARG WHEELS_TAG_ARM64=cu130-aarch64-v0.5.12
+ARG WHEELS_TAG_X86=cu130-x86_64
+ARG WHEELS_TAG_ARM64=cu130-aarch64
 
 # ======================================== Setup =============================================
 
@@ -73,11 +73,11 @@ RUN case "${TARGETARCH}" in \
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
 # flash-attn hopper (FA3): Hopper-only (sm_90a). Coexists with FA2.
-RUN pip install /tmp/wheels/flash_attn_3-*.whl && \
-    python_path=$(python -c "import site; print(site.getsitepackages()[0])") && \
-    mkdir -p $python_path/flash_attn_3 && \
-    curl -fSL https://raw.githubusercontent.com/Dao-AILab/flash-attention/fbf24f67cf7f6442c5cfb2c1057f4bfc57e72d89/hopper/flash_attn_interface.py \
-      -o $python_path/flash_attn_3/flash_attn_interface.py
+# The wheel ships flash_attn_interface top-level (what transformer_engine imports)
+# plus a flash_attn_3.flash_attn_interface re-export shim, so there is nothing to
+# fetch separately. Do not overwrite the shim with a copy of the full module: it
+# re-runs @torch.library.custom_op("flash_attn_3::...") and double-registers.
+RUN pip install /tmp/wheels/flash_attn_3-*.whl
 
 RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
 
@@ -87,29 +87,52 @@ RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
 RUN pip install --no-deps tile_kernels==1.0.0
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
 RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git"
-RUN pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation
-
-# Mamba kernels for nemotron_h hybrid (mamba+attention) models.
-RUN pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation
-
-# transformer_engine
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-      pip install --no-deps transformer_engine==2.12.0 && \
-      pip install transformer_engine_cu13==2.12.0 && \
-      if ls /tmp/wheels/transformer_engine_torch-*.whl 2>/dev/null | grep -q .; then \
-        pip install /tmp/wheels/transformer_engine_torch-*.whl; \
-      else \
-        pip install nvidia-mathdx==25.6.0 && \
-        pip -v install --no-build-isolation transformer_engine_torch==2.12.0; \
-      fi; \
+# Prefer the prebuilt wheel; fall back to a source build while the current
+# arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
+# builds are the expensive path this avoids).
+RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; then \
+      pip install /tmp/wheels/fast_hadamard_transform-*.whl; \
     else \
-      pip -v install --no-build-isolation "transformer_engine[pytorch]==2.10.0"; \
+      pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation; \
     fi
 
-# TE patches (cu13): B300/GB300 sm103 FA2 whitelist fix
+# Mamba kernels for nemotron_h hybrid (mamba+attention) models.
+RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
+       ls /tmp/wheels/mamba_ssm-*.whl 2>/dev/null | grep -q .; then \
+      pip install /tmp/wheels/causal_conv1d-*.whl /tmp/wheels/mamba_ssm-*.whl; \
+    else \
+      pip install causal-conv1d==1.6.1 mamba-ssm==2.3.1 --no-build-isolation; \
+    fi
+
+# transformer_engine
+# --no-deps pins the three TE dists to exactly the wheels above, so pip cannot
+# pull a conflicting core dist. That also drops transformer_engine_torch's own
+# runtime deps, which still have to be installed: transformer_engine.pytorch
+# imports onnxscript unconditionally (module/_common -> export -> onnx_extensions).
+RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
+    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      TE_CORE_DIST=transformer_engine_cu13; \
+    else \
+      TE_CORE_DIST=transformer_engine_cu12; \
+    fi && \
+    set -- \
+      /tmp/wheels/transformer_engine-2.17.0-py3-none-any.whl \
+      /tmp/wheels/${TE_CORE_DIST}-2.17.0-py3-none-manylinux_2_28_*.whl \
+      /tmp/wheels/transformer_engine_torch-2.17.0-cp312-cp312-linux_*.whl; \
+    if [ "$#" -ne 3 ] || [ ! -f "$1" ] || [ ! -f "$2" ] || [ ! -f "$3" ]; then \
+      echo "expected exactly one TransformerEngine 2.17 wheel for each component (${TE_CORE_DIST})" >&2; exit 1; \
+    fi && \
+    pip uninstall -y transformer-engine transformer-engine-cu12 transformer-engine-cu13 transformer-engine-torch && \
+    pip install --force-reinstall --no-deps "$@" && \
+    pip install einops onnx onnxscript pydantic nvdlfw-inspect && \
+    python3 /tmp/verify_transformer_engine.py "${TE_CORE_DIST}"
+
+# TE patches (cu13): B300/GB300 FA2 and backward override fixes
+# te_dequantized_backward_override.patch is a hot fix from
+# https://github.com/NVIDIA/TransformerEngine/pull/3141; drop it after TE v2.18.
 COPY docker/patch/ /tmp/patches/
 RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
-      TE_DIR=$(python -c 'import transformer_engine; print(transformer_engine.__path__[0])') && \
+      TE_DIR=$(python -c 'import importlib.util; print(importlib.util.find_spec("transformer_engine").submodule_search_locations[0])') && \
       for p in /tmp/patches/cu13/*.patch; do \
         echo "Applying $(basename $p) to $TE_DIR" && \
         patch -d "$TE_DIR" -p1 < "$p"; \
@@ -128,7 +151,9 @@ RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_
 # git source Megatron-LM itself pins in pyproject.toml.
 RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.1.0"
 
-RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
+# torch_memory_saver's source build needs TMS_CUDA_MAJOR; take it from torch.
+RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
+    pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@74d68c5e4bedf2b6774f2c92ed0f81b7c8d91ed0 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
@@ -137,11 +162,10 @@ RUN pip install multi-storage-client --no-deps
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
 
-# https://github.com/pytorch/pytorch/issues/168167
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-    pip install nvidia-cudnn-cu13==9.16.0.29; \
+    pip install nvidia-cudnn-cu13==9.22.0.52; \
   else \
-    pip install nvidia-cudnn-cu12==9.16.0.29; \
+    pip install nvidia-cudnn-cu12==9.22.0.52; \
   fi
 
 
@@ -158,6 +182,21 @@ RUN cd /sgl-workspace/sglang && \
       git checkout FETCH_HEAD; \
     fi && \
     pip install -e "python[all]" --no-deps
+
+# =========================== Mooncake structured object store wheel ===========================
+
+# Miles' Mooncake backend requires the structured object store API. Install the selected
+# CUDA 13 wheel as one coherent Python/native package; CUDA 12 keeps its base Mooncake.
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+      set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
+      if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then \
+        echo "expected exactly one mooncake wheel for cu13/${TARGETARCH}" >&2; exit 1; \
+      fi && \
+      pip install --force-reinstall --no-deps "$1" && \
+      python3 -c "from mooncake.structured_object_store import FieldSchema, MooncakeBundleTransfer, export_ref, import_ref; MooncakeBundleTransfer.put; MooncakeBundleTransfer.get; MooncakeBundleTransfer.release_result; MooncakeBundleTransfer.cleanup_dataproto"; \
+    else \
+      echo "CUDA 12 variant: keeping the base image's mooncake"; \
+    fi
 
 # ====================================== Install main package ============================================
 

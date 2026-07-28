@@ -5,7 +5,7 @@ description: The Dockerfiles, the build script, the remote build workflow, and h
 
 # Docker build
 
-GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the script that builds them, how the remote build is triggered, and how to build & push manually.
+GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the script that builds them, the PR-side build check, how the remote build is triggered, and how to build & push manually.
 
 ## Dockerfiles
 
@@ -18,17 +18,17 @@ GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the 
 
 ### `docker/Dockerfile` — inputs & output
 
-The Dockerfile is the build recipe and nothing more: it knows no variants and no tags. Everything it needs arrives as build-args; it emits one image. `build.py` owns the variant → build-arg mapping (see Build script), so the boundary stays clean — e.g. the wheels-repo tag naming lives only in `build.py`, never here.
+The Dockerfile is the build recipe: it provides the cu13 defaults and emits one image. `build.py` owns the variant → build-arg overrides (see Build script), including the cu12 base and wheels release.
 
 **Inputs (build-args)**
 
 
 | Arg                                                                                                    | Meaning                                                                                                                                                                                                                                                                                                                                             |
 | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SGLANG_IMAGE_TAG`                                                                                     | base `lmsysorg/sglang` tag (default `v0.5.14`, a multi-arch release)                                                                                                                                                                                                                                                                                |
-| `ENABLE_CUDA_13`                                                                                       | `1` = CUDA 13 (default), `0` = CUDA 12.9                                                                                                                                                                                                                                                                                                            |
+| `SGLANG_IMAGE_TAG`                                                                                     | base `lmsysorg/sglang` image tag                                                                                                                                                                                                                                                                                                                    |
+| `ENABLE_CUDA_13`                                                                                       | `1` = CUDA 13 (default) and installs the Mooncake wheel from the selected wheels release; `0` = CUDA 12.9 and keeps the base image's Mooncake                                                                                                                                                                                                         |
 | `WHEELS_REPO`                                                                                          | prebuilt-wheels GitHub repo (`yueming-yuan/miles-wheels`)                                                                                                                                                                                                                                                                                           |
-| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64`                                                                  | the two **complete** wheels release tags (e.g. `cu130-x86_64-v0.5.12` / `cu130-aarch64-v0.5.12`), the wheels repo's own names. In a multi-arch build the Dockerfile **picks one by `TARGETARCH`** (the only per-platform value buildx varies) and installs it **verbatim** — never assembling a tag from parts; cu12-x86 overrides `WHEELS_TAG_X86` |
+| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64`                                                                  | the two **complete** wheels release tags selected by `TARGETARCH` and installed **verbatim**. cu13 uses the rolling `cu130-x86_64` / `cu130-aarch64` releases; cu12-x86 overrides `WHEELS_TAG_X86` with the rolling `cu129-x86_64` release                                                                                                                                                                                              |
 | `SGLANG_BRANCH` / `SGLANG_COMMIT`, `MEGATRON_REPO` / `MEGATRON_BRANCH`, `MILES_COMMIT`, `SGL_ROUTER_*` | source pins for the layered repos                                                                                                                                                                                                                                                                                                                   |
 
 
@@ -51,31 +51,45 @@ The Dockerfile is the build recipe and nothing more: it knows no variants and no
 | `rocm-mi350`   | `rocm/sgl-dev:miles-rocm720-mi35x` | native                        | AMD MI35x — `docker/Dockerfile.rocm`           |
 
 
-The cu13 variants share one CUDA base (`lmsysorg/sglang:v0.5.14`, multi-arch) and differ only in platforms. `cu13` runs a single `buildx --platform linux/amd64,linux/arm64` — buildx builds both arches and pushes them as one manifest in a single shot, with the Dockerfile picking each layer's wheels by `TARGETARCH` (see Dockerfile inputs), so `docker pull` auto-selects by host arch.
+The cu13 variants share one multi-arch CUDA base image and differ only in platforms. `cu13` runs a single `buildx --platform linux/amd64,linux/arm64` — buildx builds both arches and pushes them as one manifest in a single shot, with the Dockerfile picking each layer's wheels by `TARGETARCH` (see Dockerfile inputs), so `docker pull` auto-selects by host arch.
 
 The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
 
 A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`.
 
+## PR build check (in `pr-test.yml`)
+
+Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this breakage lands on `main` first.
+
+When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
+
+| Job | What it does |
+| --- | --- |
+| `docker-build` | builds `cu13` for `linux/amd64` and `linux/arm64`, then pushes one multi-arch PR-scoped `radixark/miles:pr-<num>` tag (same-repo PRs; fork PRs skip it and test on `dev`) |
+| `resolve-ci-image` | waits for the build and resolves the CI image to `pr-<num>`, so **every GPU suite runs inside the freshly built image**; a failed build stops the matrix instead of testing the stale image. The fresh build outranks a `ci-image-tag:` PR-body directive — the directive applies only when no PR image was built (non-docker or fork PRs) |
+| `delete-pr-tag` (`docker-pr-tag-cleanup.yml`) | removes the `pr-<num>` tag when the PR closes; the tag stays available for re-runs while the PR is open |
+
+Non-docker PRs are untouched: `docker-paths` reports no change, `docker-build` skips, and the matrix runs on `dev` as before.
+
 ## Remote docker build (`docker-build.yml`)
 
 The only automated builder of `radixark/miles`. Two jobs:
 
-- **`check-upstream`** (schedule / `simulate_schedule` only) — polls the inputs the image bakes: the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the source branches it builds — plus a fingerprint of the `yueming-yuan/miles-wheels` release it installs, so a rebuilt sgl-router or other wheel also triggers a build (the wheels are pinned by `WHEELS_TAG`, so re-uploads to the same tag are caught by fingerprint, not commit SHA). It compares against the values cached from the last build and sets `should_build=true` if any moved. `miles` itself is intentionally not polled. This is what stops the 12-hour cron from rebuilding an unchanged image.
+- **`check-upstream`** (schedule / `simulate_schedule` only) — polls the inputs the image bakes: the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the source branches it builds — plus a fingerprint of the selected `yueming-yuan/miles-wheels` rolling release, so a rebuilt sgl-router or other wheel also triggers a build (re-uploads to the same tag are caught by fingerprint, not commit SHA). It compares against the values cached from the last build and sets `should_build=true` if any moved. `miles` itself is intentionally not polled. This is what stops the 12-hour cron from rebuilding an unchanged image.
 - **`build-and-push`** (self-hosted runner) — calls `docker/build.py` to build + push, then conditionally points `latest` at the new `dev` and prunes old timestamped tags.
 
 `build-and-push` runs when `check-upstream` was skipped, or ran and reported `should_build=true`.
 
 ### Triggers: automatic vs manual
 
-- **Automatic** (no human) — the **schedule** (cron 00:00 / 12:00 UTC, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile` or `requirements.txt`**. Both leave `--variant` empty and build **two images**: `cu13` → `radixark/miles` (multi-arch) and `cu12-x86` → `radixark/miles:dev-cu12`.
+- **Automatic** (no human) — the **schedule** (cron 00:00 / 12:00 UTC, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both leave `--variant` empty and build **two images**: `cu13` → `radixark/miles` (multi-arch) and `cu12-x86` → `radixark/miles:dev-cu12`.
 - **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. Only the `rocm-*` images have **no automatic path** (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
 
 | Trigger                                     | `check-upstream`                   | builds                | `latest` move     | prune      |
 | ------------------------------------------- | ---------------------------------- | --------------------- | ----------------- | ---------- |
 | schedule (cron 00:00 / 12:00 UTC)           | runs; build only if upstream moved | `cu13` + `cu12-x86`   | yes (both)        | yes (both) |
-| push to `main` touching `docker/Dockerfile` or `requirements.txt` | skipped                            | `cu13` + `cu12-x86`   | no                | no         |
+| push to `main` touching `docker/Dockerfile`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | `cu13` + `cu12-x86`   | no                | no         |
 | `workflow_dispatch`                         | skipped                            | the one input variant | no                | no         |
 | `workflow_dispatch` + `simulate_schedule`   | runs                               | the one input variant | no                | no         |
 
