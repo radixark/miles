@@ -170,13 +170,7 @@ class TestRolloutExternalPath:
         from miles.ray.rollout.addr_allocator import PortAllocator
         from miles.ray.rollout.server_cell import ServerCell
         from miles.ray.rollout.server_engine import ServerEngine
-        from miles.ray.rollout.server_group import ServerGroup
 
-        args = make_args(num_gpus_per_node=8, rollout_external=True)
-        group = ServerGroup(
-            args=args,
-            cells=[ServerCell(args=args, worker_type="regular", engines=[ServerEngine()])],
-            num_gpus_per_engine=1,
-        )
+        cell = ServerCell(engines=[ServerEngine()], args=make_args(num_gpus_per_node=8, rollout_external=True))
         with pytest.raises(NotImplementedError):
-            await group.start_engines(PortAllocator.empty())
+            await cell.start_engines(PortAllocator())

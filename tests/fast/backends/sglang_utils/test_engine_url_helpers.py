@@ -16,7 +16,7 @@ class TestFormatV6Uri:
         assert format_v6_uri("::1") == "[::1]"
 
     def test_it_is_idempotent(self):
-        """The engine already brackets its host; ServerGroup starts from the bare
+        """The engine already brackets its host; the rollout process starts from the bare
         one out of the addr allocator, so both must land on the same url."""
         assert format_v6_uri("[::1]") == "[::1]"
         assert format_v6_uri(format_v6_uri("::1")) == "[::1]"

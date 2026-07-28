@@ -10,7 +10,6 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.inference_controller import InferenceController
-from miles.ray.rollout.server_cell import flatten_cells
 
 
 class _NoopRouterApiClient:
@@ -38,7 +37,6 @@ def patch_low_level(monkeypatch):
     import miles.ray.rollout.inference_controller as ictl
     import miles.ray.rollout.rollout_server as rsrv
     import miles.ray.rollout.server_cell as scell
-    import miles.ray.rollout.server_group as sg
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
     monkeypatch.setattr(scell, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
@@ -50,7 +48,7 @@ def patch_low_level(monkeypatch):
         lambda args, **kw: (args.sglang_router_ip, args.sglang_router_port),
     )
 
-    monkeypatch.setattr(sg, "SGLangRouterApiClient", _NoopRouterApiClient)
+    monkeypatch.setattr(rsrv, "SGLangRouterApiClient", _NoopRouterApiClient)
     monkeypatch.setattr(ictl, "start_session_server", lambda args: None)
 
 
@@ -103,7 +101,7 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
 
 
 def _engine_slots(controller, model: str = "actor"):
-    return controller.servers[model].server_groups[0].engines
+    return controller.servers[model].engines
 
 
 async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_interval_s: float = 0.2) -> None:
@@ -252,8 +250,8 @@ class TestCellDispatchAcrossModels:
         pg = placement_group_factory(4)
 
         controller = _make_controller(args, pg)
-        actor_handles = [e.actor_handle for e in controller.servers["actor"].server_groups[0].engines]
-        ref_handles = [e.actor_handle for e in controller.servers["ref"].server_groups[0].engines]
+        actor_handles = [e.actor_handle for e in controller.servers["actor"].engines]
+        ref_handles = [e.actor_handle for e in controller.servers["ref"].engines]
 
         await controller.stop_cell(2)
 
@@ -390,27 +388,23 @@ class TestCheckWeights:
 
         results = await controller.check_weights(action="pre_update")
 
-        # Updatable server only: nested gather is [group][engine]; 1 group × 2 engines.
-        assert len(results) == 1
-        for per_group in results:
-            assert len(per_group) == 2
-            for engine_result in per_group:
-                assert engine_result == {"mock": True}
+        # Updatable server only: one flat entry per cell's primary engine.
+        assert len(results) == 2
+        for engine_result in results:
+            assert engine_result == {"mock": True}
 
         updatable_engines = [
             engine
             for srv in controller.servers.values()
             if srv.update_weights
-            for group in srv.server_groups
-            for engine in group.engines
+            for engine in srv.engines
             if engine.is_allocated
         ]
         frozen_engines = [
             engine
             for srv in controller.servers.values()
             if not srv.update_weights
-            for group in srv.server_groups
-            for engine in group.engines
+            for engine in srv.engines
             if engine.is_allocated
         ]
         assert updatable_engines and frozen_engines
@@ -445,12 +439,12 @@ class TestRecoverUpdatableEngines:
         # Kill engine 0 directly + mark stopped (simulates a fault before any
         # rollout). recover_updatable_engines must not bring it back yet.
         ray.kill(actor0_before)
-        flatten_cells(controller.servers["actor"].server_groups[0].cells)[0].mark_stopped()
+        controller.servers["actor"].server_cells[0].primary_engine.mark_stopped()
 
         await controller.recover_updatable_engines()
 
         # Slot 0 is still de-allocated; recovery skipped because rollout_id=-1.
-        assert not flatten_cells(controller.servers["actor"].server_groups[0].cells)[0].is_allocated
+        assert not controller.servers["actor"].server_cells[0].primary_engine.is_allocated
 
     async def test_recovers_dead_engine_after_rollout_started(
         self,
@@ -469,12 +463,12 @@ class TestRecoverUpdatableEngines:
         actor0_before = _engine_slots(controller)[0].actor_handle
 
         ray.kill(actor0_before)
-        flatten_cells(controller.servers["actor"].server_groups[0].cells)[0].mark_stopped()
+        controller.servers["actor"].server_cells[0].primary_engine.mark_stopped()
 
         await controller.prepare_rollout(0)
         await controller.recover_updatable_engines()
 
-        slot0 = flatten_cells(controller.servers["actor"].server_groups[0].cells)[0]
+        slot0 = controller.servers["actor"].server_cells[0].primary_engine
         assert slot0.is_allocated
         assert slot0.actor_handle is not actor0_before
         assert isinstance(ray.get(slot0.actor_handle.get_calls.remote()), list)
