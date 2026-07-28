@@ -7,10 +7,9 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleet
-from miles.ray.rollout.rollout_server import RolloutServer, get_cell_indexer_of_id_map, start_rollout_servers
+from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.utils import Lock
-
 
 logger = logging.getLogger(__name__)
 
@@ -133,13 +132,19 @@ class InferenceController:
 
     # -------------------------- external start/stop -----------------------------
 
-    async def start_cell(self, cell_id: int):
-        idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
-        await self.servers[idx.srv_key].recover(cell_indices=[idx.cell_index])
+    async def start_cell(self, cell_id: str):
+        await self._server_of(cell_id).recover(cell_ids=[cell_id])
 
-    async def stop_cell(self, cell_id: int):
-        idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
-        await self.servers[idx.srv_key].stop_cells([idx.cell_index])
+    async def stop_cell(self, cell_id: str):
+        await self._server_of(cell_id).stop_cells([cell_id])
+
+    def list_cell_ids(self) -> list[str]:
+        return list_cell_ids(self.servers)
+
+    def _server_of(self, cell_id: str) -> RolloutServer:
+        owners = [srv for srv in self.servers.values() if cell_id in srv.server_cells]
+        assert len(owners) == 1, f"{cell_id=} must name exactly one cell, but {len(owners)} servers hold it"
+        return owners[0]
 
     # -------------------------- misc APIs -----------------------------
 

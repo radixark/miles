@@ -26,6 +26,7 @@ def _start_engines_and_collect_addressing(
         args=args,
         num_nodes=len(requested),
         worker_type=worker_type,
+        cell_id="cell-0",
         rank_offset=min(requested),
     )
     for engine in requested.values():
