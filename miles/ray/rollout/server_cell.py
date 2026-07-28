@@ -27,6 +27,12 @@ class ServerCell:
     def primary_engine(self) -> ServerEngine:
         return self.engines[0]
 
+    @property
+    def is_allocated(self) -> bool:
+        states = {engine.is_allocated for engine in self.engines}
+        assert len(states) == 1, f"a cell's engines are allocated and stopped together ({states=})"
+        return states == {True}
+
     def stop(self):
         for local_index, engine in enumerate(self.engines):
             if engine.is_allocated:
