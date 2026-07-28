@@ -383,18 +383,19 @@ def save_lora_checkpoint(
     from miles.utils import megatron_bridge_utils
 
     save_path = Path(save_dir)
-    is_dp_rank_0 = get_parallel_state().effective_dp.rank == 0
-    tp_rank = get_parallel_state().tp.rank
-    pp_rank = get_parallel_state().pp.rank
+    parallel_state = get_parallel_state()
+    is_dp_cp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0
+    tp_rank = parallel_state.tp.rank
+    pp_rank = parallel_state.pp.rank
 
     # Create directory on dp_rank=0, then synchronize
-    if is_dp_rank_0:
+    if is_dp_cp_rank_0:
         save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
         dist.barrier()
 
     # ---- Megatron-native format (per TP/PP rank, fast resume) ----
-    if is_dp_rank_0:
+    if is_dp_cp_rank_0:
         adapter_state: dict[str, torch.Tensor] = {}
         for model_chunk in model:
             for name, param in model_chunk.named_parameters():
@@ -419,8 +420,8 @@ def save_lora_checkpoint(
         ):
             lora_state_dict[hf_name] = weight
 
-    # Only one rank writes the HF PEFT files (bridge already gathered across TP)
-    if is_dp_rank_0 and tp_rank == 0:
+    # Only one rank writes the HF PEFT files (bridge already gathered across TP/PP)
+    if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
         torch.save(lora_state_dict, save_path / "adapter_model.bin")
 
         target_modules_hf = (

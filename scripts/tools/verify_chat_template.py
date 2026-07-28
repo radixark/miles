@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """One-click verification: is a chat template append-only after last user message?
 
+The shared CLI trajectory matrix covers tool, user, and system appends.
+Injected assistant input is covered by dedicated per-family CPU tests and the
+session verifier.
+
 Usage examples::
 
     # Verify a local .jinja template file at raw template-string level
@@ -11,15 +15,11 @@ Usage examples::
 
     # Verify through the registered TITO tokenizer family
     python scripts/tools/verify_chat_template.py --model Qwen/Qwen3-0.6B \\
-        --tito-model qwen3 --tito-allowed-append-roles tool
+        --tito-model qwen3
 
     # Verify through TITO while testing a local template override
     python scripts/tools/verify_chat_template.py --model Qwen/Qwen3-0.6B \\
         --tito-model qwen3 --template miles/utils/chat_template_utils/templates/qwen3_fixed.jinja
-
-    # Restrict which append roles the session is allowed to use (tool is implicit)
-    python scripts/tools/verify_chat_template.py --model Qwen/Qwen3-0.6B \\
-        --tito-allowed-append-roles user
 
     # Run thinking cases: off (default) / on / both
     python scripts/tools/verify_chat_template.py --model Qwen/Qwen3.5-0.8B --thinking both
@@ -31,7 +31,7 @@ import argparse
 import json
 import sys
 
-from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, TITOTokenizerType
 
 
 def _load_template_from_file(path: str) -> str:
@@ -75,22 +75,10 @@ def main() -> int:
         choices=[t.value for t in TITOTokenizerType],
         default=None,
         help=(
-            "Verify through the registered TITO tokenizer family under the given "
-            "--tito-allowed-append-roles surface. Requires --model and exercises "
-            "the production-shape TITO merge/tokenize path instead of the raw "
-            "template-string verifier."
-        ),
-    )
-    parser.add_argument(
-        "--tito-allowed-append-roles",
-        nargs="+",
-        default=["tool"],
-        choices=["tool", "user", "system"],
-        metavar="ROLE",
-        help=(
-            "Roles the session may append after an assistant turn.  'tool' is "
-            "implicitly always allowed (listing it is fine).  Trajectories that "
-            "require roles outside this set are skipped.  Default: tool."
+            "Verify through the registered TITO tokenizer family. Template resolution "
+            "and append capability both come from --tito-model. Requires --model and "
+            "exercises the production-shape TITO merge/tokenize path instead of the "
+            "raw template-string verifier."
         ),
     )
     parser.add_argument(
@@ -124,20 +112,20 @@ def main() -> int:
         parser.error("--tito-model requires --model so the TITO verifier can load the tokenizer")
 
     extra_template_kwargs = dict(args.chat_template_kwargs or {})
-
-    # ``--tito-allowed-append-roles`` lists the *optional* extra roles; ``tool``
-    # is implicit for tool-capable agentic workflows and unioned in here so both
-    # the fixed-template lookup and the trajectory filter see the same surface.
-    allowed_roles = set(args.tito_allowed_append_roles) | {"tool"}
-
     use_tito_instance = args.tito_model is not None
+    if use_tito_instance:
+        tokenizer_type = TITOTokenizerType(args.tito_model)
+        fixed_template = TITOTokenizerType.get_tokenizer_class(tokenizer_type).FIXED_TEMPLATE
+        allowed_roles = set(fixed_template.allowed_append_roles)
+    else:
+        allowed_roles = set(VALID_APPEND_ROLES)
 
     # ── Load template/tokenizer ────────────────────────────────────────
     if use_tito_instance:
         from miles.utils.chat_template_utils import resolve_fixed_chat_template
         from miles.utils.processing_utils import load_tokenizer
 
-        fixed_path, resolved_kwargs = resolve_fixed_chat_template(args.tito_model, sorted(allowed_roles))
+        fixed_path, resolved_kwargs = resolve_fixed_chat_template(args.tito_model)
         for key, value in resolved_kwargs.items():
             if key in extra_template_kwargs:
                 continue
@@ -172,7 +160,7 @@ def main() -> int:
     selected = select_cases(allowed_append_roles=allowed_roles, is_thinking=is_thinking_filter)
 
     print(f"Template source:       {source_desc}")
-    print(f"Allowed append roles:  {sorted(allowed_roles)}")
+    print(f"Append capability:     {sorted(allowed_roles)}")
     print(f"Thinking mode:         {args.thinking}")
     if extra_template_kwargs:
         print(f"Template kwargs:       {extra_template_kwargs}")
@@ -197,7 +185,6 @@ def main() -> int:
         results = run_all_checks_via_tito(
             tokenizer,
             args.tito_model,
-            allowed_append_roles=allowed_roles,
             thinking=args.thinking,
             extra_template_kwargs=extra_template_kwargs,
         )

@@ -86,6 +86,23 @@ A checkpoint directory looks like:
 Always pass the **parent** directory to `--load`, not a specific iteration. The
 loader reads `latest_checkpointed_iteration.txt` to pick the step.
 
+### On-demand save
+
+`--save-trigger-sentinel <path>` lets you force a checkpoint save from outside
+the training process, independent of `--save-interval`:
+
+```bash
+# trigger a save and wait until the checkpoint is on disk
+touch /path/to/save_now && until [ ! -e /path/to/save_now ]; do sleep 5; done
+```
+
+A request fired at any moment during an iteration is consumed at that
+iteration's save point — the checkpoint is written with `force_sync=True` (so
+async saves finalize before the sentinel is removed), and only then is the
+sentinel file deleted. "File gone" means "checkpoint durable on disk." If the
+job crashes mid-save, the sentinel survives and the request stays pending for
+the next run. Requires `--save` to be set.
+
 ### HuggingFace → torch_dist
 
 ```bash

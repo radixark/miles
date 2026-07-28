@@ -34,7 +34,6 @@ def setup_session_routes(app, backend, args):
         tokenizer,
         tokenizer_type=getattr(args, "tito_model", "default"),
         chat_template_kwargs=getattr(args, "apply_chat_template_kwargs", None),
-        allowed_append_roles=getattr(args, "tito_allowed_append_roles", None),
     )
 
     registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)

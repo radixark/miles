@@ -668,6 +668,7 @@ class TestArgumentValidation:
             eval_data=None,
             eval_config=None,
             eval_prompt_data=None,
+            use_miles_dashboard=False,
         )
 
         with pytest.raises(ValueError, match="--mini-ft-controller-enable requires --control-server-port"):

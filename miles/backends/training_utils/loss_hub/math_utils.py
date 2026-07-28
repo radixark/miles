@@ -604,19 +604,22 @@ def get_advantages_and_returns_batch(
     response_lengths,
     values_list,
     rewards_list,
+    terminal_rewards,
     gamma,
     lambd,
     chunked: bool = True,
 ):
     """
     Batched GAE with CP support.
+    C_i is the length of values_list[i] and rewards_list[i] on the current CP rank.
     Input:
         total_lengths:     list[int], each sample's total_len
         response_lengths:  list[int], each sample's response_len
-        values_list:       list[Tensor], each shape = [resp_len_i]
-        rewards_list:      list[Tensor], same shape
+        values_list:       list[Tensor], each current-CP-rank tensor has shape [C_i]
+        rewards_list:      list[Tensor], same shape as values_list
+        terminal_rewards:  list[float], one scalar sequence reward per sample
     Output:
-        advantages_list:   list[Tensor], each shape = [resp_len_i]
+        advantages_list:   list[Tensor], each current-CP-rank tensor has shape [C_i]
         returns_list:      list[Tensor], same shape
     """
 
@@ -624,6 +627,7 @@ def get_advantages_and_returns_batch(
         B = len(response_lengths)
         assert B == len(values_list)
         assert B == len(rewards_list)
+        assert B == len(terminal_rewards)
 
         cp_size = get_parallel_state().cp.size
         device = values_list[0].device
@@ -656,8 +660,10 @@ def get_advantages_and_returns_batch(
 
         for i in range(B):
             L = response_lengths[i]
-            full_values[i, :L] = full_values_list[i][:L]
-            full_rewards[i, :L] = full_rewards_list[i][:L]
+            if L > 0:
+                full_values[i, :L] = full_values_list[i][:L]
+                full_rewards[i, :L] = full_rewards_list[i][:L]
+                full_rewards[i, L - 1] += terminal_rewards[i]
 
         if not chunked:
             full_advantages, full_returns = vanilla_gae(
@@ -893,16 +899,15 @@ def calculate_log_probs_and_entropy(
         )
 
     logits = logits.contiguous()
-    # TODO: not sure why we need to clone the logits here.
-    # Without the clone, the backward will trigger inplace edit error.
-    # It seems that the function with tp will modify the logits inplace.
+    # TP cross-entropy mutates its input in forward, and entropy does so in backward.
+    # Force a copy for fp32 inputs, where the dtype conversion would otherwise alias logits.
     entropy = None
 
     def compute_entropy(logits_chunk: torch.Tensor) -> torch.Tensor:
         if entropy_requires_grad:
-            return compute_entropy_from_logits(logits_chunk.clone(), tp_group)
+            return compute_entropy_from_logits(logits_chunk.to(torch.float32, copy=True), tp_group)
         with torch.no_grad():
-            return compute_entropy_from_logits(logits_chunk.detach().clone(), tp_group)
+            return compute_entropy_from_logits(logits_chunk.detach().to(torch.float32, copy=True), tp_group)
 
     if logits.size(0) != 0:
         if chunk_size > 0:
@@ -911,7 +916,7 @@ def calculate_log_probs_and_entropy(
             logits_chunks = logits.chunk(num_chunks, dim=0)
             log_probs = []
             for tokens_chunk, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                log_prob = compute_log_probs(logits_chunk.clone(), tokens_chunk, tp_group)
+                log_prob = compute_log_probs(logits_chunk.to(torch.float32, copy=True), tokens_chunk, tp_group)
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
             if with_entropy:
@@ -921,7 +926,7 @@ def calculate_log_probs_and_entropy(
                     entropys.append(entropy)
                 entropy = torch.cat(entropys, dim=0)
         else:
-            log_prob = compute_log_probs(logits.clone(), tokens, tp_group)
+            log_prob = compute_log_probs(logits.to(torch.float32, copy=True), tokens, tp_group)
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:

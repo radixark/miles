@@ -8,6 +8,7 @@ from scripts.run_glm5_744b_a40b import (
     _validate_glm_checkpoint,
 )
 from tests.ci.ci_register import register_cuda_ci
+from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
@@ -21,6 +22,12 @@ register_cuda_ci(
     suite="stage-c-2-gpu-h200",
     labels=["megatron", "model-scripts", "replay"],
 )
+
+register_ci_gate(metric_key="train/grad_norm")
+register_ci_gate(metric_key="train/ppo_kl")
+register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
+register_ci_gate(metric_key="train/train_rollout_kl")
+register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:

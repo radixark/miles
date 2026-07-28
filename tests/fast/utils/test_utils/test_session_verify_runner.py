@@ -15,7 +15,6 @@ def _build_args(**overrides) -> str:
         **SESSION_VERIFY_INVARIANT_ARGS,
         "hf_checkpoint": "/root/models/test-model",
         "tito_model": "qwen3",
-        "tito_allowed_append_roles": ["tool", "user"],
         "rollout_num_gpus_per_engine": 2,
         "actor_num_nodes": 1,
         "actor_num_gpus_per_node": 8,
@@ -48,6 +47,12 @@ def test_namespace_to_train_args_keeps_ci_test_enabled_for_fsdp_debug_rollout():
     assert "--ci-test" in train_args
 
 
+def test_namespace_to_train_args_has_no_append_role_policy_flag():
+    train_args = _build_args()
+
+    assert "allowed-append-roles" not in train_args
+
+
 def test_namespace_to_train_args_omits_expert_parallel_for_single_expert():
     train_args = _build_args()
 
@@ -55,9 +60,24 @@ def test_namespace_to_train_args_omits_expert_parallel_for_single_expert():
 
 
 def test_namespace_to_train_args_emits_expert_parallel_for_moe():
-    train_args = _build_args(sglang_expert_parallel_size=8)
+    train_args = _build_args(sglang_ep_size=8)
 
     assert "--sglang-expert-parallel-size 8" in train_args
+
+
+def test_namespace_to_train_args_omits_speculative_decoding_by_default():
+    train_args = _build_args()
+
+    assert "--sglang-speculative-" not in train_args
+
+
+def test_namespace_to_train_args_enables_eagle_speculative_decoding():
+    train_args = _build_args(enable_spec=True)
+
+    assert "--sglang-speculative-algorithm EAGLE" in train_args
+    assert "--sglang-speculative-num-steps 2" in train_args
+    assert "--sglang-speculative-eagle-topk 1" in train_args
+    assert "--sglang-speculative-num-draft-tokens 3" in train_args
 
 
 def _write_metrics(path, entries: list[dict]) -> None:

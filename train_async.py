@@ -1,10 +1,13 @@
 import asyncio
 import logging
+import os
 
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.ft_utils.control_server.server import start_control_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
@@ -22,6 +25,7 @@ async def train(args):
     maybe_start_periodic_pyspy_dump()
     # allocate the GPUs
     pgs = create_placement_groups(args)
+    object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
@@ -73,18 +77,19 @@ async def train(args):
             await critic_task
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
+        remove_rollout_data_refs(args, rollout_data_curr_ref)
 
-        if should_run_periodic_action(rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout):
-            await actor_model.save_model(
-                rollout_id,
-                force_sync=rollout_id == args.num_rollout - 1,
-            )
+        external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
+        if external_save or should_run_periodic_action(
+            rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
+        ):
+            force_sync = external_save or rollout_id == args.num_rollout - 1
+            await actor_model.save_model(rollout_id, force_sync=force_sync)
             if args.use_critic:
-                await critic_model.save_model(
-                    rollout_id,
-                    force_sync=rollout_id == args.num_rollout - 1,
-                )
+                await critic_model.save_model(rollout_id, force_sync=force_sync)
             await rollout_manager.save.remote(rollout_id)
+            if external_save:
+                os.remove(args.save_trigger_sentinel)
 
         if (rollout_id + 1) % args.update_weights_interval == 0:
             # sync generate before update weights to prevent update weight in the middle of generation

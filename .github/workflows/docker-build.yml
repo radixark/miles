@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
+      - 'docker/verify_transformer_engine.py'
       - 'requirements.txt'
 
   schedule:
@@ -80,17 +81,16 @@ jobs:
 
           # Fingerprint the miles-wheels releases the images install from (sgl-router +
           # the other prebuilt wheels). cu13 installs cu130-x86_64 / cu130-aarch64;
-          # cu12-x86 installs cu129-x86_64 — both build automatically, so track all
-          # release tags they bake. Bumping a WHEELS_TAG is a Dockerfile change already
-          # caught by the push trigger; asset re-uploads keep the tag's commit fixed, so
-          # fingerprint the asset list, not a SHA.
+          # cu12-x86 installs cu129-x86_64 — both build automatically, so track all rolling
+          # release tags they bake. Rolling tags stay fixed while assets may be replaced,
+          # so fingerprint the asset list rather than a commit SHA.
           wheels_fp() {
             curl -s "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/$1" \
               | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
           }
-          WHEELS_CU13_X86_FP=$(wheels_fp cu130-x86_64-v0.5.12)
-          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-aarch64-v0.5.12)
-          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64-v0.5.12)
+          WHEELS_CU13_X86_FP=$(wheels_fp cu130-x86_64)
+          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-aarch64)
+          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64)
 
           echo "sglang HEAD:   ${SGLANG_SHA}"
           echo "megatron HEAD: ${MEGATRON_SHA}"
@@ -144,7 +144,7 @@ jobs:
     if: |
       always() &&
       (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
-    runs-on: self-hosted
+    runs-on: ["h200", "2gpu"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
