@@ -163,7 +163,6 @@ def execute(args: ScriptArgs):
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
         "--sglang-router-port 31000 "
-        # TODO: speculative decoding has issue, need to fix later
     )
 
     agent_args = (
