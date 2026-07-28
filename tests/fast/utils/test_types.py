@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import numpy
 import pytest
 
-from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 def _make_sample(
@@ -182,6 +182,29 @@ class TestWeightVersions:
         )
         assert call.spans == []
 
+    def test_from_meta_info_rejects_span_beyond_reported_output_tokens(self):
+        """A span reaching past the reported output tokens means the logprobs are incomplete, so it raises."""
+        with pytest.raises(AssertionError, match="extend past the 2 output tokens"):
+            WeightVersionsPerCall.from_meta_info(
+                {
+                    "output_token_logprobs": [(-0.1, 3), (-0.1, 4)],
+                    "weight_versions": [{"version": "v1", "start": 0, "end": 3}],
+                },
+                output_end=5,
+            )
+
+    def test_per_token_weight_versions_take_precedence_over_scalar_weight_version(self):
+        """When the engine reports both, the per-token spans win over the scalar fallback."""
+        call = WeightVersionsPerCall.from_meta_info(
+            {
+                "output_token_logprobs": [(-0.1, 3), (-0.1, 4)],
+                "weight_versions": [{"version": "v1", "start": 0, "end": 1}],
+                "weight_version": "v9",
+            },
+            output_end=2,
+        )
+        assert call.spans == [WeightVersionSpan("v1", 0, 1)]
+
     def test_update_from_meta_info_records_a_call_without_weight_version(self):
         """A call the engine did not stamp still counts as one call, with no spans."""
         s = _make_sample([1, 2], [3, 4, 5])
@@ -245,6 +268,17 @@ class TestWeightVersions:
         with pytest.raises(AssertionError, match="invalid weight version span"):
             s.validate()
 
+    def test_validate_rejects_empty_or_reversed_weight_version_span(self):
+        """validate fails for a zero-length span and for one whose end precedes its start."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 2)])]
+        with pytest.raises(AssertionError, match="invalid weight version span"):
+            s.validate()
+
+        s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 4, 3)])]
+        with pytest.raises(AssertionError, match="invalid weight version span"):
+            s.validate()
+
     def test_validate_rejects_empty_version(self):
         """validate fails when a span carries an empty version string."""
         s = _make_sample([1, 2], [3, 4, 5])
@@ -263,8 +297,37 @@ class TestWeightVersions:
         assert restored.weight_versions == s.weight_versions
         assert all(isinstance(span, WeightVersionSpan) for span in restored.all_weight_version_spans)
 
+    def test_from_dict_keeps_pre_span_dumps_loadable(self):
+        """Dumps predating per-call spans load without misparsing their flat version strings."""
+        restored = Sample.from_dict({"status": "completed", "weight_versions": ["v1", "v2"], "tokens": [1, 2]})
+        assert restored.weight_versions == []
+        assert getattr(restored, LEGACY_WEIGHT_VERSIONS_KEY) == ["v1", "v2"]
+
+    def test_from_dict_reads_current_dumps_unchanged(self):
+        """A dump written with per-call spans still round-trips into the typed structure."""
+        restored = Sample.from_dict(
+            {
+                "status": "completed",
+                "weight_versions": [[{"version": "v1", "abs_start": 0, "abs_end": 2}]],
+                "tokens": [1, 2],
+            }
+        )
+        assert restored.weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 0, 2)])]
+        assert not hasattr(restored, LEGACY_WEIGHT_VERSIONS_KEY)
+
     def test_oldest_weight_version_reads_all_spans(self):
         """oldest_weight_version takes the minimum numeric version across every span."""
         s = _make_sample([1, 2], [3, 4, 5])
         s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("7", 2, 4), WeightVersionSpan("5", 4, 5)])]
         assert s.oldest_weight_version == 5
+
+    def test_oldest_weight_version_ignores_nonnumeric_spans(self):
+        """Nonnumeric version labels are skipped, and a sample carrying only those reports no version."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4), WeightVersionSpan("9", 4, 5)])
+        ]
+        assert s.oldest_weight_version == 9
+
+        s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4)])]
+        assert s.oldest_weight_version is None
