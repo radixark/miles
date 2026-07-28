@@ -34,6 +34,7 @@ SHUTDOWN_TIMEOUT = 30
 class ServerCell:
     args: Any
     worker_type: Literal["regular", "prefill", "decode"]
+    cell_id: str
     num_nodes: int = 1
     pg: Any = None  # (placement_group, reordered_bundle_indices, reordered_gpu_ids)
     num_gpus_per_engine: int = 1
@@ -164,23 +165,24 @@ class ServerCell:
             try:
                 await asyncio.wait_for(self.unregister(router_api_client), timeout=SHUTDOWN_TIMEOUT)
             except Exception as e:
-                logger.warning(f"Unregistering {self=} from the router failed, tearing down anyway (e: {e})")
+                logger.warning(f"Unregistering cell {self.cell_id} from the router failed, tearing down anyway ({e})")
 
             for local_index, actor_handle in enumerate(self.actor_handles):
-                logger.info(f"Shutting down and killing engine at cell-local index {local_index}")
+                logger.info(f"Cell {self.cell_id}: shutting down and killing engine at cell-local index {local_index}")
                 try:
                     ray.get(actor_handle.shutdown.remote(), timeout=SHUTDOWN_TIMEOUT)
                 except Exception as e:
                     logger.warning(
-                        f"Graceful shutdown of engine at cell-local index {local_index} failed, killing anyway (e: {e})"
+                        f"Cell {self.cell_id}: graceful shutdown of engine at cell-local index {local_index} "
+                        f"failed, killing anyway ({e})"
                     )
                 try:
                     ray.kill(actor_handle)
-                    logger.info(f"Successfully killed engine at cell-local index {local_index}")
+                    logger.info(f"Cell {self.cell_id}: killed engine at cell-local index {local_index}")
                 except Exception as e:
-                    logger.warning(f"Fail to kill engine at cell-local index {local_index} (e: {e})")
+                    logger.warning(f"Cell {self.cell_id}: fail to kill engine at cell-local index {local_index} ({e})")
         else:
-            logger.info(f"Cell at rank_offset={self.rank_offset} is already stopped")
+            logger.info(f"Cell {self.cell_id} is already stopped")
         self._mark_stopped()
 
     def _mark_allocated_uninitialized(self, actor_handles: list[ray.actor.ActorHandle]) -> None:
@@ -212,10 +214,10 @@ class ServerCell:
         old_state_cls: type[CellState] | tuple[type[CellState], ...],
         new_state: CellState,
     ) -> None:
-        logger.info(f"{debug_name} start old={self._state}")
+        logger.info(f"Cell {self.cell_id} {debug_name} start old={self._state}")
         assert isinstance(self._state, old_state_cls), f"{self._state=}"
         self._state = new_state
-        logger.info(f"{debug_name} end new={self._state}")
+        logger.info(f"Cell {self.cell_id} {debug_name} end new={self._state}")
 
     async def probe_and_mark_dead(self) -> None:
         if not self.is_allocated:
