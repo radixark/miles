@@ -21,12 +21,45 @@ hf download
   --local-dir /root/datasets/aime-2025
 
 ### 5
-[multi_node num_nodes=None] source <REPO_ROOT>/scripts/models/glm4.5-355B-A32B.sh && PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+[multi_node num_nodes=None] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --nproc-per-node 4
   --master-addr {{master_addr}}
   --master-port 23456
   --nnodes={{nnodes}}
-  --node-rank {{node_rank}} <REPO_ROOT>/tools/convert_hf_to_torch_dist.py ${MODEL_ARGS[@]}
+  --node-rank {{node_rank}} <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 96
+  --num-query-groups 8
+  --kv-channels 128
+  --num-layers 92
+  --hidden-size 5120
+  --ffn-hidden-size 12288
+  --add-qkv-bias
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --rotary-percent 0.5
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 151552
+  --rotary-base 1000000
+  --moe-ffn-hidden-size 1536
+  --moe-shared-expert-intermediate-size 1536
+  --moe-router-pre-softmax
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-router-topk-scaling-factor 2.5
+  --moe-layer-freq [0]*3+[1]*89
+  --num-experts 160
+  --moe-grouped-gemm
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
   --hf-checkpoint /root/models/GLM-4.5
   --save /root/models/GLM-4.5_torch_dist 
 
@@ -53,10 +86,43 @@ export PYTHONUNBUFFERED=1 && ray start
 nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
 
 ### 11
-export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && source "<REPO_ROOT>/scripts/models/glm4.5-355B-A32B.sh" && ray job submit
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --address="http://127.0.0.1:8265"
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
-  -- python3 <REPO_ROOT>/train.py ${MODEL_ARGS[@]}
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 96
+  --num-query-groups 8
+  --kv-channels 128
+  --num-layers 92
+  --hidden-size 5120
+  --ffn-hidden-size 12288
+  --add-qkv-bias
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --rotary-percent 0.5
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 151552
+  --rotary-base 1000000
+  --moe-ffn-hidden-size 1536
+  --moe-shared-expert-intermediate-size 1536
+  --moe-router-pre-softmax
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-router-topk 8
+  --moe-router-topk-scaling-factor 2.5
+  --moe-layer-freq [0]*3+[1]*89
+  --num-experts 160
+  --moe-grouped-gemm
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --moe-aux-loss-coeff 0
   --hf-checkpoint /root/local_data/GLM-4.5
   --ref-load /root/local_data/GLM-4.5_torch_dist
   --load /root/shared_data/260101-000000-000/checkpoints
