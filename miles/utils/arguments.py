@@ -2732,11 +2732,6 @@ def miles_validate_args(args):
         ), "Critic models are not supported with --megatron-to-hf-mode bridge"
         args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
         args.critic_num_nodes = args.actor_num_nodes
-    else:
-        if args.critic_num_gpus_per_node is None:
-            args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
-        if args.critic_num_nodes is None:
-            args.critic_num_nodes = args.actor_num_nodes
     if args.critic_load is None:
         args.critic_load = args.load
     if args.critic_lr is None:
