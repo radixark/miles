@@ -66,6 +66,7 @@ _SHIM_STDOUT = {
 }
 
 _PYTHON_SHIM_BODY = """case "${1:-}" in
+*/model_args_utils.py) "$MILES_SH_HARNESS_REAL_PYTHON" "$@" ;;
 -c)
     case "$2" in
     *cluster_resources*) printf '%s\\n' 'REPLACE_GPU_COUNT' ;;

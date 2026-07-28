@@ -34,7 +34,8 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-20
 
 ```bash
 cd /root/miles
-source scripts/models/qwen3.5-4B.sh   # or qwen3.5-9B.sh / qwen3.5-27B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3.5-4B)" || exit 1   # or qwen3.5-9B / qwen3.5-27B
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/Qwen3.5-4B \
@@ -92,7 +93,7 @@ Only the 27 B script enables CPU Adam (`--optimizer-cpu-offload --overlap-cpu-op
 
 ### 5.5 Notable quirks
 
-From `scripts/models/qwen3.5-4B.sh` (and analogous configs for 9 B / 27 B):
+From `scripts/models/qwen3.5-4B.py` (and analogous configs for 9 B / 27 B):
 
 - `--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec` — attention-output gate, `A_log` parameter handling.
 - `--rotary-base 10000000`, `--rotary-percent 0.25`.

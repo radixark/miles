@@ -35,7 +35,7 @@ ray start
   --dashboard-port=8265
 
 ### 10
-source "<REPO_ROOT>/scripts/models/qwen3-4B.sh" && ray job submit
+MODEL_ARGS_LINE="$(python3 "<REPO_ROOT>/miles/utils/external_utils/model_args_utils.py" qwen3-4B)" || exit 1; read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}" && ray job submit
   --address='http://127.0.0.1:8265'
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "RAY_DEBUG": "1", "PYTHONPATH": "/root/Megatron-LM/", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "MILES_LOG_DIR": "<SANDBOX>"}}'
   -- python3 "<REPO_ROOT>/train.py" ${MODEL_ARGS[@]}

@@ -6,14 +6,19 @@
 "-m"
 
 ### 1
-"ps"
-"aux"
+"python3"
+"<REPO_ROOT>/examples/infra_features/low_precision/../../../miles/utils/external_utils/model_args_utils.py"
+"qwen3-30B-A3B"
 
 ### 2
 "ps"
 "aux"
 
 ### 3
+"ps"
+"aux"
+
+### 4
 "ray"
 "job"
 "submit"

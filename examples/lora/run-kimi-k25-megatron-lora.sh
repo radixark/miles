@@ -28,8 +28,8 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/../../scripts/models/kimi-k2-thinking.sh"
-
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../../miles/utils/external_utils/model_args_utils.py" "kimi-k2-thinking")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CKPT_ARGS=(
    --hf-checkpoint $BASE_DIR/Kimi-K2.5-int4
    --ref-load $BASE_DIR/Kimi-K2.5-bf16

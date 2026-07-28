@@ -4,7 +4,7 @@ Gemma-4 26B-A4B-it MoE GRPO training (single-node 8x H200).
 Trained via the HF<->Megatron bridge (`--megatron-to-hf-mode bridge`) on the base
 VLM checkpoint directly — sglang runs Gemma4ForConditionalGeneration (hybrid swa),
 which loads gemma-4's hybrid head_dim weights correctly. MODEL_ARGS come from
-scripts/models/gemma-4-26b-a4b-it.sh.
+scripts/models/gemma-4-26b-a4b-it.py.
 
 Single-node smoke test:
   python scripts/run_gemma_4_26b_a4b.py full-train --num-nodes 1

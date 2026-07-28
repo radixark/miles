@@ -44,6 +44,11 @@
 "-m"
 
 ### 9
+"python3"
+"<REPO_ROOT>/examples/experimental/tau-bench/../../../miles/utils/external_utils/model_args_utils.py"
+"qwen3-4B-Instruct-2507"
+
+### 10
 "ray"
 "start"
 "--head"
@@ -57,7 +62,7 @@
 "--temp-dir"
 "/root/shared/ray_temp"
 
-### 10
+### 11
 "ray"
 "job"
 "submit"

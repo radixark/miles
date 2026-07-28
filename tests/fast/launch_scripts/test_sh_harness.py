@@ -60,7 +60,7 @@ class TestRunLaunchScriptOnARealScript:
         assert ray_start[ray_start.index("--node-ip-address") + 1] == "127.0.0.1"
 
     def test_ray_job_submit_argv_contains_the_expanded_model_args(self, run):
-        """`source scripts/models/*.sh` expansion must be visible in the captured argv."""
+        """The scripts/models/*.py expansion must be visible in the captured argv."""
         argv = run.ray_job_submit_argv()
         assert argv[:3] == ["ray", "job", "submit"]
         assert "--num-layers" in argv

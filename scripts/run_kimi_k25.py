@@ -8,7 +8,7 @@ Kimi-K2.5 is a MoE + MLA model (61 layers, 384 experts) shipped as an INT4
 weights for the SGLang rollout while Megatron loads a BF16 reference via the
 HF<->Megatron bridge (`--megatron-to-hf-mode bridge`), so there is no offline
 `torch_dist` conversion step. The architecture is shared with Kimi-K2-Thinking,
-whose Megatron MODEL_ARGS we reuse (`scripts/models/kimi-k2-thinking.sh`).
+whose Megatron MODEL_ARGS we reuse (`scripts/models/kimi-k2-thinking.py`).
 
 =====================
 

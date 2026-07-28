@@ -116,8 +116,8 @@ esac
 NUM_TRAIN_NODES=$((NUM_TRAIN_GPUS / GPUS_PER_NODE))
 
 MILES_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"
-source "${MILES_ROOT}/scripts/models/${MODEL_TYPE}.sh"
-
+MODEL_ARGS_LINE="$(python3 "${MILES_ROOT}/miles/utils/external_utils/model_args_utils.py" "${MODEL_TYPE}")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 echo ""
 echo "============================================================"
 echo "  Model      : ${MODEL_NAME} (${MODEL_TYPE})"

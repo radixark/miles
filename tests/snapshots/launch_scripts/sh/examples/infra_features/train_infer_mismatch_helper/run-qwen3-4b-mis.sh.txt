@@ -44,6 +44,11 @@
 "-m"
 
 ### 9
+"python3"
+"<REPO_ROOT>/examples/infra_features/train_infer_mismatch_helper/../../../miles/utils/external_utils/model_args_utils.py"
+"qwen3-4B"
+
+### 10
 "ray"
 "start"
 "--head"
@@ -55,7 +60,7 @@
 "--dashboard-host=0.0.0.0"
 "--dashboard-port=8265"
 
-### 10
+### 11
 "ray"
 "job"
 "submit"

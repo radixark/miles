@@ -39,7 +39,7 @@ RAY_memory_monitor_refresh_ms=0 ray start
 python3 -c "import ray; ray.init(address='auto', ignore_reinit_error=True); print(int(ray.cluster_resources().get('GPU', 0))); ray.shutdown()"
 
 ### 11
-source "<REPO_ROOT>/scripts/models/glm5-744B-A40B.sh" && ray job submit
+MODEL_ARGS_LINE="$(python3 "<REPO_ROOT>/miles/utils/external_utils/model_args_utils.py" glm5-744B-A40B)" || exit 1; read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}" && ray job submit
   --address='http://127.0.0.1:8265'
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "RAY_DEBUG": "1", "PYTHONPATH": "/root/Megatron-LM/", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "1", "MILES_LOG_DIR": "<SANDBOX>", "MC_TRANSFER_TIMEOUT": "600", "INDEXER_ROPE_NEOX_STYLE": "0", "NVSHMEM_DISABLE_NCCL": "1"}}'
   -- python3 "<REPO_ROOT>/train.py" ${MODEL_ARGS[@]}

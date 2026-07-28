@@ -42,6 +42,11 @@
 "nvidia-smi"
 
 ### 9
+"python3"
+"<REPO_ROOT>/examples/lora/../../miles/utils/external_utils/model_args_utils.py"
+"qwen3-4B"
+
+### 10
 "ray"
 "start"
 "--head"
@@ -51,7 +56,7 @@
 "4"
 "--disable-usage-stats"
 
-### 10
+### 11
 "ray"
 "job"
 "submit"

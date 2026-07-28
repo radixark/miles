@@ -44,6 +44,11 @@
 "redis"
 
 ### 9
+"python3"
+"<REPO_ROOT>/miles/utils/external_utils/model_args_utils.py"
+"glm5-744B-A40B"
+
+### 10
 "ray"
 "start"
 "--head"
@@ -55,22 +60,22 @@
 "--dashboard-host=0.0.0.0"
 "--dashboard-port=8265"
 
-### 10
+### 11
 "python3"
 "-c"
 "import ray; ray.init(address='auto', ignore_reinit_error=True); print(int(ray.cluster_resources().get('GPU', 0))); ray.shutdown()"
 
-### 11
+### 12
 "mkdir"
 "-p"
 "<SANDBOX>/workdir"
 
-### 12
+### 13
 "rm"
 "-f"
 "<SANDBOX>/workdir/job_done_p2p"
 
-### 13
+### 14
 "ray"
 "job"
 "submit"

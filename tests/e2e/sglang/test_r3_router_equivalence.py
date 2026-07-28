@@ -32,7 +32,7 @@ identical prompts).
 Backend / checkpoint
 ~~~~~~~~~~~~~~~~~~~~
 Megatron backend (same as the sibling ``tests/e2e/megatron/*_r3.py``
-tests) — sourcing ``scripts/models/{type}.sh`` populates
+tests) — loading ``scripts/models/{type}.py`` populates
 ``args.num_layers`` / ``args.moe_router_topk`` that the rollout-side
 reshape of ``routed_experts`` depends on.  We do *not* set
 ``--use-kl-loss`` or ``--kl-coef`` > 0, which is what gates the
