@@ -10,6 +10,7 @@ import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url
+from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
@@ -136,6 +137,20 @@ class ServerCell:
     async def check_weights(self, action: str, allow_quant_error: bool, selector: str, skip_list: list[str] | None):
         return await self.primary_engine.api_client.check_weights(
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+        )
+
+    async def register(self, router_api_client: SGLangRouterApiClient) -> None:
+        await router_api_client.add_worker(
+            worker_url=self.primary_engine.addr_info.server_url,
+            worker_type=self.worker_type,
+            use_legacy_api=use_legacy_router_api(self.args),
+            bootstrap_port=self.primary_engine.addr_info.bootstrap_port,
+        )
+
+    async def unregister(self, router_api_client: SGLangRouterApiClient) -> None:
+        await router_api_client.remove_worker(
+            worker_url=self.primary_engine.addr_info.server_url,
+            use_legacy_api=use_legacy_router_api(self.args),
         )
 
 
