@@ -177,7 +177,6 @@ class TestRolloutExternalPath:
             args=args,
             cells=[ServerCell(args=args, worker_type="regular", engines=[ServerEngine()])],
             num_gpus_per_engine=1,
-            has_new_engines=False,
         )
         with pytest.raises(NotImplementedError):
             await group.start_engines(PortAllocator.empty())

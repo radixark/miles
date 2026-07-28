@@ -35,7 +35,6 @@ def _build_group(
             needs_offload=needs_offload,
         ),
         num_gpus_per_engine=num_gpus_per_engine,
-        has_new_engines=False,
     )
 
 

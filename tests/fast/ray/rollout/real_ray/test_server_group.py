@@ -37,7 +37,6 @@ def _build_group(
             model_path=model_path,
         ),
         num_gpus_per_engine=1,
-        has_new_engines=False,
         worker_type=worker_type,
     )
 
@@ -51,7 +50,6 @@ class TestStartEnginesShortCircuits:
         group = _build_group(pg_tuple=pg, num_engines=2, debug_train_only=True)
         indices = await group.start_engines(PortAllocator.empty())
         assert indices == []
-        assert group.has_new_engines is False
         for e in flatten_cells(group.cells):
             assert not e.is_allocated
 
@@ -61,7 +59,6 @@ class TestStartEnginesShortCircuits:
         group = _build_group(pg_tuple=pg, num_engines=0, worker_type="placeholder")
         indices = await group.start_engines(PortAllocator.empty())
         assert indices == []
-        assert group.has_new_engines is False
 
 
 class TestStartEnginesRealActors:
@@ -75,7 +72,6 @@ class TestStartEnginesRealActors:
 
         indices = await group.start_engines(PortAllocator.empty())
         assert sorted(indices) == [0, 1]
-        assert group.has_new_engines is True
 
         for e in flatten_cells(group.cells):
             assert e.is_allocated

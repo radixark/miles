@@ -24,8 +24,6 @@ class ServerGroup:
     args: Any
     cells: list[ServerCell]
     num_gpus_per_engine: int
-    # NOTE: this may have risk when recovering engines parallelly; may use source of truth (cells) later
-    has_new_engines: bool
     worker_type: str = "regular"  # "regular", "prefill", or "decode"
     router_ip: str | None = None
     router_port: int | None = None
@@ -72,7 +70,6 @@ class ServerGroup:
 
         await asyncio.gather(*cell_starts)
 
-        self.has_new_engines |= bool(started_cell_indices)
         return started_cell_indices
 
     def _precheck_engine_start(self) -> bool:
@@ -109,7 +106,7 @@ class ServerGroup:
         for cell_index in sorted(set(cell_indices)):
             self.cells[cell_index].stop()
 
-    async def recover(self, port_allocator: PortAllocator, filter_cell_indices: list[int] | None = None):
+    async def recover(self, port_allocator: PortAllocator, filter_cell_indices: list[int] | None = None) -> list[int]:
         if filter_cell_indices is None:
             filter_cell_indices = list(range(len(self.cells)))
         filter_cell_indices = [
@@ -117,7 +114,7 @@ class ServerGroup:
         ]
 
         if not self._precheck_engine_start():
-            return
+            return []
 
         await asyncio.gather(
             *[
@@ -125,9 +122,9 @@ class ServerGroup:
                 for cell_index in filter_cell_indices
             ]
         )
-        self.has_new_engines |= bool(filter_cell_indices)
 
         logger.info(f"Recovered {len(filter_cell_indices)} dead rollout cells (worker_type={self.worker_type})")
+        return filter_cell_indices
 
     def mark_alive(self, cell_indices: list[int]):
         for cell_index in cell_indices:
