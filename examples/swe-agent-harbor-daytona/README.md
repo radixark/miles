@@ -5,7 +5,7 @@ task sandboxes hosted on [Daytona](https://www.daytona.io/) instead of local
 Docker. Miles runs synchronous GRPO and serves the policy through its session
 server; a Harbor agent server drives the agent and returns verifier rewards.
 
-It is the [`../swe-agent`](../swe-agent) pipeline with two changes:
+It is the [`examples/swe-agent`](../swe-agent) pipeline with two changes:
 
 - **Daytona sandboxes.** The agent-server host needs outbound HTTPS but no
   Docker daemon, no local image builds, and no local disk for task images. This
@@ -16,7 +16,7 @@ It is the [`../swe-agent`](../swe-agent) pipeline with two changes:
   and `tool` turns, which the session server must be told to allow.
 
 Everything else — TITO, the session server, GRPO, the reward path — is shared
-with `../swe-agent`, and `run.py` imports that example's `generate.py` and
+with `examples/swe-agent`, and `run.py` imports that example's `generate.py` and
 `swe_agent_function.py` rather than duplicating them.
 
 ## Files
@@ -35,20 +35,8 @@ host:
 export DAYTONA_API_KEY=<your-daytona-api-key>
 ```
 
-Daytona enforces an **account-wide total-disk quota**, so size the run against
-it: concurrent sandboxes times `HARBOR_DAYTONA_DISK_GB` must stay under the cap,
-with headroom. Two things surprise people here:
-
-- A `stopped` sandbox still consumes quota. Only deletion, or expiry of the
-  sandbox's auto-delete interval, frees it.
-- The quota is shared by everything using the same account. If other jobs use
-  the key, your sandbox creations will start failing for reasons that have
-  nothing to do with your run — so check total usage by owner before assuming
-  you are leaking sandboxes.
-
-An over-quota creation is rejected quickly rather than hanging, and surfaces as
-`DaytonaValidationError`, or as `EnvironmentStartTimeoutError` when creations
-are merely slow because the account is near its limit.
+Daytona accounts have a total-disk quota, so keep concurrent sandboxes times
+`HARBOR_DAYTONA_DISK_GB` under it.
 
 ## 2. Start the Harbor agent server
 
@@ -64,7 +52,7 @@ uv sync
 export DAYTONA_API_KEY=<your-daytona-api-key>
 export HARBOR_TASKS_DIR=/path/to/harbor_tasks
 export TRIALS_DIR=/path/to/trials
-bash /path/to/miles/examples/swe-agent-daytona/launch_agent_server.sh
+bash /path/to/miles/examples/swe-agent-harbor-daytona/launch_agent_server.sh
 ```
 
 `HARBOR_TASKS_DIR` must contain one Harbor task directory for every
@@ -83,8 +71,8 @@ Verify `http://<agent-server>:11000/health` before launching Miles.
 
 ## 3. Prepare data
 
-`../swe-agent/download_and_process_data.py` converts a local JSONL into Miles
-format. For terminus-2, set the agent name accordingly:
+`examples/swe-agent/download_and_process_data.py` converts a local JSONL into
+Miles format. For terminus-2, set the agent name accordingly:
 
 ```bash
 python examples/swe-agent/download_and_process_data.py \
@@ -102,7 +90,7 @@ H200 GPUs, with the agent server colocated on the same host as the trainer:
 ```bash
 export WANDB_API_KEY=<your-wandb-key>
 
-python examples/swe-agent-daytona/run.py \
+python examples/swe-agent-harbor-daytona/run.py \
     --num-nodes 1 \
     --num-gpus-per-node 8 \
     --skip-prepare \
@@ -177,10 +165,9 @@ are written by the trainer itself and are authoritative.
 
 | Symptom | Cause |
 | --- | --- |
-| `DaytonaValidationError` on sandbox create | Account-wide disk quota exhausted; see step 1. |
-| `EnvironmentStartTimeoutError` in bursts | Sandbox creation is slow because the account is near its quota. |
+| `DaytonaValidationError` on sandbox create | Daytona disk quota exhausted. |
+| `EnvironmentStartTimeoutError` in bursts | Sandbox creation is slow because the account is near its disk quota. |
 | `SingleTurnMaxSeqLenExceededError` | Per-turn output cap too low; see the sizing section. |
 | `ContextLengthExceededError` | `AGENT_MAX_INPUT_TOKENS` below the observed context length. |
-| Trajectories all one turn, many session rollbacks | `--tito-allowed-append-roles user tool` missing, so terminus-2's appends are rejected. |
 | sgl-router fails to bind | `--router-external-host` is a hostname; it must be a numeric IP. |
 | Every trial scores 0 | `metadata.instance_id` values have no matching directory under `HARBOR_TASKS_DIR`. |

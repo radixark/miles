@@ -1,12 +1,12 @@
 """SWE-Agent launcher (GLM-4.7-Flash) for Harbor tasks on Daytona sandboxes.
 
-Same Miles <-> Harbor pipeline as ../swe-agent, with two differences:
+Same Miles <-> Harbor pipeline as examples/swe-agent, with two differences:
   * sandboxes are Daytona cloud sandboxes rather than local Docker containers,
     so the trainer host needs no Docker daemon and no per-task image pulls
   * the agent is terminus-2, which needs --tito-allowed-append-roles
 
 Usage:
-    python run.py --prompt-data /path/to/tb2_train.jsonl
+    python examples/swe-agent-harbor-daytona/run.py --prompt-data /path/to/tb2_train.jsonl
 """
 
 import os
@@ -23,8 +23,8 @@ import miles.utils.external_utils.command_utils as U
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 # generate.py and swe_agent_function.py are identical for Docker- and
-# Daytona-backed runs, so import them from the sibling example instead of
-# keeping a second copy in sync.
+# Daytona-backed runs, so import them from examples/swe-agent instead of keeping
+# a second copy in sync.
 SHARED_DIR = SCRIPT_DIR.parent / "swe-agent"
 
 
@@ -50,7 +50,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "GLM-4.7-Flash"
     hf_checkpoint: str = "zai-org/GLM-4.7-Flash"
     ref_load: str = "/root/GLM-4.7-Flash_torch_dist"
-    save_dir: str = "/root/GLM-4.7-Flash_swe_agent_daytona/"
+    save_dir: str = "/root/GLM-4.7-Flash_swe_agent_harbor_daytona/"
     save_traces_dir: str = ""
     prompt_data: str = "/root/tb2_train.jsonl"
 
@@ -80,12 +80,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
     wandb_project: str = os.environ.get("WANDB_PROJECT", "my-wandb-project")
     wandb_team: str = os.environ.get("WANDB_TEAM", "")
-    wandb_run_name: str = "glm47-flash-swe-agent-daytona"
+    wandb_run_name: str = "glm47-flash-swe-agent-harbor-daytona"
 
     # Prometheus settings
     use_prometheus: bool = True
     prometheus_port: int = 9090
-    prometheus_run_name: str = "glm47-flash-swe-agent-daytona"
+    prometheus_run_name: str = "glm47-flash-swe-agent-harbor-daytona"
 
 
 def cleanup():

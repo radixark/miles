@@ -19,7 +19,7 @@ These examples provide concrete examples to leverage miles in your own RL workfl
 - **[search-r1](./search-r1)**: A minimal reproduction of Search-R1, featuring multi-turn conversation and tool-calling.
 - **[strands-agents](./strands-agents)**: Integration example with the Strands-Agents scaffolding framework.
 - **[swe-agent](./swe-agent)**: Trains coding and terminal agents with Harbor-managed sandboxes and verifier rewards.
-- **[swe-agent-daytona](./swe-agent-daytona)**: The same Harbor pipeline with task sandboxes hosted on Daytona instead of local Docker.
+- **[swe-agent-harbor-daytona](./swe-agent-harbor-daytona)**: The same Harbor pipeline with task sandboxes hosted on Daytona instead of local Docker.
 - **[tau-bench](./tau-bench)**: Training in an agentic multi-turn tool use environment (Tau-bench).
 - **[train_infer_mismatch_helper](./train_infer_mismatch_helper)**: Algorithmic methods for rollout correction (e.g., TIS, MIS).
 - **[true_on_policy](./true_on_policy)**: Ensures strictly equal log probabilities between inference (SGLang) and training engines.
