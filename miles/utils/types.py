@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -6,6 +6,52 @@ import numpy
 import torch
 
 from miles.utils.sampling_mask import RolloutSamplingMask
+
+
+@dataclass(frozen=True)
+class WeightVersionSpan:
+    version: str
+    abs_start: int
+    abs_end: int
+
+
+@dataclass
+class WeightVersionsPerCall:
+    spans: list[WeightVersionSpan] = field(default_factory=list)
+
+    def to_dicts(self) -> list[dict]:
+        return [asdict(span) for span in self.spans]
+
+    @staticmethod
+    def from_dicts(data: list[dict]) -> "WeightVersionsPerCall":
+        return WeightVersionsPerCall(spans=[WeightVersionSpan(**span) for span in data])
+
+    @staticmethod
+    def from_meta_info(meta_info: dict, output_end: int) -> "WeightVersionsPerCall":
+        num_output_tokens = len(meta_info.get("output_token_logprobs") or [])
+        if (raw_spans := meta_info.get("weight_versions")) is not None:
+            output_relative = [(span["version"], span["start"], span["end"]) for span in raw_spans]
+            assert all(end <= num_output_tokens for _, _, end in output_relative), (
+                f"weight version spans {raw_spans} extend past the {num_output_tokens} output tokens implied by "
+                f"output_token_logprobs; anchoring spans relies on return_logprob reporting every output token"
+            )
+        elif meta_info.get("weight_version") is not None:
+            assert num_output_tokens > 0 or not meta_info.get("completion_tokens"), (
+                "weight_version is present but output_token_logprobs is empty; anchoring the version to output "
+                "tokens requires return_logprob=True on the generate request"
+            )
+            output_relative = [(meta_info["weight_version"], 0, num_output_tokens)]
+        else:
+            output_relative = []
+
+        output_start = output_end - num_output_tokens
+        return WeightVersionsPerCall(
+            spans=[
+                WeightVersionSpan(version=version, abs_start=output_start + start, abs_end=output_start + end)
+                for version, start, end in output_relative
+                if start < end
+            ]
+        )
 
 
 @dataclass(frozen=True)
@@ -44,7 +90,7 @@ class Sample:
     label: str | None = None
     reward: float | dict[str, Any] | None = None
     loss_mask: list[int] | None = None
-    weight_versions: list[str] = field(default_factory=list)
+    weight_versions: list[WeightVersionsPerCall] = field(default_factory=list)
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
     rollout_sampling_mask: RolloutSamplingMask | None = None
     rollout_routed_experts: numpy.ndarray | None = (
@@ -158,6 +204,7 @@ class Sample:
         value["status"] = self.status.value
         value["spec_info"] = self.spec_info.to_dict()
         value["prefix_cache_info"] = self.prefix_cache_info.to_dict()
+        value["weight_versions"] = [call.to_dicts() for call in self.weight_versions]
         return value
 
     @staticmethod
@@ -166,6 +213,7 @@ class Sample:
         data["status"] = Sample.Status(data["status"])
         data["spec_info"] = Sample.SpecInfo.from_dict(data.get("spec_info", {}))
         data["prefix_cache_info"] = Sample.PrefixCacheInfo.from_dict(data.get("prefix_cache_info", {}))
+        data["weight_versions"] = [WeightVersionsPerCall.from_dicts(call) for call in data.get("weight_versions", [])]
 
         field_names = set(Sample.__dataclass_fields__.keys())
         init_data = {k: v for k, v in data.items() if k in field_names}
@@ -225,6 +273,13 @@ class Sample:
             actual = len(self.rollout_indexer_topk)
             expect = len(self.tokens) - 1
             assert actual == expect, f"rollout_indexer_topk length ({actual}) != len(tokens) - 1 ({expect})"
+        previous_end = 0
+        for span in self.all_weight_version_spans:
+            assert span.version, f"weight version span has empty version: {self.weight_versions}"
+            assert (
+                previous_end <= span.abs_start < span.abs_end <= len(self.tokens)
+            ), f"invalid weight version span {span} (previous_end={previous_end}, len(tokens)={len(self.tokens)})"
+            previous_end = span.abs_end
 
     def strip_last_output_tokens(self, n: int, tokenizer) -> None:
         """Remove the last *n* output tokens and all associated per-token info."""
@@ -252,6 +307,12 @@ class Sample:
             self.rollout_routed_experts = self.rollout_routed_experts[:-n]
         if self.rollout_indexer_topk is not None:
             self.rollout_indexer_topk = self.rollout_indexer_topk[:-n]
+        for call in self.weight_versions:
+            call.spans = [
+                span if span.abs_end <= len(self.tokens) else replace(span, abs_end=len(self.tokens))
+                for span in call.spans
+                if span.abs_start < len(self.tokens)
+            ]
 
     def reset_for_retry(self) -> None:
         """Reset generated outputs so the original prompt can be re-sampled.
@@ -279,9 +340,13 @@ class Sample:
         self.train_metadata = None
 
     @property
+    def all_weight_version_spans(self) -> list[WeightVersionSpan]:
+        return [span for call in self.weight_versions for span in call.spans]
+
+    @property
     def oldest_weight_version(self) -> int | None:
         """Minimum weight version across all turns (generation calls) for this trajectory."""
-        numeric = [int(v) for v in self.weight_versions if str(v).isdigit()]
+        numeric = [int(span.version) for span in self.all_weight_version_spans if str(span.version).isdigit()]
         return min(numeric) if numeric else None
 
     def update_from_meta_info(self, args, meta_info: dict):
@@ -296,8 +361,7 @@ class Sample:
         # Collect prefix cache statistics
         self.prefix_cache_info.add(meta_info=meta_info)
 
-        if "weight_version" in meta_info:
-            self.weight_versions.append(meta_info["weight_version"])
+        self.weight_versions.append(WeightVersionsPerCall.from_meta_info(meta_info, output_end=len(self.tokens)))
 
         match meta_info["finish_reason"]["type"]:
             case "length":

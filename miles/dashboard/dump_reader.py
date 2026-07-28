@@ -28,7 +28,7 @@ import polars as pl
 import torch
 
 from miles.backends.training_utils.cp_utils import assemble_log_prob_from_cp, get_logits_and_tokens_offset_with_cp
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionsPerCall
 
 
 class DumpStillWriting(Exception):
@@ -47,6 +47,10 @@ STEP_AGGREGATE_METRICS = (
     "mean_entropy",
     "mixed_version_frac",
 )
+
+
+def _weight_version_summary(sample: Sample) -> tuple[list[str], int | None]:
+    return [span.version for span in sample.all_weight_version_spans], len(sample.weight_versions) or None
 
 
 def _min_numeric_version(versions: list[str] | None) -> int | None:
@@ -147,7 +151,7 @@ class TrainRow:
     returns: torch.Tensor | None
     raw_reward: Any
     truncated: int | None
-    weight_versions: list[str] | None
+    weight_versions: list[WeightVersionsPerCall] | None
     # cp slices could not be placed: dumped but unreadable, not merely absent
     alignment_failed: bool = False
 
@@ -354,7 +358,7 @@ class DumpReader:
     FRESH_SECONDS: ClassVar[float] = 60.0
 
     # bump to invalidate summary parquet caches when their columns change
-    SUMMARY_VERSION: ClassVar[int] = 6  # v6: TITO leaves sharing Sample.index remain distinct
+    SUMMARY_VERSION: ClassVar[int] = 7  # v7: turns counts unstamped calls, mixed_version spans flattened
 
     # Column order of summary(). Only needed to give a step with no samples the
     # same shape as any other step; with rows present the schema comes from
@@ -793,6 +797,7 @@ class DumpReader:
     def _summary_row(self, sample: Sample, row: TrainRow | None, *, rollout_id: int, sample_occurrence: int) -> dict:
         spec = sample.spec_info
         cache_info = sample.prefix_cache_info
+        versions, turns = _weight_version_summary(sample)
         entry = dict(
             sample_index=sample.index,
             sample_occurrence=sample_occurrence,
@@ -802,14 +807,12 @@ class DumpReader:
             response_length=sample.response_length,
             total_length=len(sample.tokens),
             reward=float(sample.reward) if isinstance(sample.reward, (int, float)) else None,
-            weight_version=sample.weight_versions[-1] if sample.weight_versions else None,
-            weight_version_min=_min_numeric_version(sample.weight_versions),
-            mixed_version=len(set(sample.weight_versions)) > 1 if sample.weight_versions else None,
+            weight_version=versions[-1] if versions else None,
+            weight_version_min=_min_numeric_version(versions),
+            mixed_version=len(set(versions)) > 1 if versions else None,
             # rollout_id - oldest weight version: rollout/fully_async/avg_staleness per sample
-            staleness=(
-                None if (oldest := _min_numeric_version(sample.weight_versions)) is None else rollout_id - oldest
-            ),
-            turns=len(sample.weight_versions) if sample.weight_versions else None,
+            staleness=(None if (oldest := _min_numeric_version(versions)) is None else rollout_id - oldest),
+            turns=turns,
             tool_calls=_tool_call_count(sample),
             non_generation_time=sample.non_generation_time,
             spec_accept_rate=(

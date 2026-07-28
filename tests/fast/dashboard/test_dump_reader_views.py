@@ -357,3 +357,30 @@ def test_pre_fix_columnless_cache_is_not_served(tmp_path):
 
     assert reader.summary(1).columns == list(DumpReader.SUMMARY_COLUMNS)
     assert DumpReader.SUMMARY_VERSION > 4  # regressing the bump re-serves those caches
+
+
+def test_turns_counts_calls_not_spans():
+    """A single generation call that spanned a weight update is still one turn."""
+    from miles.dashboard.dump_reader import _weight_version_summary
+    from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+
+    sample = Sample(group_index=0, index=0, prompt="p", tokens=[1, 2, 3], response="r", response_length=3, label="l")
+    sample.weight_versions = [
+        WeightVersionsPerCall(spans=[WeightVersionSpan("4", 0, 2), WeightVersionSpan("5", 2, 3)])
+    ]
+
+    assert _weight_version_summary(sample) == (["4", "5"], 1)
+
+
+def test_turns_counts_a_call_that_carried_no_version():
+    """An unstamped call still happened, so it must not vanish from the turn count."""
+    from miles.dashboard.dump_reader import _weight_version_summary
+    from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+
+    sample = Sample(group_index=0, index=0, prompt="p", tokens=[1, 2], response="r", response_length=2, label="l")
+    sample.weight_versions = [
+        WeightVersionsPerCall(spans=[WeightVersionSpan("4", 0, 1)]),
+        WeightVersionsPerCall(spans=[]),
+    ]
+
+    assert _weight_version_summary(sample) == (["4"], 2)
