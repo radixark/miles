@@ -117,11 +117,14 @@ def _build_servers(
                 ServerGroup(
                     args=args,
                     cells=chunk_engines_into_cells(
-                        engines, num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8, args=args
+                        engines,
+                        num_gpus_per_engine=num_gpus_per_engine,
+                        num_gpus_per_node=8,
+                        args=args,
+                        update_weights=True,
                     ),
                     num_gpus_per_engine=num_gpus_per_engine,
                     has_new_engines=False,
-                    update_weights=True,
                 )
             )
         servers[f"model_{s_idx}"] = RolloutServer(
