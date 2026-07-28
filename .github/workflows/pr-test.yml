@@ -6,7 +6,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   schedule:
-    # Nightly CI on main runs every enabled tag except ft-long, with fast-fail disabled.
+    # Nightly CI on main runs every enabled tag except long and ft-long, with fast-fail disabled.
     # 15:00 UTC = 08:00 PDT / 07:00 PST (cron is UTC, no DST).
     - cron: '0 15 * * *'
   workflow_dispatch:
