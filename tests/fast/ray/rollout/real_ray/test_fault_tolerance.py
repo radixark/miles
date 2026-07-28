@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 import ray
-from tests.fast.ray.rollout.conftest import flatten_cells, make_args
+from tests.fast.ray.rollout.conftest import make_args
 from tests.fast.ray.rollout.real_ray.conftest import build_cells, kill_cells, start_cells
 
 from miles.ray.rollout.addr_allocator import PortAllocator
@@ -30,22 +30,22 @@ class TestKillAndRecover:
         cells = build_cells(pg_tuple=pg, num_cells=2)
         await start_cells(cells, mark_alive=True)
 
-        original_handles = [e.actor_handle for e in flatten_cells(cells)]
+        original_handles = [cell.primary_actor_handle for cell in cells]
         # Real fault: kill engine 0 + mark its slot stopped (production code's
         # health monitor would do this; here we simulate it directly).
         ray.kill(original_handles[0])
-        cells[0].primary_engine.mark_stopped()
+        cells[0].stop()
 
         try:
             await cells[0].recover(PortAllocator())
             # New actor for cell 0
-            assert cells[0].primary_engine.is_allocated
-            assert cells[0].primary_engine.actor_handle is not original_handles[0]
-            calls = ray.get(cells[0].primary_engine.actor_handle.get_calls.remote())
+            assert cells[0].is_allocated
+            assert cells[0].primary_actor_handle is not original_handles[0]
+            calls = ray.get(cells[0].primary_actor_handle.get_calls.remote())
             assert "init" in [c[0] for c in calls]
 
             # Cell 1 untouched, still the same actor
-            assert cells[1].primary_engine.actor_handle is original_handles[1]
+            assert cells[1].primary_actor_handle is original_handles[1]
         finally:
             kill_cells(cells)
 
@@ -62,17 +62,17 @@ class TestKillAndRecover:
         await start_cells(cells, mark_alive=True)
         srv = RolloutServer(server_cells=cells, args=make_args(num_gpus_per_node=8))
 
-        old = [e.actor_handle for e in flatten_cells(cells)]
+        old = [cell.primary_actor_handle for cell in cells]
         for i in (0, 2):
             ray.kill(old[i])
-            cells[i].primary_engine.mark_stopped()
+            cells[i].stop()
 
         try:
             await srv.recover()
             for i in (0, 2):
-                assert cells[i].primary_engine.is_allocated
-                assert cells[i].primary_engine.actor_handle is not old[i]
-            assert cells[1].primary_engine.actor_handle is old[1]
+                assert cells[i].is_allocated
+                assert cells[i].primary_actor_handle is not old[i]
+            assert cells[1].primary_actor_handle is old[1]
         finally:
             kill_cells(cells)
 
@@ -99,15 +99,15 @@ class TestKillAndRecover:
             server_cells=cells, args=make_args(num_gpus_per_node=8), router_ip="10.0.0.9", router_port=9000
         )
         await start_cells(cells, mark_alive=True)
-        ray.kill(cells[0].primary_engine.actor_handle)
-        cells[0].primary_engine.mark_stopped()
+        ray.kill(cells[0].primary_actor_handle)
+        cells[0].stop()
 
         try:
             with patch.object(RolloutServer, "_router_api_client", property(lambda self: _Recorder())):
                 await srv.recover(cell_indices=[0])
 
-            assert [event["worker_url"] for event in events] == [cells[0].primary_engine.addr_info.server_url]
-            assert cells[0].primary_engine.is_alive
+            assert [event["worker_url"] for event in events] == [cells[0].addr_info.server_url]
+            assert cells[0].is_alive
         finally:
             kill_cells(cells)
 
@@ -122,14 +122,14 @@ class TestKillAndRecover:
         pg = placement_group_factory(2)
         cells = build_cells(pg_tuple=pg, num_cells=2, needs_offload=True, update_weights=True)
         await start_cells(cells, mark_alive=True)
-        old = [e.actor_handle for e in flatten_cells(cells)]
+        old = [cell.primary_actor_handle for cell in cells]
 
         ray.kill(old[0])
-        cells[0].primary_engine.mark_stopped()
+        cells[0].stop()
 
         try:
             await cells[0].recover(PortAllocator())
-            recovered_actor = cells[0].primary_engine.actor_handle
+            recovered_actor = cells[0].primary_actor_handle
             calls = ray.get(recovered_actor.get_calls.remote())
             assert "init" in [c[0] for c in calls]
 
@@ -188,9 +188,9 @@ class TestConcurrentRecover:
 
         # Kill one engine in each batch
         for cells in (a, b):
-            old = cells[0].primary_engine.actor_handle
+            old = cells[0].primary_actor_handle
             ray.kill(old)
-            cells[0].primary_engine.mark_stopped()
+            cells[0].stop()
 
         try:
             # Real concurrent recover via asyncio.gather
@@ -199,8 +199,8 @@ class TestConcurrentRecover:
                 a[0].recover(shared_allocator),
                 b[0].recover(shared_allocator),
             )
-            assert a[0].primary_engine.is_allocated
-            assert b[0].primary_engine.is_allocated
+            assert a[0].is_allocated
+            assert b[0].is_allocated
         finally:
             kill_cells(a)
             kill_cells(b)
@@ -224,7 +224,7 @@ class TestSimulateCrashKeepsActorReachable:
         pg = placement_group_factory(1)
         cells = build_cells(pg_tuple=pg, num_cells=1)
         await start_cells(cells, mark_alive=True)
-        actor = cells[0].primary_engine.actor_handle
+        actor = cells[0].primary_actor_handle
 
         try:
             ray.get(actor.simulate_crash.remote())
@@ -244,12 +244,12 @@ class TestRecoverMultiNodeEngine:
         """Recovering a 2-node engine must not send release/resume to node 1."""
         pg = placement_group_factory(16)
         (cell,) = build_cells(pg_tuple=pg, num_cells=1, num_gpus_per_engine=16, needs_offload=True)
-        assert len(cell.engines) == 2
+        assert cell.num_nodes == 2
 
         try:
             await cell.recover(PortAllocator())
 
-            node0_actor, node1_actor = [e.actor_handle for e in cell.engines]
+            node0_actor, node1_actor = cell.actor_handles
             node0_paths = ray.get(node0_actor.get_http_paths.remote())
             node1_paths = ray.get(node1_actor.get_http_paths.remote())
 
