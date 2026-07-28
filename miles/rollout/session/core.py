@@ -227,10 +227,9 @@ class SessionCore:
             # token IDs still come from logprobs below.
             request_body["no_stop_trim"] = False
             # Keep request's chat_template_kwargs and override some key fields by tito tokenizer chat template kwargs.
-            # FIXME(session): 1) only the nested "chat_template_kwargs" object
-            # is read — top-level "reasoning"/"reasoning_effort" request fields
-            # (and the kwargs spelling SGLang promotes to top level) never
-            # reach the local render, so those spellings still diverge;
+            # FIXME(session): 1) only nested "chat_template_kwargs" reach the
+            # local render; unlike upstream SGLang, top-level "reasoning" and
+            # "reasoning_effort" are not mapped into template kwargs;
             # 2) mid-session mode-change safety is a per-family property and
             # is not guarded yet:
             #    - DeepSeek V3.2/V4: unsafe — history think blocks and the

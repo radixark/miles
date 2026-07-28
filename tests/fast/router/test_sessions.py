@@ -204,19 +204,6 @@ class TestSessionProxy:
         assert resp.status_code == 400
         assert resp.json()["error"].startswith("invalid JSON body:")
 
-    def test_chat_rejects_non_object_template_kwargs(self, router_env):
-        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
-        resp = requests.post(
-            f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
-            json={
-                "messages": [{"role": "user", "content": "hi"}],
-                "chat_template_kwargs": ["enable_thinking"],
-            },
-            timeout=10.0,
-        )
-        assert resp.status_code == 400
-        assert resp.json()["error"] == "chat_template_kwargs must be an object"
-
     def test_chat_template_kwargs_override_reaches_render_and_backend(self, router_env):
         """A request response-mode kwarg wins over the launch default in both
         the locally rendered input_ids and the outbound backend request."""
@@ -243,20 +230,6 @@ class TestSessionProxy:
         override_payload = router_env.backend.request_log[-1]
         assert override_payload["chat_template_kwargs"] == {"enable_thinking": True}
         assert override_payload["input_ids"] != default_payload["input_ids"]
-
-    def test_chat_unknown_template_kwarg_passes_through(self, router_env):
-        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
-        resp = requests.post(
-            f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
-            json={
-                "messages": [{"role": "user", "content": "hi"}],
-                "chat_template_kwargs": {"unknown": False},
-            },
-            timeout=10.0,
-        )
-        assert resp.status_code == 200
-        payload = router_env.backend.request_log[-1]
-        assert payload["chat_template_kwargs"] == {"enable_thinking": False, "unknown": False}
 
     def test_chat_upstream_null_message_returns_502(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]

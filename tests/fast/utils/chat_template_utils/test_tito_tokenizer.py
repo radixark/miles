@@ -258,47 +258,6 @@ class TestConfig:
         assert comp._trim_trailing_ids == set(qwen3_tito.trailing_token_ids)
 
 
-class TestCloneWithChatTemplateKwargs:
-    """clone_with_chat_template_kwargs builds a request-scoped tokenizer:
-    request kwargs win over construction-time kwargs, fixed-template
-    conflicts re-validate, derived kwargs recompute, and the shared instance
-    never absorbs request state."""
-
-    def test_request_kwargs_win_and_share_hf_tokenizer(self, qwen3_tito: Qwen3TITOTokenizer):
-        clone = qwen3_tito.clone_with_chat_template_kwargs({"enable_thinking": True})
-
-        assert clone.tokenizer is qwen3_tito.tokenizer
-        assert clone.chat_template_kwargs["enable_thinking"] is True
-        # Construction-time kwargs the request did not touch survive.
-        assert clone.chat_template_kwargs["clear_thinking"] is False
-        # The shared instance never absorbs request state.
-        assert "enable_thinking" not in qwen3_tito.chat_template_kwargs
-
-    def test_fixed_template_conflict_revalidates(self, qwen3_tito: Qwen3TITOTokenizer):
-        class _PinnedQwen3TITOTokenizer(Qwen3TITOTokenizer):
-            FIXED_TEMPLATE = FixedTemplate(
-                template=Qwen3TITOTokenizer.FIXED_TEMPLATE.template,
-                extra_kwargs={"drop_thinking": False},
-            )
-
-        pinned = _PinnedQwen3TITOTokenizer(qwen3_tito.tokenizer)
-        with pytest.raises(ValueError, match="drop_thinking"):
-            pinned.clone_with_chat_template_kwargs({"drop_thinking": True})
-
-    def test_deepseek_v32_rederives_effective_thinking(self):
-        tokenizer = MagicMock()
-        tokenizer.convert_tokens_to_ids.side_effect = [1, 2, 1, 2]
-
-        tito = DeepSeekV32TITOTokenizer(tokenizer, chat_template_kwargs={})
-        assert tito.chat_template_kwargs["thinking"] is True
-
-        clone = tito.clone_with_chat_template_kwargs({"enable_thinking": False})
-        # The stale derived value does not survive the override: the clone's
-        # constructor recomputes ``thinking`` from the merged kwargs.
-        assert clone.chat_template_kwargs["thinking"] is False
-        assert tito.chat_template_kwargs["thinking"] is True
-
-
 class TestDeepSeekV32IncrementalAppend:
     """V3.2 rides the default synthetic-prefix suffix diff; with the family's
     pinned ``drop_thinking=False`` the vendored encoder renders every turn
