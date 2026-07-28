@@ -416,7 +416,6 @@ def _train(args: ScriptArgs):
         "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "AITER_BF16_FP8_MOE_BOUND": "0",
-        "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "1",
     }
 
     misc_args = (
