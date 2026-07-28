@@ -33,8 +33,8 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 LR=2e-5
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/../../scripts/models/qwen3-4B.sh"
-
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../../miles/utils/external_utils/model_args_utils.py" "qwen3-4B")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-4B
    --save /root/Qwen3-4B-lora-ckpt

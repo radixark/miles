@@ -32,7 +32,8 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-20
 
 ```bash
 cd /root/miles
-source scripts/models/qwen3.5-35B-A3B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3.5-35B-A3B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
@@ -98,7 +99,7 @@ CPU Adam is enabled (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --
 ### 5.5 Notable quirks
 
 - The Megatron side uses `--moe-token-dispatcher-type flex`; DeepEP isn't enabled here, unlike Qwen3-Next.
-- The model config (`scripts/models/qwen3.5-35B-A3B.sh`) reuses the Qwen3.5 spec: `--attention-output-gate`, `--rotary-base 10000000`, `--rotary-percent 0.25`, `A_log` kept in FP32 via the bridge. See [Backends Beyond Megatron](/advanced/architecture-support).
+- The model config (`scripts/models/qwen3.5-35B-A3B.py`) reuses the Qwen3.5 spec: `--attention-output-gate`, `--rotary-base 10000000`, `--rotary-percent 0.25`, `A_log` kept in FP32 via the bridge. See [Backends Beyond Megatron](/advanced/architecture-support).
 
 ## 6. Pairs Well With
 

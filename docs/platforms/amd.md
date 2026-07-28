@@ -68,7 +68,8 @@ ROCm converter is in development.
 
 ```bash
 cd /root/miles
-source scripts/models/qwen3-4B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3-4B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 MEGATRON_LM_PATH=$(pip list | grep megatron-core | awk '{print $NF}')
 
 PYTHONPATH=${MEGATRON_LM_PATH} python tools/convert_hf_to_torch_dist.py \

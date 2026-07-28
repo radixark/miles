@@ -29,6 +29,11 @@
 "python"
 
 ### 6
+"python3"
+"<REPO_ROOT>/examples/lora/../../miles/utils/external_utils/model_args_utils.py"
+"qwen2.5-0.5B"
+
+### 7
 "ray"
 "start"
 "--head"
@@ -38,7 +43,7 @@
 "8"
 "--disable-usage-stats"
 
-### 7
+### 8
 "ray"
 "job"
 "submit"

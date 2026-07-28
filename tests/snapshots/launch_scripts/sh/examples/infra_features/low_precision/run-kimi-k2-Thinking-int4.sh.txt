@@ -42,6 +42,11 @@
 "nvidia-smi"
 
 ### 9
+"python3"
+"<REPO_ROOT>/examples/infra_features/low_precision/../../../miles/utils/external_utils/model_args_utils.py"
+"kimi-k2-thinking"
+
+### 10
 "ray"
 "job"
 "submit"

@@ -49,6 +49,11 @@
 "-m"
 
 ### 10
+"python3"
+"<REPO_ROOT>/miles/utils/external_utils/model_args_utils.py"
+"qwen3-30B-A3B"
+
+### 11
 "ray"
 "start"
 "--head"
@@ -60,12 +65,12 @@
 "--dashboard-host=0.0.0.0"
 "--dashboard-port=8265"
 
-### 11
+### 12
 "python3"
 "-c"
 "import ray; ray.init(address='auto', ignore_reinit_error=True); print(int(ray.cluster_resources().get('GPU', 0))); ray.shutdown()"
 
-### 12
+### 13
 "ray"
 "job"
 "submit"

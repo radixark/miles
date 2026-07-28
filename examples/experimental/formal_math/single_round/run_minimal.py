@@ -8,6 +8,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from miles.utils.external_utils.model_args_utils import load_model_args
+
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[4]
 
 MODEL_NAME, MODEL_TYPE = "Qwen3-8B", "qwen3-8B"
@@ -131,11 +133,10 @@ runtime_env_json = json.dumps(
 
 cmd = (
     f"export PYTHONUNBUFFERED=1 && "
-    f'source "{repo_base_dir}/scripts/models/{MODEL_TYPE}.sh" && '
     f'ray job submit --address="http://127.0.0.1:8265" '
     f"--runtime-env-json='{runtime_env_json}' "
     f"-- python3 train.py "
-    "${MODEL_ARGS[@]} "
+    f"{load_model_args(MODEL_TYPE)} "
     f"{train_args}"
 )
 

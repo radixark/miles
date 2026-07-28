@@ -42,7 +42,7 @@ class TestRunImplValidation:
 
 class TestRunImplExecCommand:
     """Only mock exec_command_gpu, generate_token_ids, write_token_ids_to_tmpfile,
-    and resolve_model_script — let the rest (build_worker_args, build_dumper_env,
+    and load_model_args — let the rest (build_worker_args, build_dumper_env,
     build_torchrun_cmd, ParallelConfig, WorkerScriptArgs) run for real."""
 
     @pytest.fixture(autouse=True)
@@ -58,8 +58,8 @@ class TestRunImplExecCommand:
                 return_value=Path("/tmp/tokens.json"),
             ),
             patch(
-                "miles.utils.debug_utils.run_megatron.cli.worker_executor.resolve_model_script",
-                return_value=Path("/repo/scripts/models/deepseek_v3.sh"),
+                "miles.utils.debug_utils.run_megatron.cli.worker_executor.load_model_args",
+                return_value="--num-layers 61",
             ),
         ):
             self.mock_exec = mock_exec

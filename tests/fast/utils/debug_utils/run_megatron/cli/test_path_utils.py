@@ -29,7 +29,7 @@ class TestResolveModelScript:
     def test_returns_path_when_exists(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         scripts_dir = tmp_path / "scripts" / "models"
         scripts_dir.mkdir(parents=True)
-        script_file = scripts_dir / "deepseek_v3.sh"
+        script_file = scripts_dir / "deepseek_v3.py"
         script_file.touch()
 
         monkeypatch.setattr(

@@ -45,8 +45,8 @@ if [[ "$ROLE" == "worker" ]]; then
 fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/nemotron-3-super-120b-a12b.sh"
-
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" "nemotron-3-super-120b-a12b")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 MODELS_DIR=${MODELS_DIR:-/cluster_public/miles_data/models}
 DATASETS_DIR=${DATASETS_DIR:-/cluster_public/miles_data/datasets}
 

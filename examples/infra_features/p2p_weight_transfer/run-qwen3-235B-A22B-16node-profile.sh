@@ -82,9 +82,8 @@ MODEL_TYPE="qwen3-235B-A22B"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 MILES_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"
 export MODEL_ARGS_ROTARY_BASE=5000000
-source "${MILES_ROOT}/scripts/models/${MODEL_TYPE}.sh"
-
-
+MODEL_ARGS_LINE="$(python3 "${MILES_ROOT}/miles/utils/external_utils/model_args_utils.py" "${MODEL_TYPE}")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 # ---------------------------------------------------------------------------
 # Determine modes to run
 # ---------------------------------------------------------------------------

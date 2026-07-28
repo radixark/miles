@@ -9,12 +9,12 @@ import os
 import random
 import shlex
 import socket
-import subprocess
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
 from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
+from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.http_utils import wait_for_server_ready
 from miles.utils.typer_utils import dataclass_cli
@@ -30,18 +30,6 @@ def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | 
         if pythonpath:
             entries.extend(pythonpath.split(os.pathsep))
     return os.pathsep.join(dict.fromkeys(entries))
-
-
-def load_model_args(megatron_model_type: str) -> list[str]:
-    """Expand the MODEL_ARGS array that scripts/models/<megatron_model_type>.sh declares."""
-    script = f"{repo_base_dir}/scripts/models/{megatron_model_type}.sh"
-    assert os.path.exists(script), f"no model args script at {script}"
-    expansion = f'source {shlex.quote(script)} && printf "%s\\0" "${{MODEL_ARGS[@]}}"'
-    result = subprocess.run(["bash", "-c", expansion], capture_output=True, text=True, check=True)
-    tokens = result.stdout.split("\0")[:-1]
-    for token in tokens:
-        assert token.split() == [token], f"model args token must be one whitespace-free word: {token!r}"
-    return tokens
 
 
 def convert_checkpoint(
@@ -81,7 +69,7 @@ def convert_checkpoint(
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
         f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
-        f"{' '.join(load_model_args(megatron_model_type))} "
+        f"{load_model_args(megatron_model_type)} "
         f"--hf-checkpoint {hf_checkpoint} "
         f"--save {path_dst} "
         f"{extra_args}"
@@ -207,7 +195,7 @@ def execute_train(
     runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
 
     if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
-        model_args = " ".join(load_model_args(megatron_model_type)) if megatron_model_type is not None else ""
+        model_args = load_model_args(megatron_model_type) if megatron_model_type is not None else ""
         exec_command_cpu(
             f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
             f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""

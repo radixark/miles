@@ -71,6 +71,11 @@
 "/root/datasets/geo3k_imgurl"
 
 ### 13
+"python3"
+"<REPO_ROOT>/miles/utils/external_utils/model_args_utils.py"
+"qwen3-8B"
+
+### 14
 "ray"
 "start"
 "--head"
@@ -82,7 +87,7 @@
 "--dashboard-host=0.0.0.0"
 "--dashboard-port=8265"
 
-### 14
+### 15
 "ray"
 "job"
 "submit"

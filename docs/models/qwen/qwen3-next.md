@@ -42,7 +42,8 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir $BASE_FOLDER/
 
 ```bash
 cd /root/miles
-source scripts/models/qwen3-next-80B-A3B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3-next-80B-A3B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \

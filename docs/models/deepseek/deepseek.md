@@ -52,7 +52,8 @@ Then convert BF16 HF → Megatron `torch_dist`. Run on **4 separate nodes** (`NO
 
 ```bash
 cd miles/
-source scripts/models/deepseek-v3.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py deepseek-v3)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM/ torchrun \
    --nproc-per-node 8 \
    --master-addr ${MASTER_ADDR} --master-port 12345 \
