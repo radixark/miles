@@ -1,4 +1,4 @@
-"""SWE-Agent V2 launcher (GLM-4.7-Flash): Miles <-> Harbor orchestration.
+"""SWE-Agent launcher (GLM-4.7-Flash): Miles <-> Harbor orchestration.
 
 Supports any task type (SWE-bench, Terminal-Bench, custom) via Harbor.
 

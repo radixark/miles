@@ -1,4 +1,4 @@
-# SWE-Agent V2 training with Harbor
+# SWE-Agent training with Harbor
 
 This example trains GLM-4.7-Flash on agentic coding and terminal tasks. Miles
 runs synchronous GRPO and serves the policy through its session server; a
@@ -58,7 +58,7 @@ long-running trials do not lose an idle connection while Harbor is working.
 Convert a local JSONL whose rows include a task instruction and instance name:
 
 ```bash
-python examples/swe-agent-v2/download_and_process_data.py \
+python examples/swe-agent/download_and_process_data.py \
     --input /path/to/terminal-bench.jsonl \
     --output /path/to/tb2_train.jsonl \
     --agent-name mini-swe-agent \
@@ -75,7 +75,7 @@ H200 GPUs: 32 trajectories per GRPO step (4 prompts times 8 samples), each one a
 full mini-swe-agent episode in its own Harbor sandbox.
 
 ```bash
-python examples/swe-agent-v2/run.py \
+python examples/swe-agent/run.py \
     --num-nodes 1 \
     --num-gpus-per-node 8 \
     --skip-prepare \
