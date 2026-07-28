@@ -6,7 +6,6 @@ import pytest
 from miles.dashboard import backend, hooks
 from miles.dashboard.hooks import BATCH_MAX_EVENTS, BATCH_MAX_SECONDS, _Identity
 from miles.dashboard.store import Role
-from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.timer import Timer
 
 
@@ -144,15 +143,16 @@ class FakeEngineHandle:
         return self._info  # hooks._ray_get is patched to the identity function
 
 
-class FakeServerEngine:
-    def __init__(self, info, alive=True):
-        self.actor_handle = FakeEngineHandle(info)
-        self.is_allocated = alive
+class FakeCell:
+    """Duck-typed ServerCell: the hooks only read is_alive and actor_handles."""
+
+    def __init__(self, infos, alive=True):
+        self.actor_handles = [FakeEngineHandle(info) for info in infos]
         self.is_alive = alive
 
 
-def _cells(engines, nodes_per_engine=1):
-    return [ServerCell(engines=engines[i : i + nodes_per_engine]) for i in range(0, len(engines), nodes_per_engine)]
+def _cell(*infos, alive=True):
+    return [FakeCell(list(infos), alive=alive)]
 
 
 def _info(url, node, gpus):
@@ -168,10 +168,9 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
     # one multi-node engine (master + worker node) and one single-node engine
-    master = FakeServerEngine(_info("http://a:1", "node-a", [0, 1]))
-    worker = FakeServerEngine(_info("http://a-worker:1", "node-b", [0, 1]))
-    single = FakeServerEngine(_info("http://b:1", "node-a", [2, 3]))
-    servers = _servers(_cells([master, worker], nodes_per_engine=2), _cells([single]))
+    multinode_cell = _cell(_info("http://a:1", "node-a", [0, 1]), _info("http://a-worker:1", "node-b", [0, 1]))
+    single_cell = _cell(_info("http://b:1", "node-a", [2, 3]))
+    servers = _servers(multinode_cell, single_cell)
 
     hooks.register_engines(servers)
     [(args, _)] = handle.update_topology.calls
@@ -183,7 +182,7 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     hooks.register_engines(servers)  # steady state: no remote traffic
     assert len(handle.update_topology.calls) == 1
 
-    single.actor_handle = FakeEngineHandle(_info("http://b:2", "node-a", [2, 3]))  # recovery: new actor
+    single_cell[0].actor_handles = [FakeEngineHandle(_info("http://b:2", "node-a", [2, 3]))]  # recovery: new actor
     hooks.register_engines(servers)
     assert len(handle.update_topology.calls) == 2
     assert handle.update_topology.calls[-1][0][0].engines[1].addr == "http://b:2"
@@ -192,16 +191,16 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
 def test_register_engines_skips_dead_chunks(monkeypatch):
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
-    alive = FakeServerEngine(_info("http://a:1", "n", [0]))
-    dead = FakeServerEngine(_info("http://b:1", "n", [1]), alive=False)
-    hooks.register_engines(_servers(_cells([alive]), _cells([dead])))
+    hooks.register_engines(
+        _servers(_cell(_info("http://a:1", "n", [0])), _cell(_info("http://b:1", "n", [1]), alive=False))
+    )
 
     [(args, _)] = handle.update_topology.calls
     assert [e.addr for e in args[0].engines] == ["http://a:1"]
 
 
 def test_register_engines_without_collector_is_noop():
-    hooks.register_engines(_servers(_cells([FakeServerEngine(_info("http://a:1", "n", [0]))])))
+    hooks.register_engines(_servers(_cell(_info("http://a:1", "n", [0]))))
     assert hooks._engines_fingerprint is None
 
 

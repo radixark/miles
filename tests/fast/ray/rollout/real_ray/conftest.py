@@ -55,14 +55,13 @@ def build_cells(
     from tests.fast.ray.rollout.conftest import make_args
 
     from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
-    from miles.ray.rollout.server_engine import ServerEngine
 
     args = make_args(num_gpus_per_node=8, debug_train_only=debug_train_only)
     nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
     num_gpu_per_engine = min(num_gpus_per_engine, 8)
     return [
         ServerCell(
-            engines=[ServerEngine() for _ in range(nodes_per_engine)],
+            num_nodes=nodes_per_engine,
             args=args,
             pg=pg_tuple,
             num_gpus_per_engine=num_gpus_per_engine,
@@ -92,10 +91,10 @@ async def start_cells(cells, allocator=None, *, mark_alive: bool = False):
 
 def kill_cells(cells) -> None:
     for cell in cells:
-        for engine in cell.engines:
-            if engine.is_allocated:
+        if cell.is_allocated:
+            for actor_handle in cell.actor_handles:
                 try:
-                    ray.kill(engine.actor_handle)
+                    ray.kill(actor_handle)
                 except Exception:
                     pass
 
