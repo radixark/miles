@@ -46,7 +46,7 @@ ROLLOUT_ARGS+=(
 
 ## Example
 
-A full multi-turn agentic setup on the session-server TITO path lives in [`examples/experimental/swe-agent-v2`](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-v2): its launchers wire `--use-session-server` + `--tito-model glm47` against a real SWE agent.
+A full multi-turn agentic setup on the session-server TITO path lives in [`examples/swe-agent`](https://github.com/radixark/miles/tree/main/examples/swe-agent): its launchers wire `--use-session-server` + `--tito-model glm47` against a real SWE agent.
 
 ## Add a new model
 
