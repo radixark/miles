@@ -14,6 +14,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
 )
+from miles.utils.types import WeightVersionSpan, WeightVersionsPerCall
 
 
 @pytest.fixture
@@ -163,6 +164,24 @@ class TestGenerate:
             assert "rewards" in partition
             assert "loss_masks" in partition
             assert len(partition["tokens"]) == 4
+
+    async def test_rejects_samples_generated_under_the_default_weight_version(self, ray_local_mode, patch_low_level):
+        """A batch carrying the sglang never-updated version must fail get(), not reach training."""
+        args = _make_test_args()
+        args.global_batch_size = 8
+
+        executor = _make_executor(args)
+        executor.set_train_parallel_config({"dp_size": 2})
+
+        samples = make_samples_grouped(n_groups=2, group_size=4)
+        samples[0].weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan(version="default", abs_start=0, abs_end=1)])
+        ]
+
+        executor.generate_rollout = lambda input: RolloutFnTrainOutput(samples=[samples], metrics=None)
+
+        with pytest.raises(AssertionError, match="never updated"):
+            await executor.get(rollout_id=42)
 
     async def test_does_not_touch_the_inference_side(self, ray_local_mode, patch_low_level):
         """The controller is a driver-side object the executor cannot reach, so generate must not need it."""
