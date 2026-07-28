@@ -16,6 +16,16 @@ from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.types import RolloutBatch
 
 
+def _detach_rollout_tensor_list(rollout_data: RolloutBatch, key: str) -> list[torch.Tensor] | None:
+    tensors = rollout_data.get(key)
+    if tensors is None:
+        return None
+
+    detached_tensors = [tensor.detach() for tensor in tensors]
+    rollout_data[key] = detached_tensors
+    return detached_tensors
+
+
 def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
 
@@ -38,7 +48,8 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
             "total_lengths"). Modified in-place to add "advantages" and
             "returns" keys, each mapping to lists of tensors per sample.
     """
-    log_probs: list[torch.Tensor] = rollout_data.get("rollout_log_probs" if args.use_rollout_logprobs else "log_probs")
+    log_probs_key = "rollout_log_probs" if args.use_rollout_logprobs else "log_probs"
+    log_probs: list[torch.Tensor] = rollout_data.get(log_probs_key)
     ref_log_probs: list[torch.Tensor] = rollout_data.get("ref_log_probs")
     rewards: list[float] = rollout_data.get("rewards")
     values: None | list[torch.Tensor] = rollout_data.get("values")
@@ -50,6 +61,15 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     # return when not the last pp stage.
     if log_probs is None and values is None:
         return
+
+    # This is the authoritative persistence boundary: scores produced before
+    # the policy update are fixed training data and must not retain a graph.
+    _detach_rollout_tensor_list(rollout_data, "log_probs")
+    _detach_rollout_tensor_list(rollout_data, "rollout_log_probs")
+    _detach_rollout_tensor_list(rollout_data, "ref_log_probs")
+    _detach_rollout_tensor_list(rollout_data, "teacher_log_probs")
+    log_probs = rollout_data.get(log_probs_key)
+    ref_log_probs = rollout_data.get("ref_log_probs")
 
     if args.kl_coef == 0 or not log_probs:
         # when kl_coef is 0, we won't compute ref_log_prob
