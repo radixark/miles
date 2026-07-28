@@ -204,6 +204,7 @@ class RolloutComponents(NamedTuple):
 
 async def create_rollout_components(args, pg) -> RolloutComponents:
     inference_controller = InferenceController(args, pg)
+    await inference_controller.init()
 
     rollout_executor = RolloutExecutor.options(
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
