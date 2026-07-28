@@ -91,6 +91,28 @@ class TestStartEnginesRealActors:
         for h in first_handles:
             ray.kill(h)
 
+    async def test_a_cell_that_lost_one_node_restarts_whole(self, patched_sglang_engine, placement_group_factory):
+        """The surviving node belongs to a process group that no longer exists,
+        so restarting the dead node alone would leave the engine broken."""
+        pg = placement_group_factory(16)
+        (cell,) = build_cells(pg_tuple=pg, num_cells=1, num_gpus_per_engine=16)
+        await start_cells([cell])
+        assert len(cell.engines) == 2
+        original_handles = [e.actor_handle for e in cell.engines]
+
+        cell.engines[1].mark_stopped()
+
+        try:
+            assert await cell.start_engines(PortAllocator()) is True
+            assert all(e.is_allocated for e in cell.engines)
+            # Both node-ranks are fresh actors, not just the one that died.
+            for original, engine in zip(original_handles, cell.engines, strict=True):
+                assert engine.actor_handle is not original
+        finally:
+            for e in cell.engines:
+                if e.is_allocated:
+                    ray.kill(e.actor_handle)
+
 
 # FIXME(@fzyzcjy): TestStopCellsRealKill is a timing-sensitive Ray actor
 # termination race that flakes in CI (stage-a-cpu). Real fix tracked in
