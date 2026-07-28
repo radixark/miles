@@ -64,6 +64,7 @@ def make_args(**overrides: Any) -> Namespace:
         # placement / colocation
         debug_train_only=False,
         debug_rollout_only=False,
+        debug_skip_weight_update=False,
         colocate=False,
         actor_num_nodes=1,
         actor_num_gpus_per_node=8,
