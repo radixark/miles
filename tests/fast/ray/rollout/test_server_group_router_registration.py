@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-import pytest
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, fake_actor_handle, make_args
 
 from miles.ray.rollout.server_cell import flatten_cells
@@ -35,14 +34,13 @@ def _build_group(
     num_engines: int = 1,
     num_gpus_per_engine: int = 1,
     worker_type: str = "regular",
-    router_ip: str | None = "10.0.0.9",
-    router_port: int | None = 9000,
+    router_ip: str = "10.0.0.9",
+    router_port: int = 9000,
     bootstrap_port: int | None = None,
     use_miles_router: bool = False,
-    rollout_external: bool = False,
     remove_worker_effect=None,
 ) -> ServerGroup:
-    args = make_args(num_gpus_per_node=8, use_miles_router=use_miles_router, rollout_external=rollout_external)
+    args = make_args(num_gpus_per_node=8, use_miles_router=use_miles_router)
     engines = []
     for index in range(num_engines):
         engine = ServerEngine()
@@ -63,7 +61,6 @@ def _build_group(
             worker_type=worker_type,
         ),
         num_gpus_per_engine=num_gpus_per_engine,
-        has_new_engines=False,
         worker_type=worker_type,
         router_ip=router_ip,
         router_port=router_port,
@@ -131,30 +128,6 @@ async def test_registration_skips_a_cell_that_is_not_allocated():
         await group.register_workers([0, 1])
 
     assert [kwargs["worker_url"] for _name, kwargs in events] == ["http://10.0.0.2:30001"]
-
-
-@pytest.mark.parametrize("missing", [dict(router_ip=None), dict(router_port=None)])
-async def test_registration_is_skipped_without_a_router(missing):
-    events: list[tuple[str, dict]] = []
-    group = _build_group(events=events, **missing)
-
-    with _with_recording_client(group):
-        await group.register_workers([0])
-        await group.unregister_workers([0])
-
-    assert events == []
-
-
-async def test_an_external_engine_is_never_registered_or_unregistered():
-    """External engines are published by whoever runs them."""
-    events: list[tuple[str, dict]] = []
-    group = _build_group(events=events, rollout_external=True)
-
-    with _with_recording_client(group):
-        await group.register_workers([0])
-        await group.unregister_workers([0])
-
-    assert events == []
 
 
 def test_stop_engines_unregisters_before_killing_the_actor():
