@@ -346,12 +346,12 @@ class TestGetUpdatableEnginesAndLock:
 
         controller = _make_controller(args, pg)
         # Force ref's flag True so we can detect any erroneous clear.
-        controller.servers["ref"].server_groups[0].has_new_engines = True
+        controller.servers["ref"].has_new_engines = True
 
         await controller.clear_updatable_has_new_engines()
 
-        assert controller.servers["ref"].server_groups[0].has_new_engines is True
-        assert controller.servers["actor"].server_groups[0].has_new_engines is False
+        assert controller.servers["ref"].has_new_engines is True
+        assert controller.servers["actor"].has_new_engines is False
 
     async def test_multiple_updatable_servers_raises_assertion(
         self,

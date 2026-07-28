@@ -93,7 +93,6 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 args=args,
                 cells=cells,
                 num_gpus_per_engine=gpus_per_engine,
-                has_new_engines=False,
                 worker_type=group_cfg.worker_type,
                 router_ip=router_ip,
                 router_port=router_port,
@@ -112,6 +111,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
         servers[model_cfg.name] = RolloutServer(
             server_groups=server_groups,
+            has_new_engines=any(bool(new_cell_indices) for new_cell_indices in new_cell_indices_per_group),
             router_ip=router_ip,
             router_port=router_port,
             model_name=model_cfg.name,
@@ -223,6 +223,8 @@ class RolloutServer:
     """
 
     server_groups: list[ServerGroup]
+    # NOTE: this may have risk when recovering engines parallelly; may use source of truth (cells) later
+    has_new_engines: bool = False
     router_ip: str | None = None
     router_port: int | None = None
     model_name: str = "default"
@@ -233,13 +235,8 @@ class RolloutServer:
         """All node-0 engines across all groups."""
         return [e for g in self.server_groups for e in g.engines]
 
-    @property
-    def has_new_engines(self) -> bool:
-        return any(g.has_new_engines for g in self.server_groups)
-
     def clear_has_new_engines(self):
-        for g in self.server_groups:
-            g.has_new_engines = False
+        self.has_new_engines = False
 
     @property
     def engine_gpu_counts(self) -> list[int]:
@@ -279,7 +276,19 @@ class RolloutServer:
     async def recover(self):
         """Recover dead engines across all active groups, overlapping init."""
         port_allocator = PortAllocator.empty()
-        await asyncio.gather(*[g.recover(port_allocator=port_allocator) for g in self.server_groups])
+        started_per_group = await asyncio.gather(
+            *[g.recover(port_allocator=port_allocator) for g in self.server_groups]
+        )
+        self.has_new_engines |= any(bool(started) for started in started_per_group)
+
+    async def recover_cell(self, group_index: int, cell_index: int):
+        started = await self.server_groups[group_index].recover(
+            port_allocator=PortAllocator.empty(), filter_cell_indices=[cell_index]
+        )
+        self.has_new_engines |= bool(started)
+
+    def stop_cell(self, group_index: int, cell_index: int):
+        self.server_groups[group_index].stop_engines(cell_indices=[cell_index])
 
     async def offload(self, tags: list[str] | None = None):
         per_group = await asyncio.gather(*[g.offload(tags=tags) for g in self.server_groups])

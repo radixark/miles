@@ -313,7 +313,6 @@ def make_dataclass_group(
             update_weights=True,
         ),
         num_gpus_per_engine=num_gpus_per_engine,
-        has_new_engines=False,
     )
 
 
