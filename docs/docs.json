@@ -173,6 +173,14 @@
        "user-guide/agentic-chat-template",
        "user-guide/cli-reference"
       ]
+     },
+     {
+      "group": "Environments",
+      "root": "user-guide/environments",
+      "pages": [
+       "user-guide/harbor",
+       "user-guide/openenv"
+      ]
      }
     ]
    },
@@ -198,7 +206,8 @@
         "pages": [
          "advanced/fault-tolerance",
          "advanced/pd-disaggregation",
-         "advanced/p2p-weight-transfer"
+         "advanced/p2p-weight-transfer",
+         "advanced/disk-offload"
         ],
         "expanded": false
        },

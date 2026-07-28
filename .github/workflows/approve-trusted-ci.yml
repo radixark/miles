@@ -1,0 +1,44 @@
+# A maintainer-applied `run-ci*` label doubles as the "Approve and run"
+# decision for fork PRs from first-time contributors, on this and every later
+# push. Kept apart from pr-test.yml: tests run PR-world merge-ref code, while
+# approval must come from main's workflow definition and base-repo token
+# (`pull_request_target`). This job checks out nothing from the fork.
+
+name: Approve Trusted CI
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  actions: write
+
+jobs:
+  approve-held-runs:
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      contains(join(github.event.pull_request.labels.*.name, ' '), 'run-ci')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Approve held runs on the PR head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          # job-level contains() is substring-only; re-check the exact prefix
+          if ! echo "${LABELS_JSON}" | jq -e 'any(.[]; startswith("run-ci"))' >/dev/null; then
+            echo "no run-ci* label; not approving"
+            exit 0
+          fi
+          # held runs appear around the same time this event fires; poll so
+          # none are missed
+          for attempt in 1 2 3 4 5; do
+            sleep 15
+            run_ids=$(gh api "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&status=action_required" --jq '.workflow_runs[].id')
+            for run_id in ${run_ids}; do
+              echo "approving run ${run_id}"
+              gh api -X POST "repos/${REPO}/actions/runs/${run_id}/approve" || true
+            done
+          done

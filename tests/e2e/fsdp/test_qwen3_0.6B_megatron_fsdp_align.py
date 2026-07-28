@@ -6,15 +6,14 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=900,
-    suite="stage-c-8-gpu-h100",
+    suite="stage-c-2-gpu-h200",
     labels=["fsdp"],
-    disabled="FSDP backend has known issues, not actively maintained",
 )
 
 
 MODEL_NAME = "Qwen3-0.6B"
 MODEL_TYPE = "qwen3-0.6B"
-NUM_GPUS = 8
+NUM_GPUS = 2
 CP_SIZE = 1
 MEGATRON_TP_SIZE = 1
 MEGATRON_PP_SIZE = 1

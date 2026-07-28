@@ -7,7 +7,6 @@ CONFIG = ModelConfig(
     reasoning_parser="deepseek-v3",
     tool_call_parser="deepseekv32",
     tito_model="deepseekv32",
-    allowed_append_roles=("tool",),
     num_gpus=8,
     tp_size=8,
     ep_size=8,

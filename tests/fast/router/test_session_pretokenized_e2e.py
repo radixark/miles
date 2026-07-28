@@ -43,25 +43,25 @@ FIXED_TEMPLATE_SMOKE_CONFIGS: tuple[FixedTemplateSmokeConfig, ...] = (
     FixedTemplateSmokeConfig(
         name="qwen3-fixed",
         hf_checkpoint="Qwen/Qwen3-0.6B",
-        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWEN3, ["tool"])[0],
+        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWEN3)[0],
         tito_model=TITOTokenizerType.QWEN3.value,
     ),
     FixedTemplateSmokeConfig(
         name="qwen3.5-fixed",
         hf_checkpoint="Qwen/Qwen3.5-0.8B",
-        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWEN35, ["tool"])[0],
+        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWEN35)[0],
         tito_model=TITOTokenizerType.QWEN35.value,
     ),
     FixedTemplateSmokeConfig(
         name="qwen3-thinking2507-fixed",
         hf_checkpoint="Qwen/Qwen3-4B-Thinking-2507",
-        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWENNEXT, ["tool"])[0],
+        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWENNEXT)[0],
         tito_model=TITOTokenizerType.QWENNEXT.value,
     ),
     FixedTemplateSmokeConfig(
         name="qwen3-next-thinking-fixed",
         hf_checkpoint="Qwen/Qwen3-Next-80B-A3B-Thinking",
-        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWENNEXT, ["tool"])[0],
+        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWENNEXT)[0],
         tito_model=TITOTokenizerType.QWENNEXT.value,
     ),
 )
@@ -113,7 +113,6 @@ def test_bundled_fixed_template_session_smoke(config: FixedTemplateSmokeConfig):
         hf_checkpoint=config.hf_checkpoint,
         chat_template_path=config.chat_template_path,
         tito_model=config.tito_model,
-        allowed_append_roles=["tool"],
     )
 
     try:
@@ -149,7 +148,6 @@ def test_bundled_fixed_template_session_smoke(config: FixedTemplateSmokeConfig):
             local_mismatch = compute_local_session_mismatch(
                 tokenizer,
                 tito_model=config.tito_model,
-                allowed_append_roles=["tool"],
                 messages=session_messages,
                 accumulated_token_ids=metadata["accumulated_token_ids"],
                 tools=trajectory.tools,

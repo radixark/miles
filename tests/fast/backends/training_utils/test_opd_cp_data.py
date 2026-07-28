@@ -57,12 +57,13 @@ def _load_rollout_data(
         opd_key: [_OPD_VALUES.clone()],
     }
 
-    monkeypatch.setattr(data_utils, "process_rollout_data", lambda *args, **kwargs: rollout_data)
+    monkeypatch.setattr(data_utils, "process_rollout_data", lambda *args, **kwargs: (rollout_data, object()))
     monkeypatch.setattr(data_utils, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
 
-    return data_utils.get_rollout_data(_args(qkv_format), object())
+    loaded_rollout_data, _store_get_result = data_utils.get_rollout_data(_args(qkv_format), object())
+    return loaded_rollout_data
 
 
 @pytest.mark.parametrize("opd_key", ["teacher_log_probs", "opd_reverse_kl"])

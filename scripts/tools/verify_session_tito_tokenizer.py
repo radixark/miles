@@ -2,8 +2,8 @@
 """CLI: run the multi-role TITO session-server verifier against a real model.
 
 Boots the miles rollout pipeline (sglang + miles-router) under
-``--debug-rollout-only`` and drives the schedule registered for the requested
-``--tito-allowed-append-roles`` surface (see
+``--debug-rollout-only`` and drives the schedule registered for the selected
+family's ``FixedTemplate.allowed_append_roles`` capability (see
 ``miles.utils.test_utils.session_verify_agent``).  PASS iff every sample
 completes without HTTP error from the server-side prefix check and the
 custom-generate coverage assertion is satisfied.
@@ -21,7 +21,6 @@ Usage examples::
     python scripts/tools/verify_session_tito_tokenizer.py \\
         --hf-checkpoint zai-org/GLM-4.7-Flash \\
         --tito-model glm47 \\
-        --tito-allowed-append-roles tool user system \\
         --sglang-reasoning-parser glm45 \\
         --sglang-tool-call-parser glm47 \\
         --rollout-num-gpus-per-engine 4
@@ -30,7 +29,6 @@ Usage examples::
     python scripts/tools/verify_session_tito_tokenizer.py \\
         --hf-checkpoint Qwen/Qwen3-4B \\
         --tito-model qwen3 \\
-        --tito-allowed-append-roles tool user \\
         --sglang-reasoning-parser qwen3 \\
         --sglang-tool-call-parser qwen25 \\
         --rollout-num-gpus-per-engine 1
@@ -42,7 +40,6 @@ Usage examples::
     python scripts/tools/verify_session_tito_tokenizer.py \\
         --hf-checkpoint zai-org/GLM-4.7-Flash \\
         --tito-model glm47 \\
-        --tito-allowed-append-roles tool user system \\
         --sglang-reasoning-parser glm45 \\
         --sglang-tool-call-parser glm47 \\
         --rollout-num-gpus-per-engine 4 \\
@@ -55,7 +52,7 @@ import logging
 import sys
 
 from miles.utils.arguments import parse_args
-from miles.utils.test_utils.session_verify_agent import select_schedule
+from miles.utils.test_utils.session_verify_agent import fixed_template_append_roles, select_schedule
 from miles.utils.test_utils.session_verify_runner import run_session_verify, session_verify_extras
 
 
@@ -71,6 +68,8 @@ def _print_action_table(allowed_roles: list[str]) -> None:
         print("  - append_user      (deterministic; required because 'user' in roles)")
     if "system" in allowed_roles:
         print("  - append_system    (deterministic; required because 'system' in roles)")
+    if "assistant" in allowed_roles:
+        print("  - append_assistant (deterministic; required because 'assistant' in roles)")
     print()
     print("Required cross-sample driver events (asserted in generate wrapper):")
     print("  - append_tool      (model-dependent; >=1 sample must emit a tool_call)")
@@ -85,14 +84,13 @@ def main() -> int:
 
     args = parse_args(add_custom_arguments=session_verify_extras)
 
-    # Normalize role surface up-front for the printed summary.  ``run_session_verify``
-    # also normalizes internally (lowercase + dedup + ensure 'tool'), but doing it
-    # here lets ``select_schedule`` validate the surface before any GPU work starts.
-    allowed_roles = sorted(set(r.lower() for r in args.tito_allowed_append_roles) | {"tool"})
+    # Resolve the family-owned capability before any GPU work starts so an
+    # unsupported verifier schedule fails immediately.
+    allowed_roles = list(fixed_template_append_roles(args.tito_model))
 
     print(f"Model:                  {args.hf_checkpoint}")
     print(f"TITO model family:      {args.tito_model}")
-    print(f"Allowed append roles:   {allowed_roles}")
+    print(f"Template append roles:  {allowed_roles}")
     print(f"sglang reasoning parser:{args.sglang_reasoning_parser}")
     print(f"sglang tool-call parser:{args.sglang_tool_call_parser or '(none)'}")
     print(f"Rollout GPUs per engine:{args.rollout_num_gpus_per_engine}")

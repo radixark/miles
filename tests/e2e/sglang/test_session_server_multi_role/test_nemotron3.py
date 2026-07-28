@@ -23,7 +23,6 @@ CONFIG = ModelConfig(
     reasoning_parser="nemotron_3",
     tool_call_parser="qwen3_coder",
     tito_model="nemotron3",
-    allowed_append_roles=("tool", "user"),
     tp_size=4,
     cycles=2,
     assistant_text_threshold=1.0,

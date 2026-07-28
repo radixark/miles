@@ -1,12 +1,40 @@
 from typing import Any
 
-import ray
 import torch
 
-from miles.utils.ray_utils import Box
+from miles.utils import object_store
+from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
+
+ROLLOUT_DATA_TENSOR_DTYPES = {
+    "tokens": "int32",
+    "loss_masks": "int32",
+    "rollout_log_probs": "float32",
+    "teacher_log_probs": "float32",
+    "opd_reverse_kl": "float32",
+    "rollout_routed_experts": "int32",
+    "rollout_indexer_topk": "int32",
+}
+
+ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
+    **{field: ValueSpec(codec="typed_ragged") for field in ROLLOUT_DATA_TENSOR_DTYPES},
+    "partition": ValueSpec(codec="ndarray", dtype="int64"),
+    "seq_witness_ids": ValueSpec(codec="ndarray", dtype="int64"),
+    "response_lengths": ValueSpec(codec="ndarray", dtype="int64"),
+    "rewards": ValueSpec(codec="ndarray", dtype="float32"),
+    "truncated": ValueSpec(codec="ndarray", dtype="int64"),
+    "round_number": ValueSpec(codec="ndarray", dtype="int64"),
+    "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
+    "prompt": ValueSpec(codec="msgpack_ragged"),
+    "metadata": ValueSpec(codec="msgpack_ragged"),
+    "weight_versions": ValueSpec(codec="msgpack_ragged"),
+    "raw_reward": ValueSpec(codec="auto"),
+    "total_lengths": ValueSpec(codec="auto"),
+    "dynamic_global_batch_size": ValueSpec(codec="auto"),
+}
 
 
 def convert_samples_to_train_data(
@@ -168,7 +196,8 @@ def _post_process_rewards(
 def split_train_data_by_dp(args, data, dp_size):
     """Split the train data by data parallel size."""
     rollout_data_list = split_train_data_by_dp_raw(args, data, dp_size=dp_size)
-    return [Box(ray.put(rollout_data)) for rollout_data in rollout_data_list]
+    store = object_store.get_instance()
+    return [store.put(value=rollout_data, value_spec=ROLLOUT_DATA_VALUE_SPEC) for rollout_data in rollout_data_list]
 
 
 def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> list[dict[str, Any]]:

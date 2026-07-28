@@ -19,9 +19,9 @@ Run it directly:
 Add `--incremental-r3` to mock a backend that returns only the new per-turn
 `routed_experts` payload instead of the full accumulated sequence payload;
 add `--get-records` to also exercise the full-records GET (read path).
-With `--allowed-append-roles tool` (no `user`), turns after the first append
-tool responses to assistant tool calls instead of user messages, matching
-tool-only TITO surfaces such as DeepSeek V4.
+Use `--append-role tool` to make turns after the first append tool responses
+to assistant tool calls instead of user messages. This selects the benchmark
+traffic shape; the TITO family's fixed template owns the allowed role surface.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from typing import Any
 
 DEFAULT_HF_CHECKPOINT = "Qwen/Qwen3-0.6B"
 DEFAULT_TITO_MODEL = "qwen3"
-DEFAULT_ALLOWED_APPEND_ROLES = ["user"]
+DEFAULT_APPEND_ROLE = "user"
 
 # Tool-append turns declare this in every request: some encoders (DeepSeek V4)
 # render assistant history differently when no tools are declared, which breaks
@@ -337,7 +337,6 @@ def _build_server_args(
         chat_template_path=chat_template_path,
         apply_chat_template_kwargs=chat_template_kwargs,
         tito_model=bench_args.tito_model,
-        tito_allowed_append_roles=bench_args.allowed_append_roles,
         generate_multi_samples=False,
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=False,
@@ -541,9 +540,7 @@ def run_http_bench(args) -> dict[str, Any]:
         chat_template_path = None
         chat_template_kwargs = None
     else:
-        chat_template_path, chat_template_kwargs = resolve_fixed_chat_template(
-            args.tito_model, args.allowed_append_roles
-        )
+        chat_template_path, chat_template_kwargs = resolve_fixed_chat_template(args.tito_model)
 
     # Build the synthetic per-turn request/response bodies once (CPU, off the clock).
     tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=chat_template_path, trust_remote_code=True)
@@ -551,7 +548,6 @@ def run_http_bench(args) -> dict[str, Any]:
         tokenizer,
         tokenizer_type=args.tito_model,
         chat_template_kwargs=chat_template_kwargs,
-        allowed_append_roles=args.allowed_append_roles,
     )
     specs = _build_turn_specs(
         tokenizer,
@@ -561,7 +557,7 @@ def run_http_bench(args) -> dict[str, Any]:
         output_tokens=args.output_tokens,
         r3_scale=args.r3_scale,
         incremental_r3=args.incremental_r3,
-        tool_appends="user" not in args.allowed_append_roles,
+        tool_appends=args.append_role == "tool",
     )
     response_bodies = [spec.response_body for spec in specs]
 
@@ -667,7 +663,7 @@ def run_http_bench(args) -> dict[str, Any]:
         "r3_scale_raw_bytes_per_token": args.r3_scale,
         "hf_checkpoint": args.hf_checkpoint,
         "tito_model": args.tito_model,
-        "allowed_append_roles": args.allowed_append_roles,
+        "append_role": args.append_role,
         "chat_template_path": chat_template_path,
         "chat_template_kwargs": chat_template_kwargs,
         "wall_s": wall_s,
@@ -788,11 +784,10 @@ def main() -> None:
     parser.add_argument("--hf-checkpoint", default=DEFAULT_HF_CHECKPOINT, help="tokenizer checkpoint or local path")
     parser.add_argument("--tito-model", default=DEFAULT_TITO_MODEL, help="TITO tokenizer family")
     parser.add_argument(
-        "--allowed-append-roles",
-        nargs="+",
-        default=DEFAULT_ALLOWED_APPEND_ROLES,
-        help="roles allowed after the pretokenized prefix; without 'user' the bench appends "
-        "tool responses to assistant tool calls instead of user turns (tool-only TITO surfaces)",
+        "--append-role",
+        choices=["user", "tool"],
+        default=DEFAULT_APPEND_ROLE,
+        help="role used for benchmark turns after the first; selects traffic shape only",
     )
     parser.add_argument("--chat-template-path", default=None, help="explicit chat template path")
     parser.add_argument("--json-out", default=None, help="persist the run as a JSON artifact")

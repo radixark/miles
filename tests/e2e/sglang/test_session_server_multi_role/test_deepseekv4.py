@@ -12,7 +12,6 @@ CONFIG = ModelConfig(
     reasoning_parser="deepseek-v4",
     tool_call_parser="deepseekv4",
     tito_model="deepseekv4",
-    allowed_append_roles=("tool", "user"),
     tp_size=4,
     # V4-Flash serving recipe (scripts/run_deepseek_v4.py): tp=4, ep=4.
     ep_size=4,
