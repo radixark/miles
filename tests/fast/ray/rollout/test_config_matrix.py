@@ -175,8 +175,7 @@ class TestRolloutExternalPath:
         args = make_args(num_gpus_per_node=8, rollout_external=True)
         group = ServerGroup(
             args=args,
-            pg=None,
-            cells=[ServerCell(engines=[ServerEngine()])],
+            cells=[ServerCell(args=args, worker_type="regular", engines=[ServerEngine()])],
             num_gpus_per_engine=1,
             has_new_engines=False,
         )

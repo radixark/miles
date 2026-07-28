@@ -14,13 +14,15 @@ class TestServerCellPrimaryEngine:
     def test_primary_engine_is_the_first_engine(self):
         """The node-0 engine of the cell owns the server url and receives per-cell calls."""
         engines = [MagicMock(), MagicMock()]
-        assert ServerCell(engines=engines).primary_engine is engines[0]
+        assert ServerCell(args=None, worker_type="regular", engines=engines).primary_engine is engines[0]
 
     async def test_offload_releases_memory_on_the_primary_engine_only(self):
         """Non-primary engines are workers without their own HTTP endpoint."""
         engines = [MagicMock(), MagicMock()]
         engines[0].api_client.release_memory_occupation = AsyncMock(return_value="released")
-        assert await ServerCell(engines=engines).offload(tags=["weights"]) == "released"
+        assert (
+            await ServerCell(args=None, worker_type="regular", engines=engines).offload(tags=["weights"]) == "released"
+        )
         engines[0].api_client.release_memory_occupation.assert_awaited_once_with(tags=["weights"])
         engines[1].api_client.release_memory_occupation.assert_not_called()
 
@@ -28,7 +30,7 @@ class TestServerCellPrimaryEngine:
         """Non-primary engines are workers without their own HTTP endpoint."""
         engines = [MagicMock(), MagicMock()]
         engines[0].api_client.resume_memory_occupation = AsyncMock(return_value="resumed")
-        assert await ServerCell(engines=engines).onload(tags=None) == "resumed"
+        assert await ServerCell(args=None, worker_type="regular", engines=engines).onload(tags=None) == "resumed"
         engines[0].api_client.resume_memory_occupation.assert_awaited_once_with(tags=None)
         engines[1].api_client.resume_memory_occupation.assert_not_called()
 
@@ -36,7 +38,7 @@ class TestServerCellPrimaryEngine:
         """The whole keyword set must reach the engine api unchanged."""
         engines = [MagicMock()]
         engines[0].api_client.check_weights = AsyncMock(return_value={"ok": True})
-        result = await ServerCell(engines=engines).check_weights(
+        result = await ServerCell(args=None, worker_type="regular", engines=engines).check_weights(
             action="report", allow_quant_error=True, selector="first", skip_list=["a"]
         )
         assert result == {"ok": True}
@@ -61,9 +63,8 @@ def _build_servers(
             groups.append(
                 ServerGroup(
                     args=args,
-                    pg=None,
                     cells=chunk_engines_into_cells(
-                        engines, num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8
+                        engines, num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8, args=args
                     ),
                     num_gpus_per_engine=num_gpus_per_engine,
                     has_new_engines=False,

@@ -24,15 +24,11 @@ class ServerGroup:
     """
 
     args: Any
-    pg: Any  # (placement_group, reordered_bundle_indices, reordered_gpu_ids)
     cells: list[ServerCell]
     num_gpus_per_engine: int
     # NOTE: this may have risk when recovering engines parallelly; may use source of truth (cells) later
     has_new_engines: bool
     worker_type: str = "regular"  # "regular", "prefill", or "decode"
-    rank_offset: int = 0
-    gpu_offset: int = 0
-    sglang_overrides: dict = dataclasses.field(default_factory=dict)
     needs_offload: bool = False
     model_path: str | None = None
     router_ip: str | None = None
@@ -40,9 +36,9 @@ class ServerGroup:
     update_weights: bool = True
 
     def __post_init__(self):
-        assert (
-            not self.cells or self.rank_offset % self.nodes_per_engine == 0
-        ), f"{self.rank_offset=} must be a multiple of {self.nodes_per_engine=}"
+        assert all(
+            cell.rank_offset % self.nodes_per_engine == 0 for cell in self.cells
+        ), f"every cell's rank_offset must be a multiple of {self.nodes_per_engine=}"
 
     @property
     def nodes_per_engine(self):
@@ -63,21 +59,9 @@ class ServerGroup:
         allocated. Actor creation, port allocation and state marking all happen before
         the first await point, so concurrent callers cannot double-start a slot.
         """
-        assert not ({"host", "port"} & set(self.sglang_overrides)), (
-            f"sglang_overrides must not override host/port ({self.sglang_overrides=}): the rollout process derives "
-            f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
-        )
-
         if self.args.debug_train_only or self.worker_type == "placeholder":
             self.has_new_engines = False
             return []
-
-        if self.args.rollout_external:
-            raise NotImplementedError(
-                "external rollout address allocation was removed and a new implementation is coming"
-            )
-
-        num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
 
         started_cell_indices: list[int] = []
         cell_starts = []
@@ -89,18 +73,7 @@ class ServerGroup:
                 continue
 
             started_cell_indices.append(cell_index)
-            cell_starts.append(
-                cell.start_engines(
-                    args=self.args,
-                    pg=self.pg,
-                    port_allocator=port_allocator,
-                    worker_type=self.worker_type,
-                    sglang_overrides=self.sglang_overrides,
-                    num_gpus_per_engine=self.num_gpus_per_engine,
-                    rank_offset=self.rank_offset + cell_index * self.nodes_per_engine,
-                    gpu_offset=self.gpu_offset + cell_index * self.nodes_per_engine * num_gpu_per_engine,
-                )
-            )
+            cell_starts.append(cell.start_engines(port_allocator))
 
         await asyncio.gather(*cell_starts)
 

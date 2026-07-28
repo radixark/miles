@@ -1,9 +1,10 @@
 import asyncio
+import dataclasses
 import functools
 import logging
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -24,7 +25,14 @@ SHUTDOWN_TIMEOUT = 30
 
 @dataclass
 class ServerCell:
+    args: Any
+    worker_type: Literal["regular", "prefill", "decode"]
     engines: list[ServerEngine]
+    pg: Any = None  # (placement_group, reordered_bundle_indices, reordered_gpu_ids)
+    num_gpus_per_engine: int = 1
+    rank_offset: int = 0
+    gpu_offset: int = 0
+    sglang_overrides: dict = dataclasses.field(default_factory=dict)
 
     @property
     def primary_engine(self) -> ServerEngine:
@@ -36,33 +44,31 @@ class ServerCell:
         assert len(states) == 1, f"a cell's engines are allocated and stopped together ({states=})"
         return states == {True}
 
-    async def start_engines(
-        self,
-        *,
-        args: Any,
-        pg: Any,
-        port_allocator: PortAllocator,
-        worker_type: str,
-        sglang_overrides: dict,
-        num_gpus_per_engine: int,
-        rank_offset: int,
-        gpu_offset: int,
-    ) -> None:
+    async def start_engines(self, port_allocator: PortAllocator) -> None:
+        assert not ({"host", "port"} & set(self.sglang_overrides)), (
+            f"sglang_overrides must not override host/port ({self.sglang_overrides=}): the rollout process derives "
+            f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
+        )
         assert not self.is_allocated, "the caller starts only stopped cells"
 
-        num_gpu_per_engine = min(num_gpus_per_engine, args.num_gpus_per_node)
+        if self.args.rollout_external:
+            raise NotImplementedError(
+                "external rollout address allocation was removed and a new implementation is coming"
+            )
+
+        num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
 
         new_entries: list[tuple[int, ServerEngine, Any]] = []
         for local_index, engine_slot in enumerate(self.engines):
-            global_rank = rank_offset + local_index
+            global_rank = self.rank_offset + local_index
             rollout_engine = launch_sglang_ray_actor(
-                args=args,
-                pg=pg,
+                args=self.args,
+                pg=self.pg,
                 global_rank=global_rank,
-                gpu_index=gpu_offset + local_index * num_gpu_per_engine,
-                worker_type=worker_type,
-                sglang_overrides=sglang_overrides,
-                num_gpus_per_engine=num_gpus_per_engine,
+                gpu_index=self.gpu_offset + local_index * num_gpu_per_engine,
+                worker_type=self.worker_type,
+                sglang_overrides=self.sglang_overrides,
+                num_gpus_per_engine=self.num_gpus_per_engine,
             )
 
             new_entries.append((global_rank, engine_slot, rollout_engine))
@@ -75,7 +81,7 @@ class ServerCell:
             alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
 
             if entry_index == 0:
-                dist_init_addr = f"{node_ip}:{alloc(consecutive=30 + args.sglang_dp_size)}"
+                dist_init_addr = f"{node_ip}:{alloc(consecutive=30 + self.args.sglang_dp_size)}"
 
             addr_and_ports[global_rank] = dict(
                 host=node_ip,
@@ -84,7 +90,7 @@ class ServerCell:
                 engine_info_bootstrap_port=alloc(),
                 dist_init_addr=dist_init_addr,
             )
-            if worker_type == "prefill":
+            if self.worker_type == "prefill":
                 addr_and_ports[global_rank]["disaggregation_bootstrap_port"] = alloc()
 
         init_handles = []

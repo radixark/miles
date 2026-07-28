@@ -20,11 +20,15 @@ class _HangingEngine:
 
 
 def _build_group(*, pg_tuple: tuple, num_engines: int = 1) -> ServerGroup:
+    args = make_args(num_gpus_per_node=8)
     return ServerGroup(
-        args=make_args(num_gpus_per_node=8),
-        pg=pg_tuple,
+        args=args,
         cells=chunk_engines_into_cells(
-            [ServerEngine() for _ in range(num_engines)], num_gpus_per_engine=1, num_gpus_per_node=8
+            [ServerEngine() for _ in range(num_engines)],
+            num_gpus_per_engine=1,
+            num_gpus_per_node=8,
+            args=args,
+            pg=pg_tuple,
         ),
         num_gpus_per_engine=1,
         has_new_engines=False,
