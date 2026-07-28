@@ -8,6 +8,9 @@ import torch
 from miles.utils.sampling_mask import RolloutSamplingMask
 
 
+LEGACY_WEIGHT_VERSIONS_KEY = "legacy_weight_versions"
+
+
 @dataclass(frozen=True)
 class WeightVersionSpan:
     version: str
@@ -213,7 +216,13 @@ class Sample:
         data["status"] = Sample.Status(data["status"])
         data["spec_info"] = Sample.SpecInfo.from_dict(data.get("spec_info", {}))
         data["prefix_cache_info"] = Sample.PrefixCacheInfo.from_dict(data.get("prefix_cache_info", {}))
-        data["weight_versions"] = [WeightVersionsPerCall.from_dicts(call) for call in data.get("weight_versions", [])]
+        raw_weight_versions = data.get("weight_versions") or []
+
+        if raw_weight_versions and isinstance(raw_weight_versions[0], str):
+            data[LEGACY_WEIGHT_VERSIONS_KEY] = raw_weight_versions
+            raw_weight_versions = []
+
+        data["weight_versions"] = [WeightVersionsPerCall.from_dicts(call) for call in raw_weight_versions]
 
         field_names = set(Sample.__dataclass_fields__.keys())
         init_data = {k: v for k, v in data.items() if k in field_names}

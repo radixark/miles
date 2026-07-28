@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import statistics
 import time
 
@@ -7,7 +8,8 @@ import polars as pl
 import pytest
 from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
 
-from miles.dashboard.dump_reader import DumpReader
+from miles.dashboard.dump_reader import DumpReader, _weight_version_summary
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 REMOVED = (3,)  # within-step positions marked remove_sample=True by the fixture
 
@@ -213,7 +215,6 @@ def test_summary_and_tokens_survive_dump_without_log_probs(tmp_path):
     derived from them degrades to None instead of KeyError -> HTTP 404
     (disagg report 2026-07-14)."""
     import torch
-
     from tests.fast.dashboard.dummy_dump import dump_dummy_run
 
     from miles.dashboard.dump_reader import DumpReader
@@ -384,3 +385,106 @@ def test_turns_counts_a_call_that_carried_no_version():
     ]
 
     assert _weight_version_summary(sample) == (["4"], 2)
+
+
+class TestLegacyWeightVersionSummary:
+    def test_reads_versions_from_a_pre_span_dump(self):
+        """A dump that predates spans still reports its versions and turn count."""
+        sample = Sample.from_dict({"status": "completed", "weight_versions": ["3", "4"], "tokens": [1, 2]})
+
+        versions, turns = _weight_version_summary(sample)
+
+        assert versions == ["3", "4"]
+        assert turns == 2
+
+    def test_prefers_spans_when_the_dump_has_them(self):
+        """A current dump is read from its spans, in generation order."""
+        sample = Sample(
+            weight_versions=[
+                WeightVersionsPerCall(spans=[WeightVersionSpan("3", 0, 1)]),
+                WeightVersionsPerCall(spans=[WeightVersionSpan("4", 1, 2), WeightVersionSpan("5", 2, 3)]),
+            ]
+        )
+
+        versions, turns = _weight_version_summary(sample)
+
+        assert versions == ["3", "4", "5"]
+        assert turns == 2
+
+    def test_reports_nothing_when_the_sample_was_never_stamped(self):
+        """A sample with no versions at all yields no series rather than a zero."""
+        assert _weight_version_summary(Sample()) == ([], None)
+
+    def test_repeated_legacy_versions_are_two_turns_but_not_mixed(self):
+        """Two calls that happened to see the same weights are still two turns."""
+        sample = Sample.from_dict({"status": "completed", "weight_versions": ["3", "3"], "tokens": [1, 2]})
+
+        assert _weight_version_summary(sample) == (["3", "3"], 2)
+
+
+class TestCurrentFormatWeightVersionSummary:
+    def test_turns_counts_calls_when_every_call_is_unstamped(self):
+        """Two calls that the engine never stamped report no versions but still count as two turns."""
+        sample = Sample(weight_versions=[WeightVersionsPerCall(spans=[]), WeightVersionsPerCall(spans=[])])
+
+        assert _weight_version_summary(sample) == ([], 2)
+
+    def test_summary_does_not_mark_repeated_current_version_as_mixed(self, tmp_path):
+        """Two calls that saw the same weights give two turns without flagging a mixed version."""
+        sample = Sample(
+            group_index=0,
+            index=0,
+            tokens=[1, 2],
+            response_length=2,
+            weight_versions=[
+                WeightVersionsPerCall(spans=[WeightVersionSpan("3", 0, 1)]),
+                WeightVersionsPerCall(spans=[WeightVersionSpan("3", 1, 2)]),
+            ],
+        )
+
+        row = DumpReader(tmp_path)._summary_row(sample, None, rollout_id=0, sample_occurrence=0)
+
+        assert row["turns"] == 2
+        assert row["mixed_version"] is False
+        assert row["weight_version"] == "3"
+
+
+class TestSummaryCacheVersioning:
+    def test_summary_invalidates_v2_cache_after_weight_version_schema_change(self, reader):
+        """A summary cache stamped with the previous schema version is rebuilt and restamped at version 5."""
+        import polars as pl
+
+        expected = reader.summary(0)
+        cache_path = reader.cache_dir / "rollout_0.parquet"
+        sources_path = reader.cache_dir / "rollout_0.sources.json"
+        pl.DataFrame({"sample_index": [-1]}).write_parquet(cache_path)
+        sources_path.write_text(json.dumps(json.loads(sources_path.read_text()) | {"_summary_version": 2}))
+
+        rebuilt = reader.summary(0)
+
+        assert rebuilt.equals(expected)
+        assert pl.read_parquet(cache_path).equals(expected)
+        assert json.loads(sources_path.read_text())["_summary_version"] == 7
+
+
+def test_pre_span_dump_survives_the_full_reader_pipeline(tmp_path):
+    """A real dump downgraded to the pre-span format still rebuilds its parquet and summarises."""
+    import polars as pl
+    import torch
+
+    dump_dummy_run(tmp_path, steps=1, dp_size=2, tp_dup=2, with_eval=False)
+    shutil.rmtree(tmp_path / "dashboard_columns")
+    for path in (tmp_path / "rollout_data").glob("*.pt"):
+        pack = torch.load(path, weights_only=False)
+        for data in pack["samples"]:
+            data["weight_versions"] = [span["version"] for call in data["weight_versions"] for span in call]
+        torch.save(pack, path)
+
+    reader = DumpReader(tmp_path)
+    df = reader.summary(0)
+
+    assert df.height > 0
+    agentic = df.filter(pl.col("sample_index") % 3 == 0)
+    assert agentic["turns"].min() == 2
+    assert agentic["mixed_version"].all()
+    assert reader.tokens(0, int(agentic["sample_index"][0]))
