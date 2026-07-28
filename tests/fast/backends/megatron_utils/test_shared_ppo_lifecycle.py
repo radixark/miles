@@ -10,31 +10,49 @@ import pytest
 
 @pytest.fixture(scope="module")
 def actor_module():
-    module_name = "miles.backends.megatron_utils.actor"
-    package = importlib.import_module("miles.backends.megatron_utils")
+    actor_module_name = "miles.backends.megatron_utils.actor"
+    p2p_module_name = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.p2p"
+    actor_package = importlib.import_module("miles.backends.megatron_utils")
+    p2p_package = importlib.import_module("miles.backends.megatron_utils.update_weight.update_weight_from_distributed")
     missing = object()
-    saved_module = sys.modules.get(module_name, missing)
+    saved_actor_module = sys.modules.get(actor_module_name, missing)
+    saved_p2p_module = sys.modules.get(p2p_module_name, missing)
     saved_saver = sys.modules.get("torch_memory_saver", missing)
-    saved_package_attr = getattr(package, "actor", missing)
+    saved_actor_package_attr = getattr(actor_package, "actor", missing)
+    saved_p2p_package_attr = getattr(p2p_package, "p2p", missing)
 
     saver_module = ModuleType("torch_memory_saver")
     saver_module.torch_memory_saver = Mock()
+    p2p_module = ModuleType(p2p_module_name)
+    p2p_module.UpdateWeightP2P = Mock(
+        side_effect=AssertionError("shared PPO lifecycle tests must not construct UpdateWeightP2P")
+    )
     sys.modules["torch_memory_saver"] = saver_module
-    sys.modules.pop(module_name, None)
-    if saved_package_attr is not missing:
-        delattr(package, "actor")
+    sys.modules[p2p_module_name] = p2p_module
+    p2p_package.p2p = p2p_module
+    sys.modules.pop(actor_module_name, None)
+    if saved_actor_package_attr is not missing:
+        delattr(actor_package, "actor")
 
     try:
-        yield importlib.import_module(module_name)
+        yield importlib.import_module(actor_module_name)
     finally:
-        sys.modules.pop(module_name, None)
-        if saved_module is not missing:
-            sys.modules[module_name] = saved_module
-        if saved_package_attr is missing:
-            if hasattr(package, "actor"):
-                delattr(package, "actor")
+        sys.modules.pop(actor_module_name, None)
+        if saved_actor_module is not missing:
+            sys.modules[actor_module_name] = saved_actor_module
+        if saved_actor_package_attr is missing:
+            if hasattr(actor_package, "actor"):
+                delattr(actor_package, "actor")
         else:
-            package.actor = saved_package_attr
+            actor_package.actor = saved_actor_package_attr
+        sys.modules.pop(p2p_module_name, None)
+        if saved_p2p_module is not missing:
+            sys.modules[p2p_module_name] = saved_p2p_module
+        if saved_p2p_package_attr is missing:
+            if hasattr(p2p_package, "p2p"):
+                delattr(p2p_package, "p2p")
+        else:
+            p2p_package.p2p = saved_p2p_package_attr
         if saved_saver is missing:
             sys.modules.pop("torch_memory_saver", None)
         else:
