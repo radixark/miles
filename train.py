@@ -75,10 +75,11 @@ async def train(args):
 
     async def save(rollout_id, force_sync=False):
         force_sync = force_sync or rollout_id == args.num_rollout - 1
+        save_options = {"wake_up_before_save": args.offload_train} if args.use_critic else None
         if (not args.use_critic) or (rollout_id >= args.num_critic_only_steps):
-            await actor_model.save_model(rollout_id, force_sync=force_sync)
+            await actor_model.save_model(rollout_id, force_sync=force_sync, options=save_options)
         if args.use_critic:
-            await critic_model.save_model(rollout_id, force_sync=force_sync)
+            await critic_model.save_model(rollout_id, force_sync=force_sync, options=save_options)
         await rollout_manager.save.remote(rollout_id)
 
     # train loop.
@@ -98,9 +99,10 @@ async def train(args):
             await rollout_manager.offload.remote(tags=offload_tags)
 
         if args.use_critic:
-            values = await critic_model.train(rollout_id, rollout_data_pack)
+            train_options = {"sleep_after_train": args.offload_train}
+            values = await critic_model.train(rollout_id, rollout_data_pack, options=train_options)
             if rollout_id >= args.num_critic_only_steps:
-                await actor_model.train(rollout_id, rollout_data_pack, external_data=values)
+                await actor_model.train(rollout_id, rollout_data_pack, external_data=values, options=train_options)
         else:
             await actor_model.train(rollout_id, rollout_data_pack)
         remove_rollout_data_refs(args, rollout_data_pack)

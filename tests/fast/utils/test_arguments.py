@@ -313,6 +313,18 @@ def test_bridge_mode_rejects_critic(tmp_path):
         miles_validate_args(args)
 
 
+def test_critic_rejects_experimental_ft_trainer(tmp_path, monkeypatch):
+    monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--advantage-estimator", "ppo", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
+        miles_validate_args(args)
+
+
 class TestMultiLoRAValidation:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

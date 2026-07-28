@@ -311,8 +311,9 @@ class FSDPTrainRayActor(TrainRayActor):
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up model")
 
-    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
+    def save_model(self, rollout_id: int, force_sync: bool = False, options: dict | None = None) -> None:
         """Delegate checkpoint saving to the shared checkpoint utilities."""
+        assert not options, "lifecycle options are not supported by the FSDP backend"
         if self.args.debug_rollout_only or self.args.save is None:
             return
 
@@ -411,6 +412,7 @@ class FSDPTrainRayActor(TrainRayActor):
         rollout_data_ref: Box,
         witness_info: "WitnessInfo | None" = None,
         attempt: int = 0,
+        options: dict | None = None,
     ) -> None:
         """Run one training update over a rollout batch (``rollout_data_ref`` is a Box handle to the
         Ray object ref with the rollout tensors; fetched and partitioned by data-parallel rank)."""

@@ -194,6 +194,7 @@ class MegatronTrainRayActor(TrainRayActor):
         verify_megatron_parallel_state(self.model)
 
         start_rollout_id = loaded_rollout_id + 1
+        self._asleep = False
 
         if role == "critic":
             if self.args.offload_train:
@@ -278,6 +279,9 @@ class MegatronTrainRayActor(TrainRayActor):
     @timer
     def sleep(self) -> None:
         assert self.args.offload_train
+        if self._asleep:
+            logger.info("sleep() called while already offloaded; skipping")
+            return
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
@@ -288,6 +292,7 @@ class MegatronTrainRayActor(TrainRayActor):
         tag = "default" if is_lora_enabled(self.args) else None
         torch_memory_saver.pause(tag=tag)
 
+        self._asleep = True
         print_memory("after offload model")
 
         if should_log_cpu_memory:
@@ -297,6 +302,10 @@ class MegatronTrainRayActor(TrainRayActor):
     @timer
     def wake_up(self) -> None:
         assert self.args.offload_train
+        if not self._asleep:
+            logger.info("wake_up() called while already resident; ensuring process groups only")
+            reload_process_groups()
+            return
         print_memory("before wake_up model")
 
         tag = "default" if is_lora_enabled(self.args) else None
@@ -304,6 +313,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory()
         reload_process_groups()
+        self._asleep = False
         print_memory("after wake_up model")
 
     @property
@@ -345,7 +355,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @event_logger_context(
-        lambda _self, rollout_id, rollout_data_ref, witness_info=None, attempt=0, external_data=None: dict(
+        lambda _self, rollout_id, rollout_data_ref, witness_info=None, attempt=0, external_data=None, options=None: dict(
             rollout_id=rollout_id, attempt=attempt
         )
     )
@@ -356,6 +366,7 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None = None,
         attempt: int = 0,
         external_data=None,
+        options: dict | None = None,
     ):
         self._heartbeat.bump()
         self._last_rollout_id = rollout_id
@@ -384,7 +395,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
-            if self.args.use_critic and self.args.offload_train:
+            if (options or {}).get("sleep_after_train"):
                 del rollout_data
                 self.sleep()
 
@@ -422,7 +433,8 @@ class MegatronTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         result = {"train_step_outcome": train_step_outcome}
         if get_parallel_state().is_pp_last_stage and "values" in rollout_data:
-            result["values"] = [value.detach().cpu() for value in rollout_data["values"]]
+            # Ship by object reference
+            result["values"] = Box(ray.put([value.detach().cpu() for value in rollout_data["values"]]))
         return result
 
     def _use_rollout_replay(self, m) -> bool:
@@ -503,10 +515,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
                 if self.args.use_critic:
                     if external_data is not None and get_parallel_state().is_pp_last_stage:
-                        values = external_data.get("values")
-                        if values is not None:
+                        values_ref = external_data.get("values")
+                        if values_ref is not None:
                             rollout_data["values"] = [
-                                value.to(device=torch.cuda.current_device(), non_blocking=True) for value in values
+                                value.to(device=torch.cuda.current_device(), non_blocking=True)
+                                for value in ray.get(values_ref.inner)
                             ]
                 if self._active_model_tag != "actor":
                     self._switch_model("actor")
@@ -623,14 +636,13 @@ class MegatronTrainRayActor(TrainRayActor):
                 ray.get(get_multi_lora_controller().free_slot.remote(name))
 
     @timer
-    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
+    def save_model(self, rollout_id: int, force_sync: bool = False, options: dict | None = None) -> None:
         self._heartbeat.bump()
         if self.args.debug_rollout_only:
             return
 
-        # torch dist may trigger nccl communication during saving.
-        auto_offload = self.args.use_critic and self.args.offload_train
-        if auto_offload:
+        wake_for_save = (options or {}).get("wake_up_before_save")
+        if wake_for_save:
             self.wake_up()
         elif self.args.offload_train:
             reload_process_groups()
@@ -644,7 +656,9 @@ class MegatronTrainRayActor(TrainRayActor):
             from miles.backends.megatron_utils.multi_lora_utils import save_due_adapter_checkpoints
 
             if not save_due_adapter_checkpoints(self.args, self.model):
-                if self.args.offload_train:
+                if wake_for_save:
+                    self.sleep()
+                elif self.args.offload_train:
                     destroy_process_groups()
                 return
         else:
@@ -675,7 +689,7 @@ class MegatronTrainRayActor(TrainRayActor):
             post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
             post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
 
-        if auto_offload:
+        if wake_for_save:
             self.sleep()
         elif self.args.offload_train:
             destroy_process_groups()

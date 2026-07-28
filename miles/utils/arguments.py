@@ -11,7 +11,7 @@ from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
-from miles.utils.environ import enable_experimental_rollout_refactor
+from miles.utils.environ import enable_experimental_ft_trainer, enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.hf_config import is_dsa, load_hf_config
@@ -2730,6 +2730,11 @@ def miles_validate_args(args):
         assert (
             args.megatron_to_hf_mode != "bridge"
         ), "Critic models are not supported with --megatron-to-hf-mode bridge"
+        assert not enable_experimental_ft_trainer(), (
+            "Shared Actor/Critic PPO is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: the v2 "
+            "fault-tolerant train group cannot route critic values or lifecycle options yet. "
+            "Unset MILES_EXPERIMENTAL_FT_TRAINER or use a non-PPO advantage estimator."
+        )
         args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
         args.critic_num_nodes = args.actor_num_nodes
     if args.critic_load is None:

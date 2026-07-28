@@ -24,13 +24,30 @@ async def test_train_routes_each_critic_payload_to_matching_actor_rank():
     group = object.__new__(RayTrainGroup)
     group._actor_handles = [_Handle(0, calls), _Handle(1, calls)]
     payloads = [{"values": ["v0"]}, {"values": ["v1"]}]
+    options = object()
 
-    result = await group.train(5, {"data_ref": "rollout"}, external_data=payloads)
+    result = await group.train(5, {"data_ref": "rollout"}, external_data=payloads, options=options)
 
     assert result == [{"rank": 0}, {"rank": 1}]
     assert calls == [
-        (0, 5, "rollout", {"witness_info": None, "attempt": 0, "external_data": payloads[0]}),
-        (1, 5, "rollout", {"witness_info": None, "attempt": 0, "external_data": payloads[1]}),
+        (0, 5, "rollout", {"witness_info": None, "attempt": 0, "external_data": payloads[0], "options": options}),
+        (1, 5, "rollout", {"witness_info": None, "attempt": 0, "external_data": payloads[1], "options": options}),
+    ]
+
+
+async def test_train_broadcast_forwards_options():
+    from miles.ray.actor_group import RayTrainGroup
+
+    calls = []
+    group = object.__new__(RayTrainGroup)
+    group._actor_handles = [_Handle(0, calls), _Handle(1, calls)]
+    options = object()
+
+    await group.train(7, {"data_ref": "rollout"}, options=options)
+
+    assert calls == [
+        (0, 7, "rollout", {"witness_info": None, "attempt": 0, "options": options}),
+        (1, 7, "rollout", {"witness_info": None, "attempt": 0, "options": options}),
     ]
 
 
