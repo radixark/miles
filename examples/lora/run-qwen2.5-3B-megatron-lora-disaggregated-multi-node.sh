@@ -53,7 +53,7 @@
 #   # so rank 0 exposes 1 GPU and rank 1 exposes 2 GPUs to Ray automatically.
 
 export FLASHINFER_DISABLE_VERSION_CHECK=1
-export PYTHONBUFFERED=1
+export PYTHONUNBUFFERED=1
 
 # ---------------------------------------------------------------------------
 # Cluster topology — edit these (or pass as env vars) to size the cluster
