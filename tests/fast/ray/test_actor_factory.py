@@ -38,6 +38,7 @@ def test_megatron_offload_uses_torch_memory_saver_preload_resolver(monkeypatch):
     args = SimpleNamespace(
         dumper_source_patcher_config_train=None,
         offload_train=True,
+        offload_train_target="cpu",
         train_backend="megatron",
         train_env_vars={},
         use_fault_tolerance=False,
