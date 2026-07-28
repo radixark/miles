@@ -9,12 +9,11 @@ from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApi
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
-from miles.utils import async_utils
 
 logger = logging.getLogger(__name__)
 
 
-def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
+async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     """Start rollout servers: one per model, each with its own router.
 
     Returns a dict mapping model name -> ``RolloutServer``.
@@ -24,6 +23,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     servers: dict[str, RolloutServer] = {}
     gpu_offset = 0
     engine_offset = 0
+    port_allocator = PortAllocator()
 
     rollout_pg_offset = _compute_rollout_offset(args)
     megatron_num_gpus = _compute_megatron_num_gpus(args)
@@ -39,7 +39,6 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             args.sglang_router_port = router_port
 
         server_cells: dict[str, ServerCell] = {}
-        port_allocator = PortAllocator()
 
         for group_cfg in model_cfg.server_groups:
             gpus_per_engine = group_cfg.num_gpus_per_engine
@@ -90,7 +89,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             engine_offset += num_engines
             gpu_offset += group_cfg.num_gpus
 
-        srv = RolloutServer(
+        servers[model_cfg.name] = RolloutServer(
             server_cells=server_cells,
             args=args,
             router_ip=router_ip,
@@ -98,8 +97,8 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
         )
-        async_utils.run(srv.start_all_cells(port_allocator))
-        servers[model_cfg.name] = srv
+
+    await asyncio.gather(*[srv.start_all_cells(port_allocator) for srv in servers.values()])
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 

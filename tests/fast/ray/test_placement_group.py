@@ -45,15 +45,18 @@ def fake_components():
     controller.check_weights = AsyncMock()
     controller.offload = AsyncMock()
 
-    def build_controller(args, pg):
+    async def build_controller(args, pg):
         args.sglang_router_ip = "10.0.0.1"
         args.sglang_router_port = 4321
         return controller
 
+    controller_cls = MagicMock(name="InferenceController")
+    controller_cls.create = AsyncMock(side_effect=build_controller)
+
     executor_handle = MagicMock(name="rollout_executor")
     executor_cls = _FakeExecutorClass(executor_handle)
 
-    with patch("miles.ray.placement_group.InferenceController", side_effect=build_controller), patch(
+    with patch("miles.ray.placement_group.InferenceController", controller_cls), patch(
         "miles.ray.placement_group.RolloutExecutor", executor_cls
     ), patch("miles.ray.placement_group.ray.get", return_value=5):
         yield Namespace(controller=controller, executor_cls=executor_cls, executor_handle=executor_handle)
