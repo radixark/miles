@@ -173,10 +173,8 @@ class TestStopEnginesRealKill:
 
 
 class TestStartEnginesRealAllocator:
-    """Drive ``start_engines`` with the real
-    ``allocate_rollout_engine_addr_and_ports_normal`` (no stub) so that the
-    actor → driver port round-trip via
-    ``_get_current_node_ip_and_free_port.remote`` actually runs."""
+    """Drive ``start_engines`` with real actors so that the actor → driver port
+    round-trip via ``_get_current_node_ip_and_free_port.remote`` actually runs."""
 
     def test_real_allocator_assigns_distinct_ports_via_remote_calls(
         self,

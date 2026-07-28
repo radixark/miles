@@ -296,8 +296,11 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
 
     Mocks ``_get_current_node_ip_and_free_port.remote(start_port, consecutive)``
     with a deterministic ``max(seq, start_port)`` counter so allocator tests
-    can predict and assert on port assignment."""
+    can predict and assert on port assignment. It also passes
+    ``isinstance(x, ray.actor.ActorHandle)`` so it can be handed to
+    ``ServerEngine.mark_allocated_uninitialized`` (see ``fake_actor_handle``)."""
     e = MagicMock()
+    e._spec_class = ray.actor.ActorHandle
     e._port_cursor = port_seed
 
     def _alloc(start_port: int = 15000, consecutive: int = 1):
