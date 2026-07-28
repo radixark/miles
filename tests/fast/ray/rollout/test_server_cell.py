@@ -4,9 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, fake_actor_handle, make_args
 
+from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer, get_cell_indexer_of_id_map
 from miles.ray.rollout.server_cell import ServerCell
-from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
+from miles.ray.rollout.server_engine import ServerEngine
 
 
 class TestServerCellPrimaryEngine:

@@ -13,7 +13,8 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.addr_allocator import PortAllocator
-from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
+from miles.ray.rollout.cell_state import AddrInfo
+from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import dumper_utils
 
