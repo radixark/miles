@@ -313,7 +313,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
     def save_model(self, rollout_id: int, force_sync: bool = False, options: dict | None = None) -> None:
         """Delegate checkpoint saving to the shared checkpoint utilities."""
-        assert not options, "lifecycle options are not supported by the FSDP backend"
         if self.args.debug_rollout_only or self.args.save is None:
             return
 
