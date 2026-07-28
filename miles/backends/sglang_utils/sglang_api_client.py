@@ -377,10 +377,10 @@ class SGLangApiClient:
         """Close the weight-update session (post-load + quant post-process on the full model)."""
         return await self._make_request("end_weight_update", {})
 
-    async def update_weight_version(self, weight_version: str):
+    async def update_weight_version(self, weight_version: str, abort_all_requests: bool = True):
         return await self._make_request(
             "update_weight_version",
-            {"new_version": weight_version, "abort_all_requests": False},
+            {"new_version": weight_version, "abort_all_requests": abort_all_requests},
         )
 
     async def start_profile(
