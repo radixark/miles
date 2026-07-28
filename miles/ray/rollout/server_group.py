@@ -5,9 +5,9 @@ from typing import Any
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
+from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.addr_allocator import PortAllocator
-from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, flatten_cells
+from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.utils import async_utils
 
@@ -55,9 +55,9 @@ class ServerGroup:
         """Create Ray actors, allocate ports, and run ``engine.init()`` on every new engine.
 
         Mutates ``port_allocator`` in place to advance past any newly assigned ports.
-        Returns the list of indices into the group's flat engine list that were just
-        allocated. Actor creation, port allocation and state marking all happen before
-        the first await point, so concurrent callers cannot double-start a slot.
+        Returns the indices of the cells that were just allocated. Actor creation,
+        port allocation and state marking all happen before the first await point,
+        so concurrent callers cannot double-start a slot.
         """
         if self.args.debug_train_only or self.worker_type == "placeholder":
             self.has_new_engines = False
@@ -77,52 +77,25 @@ class ServerGroup:
 
         await asyncio.gather(*cell_starts)
 
-        new_engine_indices = [
-            cell_index * self.nodes_per_engine + local_index
-            for cell_index in started_cell_indices
-            for local_index in range(self.nodes_per_engine)
-        ]
-        self.has_new_engines |= bool(new_engine_indices)
-        return new_engine_indices
+        self.has_new_engines |= bool(started_cell_indices)
+        return started_cell_indices
 
-    async def register_workers(self, engine_indices: list[int]) -> None:
+    async def register_workers(self, cell_indices: list[int]) -> None:
         if self.args.rollout_external or not (self.router_ip and self.router_port):
             return
         await asyncio.gather(
-            *[
-                self._router_api_client.add_worker(
-                    worker_url=engine.addr_info.server_url,
-                    worker_type=self.worker_type,
-                    use_legacy_api=use_legacy_router_api(self.args),
-                    bootstrap_port=engine.addr_info.bootstrap_port,
-                )
-                for engine in self._primary_engines_of(engine_indices)
-            ]
+            *[cell.register(self._router_api_client) for cell in self._allocated_cells_of(cell_indices)]
         )
 
-    async def unregister_workers(self, engine_indices: list[int]) -> None:
+    async def unregister_workers(self, cell_indices: list[int]) -> None:
         if self.args.rollout_external or not (self.router_ip and self.router_port):
             return
         await asyncio.gather(
-            *[
-                self._router_api_client.remove_worker(
-                    worker_url=engine.addr_info.server_url,
-                    use_legacy_api=use_legacy_router_api(self.args),
-                )
-                for engine in self._primary_engines_of(engine_indices)
-            ]
+            *[cell.unregister(self._router_api_client) for cell in self._allocated_cells_of(cell_indices)]
         )
 
-    def _engine_indices_of_cell(self, cell_index: int) -> range:
-        return range(cell_index * self.nodes_per_engine, (cell_index + 1) * self.nodes_per_engine)
-
-    def _primary_engines_of(self, engine_indices: list[int]) -> list[ServerEngine]:
-        all_engines = flatten_cells(self.cells)
-        return [
-            all_engines[index]
-            for index in engine_indices
-            if index % self.nodes_per_engine == 0 and all_engines[index].is_allocated
-        ]
+    def _allocated_cells_of(self, cell_indices: list[int]) -> list[ServerCell]:
+        return [self.cells[cell_index] for cell_index in cell_indices if self.cells[cell_index].is_allocated]
 
     @property
     def _router_api_client(self) -> SGLangRouterApiClient:
@@ -135,11 +108,10 @@ class ServerGroup:
     # moving `shutdown` mainly to local code
     def stop_engines(self, cell_indices: list[int]):
         logger.info(f"Killing server {cell_indices=}...")
-        engine_indices = [i for cell_index in cell_indices for i in self._engine_indices_of_cell(cell_index)]
         try:
-            async_utils.run(asyncio.wait_for(self.unregister_workers(engine_indices), timeout=SHUTDOWN_TIMEOUT))
+            async_utils.run(asyncio.wait_for(self.unregister_workers(cell_indices), timeout=SHUTDOWN_TIMEOUT))
         except Exception as e:
-            logger.warning(f"Unregistering {engine_indices=} from the router failed, tearing down anyway (e: {e})")
+            logger.warning(f"Unregistering {cell_indices=} from the router failed, tearing down anyway (e: {e})")
         for cell_index in sorted(set(cell_indices)):
             self.cells[cell_index].stop()
 
@@ -147,14 +119,13 @@ class ServerGroup:
         if filter_cell_indices is None:
             filter_cell_indices = [cell_index for cell_index, cell in enumerate(self.cells) if not cell.is_allocated]
 
-        new_engine_indices = await self.start_engines(port_allocator, start_cell_indices=filter_cell_indices)
+        started_cell_indices = await self.start_engines(port_allocator, start_cell_indices=filter_cell_indices)
 
-        all_engines = flatten_cells(self.cells)
         release_handles = []
         all_resume_engines = []
-        logger.info(f"Recovered {len(new_engine_indices)} dead rollout engines (worker_type={self.worker_type})")
-        if self.needs_offload and new_engine_indices:
-            new_primary_engines = [all_engines[i] for i in new_engine_indices if i % self.nodes_per_engine == 0]
+        logger.info(f"Recovered {len(started_cell_indices)} dead rollout cells (worker_type={self.worker_type})")
+        if self.needs_offload and started_cell_indices:
+            new_primary_engines = [self.cells[i].primary_engine for i in started_cell_indices]
             release_handles.extend(engine.api_client.release_memory_occupation() for engine in new_primary_engines)
             if self.update_weights or self.model_path:
                 all_resume_engines.extend(new_primary_engines)
@@ -169,13 +140,13 @@ class ServerGroup:
                     ]
                 )
 
-        self.mark_alive(engine_indices=new_engine_indices)
-        await self.register_workers(new_engine_indices)
+        self.mark_alive(cell_indices=started_cell_indices)
+        await self.register_workers(started_cell_indices)
 
-    def mark_alive(self, engine_indices: list[int]):
-        all_engines = flatten_cells(self.cells)
-        for engine_index in engine_indices:
-            all_engines[engine_index].mark_alive()
+    def mark_alive(self, cell_indices: list[int]):
+        for cell_index in cell_indices:
+            for engine in self.cells[cell_index].engines:
+                engine.mark_alive()
 
     async def offload(self, tags: list[str] | None = None):
         if not self.needs_offload:
