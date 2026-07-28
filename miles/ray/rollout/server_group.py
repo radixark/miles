@@ -56,15 +56,15 @@ class ServerGroup:
         """Node-0 engines only (for multi-node serving)."""
         return [cell.engines[0] for cell in self.cells]
 
-    def start_engines(
+    async def start_engines(
         self, port_allocator: PortAllocator, start_cell_indices: list[int] | None = None
-    ) -> tuple[list, list[int]]:
-        """Create Ray actors, allocate ports, and fire ``engine.init()`` without waiting.
+    ) -> list[int]:
+        """Create Ray actors, allocate ports, and run ``engine.init()`` on every new engine.
 
         Mutates ``port_allocator`` in place to advance past any newly assigned ports.
-        Returns ``(init_handles, new_engine_indices)`` where *init_handles* is a list
-        of Ray ObjectRefs (one per newly created engine) and *new_engine_indices* is
-        the list of indices into the group's flat engine list that were just allocated.
+        Returns the list of indices into the group's flat engine list that were just
+        allocated. Actor creation, port allocation and state marking all happen before
+        the first await point, so concurrent callers cannot double-start a slot.
         """
         assert not ({"host", "port"} & set(self.sglang_overrides)), (
             f"sglang_overrides must not override host/port ({self.sglang_overrides=}): the rollout process derives "
@@ -73,7 +73,7 @@ class ServerGroup:
 
         if self.args.debug_train_only or self.worker_type == "placeholder":
             self.has_new_engines = False
-            return [], []
+            return []
 
         if self.args.rollout_external:
             raise NotImplementedError(
@@ -117,7 +117,7 @@ class ServerGroup:
         self.has_new_engines |= curr_num_new_engines > 0
 
         if curr_num_new_engines == 0:
-            return [], []
+            return []
 
         addr_and_ports: dict[int, dict[str, Any]] = {}
         for cell_index in sorted({index // self.nodes_per_engine for index in new_engine_indices}):
@@ -153,7 +153,8 @@ class ServerGroup:
             )
 
         init_handles = [engine.init.remote(**addr_and_ports[index]) for index, engine in new_engines]
-        return init_handles, new_engine_indices
+        await asyncio.gather(*init_handles)
+        return new_engine_indices
 
     async def register_workers(self, engine_indices: list[int]) -> None:
         if self.args.rollout_external or not (self.router_ip and self.router_port):
@@ -221,8 +222,7 @@ class ServerGroup:
                 if any(not engine.is_allocated for engine in cell.engines)
             ]
 
-        handles, new_engine_indices = self.start_engines(port_allocator, start_cell_indices=filter_cell_indices)
-        await asyncio.gather(*handles)
+        new_engine_indices = await self.start_engines(port_allocator, start_cell_indices=filter_cell_indices)
 
         all_engines = flatten_cells(self.cells)
         release_handles = []

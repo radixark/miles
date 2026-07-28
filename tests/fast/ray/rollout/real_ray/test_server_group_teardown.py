@@ -46,11 +46,10 @@ def _is_dead(actor_handle, *, timeout: float = 60.0) -> bool:
 
 
 class TestTeardownIsTerminal:
-    def test_a_failing_shutdown_still_kills_the_actor(self, patched_sglang_engine, placement_group_factory):
+    async def test_a_failing_shutdown_still_kills_the_actor(self, patched_sglang_engine, placement_group_factory):
         """A graceful shutdown that raises must not leave the actor and its server process behind."""
         group = _build_group(pg_tuple=placement_group_factory(1))
-        handles, _ = group.start_engines(PortAllocator.empty())
-        ray.get(handles)
+        await group.start_engines(PortAllocator.empty())
         actor_handle = flatten_cells(group.cells)[0].actor_handle
         ray.get(actor_handle.set_fault.remote("shutdown", RuntimeError("shutdown blew up")))
 
