@@ -240,3 +240,41 @@ class TestSharedPortAllocatorAcrossCells:
         ports_a = {addrs_a[r]["port"] for r in addrs_a} | {addrs_a[r]["nccl_port"] for r in addrs_a}
         ports_b = {addrs_b[r]["port"] for r in addrs_b} | {addrs_b[r]["nccl_port"] for r in addrs_b}
         assert ports_a.isdisjoint(ports_b), f"port overlap A={ports_a} B={ports_b}"
+
+
+class TestConcurrentNodeProbes:
+    async def test_a_cell_probes_all_of_its_nodes_concurrently(self, patch_ray_get):
+        """Serializing the node probes would make cell startup scale with the node count."""
+        events: list[tuple[str, int]] = []
+        num_nodes = 3
+
+        def _instrumented(index: int):
+            engine = fake_engine(host=f"10.0.0.{index + 1}", port_seed=0)
+            engine.__class__ = ray.actor.ActorHandle
+            engine.init.remote.side_effect = lambda **kwargs: asyncio.sleep(0)
+            alloc = engine._get_current_node_ip_and_free_port.remote.side_effect
+
+            async def _probe():
+                events.append(("enter", index))
+                await asyncio.sleep(0.05)
+                events.append(("exit", index))
+                return alloc(start_port=15000, consecutive=1)
+
+            engine._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: alloc(**kw) if kw else _probe()
+            return engine
+
+        actors = {rank: _instrumented(rank) for rank in range(num_nodes)}
+        cell = ServerCell(
+            args=make_args(num_gpus_per_node=8, sglang_dp_size=1),
+            num_nodes=num_nodes,
+            worker_type="regular",
+            cell_id="cell-0",
+        )
+        with patch.object(
+            server_cell_module,
+            "launch_sglang_ray_actor",
+            side_effect=lambda *, global_rank, **kw: actors[global_rank],
+        ):
+            await cell.start_engines(PortAllocator())
+
+        assert [kind for kind, _ in events[:num_nodes]] == ["enter"] * num_nodes, events
