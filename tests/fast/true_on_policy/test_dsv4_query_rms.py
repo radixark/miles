@@ -105,12 +105,9 @@ def test_dsv4_query_rms_default_matches_legacy_formula():
     )
     reference_input = x.detach().clone().requires_grad_()
     reference_fp32 = reference_input.float()
-    expected = (
-        reference_fp32
-        * torch.rsqrt(
-            reference_fp32.square().mean(-1, keepdim=True) + 1.0e-6
-        )
-    ).to(reference_input.dtype)
+    expected = (reference_fp32 * torch.rsqrt(reference_fp32.square().mean(-1, keepdim=True) + 1.0e-6)).to(
+        reference_input.dtype
+    )
 
     actual = dsv4_utils.dsv4_query_rms_norm(
         x,
@@ -149,6 +146,4 @@ def test_fixed_tree_mean_rejects_scalar_input():
 
 def test_fixed_tree_mean_rejects_non_floating_input():
     with pytest.raises(RuntimeError, match="floating-point tensor"):
-        dsv4_utils.fixed_tree_mean_last_dim(
-            torch.ones(2, 4, dtype=torch.int64)
-        )
+        dsv4_utils.fixed_tree_mean_last_dim(torch.ones(2, 4, dtype=torch.int64))

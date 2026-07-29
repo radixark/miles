@@ -45,11 +45,7 @@ def dsv4_query_rms_norm(
     """
     x_fp32 = x.float()
     x_square = x_fp32.square()
-    x_square_mean = (
-        fixed_tree_mean_last_dim(x_square)
-        if batch_invariant
-        else x_square.mean(-1, keepdim=True)
-    )
+    x_square_mean = fixed_tree_mean_last_dim(x_square) if batch_invariant else x_square.mean(-1, keepdim=True)
     return (x_fp32 * torch.rsqrt(x_square_mean + eps)).to(x.dtype)
 
 
