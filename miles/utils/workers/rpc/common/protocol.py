@@ -4,6 +4,11 @@ from typing import Any, Literal
 
 from miles.utils.pydantic_utils import StrictBaseModel
 
+EXPECTED_BOOT_UUID_HEADER = "x-miles-expected-boot-uuid"
+BOOT_UUID_HEADER = "x-miles-boot-uuid"
+
+BOOT_UUID_MISMATCH_STATUS = 412
+
 HEALTH_PATH = "/v1/health"
 CALL_STATUS_PATH = "/v1/calls/{call_id}"
 SUBMIT_PATH = "/v1/{method_name}"
