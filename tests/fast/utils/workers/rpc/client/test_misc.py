@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 import httpx
 import pytest
 
-from miles.utils.workers.rpc.client.misc import RpcProtocolError, RpcTransport
+from miles.utils.workers.rpc.client.misc import RetryableResponseError, RpcProtocolError, RpcTransport
 from miles.utils.workers.rpc.common.protocol import HealthResponse
 
 
@@ -34,9 +34,26 @@ class TestRpcTransport:
 
         assert response == HealthResponse()
 
-    @pytest.mark.parametrize("status_code", [201, 400, 404, 409, 499, 500, 503])
-    async def test_non_200_raises_protocol_error(self, status_code: int) -> None:
-        """Any non-200 response is a protocol error carrying its status."""
+    @pytest.mark.parametrize("status_code", [500, 502, 503, 599])
+    async def test_server_status_raises_retryable_response(self, status_code: int) -> None:
+        """Any 5xx response is classified as retryable."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(status_code, text="busy", request=request)
+
+        transport, client = _transport_over(handler)
+        async with client:
+            with pytest.raises(RetryableResponseError, match=str(status_code)):
+                await transport.request(
+                    "GET",
+                    "/v1/health",
+                    seconds=1.0,
+                    response_model=HealthResponse,
+                )
+
+    @pytest.mark.parametrize("status_code", [201, 400, 404, 409, 499])
+    async def test_non_200_non_5xx_raises_protocol_error(self, status_code: int) -> None:
+        """A non-200 non-5xx response is a protocol error."""
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(status_code, text="rejected", request=request)

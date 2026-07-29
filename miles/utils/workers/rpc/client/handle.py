@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import asyncio
-import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 
+from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.rpc.client.call import RpcCall
-from miles.utils.workers.rpc.client.misc import RpcTransport
+from miles.utils.workers.rpc.client.misc import RETRY_INITIAL_DELAY_SECONDS, RETRYABLE_ERRORS, RpcTransport
 from miles.utils.workers.rpc.common.metadata import RpcMethodSpec, collect_rpc_method_specs
 from miles.utils.workers.rpc.common.protocol import HEALTH_PATH, HealthResponse
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
@@ -17,7 +16,6 @@ DEFAULT_CALL_TIMEOUT_SECONDS = 3600.0
 DEFAULT_READY_TIMEOUT_SECONDS = 600.0
 
 _HEALTH_TIMEOUT_SECONDS = 5.0
-_HEALTH_RETRY_DELAY_SECONDS = 0.05
 
 
 class RpcWorkerHandle(BaseWorkerHandle):
@@ -53,20 +51,23 @@ class RpcWorkerHandle(BaseWorkerHandle):
         return call
 
     async def wait_ready(self, *, timeout: float) -> None:
-        expires_at = time.monotonic() + timeout
-        last_error: Exception | None = None
+        async def attempt(remaining: float) -> None:
+            await self._transport.request(
+                "GET", HEALTH_PATH, seconds=min(_HEALTH_TIMEOUT_SECONDS, remaining), response_model=HealthResponse
+            )
 
-        while time.monotonic() < expires_at:
-            try:
-                await self._transport.request(
-                    "GET", HEALTH_PATH, seconds=_HEALTH_TIMEOUT_SECONDS, response_model=HealthResponse
-                )
-                return
-            except (httpx.TransportError, TimeoutError, asyncio.TimeoutError) as e:
-                last_error = e
-                await asyncio.sleep(_HEALTH_RETRY_DELAY_SECONDS)
-
-        raise WorkerUnreachableError(f"{self._worker_cls_name} rpc server not ready within {timeout}s: {last_error!r}")
+        try:
+            await retry_until_deadline(
+                attempt,
+                total_seconds=timeout,
+                retry_on=RETRYABLE_ERRORS,
+                initial_delay=RETRY_INITIAL_DELAY_SECONDS,
+                backoff_factor=1.0,
+            )
+        except RETRYABLE_ERRORS as e:
+            raise WorkerUnreachableError(
+                f"{self._worker_cls_name} rpc server not ready within {timeout}s: {e!r}"
+            ) from e
 
     async def _perform_call(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> Any:
         call = RpcCall(
