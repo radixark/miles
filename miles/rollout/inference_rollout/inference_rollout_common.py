@@ -121,35 +121,46 @@ async def generate_and_rm(
 
 
 class SubmissionScheduler:
-    """Decides when the next prompt group may be submitted, and what counts as progress.
+    """Paces prompt-group submission for a rollout driver: when may another group go
+    out, and what counts as progress worth re-checking that on.
 
-    Default (group level): a group holds its slot until the whole group task returns.
-    With ``--rollout-sample-completion-backfill``: every finished sample frees a slot,
-    so a replacement group is submitted once ``n_samples_per_prompt`` samples finish
-    instead of waiting for the slowest sibling of a group. With long-horizon agentic
-    trials that straggler gating is a primary rollout-throughput limiter.
+    Both rollout drivers (the sync one below and the fully-async worker) use it, under
+    one of two policies:
+
+    - **group level** (default): a group occupies its slot until the whole group task
+      returns, so submission is paced by completed groups.
+    - **sample-completion backfill** (``--rollout-sample-completion-backfill``): every
+      finished sample frees its own slot, so a replacement group goes out once
+      ``n_samples_per_prompt`` samples finish, whichever groups they came from. With
+      long-horizon agentic trials, waiting for the slowest sibling of each group is a
+      primary rollout-throughput limiter.
     """
 
     def __init__(self, args: Namespace):
-        self.enabled = args.rollout_sample_completion_backfill
+        self.backfill_on_sample_completion = args.rollout_sample_completion_backfill
         self.group_size = args.n_samples_per_prompt
         self.samples_in_flight = 0
         self._sample_done = asyncio.Event()
 
     @property
     def sample_done_callback(self) -> Callable[[], None] | None:
-        return self._on_sample_done if self.enabled else None
+        """Passed to ``generate_and_rm_group``; ``None`` under the group-level policy."""
+        return self._on_sample_done if self.backfill_on_sample_completion else None
 
     def has_capacity(self, *, pending_groups: int, group_budget: int) -> bool:
-        if not self.enabled:
+        """Whether one more prompt group fits in a budget of ``group_budget`` groups."""
+        if not self.backfill_on_sample_completion:
             return pending_groups < group_budget
         return self.samples_in_flight + self.group_size <= group_budget * self.group_size
 
     def on_submit(self, groups: list[list[Sample]]) -> None:
+        if not self.backfill_on_sample_completion:
+            # Nothing decrements the counter without the callback; keep it meaningful.
+            return
         self.samples_in_flight += sum(len(group) for group in groups)
 
     def arm(self) -> None:
-        """Drop notifications already reflected in ``samples_in_flight``.
+        """Drop sample completions already reflected in ``samples_in_flight``.
 
         Callers must not await between ``arm`` and ``wait_for_progress``, so that no
         completion can be missed in between.
@@ -157,8 +168,9 @@ class SubmissionScheduler:
         self._sample_done.clear()
 
     async def wait_for_progress(self, pendings: set[asyncio.Task]) -> tuple[set, set]:
-        """``asyncio.wait(FIRST_COMPLETED)``, also returning when a single sample finishes."""
-        if not self.enabled:
+        """``asyncio.wait(FIRST_COMPLETED)`` over the group tasks, also returning on a
+        single sample completion under the backfill policy."""
+        if not self.backfill_on_sample_completion:
             return await asyncio.wait(pendings, return_when=asyncio.FIRST_COMPLETED)
 
         waiter = asyncio.create_task(self._sample_done.wait())

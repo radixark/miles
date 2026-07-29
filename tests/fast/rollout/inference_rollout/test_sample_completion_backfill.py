@@ -183,6 +183,10 @@ class TestSubmissionScheduler:
         assert scheduler.has_capacity(pending_groups=1, group_budget=2)
         assert not scheduler.has_capacity(pending_groups=2, group_budget=2)
 
+        # No callback decrements it when disabled, so it must not accumulate either.
+        scheduler.on_submit([make_group(1), make_group(2)])
+        assert scheduler.samples_in_flight == 0
+
     def test_enabled_counts_samples(self):
         scheduler = SubmissionScheduler(make_args(rollout_sample_completion_backfill=True))
         assert scheduler.sample_done_callback is not None
