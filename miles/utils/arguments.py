@@ -2736,6 +2736,12 @@ def miles_validate_args(args):
             "fault-tolerant train group cannot route critic values or lifecycle options yet. "
             "Unset MILES_EXPERIMENTAL_FT_TRAINER or use a non-PPO advantage estimator."
         )
+        assert args.kl_coef == 0, (
+            "Shared Actor/Critic PPO does not support reward-level KL (--kl-coef): the critic "
+            "trains before the actor and never sees ref log probs, so its value targets would "
+            "silently exclude the KL penalty applied to the actor's rewards. Use --use-kl-loss "
+            "for KL regularization instead."
+        )
         args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
         args.critic_num_nodes = args.actor_num_nodes
     if args.critic_load is None:

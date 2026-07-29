@@ -325,6 +325,29 @@ def test_critic_rejects_experimental_ft_trainer(tmp_path, monkeypatch):
         miles_validate_args(args)
 
 
+def test_critic_rejects_reward_level_kl(tmp_path):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--advantage-estimator",
+            "ppo",
+            "--kl-coef",
+            "0.05",
+            "--ref-load",
+            str(tmp_path),
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="does not support reward-level KL"):
+        miles_validate_args(args)
+
+
 class TestMultiLoRAValidation:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
