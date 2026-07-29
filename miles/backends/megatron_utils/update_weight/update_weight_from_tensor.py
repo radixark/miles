@@ -366,6 +366,30 @@ class UpdateWeightFromTensor:
             return refs or [], long_lived_tensors
 
 
+# One persistent CUDA-IPC storage per device for all LoRA chunks: fresh
+# per-chunk buckets rotate IPC handles/ref-counter files and race the
+# consumers' release lag (premature reap, stale handles, limbo pile-up).
+_LORA_TRANSFER_BUFFERS: dict[int, torch.Tensor] = {}
+
+
+def _lora_transfer_view(flat: torch.Tensor) -> torch.Tensor:
+    dev = flat.device.index
+    buf = _LORA_TRANSFER_BUFFERS.get(dev)
+    if buf is None:
+        numel = max(flat.numel(), 512 * 1024 * 1024 // flat.element_size())
+        buf = torch.empty(numel, dtype=flat.dtype, device=flat.device)
+        _LORA_TRANSFER_BUFFERS[dev] = buf
+    assert buf.dtype == flat.dtype and buf.numel() >= flat.numel(), (
+        f"LoRA transfer buffer cannot take this chunk without rotating the IPC "
+        f"handle: have {buf.numel()} {buf.dtype}, need {flat.numel()} {flat.dtype}"
+    )
+    view = buf[: flat.numel()]
+    view.copy_(flat)
+    # The IPC sync event is recorded only at the first share; order later copies explicitly.
+    torch.cuda.current_stream().synchronize()
+    return view
+
+
 def _send_to_colocated_engine(
     hf_named_tensors: list[tuple[str, torch.Tensor]],
     *,
@@ -393,12 +417,10 @@ def _send_to_colocated_engine(
         assert weight_version is not None, "LoRA tensor sync requires a weight version"
         names = [name for name, _ in hf_named_tensors]
         assert len(set(names)) == len(names), "LoRA adapter contains duplicate HF tensor names"
-        # Use one CUDA IPC allocation per existing chunk. K3 exports thousands
-        # of tensors; serializing them individually overflows PyTorch's CUDA IPC
-        # limbo before the receiver-side references are reaped.
+        # The caller's per-chunk ACK barrier makes overwriting the shared buffer safe.
         flattened_tensor_bucket = FlattenedTensorBucket(named_tensors=hf_named_tensors)
         flattened_tensor_data = {
-            "flattened_tensor": flattened_tensor_bucket.get_flattened_tensor(),
+            "flattened_tensor": _lora_transfer_view(flattened_tensor_bucket.get_flattened_tensor()),
             "metadata": flattened_tensor_bucket.get_metadata(),
         }
         long_live_tensors.append(flattened_tensor_data)
