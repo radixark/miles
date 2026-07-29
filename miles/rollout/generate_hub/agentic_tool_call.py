@@ -24,6 +24,7 @@ Agent function contract:
 """
 
 import argparse
+import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -66,6 +67,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     metadata = {**metadata, "session_server_id": tracer.session_server_id}
 
     agent_metadata = None
+    collect_timed_out = False
     t_start = time.monotonic()
     try:
         logger.debug(f"{log_prefix} Starting agent function call")
@@ -82,14 +84,24 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     finally:
         # Collect even if the agent failed.
         logger.debug(f"{log_prefix} Calling collect_samples...")
-        result = await tracer.collect_samples(
-            input.sample,
-            max_seq_len=max_seq_len,
-        )
-        logger.debug(
-            f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
-            f"total_time={time.monotonic()-t_start:.1f}s"
-        )
+        try:
+            result = await tracer.collect_samples(
+                input.sample,
+                max_seq_len=max_seq_len,
+            )
+        except asyncio.TimeoutError:
+            collect_timed_out = True
+            logger.warning(f"{log_prefix} Timed out collecting samples", exc_info=True)
+        else:
+            logger.debug(
+                f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
+                f"total_time={time.monotonic()-t_start:.1f}s"
+            )
+
+    if collect_timed_out:
+        sample = deepcopy(input.sample)
+        sample.status = Sample.Status.ABORTED
+        return GenerateFnOutput(samples=sample)
 
     if not result.samples:
         if result.empty_reason == "all_truncated":

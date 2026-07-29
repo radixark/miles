@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -8,7 +10,6 @@ import pybase64
 import pytest
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
-
 
 from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
@@ -666,6 +667,37 @@ class TestAgentMetadata:
         for s in samples:
             assert s.metadata["session_server_id"] == expected_session_server_id
             assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
+
+
+class TestAgentCollectionFailure:
+    @pytest.fixture(params=_AGENTIC_VARIANTS)
+    def variant(self, request):
+        return request.param
+
+    def test_collect_timeout_aborts_sample_but_other_errors_propagate(
+        self, variant, generation_env, monkeypatch, caplog
+    ):
+        collect_error = asyncio.TimeoutError()
+
+        async def fail_collect(_tracer, _input_sample, *, max_seq_len):
+            raise collect_error
+
+        monkeypatch.setattr(
+            "miles.rollout.generate_utils.openai_endpoint_utils.OpenAIEndpointTracer.collect_samples",
+            fail_collect,
+        )
+        input_sample = make_sample(prompt=TwoTurnStub.PROMPT)
+        with caplog.at_level(logging.WARNING):
+            result = _run_generate(variant, generation_env, input_sample)
+
+        assert isinstance(result.sample, Sample)
+        assert result.sample.status == Sample.Status.ABORTED
+        assert input_sample.status == Sample.Status.PENDING
+        assert "Timed out collecting samples" in caplog.text
+
+        collect_error = RuntimeError("assembly failed")
+        with pytest.raises(RuntimeError, match="assembly failed"):
+            _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
 
 
 class TestAgentNoRecords:
