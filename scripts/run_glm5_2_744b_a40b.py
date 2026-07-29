@@ -344,7 +344,7 @@ def _execute_train(args: ScriptArgs):
         else:
             sglang_world_size = 64
     else:
-        sglang_decode_max_bs = 256
+        sglang_decode_max_bs = 32
         sglang_world_size = 8
 
     sglang_args = (
@@ -400,6 +400,7 @@ def _execute_train(args: ScriptArgs):
         # Node-local triton cache: the default ~/.triton on NFS races across nodes
         # (ESTALE) when many processes cold-compile the same kernels.
         "TRITON_CACHE_DIR": "/scratch/yyuan/triton_cache",
+        "TVM_FFI_CACHE_DIR": "/scratch/yyuan/tvm_ffi_cache",
     }
 
     misc_args = (
