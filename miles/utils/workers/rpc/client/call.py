@@ -6,10 +6,16 @@ import time
 import uuid
 from typing import Any
 
-import httpx
-
+from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.tracking_utils.structured_log import log_structured
-from miles.utils.workers.rpc.client.misc import RpcTransport, RpcWorkerCallError
+from miles.utils.workers.rpc.client.misc import (
+    NEVER_REACHED_SERVER_ERRORS,
+    RETRY_INITIAL_DELAY_SECONDS,
+    RETRY_MAX_DELAY_SECONDS,
+    RETRYABLE_ERRORS,
+    RpcTransport,
+    RpcWorkerCallError,
+)
 from miles.utils.workers.rpc.common.metadata import RpcMethodSpec
 from miles.utils.workers.rpc.common.protocol import (
     CALL_STATUS_PATH,
@@ -22,7 +28,8 @@ from miles.utils.workers.worker_handle import WorkerUnreachableError
 
 logger = logging.getLogger(__name__)
 
-SUBMIT_TIMEOUT_SECONDS = 30.0
+SUBMIT_RETRY_WINDOW_SECONDS = 60.0
+SUBMIT_ATTEMPT_TIMEOUT_SECONDS = 10.0
 POLL_INTERVAL_SECONDS = 0.05
 
 
@@ -62,17 +69,26 @@ class RpcCall:
         request = SubmitRequest(call_id=self._call_id, query=self._query)
 
         try:
-            await self._transport.request(
-                "POST",
-                SUBMIT_PATH.format(method_name=self._spec.name),
-                seconds=SUBMIT_TIMEOUT_SECONDS,
-                response_model=SubmitResponse,
-                json=request.model_dump(exclude_none=True),
+            await retry_until_deadline(
+                lambda remaining: self._submit_attempt(request=request, remaining=remaining),
+                total_seconds=SUBMIT_RETRY_WINDOW_SECONDS,
+                retry_on=NEVER_REACHED_SERVER_ERRORS,
+                initial_delay=RETRY_INITIAL_DELAY_SECONDS,
+                max_delay=RETRY_MAX_DELAY_SECONDS,
+                log_fields={**self._log_fields, "op": "submit"},
             )
-        except (httpx.TransportError, TimeoutError, asyncio.TimeoutError) as e:
+        except RETRYABLE_ERRORS as e:
             log_structured(logger.warning, op="submit", phase="gave_up", **self._log_fields, error=repr(e))
             raise WorkerUnreachableError(f"{self._method_label} submit failed: {e!r}") from e
 
+    async def _submit_attempt(self, *, request: SubmitRequest, remaining: float) -> None:
+        await self._transport.request(
+            "POST",
+            SUBMIT_PATH.format(method_name=self._spec.name),
+            seconds=min(SUBMIT_ATTEMPT_TIMEOUT_SECONDS, remaining),
+            response_model=SubmitResponse,
+            json=request.model_dump(exclude_none=True),
+        )
         log_structured(logger.debug, op="submit", phase="accepted", **self._log_fields)
 
     async def _poll_until_done(self) -> CallStatusResponse:
