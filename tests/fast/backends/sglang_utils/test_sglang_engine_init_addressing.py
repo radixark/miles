@@ -13,7 +13,7 @@ def test_init_brackets_bare_ipv6_inputs_and_keeps_the_allocated_port():
     from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 
     engine = SGLangEngine.__new__(SGLangEngine)
-    engine.args = Namespace(env_report=None, rollout_external=False)
+    engine.args = Namespace(env_report=None)
     engine.rank = 0
     engine.worker_type = "regular"
     engine.base_gpu_id = 0
@@ -25,7 +25,7 @@ def test_init_brackets_bare_ipv6_inputs_and_keeps_the_allocated_port():
     def fake_compute_server_args(*args, **kwargs):
         forwarded["dist_init_addr"] = args[2]
         forwarded["host"] = args[4]
-        return {"node_rank": 0, "host": "fd00::2", "port": 31007, "disaggregation_bootstrap_port": None}, []
+        return {"node_rank": 0, "host": "fd00::2", "port": 31007, "disaggregation_bootstrap_port": None}
 
     with (
         patch(f"{_MODULE}._compute_server_args", side_effect=fake_compute_server_args),
