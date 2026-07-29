@@ -50,12 +50,9 @@ concurrency. Per-task containers are heavy on disk — if you'd rather not coloc
 them with the GPU workload, run the env server on a separate Docker host and point
 the launcher at it via `--openenv-env-url http://<env-host>:8003`.
 
-**Server contract**: the installed `tbench2_env` must be at or after the
-huggingface/OpenEnv#1012 merge (04d259ea6) — `evaluate` runs the task's own
-`tests/test.sh` in the image WORKDIR. The adapter checks the harness marker on
-every `evaluate`: a server that does not score through the canonical harness
-surfaces as every sample dropping with a warning, never as a plausible-looking
-reward curve.
+The installed `tbench2_env` must be `>=` the #1012 merge (04d259ea6), same as
+step 2b below; the adapter drops every episode (with a warning) from a server
+that doesn't carry that contract.
 
 ### 2b. Alternative: Daytona cloud sandboxes (no Docker host)
 

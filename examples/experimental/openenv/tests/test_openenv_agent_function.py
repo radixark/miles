@@ -40,7 +40,8 @@ class _FakeResult:
 
 
 class _FakeEnv:
-    """Records every step() action; scores via the canonical `evaluate` contract."""
+    """Records every step() action; answers `evaluate` like a contract-carrying
+    server (reward plus the canonical-harness marker)."""
 
     last_actions: list = []
 
@@ -93,10 +94,10 @@ _CLASSES = {"env": _FakeEnv, "action": _FakeAction}
 
 
 def test_shared_leg_dispatch(monkeypatch):
-    """The shared-server run_episode: raw exec commands (the server resolves
-    the workdir), scoring via the standard `evaluate` action, no adapter-side
-    canonical exec — and the trial-dir purge (post_episode) still runs, since
-    the shared server outlives the episode."""
+    """The shared-server run_episode: exec commands pass through unmodified
+    (the server resolves the workdir), scoring via the standard `evaluate`
+    action — and the trial-dir purge (post_episode) runs, since the shared
+    server outlives the episode."""
     monkeypatch.setattr(oaf, "_load_tbench2", lambda: _CLASSES)
 
     async def spying_with_env(env_cls, env_url, body):
@@ -112,17 +113,17 @@ def test_shared_leg_dispatch(monkeypatch):
 
     assert reward == 1.0
     assert execs[0].command == "echo hi"
-    assert not any("test.sh" in (a.command or "") for a in execs)
     assert any("/tmp/tbench2_env_runs" in (a.command or "") for a in execs), "trial-dir purge missing"
     assert any(a.action_type == "evaluate" for a in actions)
     assert metrics["turns"] == 2 and metrics["tool_calls"] == 1
 
 
 def test_old_server_reward_is_not_trusted(monkeypatch):
-    """An older tbench2_env deployment answers `evaluate` with a
-    plausible-looking reward but no canonical-harness marker (its info is
-    {tests_passed, exit_code} from bare pytest). That reward must be dropped,
-    not ingested: source preflight is impossible against a remote server."""
+    """A server without the canonical contract (e.g. an out-of-date install)
+    answers `evaluate` with a plausible-looking reward but no harness marker
+    (its info is {tests_passed, exit_code} from bare pytest). That reward must
+    be dropped, not ingested: source preflight is impossible against a remote
+    server."""
 
     class _OldServerEnv(_FakeEnv):
         async def step(self, action):

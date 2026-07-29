@@ -173,11 +173,6 @@ _DEFAULT_ENV_URL = "http://localhost:8003"
 #                       shared server accumulates trial dirs; a Daytona
 #                       sandbox lives only for its episode and needs nothing).
 #
-# Scoring is identical on both legs: the standard `evaluate` action against a
-# server carrying the canonical contract (see the module docstring), guarded
-# by the harness marker so an older deployment drops episodes loudly instead
-# of mis-scoring them.
-#
 # Every agent-function module exposes the same two entries: run() for miles
 # (session-server policy wiring + training failure semantics) and
 # run_episode() for callers that bring their own policy client and own
@@ -252,8 +247,8 @@ async def _multi_turn(
     reply), executed by the server in the task image's real WORKDIR; the loop
     ends when the policy stops emitting a command, says TASK_COMPLETE, or hits
     OPENENV_MAX_TURNS. Scoring is the standard ``evaluate`` action: the server
-    runs the task's canonical tests/test.sh natively and reports the verdict
-    (see the module docstring for the required server contract).
+    runs the task's tests/test.sh and reports the verdict (see the module
+    docstring for the required server contract).
     """
     action_cls = classes["action"]
     task_id = metadata.get("task_id") or metadata.get("task_name")
@@ -421,8 +416,8 @@ async def _run_for_training(
         )
     except asyncio.TimeoutError:
         logger.warning(f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; " "terminating with reward 0")
-        # eval_report empty: the episode was cancelled before the canonical
-        # eval ever ran, so there is no pytest report to surface.
+        # eval_report empty: the episode was cancelled before evaluate ever
+        # ran, so there is no pytest report to surface.
         return {
             "reward": 0.0,
             "exit_status": "timeout",
