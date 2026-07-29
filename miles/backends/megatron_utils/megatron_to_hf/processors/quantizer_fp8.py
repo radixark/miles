@@ -4,12 +4,7 @@ import torch
 
 from miles.utils.fp8_kernel import blockwise_cast_to_fp8_triton
 
-from ...sglang import (
-    per_block_cast_to_fp8,
-    quant_weight_ue8m0,
-    should_deepgemm_weight_requant_ue8m0,
-    transform_scale_ue8m0,
-)
+from ...sglang import per_block_cast_to_fp8
 
 
 def quantize_params_fp8(args, megatron_name, converted_named_params, quantization_config):
@@ -17,7 +12,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     fmt = quantization_config.get("fmt", "e4m3")
     assert fmt == "e4m3", f"Unsupported FP8 format: {fmt}"
     assert quantization_config["activation_scheme"] == "dynamic"
-    weight_block_size = quantization_config.get("weight_block_size", None)
+    weight_block_size = quantization_config.get("weight_block_size")
 
     decoder_layers_pattern = r"module\.module\.decoder\.layers\.(\d+)\.(.+)"
     match = re.match(decoder_layers_pattern, megatron_name)
@@ -48,7 +43,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
                 # TODO: find a clearer way.
                 if converted_name.endswith("_scale"):
                     continue
-                quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
+                quantize_named_params.extend(_quantize_weight(converted_name, param, weight_block_size))
 
             return quantize_named_params
 
@@ -63,7 +58,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         ]:
             quantize_named_params = []
             for converted_name, param in converted_named_params:
-                quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
+                quantize_named_params.extend(_quantize_weight(converted_name, param, weight_block_size))
 
             return quantize_named_params
 
@@ -94,7 +89,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     ]:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
-            quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))
+            quantize_named_params.extend(_quantize_weight(converted_name, param, weight_block_size))
 
         return quantize_named_params
 
@@ -102,42 +97,20 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
     return converted_named_params
 
 
-def _quantize_param(args, name, weight, weight_block_size):
+def _quantize_weight(name, weight, weight_block_size):
+    # The engine derives backend-specific scale layouts while loading.
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
-    FP8_MIN = torch.finfo(torch.float8_e4m3fn).min
-    FP8_MAX = torch.finfo(torch.float8_e4m3fn).max
+    fp8_min = torch.finfo(torch.float8_e4m3fn).min
+    fp8_max = torch.finfo(torch.float8_e4m3fn).max
     if weight_block_size is not None:
-        if _get_scale_format(args, name, weight_block_size) == "ue8m0":
-            qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
-            scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
-        # TODO: this [128, 128] is hacky. need improve
-        elif per_block_cast_to_fp8 is not None and list(weight_block_size) == [128, 128]:
+        if per_block_cast_to_fp8 is not None and list(weight_block_size) == [128, 128]:
             qweight, scale = per_block_cast_to_fp8(weight)
         else:
             qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
         scale_name = name.replace(".weight", ".weight_scale_inv")
     else:
-        # per tensor quant
-        scale = weight.abs().max().clamp(min=1e-12).to(torch.float32) / FP8_MAX
-        qweight = (weight / scale).clamp(min=FP8_MIN, max=FP8_MAX).to(torch.float8_e4m3fn)
+        scale = weight.abs().max().clamp(min=1e-12).to(torch.float32) / fp8_max
+        qweight = (weight / scale).clamp(min=fp8_min, max=fp8_max).to(torch.float8_e4m3fn)
         scale = scale.view(1)
         scale_name = name.replace(".weight", ".weight_scale")
     return [(name, qweight), (scale_name, scale)]
-
-
-def _get_scale_format(args, name, weight_block_size):
-    if not (
-        should_deepgemm_weight_requant_ue8m0
-        and should_deepgemm_weight_requant_ue8m0(weight_block_size=weight_block_size)
-    ):
-        return None  # use default fp32 scale format
-
-    if ".experts." not in name:
-        # Non-MoE linear weights: ue8m0 when deepgemm is enabled
-        return "ue8m0"
-
-    # MoE expert weights: only ue8m0 when runner is deep_gemm
-    is_deepgemm_moe_backend = args.sglang_moe_runner_backend == "deep_gemm" or (
-        args.sglang_moe_runner_backend == "auto" and args.sglang_moe_a2a_backend in ["deepep", "mooncake"]
-    )
-    return "ue8m0" if is_deepgemm_moe_backend else None
