@@ -230,24 +230,40 @@ def _autouse_reset_object_store(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _autouse_subprocess_leak_check():
-    """Catch leaked router / session-server multiprocessing children."""
+def _autouse_subprocess_leak_check(monkeypatch):
+    """Catch leaked router / session-server children (multiprocessing and Popen)."""
     import multiprocessing
+
+    from miles.utils.workers import process_utils
+
+    launched: list = []
+    real_launch = process_utils.launch_bound_subprocess
+
+    def _recording_launch(argv, *, envs):
+        process = real_launch(argv, envs=envs)
+        launched.append(process)
+        return process
+
+    monkeypatch.setattr(process_utils, "launch_bound_subprocess", _recording_launch)
 
     before = {p.pid for p in multiprocessing.active_children()}
     yield
-    after = {p.pid for p in multiprocessing.active_children()}
-    leaked = after - before
-    if leaked:
+    leaked_mp = {p.pid for p in multiprocessing.active_children()} - before
+    leaked_popen = [p for p in launched if p.poll() is None]
+    if leaked_mp or leaked_popen:
         # Tear down leaked children to avoid cascading test failures.
         for p in multiprocessing.active_children():
-            if p.pid in leaked:
+            if p.pid in leaked_mp:
                 try:
                     p.terminate()
                     p.join(timeout=2)
                 except Exception:
                     pass
-        raise AssertionError(f"Subprocess leaked from previous test: pids={leaked}")
+        for p in leaked_popen:
+            process_utils._terminate_process_tree(p)
+        raise AssertionError(
+            f"Subprocess leaked from previous test: mp={leaked_mp} popen={[p.pid for p in leaked_popen]}"
+        )
 
 
 def dedent(s: str) -> str:

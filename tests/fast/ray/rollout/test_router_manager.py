@@ -7,6 +7,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.router_manager import _resolve_session_server_ports, start_router, start_session_server
+from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
 from miles.utils.workers.argv_utils import parse_config_argv
 
@@ -93,6 +94,46 @@ class TestStartRouterLaunchCommand:
         assert config.host == ip
         assert config.port == port == 20000
         assert config.max_connections == 100
+
+
+class TestStartSessionServerLaunchCommand:
+    def test_one_launch_per_port_with_parseable_configs(self, monkeypatch):
+        """Each resolved port gets its own subprocess with a lossless config."""
+        launches: list[list[str]] = []
+        monkeypatch.setattr(
+            "miles.utils.workers.process_utils.launch_bound_subprocess",
+            lambda argv, *, envs: launches.append(argv) or MagicMock(),
+        )
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_for_server_ready", lambda *fn_args, **fn_kwargs: None
+        )
+        monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
+
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            sglang_router_ip="127.0.0.1",
+            sglang_router_port=3000,
+            session_server_port=[5005, 5007],
+            miles_router_timeout=None,
+            chat_template_path=None,
+            tito_model="default",
+            apply_chat_template_kwargs=None,
+            tito_allowed_append_roles=["tool"],
+            use_rollout_indexer_replay=False,
+        )
+        start_session_server(args)
+
+        assert len(launches) == 2
+        configs = []
+        for argv in launches:
+            assert argv[:3] == [sys.executable, "-m", "miles.rollout.session.server"]
+            configs.append(parse_config_argv(SessionServerConfig, argv[3:]))
+
+        assert {config.backend_url for config in configs} == {"http://127.0.0.1:3000"}
+        assert {config.port for config in configs} == {5005, 5006}
+        assert {config.host for config in configs} == {"127.0.0.1"}
+        assert {config.instance_id for config in configs} == set(args.session_server_instance_ids.values())
 
 
 class TestStartSessionServer:
