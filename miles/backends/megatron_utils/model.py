@@ -471,6 +471,7 @@ def train_one_step(
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
+                "rollout_mask_sums",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -555,7 +556,7 @@ def train_one_step(
             ft_test_action_executor.maybe_crash(rollout_id=rollout_id, attempt=attempt)
 
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
-            args, model, parallel_state, losses_reduced=losses_reduced
+            args, model, parallel_state, losses_reduced=losses_reduced, step_global_batch_size=step_global_batch_size
         )
         if not ok:
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
@@ -622,7 +623,9 @@ def train_one_step(
 
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
             loss_reduced = (
-                indep_dp_loss_reduced if parallel_state.indep_dp.size > 1 else aggregate_train_losses(losses_reduced)
+                indep_dp_loss_reduced
+                if parallel_state.indep_dp.size > 1
+                else aggregate_train_losses(losses_reduced, step_global_batch_size)
             )
             return loss_reduced, grad_norm, outcome
 

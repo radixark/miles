@@ -33,6 +33,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
     "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
     "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
+    "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
@@ -96,6 +97,22 @@ def convert_samples_to_train_data(
             sample.loss_mask = [0] * sample.response_length
         loss_masks.append(sample.loss_mask)
     train_data["loss_masks"] = loss_masks
+
+    # Per-rollout aggregate, precomputed here (where every sample of every
+    # rollout is visible) and broadcast per-sample so the per-mb loss reducer
+    # uses the correct whole-rollout denominator even when a rollout's samples
+    # land in different micro-batches:
+    #
+    #   ``rollout_mask_sums[i]`` — sum of loss-mask totals over every sample in
+    #   sample i's rollout. Used as the reducer's denominator so summing
+    #   partial contributions across mbs yields one token-weighted mean per
+    #   rollout. Equals ``sum(loss_masks[i])`` when 1 rollout = 1 sample.
+    rollout_id_list = train_data["rollout_ids"]
+    mask_sums_per_sample = [sum(m) for m in loss_masks]
+    rollout_total_mask: dict[int, int] = {}
+    for rid, ms in zip(rollout_id_list, mask_sums_per_sample, strict=True):
+        rollout_total_mask[rid] = rollout_total_mask.get(rid, 0) + ms
+    train_data["rollout_mask_sums"] = [rollout_total_mask[rid] for rid in rollout_id_list]
 
     # overwriting the raw reward
     if samples[0].metadata and "raw_reward" in samples[0].metadata:
@@ -293,6 +310,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "round_number",
             "sample_indices",
             "rollout_ids",
+            "rollout_mask_sums",
             "rollout_log_probs",
             "rollout_routed_experts",
             "rollout_indexer_topk",

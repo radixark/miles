@@ -137,6 +137,7 @@ def loss_function(
         args.calculate_per_token_loss,
         args.qkv_format,
         batch.get("max_seq_lens", None),
+        sample_denoms=batch.get("rollout_mask_sums", None),
     )
 
     func = get_loss_function(args)
@@ -181,16 +182,25 @@ def loss_function(
         if apply_megatron_loss_scaling:
             loss = loss * parallel_state.cp.size
 
+    # values[0] is the reducer's denominator after the DP*CP all-reduce. For
+    # per-token loss it must be the all-reduced token total. When the caller
+    # provides step_global_batch_size the divisor is that constant, so leave a
+    # 0 placeholder and let aggregate_train_losses substitute it; legacy
+    # callers (fsdp/torchtitan) keep the all-reduced sample count.
+    if args.calculate_per_token_loss:
+        denominator = num_tokens
+    elif step_global_batch_size is not None:
+        denominator = 0
+    else:
+        denominator = num_samples
+
     return (
         loss,
         torch.tensor(num_tokens if args.calculate_per_token_loss else 1, device=logits.device),
         {
             "keys": list(log.keys()),
             "values": torch.tensor(
-                [
-                    num_samples if not args.calculate_per_token_loss else num_tokens,
-                ]
-                + list(log.values()),
+                [denominator] + list(log.values()),
                 device=logits.device,
             ),
         },
