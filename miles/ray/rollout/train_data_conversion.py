@@ -227,8 +227,11 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
         return False
     if "multimodal_train_inputs" in data:
         return False
+    if "rollout_ids" not in data:
+        # custom convert_samples_to_train_data functions may not emit it
+        return False
     global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
-    return len(data["tokens"]) % global_batch_size == 0
+    return len(set(data["rollout_ids"])) >= global_batch_size
 
 
 def split_train_data_by_dp_scheduled(args, data: dict[str, Any], train_parallel_config: dict):
@@ -251,9 +254,11 @@ def split_train_data_by_dp_scheduled_raw(
         train_parallel_config,
         total_lengths,
         global_batch_size=global_batch_size,
+        rollout_indices=data["rollout_ids"],
     )
     logger.info(
         f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
+        f"num_rollouts={len(set(data['rollout_ids']))}, "
         f"global_batch_sizes={global_batch_sizes}, num_microbatches={num_microbatches}"
     )
 

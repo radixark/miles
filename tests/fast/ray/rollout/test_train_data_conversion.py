@@ -583,7 +583,7 @@ FULL_SCHEDULE_CONFIG = {
 }
 
 
-def _make_split_data(n: int, *, lengths: list[int] | None = None) -> dict:
+def _make_split_data(n: int, *, lengths: list[int] | None = None, rollout_ids: list[int] | None = None) -> dict:
     lengths = lengths or [2] * n
     assert len(lengths) == n
     return {
@@ -593,6 +593,7 @@ def _make_split_data(n: int, *, lengths: list[int] | None = None) -> dict:
         "truncated": [0] * n,
         "loss_masks": [[1] * length for length in lengths],
         "sample_indices": list(range(n)),
+        "rollout_ids": rollout_ids if rollout_ids is not None else list(range(n)),
     }
 
 
@@ -618,9 +619,14 @@ class TestCanScheduleOnRolloutSide:
         data["multimodal_train_inputs"] = [None] * 8
         assert not can_schedule_on_rollout_side(args, data, FULL_SCHEDULE_CONFIG)
 
-    def test_rejects_indivisible_sample_count(self):
+    def test_rejects_fewer_rollouts_than_gbs(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
-        assert not can_schedule_on_rollout_side(args, _make_split_data(10), FULL_SCHEDULE_CONFIG)
+        assert not can_schedule_on_rollout_side(args, _make_split_data(6), FULL_SCHEDULE_CONFIG)
+
+    def test_accepts_trailing_partial_step(self):
+        """Extra rollouts beyond a full step are fine — the schedule drops them."""
+        args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
+        assert can_schedule_on_rollout_side(args, _make_split_data(10), FULL_SCHEDULE_CONFIG)
 
     def test_dynamic_gbs_overrides_args_gbs(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)  # global_batch_size=8
@@ -630,24 +636,39 @@ class TestCanScheduleOnRolloutSide:
 
 
 class TestSplitTrainDataByDpScheduled:
-    def test_static_shards_match_legacy_split_plus_schedule(self):
-        """Static path: shards must be identical to the legacy split, plus the two
-        schedule keys, and the schedule must tile each shard's rows exactly."""
+    def test_static_shards_cover_all_samples(self):
+        """Static path: every sample lands in exactly one shard row, the schedule
+        tiles each shard's rows exactly, and shard rows match their partition."""
         args = make_args(balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False)
         data = _make_split_data(8)
-        legacy = split_train_data_by_dp_raw(args, dict(data), dp_size=2)
         scheduled = split_train_data_by_dp_scheduled_raw(args, dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG)
 
         assert len(scheduled) == 2
-        for rank, (old, new) in enumerate(zip(legacy, scheduled, strict=True)):
-            assert list(new["partition"]) == list(old["partition"]), f"rank {rank} partition changed"
-            for key in ("tokens", "response_lengths", "loss_masks", "sample_indices"):
-                assert new[key] == old[key], f"rank {rank} {key} changed"
-            # global_batch_size=8, dp=2, mbs=2 -> 2 mbs per rank, 1 step
+        seen = []
+        for new in scheduled:
+            partition = list(new["partition"])
+            seen.extend(partition)
+            assert new["tokens"] == [data["tokens"][j] for j in partition]
+            # global_batch_size=8, dp=2, mbs=2 -> 4 mbs total, 2 per rank, 1 step
             assert new["num_microbatches"] == [2]
             assert new["global_batch_sizes"] == [8]
             flat = [i for mbs in new["micro_batch_indices"] for i in mbs]
             assert flat == list(range(len(new["tokens"])))
+        assert sorted(seen) == list(range(8))
+
+    def test_compact_rollout_gbs_counts_rollouts_not_samples(self):
+        """gbs counts rollouts: 4 rollouts over 6 samples with gbs=2 -> 2 steps,
+        and every sample is still covered exactly once across shards."""
+        args = make_args(balance_data=False, micro_batch_size=1, use_dynamic_batch_size=True, max_tokens_per_gpu=8)
+        rollout_ids = [0, 1, 1, 1, 2, 3]  # rollout 1 emits 3 samples
+        data = _make_split_data(6, rollout_ids=rollout_ids)
+        data["dynamic_global_batch_size"] = 2
+        shards = split_train_data_by_dp_scheduled_raw(args, dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG)
+
+        assert shards[0]["global_batch_sizes"] == [2, 2]
+        assert len(shards[0]["num_microbatches"]) == 2
+        seen = sorted(j for shard in shards for j in shard["partition"])
+        assert seen == list(range(6))
 
     def test_dynamic_schedule_respects_token_cap(self):
         args = make_args(
