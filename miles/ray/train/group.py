@@ -299,6 +299,10 @@ class RayTrainGroup:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
+    async def offload_grad_buffer(self):
+        # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
+        await self._execute_all_alive_and_catch("offload_grad_buffer")
+
     async def connect(self, critic_group: "RayTrainGroup"):
         assert len(self._cells) == len(critic_group._cells), (
             f"Actor and critic must have the same number of cells: "

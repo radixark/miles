@@ -376,6 +376,9 @@ def _execute_train(args: ScriptArgs) -> None:
         "--accumulate-allreduce-grads-in-fp32 "
         "--colocate "
         "--offload-train "
+        # GB300: the engine weight mirror + trainer backup exceed the job
+        # cgroup, so the handoff overlap must live on the GPU instead.
+        "--colocate-memory-peak-device gpu "
         "--disable-weights-backuper "
         f"--update-weight-buffer-size {update_weight_buffer_size} "
         f"--train-memory-margin-bytes {(2 if args.mode == 'debug_minimal' else 4) * 1024**3} "

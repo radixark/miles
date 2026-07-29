@@ -112,6 +112,9 @@ class RayTrainGroup:
     async def clear_memory(self):
         await self._broadcast("clear_memory")
 
+    async def offload_grad_buffer(self):
+        await self._broadcast("offload_grad_buffer")
+
     async def connect(self, critic_group):
         refs = [
             actor.connect_actor_critic.remote(critic)

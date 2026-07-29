@@ -23,6 +23,12 @@ async def train(args):
     pgs = create_placement_groups(args)
     init_tracking(args)
 
+    if args.colocate_memory_peak_device == "gpu":
+        assert (
+            args.offload_train and args.offload_rollout
+        ), "--colocate-memory-peak-device gpu requires --offload-train and --offload-rollout"
+        assert not args.use_critic, "--colocate-memory-peak-device gpu is not wired for the critic path"
+
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
@@ -40,7 +46,8 @@ async def train(args):
 
     maybe_start_mini_ft_controller(args)
 
-    if args.offload_rollout:
+    if args.offload_rollout and args.colocate_memory_peak_device != "gpu":
+        # gpu mode never released the weights at init; resuming a never-released TMS region is fatal.
         await rollout_manager.onload_weights.remote()
 
     # always update weight first so that sglang has the loaded weights from training.
@@ -96,7 +103,14 @@ async def train(args):
         rollout_data_ref = await rollout_manager.generate.remote(rollout_id)
 
         if args.offload_rollout:
-            await rollout_manager.offload.remote(tags=get_rollout_offload_tags(args))
+            if args.colocate_memory_peak_device == "gpu":
+                # Overlap the handoff on the GPU so the two host copies
+                # (engine weight mirror, trainer backup) never coexist.
+                await rollout_manager.offload_kv.remote()
+                await actor_model.onload()
+                await rollout_manager.offload_weights.remote()
+            else:
+                await rollout_manager.offload.remote(tags=get_rollout_offload_tags(args))
 
         if args.use_critic:
             critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_ref))
@@ -114,9 +128,17 @@ async def train(args):
         if rollout_id + 1 < args.num_rollout or should_run_periodic_action(
             rollout_id, args.eval_interval, num_rollout_per_epoch
         ):
-            await offload_train()
-            if args.offload_rollout:
+            if args.colocate_memory_peak_device == "gpu" and args.offload_rollout:
+                # Mirror-first handoff; the trainer returns its caches and grad
+                # buffers first — the engine resume needs the wake-time layout.
+                await actor_model.clear_memory()
+                await actor_model.offload_grad_buffer()
                 await rollout_manager.onload_weights.remote()
+                await offload_train()
+            else:
+                await offload_train()
+                if args.offload_rollout:
+                    await rollout_manager.onload_weights.remote()
             await actor_model.update_weights(rollout_id=rollout_id)
             if args.offload_rollout:
                 await rollout_manager.onload_kv.remote()

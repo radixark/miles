@@ -214,6 +214,11 @@ def create_rollout_manager(args, pg):
         )
 
     if args.offload_rollout:
-        ray.get(rollout_manager.offload.remote(tags=get_rollout_offload_tags(args)))
+        if getattr(args, "colocate_memory_peak_device", "cpu") == "gpu":
+            # Keep the engine weights resident through trainer init: their host
+            # mirror cannot coexist with the checkpoint load's footprint.
+            ray.get(rollout_manager.offload_kv.remote())
+        else:
+            ray.get(rollout_manager.offload.remote(tags=get_rollout_offload_tags(args)))
 
     return rollout_manager, num_rollout_per_epoch

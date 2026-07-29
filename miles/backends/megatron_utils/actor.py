@@ -253,10 +253,31 @@ class MegatronTrainRayActor(TrainRayActor):
 
         return start_rollout_id
 
+    # Make sleep()/wake_up() idempotent: gpu peak mode wakes the trainer early.
+    _train_offloaded = False
+    _grad_buffer_offloaded = False
+
+    @with_logs
+    @timer
+    def offload_grad_buffer(self) -> None:
+        """Release the no-backup grad buffers ahead of the engine weight
+        resume: free host-side, and the heavy PP stages need the bytes."""
+        assert self.args.offload_train
+        if self._train_offloaded or self._grad_buffer_offloaded:
+            return
+        if not is_lora_enabled(self.args):
+            return
+        print_memory("before offload grad_buffer")
+        torch_memory_saver.pause(tag="grad_buffer")
+        self._grad_buffer_offloaded = True
+        print_memory("after offload grad_buffer")
+
     @with_logs
     @timer
     def sleep(self) -> None:
         assert self.args.offload_train
+        if self._train_offloaded:
+            return
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
@@ -265,12 +286,15 @@ class MegatronTrainRayActor(TrainRayActor):
         destroy_process_groups()
 
         if is_lora_enabled(self.args):
-            torch_memory_saver.pause(tag="grad_buffer")
+            if not self._grad_buffer_offloaded:
+                torch_memory_saver.pause(tag="grad_buffer")
+                self._grad_buffer_offloaded = True
             torch_memory_saver.pause(tag="default")
         else:
             torch_memory_saver.pause(tag=None)
 
         print_memory("after offload model")
+        self._train_offloaded = True
 
         if should_log_cpu_memory:
             log_cpu_memory(self._last_rollout_id, self.args, "after_offload_train")
@@ -279,17 +303,21 @@ class MegatronTrainRayActor(TrainRayActor):
     @timer
     def wake_up(self) -> None:
         assert self.args.offload_train
+        if not self._train_offloaded:
+            return
         print_memory("before wake_up model")
 
         if is_lora_enabled(self.args):
             torch_memory_saver.resume(tag="default")
             torch_memory_saver.resume(tag="grad_buffer")
+            self._grad_buffer_offloaded = False
         else:
             torch_memory_saver.resume(tag=None)
 
         clear_memory()
         reload_process_groups()
         print_memory("after wake_up model")
+        self._train_offloaded = False
 
     @property
     def _enable_weight_backup(self) -> bool:
