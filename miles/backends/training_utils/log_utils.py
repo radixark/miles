@@ -23,12 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def reduce_gathered_log_dict(gathered: list[dict], dp_size: int) -> dict[str, float]:
-    """Per-key reduction of gathered per-rank log dicts.
-
-    A ``(sum, count)`` tuple reduces as ``Σsum / Σcount`` (correct when ranks
-    hold different sample counts); a plain scalar reduces as the mean across
-    ranks (legacy; correct only when every rank holds the same N samples).
-    """
+    """Per-key reduction: ``(sum, count)`` tuples as ``Σsum / Σcount``, scalars as mean."""
     reduced: dict[str, float] = {}
     for key in gathered[0]:
         values = [d[key] for d in gathered]
@@ -51,10 +46,7 @@ def gather_log_data(
     """
     Gather per-rank metrics, reduce on the DP source rank, and log.
 
-    Values are either plain scalars or ``(sum, count)`` tuples — see
-    :func:`reduce_gathered_log_dict`. The DP source rank prints and optionally
-    logs to WandB/TensorBoard with a step derived from `rollout_id` and batch
-    sizes. Returns the reduced dict on the DP source rank; returns None on others.
+    Returns the reduced dict on the DP source rank; returns None on others.
     """
 
     parallel_state = get_parallel_state()
@@ -168,8 +160,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "prompt_group_sizes",
             ]:
                 continue
-            # Emit (sum, count) so gather_log_data can do a weighted average
-            # across DP ranks instead of assuming every rank holds N samples.
             if isinstance(val, (list, tuple)):
                 if isinstance(val[0], torch.Tensor):
                     count = len(val)
@@ -196,12 +186,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                             qkv_format=args.qkv_format,
                             max_seq_lens=max_seq_lens,
                         )
-                        # cp_size cancels the CP division; result is the
-                        # sum-of-per-sample-means over this rank's samples.
                         per_rank_sum = cp_size * sum_of_sample_mean(tensor)
                     else:
-                        # tensor.mean() * cp_size is this rank's per-sample mean;
-                        # multiply by count to get the per-rank sum.
                         per_rank_sum = tensor.mean() * cp_size * count
                     log_dict[key] = (per_rank_sum.item(), count)
                 else:
@@ -214,7 +200,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         continue
                     log_dict[key] = (sum(flat), len(flat))
             elif isinstance(val, torch.Tensor):
-                # Scalar tensor (one per rank): treat as count=1.
                 log_dict[key] = (val.float().mean().item(), 1)
             else:
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")

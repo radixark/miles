@@ -250,8 +250,6 @@ def split_train_data_by_dp_scheduled_raw(
     for rank, shard in enumerate(shards):
         shard["num_microbatches"] = num_microbatches
         shard["micro_batch_indices"] = micro_batch_indices[rank]
-        # Per-step sample count (total across DP); the train side normalizes the
-        # loss and steps the LR scheduler by this instead of args.global_batch_size.
         shard["global_batch_sizes"] = global_batch_sizes
     return shards
 

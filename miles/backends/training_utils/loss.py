@@ -115,10 +115,8 @@ def loss_function(
             keys required by the selected loss function.
         num_microbatches: Number of gradient accumulation steps.
         logits: Model outputs (policy or value head).
-        step_global_batch_size: Sample count of the current training step (total
-            across DP), used as the loss normalizer. None (fsdp/torchtitan and
-            other legacy callers) falls back to the batch's
-            ``dynamic_global_batch_size`` or ``args.global_batch_size``.
+        step_global_batch_size: Per-step sample count used as the loss
+            normalizer; None falls back to the legacy batch/args value.
 
     Returns:
         Tuple of `(scaled_loss, normalizer, logging_dict)` where:

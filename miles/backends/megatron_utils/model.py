@@ -415,8 +415,7 @@ def train_one_step(
         optimizer: Optimizer instance.
         opt_param_scheduler: LR/WD scheduler.
         num_microbatches: Number of microbatches to process.
-        step_global_batch_size: Sample count for this step (total across DP);
-            loss normalizer and LR scheduler increment.
+        step_global_batch_size: Per-step sample count (loss normalizer + LR increment).
 
     Returns:
         Tuple of (reduced loss dict, gradient norm, step outcome).
@@ -603,8 +602,7 @@ def train_one_step(
             # Update parameters.
             update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
 
-            # Update learning rate. Use the per-step sample count so the
-            # scheduler's samples-seen counter tracks reality.
+            # Update learning rate.
             assert update_successful
             opt_param_scheduler.step(increment=step_global_batch_size)
 
@@ -670,8 +668,7 @@ def train(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
-        global_batch_sizes (Sequence[int]): Sample count per step (total across
-            DP); same length as ``num_microbatches``.
+        global_batch_sizes (Sequence[int]): Sample count per step (total across DP).
     """
     parallel_state = get_parallel_state()
     args = get_args()
