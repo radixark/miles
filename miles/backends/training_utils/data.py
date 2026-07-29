@@ -405,6 +405,14 @@ class DataIterator:
         return self
 
 
+def get_global_batch_sizes(args: Namespace, rollout_data: RolloutBatch, num_steps: int) -> list[int]:
+    """Per-step sample counts (total across DP). Precomputed by the rollout-side
+    schedule; legacy shards fall back to the constant (dynamic) global batch size."""
+    if "global_batch_sizes" in rollout_data:
+        return rollout_data["global_batch_sizes"]
+    return [rollout_data.get("dynamic_global_batch_size", args.global_batch_size)] * num_steps
+
+
 def get_data_iterator(
     args: Namespace,
     model: torch.nn.Module | Sequence[torch.nn.Module],

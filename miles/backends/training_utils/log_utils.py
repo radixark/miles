@@ -22,18 +22,39 @@ from .parallel import get_parallel_state
 logger = logging.getLogger(__name__)
 
 
+def reduce_gathered_log_dict(gathered: list[dict], dp_size: int) -> dict[str, float]:
+    """Per-key reduction of gathered per-rank log dicts.
+
+    A ``(sum, count)`` tuple reduces as ``Σsum / Σcount`` (correct when ranks
+    hold different sample counts); a plain scalar reduces as the mean across
+    ranks (legacy; correct only when every rank holds the same N samples).
+    """
+    reduced: dict[str, float] = {}
+    for key in gathered[0]:
+        values = [d[key] for d in gathered]
+        first = values[0]
+        if isinstance(first, tuple) and len(first) == 2:
+            total_sum = sum(v[0] for v in values)
+            total_count = sum(v[1] for v in values)
+            reduced[key] = total_sum / total_count if total_count else 0.0
+        else:
+            reduced[key] = sum(values) / dp_size
+    return reduced
+
+
 def gather_log_data(
     metric_name: str,
     args: Namespace,
     rollout_id: int,
-    log_dict: dict[str, float],
+    log_dict: dict[str, "float | tuple[float, float]"],
 ) -> dict[str, float] | None:
     """
-    Gather per-rank metrics, reduce by mean on the DP source rank, and log.
+    Gather per-rank metrics, reduce on the DP source rank, and log.
 
-    Expects `log_dict` to contain plain scalars. The DP source rank prints and
-    optionally logs to WandB/TensorBoard with a step derived from `rollout_id` and
-    batch sizes. Returns the reduced dict on the DP source rank; returns None on others.
+    Values are either plain scalars or ``(sum, count)`` tuples — see
+    :func:`reduce_gathered_log_dict`. The DP source rank prints and optionally
+    logs to WandB/TensorBoard with a step derived from `rollout_id` and batch
+    sizes. Returns the reduced dict on the DP source rank; returns None on others.
     """
 
     parallel_state = get_parallel_state()
@@ -60,9 +81,8 @@ def gather_log_data(
         return None
 
     if pg.rank == 0:
-        reduced_log_dict = {
-            f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / pg.size for key in log_dict
-        }
+        reduced = reduce_gathered_log_dict(gathered_log_dict, pg.size)
+        reduced_log_dict = {f"{metric_name}/{key}": value for key, value in reduced.items()}
         logger.info(f"{metric_name} {rollout_id}: {reduced_log_dict}")
 
         # Calculate step once to avoid duplication
@@ -139,6 +159,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "metadata",
                 "num_microbatches",
                 "micro_batch_indices",
+                "global_batch_sizes",
                 "n_adapters",
                 "adapter_slots",
                 "step_slots",
@@ -147,16 +168,16 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "prompt_group_sizes",
             ]:
                 continue
-            # Upload per sample mean for each rollout value
-            # There are the following assumptions:
-            # - Each dp rank has the same number of samples
+            # Emit (sum, count) so gather_log_data can do a weighted average
+            # across DP ranks instead of assuming every rank holds N samples.
             if isinstance(val, (list, tuple)):
                 if isinstance(val[0], torch.Tensor):
+                    count = len(val)
                     # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
                     # modified in place and will cause problem for the next rollout.
-                    val = torch.cat(val).clone().detach()
-                    if val.device != loss_masks[0].device:
-                        val = val.to(loss_masks[0].device)
+                    tensor = torch.cat(val).clone().detach()
+                    if tensor.device != loss_masks[0].device:
+                        tensor = tensor.to(loss_masks[0].device)
                     if key in [
                         "log_probs",
                         "ref_log_probs",
@@ -175,9 +196,14 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                             qkv_format=args.qkv_format,
                             max_seq_lens=max_seq_lens,
                         )
-                        val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
+                        # cp_size cancels the CP division; result is the
+                        # sum-of-per-sample-means over this rank's samples.
+                        per_rank_sum = cp_size * sum_of_sample_mean(tensor)
                     else:
-                        val = val.mean() * cp_size
+                        # tensor.mean() * cp_size is this rank's per-sample mean;
+                        # multiply by count to get the per-rank sum.
+                        per_rank_sum = tensor.mean() * cp_size * count
+                    log_dict[key] = (per_rank_sum.item(), count)
                 else:
                     # Flatten nested lists (e.g. list of lists from async rollout)
                     flat = val
@@ -186,12 +212,12 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     # Skip non-numeric values (e.g. strings from async rollout metadata)
                     if flat and not isinstance(flat[0], (int, float)):
                         continue
-                    val = sum(flat) / len(flat)
+                    log_dict[key] = (sum(flat), len(flat))
             elif isinstance(val, torch.Tensor):
-                val = val.float().mean()
+                # Scalar tensor (one per rank): treat as count=1.
+                log_dict[key] = (val.float().mean().item(), 1)
             else:
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
-            log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and not args.ci_disable_logprobs_checker and reduced_log_dict is not None:

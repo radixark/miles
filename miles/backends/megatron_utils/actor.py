@@ -36,7 +36,12 @@ from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data
+from ..training_utils.data import (
+    DataIterator,
+    get_data_iterator,
+    get_global_batch_sizes,
+    get_rollout_data,
+)
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import (
     compute_advantages_and_returns,
@@ -430,6 +435,7 @@ class MegatronTrainRayActor(TrainRayActor):
             self.opt_param_scheduler,
             data_iterator,
             num_microbatches,
+            get_global_batch_sizes(self.args, rollout_data, len(num_microbatches)),
             witness_info=None,
             attempt=0,
         )
@@ -551,6 +557,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.opt_param_scheduler,
                     data_iterator,
                     num_microbatches,
+                    get_global_batch_sizes(self.args, rollout_data, len(num_microbatches)),
                     witness_info=witness_info,
                     attempt=attempt,
                     ft_test_action_executor=self._ft_test_action_executor,

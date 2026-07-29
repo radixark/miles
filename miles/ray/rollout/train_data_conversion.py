@@ -41,6 +41,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "dynamic_global_batch_size": ValueSpec(codec="auto"),
     "num_microbatches": ValueSpec(codec="auto"),
     "micro_batch_indices": ValueSpec(codec="auto"),
+    "global_batch_sizes": ValueSpec(codec="auto"),
 }
 
 
@@ -234,7 +235,7 @@ def split_train_data_by_dp_scheduled_raw(
     data["total_lengths"] = total_lengths
 
     global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
-    partitions, micro_batch_indices, num_microbatches = build_dp_schedule(
+    partitions, micro_batch_indices, num_microbatches, global_batch_sizes = build_dp_schedule(
         args,
         train_parallel_config,
         total_lengths,
@@ -242,13 +243,16 @@ def split_train_data_by_dp_scheduled_raw(
     )
     logger.info(
         f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
-        f"global_batch_size={global_batch_size}, num_microbatches={num_microbatches}"
+        f"global_batch_sizes={global_batch_sizes}, num_microbatches={num_microbatches}"
     )
 
     shards = _package_shards(args, data, partitions)
     for rank, shard in enumerate(shards):
         shard["num_microbatches"] = num_microbatches
         shard["micro_batch_indices"] = micro_batch_indices[rank]
+        # Per-step sample count (total across DP); the train side normalizes the
+        # loss and steps the LR scheduler by this instead of args.global_batch_size.
+        shard["global_batch_sizes"] = global_batch_sizes
     return shards
 
 

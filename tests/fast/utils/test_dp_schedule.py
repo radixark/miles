@@ -89,9 +89,10 @@ def test_static_stride_single_step():
     args = make_args(micro_batch_size=2)
     tp = make_tp(dp_size=4)
 
-    partitions, mbi, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=16)
+    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=16)
 
     assert nmb == [2]
+    assert gbs_steps == [16]
     assert_invariants(partitions, mbi, nmb, dp_size=4, total_lengths=total_lengths)
 
 
@@ -102,7 +103,7 @@ def test_static_stride_matches_legacy_partition_order():
     args = make_args(micro_batch_size=2)
     tp = make_tp(dp_size=4)
 
-    partitions, _, _ = build_dp_schedule(args, tp, total_lengths, global_batch_size=16)
+    partitions, _, _, _ = build_dp_schedule(args, tp, total_lengths, global_batch_size=16)
 
     for r in range(4):
         assert partitions[r] == list(range(r, 16, 4)), f"rank {r} partition deviates from legacy strided order"
@@ -114,7 +115,8 @@ def test_static_balance_multi_step():
     args = make_args(micro_batch_size=2, balance_data=True)
     tp = make_tp(dp_size=2)
 
-    partitions, mbi, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
+    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
+    assert gbs_steps == [8] * len(nmb)
 
     assert nmb == [2, 2]
     assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths)
@@ -126,7 +128,8 @@ def test_dynamic_uniform():
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=10)
     tp = make_tp(dp_size=2)
 
-    partitions, mbi, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
+    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
+    assert gbs_steps == [8] * len(nmb)
 
     assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths, max_per_bin=10)
 
@@ -137,7 +140,8 @@ def test_dynamic_skewed_lengths():
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=10)
     tp = make_tp(dp_size=2)
 
-    partitions, mbi, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
+    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
+    assert gbs_steps == [8] * len(nmb)
 
     assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths, max_per_bin=10)
 
@@ -149,7 +153,8 @@ def test_dynamic_oversized_sample_lands_alone():
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=10)
     tp = make_tp(dp_size=2)
 
-    partitions, mbi, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
+    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
+    assert gbs_steps == [8] * len(nmb)
 
     assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths, max_per_bin=10)
     # Find the rank holding the oversized sample and verify it lives alone in some mbs.
@@ -173,7 +178,8 @@ def test_dynamic_with_vpp_rounds_to_mb_group():
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=8)
     tp = make_tp(dp_size=2, vpp_size=2, microbatch_group_size_per_vp_stage=2)
 
-    partitions, mbi, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=16)
+    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=16)
+    assert gbs_steps == [16] * len(nmb)
 
     for n in nmb:
         assert n % 2 == 0, f"num_microbatches {n} is not a multiple of mb_group=2"
@@ -211,7 +217,7 @@ def test_dynamic_num_microbatches_matches_legacy_train_side():
 
         args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=max_tokens_per_gpu)
         tp = make_tp(dp_size=dp_size, cp_size=cp_size)
-        _, _, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=global_batch_size)
+        _, _, nmb, _ = build_dp_schedule(args, tp, total_lengths, global_batch_size=global_batch_size)
 
         # Legacy: each rank r holds the strided rows of each step, computes its own
         # first-fit bin count over its local per-step slice, and the DP group takes MAX.
@@ -242,9 +248,19 @@ def test_randomized_invariants_dynamic():
 
         args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=max_tokens, balance_data=balance)
         tp = make_tp(dp_size=dp_size)
-        partitions, mbi, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=gbs)
+        partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=gbs)
 
+        assert gbs_steps == [gbs] * len(nmb)
         assert_invariants(partitions, mbi, nmb, dp_size=dp_size, total_lengths=total_lengths, max_per_bin=max_tokens)
+
+
+def test_global_batch_sizes_one_per_step():
+    """4th return value: per-step sample count, constant in the equal-size case."""
+    args = make_args(micro_batch_size=2)
+    tp = make_tp(dp_size=2)
+    _, _, nmb, gbs_steps = build_dp_schedule(args, tp, [10] * 24, global_batch_size=8)
+    assert len(gbs_steps) == len(nmb) == 3
+    assert gbs_steps == [8, 8, 8]
 
 
 def test_has_full_schedule_config():
