@@ -28,7 +28,12 @@ def postprocess_rollout_data(args, data, train_parallel_config):
     while isinstance(data[0], list):
         data = list(itertools.chain.from_iterable(data))
 
-    if not args.disable_rollout_trim_samples:
+    # Compact / subagent rollouts (explicit rollout_id) must not be trimmed by
+    # sample count — cutting mid-rollout would orphan siblings. The rollout-side
+    # schedule drops whole trailing rollouts instead.
+    is_compact = any(s.rollout_id is not None for s in data)
+
+    if not args.disable_rollout_trim_samples and not is_compact:
         global_batch_size = args.global_batch_size
         if args.use_dynamic_global_batch_size:
             logger.info(f"Collected {len(data)} samples from rollout to train with dynamic global batch size")

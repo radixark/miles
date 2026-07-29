@@ -1,10 +1,8 @@
 """CPU unit tests for miles.utils.dp_schedule.build_dp_schedule.
 
 The tests assert the invariants documented at the top of dp_schedule.py against
-a range of static / dynamic / VPP / oversize / balance scenarios, plus an
-equivalence check of ``num_microbatches`` against the legacy train-side
-computation (``get_minimum_num_micro_batch_size`` + DP-wide MAX) that this
-schedule replaces.
+static / dynamic / VPP / oversize / balance / compact-rollout / trailing-trim
+scenarios.
 
 Trim, dynamic-gbs resolution, and per-rank rollout_data packaging all live in
 ``train_data_conversion.split_train_data_by_dp_scheduled``; these tests just
@@ -18,7 +16,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 
 
@@ -46,30 +43,38 @@ def make_tp(dp_size=1, cp_size=1, vpp_size=1, microbatch_group_size_per_vp_stage
     }
 
 
-def assert_invariants(partitions, micro_batch_indices, num_microbatches, *, dp_size, total_lengths, max_per_bin=None):
-    """Check the invariants documented at the top of dp_schedule.py."""
-    expected_per_rank = len(total_lengths) // dp_size
+def assert_invariants(
+    partitions,
+    micro_batch_indices,
+    num_microbatches,
+    *,
+    dp_size,
+    expected_global_sample_indices,
+    total_lengths,
+    max_per_bin=None,
+):
+    """Check the invariants documented at the top of dp_schedule.py.
+
+    ``expected_global_sample_indices`` is the set of global sample indices
+    that should end up covered (after trim). Trailing rollouts that don't
+    fit are excluded.
+    """
     seen_global: set[int] = set()
     for r in range(dp_size):
         partition = partitions[r]
         mbi = micro_batch_indices[r]
 
-        # Same sample count per rank.
-        assert len(partition) == expected_per_rank, f"rank {r}: {len(partition)} samples, want {expected_per_rank}"
-
-        # Same num_mbs per rank (PP sync); num_microbatches is shared, so each rank's
-        # flat mbs count must match sum(num_microbatches).
+        # Same num_mbs per rank (PP sync).
         assert len(mbi) == sum(num_microbatches), f"rank {r}: mbs count mismatch"
 
-        # Flattened micro_batch_indices == range(len(partition)) (each sample covered
-        # exactly once, by exactly one mbs).
+        # Flattened micro_batch_indices == range(len(partition)).
         flat = [i for mbs in mbi for i in mbs]
         assert flat == list(range(len(partition))), f"rank {r}: micro_batch_indices don't tile [0, n)"
 
-        # Disjoint partitions whose union covers every sample.
+        # Disjoint partitions whose union covers every kept sample.
         assert seen_global.isdisjoint(partition), f"rank {r}: overlap with other ranks"
         seen_global.update(partition)
-    assert seen_global == set(range(len(total_lengths))), "some samples not assigned to any rank"
+    assert seen_global == set(expected_global_sample_indices), "covered sample set mismatch"
 
     if max_per_bin is None:
         return
@@ -84,87 +89,100 @@ def assert_invariants(partitions, micro_batch_indices, num_microbatches, *, dp_s
 
 
 def test_static_stride_single_step():
-    """Static + strided DP split, single step."""
+    """Static + strided DP split, single step (1 rollout = 1 sample)."""
     total_lengths = [10] * 16
+    rollout_indices = list(range(16))
     args = make_args(micro_batch_size=2)
     tp = make_tp(dp_size=4)
 
-    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=16)
+    partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=16, rollout_indices=rollout_indices
+    )
 
     assert nmb == [2]
-    assert gbs_steps == [16]
-    assert_invariants(partitions, mbi, nmb, dp_size=4, total_lengths=total_lengths)
-
-
-def test_static_stride_matches_legacy_partition_order():
-    """Static + strided must produce exactly the legacy strided row order —
-    rank r gets rows [r, r+dp, r+2*dp, ...] in that order, contiguously chunked."""
-    total_lengths = list(range(100, 116))
-    args = make_args(micro_batch_size=2)
-    tp = make_tp(dp_size=4)
-
-    partitions, _, _, _ = build_dp_schedule(args, tp, total_lengths, global_batch_size=16)
-
-    for r in range(4):
-        assert partitions[r] == list(range(r, 16, 4)), f"rank {r} partition deviates from legacy strided order"
+    assert gbs_per_step == [16]
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=4,
+        expected_global_sample_indices=range(16),
+        total_lengths=total_lengths,
+    )
 
 
 def test_static_balance_multi_step():
-    """Static + balance_data + 2 training steps. Each rank must get gbs/dp per step."""
-    total_lengths = [1, 2, 3, 4, 5, 6, 7, 8, 8, 7, 6, 5, 4, 3, 2, 1]  # 2 steps of 8
+    """Static + balance_data + 2 training steps."""
+    total_lengths = [1, 2, 3, 4, 5, 6, 7, 8, 8, 7, 6, 5, 4, 3, 2, 1]
+    rollout_indices = list(range(16))
     args = make_args(micro_batch_size=2, balance_data=True)
     tp = make_tp(dp_size=2)
 
-    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
-    assert gbs_steps == [8] * len(nmb)
+    partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=8, rollout_indices=rollout_indices
+    )
 
     assert nmb == [2, 2]
-    assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths)
+    assert gbs_per_step == [8, 8]
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=2,
+        expected_global_sample_indices=range(16),
+        total_lengths=total_lengths,
+    )
 
 
 def test_dynamic_uniform():
     """Dynamic mbs on uniform-length samples."""
     total_lengths = [5] * 8
+    rollout_indices = list(range(8))
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=10)
     tp = make_tp(dp_size=2)
 
-    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
-    assert gbs_steps == [8] * len(nmb)
+    partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=8, rollout_indices=rollout_indices
+    )
 
-    assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths, max_per_bin=10)
-
-
-def test_dynamic_skewed_lengths():
-    """Skewed lengths (the case where K-K used to over-pack a single bin)."""
-    total_lengths = [9, 9, 9, 9, 1, 1, 1, 1]
-    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=10)
-    tp = make_tp(dp_size=2)
-
-    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
-    assert gbs_steps == [8] * len(nmb)
-
-    assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths, max_per_bin=10)
+    assert gbs_per_step == [8]
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=2,
+        expected_global_sample_indices=range(8),
+        total_lengths=total_lengths,
+        max_per_bin=10,
+    )
 
 
 def test_dynamic_oversized_sample_lands_alone():
-    """A single sample exceeding max_per_bin must end up alone in its mbs (with no
-    other samples crammed in)."""
-    total_lengths = [15, 3, 3, 3, 3, 3, 3, 3]  # 15 > C=10
+    """A sample larger than max_per_bin must end up alone in its mbs."""
+    total_lengths = [15, 3, 3, 3, 3, 3, 3, 3]
+    rollout_indices = list(range(8))
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=10)
     tp = make_tp(dp_size=2)
 
-    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=8)
-    assert gbs_steps == [8] * len(nmb)
+    partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=8, rollout_indices=rollout_indices
+    )
 
-    assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths, max_per_bin=10)
-    # Find the rank holding the oversized sample and verify it lives alone in some mbs.
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=2,
+        expected_global_sample_indices=range(8),
+        total_lengths=total_lengths,
+        max_per_bin=10,
+    )
     oversize_idx = total_lengths.index(15)
     found = False
     for r in range(2):
-        partition = partitions[r]
-        if oversize_idx not in partition:
+        if oversize_idx not in partitions[r]:
             continue
-        local = partition.index(oversize_idx)
+        local = partitions[r].index(oversize_idx)
         for mbs in mbi[r]:
             if local in mbs:
                 assert mbs == [local], f"oversized sample shares an mbs: {mbs}"
@@ -174,93 +192,140 @@ def test_dynamic_oversized_sample_lands_alone():
 
 def test_dynamic_with_vpp_rounds_to_mb_group():
     """num_microbatches per rank should be a multiple of mb_group when vpp_size > 1."""
-    total_lengths = [4] * 32  # 2 steps of 16; per step, ~8 bins of 8 needed at C=8
+    total_lengths = [4] * 32
+    rollout_indices = list(range(32))
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=8)
     tp = make_tp(dp_size=2, vpp_size=2, microbatch_group_size_per_vp_stage=2)
 
-    partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=16)
-    assert gbs_steps == [16] * len(nmb)
+    partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=16, rollout_indices=rollout_indices
+    )
 
     for n in nmb:
         assert n % 2 == 0, f"num_microbatches {n} is not a multiple of mb_group=2"
-    assert_invariants(partitions, mbi, nmb, dp_size=2, total_lengths=total_lengths, max_per_bin=8)
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=2,
+        expected_global_sample_indices=range(32),
+        total_lengths=total_lengths,
+        max_per_bin=8,
+    )
 
 
-def test_static_indivisible_per_rank_batch_asserts():
-    """gbs/dp not a multiple of micro_batch_size must fail loudly, not mis-schedule."""
+def test_rollout_grouping_keeps_samples_together():
+    """compact / subagent simulation: rollout 0 emits 3 samples, rollout 1 emits 2,
+    rollout 2 emits 4. Splitter keeps every rollout's samples in a single step."""
+    rollout_indices = [0, 0, 0, 1, 1, 2, 2, 2, 2]
+    total_lengths = [3] * 9
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
+    tp = make_tp(dp_size=1)
+
+    partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=1, rollout_indices=rollout_indices
+    )
+
+    # 3 rollouts / 1 per step -> 3 steps, gbs constant.
+    assert gbs_per_step == [1, 1, 1]
+    # For each step, collect the samples (global indices) that landed in that step's mbs
+    # on rank 0, then verify they exactly equal the rollout's sample positions.
+    expected_per_step = [[0, 1, 2], [3, 4], [5, 6, 7, 8]]
+    rank0_partition = partitions[0]
+    mbs_cursor = 0
+    for step_i, n_mbs in enumerate(nmb):
+        step_locals = sorted(j for mbs in mbi[0][mbs_cursor : mbs_cursor + n_mbs] for j in mbs)
+        step_globals = [rank0_partition[j] for j in step_locals]
+        assert (
+            sorted(step_globals) == expected_per_step[step_i]
+        ), f"step {step_i} samples = {step_globals}, expected {expected_per_step[step_i]}"
+        mbs_cursor += n_mbs
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=1,
+        expected_global_sample_indices=range(9),
+        total_lengths=total_lengths,
+        max_per_bin=12,
+    )
+
+
+def test_trims_trailing_rollouts_that_dont_fill_a_step():
+    """5 rollouts, gbs=2 -> 2 steps x 2 rollouts; trailing rollout 4 (sample positions 6, 7)
+    is dropped."""
+    rollout_indices = [0, 0, 1, 2, 2, 3, 4, 4]
+    total_lengths = [3] * 8
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
+    tp = make_tp(dp_size=1)
+
+    partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=2, rollout_indices=rollout_indices
+    )
+
+    assert gbs_per_step == [2, 2]
+    # Sample positions 6 and 7 belong to the trimmed rollout 4 and must be absent.
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=1,
+        expected_global_sample_indices=range(6),
+        total_lengths=total_lengths,
+        max_per_bin=12,
+    )
+
+
+def test_rejects_when_fewer_rollouts_than_gbs():
+    """gbs=4 with only 3 distinct rollouts -> cannot form one step."""
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
+    tp = make_tp(dp_size=1)
+    with pytest.raises(AssertionError, match="num_rollouts"):
+        build_dp_schedule(args, tp, [3] * 6, global_batch_size=4, rollout_indices=[0, 0, 1, 1, 2, 2])
+
+
+def test_static_misaligned_mbs_count_asserts():
+    """Static path: mbs count not a multiple of dp_size * mb_group must fail loudly."""
     args = make_args(micro_batch_size=3)
     tp = make_tp(dp_size=2)
-    with pytest.raises(AssertionError, match="micro_batch_size"):
-        build_dp_schedule(args, tp, [10] * 8, global_batch_size=8)
-
-
-def test_untrimmed_input_asserts():
-    """num_samples not a multiple of global_batch_size must fail loudly."""
-    args = make_args(micro_batch_size=1)
-    tp = make_tp(dp_size=2)
-    with pytest.raises(AssertionError, match="multiple of global_batch_size"):
-        build_dp_schedule(args, tp, [10] * 10, global_batch_size=8)
-
-
-def test_dynamic_num_microbatches_matches_legacy_train_side():
-    """The PP-sync-critical value: for the same strided partition, the rollout-side
-    schedule must produce exactly the num_microbatches the legacy train-side path
-    computed (per-rank ``get_minimum_num_micro_batch_size``, then DP-wide MAX)."""
-    rng = random.Random(42)
-    dp_size, cp_size = 4, 2
-    max_tokens_per_gpu = 512
-    global_batch_size = 32
-
-    for _ in range(50):
-        num_steps = rng.randint(1, 3)
-        total_lengths = [rng.randint(16, 1200) for _ in range(global_batch_size * num_steps)]
-
-        args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=max_tokens_per_gpu)
-        tp = make_tp(dp_size=dp_size, cp_size=cp_size)
-        _, _, nmb, _ = build_dp_schedule(args, tp, total_lengths, global_batch_size=global_batch_size)
-
-        # Legacy: each rank r holds the strided rows of each step, computes its own
-        # first-fit bin count over its local per-step slice, and the DP group takes MAX.
-        num_local_gbs = global_batch_size // dp_size
-        legacy_nmb = []
-        for step_i in range(num_steps):
-            step = total_lengths[step_i * global_batch_size : (step_i + 1) * global_batch_size]
-            per_rank = []
-            for r in range(dp_size):
-                local = [step[i] for i in range(r, global_batch_size, dp_size)]
-                assert len(local) == num_local_gbs
-                per_rank.append(get_minimum_num_micro_batch_size(local, max_tokens_per_gpu * cp_size))
-            legacy_nmb.append(max(per_rank))
-
-        assert nmb == legacy_nmb, f"num_microbatches diverged from legacy: {nmb} vs {legacy_nmb}"
+    with pytest.raises(AssertionError, match="static path"):
+        build_dp_schedule(args, tp, [10] * 8, global_batch_size=8, rollout_indices=list(range(8)))
 
 
 def test_randomized_invariants_dynamic():
-    """Randomized sweep of the documented invariants on the dynamic path."""
+    """Randomized sweep of the documented invariants on the dynamic path,
+    including random compact rollout groupings."""
     rng = random.Random(7)
     for _ in range(30):
         dp_size = rng.choice([1, 2, 4])
         gbs = dp_size * rng.choice([2, 4, 8])
-        num_steps = rng.randint(1, 2)
-        total_lengths = [rng.randint(1, 40) for _ in range(gbs * num_steps)]
+        num_rollouts = gbs * rng.randint(1, 2) + rng.randint(0, 3)  # may leave a trailing partial step
+        rollout_indices = []
+        for rid in range(num_rollouts):
+            rollout_indices.extend([rid] * rng.randint(1, 3))
+        total_lengths = [rng.randint(1, 40) for _ in rollout_indices]
         max_tokens = rng.randint(20, 60)
         balance = rng.random() < 0.5
 
         args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=max_tokens, balance_data=balance)
         tp = make_tp(dp_size=dp_size)
-        partitions, mbi, nmb, gbs_steps = build_dp_schedule(args, tp, total_lengths, global_batch_size=gbs)
+        partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+            args, tp, total_lengths, global_batch_size=gbs, rollout_indices=rollout_indices
+        )
 
-        assert gbs_steps == [gbs] * len(nmb)
-        assert_invariants(partitions, mbi, nmb, dp_size=dp_size, total_lengths=total_lengths, max_per_bin=max_tokens)
-
-
-def test_global_batch_sizes_one_per_step():
-    """4th return value: per-step sample count, constant in the equal-size case."""
-    args = make_args(micro_batch_size=2)
-    tp = make_tp(dp_size=2)
-    _, _, nmb, gbs_steps = build_dp_schedule(args, tp, [10] * 24, global_batch_size=8)
-    assert len(gbs_steps) == len(nmb) == 3
-    assert gbs_steps == [8, 8, 8]
+        num_steps = num_rollouts // gbs
+        assert gbs_per_step == [gbs] * num_steps
+        kept_rollouts = set(range(num_steps * gbs))
+        expected = [i for i, rid in enumerate(rollout_indices) if rid in kept_rollouts]
+        assert_invariants(
+            partitions,
+            mbi,
+            nmb,
+            dp_size=dp_size,
+            expected_global_sample_indices=expected,
+            total_lengths=total_lengths,
+            max_per_bin=max_tokens,
+        )
 
 
 def test_has_full_schedule_config():
