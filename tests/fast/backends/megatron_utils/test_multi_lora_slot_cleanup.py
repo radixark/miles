@@ -1,5 +1,5 @@
 """zero_optimizer_state_for_adapter must reset a retired slot's Adam moments and step clock
-(group-level FusedAdam or per-param torch AdamW) while leaving co-tenant slots untouched."""
+(group-level FusedAdam or per-param torch AdamW) — and Muon momentum buffers — while leaving co-tenant slots untouched."""
 
 import sys
 import types
@@ -89,3 +89,22 @@ def test_per_param_adamw_fallback_clock_resets(rig):
     zero_optimizer_state_for_adapter(optimizer, rig.model, 0)
 
     assert float(inner.state[rig.p0]["step"]) == 0.0
+
+
+def test_muon_momentum_buffer_resets_only_for_the_retired_slot(rig):
+    # Muon (emerging-optimizers) keeps a per-param momentum_buffer and no step clock.
+    inner, optimizer = make_optimizer(
+        groups=[
+            {"params": [rig.p0], "miles_multi_lora_slot": 0},
+            {"params": [rig.p1], "miles_multi_lora_slot": 1},
+        ],
+        state={
+            rig.p0: {"momentum_buffer": torch.ones(4)},
+            rig.p1: {"momentum_buffer": torch.ones(4)},
+        },
+    )
+
+    zero_optimizer_state_for_adapter(optimizer, rig.model, 0)
+
+    assert float(inner.state[rig.p0]["momentum_buffer"].abs().sum()) == 0.0
+    assert float(inner.state[rig.p1]["momentum_buffer"].abs().sum()) == 4.0  # co-tenant untouched
