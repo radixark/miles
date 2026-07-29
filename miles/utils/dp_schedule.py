@@ -103,10 +103,8 @@ def build_dp_schedule(
         f"need at least one rollout per step."
     )
 
-    # Per-step rollout counts. With --allow-partial-train-step, trailing
-    # rollouts train as one smaller final step (dynamic batch only — the
-    # static path can't satisfy its fixed-size alignment on an arbitrary
-    # remainder) instead of being dropped.
+    # --allow-partial-train-step: trailing rollouts form one smaller final step
+    # (dynamic batch only).
     step_rollout_counts = [global_batch_size] * num_steps
     leftover = len(rollout_ids) - num_steps * global_batch_size
     if leftover and getattr(args, "allow_partial_train_step", False) and args.use_dynamic_batch_size:
