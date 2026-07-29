@@ -6,7 +6,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-from tests.fast.utils.workers.e2e.harness import ServerProcess, spawn_server, wait_until_serving
+from tests.fast.utils.workers.e2e.e2e_worker import E2eWorker
+from tests.fast.utils.workers.e2e.harness import READY_TIMEOUT_SECONDS, ServerProcess, spawn_server, wait_until_serving
+
+from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 
 
 @pytest.fixture
@@ -80,6 +83,29 @@ async def server(shared_server, request) -> AsyncIterator[ServerProcess]:
 
     if request.node.rep_call is not None and request.node.rep_call.failed:
         print(f"\n--- shared server log tail ---\n{shared_server.logs()[-4000:]}")
+
+
+@pytest.fixture
+async def make_handle() -> AsyncIterator[Callable[..., RpcWorkerHandle]]:
+    clients: list[httpx.AsyncClient] = []
+
+    def build(target: ServerProcess | str, *, worker_cls: type = E2eWorker, **kwargs) -> RpcWorkerHandle:
+        url = target if isinstance(target, str) else target.url
+        client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0), trust_env=False)
+        clients.append(client)
+        return RpcWorkerHandle(worker_cls, server_url=url, http_client=client, **kwargs)
+
+    yield build
+
+    for client in clients:
+        await client.aclose()
+
+
+@pytest.fixture
+async def handle(server, make_handle) -> AsyncIterator[RpcWorkerHandle]:
+    worker_handle = make_handle(server)
+    await worker_handle.wait_ready(timeout=READY_TIMEOUT_SECONDS)
+    yield worker_handle
 
 
 @pytest.fixture
