@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import uuid
+from collections.abc import AsyncIterator, Callable, Iterator
+from pathlib import Path
+
+import httpx
+import pytest
+from tests.fast.utils.workers.e2e.harness import ServerProcess, spawn_server, wait_until_serving
+
+
+@pytest.fixture
+def state_dir(tmp_path) -> Path:
+    path = tmp_path / "state"
+    path.mkdir()
+    return path
+
+
+@pytest.fixture
+def tag() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+@pytest.fixture
+def spawn(state_dir, tmp_path, request) -> Iterator[Callable[..., ServerProcess]]:
+    started: list[ServerProcess] = []
+
+    def start(*, wait: bool = True, **kwargs) -> ServerProcess:
+        log_path = tmp_path / f"server-{len(started)}.log"
+        server = spawn_server(state_dir=state_dir, log_path=log_path, **kwargs)
+        started.append(server)
+        if wait:
+            wait_until_serving(server)
+        return server
+
+    yield start
+
+    for server in started:
+        server.stop()
+        server.kill()
+        if request.node.rep_call is not None and request.node.rep_call.failed:
+            print(f"\n--- server log {server.log_path.name} ---\n{server.logs()[-4000:]}")
+
+
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    setattr(item, f"rep_{call.when}", outcome.get_result())
+
+
+@pytest.fixture(autouse=True)
+def _reset_reports(request):
+    for phase in ("setup", "call", "teardown"):
+        if not hasattr(request.node, f"rep_{phase}"):
+            setattr(request.node, f"rep_{phase}", None)
+
+
+@pytest.fixture(scope="session")
+def shared_server(tmp_path_factory) -> Iterator[ServerProcess]:
+    directory = tmp_path_factory.mktemp("shared-server")
+    state_dir = directory / "state"
+    state_dir.mkdir()
+
+    server = spawn_server(state_dir=state_dir, log_path=directory / "server.log")
+    wait_until_serving(server)
+    yield server
+
+    server.stop()
+    server.kill()
+
+
+@pytest.fixture
+async def server(shared_server, request) -> AsyncIterator[ServerProcess]:
+    assert shared_server.is_running(), (
+        f"the shared server died in an earlier test; a test that stops it must spawn its own:\n"
+        f"{shared_server.logs()[-4000:]}"
+    )
+
+    yield shared_server
+
+    if request.node.rep_call is not None and request.node.rep_call.failed:
+        print(f"\n--- shared server log tail ---\n{shared_server.logs()[-4000:]}")
+
+
+@pytest.fixture
+async def raw(server) -> AsyncIterator[httpx.AsyncClient]:
+    async with httpx.AsyncClient(base_url=server.url, timeout=30.0, trust_env=False) as client:
+        yield client
