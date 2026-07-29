@@ -16,8 +16,10 @@ from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
+    can_schedule_on_rollout_side,
     convert_samples_to_train_data,
     split_train_data_by_dp,
+    split_train_data_by_dp_scheduled,
 )
 from miles.ray.utils import Lock
 from miles.rollout.base_types import (
@@ -143,6 +145,8 @@ class RolloutManager:
         sample_indices = data.get("sample_indices")
         if self.args.delay_split_train_data_by_dp:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+        elif can_schedule_on_rollout_side(self.args, data, self.train_parallel_config):
+            data_ref = split_train_data_by_dp_scheduled(self.args, data, self.train_parallel_config)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
         return dict(sample_indices=sample_indices, data_ref=data_ref)

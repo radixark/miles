@@ -3,6 +3,8 @@ from typing import Any
 import torch
 
 from miles.utils import object_store
+from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
@@ -34,6 +36,9 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "raw_reward": ValueSpec(codec="auto"),
     "total_lengths": ValueSpec(codec="auto"),
     "dynamic_global_batch_size": ValueSpec(codec="auto"),
+    # Rollout-side precomputed mbs schedule (split_train_data_by_dp_scheduled).
+    "num_microbatches": ValueSpec(codec="auto"),
+    "micro_batch_indices": ValueSpec(codec="auto"),
 }
 
 
@@ -200,6 +205,64 @@ def split_train_data_by_dp(args, data, dp_size):
     return [store.put(value=rollout_data, value_spec=ROLLOUT_DATA_VALUE_SPEC) for rollout_data in rollout_data_list]
 
 
+def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_config: dict | None) -> bool:
+    """Whether the rollout side can precompute the full DP/mbs schedule.
+
+    Requires the training backend to have advertised a full schedule config
+    (megatron, non-indep_dp). Excluded on top of that:
+      - multi-LoRA — keeps the legacy per-rank scheduling with its
+        slot-contiguity handling;
+      - multimodal batches — media-token expansion on the train side changes
+        ``total_lengths`` after the schedule would have been computed, so the
+        token-cap packing must stay train-side;
+      - sample counts not divisible by the (dynamic) global batch size —
+        legacy behavior silently drops the remainder per-rank; keep it there.
+    """
+    if not has_full_schedule_config(train_parallel_config):
+        return False
+    if is_multi_lora_enabled(args):
+        return False
+    if "multimodal_train_inputs" in data:
+        return False
+    global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+    return len(data["tokens"]) % global_batch_size == 0
+
+
+def split_train_data_by_dp_scheduled(args, data: dict[str, Any], train_parallel_config: dict):
+    """DP split with the micro-batch schedule precomputed on the rollout side.
+
+    Same shard layout as :func:`split_train_data_by_dp`, plus two extra keys
+    per shard consumed by ``training_utils.data.get_data_iterator``:
+      - ``num_microbatches`` — per training step, identical on every rank;
+      - ``micro_batch_indices`` — this rank's mbs schedule (local row indices).
+    """
+    shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
+    store = object_store.get_instance()
+    return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+
+
+def split_train_data_by_dp_scheduled_raw(
+    args, data: dict[str, Any], *, train_parallel_config: dict
+) -> list[dict[str, Any]]:
+    """Object-store-free core of :func:`split_train_data_by_dp_scheduled`."""
+    total_lengths = [len(t) for t in data["tokens"]]
+    data["total_lengths"] = total_lengths
+
+    global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+    partitions, micro_batch_indices, num_microbatches = build_dp_schedule(
+        args,
+        train_parallel_config,
+        total_lengths,
+        global_batch_size=global_batch_size,
+    )
+
+    shards = _package_shards(args, data, partitions)
+    for rank, shard in enumerate(shards):
+        shard["num_microbatches"] = num_microbatches
+        shard["micro_batch_indices"] = micro_batch_indices[rank]
+    return shards
+
+
 def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> list[dict[str, Any]]:
     """Split the train data by data parallel size."""
     total_lengths = [len(t) for t in data["tokens"]]
@@ -216,9 +279,14 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     if adapter_slots is not None:
         partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
 
+    return _package_shards(args, data, partitions)
+
+
+def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, Any]]:
+    """Package one rollout_data shard per DP rank from precomputed partitions."""
     shards = []
 
-    for i in range(dp_size):
+    for i in range(len(partitions)):
         rollout_data = {}
         partition = partitions[i]
         rollout_data["partition"] = partition
