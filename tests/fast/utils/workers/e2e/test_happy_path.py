@@ -106,18 +106,13 @@ class TestManualProtocol:
     async def test_finished_call_can_be_polled_repeatedly(self, raw):
         """A finished outcome stays retrievable for later polls."""
         await raw.post("/v1/demo_sync", json={"call_id": "manual-2", "query": {"a": 1, "b": 1}})
-        for _ in range(50):
+        for _ in range(3):
             body = (await raw.get("/v1/calls/manual-2", params={"timeout": 5.0})).json()
-            if body["status"] != "pending":
-                break
         assert body == {"status": "success", "result": 2, "error": None}
 
     async def test_second_client_sees_the_outcome(self, raw, server):
         """Call state belongs to the server, not to the connection that submitted it."""
         await raw.post("/v1/demo_sync", json={"call_id": "manual-3", "query": {"a": 4, "b": 4}})
         async with httpx.AsyncClient(base_url=server.url, timeout=30.0, trust_env=False) as other:
-            for _ in range(50):
-                body = (await other.get("/v1/calls/manual-3", params={"timeout": 5.0})).json()
-                if body["status"] != "pending":
-                    break
+            body = (await other.get("/v1/calls/manual-3", params={"timeout": 5.0})).json()
         assert body["result"] == 8

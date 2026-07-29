@@ -9,7 +9,12 @@ from pydantic import ValidationError
 
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
-from miles.utils.workers.rpc.common.protocol import CallStatusResponse, SubmitRequest, SubmitResponse
+from miles.utils.workers.rpc.common.protocol import (
+    MAX_POLL_TIMEOUT_SECONDS,
+    CallStatusResponse,
+    SubmitRequest,
+    SubmitResponse,
+)
 from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 from miles.utils.workers.rpc.server.store import CallStore
 
@@ -70,7 +75,7 @@ class RpcServer:
             log_structured(logger.warning, tag="rpc", op="poll", phase="reject", reason="unknown_call", call=call_id)
             raise HTTPException(status_code=404, detail=f"unknown call id {call_id!r}")
 
-        outcome = await self._store.wait(call_id=call_id, timeout=timeout)
+        outcome = await self._store.wait(call_id=call_id, timeout=min(timeout, MAX_POLL_TIMEOUT_SECONDS))
         if outcome is None:
             return CallStatusResponse(status="pending")
         return CallStatusResponse(status=outcome.status, result=outcome.result, error=outcome.error)
