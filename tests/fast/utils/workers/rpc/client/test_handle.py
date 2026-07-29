@@ -1,5 +1,5 @@
-import asyncio
 import contextlib
+import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from typing import Any
@@ -23,17 +23,27 @@ class _Item(StrictBaseModel):
 
 class _Worker:
     def __init__(self) -> None:
+        self.block_forever = threading.Event()
         self.calls = 0
 
-    async def demo_default_arg(self, a: int, b: int = 100) -> int:
+    def demo_default_arg(self, a: int, b: int = 100) -> int:
         self.calls += 1
         return a + b
 
     async def demo_model(self, item: _Item) -> _Item:
         return item
 
-    async def demo_raises(self) -> None:
+    def demo_raises(self) -> None:
         raise ValueError("exploded")
+
+    def demo_hang(self) -> str:
+        assert self.block_forever.wait(timeout=30.0)
+        return "done"
+
+
+class _WiderWorker(_Worker):
+    def demo_extra(self) -> int:
+        return 1
 
 
 class _HookTransport(httpx.AsyncBaseTransport):
@@ -152,17 +162,14 @@ class TestCallTimeout:
     async def test_pending_past_deadline_raises_timeout(self):
         """A call that never finishes inside its deadline raises TimeoutError."""
 
-        class _NeverFinishes:
-            async def demo_default_arg(self, a: int, b: int = 100) -> int:
-                await asyncio.Event().wait()
-                return a + b
-
+        worker = _Worker()
         async with (
-            _running_app(_NeverFinishes()) as app,
-            _handle_over(httpx.ASGITransport(app=app), worker_cls=_NeverFinishes, call_timeout_seconds=0.2) as handle,
+            _running_app(worker) as app,
+            _handle_over(httpx.ASGITransport(app=app), call_timeout_seconds=0.3) as handle,
         ):
             with pytest.raises(TimeoutError):
-                await handle.demo_default_arg(a=1)
+                await handle.demo_hang()
+            worker.block_forever.set()
 
 
 class TestWaitReady:
