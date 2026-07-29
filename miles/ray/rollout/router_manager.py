@@ -1,12 +1,10 @@
 import logging
-import multiprocessing
 import random
 import sys
 import uuid
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.rollout.session.config import compute_session_server_config
-from miles.rollout.session.server import run_session_server
 from miles.router.config import compute_miles_router_config
 from miles.utils.http_utils import (
     _wrap_ipv6,
@@ -123,8 +121,6 @@ def start_session_server(args):
 
     # Spawn all children before waiting on any: each child pays the ~10s
     # transformers import, so N servers start in ~one import of wall-time.
-    # spawn (not fork): the child must not inherit threads/finalizers from this
-    # Ray actor (e.g. wandb's service thread), which deadlock a forked child.
     instance_ids: dict[int, str] = {}
     processes = []
     for port in ports:
@@ -133,10 +129,8 @@ def start_session_server(args):
         config = compute_session_server_config(
             args, host=ip, port=port, instance_id=instance_id, backend_url=router_url
         )
-        process = multiprocessing.get_context("spawn").Process(target=run_session_server, args=(config,))
-        process.daemon = True
-        process.start()
-        processes.append((port, process))
+        launch_argv = [sys.executable, "-m", "miles.rollout.session.server", *config_to_argv(config)]
+        processes.append((port, process_utils.launch_bound_subprocess(launch_argv, envs={})))
     # The per-port map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids

@@ -18,6 +18,7 @@ from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import ProxyRequest
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.workers.argv_utils import parse_config_argv
 
 logger = logging.getLogger(__name__)
 
@@ -88,3 +89,11 @@ def run_session_server(config: SessionServerConfig):
         config.backend_url,
     )
     uvicorn.run(server.app, host=config.host, port=config.port, log_level="info")
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_session_server(parse_config_argv(SessionServerConfig, argv))
+
+
+if __name__ == "__main__":
+    main()
