@@ -53,10 +53,11 @@ class TestReadiness:
         assert time.monotonic() - started < 5.0
 
     async def test_health_endpoint(self, raw):
-        """The health endpoint answers ok."""
+        """The health endpoint answers ok with a boot uuid header."""
         response = await raw.get("/v1/health")
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+        assert response.headers["x-miles-boot-uuid"]
 
 
 class TestConcurrentCalls:

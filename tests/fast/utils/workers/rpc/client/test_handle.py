@@ -15,7 +15,8 @@ from miles.utils.workers.rpc.client import call as rpc_client_module
 from miles.utils.workers.rpc.client import handle as rpc_handle_module
 from miles.utils.workers.rpc.client import misc as rpc_misc_module
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
-from miles.utils.workers.rpc.client.misc import RpcProtocolError, RpcWorkerCallError
+from miles.utils.workers.rpc.client.misc import RpcProtocolError, RpcWorkerCallError, ServerRestartedError
+from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 
@@ -149,6 +150,7 @@ async def _running_app(worker: object) -> AsyncIterator:
 async def _handle_over(
     transport: httpx.AsyncBaseTransport,
     worker_cls: type = _Worker,
+    require_stable_boot_uuid: bool = False,
     call_timeout_seconds: float = 3600.0,
     follow_redirects: bool = False,
 ) -> AsyncIterator[RpcWorkerHandle]:
@@ -156,6 +158,7 @@ async def _handle_over(
         yield RpcWorkerHandle(
             worker_cls,
             server_url="http://testserver",
+            require_stable_boot_uuid=require_stable_boot_uuid,
             call_timeout_seconds=call_timeout_seconds,
             http_client=http_client,
         )
@@ -221,6 +224,49 @@ class TestLocalValidation:
                 assert transport.requests == 0
 
 
+class TestReadyHandshake:
+    @pytest.mark.parametrize(
+        ("handle_kwargs", "expected_timeout"),
+        [
+            ({}, rpc_handle_module.DEFAULT_READY_TIMEOUT_SECONDS),
+            ({"ready_timeout_seconds": 2.5}, 2.5),
+        ],
+    )
+    async def test_stable_handshake_uses_configured_ready_timeout(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        handle_kwargs: dict[str, float],
+        expected_timeout: float,
+    ) -> None:
+        """A stable-boot handshake uses the default or configured ready timeout."""
+        observed_timeouts: list[float] = []
+
+        async def wait_ready(*, timeout: float) -> None:
+            observed_timeouts.append(timeout)
+
+        async def run(call: rpc_client_module.RpcCall) -> int:
+            return 3
+
+        def fail_if_requested(request: httpx.Request) -> httpx.Response:
+            raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(fail_if_requested)) as http_client:
+            handle = RpcWorkerHandle(
+                _Worker,
+                server_url="http://testserver",
+                require_stable_boot_uuid=True,
+                http_client=http_client,
+                **handle_kwargs,
+            )
+            monkeypatch.setattr(handle, "wait_ready", wait_ready)
+            monkeypatch.setattr(rpc_client_module.RpcCall, "run", run)
+
+            assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        assert rpc_handle_module.DEFAULT_READY_TIMEOUT_SECONDS == 600.0
+        assert observed_timeouts == [expected_timeout]
+
+
 class TestSubmitRetry:
     async def test_never_reached_errors_retried_until_success(self, fast_retries: None) -> None:
         """Never-reached submit failures are retried until one succeeds."""
@@ -228,9 +274,10 @@ class TestSubmitRetry:
             transport = _HookTransport(app, hook=_fail_hook(2, "POST"))
             async with _handle_over(transport) as handle:
                 assert await handle.demo_default_arg(a=1, b=2) == 3
+                assert transport.requests >= 3
 
-    async def test_pool_timeout_submit_is_retried_until_success(self, fast_retries: None) -> None:
-        """A submit that never got a connection out of the pool is retried until one succeeds."""
+    async def test_pool_timeout_is_retried_until_submit_succeeds(self, fast_retries: None) -> None:
+        """A pool timeout never handed the submit to the server, so it is retried until one lands."""
         async with _running_app(_Worker()) as app:
             transport = _HookTransport(app, hook=_fail_hook(2, "POST", error_type=httpx.PoolTimeout))
             async with _handle_over(transport) as handle:
@@ -238,15 +285,23 @@ class TestSubmitRetry:
 
             assert len([r for r in transport.seen if r.method == "POST"]) == 3
 
-    async def test_server_error_submit_gives_up_without_retry(self, fast_retries: None) -> None:
-        """A 5xx submit may have reached the worker, so it is never retried."""
+    @pytest.mark.parametrize("status_code", [500, 502, 503, 504])
+    async def test_server_error_submit_gives_up_without_retry(
+        self,
+        status_code: int,
+        fast_retries: None,
+    ) -> None:
+        """A submit 5xx becomes unreachable after exactly one attempt."""
         async with _running_app(_Worker()) as app:
-            transport = _HookTransport(app, hook=_status_hook(status_code=503, times=1, method="POST"))
+            transport = _HookTransport(
+                app,
+                hook=_status_hook(status_code=status_code, times=1, method="POST"),
+            )
             async with _handle_over(transport) as handle:
                 with pytest.raises(WorkerUnreachableError):
                     await handle.demo_default_arg(a=1, b=2)
 
-            assert len([r for r in transport.seen if r.method == "POST"]) == 1
+        assert transport.requests == 1
 
     async def test_one_stalled_attempt_does_not_consume_the_whole_window(
         self, monkeypatch: pytest.MonkeyPatch
@@ -334,44 +389,135 @@ class TestSubmitRetry:
         assert transport.attempts > 1
 
     async def test_window_exhausted_raises_unreachable(self, fast_retries: None) -> None:
-        """Retrying a never-reached submit past its window surfaces as unreachable."""
-        async with _handle_over(_HookTransport(None, hook=_fail_hook(-1, "POST"))) as handle:
+        """A dead server exhausts the retry window, which also bounds when requests stop."""
+        transport = _HookTransport(None, hook=_fail_hook(-1))
+        async with _handle_over(transport) as handle:
+            started = time.monotonic()
             with pytest.raises(WorkerUnreachableError):
                 await handle.demo_default_arg(a=1, b=2)
 
+            window = rpc_client_module.SUBMIT_RETRY_WINDOW_SECONDS
+            assert transport.request_times, "expected at least one submit attempt"
+            assert max(transport.request_times) - started <= window
+
     async def test_backoff_grows_between_attempts(self, fast_retries: None) -> None:
-        """Submit retries back off instead of hammering the server."""
-        async with _running_app(_Worker()) as app:
-            transport = _HookTransport(app, hook=_fail_hook(3, "POST"))
-            async with _handle_over(transport) as handle:
-                assert await handle.demo_default_arg(a=1, b=2) == 3
+        """Retry gaps grow instead of hammering the server at a fixed rate."""
+        transport = _HookTransport(None, hook=_fail_hook(-1))
+        async with _handle_over(transport) as handle:
+            with pytest.raises(WorkerUnreachableError):
+                await handle.demo_default_arg(a=1, b=2)
 
             gaps = [b - a for a, b in zip(transport.request_times, transport.request_times[1:], strict=False)]
+            assert len(gaps) >= 3, f"expected several retries, got {len(gaps)}"
+            assert gaps[0] >= rpc_client_module.RETRY_INITIAL_DELAY_SECONDS
             assert gaps[1] > gaps[0]
 
+    @pytest.mark.parametrize("error_type", [httpx.ReadTimeout, httpx.ReadError])
+    async def test_post_wire_submit_error_gives_up_without_retry(
+        self,
+        error_type: type[httpx.TransportError],
+        fast_retries: None,
+    ) -> None:
+        """A post-wire submit transport error gives up after one attempt."""
+        transport = _HookTransport(
+            None,
+            hook=_fail_hook(-1, "POST", error_type=error_type),
+        )
+        async with _handle_over(transport) as handle:
+            with pytest.raises(WorkerUnreachableError):
+                await handle.demo_default_arg(a=1, b=2)
+
+        assert transport.requests == 1
+
     async def test_protocol_error_not_retried(self) -> None:
-        """A rejection the server is sure about is not retried."""
+        """A 4xx protocol error raises immediately without retries."""
         async with _running_app(_Worker()) as app:
-            transport = _HookTransport(app, hook=_status_hook(status_code=404, times=1, method="POST"))
-            async with _handle_over(transport) as handle:
-                with pytest.raises(RpcProtocolError):
+            transport = _HookTransport(app)
+            async with _handle_over(transport, worker_cls=_WiderWorker) as handle:
+                with pytest.raises(RpcProtocolError) as exc_info:
+                    await handle.demo_extra()
+                assert exc_info.value.status_code == 404
+                assert transport.requests == 1
+
+
+class TestPollFailure:
+    async def test_server_death_after_submit_exhausts_as_timeout(self, fast_retries: None) -> None:
+        """Poll transport failures exhaust as TimeoutError."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=_fail_hook(-1, "GET", "/v1/calls/"))
+            async with _handle_over(transport, call_timeout_seconds=0.2) as handle:
+                with pytest.raises(TimeoutError):
                     await handle.demo_default_arg(a=1, b=2)
 
-            assert len([r for r in transport.seen if r.method == "POST"]) == 1
+    async def test_transient_poll_loss_recovers(self, fast_retries: None) -> None:
+        """A poll failure before the deadline is retried and the call still returns."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=_fail_hook(2, "GET", "/v1/calls/"))
+            async with _handle_over(transport, call_timeout_seconds=10.0) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+    async def test_transient_poll_5xx_recovers(self, fast_retries: None) -> None:
+        """A transient poll 5xx is retried and the call succeeds."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(
+                app,
+                hook=_status_hook(
+                    status_code=503,
+                    times=1,
+                    method="GET",
+                    path_fragment="/v1/calls/",
+                ),
+            )
+            async with _handle_over(transport, call_timeout_seconds=2.0) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        assert len(transport.polls()) >= 2
+
+    async def test_poll_non_200_raises_protocol_error(self, fast_retries: None) -> None:
+        """A poll 4xx raises RpcProtocolError without retry."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(
+                app,
+                hook=_status_hook(
+                    status_code=404,
+                    times=1,
+                    method="GET",
+                    path_fragment="/v1/calls/",
+                ),
+            )
+            async with _handle_over(transport, call_timeout_seconds=2.0) as handle:
+                with pytest.raises(RpcProtocolError) as exc_info:
+                    await handle.demo_default_arg(a=1, b=2)
+
+        assert exc_info.value.status_code == 404
+        assert len(transport.polls()) == 1
+
+    async def test_long_poll_timeout_silently_repolls(self, fast_retries: None) -> None:
+        """A long-poll timeout is silently retried."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(
+                app,
+                hook=_fail_hook(1, "GET", "/v1/calls/", error_type=httpx.ReadTimeout),
+            )
+            async with _handle_over(transport, call_timeout_seconds=2.0) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        assert len(transport.polls()) >= 2
 
 
 class TestCallTimeout:
     async def test_pending_past_deadline_raises_timeout(self):
-        """A call that never finishes inside its deadline raises TimeoutError."""
-
+        """A call still pending past the call timeout raises, and polls never outlast the budget."""
         worker = _Worker()
-        async with (
-            _running_app(worker) as app,
-            _handle_over(httpx.ASGITransport(app=app), call_timeout_seconds=0.3) as handle,
-        ):
-            with pytest.raises(TimeoutError):
-                await handle.demo_hang()
-            worker.block_forever.set()
+        async with _running_app(worker) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport, call_timeout_seconds=0.3) as handle:
+                with pytest.raises(TimeoutError):
+                    await handle.demo_hang()
+
+                assert transport.polls(), "expected at least one poll"
+                assert all(float(r.url.params["timeout"]) <= 0.3 for r in transport.polls())
+                worker.block_forever.set()
 
 
 class TestLongPoll:
@@ -457,10 +603,152 @@ class TestLongPoll:
         """The poll slack keeps the value that lets the server answer before the client gives up."""
         assert rpc_client_module.POLL_SLACK_SECONDS == 5.0
 
+    async def test_restart_during_polling_is_detected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A pinned handle notices a server swap that happens while it is already polling."""
+        monkeypatch.setattr(rpc_client_module, "DEFAULT_POLL_TIMEOUT_SECONDS", 0.1)
+        worker = _Worker()
+        async with _running_app(worker) as first_app, _running_app(_Worker()) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True, call_timeout_seconds=10.0) as handle:
+                pending = asyncio.create_task(handle.demo_hang())
+                await asyncio.sleep(0.5)
+                transport.switch_to(second_app)
+
+                with pytest.raises(ServerRestartedError):
+                    await pending
+                worker.block_forever.set()
+
+
+class TestBootUuid:
+    async def test_restart_detected_when_required_stable(self):
+        """A server restart between calls raises ServerRestartedError."""
+        async with _running_app(_Worker()) as first_app, _running_app(_Worker()) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+                transport.switch_to(second_app)
+                with pytest.raises(ServerRestartedError):
+                    await handle.demo_default_arg(a=1, b=2)
+
+    async def test_restart_ignored_by_default(self):
+        """Without the stable-boot-uuid requirement a restart is tolerated."""
+        async with _running_app(_Worker()) as first_app, _running_app(_Worker()) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+                transport.switch_to(second_app)
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+    async def test_stale_pin_refused_before_side_effects(self):
+        """In stable mode a submit reaching a restarted server never runs there."""
+        second_worker = _Worker()
+        async with _running_app(_Worker()) as first_app, _running_app(second_worker) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+
+                transport.switch_to(second_app)
+                with pytest.raises(ServerRestartedError):
+                    await handle.demo_default_arg(a=1, b=2)
+                assert second_worker.calls == 0
+
+    async def test_post_wire_loss_is_not_retried_on_restarted_server(self, fast_retries: None) -> None:
+        """A post-wire submit loss is not retried onto a restarted server."""
+        dropped: list[bool] = []
+        second_worker = _Worker()
+
+        def drop_first_submit_response(request: httpx.Request) -> httpx.Response | None:
+            if request.method == "POST" and not dropped:
+                dropped.append(True)
+                raise httpx.ReadError("response lost after the server accepted it", request=request)
+            return None
+
+        async with _running_app(_Worker()) as first_app, _running_app(second_worker) as second_app:
+            transport = _HookTransport(first_app, hook=drop_first_submit_response)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+
+                transport.switch_to(second_app)
+                with pytest.raises(WorkerUnreachableError):
+                    await handle.demo_default_arg(a=1, b=2)
+                assert second_worker.calls == 0
+
+    async def test_missing_header_rejected_in_stable_mode(self):
+        """A response without the boot uuid header is refused in stable mode."""
+
+        def strip_header(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"status": "ok"}, request=request)
+
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=strip_header)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                with pytest.raises(ServerRestartedError):
+                    await handle.demo_default_arg(a=1, b=2)
+
+    async def test_server_ignoring_the_expectation_header_is_still_refused(self) -> None:
+        """A rolled-back server that never checks the expectation header is caught by the client."""
+
+        def answer_from_another_boot(request: httpx.Request) -> httpx.Response | None:
+            if request.method != "POST":
+                return None
+            return httpx.Response(
+                200, json={"status": "submitted"}, headers={BOOT_UUID_HEADER: "some-other-boot"}, request=request
+            )
+
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=answer_from_another_boot)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+
+                with pytest.raises(ServerRestartedError, match="some-other-boot"):
+                    await handle.demo_default_arg(a=1, b=2)
+
+    async def test_response_losing_the_header_after_pinning_is_refused(self) -> None:
+        """Once pinned, a successful response without the header is a restart, not a silent pass."""
+
+        def strip_header(request: httpx.Request) -> httpx.Response | None:
+            if request.method != "POST":
+                return None
+            return httpx.Response(200, json={"status": "submitted"}, request=request)
+
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=strip_header)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+
+                with pytest.raises(ServerRestartedError, match=BOOT_UUID_HEADER):
+                    await handle.demo_default_arg(a=1, b=2)
+
+    @pytest.mark.parametrize("status_code", [500, 502, 503])
+    async def test_header_less_error_before_pinning_is_not_a_restart(
+        self, fast_retries: None, status_code: int
+    ) -> None:
+        """A transient error response carrying no boot uuid is retried, not reported as a restart."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(
+                app, hook=_status_hook(status_code=status_code, times=1, method="GET", path_fragment="/v1/health")
+            )
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+                assert transport.requests > 1
+
+    async def test_wait_ready_keeps_original_pin_after_restart(self) -> None:
+        """wait_ready refuses a new boot after the first pin."""
+        async with _running_app(_Worker()) as first_app, _running_app(_Worker()) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+                transport.switch_to(second_app)
+                with pytest.raises(ServerRestartedError):
+                    await handle.wait_ready(timeout=5.0)
+
 
 class TestWaitReady:
     async def test_wait_ready_returns_when_healthy(self):
-        """A live server satisfies wait_ready immediately."""
+        """wait_ready returns promptly against a healthy server."""
         async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
             await handle.wait_ready(timeout=5.0)
 
@@ -468,17 +756,16 @@ class TestWaitReady:
         """wait_ready keeps polling within its window and then raises WorkerUnreachableError."""
         transport = _HookTransport(None, hook=_fail_hook(-1))
         async with _handle_over(transport) as handle:
+            started = time.monotonic()
             with pytest.raises(WorkerUnreachableError):
                 await handle.wait_ready(timeout=0.2)
+            assert time.monotonic() - started <= 2.0
             assert transport.requests > 1
 
     async def test_wait_ready_survives_initial_failures(self, fast_retries):
-        """Readiness tolerates a few early failures before the server answers."""
+        """wait_ready keeps retrying through initial connection failures."""
         async with _running_app(_Worker()) as app:
-            transport = _HookTransport(app, hook=_fail_hook(2, "GET"))
+            transport = _HookTransport(app, hook=_fail_hook(2))
             async with _handle_over(transport) as handle:
                 await handle.wait_ready(timeout=5.0)
-
-    def test_default_ready_timeout_is_generous(self):
-        """Readiness waits long enough for a heavy worker to import and load weights."""
-        assert rpc_handle_module.DEFAULT_READY_TIMEOUT_SECONDS == 600.0
+                assert transport.requests >= 3
