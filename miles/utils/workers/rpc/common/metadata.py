@@ -44,7 +44,10 @@ def collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
             continue
         if not callable(static_attr):
             continue
-        specs[name] = _build_method_spec(worker_cls=worker_cls, name=name, fn=inspect.unwrap(static_attr))
+        specs[name] = _build_method_spec(worker_cls=worker_cls, name=name, attr=static_attr)
+
+    if len(specs) == 0:
+        raise TypeError(f"{worker_cls.__name__} exposes no public rpc methods")
 
     return specs
 
@@ -54,9 +57,26 @@ class _RpcConfig:
     concurrency_group: str
 
 
-def _build_method_spec(*, worker_cls: type, name: str, fn: Callable[..., Any]) -> RpcMethodSpec:
-    config: _RpcConfig = getattr(fn, _RPC_CONFIG_ATTR, _RpcConfig(concurrency_group=DEFAULT_CONCURRENCY_GROUP))
-    is_async = inspect.iscoroutinefunction(inspect.unwrap(fn))
+def _find_rpc_config(attr: Callable[..., Any]) -> _RpcConfig:
+    layer: Any = attr
+    while layer is not None:
+        config = getattr(layer, _RPC_CONFIG_ATTR, None)
+        if config is not None:
+            return config
+        layer = getattr(layer, "__wrapped__", None)
+    return _RpcConfig(concurrency_group=DEFAULT_CONCURRENCY_GROUP)
+
+
+def _build_method_spec(*, worker_cls: type, name: str, attr: Callable[..., Any]) -> RpcMethodSpec:
+    fn = inspect.unwrap(attr)
+    if not inspect.isroutine(fn):
+        raise TypeError(
+            f"{worker_cls.__name__}.{name} is a public callable attribute but not a method, "
+            f"so it cannot be exposed over rpc; make it private or move it off the worker class"
+        )
+
+    config = _find_rpc_config(attr)
+    is_async = inspect.iscoroutinefunction(fn)
     if is_async and config.concurrency_group != DEFAULT_CONCURRENCY_GROUP:
         raise TypeError(
             f"{worker_cls.__name__}.{name} is async; concurrency groups only serialize sync methods, "
@@ -66,10 +86,38 @@ def _build_method_spec(*, worker_cls: type, name: str, fn: Callable[..., Any]) -
     signature = inspect.signature(fn)
     hints = typing.get_type_hints(fn, include_extras=True)
 
+    parameters = list(signature.parameters.values())
+    if len(parameters) == 0:
+        raise TypeError(f"{worker_cls.__name__}.{name} must take a receiver parameter for rpc exposure")
+    if parameters[0].name != "self":
+        raise TypeError(
+            f"{worker_cls.__name__}.{name} must name its receiver parameter 'self' for rpc exposure, "
+            f"got {parameters[0].name!r}; otherwise it would be silently dropped from the wire"
+        )
+    if parameters[0].kind not in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
+        raise TypeError(
+            f"{worker_cls.__name__}.{name} must take its receiver parameter positionally for rpc exposure, "
+            f"got a {parameters[0].kind.description} parameter"
+        )
+
     query_fields: dict[str, Any] = {}
-    for param in list(signature.parameters.values())[1:]:
+    for param in parameters[1:]:
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+            inspect.Parameter.POSITIONAL_ONLY,
+        ):
+            raise TypeError(
+                f"{worker_cls.__name__}.{name} must not use *args/**kwargs or positional-only parameters "
+                f"for rpc exposure"
+            )
+        if param.annotation is inspect.Parameter.empty:
+            raise TypeError(f"{worker_cls.__name__}.{name} parameter '{param.name}' must be type-annotated")
         default = ... if param.default is inspect.Parameter.empty else param.default
         query_fields[param.name] = (hints[param.name], default)
+
+    if signature.return_annotation is inspect.Signature.empty:
+        raise TypeError(f"{worker_cls.__name__}.{name} must have a return type annotation")
 
     return RpcMethodSpec(
         name=name,
