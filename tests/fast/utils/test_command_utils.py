@@ -2,8 +2,9 @@ import json
 import os
 import shlex
 
-import miles.utils.external_utils.command_utils as command_utils
 import pytest
+
+import miles.utils.external_utils.command_utils as command_utils
 
 
 def test_convert_checkpoint_preserves_source_paths(monkeypatch, tmp_path):
