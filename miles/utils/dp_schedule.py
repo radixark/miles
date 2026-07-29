@@ -34,7 +34,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from miles.utils.seqlen_balancing import expand_bins_by_splitting, first_fit_pack, get_seqlen_balanced_partitions
+from miles.utils.seqlen_balancing import (
+    expand_bins_by_splitting,
+    first_fit_decreasing_pack,
+    get_seqlen_balanced_partitions,
+)
 
 SCHEDULE_CONFIG_KEYS = ("dp_size", "cp_size", "vpp_size", "microbatch_group_size_per_vp_stage")
 
@@ -57,7 +61,9 @@ def _pack_step_into_mbs(
     """Group a step's samples into mbs. Returns ``mbs[k]`` = local indices into ``step_lengths``."""
     if use_dynamic_batch_size:
         assert max_per_bin is not None
-        return first_fit_pack(step_lengths, max_per_bin)
+        # FFD packs at least as tightly as arrival-order first-fit; fewer
+        # bins = fewer micro-batches per training step.
+        return first_fit_decreasing_pack(step_lengths, max_per_bin)
     assert micro_batch_size is not None
     n = len(step_lengths)
     return [list(range(i, min(i + micro_batch_size, n))) for i in range(0, n, micro_batch_size)]
