@@ -1,3 +1,4 @@
+import logging
 from typing import Any
 
 import torch
@@ -9,6 +10,8 @@ from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
+
+logger = logging.getLogger(__name__)
 
 ROLLOUT_DATA_TENSOR_DTYPES = {
     "tokens": "int32",
@@ -254,6 +257,10 @@ def split_train_data_by_dp_scheduled_raw(
         train_parallel_config,
         total_lengths,
         global_batch_size=global_batch_size,
+    )
+    logger.info(
+        f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
+        f"global_batch_size={global_batch_size}, num_microbatches={num_microbatches}"
     )
 
     shards = _package_shards(args, data, partitions)
