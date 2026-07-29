@@ -1,8 +1,8 @@
-"""Agent V2 launcher (GLM-4.7-Flash): Miles <-> Harbor agent orchestration.
+"""SWE-Agent launcher (GLM-4.7-Flash): Miles <-> Harbor orchestration.
 
 Supports any task type (SWE-bench, Terminal-Bench, custom) via Harbor.
 
-Python equivalent of run.sh. Usage:
+Usage:
     python run.py
     python run.py --mode normal
     python run.py --base-dir /my/models --prompt-data /my/data.jsonl
@@ -41,16 +41,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     prompt_data: str = "/root/swe_train.jsonl"
 
     # Training settings
-    max_seq_len: int = 16384
-    rollout_batch_size: int = 2
-    n_samples_per_prompt: int = 4
-    global_batch_size: int = 8
-
-    # SGLang / TITO parsers (model-family specific; GLM-4.7-Flash defaults).
-    # Subclasses (e.g. run-qwen3-swe.py) override these for other models.
-    sglang_tool_call_parser: str = "glm47"
-    sglang_reasoning_parser: str = "glm45"
-    tito_model: str = "glm47"
+    max_seq_len: int = 65536
+    num_rollout: int = 3000
+    rollout_batch_size: int = 4
+    n_samples_per_prompt: int = 8
+    global_batch_size: int = 32
+    save_interval: int = 100
+    save_traces_dir: str = ""
 
     # Agent settings
     agent_server_url: str = os.environ.get(
@@ -59,11 +56,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", socket.gethostname())  # public IP
-    miles_host_ip: str = os.environ.get("MILES_HOST_IP", socket.gethostname())  # cluster/pod IP
+    miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")  # optional cluster/pod IP override
 
     # W&B settings
     wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
-    wandb_project: str = os.environ.get("WANDB_PROJECT", "glm47-flash-agentic")
+    wandb_project: str = os.environ.get("WANDB_PROJECT", "my-wandb-project")
     wandb_team: str = os.environ.get("WANDB_TEAM", "")
     wandb_run_name: str = "glm47-flash-swe-tito"
 
@@ -106,7 +103,7 @@ def execute(args: ScriptArgs):
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
         f"--save {args.save_dir} "
-        "--save-interval 100 "
+        f"--save-interval {args.save_interval} "
     )
 
     rollout_args = (
@@ -114,7 +111,7 @@ def execute(args: ScriptArgs):
         "--input-key prompt "
         "--metadata-key metadata "
         "--rollout-shuffle "
-        "--num-rollout 3000 "
+        f"--num-rollout {args.num_rollout} "
         f"--rollout-batch-size {args.rollout_batch_size} "
         f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
@@ -163,11 +160,9 @@ def execute(args: ScriptArgs):
     sglang_args = (
         "--rollout-num-gpus-per-engine 1 "
         "--sglang-mem-fraction-static 0.7 "
-        f"--sglang-tool-call-parser {args.sglang_tool_call_parser} "
-        f"--sglang-reasoning-parser {args.sglang_reasoning_parser} "
-        "--use-miles-router "
+        "--sglang-tool-call-parser glm47 "
+        "--sglang-reasoning-parser glm45 "
         "--sglang-router-port 31000 "
-        # TODO: speculative decoding has issue, need to fix later
     )
 
     agent_args = (
@@ -176,7 +171,7 @@ def execute(args: ScriptArgs):
         "--custom-rm-path generate.reward_func "
         "--rollout-function-path generate.RolloutFn "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
-        f"--tito-model {args.tito_model} "
+        "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
     )
@@ -194,6 +189,10 @@ def execute(args: ScriptArgs):
     )
 
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
+
+    trace_args = ""
+    if args.save_traces_dir:
+        trace_args = f"--dump-details {args.save_traces_dir} "
 
     wandb_args = ""
     if args.wandb_key:
@@ -221,6 +220,7 @@ def execute(args: ScriptArgs):
         f"{grpo_args}"
         f"{wandb_args}"
         f"{prometheus_args}"
+        f"{trace_args}"
         f"{perf_args}"
         f"{sglang_args}"
         f"{agent_args}"
@@ -237,18 +237,9 @@ def execute(args: ScriptArgs):
         "AGENT_MODEL_NAME": args.agent_model_name,
         "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
-        "MILES_HOST_IP": args.miles_host_ip,
     }
-
-    # On ROCm/AMD, Ray blanks the Ray-job driver's HIP_VISIBLE_DEVICES, which
-    # makes SGLang's import-time GPU probe fail ("No HIP GPUs are available").
-    # Tell Ray not to touch device visibility so miles manages placement itself.
-    # No-op on NVIDIA (``torch.version.hip`` is None) — CUDA device management is
-    # left entirely to Ray there, so this does not change NVIDIA behaviour.
-    import torch
-
-    if getattr(torch.version, "hip", None):
-        extra_env_vars["RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"] = "1"
+    if args.miles_host_ip:
+        extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 
     U.execute_train(
         train_args=train_args,

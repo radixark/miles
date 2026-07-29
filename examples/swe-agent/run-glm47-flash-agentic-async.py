@@ -1,19 +1,26 @@
-"""GLM-4.7 Full (355B-A32B) fully-async reasoning training with GSM8K data.
+"""GLM-4.7-Flash fully-async agentic training with SWE-bench data.
 
-Disaggregated fully-async variant of run-glm47-reasoning.py: training and
-rollout run on separate nodes concurrently. Uses train_async.py and the
-fully_async_rollout module so that weight updates do not block generation.
+Disaggregated fully-async variant for agentic tasks: training and rollout run
+on separate nodes concurrently. Uses train_async.py and the fully_async_rollout
+module so that weight updates do not block generation. Agent tasks are dispatched
+to a Harbor-based agent server.
 
-Default split: 4 nodes training + 12 nodes inference (configurable via
---train-num-nodes). Same model architecture as GLM-4.5-355B-A32B.
-Targets 16 x 8-GPU H200 nodes.
+GLM-4.7-Flash architecture: 47 layers, 20 attention heads, 64 routed experts,
+hidden_size=2048, first_k_dense_replace=1. TP must divide 20 (valid: 1,2,4,5).
+Default split: 1 node training + 7 nodes inference (configurable via
+--train-num-nodes), sized for an 8-node job.
+
+Data preparation (run separately before training):
+    python download_and_process_data.py \\
+        --input SWE-bench/SWE-bench_Verified \\
+        --output /root/swe_train.jsonl \\
+        --agent-name mini-swe-agent --split test
 
 Usage:
-    python run-glm47-reasoning-async.py --num-nodes 16
-    python run-glm47-reasoning-async.py --num-nodes 16 --train-num-nodes 8
-    python run-glm47-reasoning-async.py --num-nodes 16 --rollout-fp8
-    python run-glm47-reasoning-async.py --num-nodes 16 --pause-generation-mode retract --update-weight-transfer-mode p2p
-    python run-glm47-reasoning-async.py --num-nodes 16 --skip-prepare
+    python run-glm47-flash-agentic-async.py --num-nodes 8
+    python run-glm47-flash-agentic-async.py --num-nodes 8 --train-num-nodes 1
+    python run-glm47-flash-agentic-async.py --num-nodes 8 \\
+        --agent-server-url http://agent-server.example.com:8080
 """
 
 import os
@@ -28,49 +35,73 @@ import typer
 import miles.utils.external_utils.command_utils as U
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-FULLY_ASYNC_DIR = (Path(__file__).resolve().parent.parent.parent / "fully_async").resolve()
+FULLY_ASYNC_DIR = (Path(__file__).resolve().parent.parent / "fully_async").resolve()
+
+# Cluster-wide GPU-node ceiling for the ckpt-conversion job. Kept below the
+# raw node count so ckpt conversion doesn't starve the rest of the cluster.
+MAX_CONVERT_GPUS = 92
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
     run_id: str = U.create_run_id()
-    megatron_model_type: str = "glm4.5-355B-A32B"
+    megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
     megatron_path: str = "/root/Megatron-LM"
 
     # Paths
     skip_prepare: bool = False
-    model_name: str = "GLM-4.7"
-    hf_checkpoint: str = "/models/zai-org/GLM-4.7"
-    ref_load: str = "/models/zai-org/GLM-4.7_torch_dist"
-    save_dir: str = "/root/GLM-4.7-Full_reasoning_async/"
-    prompt_data: str = "/root/datasets/gsm8k/train.parquet"
-    rollout_max_response_len: int = 1024
+    model_name: str = "GLM-4.7-Flash"
+    hf_checkpoint: str = "/models/zai-org/GLM-4.7-Flash"
+    ref_load: str = "/models/zai-org/GLM-4.7-Flash_torch_dist"
+    save_dir: str = "/root/GLM-4.7-Flash_agentic_async/"
+    # Directory to dump rollout + training traces (per-rollout .pt files). Empty
+    # means default to ``<save_dir>/traces``; set to ``"disabled"`` to skip.
+    save_traces_dir: str = ""
+    prompt_data: str = "/root/swe_train.jsonl"
+    max_seq_len: int = 16384
+    rollout_max_response_len: int = 8192
+    save_interval: int = 5
+
+    # Rollout / training batch sizing (overridable for smoke tests)
+    num_rollout: int = 3000
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 4
+    global_batch_size: int = 32
+    over_sampling_batch_size: int = 64
 
     # Rollout precision
     rollout_fp8: bool = False
     rollout_health_check_first_wait: int = 1800
 
+    # Agent settings
+    agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://localhost:8080")
+    agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
+    harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
+    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
+
     # Disaggregated fully-async settings
-    train_num_nodes: int = 4
+    train_num_nodes: int = 1
     pause_generation_mode: Literal["in_place", "retract"] = "in_place"
     update_weight_transfer_mode: Literal["broadcast", "p2p"] = "broadcast"
     accumulate_allreduce_grads_in_fp32: bool = False
-    max_tokens_per_gpu: int = 2048
+    max_tokens_per_gpu: int = 8192
     optimizer_cpu_offload: bool = True
     use_precision_aware_optimizer: bool = True
 
     # W&B settings
     wandb_key: str = os.environ.get("WANDB_KEY", os.environ.get("WANDB_API_KEY", ""))
-    wandb_project: str = os.environ.get("WANDB_PROJECT", "glm47-full-reasoning-async")
+    wandb_project: str = os.environ.get("WANDB_PROJECT", "my-wandb-project")
     wandb_team: str = os.environ.get("WANDB_TEAM", "")
-    wandb_run_name: str = "glm47-full-gsm8k-async"
+    wandb_run_name: str = "glm47-flash-swe-async"
+    disable_wandb_random_suffix: bool = True
 
     # Prometheus settings
     use_prometheus: bool = True
     prometheus_port: int = 9090
-    prometheus_run_name: str = "glm47-full-gsm8k-async"
+    prometheus_run_name: str = "glm47-flash-swe-async"
 
 
 def cleanup():
@@ -81,34 +112,21 @@ def cleanup():
     targets = ["sglang", "train.py", "train_async.py", "MegatronTrain"]
     exclude = f"grep -v '^{my_pid}$' | grep -v '^{ppid}$'"
     for t in targets:
+        # Bracket-wrap the first char so the pgrep pattern doesn't match its
+        # own shell/subprocess command line (which literally contains the
+        # bracketed pattern and thus fails the regex).
+        pattern = f"[{t[0]}]{t[1:]}"
         subprocess.run(
-            f"pgrep -f '{t}' | {exclude} | xargs -r kill 2>/dev/null || true",
+            f"pgrep -f '{pattern}' | {exclude} | xargs -r kill 2>/dev/null || true",
             shell=True,
         )
     time.sleep(5)
     print(f"Cleanup complete (pid={my_pid}) — old processes killed.")
 
 
-def _convert_hf_to_fp8(args: ScriptArgs):
-    """Convert HF bf16 checkpoint to block-wise FP8 for SGLang rollout."""
-    fp8_dir = f"{args.hf_checkpoint}-FP8"
-    if Path(fp8_dir).exists():
-        print(f"FP8 checkpoint already exists at {fp8_dir}, skipping conversion.")
-        return
-    U.exec_command(
-        "python tools/convert_hf_to_fp8.py "
-        f"--model-dir {args.hf_checkpoint} "
-        f"--save-dir {fp8_dir} "
-        "--strategy block --block-size 128 128 "
-        "--max-workers 4"
-    )
-
-
 def prepare(args: ScriptArgs):
-    """Download GSM8K data and convert HF checkpoint to torch_dist format."""
-    U.hf_download_dataset("zhuzilin/gsm8k")
-
-    max_convert_nodes = 92 // args.num_gpus_per_node
+    """Convert HF checkpoint to torch_dist format."""
+    max_convert_nodes = MAX_CONVERT_GPUS // args.num_gpus_per_node
     convert_nodes = min(args.num_nodes, max_convert_nodes)
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -121,9 +139,6 @@ def prepare(args: ScriptArgs):
         megatron_path=args.megatron_path,
     )
 
-    if args.rollout_fp8:
-        _convert_hf_to_fp8(args)
-
 
 def execute(args: ScriptArgs):
     if args.pause_generation_mode == "in_place" and args.update_weight_transfer_mode == "p2p":
@@ -132,42 +147,33 @@ def execute(args: ScriptArgs):
             "active NCCL inference. Use broadcast with in_place, or retract with p2p."
         )
 
-    hf_checkpoint = f"{args.hf_checkpoint}-FP8" if args.rollout_fp8 else args.hf_checkpoint
     ckpt_args = (
-        f"--hf-checkpoint {hf_checkpoint} "
+        f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
         f"--save {args.save_dir} "
-        "--save-interval 100 "
+        f"--save-interval {args.save_interval} "
     )
 
     rollout_args = (
         "--rollout-function-path fully_async_rollout.generate_rollout_fully_async "
         f"--prompt-data {args.prompt_data} "
-        "--input-key messages "
-        "--label-key label "
-        "--apply-chat-template "
+        "--input-key prompt "
+        "--metadata-key metadata "
         "--rollout-shuffle "
-        "--rm-type math "
-        "--num-rollout 3000 "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 4 "
+        f"--num-rollout {args.num_rollout} "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
         "--rollout-temperature 0.8 "
         f"--rollout-max-response-len {args.rollout_max_response_len} "
-        "--over-sampling-batch-size 64 "
-        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
-        "--global-batch-size 64 "
+        f"--max-seq-len {args.max_seq_len} "
+        f"--over-sampling-batch-size {args.over_sampling_batch_size} "
+        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
+        f"--global-batch-size {args.global_batch_size} "
         "--balance-data "
         f"--pause-generation-mode {args.pause_generation_mode} "
     )
 
-    eval_args = (
-        # "--eval-interval 20 "
-        # "--skip-eval-before-train "
-        # "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
-        # "--n-samples-per-eval-prompt 1 "
-        # "--eval-max-response-len 1024 "
-        # "--eval-top-k 1 "
-    )
+    eval_args = ""
 
     # Disaggregated split: training on train_num_nodes, inference on the rest.
     rollout_num_nodes = args.num_nodes - args.train_num_nodes
@@ -182,11 +188,12 @@ def execute(args: ScriptArgs):
         f"{rollout_num_nodes} nodes ({rollout_gpus} GPUs) inference"
     )
 
-    # Training parallelism: TP=4, PP=2, EP chosen as largest divisor of 160 that fits.
-    tp, pp = 4, 2
+    # Training parallelism for Flash: TP=4 (divides 20-head attention), PP=1,
+    # EP = largest divisor of 64 that also divides DP.
+    tp, pp = 4, 1
     dp = train_gpus // (tp * pp)
     assert train_gpus % (tp * pp) == 0, f"train GPUs ({train_gpus}) must be divisible by TP*PP ({tp * pp})"
-    num_experts = 160
+    num_experts = 64
     ep = max(d for d in range(1, dp + 1) if num_experts % d == 0 and dp % d == 0)
 
     perf_args = (
@@ -226,11 +233,10 @@ def execute(args: ScriptArgs):
         "--adam-beta2 0.98 "
     )
 
-    # SGLang: 4 nodes/engine with full EP + DP-attention on dedicated rollout nodes.
-    # 355B across 32 GPUs → ~22GB/GPU (bf16) or ~11GB/GPU (FP8) for weights.
-    # EP=32 with 160 experts → 5 experts/GPU. DP-attention keeps attention
-    # within a single node (attn_tp=8).
-    sglang_nodes_per_engine = min(4, rollout_num_nodes)
+    # SGLang: single-node engines with DP-attention. Flash has 20 attention
+    # heads so TP=8 crashes (20 % 8 != 0); we use attn_tp=4, attn_dp=2 while
+    # MoE stays 8-way TP/EP across the 8 GPUs in each rollout node.
+    sglang_nodes_per_engine = 1
     sglang_world_size = sglang_nodes_per_engine * args.num_gpus_per_node
     num_engines = rollout_num_nodes // sglang_nodes_per_engine
     assert rollout_num_nodes % sglang_nodes_per_engine == 0, (
@@ -239,7 +245,10 @@ def execute(args: ScriptArgs):
     )
     print(f"Inference: {num_engines} engines x {sglang_world_size} GPUs/engine")
     sglang_decode_max_bs = 256
-    sglang_attn_tp_size = min(args.num_gpus_per_node, sglang_world_size)
+    sglang_attn_tp_size = 4
+    assert sglang_world_size % sglang_attn_tp_size == 0, (
+        f"sglang world ({sglang_world_size}) must be divisible by " f"attn_tp_size ({sglang_attn_tp_size})"
+    )
     sglang_attn_dp_size = sglang_world_size // sglang_attn_tp_size
 
     sglang_p2p_extra = ""
@@ -255,18 +264,24 @@ def execute(args: ScriptArgs):
         f"--sglang-dp-size {sglang_attn_dp_size} "
         "--sglang-moe-dense-tp-size 1 "
         "--sglang-enable-dp-lm-head "
-        "--sglang-moe-a2a-backend deepep "
-        "--sglang-deepep-mode low_latency "
         f"--sglang-max-running-requests {sglang_world_size * sglang_decode_max_bs // sglang_attn_tp_size} "
         f"--sglang-chunked-prefill-size {sglang_world_size * sglang_decode_max_bs} "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
+        "--sglang-tool-call-parser glm47 "
+        "--sglang-reasoning-parser glm45 "
+        "--sglang-router-port 31000 "
         f"{sglang_p2p_extra}"
     )
-    if args.rollout_fp8:
-        sglang_args += "--sglang-moe-runner-backend deep_gemm "
-    sglang_extra_env_vars = {
-        "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{sglang_decode_max_bs}",
-    }
+    sglang_extra_env_vars: dict[str, str] = {}
+
+    agent_args = (
+        "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
+        "--custom-agent-function-path swe_agent_function.run "
+        "--custom-rm-path generate.reward_func "
+        "--tito-model glm47 "
+        "--use-session-server "
+        "--session-server-port 30000 "
+    )
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -286,6 +301,10 @@ def execute(args: ScriptArgs):
     if args.accumulate_allreduce_grads_in_fp32:
         misc_args += "--accumulate-allreduce-grads-in-fp32 "
 
+    traces_dir = args.save_traces_dir or f"{args.save_dir.rstrip('/')}/traces"
+    if traces_dir != "disabled":
+        misc_args += f"--dump-details {traces_dir} "
+
     debug_args = "--debug-rollout-only " if args.mode == "debug_rollout_only" else ""
 
     wandb_args = ""
@@ -298,6 +317,8 @@ def execute(args: ScriptArgs):
         )
         if args.wandb_team:
             wandb_args += f"--wandb-team {args.wandb_team} "
+        if args.disable_wandb_random_suffix:
+            wandb_args += "--disable-wandb-random-suffix "
 
     prometheus_args = ""
     if args.use_prometheus:
@@ -317,6 +338,7 @@ def execute(args: ScriptArgs):
         f"{prometheus_args}"
         f"{perf_args}"
         f"{sglang_args}"
+        f"{agent_args}"
         f"{misc_args}"
         f"{debug_args}"
     )
@@ -326,10 +348,17 @@ def execute(args: ScriptArgs):
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{FULLY_ASYNC_DIR}:{miles_root}",
         "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-        "NCCL_NVLS_ENABLE": "0",
+        "NCCL_NVLS_ENABLE": os.environ.get("HAS_NVLINK", "0"),
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "true",
+        "AGENT_SERVER_URL": args.agent_server_url,
+        "AGENT_MODEL_NAME": args.agent_model_name,
+        "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
         **sglang_extra_env_vars,
     }
+    if args.router_external_host:
+        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
+    if args.miles_host_ip:
+        extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 
     U.execute_train(
         train_args=train_args,

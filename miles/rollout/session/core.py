@@ -226,20 +226,27 @@ class SessionCore:
             # Must be False so stop-token text is trimmed from assistant content;
             # token IDs still come from logprobs below.
             request_body["no_stop_trim"] = False
-            # Chat template kwargs should also be forwarded to sglang to make sure
-            # parsers work correctly.
-            server_ctk = self.registry.tito_tokenizer.chat_template_kwargs
-            if server_ctk:
-                request_body["chat_template_kwargs"] = {
-                    **server_ctk,
-                    **(request_body.get("chat_template_kwargs") or {}),
-                }
+            # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
+            # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.
+            request_ctk = request_body.get("chat_template_kwargs")
+            if request_ctk is not None and not isinstance(request_ctk, dict):
+                raise MessageValidationError("chat_template_kwargs must be an object")
+            tito_tokenizer = self.registry.tito_tokenizer
+            if request_ctk:
+                try:
+                    tito_tokenizer = tito_tokenizer.clone_with_chat_template_kwargs(request_ctk)
+                except ValueError as e:
+                    raise MessageValidationError(str(e)) from e
+            if tito_tokenizer.chat_template_kwargs:
+                request_body["chat_template_kwargs"] = dict(tito_tokenizer.chat_template_kwargs)
+            else:
+                request_body.pop("chat_template_kwargs", None)
 
             request_messages = request_body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(
                 request_messages,
                 tools=request_body.get("tools"),
-                tito_tokenizer=self.registry.tito_tokenizer,
+                tito_tokenizer=tito_tokenizer,
             )
             request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))

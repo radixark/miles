@@ -1,5 +1,5 @@
 """
-Custom agent function for agentic_tool_call.generate.
+Custom agent function for ``agentic_tool_call.generate``.
 
 Dispatches to a Harbor-based agent server and returns env metadata
 as a plain dict. The generate layer merges this into sample.metadata so
@@ -13,12 +13,43 @@ differentiation (environment, grading harness, agent selection).
 import asyncio
 import logging
 import os
+import socket
 from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunparse
+
+import httpx
 
 from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
+
+_agent_server_client: httpx.AsyncClient | None = None
+
+
+def _get_agent_server_client() -> httpx.AsyncClient:
+    """Return a client whose long-running requests survive idle network paths."""
+    global _agent_server_client
+    if _agent_server_client is None:
+        socket_options = [
+            (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPIDLE", 4), 60),
+            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPINTVL", 5), 30),
+            (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPCNT", 6), 5),
+        ]
+        transport = httpx.AsyncHTTPTransport(socket_options=socket_options)
+        _agent_server_client = httpx.AsyncClient(
+            transport=transport,
+            limits=httpx.Limits(max_connections=64, max_keepalive_connections=32),
+            timeout=None,
+        )
+    return _agent_server_client
+
+
+async def _post_agent_server(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    client = _get_agent_server_client()
+    response = await client.post(url, json=payload)
+    response.raise_for_status()
+    return response.json()
 
 
 async def run(
@@ -73,7 +104,7 @@ async def run(
 
     try:
         response = await asyncio.wait_for(
-            post(f"{agent_server_url}/run", request),
+            _post_agent_server(f"{agent_server_url}/run", request),
             timeout=3600,  # 1 hour max per trial
         )
     except asyncio.TimeoutError:

@@ -11,7 +11,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 |---|---|---|
 | Domain label | `run-ci-megatron` | selects which tests run |
 | Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, and `ft-long` |
-| Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `ft-long`, with fast-fail disabled |
+| Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long` and `ft-long`, with fast-fail disabled |
 | Scope label | `run-ci-all` | run every enabled tag |
 | Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
 
@@ -49,16 +49,16 @@ The workflow's `resolve-ci-policy` job forwards trigger-specific facts to `tests
 | Scope | Explicit source | Runs | Subtracts | Fast-fail |
 |---|---|---|---|---|
 | all | `run-ci-all` label | every enabled tag | — | determined by cadence |
-| nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag incl. `ft-short` | `ft-long` | disabled on both levels (within-stage only for local runs) |
+| nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag except `long` and `ft-long`, incl. `ft-short` | `long`, `ft-long` | disabled on both levels (within-stage only for local runs) |
 | image | `run-ci-image` label | every enabled tag except `long` and FT tags | `long`, `ft-short`, `ft-long` | determined by cadence |
 
 Rows are in precedence order: when scope signals overlap, the higher row wins (`run-ci-all` > nightly > `run-ci-image`, the branch order of `resolve_policy`). `run-ci-all` widens only the domain scope; without nightly cadence it does not admit nightly-only registrations.
 
 The generic triggers carry no policy. The current nightly schedule is identified by the exact cron string `0 15 * * *`; adding a weekly schedule requires a distinct cadence mapping rather than another `event_name == "schedule"` branch. A manual dispatch uses regular cadence and no PR labels, so it receives only the ordinary always-on scope; its existing operation inputs do not imply all or nightly.
 
-A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must never run at nightly must carry only FT labels.
+A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must stay outside the standard nightly scope must carry only labels that nightly subtracts.
 
-A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-long` or `run-ci-ft-short` runs the image scope *and* the explicitly requested tests, rather than silently dropping the request.
+A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-long` or `run-ci-ft-short`, and nightly plus `run-ci-long`, add the explicitly requested tests back rather than silently dropping the request.
 
 ## Registration and scan scope
 
@@ -83,7 +83,7 @@ The `bypass-fastfail` PR label turns both off so one run surfaces every failure:
 - Cross-stage: each GPU stage consumes the shared `bypass_fastfail` policy output, so GPU stages run even after `stage-a-cpu` fails.
 - Within-stage: `run_suite.py` derives continue-on-error from the same resolved policy (drops `pytest -x`; sets `continue_on_error=True` for CUDA). The stage still ends red — it changes coverage, not the verdict.
 
-A resolved nightly cadence bypasses fast-fail on both levels because a nightly is meant to exercise every eligible test except `ft-long` and surface every failure (one datapoint per test), not stop at the first. This applies equally whether the cadence came from the PR `nightly` label or the explicitly mapped nightly cron. Local `--nightly` applies the same selection and within-stage behavior; cross-stage gating does not exist in a local invocation.
+A resolved nightly cadence bypasses fast-fail on both levels because a nightly is meant to exercise every eligible test except `long` and `ft-long` and surface every failure (one datapoint per test), not stop at the first. This applies equally whether the cadence came from the PR `nightly` label or the explicitly mapped nightly cron. Local `--nightly` applies the same selection and within-stage behavior; cross-stage gating does not exist in a local invocation.
 
 Like the scope labels, `bypass-fastfail` is a workflow-only input and is not in `KNOWN_LABELS`.
 

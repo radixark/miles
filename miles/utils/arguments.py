@@ -2977,6 +2977,27 @@ def miles_validate_args(args):
     _maybe_apply_dumper_overrides(args)
 
 
+def validate_async_off_policy_correction(args) -> None:
+    """Require an explicit behavior-policy choice for async PPO training.
+
+    In the async train loop the next rollout is generated before the current
+    weight update is published, so samples can come from a stale policy. With
+    the default flags the PPO ratio denominator (``log_probs``) is recomputed
+    by the *current* actor, silently anchoring clipping (and KL-shaped
+    advantages) to a policy that never generated the trajectory; the recorded
+    ``weight_versions`` are a metric, not an enforcement mechanism.
+    """
+    if not args.use_critic:
+        return
+    assert args.use_rollout_logprobs or args.use_tis or args.keep_old_actor, (
+        "Async PPO training requires an explicit behavior-policy correction, because rollouts are "
+        "generated before the current weight update while log probs are recomputed by the current "
+        "actor by default. Pass one of: --use-rollout-logprobs (use the rollout engine's log probs "
+        "as the ratio denominator), --use-tis (truncated importance sampling correction), or "
+        "--keep-old-actor (recompute the denominator with the weights the rollout engines used)."
+    )
+
+
 def _maybe_apply_dumper_overrides(args) -> None:
     if not args.dumper_enable:
         return

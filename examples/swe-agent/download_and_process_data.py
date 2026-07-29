@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Download and convert datasets to Miles format for agent training.
+"""Download and convert datasets to Miles format for SWE-agent training.
 
 Supports any task type — SWE-bench, Terminal-Bench, custom datasets, etc.
 Each record's metadata is enriched with ``agent_name`` so that
-downstream components (server.py) can route to the correct Harbor agent.
+the Harbor agent server can route to the correct agent.
 All original fields are preserved in metadata so that
 prepare_harbor_tasks.py can infer the right task directory layout.
 

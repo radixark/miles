@@ -13,7 +13,7 @@ Your harness only ever sends and receives **OpenAI chat messages**, never tokens
 
 Your rollout loop must keep two invariants, or TITO is rejected at runtime:
 
-- **Append-only messages.** Each turn = previous messages + new ones on the tail; past turns are never edited. The only exception is retrying the latest turn — a single-step rollback to the last assistant checkpoint. Diverging earlier, or rolling back more than one turn, is rejected.
+- **Append-only messages.** Each turn = previous messages + new ones on the tail; past turns are never edited. The only exception is retrying the latest turn — a single-step rollback to the last assistant checkpoint, or to an empty session when the retried turn is the first one. Diverging earlier, or rolling back more than one turn, is rejected.
 - **Appended roles follow the chat template.** After the first assistant message, the selected model's chat template determines which roles may be appended; users do not configure this separately.
 
 ## Pick your `--tito-model`
@@ -46,7 +46,7 @@ ROLLOUT_ARGS+=(
 
 ## Example
 
-A full multi-turn agentic setup on the session-server TITO path lives in [`examples/experimental/swe-agent-v2`](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-v2): its launchers wire `--use-session-server` + `--tito-model glm47` against a real SWE agent.
+A full multi-turn agentic setup on the session-server TITO path lives in [`examples/swe-agent`](https://github.com/radixark/miles/tree/main/examples/swe-agent): its launchers wire `--use-session-server` + `--tito-model glm47` against a real SWE agent.
 
 ## Add a new model
 
