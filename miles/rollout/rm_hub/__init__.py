@@ -4,7 +4,7 @@ import random
 
 import aiohttp
 
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.types import Sample
 

@@ -17,8 +17,8 @@ from miles.rollout.filter_hub.base_types import call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group, get_model_url
 from miles.utils.async_utils import run
+from miles.utils.function_registry import load_function
 from miles.utils.metric_utils import compute_statistics, dict_add_prefix
-from miles.utils.misc import load_function
 from miles.utils.multi_lora import EmptyBatchTimeoutError, min_groups_per_dp_split
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample

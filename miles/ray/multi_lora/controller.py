@@ -9,7 +9,8 @@ import ray
 from miles.ray.multi_lora.backend import MultiLoRABackend
 from miles.ray.multi_lora.http_server import MultiLoRAHTTPServer
 from miles.utils.adapter_config import AdapterRun
-from miles.utils.misc import SingletonMeta, get_current_node_ip, load_function
+from miles.utils.function_registry import load_function
+from miles.utils.misc import SingletonMeta, get_current_node_ip
 from miles.utils.ray_utils import compute_ray_pin_head_options
 
 CONTROLLER_NAME = "miles_multi_lora_controller"
