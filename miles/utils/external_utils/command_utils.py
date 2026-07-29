@@ -7,11 +7,13 @@ import json
 import os
 import random
 import shlex
+import socket
 import time
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
+from miles.utils.http_utils import wait_for_server_ready
 from miles.utils.misc import exec_command, exec_command_all_ray_node
 from miles.utils.typer_utils import dataclass_cli
 
@@ -272,6 +274,7 @@ def get_env_enable_infinite_run():
 
 MOONCAKE_MASTER_PORT = 50051
 MOONCAKE_MASTER_METRICS_PORT = 50052
+MOONCAKE_MASTER_LOG_PATH = Path("/tmp/mooncake_master.log")
 
 
 def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT) -> str:
@@ -284,14 +287,45 @@ def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT) -> s
     return "--object-store-backend mooncake " f"--mooncake-store-init-kwargs {shlex.quote(json.dumps(init_kwargs))} "
 
 
+def _is_tcp_server_ready(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
 def start_mooncake_master(
-    rpc_port: int = MOONCAKE_MASTER_PORT, metrics_port: int = MOONCAKE_MASTER_METRICS_PORT
+    rpc_port: int = MOONCAKE_MASTER_PORT,
+    metrics_port: int = MOONCAKE_MASTER_METRICS_PORT,
+    timeout: float = 30,
+    log_path: str | Path = MOONCAKE_MASTER_LOG_PATH,
 ) -> None:
+    host = "127.0.0.1"
+    if _is_tcp_server_ready(host, rpc_port):
+        print(f"Mooncake master is already ready at {host}:{rpc_port}", flush=True)
+        return
+
+    log_path = Path(log_path)
+    quoted_log_path = shlex.quote(str(log_path))
     exec_command(
-        "pgrep -x mooncake_master >/dev/null || "
+        "pkill -x mooncake_master >/dev/null 2>&1 || true; "
         f"(setsid mooncake_master --rpc_port {rpc_port} --metrics_port {metrics_port} "
-        "> /tmp/mooncake_master.log 2>&1 &)"
+        f"> {quoted_log_path} 2>&1 &)"
     )
+    try:
+        wait_for_server_ready(host, rpc_port, timeout=timeout)
+    except RuntimeError as exc:
+        exec_command("pkill -x mooncake_master >/dev/null 2>&1 || true")
+        try:
+            log_lines = log_path.read_text(errors="replace").splitlines()
+            log_tail = "\n".join(log_lines[-100:]) or "<empty>"
+        except OSError as log_error:
+            log_tail = f"<unable to read {log_path}: {log_error}>"
+        raise RuntimeError(
+            f"Mooncake master at {host}:{rpc_port} did not become ready.\n"
+            f"Last 100 lines of {log_path}:\n{log_tail}"
+        ) from exc
 
 
 def save_to_temp_file(text: str, ext: str):
