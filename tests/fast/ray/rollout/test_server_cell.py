@@ -23,6 +23,32 @@ def _allocated_cell(num_nodes: int = 1, *, alive: bool = True, addressed: bool =
     return cell
 
 
+class TestEngineGpuIds:
+    def test_offsets_and_stride_follow_the_cell_layout(self):
+        """The driver-side gpu layout must match what the launch handed each actor."""
+        cell = ServerCell(
+            args=make_args(num_gpus_per_node=8),
+            worker_type="regular",
+            cell_id="cell-0",
+            pg=(None, [], [0, 1, 2, 3, 4, 5, 6, 7]),
+            num_gpus_per_engine=2,
+            gpu_offset=4,
+        )
+        assert cell.engine_gpu_ids == [[4, 5]]
+
+    def test_each_node_rank_of_a_multi_node_engine_covers_its_node(self):
+        """A 2-node engine reports one whole-node gpu range per node-rank."""
+        cell = ServerCell(
+            args=make_args(num_gpus_per_node=8),
+            worker_type="regular",
+            cell_id="cell-0",
+            pg=(None, [], list(range(8)) + list(range(8))),
+            num_nodes=2,
+            num_gpus_per_engine=16,
+        )
+        assert cell.engine_gpu_ids == [list(range(8)), list(range(8))]
+
+
 class TestServerCellState:
     def test_a_fresh_cell_is_stopped(self):
         """A cell owns one state machine for all of its node-ranks."""
