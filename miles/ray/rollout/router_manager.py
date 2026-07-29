@@ -7,6 +7,7 @@ import uuid
 from sglang_router.launch_router import RouterArgs
 
 from miles.rollout.session.server import run_session_server
+from miles.router.config import compute_miles_router_config
 from miles.router.router import run_router as run_miles_router
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, is_port_available
 from miles.utils.http_utils import run_router as run_sglang_router
@@ -41,9 +42,7 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
         assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
 
         run_router = run_miles_router
-        router_args = copy.copy(args)
-        router_args.sglang_router_ip = router_ip
-        router_args.sglang_router_port = router_port
+        router_args = compute_miles_router_config(args, host=router_ip, port=router_port)
 
     else:
         run_router = run_sglang_router
