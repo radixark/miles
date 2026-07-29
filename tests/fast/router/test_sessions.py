@@ -13,6 +13,7 @@ import httpx
 import pytest
 import requests
 from fastapi.responses import JSONResponse
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import strict_message_matches
@@ -63,18 +64,14 @@ def router_env():
 
     with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=patched_chat_response):
         with with_mock_server(process_fn=process_fn) as backend:
-            args = SimpleNamespace(
-                miles_router_timeout=30,
+            config = make_session_server_config(
+                backend_url=backend.url,
                 hf_checkpoint="Qwen/Qwen3-0.6B",
-                chat_template_path=None,
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
-                sglang_speculative_algorithm=None,
-                trajectory_manager="linear_trajectory",
-                session_server_instance_id=uuid.uuid4().hex,
-                save_debug_trajectory_data=None,
+                instance_id=uuid.uuid4().hex,
             )
-            server_obj = SessionServer(args, backend_url=backend.url)
+            server_obj = SessionServer(config)
 
             port = find_available_port(31000)
             server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)

@@ -15,6 +15,7 @@ import pytest
 import requests
 
 from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
+from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import SessionServer
 from miles.router.config import compute_miles_router_config
 from miles.router.router import MilesRouter
@@ -104,10 +105,15 @@ DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 @contextmanager
 def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornThreadServer]:
     """Start a SessionServer for agentic variants that need TITO session tracking."""
-    session_args = copy.copy(args)
-    session_args.miles_router_timeout = 30
-    session_server = SessionServer(session_args, backend_url=backend_url)
     port = find_available_port(31000)
+    config = compute_session_server_config(
+        args,
+        host="127.0.0.1",
+        port=port,
+        instance_id=None,
+        backend_url=backend_url,
+    )
+    session_server = SessionServer(config)
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
     try:
         server.start()
