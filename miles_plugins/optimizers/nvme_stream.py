@@ -440,6 +440,7 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
 
     dir_root = os.path.join(args.offload_train_disk_dir, "optimizer_state")
+    _purge_rank_dir(dir_root)
     for dist_opt in optimizer.chained_optimizers:
         assert isinstance(
             dist_opt, DistributedOptimizer
@@ -450,6 +451,22 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
             dist_opt, dir_root, args.offload_train_disk_chunk_mb, args.stream_optimizer_state_moment_dtype
         )
         _bind(dist_opt, store)
+
+
+def _purge_rank_dir(dir_root: str) -> None:
+    """Drop everything this rank left behind, before any store claims its own path.
+
+    A store only removes the exact path it is about to use, so state written under a
+    different layout -- another parallelism, a renamed directory scheme -- survives
+    forever, and a run killed by the scheduler never reaches its atexit cleanup either.
+    On a 744B DP1 model that is hundreds of GB per rank per stale run, and node-local
+    NVMe fills up until allocation fails. The rank subtree is exclusively this rank's,
+    so clearing it whole is safe, and it must happen before the chained dense and
+    expert stores are constructed, since they share it.
+    """
+    rank_dir = os.path.join(dir_root, f"rank{torch.distributed.get_rank():05d}")
+    shutil.rmtree(rank_dir, ignore_errors=True)
+    os.makedirs(rank_dir, exist_ok=True)
 
 
 def _bind(dist_opt: "DistributedOptimizer", store: NVMeOptimizerStateStore) -> None:
