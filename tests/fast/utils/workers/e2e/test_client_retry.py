@@ -16,6 +16,7 @@ def short_retry_window(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(client_module, "SUBMIT_RETRY_WINDOW_SECONDS", 0.2)
     monkeypatch.setattr(client_module, "RETRY_INITIAL_DELAY_SECONDS", 0.01)
     monkeypatch.setattr(client_module, "RETRY_MAX_DELAY_SECONDS", 0.02)
+    monkeypatch.setattr(client_module, "DEFAULT_POLL_TIMEOUT_SECONDS", 0.05)
 
 
 class _StaleWorker:
