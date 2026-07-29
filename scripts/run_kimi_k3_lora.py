@@ -50,14 +50,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ep_size_override: int | None = None
     rollout_tp_size: int = 8
     rollout_ep_size: int = 1
-    rollout_max_concurrency: int = 1
+    rollout_max_concurrency: int = 64
 
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.0
     target_modules: str = _DEFAULT_TARGET_MODULES
     experts_shared_outer_loras: bool = True
-    lora_base_cpu_backup: bool = False
 
     reward_model: Literal["deterministic_random", "deepscaler", "math"] | None = None
     num_rollout: int | None = None
@@ -148,7 +147,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.model_variant == "4layer":
             return 8
         # EP is bounded by the DP*CP*TP ranks inside one pipeline stage.
-        return 64 if self.pipeline_parallel_size == 1 else self.tensor_parallel_size
+        model_parallel = self.tensor_parallel_size * self.context_parallel_size * self.pipeline_parallel_size
+        data_parallel = 64 // model_parallel
+        return self.tensor_parallel_size * self.context_parallel_size * data_parallel
 
     @property
     def pipeline_layer_split(self) -> tuple[int, int]:
@@ -208,11 +209,12 @@ def _execute_train(args: ScriptArgs) -> None:
         f"--lora-dropout {args.lora_dropout} "
         f'--target-modules "{args.target_modules}" '
         "--no-gradient-accumulation-fusion "
+        # Host mirror of the rollout base weights, so releasing them does not
+        # require the trainer to re-ship the base every step.
+        "--lora-base-cpu-backup "
     )
     if args.experts_shared_outer_loras:
         lora_args += "--experts-shared-outer-loras "
-    if args.lora_base_cpu_backup:
-        lora_args += "--lora-base-cpu-backup "
 
     is_debug = args.mode == "debug_minimal"
     reward_model = args.reward_model or (
@@ -290,7 +292,7 @@ def _execute_train(args: ScriptArgs) -> None:
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        f"--max-tokens-per-gpu {args.max_tokens_per_gpu if args.max_tokens_per_gpu is not None else (512 if args.model_variant == '4layer' else 1024)} "
+        f"--max-tokens-per-gpu {args.max_tokens_per_gpu if args.max_tokens_per_gpu is not None else (512 if args.model_variant == '4layer' else 8192)} "
         "--log-probs-chunk-size 512 "
         f"--distributed-timeout-minutes {args.distributed_timeout_minutes} "
     )
@@ -381,11 +383,7 @@ def _execute_train(args: ScriptArgs) -> None:
         f"--num-gpus-per-node {args.num_gpus_per_node} "
     )
     if args.model_variant == "4layer":
-        misc_args += "--offload-rollout-level kv_cache --no-check-for-nan-in-loss-and-grad "
-    else:
-        # Rollout weights stay resident on the GPU; only the KV cache is
-        # released for training, so there is no per-cycle base reload.
-        misc_args += "--offload-rollout-level kv_cache "
+        misc_args += "--no-check-for-nan-in-loss-and-grad "
     if args.check_weight_update_equal:
         misc_args += "--check-weight-update-equal " "--check-weight-update-skip-list vision_tower. mm_projector. "
 
@@ -416,6 +414,9 @@ def _execute_train(args: ScriptArgs) -> None:
         "NCCL_TIMEOUT": "3600",
         "PYTHONPATH": os.pathsep.join((str(Path(__file__).resolve().parents[1]), args.sglang_path)),
         "SGLANG_JIT_ROUTE_RADIX": "1",
+        # sglang's default membind forces the whole TMS weights CPU backup onto
+        # one NUMA node, which cannot hold it; keep the bind off by default.
+        "SGLANG_NUMA_BIND_V2": os.environ.get("SGLANG_NUMA_BIND_V2", "0"),
     }
     # Ray's runtime_env replaces the actor environment, so the persistent
     # Triton/Inductor JIT caches exported by the launch script are lost unless
