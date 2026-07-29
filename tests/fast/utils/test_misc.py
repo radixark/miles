@@ -49,3 +49,9 @@ class TestNodeProbeMixin:
         """A block request returns the first port of a free consecutive range."""
         first_port = NodeProbeMixin._get_free_port_block(start_port=15000, count=2)
         assert first_port >= 15000
+
+    def test_get_gpu_uuids_returns_one_entry_per_gpu(self):
+        """The uuid probe is best-effort: without NVML it still answers per gpu."""
+        uuids = NodeProbeMixin._get_gpu_uuids([0, 1, 2])
+        assert len(uuids) == 3
+        assert all(uuid is None or isinstance(uuid, str) for uuid in uuids)
