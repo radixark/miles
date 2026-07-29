@@ -21,16 +21,33 @@ view, which matters because they are enabled by different flags.
 `--use-miles-dashboard` starts a `DashboardCollector` as a named Ray actor pinned to the
 driver node. Four kinds of producer push records to it:
 
-| Producer | Records |
-|---|---|
-| Phase sinks on the existing `Timer` instrumentation, on every rank | Per-rank phase intervals (rollout, train, weight update, and so on) |
-| Rollout manager hooks | Per-step trajectory and staleness metadata |
-| One NVML sampler actor per GPU node | Per-GPU utilization and memory samples |
-| sglang scraper thread | Engine metric series, started once a router registers |
+| Producer | Stream | Fields |
+|---|---|---|
+| Phase sinks on the existing `Timer`, on every rank | `phases` | `name`, `t0`, `t1`, `node`, `gpus`, `rank`, `role` |
+| One NVML sampler actor per GPU node | `gpu_util` | `ts`, `node`, `gpu`, `util`, `mem_mb`, `power_w` |
+| One NVML sampler actor per GPU node | `gpu_processes` | `ts`, `node`, `gpu`, `pid`, `name`, `mem_mb` |
+| sglang scraper thread | `engine_series` | `ts`, `addr`, `metric`, `labels`, `value` |
+| sglang scraper thread | `topology` | Per engine `addr`, `worker_type`, `engine_rank`, `gpus`, `gpu_uuids` |
+| Rollout manager hooks | `trajectory` | `ts`, `kind`, `sample_index`, `group_index`, `turn`, `weight_version`, `detail` |
+| Rollout manager hooks | `data_buffer` | `ts`, `length` (queued sample count) |
+| The tracking backend | `metrics` | `ts`, `step_key`, `step`, and the metric dictionary |
 
 The collector buffers these and appends them to JSONL streams under
 `{dump-details}/dashboard/` on a flush cadence. It can also forward a latest-value
 snapshot to the Prometheus collector for external Grafana.
+
+The phase names the timeline knows how to colour are `initialize`, `rollout`,
+`eval_rollout`, `actor_train`, `train_log_probs`, `log_probs`, `ref_log_probs`,
+`data_preprocess`, `train_wait`, `update_weights`, `ref_model_update`, `save_model`,
+`sleep` and `wake_up`. Anything else the `Timer` emits still appears, in a neutral colour.
+
+The scraped sglang whitelist covers queue and throughput gauges
+(`sglang_num_running_reqs`, `sglang_num_queue_reqs`, `sglang_gen_throughput`,
+`sglang_token_usage`, `sglang_cache_hit_rate`), cumulative token and request counters,
+the latency histograms (time to first token, inter token latency, time per output token,
+end to end request latency), and the PD disaggregation queue and KV transfer families,
+which are simply absent when PD is off. Override it with
+`--dashboard-sglang-metrics` when you need something outside that set.
 
 Three properties of this path are worth knowing because they determine what happens when
 something goes wrong:
@@ -160,37 +177,123 @@ ssh -L 7788:localhost:7788 <training-or-login-node>
 A wandb style category sidebar over every logged metric, plus an `sglang` category holding
 the scraped engine series when one is present. Hover for values and drag to zoom.
 
-Metric keys from `metrics.jsonl` are served as recorded. Per step aggregates derived from
-the dumps are namespaced under `dump/`, which is what allows this view to work for runs
-where the collector was never enabled.
+Metric keys from `metrics.jsonl` are served as recorded. Per step aggregates derived from the
+dumps are namespaced under `dump/`, which is what allows this view to work for runs where the
+collector was never enabled: `dump/reward_mean`, `dump/reward_std`,
+`dump/response_length_mean`, `dump/truncated_frac`, `dump/zero_std_group_frac`,
+`dump/mean_abs_lp_diff`, `dump/mean_entropy` and `dump/mixed_version_frac`.
+
+Two of those are worth calling out because nothing else reports them per step:
+`dump/zero_std_group_frac` is the fraction of GRPO groups whose reward standard deviation
+collapsed to zero, so a degenerating run is visible as that fraction climbing, and
+`dump/mixed_version_frac` is the fraction of samples that spanned more than one weight
+version, which is the staleness signal that matters in async runs.
 
 ### Compute Utilization
 
-Below 64 GPUs, one lane per GPU: a phase band, NVML utilization, an sglang overlay, and a
-bubble strip that zooms on click. This is the view for questions like which rank is late
-into a weight update, or whether a phase boundary lines up with a utilization dip.
+Below 64 GPUs, one lane per GPU, and each lane stacks four things:
+
+* **Phase band.** Which of the phases above that rank was in, at that moment. Because the
+  band is per rank rather than per run, a straggler shows up as one lane whose `actor_train`
+  starts late, and a rank stuck in `train_wait` while its peers compute is visible directly.
+* **NVML utilization and memory**, sampled once per second by default, so a phase that holds
+  the GPU without using it is distinguishable from one that is genuinely busy.
+* **An sglang overlay**, selectable between `sglang_num_running_reqs`,
+  `sglang_gen_throughput`, `sglang_token_usage` and `sglang_cache_hit_rate`, drawn against
+  the same time axis as the phases. This is what connects a rollout that ran long to the
+  engine state at the time, for example concurrency collapsing or KV cache saturating.
+* **A request lifecycle strip**, coloured by whether each request was queued, generating, or
+  waiting on a tool call, which separates slow generation from time spent outside the model.
+
+Typical questions it answers: which rank is late into a weight update, whether a phase
+boundary lines up with a utilization dip, whether rollout and training actually overlap in an
+async run, and how much of a step went to `train_wait`.
+
+`gpu_processes` samples additionally record which PIDs hold memory on each GPU, which is how
+a colocated run shows the trainer and the engine sharing a device.
 
 Above 64 GPUs a per lane rendering stops being readable, so the view switches to a scale
 invariant fleet overview showing phase composition and a utilization band. Lanes are
 selected with a small grammar (`g:`, `rank:`, `node:`, `every:`) alongside outlier quick
 picks, so a specific subset can still be brought up on a large cluster.
 
-This view also carries a configuration advisory panel: a small set of observed versus
-configured comparisons that suggest sglang settings to revisit. These are heuristics
-intended as a starting point rather than a guarantee, and the thresholds are expected to be
-tuned as real runs surface false positives and negatives.
+This view also carries a configuration advisory panel, which compares what the engines
+actually did against what the run was configured to allow:
+
+| Trigger | Suggestion |
+|---|---|
+| Peak `sglang_num_running_reqs` stayed below 30% of `--sglang-max-running-requests` | Lower it, and under `--colocate` note that this frees memory for training |
+| Mean `sglang_cache_hit_rate` below 10%, non colocated runs only | Raise `--sglang-mem-fraction-static` for a bigger KV cache |
+| Mean `sglang_token_usage` above 95% | Warns that KV cache is the throughput bottleneck; more GPUs or a smaller rollout batch |
+
+These are heuristics rather than a guarantee, and the thresholds are expected to be tuned as
+real runs surface false positives and negatives. The panel is empty when no sglang series was
+scraped, since it has nothing to compare against.
 
 ### Rollouts
 
-Per step trajectory table and scatter, GRPO group degeneracy by way of `zero_std`, average
-weight version staleness, and an eval tab.
+One row per sample for the selected step, sortable and plottable as a scatter. The columns
+come from joining the rollout dump with the training side dump, so both what was generated
+and what the trainer computed from it are on the same row:
+
+| Group | Columns |
+|---|---|
+| Identity and shape | `sample_index`, `group_index`, `status`, `response_length`, `total_length`, `truncated`, `remove_sample` |
+| Reward | `reward`, `raw_reward`, `normalized_reward` |
+| Advantage and return | `adv_mean`, `adv_std`, `return_mean` |
+| Train versus rollout agreement | `mean_abs_lp_diff`, `max_abs_lp_diff`, `mean_imp_ratio` |
+| Entropy | `mean_entropy`, `max_entropy`, `ref_entropy_mean` |
+| Staleness | `weight_version`, `weight_version_min`, `mixed_version`, `turns` |
+| Serving efficiency | `prefix_cache_hit_rate`, `spec_accept_rate`, `non_generation_time`, `tool_calls` |
+| Provenance | `dumped_rank` |
+
+A few of these are the reason to open this view at all:
+
+* **`mean_abs_lp_diff` and `mean_imp_ratio` per sample.** The run level
+  `train_rollout_logprob_abs_diff` tells you the average drifted; these tell you whether one
+  pathological sample carried it, and clicking through shows which tokens did.
+* **`mixed_version` and `weight_version_min`.** In an async run a single sample can span more
+  than one weight version. This flags exactly which samples did, rather than reporting a mean
+  staleness that hides it.
+* **`adv_std` per group.** GRPO degenerates when every sample in a group scores the same, and
+  the group view surfaces those zero variance groups directly.
+* **`non_generation_time` and `tool_calls`.** For agentic runs, how much of a trajectory's
+  wall clock was not the model generating.
+
+An eval tab shows the same shape for eval steps.
 
 ### Sample view
 
-Selecting a trajectory from the Rollouts view opens it in two tabs. `conversation` shows
-role tagged turns including thinking blocks and tool calls, read from the trajectory
-sidecar. `tokens` loads lazily and shows per token metric strips plus a selectable metric
-versus position chart, with loss masked regions dimmed.
+Selecting a trajectory from the Rollouts view opens it in two tabs.
+
+`conversation` shows role tagged turns including thinking blocks and tool calls, read from
+the trajectory sidecar. This is the view for reading what the model actually produced,
+including the parts a plain text dump would flatten.
+
+`tokens` loads lazily and aligns the decoded tokens with the per token series, so a metric
+can be read against the text that produced it:
+
+| Series | What it is |
+|---|---|
+| `token_ids`, `token_text` | The tokens, decoded one at a time so the text lines up with the series |
+| `rollout_log_probs` | What the engine reported while generating |
+| `train_log_probs` | What the trainer recomputed for the same tokens |
+| `lp_diff` | Their difference, per token |
+| `imp_ratio` | `exp(lp_diff)`, the per token importance ratio |
+| `entropy`, `ref_entropy` | Policy and reference entropy, present when `--use-rollout-entropy` was set |
+| `ref_log_probs` | Reference policy log probabilities |
+| `advantages`, `returns` | What the trainer assigned to each token |
+| `loss_mask` | Which positions contributed to the loss; masked regions are dimmed rather than hidden |
+
+`lp_diff` being a first class series is the point. A run level
+`train_rollout_logprob_abs_diff` tells you the two engines disagreed on average; this shows
+where, so the answer can be specific: the divergence begins at the first tool call boundary,
+or it is one low probability token rather than spread across the response. The same holds for
+`imp_ratio`, where a single outlier token is what actually drove a clipping fraction.
+
+Token ids and text cover the whole requested slice, while the per token series cover only the
+response region, and `response_offset` marks where the response starts within the returned
+slice. Prompt positions therefore have text but no statistics, which is expected.
 
 ## Runs recorded without the collector
 
