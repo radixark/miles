@@ -32,6 +32,7 @@ Invariants (asserted by tests/fast/utils/test_dp_schedule.py):
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from miles.utils.seqlen_balancing import (
@@ -39,6 +40,8 @@ from miles.utils.seqlen_balancing import (
     first_fit_decreasing_pack,
     get_seqlen_balanced_partitions,
 )
+
+logger = logging.getLogger(__name__)
 
 SCHEDULE_CONFIG_KEYS = ("dp_size", "cp_size", "vpp_size", "microbatch_group_size_per_vp_stage")
 
@@ -100,16 +103,31 @@ def build_dp_schedule(
         f"need at least one rollout per step."
     )
 
+    # Per-step rollout counts. With --allow-partial-train-step, trailing
+    # rollouts train as one smaller final step (dynamic batch only — the
+    # static path can't satisfy its fixed-size alignment on an arbitrary
+    # remainder) instead of being dropped.
+    step_rollout_counts = [global_batch_size] * num_steps
+    leftover = len(rollout_ids) - num_steps * global_batch_size
+    if leftover and getattr(args, "allow_partial_train_step", False) and args.use_dynamic_batch_size:
+        leftover_samples = sum(len(rollout_id_to_samples[rid]) for rid in rollout_ids[-leftover:])
+        if leftover_samples >= dp_size:
+            step_rollout_counts.append(leftover)
+        else:
+            logger.info(f"partial step skipped: {leftover_samples} samples < dp_size {dp_size}")
+
     partitions: list[list[int]] = [[] for _ in range(dp_size)]
     micro_batch_indices: list[list[list[int]]] = [[] for _ in range(dp_size)]
     num_microbatches: list[int] = []
     global_batch_sizes: list[int] = []
 
-    for step_i in range(num_steps):
-        step_rollouts = rollout_ids[step_i * global_batch_size : (step_i + 1) * global_batch_size]
+    rollout_cursor = 0
+    for step_i, step_rollout_count in enumerate(step_rollout_counts):
+        step_rollouts = rollout_ids[rollout_cursor : rollout_cursor + step_rollout_count]
+        rollout_cursor += step_rollout_count
         sample_indices = [pos for rid in step_rollouts for pos in rollout_id_to_samples[rid]]
         step_lengths = [total_lengths[i] for i in sample_indices]
-        global_batch_sizes.append(global_batch_size)
+        global_batch_sizes.append(step_rollout_count)
         assert len(sample_indices) >= dp_size, (
             f"step {step_i}: {len(sample_indices)} samples < dp_size {dp_size}; "
             f"each step needs at least one sample per rank."

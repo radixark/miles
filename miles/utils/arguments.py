@@ -946,6 +946,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
 
             parser.add_argument(
+                "--allow-partial-train-step",
+                action="store_true",
+                default=False,
+                help=(
+                    "Train the trailing rollouts that don't fill a whole global_batch_size step as one "
+                    "smaller final step instead of dropping them (rollout-side schedule + dynamic batch "
+                    "size only). Loss normalization and the LR scheduler use the true per-step count."
+                ),
+            )
+            parser.add_argument(
                 "--use-dynamic-batch-size",
                 action="store_true",
                 default=False,
