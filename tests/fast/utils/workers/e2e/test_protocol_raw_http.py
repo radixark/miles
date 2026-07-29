@@ -9,6 +9,10 @@ class TestMethodLookup:
         assert response.status_code == 404
         assert "no_such_method" in response.json()["detail"]
 
+    async def test_private_method_not_exposed(self, raw, tag):
+        """Underscore-prefixed worker methods are not reachable."""
+        assert (await _submit(raw, "_bump", tag, {"tag": "x"})).status_code == 404
+
     async def test_dunder_not_exposed(self, raw, tag):
         """Dunder attributes are not reachable."""
         assert (await _submit(raw, "__init__", tag, {})).status_code == 404
@@ -25,37 +29,41 @@ class TestMethodLookup:
 class TestEnvelopeValidation:
     async def test_malformed_json_400(self, raw):
         """A body that is not JSON is a client error, normalized to 400."""
-        response = await raw.post("/v1/demo_async", content=b"{not json", headers={"content-type": "application/json"})
+        response = await raw.post("/v1/demo_sync", content=b"{not json", headers={"content-type": "application/json"})
         assert response.status_code == 400
 
     async def test_missing_call_id_400(self, raw):
         """An envelope without call_id is rejected."""
-        assert (await raw.post("/v1/demo_async", json={"query": {"value": {}}})).status_code == 400
+        assert (await raw.post("/v1/demo_sync", json={"query": {"a": 1, "b": 2}})).status_code == 400
 
     async def test_missing_query_400(self, raw, tag):
         """An envelope without query is rejected."""
-        assert (await raw.post("/v1/demo_async", json={"call_id": tag})).status_code == 400
+        assert (await raw.post("/v1/demo_sync", json={"call_id": tag})).status_code == 400
 
     async def test_extra_envelope_field_400(self, raw, tag):
         """Unknown envelope fields are rejected rather than ignored."""
-        response = await raw.post("/v1/demo_async", json={"call_id": tag, "query": {"value": {}}, "bogus": 1})
+        response = await raw.post("/v1/demo_sync", json={"call_id": tag, "query": {"a": 1, "b": 2}, "bogus": 1})
         assert response.status_code == 400
 
     async def test_query_not_an_object_400(self, raw, tag):
         """A non-object query is rejected."""
-        assert (await raw.post("/v1/demo_async", json={"call_id": tag, "query": [1, 2]})).status_code == 400
+        assert (await raw.post("/v1/demo_sync", json={"call_id": tag, "query": [1, 2]})).status_code == 400
 
 
 class TestQueryValidation:
     async def test_unknown_kwarg_400(self, raw, tag):
         """An argument the method does not declare is rejected."""
-        response = await _submit(raw, "demo_async", tag, {"value": {}, "extra": 3})
-        assert response.status_code == 400 and "extra" in response.json()["detail"]
+        response = await _submit(raw, "demo_sync", tag, {"a": 1, "b": 2, "c": 3})
+        assert response.status_code == 400 and "c" in response.json()["detail"]
 
     async def test_missing_required_kwarg_400(self, raw, tag):
         """A missing required argument is rejected."""
-        response = await _submit(raw, "demo_async", tag, {})
-        assert response.status_code == 400 and "value" in response.json()["detail"]
+        response = await _submit(raw, "demo_sync", tag, {"a": 1})
+        assert response.status_code == 400 and "b" in response.json()["detail"]
+
+    async def test_wrong_type_400(self, raw, tag):
+        """An argument that cannot be coerced is rejected."""
+        assert (await _submit(raw, "demo_sync", tag, {"a": "not-int", "b": 2})).status_code == 400
 
 
 class TestCallLookup:
