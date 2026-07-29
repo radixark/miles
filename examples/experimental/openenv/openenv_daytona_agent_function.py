@@ -40,16 +40,14 @@ Env vars (the agent-loop ones in ``openenv_agent_function`` apply too):
   TB2_COMMAND_TIMEOUT_S        per-exec timeout inside the sandbox (default 900).
 """
 
-import asyncio
 import logging
 import os
-import random
-import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import openenv_agent_function as oaf
+import openenv_sandbox_common as common
 import tb2_sandbox_daytona
 
 logger = logging.getLogger(__name__)
@@ -75,7 +73,7 @@ _CREATE_BACKOFF_CAP_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_CAP_S", 
 _READY_TIMEOUT_S = float(os.getenv("OPENENV_DAYTONA_READY_TIMEOUT_S", "300"))
 _COMMAND_TIMEOUT_S = int(os.getenv("TB2_COMMAND_TIMEOUT_S", "900"))
 
-_create_sem: asyncio.Semaphore | None = None
+_get_create_sem = common.lazy_semaphore(_CREATE_CONCURRENCY)
 
 
 def _is_throttle_error(exc: BaseException) -> bool:
@@ -99,13 +97,6 @@ def _is_throttle_error(exc: BaseException) -> bool:
     return "throttler" in s or "too many requests" in s or "429" in s
 
 
-def _get_create_sem() -> asyncio.Semaphore:
-    global _create_sem
-    if _create_sem is None:
-        _create_sem = asyncio.Semaphore(_CREATE_CONCURRENCY)
-    return _create_sem
-
-
 def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
     daytona = tb2_sandbox_daytona.make_daytona()
     sandbox, url = tb2_sandbox_daytona.create_task_sandbox(
@@ -117,88 +108,34 @@ def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
     return (lambda: daytona.delete(sandbox)), url
 
 
-async def _create_once(task_id: str, tasks_dir: str) -> tuple[Any, str]:
-    """One sandbox-create attempt, safe against cancellation mid-create.
-
-    asyncio.to_thread is not cancellable: when the episode's wall-clock cap
-    cancels this coroutine mid-create, the worker thread keeps running and its
-    (close_fn, url) result would be discarded — leaking a sandbox that would
-    otherwise run (and bill) until the recipe's TTL backstop reclaims it.
-    Record the result thread-side and, on cancellation, hand it to a reaper
-    that deletes the orphan promptly once the create finishes.
-    """
-    result: list[tuple[Any, str]] = []
-    done = threading.Event()
-
-    def _start() -> tuple[Any, str]:
-        try:
-            result.append(_start_declarative(task_id, tasks_dir))
-        finally:
-            done.set()
-        return result[0]
-
-    try:
-        return await asyncio.to_thread(_start)
-    except asyncio.CancelledError:
-
-        def _reap() -> None:
-            done.wait()
-            for close_fn, _url in result:
-                try:
-                    close_fn()
-                    logger.info(f"Deleted sandbox orphaned by cancelled episode: {task_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete orphaned sandbox for {task_id}: {e}")
-
-        threading.Thread(target=_reap, name=f"tb2-sandbox-reap-{task_id}", daemon=True).start()
-        raise
-
-
 async def _start_task_sandbox(task_id: str) -> tuple[Any, str]:
     """Create one sandbox for *task_id* with the env server running.
 
-    Returns (close_fn, base_url); close_fn deletes the sandbox. Creation is
-    throttled process-wide and retried on Daytona rate limits.
+    Returns (close_fn, base_url); close_fn deletes the sandbox. The
+    orchestration — cancel-safe create, process-wide throttling, backoff on
+    Daytona rate limits — is the provider-blind skeleton in
+    ``openenv_sandbox_common``; this leg contributes only its start hook and
+    throttle classifier.
     """
-    tasks_dir = os.getenv("OPENENV_TB2_TASKS_DIR", "").strip()
-
-    attempt = 0
-    while True:
-        try:
-            # Hold the semaphore only for the create attempt; release it during
-            # backoff so other episodes keep the pipeline full.
-            async with _get_create_sem():
-                return await _create_once(task_id, tasks_dir)
-        except Exception as e:
-            if not _is_throttle_error(e) or attempt >= _CREATE_MAX_RETRIES:
-                raise
-            attempt += 1
-            delay = min(
-                _CREATE_BACKOFF_CAP_S,
-                _CREATE_BACKOFF_BASE_S * (2 ** (attempt - 1)),
-            ) * (0.5 + random.random())
-            logger.warning(
-                f"Daytona create throttled for {task_id} "
-                f"(attempt {attempt}/{_CREATE_MAX_RETRIES}); retrying in {delay:.1f}s"
-            )
-            await asyncio.sleep(delay)
+    return await common.start_task_sandbox(
+        task_id,
+        os.getenv("OPENENV_TB2_TASKS_DIR", "").strip(),
+        start_fn=lambda tid, tdir: _start_declarative(tid, tdir),
+        is_throttle=_is_throttle_error,
+        sem=_get_create_sem(),
+        max_retries=_CREATE_MAX_RETRIES,
+        backoff_base_s=_CREATE_BACKOFF_BASE_S,
+        backoff_cap_s=_CREATE_BACKOFF_CAP_S,
+        logger=logger,
+        provider="Daytona",
+    )
 
 
 @asynccontextmanager
 async def _episode_env(env_cls: Any, metadata: dict[str, Any]):
     """Yield a connected env client on a fresh sandbox; delete it after."""
-    task_id = metadata.get("task_id") or metadata.get("task_name")
-    if not task_id:
-        raise ValueError("the sandbox is built for one task: metadata['task_id'] is required")
-    close_fn, url = await _start_task_sandbox(str(task_id))
-    try:
-        async with env_cls(base_url=url, message_timeout_s=oaf._MESSAGE_TIMEOUT_S) as env:
-            yield env
-    finally:
-        try:
-            await asyncio.to_thread(close_fn)
-        except Exception as e:
-            logger.warning(f"Failed to delete sandbox for {task_id}: {e}")
+    async with common.episode_env(env_cls, metadata, start=_start_task_sandbox, logger=logger) as env:
+        yield env
 
 
 async def _sandbox_run_body(env_cls: Any, metadata: dict[str, Any], body: Any) -> Any:
