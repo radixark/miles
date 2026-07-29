@@ -375,6 +375,17 @@ class TestWeightVersionMetrics:
 
         assert out["weight_version/mixed_version_ratio"] == 0.0
 
+    def test_a_single_call_spanning_two_versions_counts_as_mixed(self):
+        """A weight update landing mid-call makes that single call mixed, just like two calls seeing two versions."""
+        sample = make_sample(index=0, group_index=0)
+        sample.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("3", 0, 2), WeightVersionSpan("4", 2, 4)])
+        ]
+
+        out = _compute_metrics_from_samples(make_args(), [sample])
+
+        assert out["weight_version/mixed_version_ratio"] == 1.0
+
     def test_no_version_metrics_when_nothing_was_stamped(self):
         """SFT-style batches carry no versions and must not synthesise the series."""
         out = _compute_metrics_from_samples(make_args(), [make_sample(index=0, group_index=0)])
