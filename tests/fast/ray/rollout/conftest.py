@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import textwrap
-from argparse import Namespace
+from argparse import ArgumentParser, Namespace
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 import ray
+from sglang_router.launch_router import RouterArgs
 
 from miles.utils import object_store
 from miles.utils.types import Sample
@@ -27,6 +28,9 @@ def fake_actor_handle() -> MagicMock:
 def make_args(**overrides: Any) -> Namespace:
     """Args namespace covering every field touched by ``miles/ray/rollout/``.
     Adding a new field is fine; deleting one likely breaks tests."""
+    parser: ArgumentParser = ArgumentParser()
+    RouterArgs.add_cli_args(parser, use_router_prefix=True, exclude_host_port=True)
+    router_defaults: dict[str, Any] = vars(parser.parse_args([]))
     defaults: dict[str, Any] = dict(
         # rollout core
         rollout_num_gpus=8,
@@ -125,6 +129,7 @@ def make_args(**overrides: Any) -> Namespace:
         dumper_enable=False,
         dumper_inference=False,
     )
+    defaults.update(router_defaults)
     defaults.update(overrides)
     return Namespace(**defaults)
 
