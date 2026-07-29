@@ -191,12 +191,22 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 # ====================================== Install sglang-miles ============================================
 
 # Install sglang from sglang-miles branch
+# The CUDA 12 sglang images sed their dependency markers from cu13 to cu12 in
+# python/pyproject.toml and never commit it, so a plain checkout aborts on the dirty
+# file. Force it, then re-apply the same rewrite: the tree we just checked out carries
+# the cu13 markers, and sglang's editable install makes them visible to every later pip
+# resolve, which would drag cu13 packages onto a cu12 image.
 RUN cd /sgl-workspace/sglang && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
-      git checkout ${SGLANG_COMMIT}; \
+      git checkout -f ${SGLANG_COMMIT}; \
     else \
-      git checkout FETCH_HEAD; \
+      git checkout -f FETCH_HEAD; \
+    fi && \
+    if [ "${ENABLE_CUDA_13}" != "1" ]; then \
+      sed -i 's/cuda-python>=13\.0/cuda-python>=12,<13/' python/pyproject.toml && \
+      sed -i 's/flashinfer_python\[cu13\]/flashinfer_python[cu12]/' python/pyproject.toml && \
+      sed -i 's/nvidia-cutlass-dsl\[cu13\]/nvidia-cutlass-dsl/' python/pyproject.toml; \
     fi && \
     pip install -e "python[all]" --no-deps
 
