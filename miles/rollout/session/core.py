@@ -226,26 +226,8 @@ class SessionCore:
             # Must be False so stop-token text is trimmed from assistant content;
             # token IDs still come from logprobs below.
             request_body["no_stop_trim"] = False
-            # Keep request's chat_template_kwargs and override some key fields by tito tokenizer chat template kwargs.
-            # FIXME(session): 1) only nested "chat_template_kwargs" reach the
-            # local render; unlike upstream SGLang, top-level "reasoning" and
-            # "reasoning_effort" are not mapped into template kwargs;
-            # 2) mid-session mode-change safety is a per-family property and
-            # is not guarded yet:
-            #    - DeepSeek V3.2/V4: unsafe — history think blocks and the
-            #      prompt-head reasoning_effort marker render under one mode,
-            #      so a flip strands old-mode prefix tokens and the history no
-            #      longer matches the requested mode;
-            #    - Nemotron 3: safe — the template writes the reasoning
-            #      setting into every turn, so history keeps each turn's own
-            #      value;
-            #    - Qwen3/Qwen3.5: safe — the toggle only affects the
-            #      generation prompt, never rendered history;
-            #    - newer models treat effort as a per-turn control (OpenAI /
-            #      Anthropic style), so the guard belongs on FixedTemplate,
-            #      defaulting to allow;
-            # 3) compute_session_mismatch still renders with the startup
-            # tokenizer, so non-default-mode sessions log spurious mismatches.
+            # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
+            # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.
             request_ctk = request_body.get("chat_template_kwargs")
             if request_ctk is not None and not isinstance(request_ctk, dict):
                 raise MessageValidationError("chat_template_kwargs must be an object")
