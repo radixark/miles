@@ -22,7 +22,11 @@ from collections.abc import Iterator
 import httpx
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnInput, RolloutFnOutput, RolloutFnTrainOutput
-from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
+from miles.rollout.inference_rollout.inference_rollout_common import (
+    GenerateState,
+    SubmissionScheduler,
+    generate_and_rm_group,
+)
 from miles.utils.http_utils import get
 from miles.utils.types import Sample
 
@@ -88,6 +92,7 @@ class FullyAsyncRolloutFn:
         self.args = input.args
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
+        self._scheduler = SubmissionScheduler(input.args)
         self._weight_version = _CachedWeightVersion()
         self._worker: asyncio.Task | None = None
         self._output: asyncio.Queue[Group] | None = None
@@ -113,22 +118,26 @@ class FullyAsyncRolloutFn:
         return self.args.rollout_batch_size
 
     def _submit_one_group(self) -> asyncio.Task:
-        [group] = self.data_source.get_samples(1)
+        samples = self.data_source.get_samples(1)
+        self._scheduler.on_submit(samples)
+        [group] = samples
         return asyncio.create_task(
             generate_and_rm_group(
                 self.state,
                 group,
                 sampling_params=self.state.sampling_params.copy(),
                 evaluation=False,
+                sample_done_callback=self._scheduler.sample_done_callback,
             )
         )
 
     async def _worker_loop(self):
         active: set[asyncio.Task] = set()
         while True:
-            while len(active) < self._max_in_flight_groups():
+            self._scheduler.arm()
+            while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
                 active.add(self._submit_one_group())
-            done, active = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
+            done, active = await self._scheduler.wait_for_progress(active)
             for task in done:
                 # Blocks when the queue is full: training lagging behind rollout
                 # production pauses submission instead of growing the queue unboundedly.

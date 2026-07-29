@@ -71,6 +71,7 @@ def make_args(**overrides) -> Namespace:
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
+        rollout_sample_completion_backfill=False,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
     )
@@ -79,7 +80,7 @@ def make_args(**overrides) -> Namespace:
 
 
 def make_fn(monkeypatch, args, data_source, generate=None):
-    async def default_generate(state, group, sampling_params, evaluation=False):
+    async def default_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await asyncio.sleep(0)
         return group
 
@@ -160,7 +161,7 @@ async def test_stale_group_recycled(monkeypatch):
 
 
 async def test_worker_error_propagates(monkeypatch):
-    async def failing_generate(state, group, sampling_params, evaluation=False):
+    async def failing_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         raise RuntimeError("generation exploded")
 
     fn = make_fn(monkeypatch, make_args(), FakeDataSource(), generate=failing_generate)
@@ -172,7 +173,7 @@ async def test_worker_error_propagates(monkeypatch):
 async def test_worker_bounds_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
@@ -191,7 +192,7 @@ async def test_worker_bounds_in_flight_groups(monkeypatch):
 async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
@@ -207,3 +208,34 @@ async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release.set()
     output = await drain
     assert len(output.samples) == 4
+
+
+async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch):
+    """With --rollout-sample-completion-backfill, finished samples free slots immediately."""
+    callbacks = []
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        callbacks.append(sample_done_callback)
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    args = make_args(rollout_batch_size=1, rollout_sample_completion_backfill=True)
+    fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+
+    # Report every sample of the still-pending group as finished.
+    for _ in range(N_SAMPLES_PER_PROMPT):
+        callbacks[0]()
+    await asyncio.sleep(0.01)
+
+    # A replacement group went out even though the first group has not returned.
+    assert data_source.num_get_calls == 2
+
+    release.set()
+    output = await drain
+    assert len(output.samples) == 1

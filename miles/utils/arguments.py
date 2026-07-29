@@ -551,6 +551,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "You could use `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std` as an example."
                 ),
             )
+            parser.add_argument(
+                "--rollout-sample-completion-backfill",
+                action="store_true",
+                default=False,
+                help=(
+                    "Submit a replacement prompt group once n_samples_per_prompt individual samples "
+                    "finish, instead of waiting for a whole group task to return. Keeps in-flight "
+                    "sample concurrency saturated when trials within a group finish at very different "
+                    "times (long-horizon agentic rollouts). Off by default: group-level scheduling."
+                ),
+            )
 
             # partial rollout
             parser.add_argument(

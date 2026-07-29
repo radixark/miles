@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 from argparse import Namespace
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
@@ -119,8 +120,65 @@ async def generate_and_rm(
     return sample
 
 
+class SubmissionScheduler:
+    """Decides when the next prompt group may be submitted, and what counts as progress.
+
+    Default (group level): a group holds its slot until the whole group task returns.
+    With ``--rollout-sample-completion-backfill``: every finished sample frees a slot,
+    so a replacement group is submitted once ``n_samples_per_prompt`` samples finish
+    instead of waiting for the slowest sibling of a group. With long-horizon agentic
+    trials that straggler gating is a primary rollout-throughput limiter.
+    """
+
+    def __init__(self, args: Namespace):
+        self.enabled = args.rollout_sample_completion_backfill
+        self.group_size = args.n_samples_per_prompt
+        self.samples_in_flight = 0
+        self._sample_done = asyncio.Event()
+
+    @property
+    def sample_done_callback(self) -> Callable[[], None] | None:
+        return self._on_sample_done if self.enabled else None
+
+    def has_capacity(self, *, pending_groups: int, group_budget: int) -> bool:
+        if not self.enabled:
+            return pending_groups < group_budget
+        return self.samples_in_flight + self.group_size <= group_budget * self.group_size
+
+    def on_submit(self, groups: list[list[Sample]]) -> None:
+        self.samples_in_flight += sum(len(group) for group in groups)
+
+    def arm(self) -> None:
+        """Drop notifications already reflected in ``samples_in_flight``.
+
+        Callers must not await between ``arm`` and ``wait_for_progress``, so that no
+        completion can be missed in between.
+        """
+        self._sample_done.clear()
+
+    async def wait_for_progress(self, pendings: set[asyncio.Task]) -> tuple[set, set]:
+        """``asyncio.wait(FIRST_COMPLETED)``, also returning when a single sample finishes."""
+        if not self.enabled:
+            return await asyncio.wait(pendings, return_when=asyncio.FIRST_COMPLETED)
+
+        waiter = asyncio.create_task(self._sample_done.wait())
+        try:
+            done, pending = await asyncio.wait(pendings | {waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            waiter.cancel()
+        return done - {waiter}, pending - {waiter}
+
+    def _on_sample_done(self) -> None:
+        self.samples_in_flight -= 1
+        self._sample_done.set()
+
+
 async def generate_and_rm_group(
-    state: GenerateState, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
+    state: GenerateState,
+    group: list[Sample],
+    sampling_params: dict[str, Any],
+    evaluation: bool = False,
+    sample_done_callback: Callable[[], None] | None = None,
 ) -> list[Sample]:
     args = state.args
 
@@ -139,9 +197,13 @@ async def generate_and_rm_group(
         current_sampling_params = sampling_params.copy()
         if getattr(args, "sglang_enable_deterministic_inference", False):
             current_sampling_params["sampling_seed"] = args.rollout_seed + idx
-        tasks.append(
-            asyncio.create_task(generate_and_rm(state, sample, current_sampling_params, evaluation=evaluation))
-        )
+        task = asyncio.create_task(generate_and_rm(state, sample, current_sampling_params, evaluation=evaluation))
+        if sample_done_callback is not None:
+            # Fires for every submitted sample whatever its outcome (success, exception
+            # or cancellation): each sample frees exactly the slot it took, so in-flight
+            # accounting is conserved and concurrency cannot decay over time.
+            task.add_done_callback(lambda _task: sample_done_callback())
+        tasks.append(task)
 
     group = await asyncio.gather(*tasks)
     logger.debug(f"{log_prefix} [group] All {len(group)} samples completed")
