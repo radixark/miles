@@ -40,6 +40,11 @@ class Point:
     y: int
 
 
+class Metric(StrictBaseModel):
+    name: str
+    value: float
+
+
 class Event(StrictBaseModel):
     tag: str
     phase: str
@@ -150,6 +155,27 @@ class E2eWorker:
 
     async def demo_bytes(self, blob: bytes) -> bytes:
         return blob
+
+    async def demo_nan_result(self) -> float:
+        return float("nan")
+
+    async def demo_float(self, value: float) -> float:
+        return value
+
+    async def demo_optional_float(self, value: float | None) -> float | None:
+        return value
+
+    async def demo_float_metrics(self) -> dict:
+        return {"loss": float("nan"), "grad_norm": float("inf"), "lr": -float("inf"), "step": 3.0}
+
+    async def demo_float_list(self, values: list[float]) -> list[float]:
+        return values
+
+    async def demo_metric_model(self, metric: Metric) -> Metric:
+        return metric
+
+    async def report_float_repr(self, value: float) -> str:
+        return repr(value)
 
     async def demo_bytes_list(self, blobs: list[bytes]) -> list[bytes]:
         return blobs

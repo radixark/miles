@@ -1,11 +1,12 @@
 import datetime
+import math
 import uuid
 from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 
-from tests.fast.utils.workers.e2e.e2e_worker import Colour, Item, Nested, Point
+from tests.fast.utils.workers.e2e.e2e_worker import Colour, Item, Metric, Nested, Point
 
 
 class TestComplexArgumentsAndResults:
@@ -50,6 +51,15 @@ class TestComplexArgumentsAndResults:
         result = await handle.demo_datetime(when=value)
         assert isinstance(result, datetime.datetime)
         assert result == value
+
+    async def test_non_utc_datetime_keeps_its_offset(self, handle):
+        """A datetime with a non-zero utc offset arrives with that same offset, not normalised to utc."""
+        tzinfo = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+        value = datetime.datetime(2026, 7, 27, 12, 30, tzinfo=tzinfo)
+        result = await handle.demo_datetime(when=value)
+        assert result == value
+        assert result.utcoffset() == datetime.timedelta(hours=5, minutes=30)
+        assert (result.hour, result.minute) == (12, 30)
 
     async def test_naive_datetime_stays_naive(self, handle):
         """A naive datetime does not acquire a timezone on the way through."""
@@ -132,6 +142,49 @@ class TestComplexArgumentsAndResults:
     async def test_none_result_roundtrips(self, handle):
         """A method declared to return None reports success carrying None."""
         assert await handle.demo_none_result() is None
+
+
+class TestNonFiniteFloats:
+    async def test_nan_result_arrives_as_nan(self, handle):
+        """A NaN result reaches the caller as NaN instead of being silently nulled."""
+        assert math.isnan(await handle.demo_nan_result())
+
+    @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, 0.0, 1.5])
+    async def test_float_argument_and_result_roundtrip(self, handle, value: float):
+        """Every float, finite or not, survives both directions unchanged."""
+        result = await handle.demo_float(value=value)
+        assert repr(result) == repr(value)
+
+    @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, None])
+    async def test_optional_float_keeps_nan_distinct_from_none(self, handle, value: float | None):
+        """A NaN under an optional annotation is not confused with None."""
+        result = await handle.demo_optional_float(value=value)
+        assert repr(result) == repr(value)
+
+    async def test_non_finite_floats_survive_a_loose_dict_result(self, handle):
+        """Non-finite floats inside an untyped dict result are not collapsed to None."""
+        metrics = await handle.demo_float_metrics()
+        assert math.isnan(metrics["loss"])
+        assert metrics["grad_norm"] == math.inf
+        assert metrics["lr"] == -math.inf
+        assert metrics["step"] == 3.0
+
+    async def test_non_finite_floats_survive_a_list_argument(self, handle):
+        """A list mixing finite and non-finite floats roundtrips element by element."""
+        values = [math.nan, math.inf, -math.inf, 0.0, -0.0, 1e308]
+        result = await handle.demo_float_list(values=values)
+        assert [repr(item) for item in result] == [repr(item) for item in values]
+
+    async def test_non_finite_float_survives_a_model_field(self, handle):
+        """A NaN inside a model field roundtrips as NaN."""
+        result = await handle.demo_metric_model(metric=Metric(name="loss", value=math.nan))
+        assert result.name == "loss"
+        assert math.isnan(result.value)
+
+    async def test_worker_receives_the_non_finite_argument(self, handle):
+        """The worker is handed a real NaN, not None and not the string 'nan'."""
+        assert await handle.report_float_repr(value=math.nan) == "nan"
+        assert await handle.report_float_repr(value=-math.inf) == "-inf"
 
 
 class TestWorkerSideTypes:
