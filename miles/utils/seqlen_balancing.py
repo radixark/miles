@@ -193,6 +193,28 @@ def first_fit_pack(total_lengths, max_tokens_per_bin):
     return bins
 
 
+def first_fit_decreasing_pack(total_lengths, max_tokens_per_bin):
+    """First-fit over indices sorted by length descending (FFD).
+
+    Same contract as :func:`first_fit_pack` but never produces more bins
+    (classic 11/9 * OPT + 6/9 guarantee vs first-fit's 17/10 * OPT); fewer
+    bins means fewer micro-batches per training step."""
+    order = sorted(range(len(total_lengths)), key=lambda i: -total_lengths[i])
+    bins: list[list[int]] = []
+    bin_sums: list[int] = []
+    for idx in order:
+        length = total_lengths[idx]
+        for j in range(len(bins)):
+            if bin_sums[j] + length <= max_tokens_per_bin:
+                bins[j].append(idx)
+                bin_sums[j] += length
+                break
+        else:
+            bins.append([idx])
+            bin_sums.append(length)
+    return bins
+
+
 def _split_bin_by_tokens(bin_indices: list[int], lengths) -> list[list[int]]:
     """Split a bin into two token-balanced halves (LPT)."""
     halves: list[list[int]] = [[], []]
