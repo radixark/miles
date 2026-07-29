@@ -8,7 +8,8 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_fre
 from miles_plugins.models.deepseek_v4.ops.kernel.precision_aligned_ops import linear_bf16_fp32
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
-from miles_plugins.models.deepseek_v4.ops.utils import batch_of_row, rotate_activation
+from miles_plugins.models.deepseek_v4.ops.thd_utils import batch_of_row
+from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 
 
 class RMSNorm(nn.Module):
