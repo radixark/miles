@@ -135,11 +135,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
         loss_masks = rollout_data["loss_masks"]
         total_lengths = rollout_data["total_lengths"]
         max_seq_lens = rollout_data.get("max_seq_lens", None)
-        # For per-rollout-mean metrics: each of the dp*cp gathered ranks emits
-        # count = num_rollouts / dp, so the (sum, count) reduction lands on
-        # sum_DP_full / num_rollouts — the same number train_one_step reports
-        # for the same samples. None (legacy shards) keeps count = local
-        # sample count. No-op while 1 rollout = 1 sample.
+        # per-rollout-mean count share: num_rollouts / dp (None = legacy local count)
         rollout_count_share = None
         if (global_batch_sizes := rollout_data.get("global_batch_sizes")) is not None:
             rollout_count_share = sum(global_batch_sizes) / parallel_state.intra_dp.size

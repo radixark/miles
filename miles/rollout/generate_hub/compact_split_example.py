@@ -1,14 +1,4 @@
-"""Example compact generate fn: one rollout execution -> multiple training samples.
-
-Wraps single-turn generation, then splits the response into two training
-samples at the midpoint of the response tokens. Both siblings share the parent
-sample's ``rollout_id`` so the by-rollout scheduler keeps them in one training
-step and the per-rollout loss reducer counts the rollout once.
-
-This mirrors the compact / subagent pattern (multi-agent systems, thinking-token
-removal) in a form small enough for e2e validation; see
-``--custom-generate-function-path miles.rollout.generate_hub.compact_split_example.generate``.
-"""
+"""Example compact generate fn: one rollout execution -> two training samples sharing rollout_id."""
 
 import copy
 
@@ -22,8 +12,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     sample = output.samples
     assert isinstance(sample, Sample)
 
-    # Too short to split, or aborted mid-generation: emit as-is (still stamp
-    # rollout_id so downstream accounting is uniform).
     sample.rollout_id = sample.index
     if sample.response_length < 2 or sample.status == Sample.Status.ABORTED:
         return GenerateFnOutput(samples=[sample])
@@ -37,8 +25,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     first.loss_mask = sample.loss_mask[:cut] if sample.loss_mask is not None else None
     if first.rollout_log_probs is not None:
         first.rollout_log_probs = sample.rollout_log_probs[:cut]
-    # The reward belongs to the full rollout; both siblings carry it so
-    # advantage computation sees the rollout's outcome on every piece.
     first.status = Sample.Status.COMPLETED
 
     second = copy.deepcopy(sample)

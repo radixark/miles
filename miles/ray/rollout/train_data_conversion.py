@@ -228,7 +228,6 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
     if "multimodal_train_inputs" in data:
         return False
     if "rollout_ids" not in data:
-        # custom convert_samples_to_train_data functions may not emit it
         return False
     global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
     return len(set(data["rollout_ids"])) >= global_batch_size

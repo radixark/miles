@@ -71,32 +71,8 @@ def build_dp_schedule(
     global_batch_size: int,
     rollout_indices: list[int],
 ) -> tuple[list[list[int]], list[list[list[int]]], list[int], list[int]]:
-    """Compute the per-rank DP partition and micro-batch schedule.
-
-    See module docstring for the pack-first-distribute-second strategy.
-
-    Args:
-        args: Namespace with ``micro_batch_size``, ``use_dynamic_batch_size``,
-            ``max_tokens_per_gpu``, ``balance_data``.
-        train_parallel_config: ``{"dp_size", "cp_size", "vpp_size",
-            "microbatch_group_size_per_vp_stage"}``.
-        total_lengths: token count per sample, indexed globally.
-        global_batch_size: number of rollouts (NOT training samples) per
-            training step. Number of training steps =
-            ``num_rollouts // global_batch_size``; trailing rollouts whose
-            samples don't fit are dropped.
-        rollout_indices: rollout id for each sample. Samples sharing the same
-            id are kept together in one step.
-
-    Returns:
-        ``(partitions, micro_batch_indices, num_microbatches, global_batch_sizes)``:
-          - ``partitions[r]`` — global sample indices of rank r, in mbs order;
-          - ``micro_batch_indices[r][k]`` — local indices into ``partitions[r]``
-            for the k-th mbs (flat across steps);
-          - ``num_microbatches[s]`` — mbs count for step s, same on every rank;
-          - ``global_batch_sizes[s]`` — rollout count for step s (constant
-            ``global_batch_size`` for every step).
-    """
+    """Compute per-rank ``(partitions, micro_batch_indices, num_microbatches, global_batch_sizes)``;
+    ``global_batch_size`` counts rollouts, not training samples."""
     dp_size = train_parallel_config["dp_size"]
     cp_size = train_parallel_config["cp_size"]
     vpp_size = train_parallel_config["vpp_size"] or 1
@@ -107,14 +83,8 @@ def build_dp_schedule(
         assert args.max_tokens_per_gpu is not None
         max_per_bin = args.max_tokens_per_gpu * cp_size
 
-    # mbs count per step must be divisible by (dp_size * mb_group_for_vpp) so
-    # every rank ends up with the same num_mbs and (for VPP) the per-rank mbs
-    # count is a multiple of mb_group.
     align_to = dp_size * (mb_group if vpp_size > 1 else 1)
 
-    # Group samples by rollout id (preserve first-occurrence order). All
-    # samples from one rollout stay in a single step so the per-rollout loss
-    # reducer is well-defined.
     rollout_id_to_samples: dict[int, list[int]] = {}
     for sample_pos, rid in enumerate(rollout_indices):
         rollout_id_to_samples.setdefault(rid, []).append(sample_pos)
@@ -141,8 +111,6 @@ def build_dp_schedule(
             f"each step needs at least one sample per rank."
         )
 
-        # 1. Pack samples in this step into mbs with one global pass.
-        # ``step_mbs`` indices are LOCAL into ``sample_indices``.
         step_mbs = _pack_step_into_mbs(
             step_lengths,
             use_dynamic_batch_size=args.use_dynamic_batch_size,
@@ -150,7 +118,6 @@ def build_dp_schedule(
             micro_batch_size=getattr(args, "micro_batch_size", None),
         )
 
-        # 2. Align mbs count to a multiple of ``align_to``.
         target_K = max(((len(step_mbs) + align_to - 1) // align_to) * align_to, align_to)
         if target_K != len(step_mbs):
             if args.use_dynamic_batch_size:
@@ -174,20 +141,15 @@ def build_dp_schedule(
         num_mbs_per_rank = K // dp_size
         num_microbatches.append(num_mbs_per_rank)
 
-        # 3. Distribute mbs across ranks: KK on mbs token sums when balance_data is on,
-        # otherwise a strided round-robin. Both produce ``num_mbs_per_rank`` mbs per
-        # rank (equal_size=True is what KK needs for PP to stay synced).
         if args.balance_data:
             mbs_token_sums = [sum(step_lengths[i] for i in bin_) for bin_ in step_mbs]
             rank_mbs_idx = get_seqlen_balanced_partitions(mbs_token_sums, dp_size, equal_size=True)
         else:
             rank_mbs_idx = [list(range(r, K, dp_size)) for r in range(dp_size)]
 
-        # 4. Build per-rank partitions (global sample indices) and micro_batch_indices
-        # (local indices into partitions[r]).
         for r in range(dp_size):
             for mbs_idx in rank_mbs_idx[r]:
-                mbs_locals = step_mbs[mbs_idx]  # local indices into sample_indices
+                mbs_locals = step_mbs[mbs_idx]
                 local_start = len(partitions[r])
                 partitions[r].extend(sample_indices[i] for i in mbs_locals)
                 micro_batch_indices[r].append(list(range(local_start, local_start + len(mbs_locals))))
