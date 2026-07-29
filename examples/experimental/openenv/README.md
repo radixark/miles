@@ -50,13 +50,12 @@ concurrency. Per-task containers are heavy on disk — if you'd rather not coloc
 them with the GPU workload, run the env server on a separate Docker host and point
 the launcher at it via `--openenv-env-url http://<env-host>:8003`.
 
-**Server contract**: the installed `tbench2_env` must carry the canonical
-scoring contract — `evaluate` runs the task's own `tests/test.sh` in the image
-WORKDIR (huggingface/OpenEnv#965 + #972 for local mode, #1012 for docker mode).
-The adapter checks the harness marker on every `evaluate`: against an older
-deployment (bare-pytest scoring) episodes are dropped with a warning rather
-than silently mis-scored, so an out-of-date server surfaces as every sample
-dropping, not as a plausible-looking reward curve.
+**Server contract**: the installed `tbench2_env` must be at or after the
+huggingface/OpenEnv#1012 merge (04d259ea6) — `evaluate` runs the task's own
+`tests/test.sh` in the image WORKDIR. The adapter checks the harness marker on
+every `evaluate`: a server that does not score through the canonical harness
+surfaces as every sample dropping with a warning, never as a plausible-looking
+reward curve.
 
 ### 2b. Alternative: Daytona cloud sandboxes (no Docker host)
 

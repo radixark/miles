@@ -21,14 +21,14 @@ Env vars:
   AGENT_MODEL_NAME   model name sent to the policy (default: "model")
   MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for off-cluster agents
 
-Server contract: the env server must run CURRENT upstream tbench2_env (the
-same pinned install the README describes for the Daytona leg) — canonical
-tests/test.sh scoring inside the standard ``evaluate`` action, task WORKDIR
-resolved server-side, verifier assets withheld. Since huggingface/OpenEnv#965
-+ #972 that is what local mode provides, and huggingface/OpenEnv#1012 brings
-docker mode to the same contract. Episodes against an OLDER deployment are
-not silently mis-scored: its ``evaluate`` carries no canonical-harness marker,
-so every episode is dropped with a warning (see the guard in _multi_turn).
+Server contract: the env server must run tbench2_env at or after the
+huggingface/OpenEnv#1012 merge (04d259ea6; install per the README) —
+canonical tests/test.sh scoring inside the standard ``evaluate`` action, task
+WORKDIR resolved server-side, verifier assets withheld. The adapter verifies
+the contract on every episode rather than trusting the deployment: an
+``evaluate`` reply without the canonical-harness marker is treated as no
+verdict and the episode is dropped with a warning (see the guard in
+_multi_turn).
 
 Daytona-sandbox variant: ``openenv_daytona_agent_function`` (sibling module)
 is a drop-in ``--custom-agent-function-path`` alternative that runs every
@@ -322,12 +322,12 @@ async def _multi_turn(
         #   - reward=None / `error` set: the scoring step itself errored
         #     server-side (toolkit timeout, staging I/O) -- not tests failing.
         #   - harness marker absent: the server scored, but not through the
-        #     canonical tests/test.sh (an older tbench2_env deployment whose
-        #     `evaluate` is bare pytest in the wrong dir, or a task dir
-        #     without test.sh scored by the server's pytest fallback). The
-        #     reward LOOKS valid, which is exactly why it must not be trusted:
-        #     source preflight is impossible against a remote server, so this
-        #     marker is the contract check.
+        #     canonical tests/test.sh (a tbench2_env install predating the
+        #     contract in the module docstring, or a task dir without test.sh
+        #     scored by the server's pytest fallback). The reward LOOKS
+        #     valid, which is exactly why it must not be trusted: source
+        #     preflight is impossible against a remote server, so this marker
+        #     is the contract check.
         raw_reward = getattr(eval_result, "reward", None)
         eval_error = _obs_field(eval_result, "error")
         harness = str(_obs_info(eval_result).get("harness", ""))

@@ -58,9 +58,9 @@ logger = logging.getLogger(__name__)
 # definition, read off the local TB2 checkout (OPENENV_TB2_TASKS_DIR); repeat
 # creates hit Daytona's build cache, and no named snapshot is involved.
 #
-# The sandbox's env server is the CURRENT upstream tbench2_env baked by the
-# recipe — carrying the fixes upstreamed via huggingface/OpenEnv#965 + #972:
-# canonical tests/test.sh scoring built into `evaluate`, task WORKDIR resolved
+# The sandbox's env server is the tbench2_env baked by the recipe, installed
+# per the README (at or after the huggingface/OpenEnv#1012 merge): canonical
+# tests/test.sh scoring built into `evaluate`, task WORKDIR resolved
 # server-side, verifier assets withheld. The launcher preflight rejects an
 # older install outright, and the shared agent loop's harness-marker guard
 # backstops it per episode.
