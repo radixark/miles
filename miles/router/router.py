@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import sys
 
 import httpx
 import setproctitle
@@ -11,6 +12,7 @@ from starlette.responses import Response
 
 from miles.router.config import MilesRouterConfig
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.workers.argv_utils import parse_config_argv
 
 logger = logging.getLogger(__name__)
 
@@ -226,3 +228,7 @@ class MilesRouter:
         assert url in self.worker_request_counts, f"URL {url} not recognized"
         self.worker_request_counts[url] -= 1
         assert self.worker_request_counts[url] >= 0, f"URL {url} count went negative"
+
+
+if __name__ == "__main__":
+    run_router(parse_config_argv(MilesRouterConfig, sys.argv[1:]))
