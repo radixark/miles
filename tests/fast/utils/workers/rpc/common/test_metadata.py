@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from miles.utils.pydantic_utils import StrictBaseModel
-from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
+from miles.utils.workers.rpc.common.metadata import DEFAULT_CONCURRENCY_GROUP, collect_rpc_method_specs, rpc
 
 
 class _Payload(StrictBaseModel):
@@ -15,11 +15,15 @@ class _Payload(StrictBaseModel):
 class _GoodWorker:
     demo_class_attribute = 3
 
-    async def demo_default_arg(self, a: int, b: int = 10) -> int:
+    def demo_default_arg(self, a: int, b: int = 10) -> int:
         return a + b
 
     async def demo_async_model(self, payload: _Payload) -> _Payload:
         return payload
+
+    @rpc(concurrency_group="heavy")
+    def demo_grouped(self, step: int) -> None:
+        pass
 
     @classmethod
     def demo_classmethod(cls, x: int) -> int:
@@ -41,12 +45,38 @@ class TestCollectSpecs:
     def test_collects_public_methods_only(self):
         """Public methods are collected; underscore-prefixed ones are skipped."""
         specs = collect_rpc_method_specs(_GoodWorker)
-        assert set(specs) == {"demo_default_arg", "demo_async_model"}
+        assert set(specs) == {"demo_default_arg", "demo_async_model", "demo_grouped"}
 
     def test_non_instance_method_members_are_skipped(self):
         """Classmethods, staticmethods and properties are skipped like plain attributes."""
         specs = collect_rpc_method_specs(_GoodWorker)
         assert {"demo_classmethod", "demo_staticmethod", "demo_property", "demo_class_attribute"}.isdisjoint(specs)
+
+    def test_default_concurrency_group(self):
+        """Undecorated methods fall into the default concurrency group."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert specs["demo_default_arg"].concurrency_group == DEFAULT_CONCURRENCY_GROUP
+
+    def test_decorated_concurrency_group(self):
+        """@rpc(concurrency_group=...) is picked up by introspection."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert specs["demo_grouped"].concurrency_group == "heavy"
+
+    def test_is_async_flag(self):
+        """Coroutine methods are flagged async, plain ones are not."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert specs["demo_async_model"].is_async and not specs["demo_default_arg"].is_async
+
+    def test_async_method_with_non_default_concurrency_group_rejected(self):
+        """A concurrency group on an async method would be silently ignored, so it is refused."""
+
+        class Worker:
+            @rpc(concurrency_group="heavy")
+            async def demo_async_grouped(self) -> None:
+                pass
+
+        with pytest.raises(TypeError, match="concurrency groups only serialize sync methods"):
+            collect_rpc_method_specs(Worker)
 
 
 class TestQueryModel:
