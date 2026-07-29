@@ -1,4 +1,75 @@
+import asyncio
+import time
+
 import httpx
+
+from tests.fast.utils.workers.e2e.harness import READY_TIMEOUT_SECONDS
+
+
+class TestRoundtrip:
+    async def test_async_method(self, handle):
+        """An async method roundtrips a nested payload unchanged."""
+        assert await handle.demo_async(value={"k": [1, "x", None]}) == {"k": [1, "x", None]}
+
+    async def test_sequential_calls_on_one_handle(self, handle):
+        """Consecutive calls on one handle stay independent."""
+        assert await handle.demo_async(value={"n": 1}) == {"n": 1}
+        assert await handle.demo_async(value={"n": 2}) == {"n": 2}
+
+    async def test_two_handles_one_server(self, server, make_handle):
+        """Two independent handles can drive the same server."""
+        first, second = make_handle(server), make_handle(server)
+        await first.wait_ready(timeout=READY_TIMEOUT_SECONDS)
+        assert await first.demo_async(value={"i": 1}) == {"i": 1}
+        assert await second.demo_async(value={"i": 2}) == {"i": 2}
+
+    async def test_call_runs_in_the_server_subprocess(self, handle, server):
+        """The worker really executes in the spawned process, not in the test process."""
+        assert await handle.report_pid() == server.process.pid
+
+
+class TestReadiness:
+    async def test_wait_ready_returns_promptly(self, server, make_handle):
+        """wait_ready returns as soon as the server answers instead of waiting out its timeout."""
+        started = time.monotonic()
+        await make_handle(server).wait_ready(timeout=30.0)
+        assert time.monotonic() - started < 5.0
+
+    async def test_health_endpoint(self, raw):
+        """The health endpoint answers ok."""
+        response = await raw.get("/v1/health")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+
+class TestConcurrentCalls:
+    async def test_many_concurrent_calls_from_one_handle(self, handle):
+        """Fifty concurrent calls over one connection pool all return their own result."""
+        results = await asyncio.gather(*[handle.demo_async(value={"i": i}) for i in range(50)])
+        assert results == [{"i": i} for i in range(50)]
+
+    async def test_concurrent_calls_from_several_handles(self, server, make_handle):
+        """Concurrent calls from several handles do not cross results."""
+        handles = [make_handle(server) for _ in range(5)]
+        await handles[0].wait_ready(timeout=READY_TIMEOUT_SECONDS)
+        results = await asyncio.gather(*[h.demo_async(value={"i": i}) for i, h in enumerate(handles)])
+        assert results == [{"i": i} for i in range(5)]
+
+
+class TestTypedPayloads:
+    async def test_scalar_types_keep_their_python_type(self, handle):
+        """Scalars keep their type instead of collapsing to strings or ints."""
+        assert await handle.demo_async(value={"f": 1.5, "b": True, "s": "1", "n": None}) == {
+            "f": 1.5,
+            "b": True,
+            "s": "1",
+            "n": None,
+        }
+
+    async def test_unicode_payload(self, handle):
+        """Non-ascii text survives the real socket unchanged."""
+        text = "中文 🚀 \\ \" '"
+        assert await handle.demo_async(value={"t": text}) == {"t": text}
 
 
 class TestManualProtocol:
