@@ -149,6 +149,22 @@ class TestProtocolErrors:
             response = await client.get("/v1/calls/missing", params={"timeout": 0.0})
             assert response.status_code == 404
 
+    async def test_resubmit_different_payload_409(self):
+        """Reusing a call id with a different payload returns 409."""
+        async with _client(_Worker()) as client:
+            first = await _submit(client, "demo_sync", {"a": 1, "b": 2}, call_id="fixed")
+            assert first.response.status_code == 200
+            second = await _submit(client, "demo_sync", {"a": 9, "b": 9}, call_id="fixed")
+            assert second.response.status_code == 409
+
+    async def test_same_call_id_across_methods_409(self):
+        """Reusing a call id on a different method returns 409 rather than the other result."""
+        async with _client(_Worker()) as client:
+            first = await client.post("/v1/demo_tag", json={"call_id": "fixed", "query": {"tag": "x"}})
+            assert first.status_code == 200
+            second = await client.post("/v1/demo_tag_upper", json={"call_id": "fixed", "query": {"tag": "x"}})
+            assert second.status_code == 409
+
     async def test_missing_query_field_400(self):
         """An envelope without the query field returns 400, not FastAPI's default 422."""
         async with _client(_Worker()) as client:
@@ -172,6 +188,21 @@ class TestProtocolErrors:
         async with _client(_Worker()) as client:
             response = await client.get("/v1/calls/whatever", params={"timeout": -1.0})
             assert response.status_code == 400
+
+
+class TestDuplicateCalls:
+    async def test_resubmit_same_payload_returns_409(self) -> None:
+        """Resubmitting an identical call id fails loudly without rerunning."""
+        worker = _Worker()
+        async with _client(worker) as client:
+            first = await _submit(client, "demo_sync", {"a": 1, "b": 2}, call_id="fixed")
+            assert first.response.json() == {"status": "submitted"}
+            assert await asyncio.to_thread(worker.done_event.wait, 5.0)
+
+            second = await _submit(client, "demo_sync", {"a": 1, "b": 2}, call_id="fixed")
+            assert second.response.status_code == 409
+            assert "already submitted" in second.response.json()["detail"]
+            assert worker.calls == 1
 
 
 class TestPendingAndCompletion:
