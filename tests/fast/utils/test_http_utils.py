@@ -24,6 +24,8 @@ This lets us simulate 20 seconds of polling in <1ms of real time.
 import asyncio
 import multiprocessing
 import socket
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -104,6 +106,14 @@ class TestWaitForServerReady:
 
         with pytest.raises(RuntimeError, match="process died"):
             wait_for_server_ready("127.0.0.1", port, process=proc, timeout=5)
+
+    def test_raises_when_subprocess_dies(self) -> None:
+        """Subprocess exits before port is ready and raises immediately."""
+        process: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", "raise SystemExit(2)"])
+        process.wait(timeout=5)
+
+        with pytest.raises(RuntimeError, match="process died"):
+            wait_for_server_ready("127.0.0.1", 0, process=process, timeout=5)
 
 
 # ---------------------------------------------------------------------------
