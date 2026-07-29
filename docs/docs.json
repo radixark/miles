@@ -167,6 +167,7 @@
        "user-guide/usage",
        "user-guide/training-script-walkthrough",
        "user-guide/monitoring",
+       "user-guide/dashboard",
        "user-guide/customization",
        "user-guide/rollout-endpoints",
        "user-guide/fully-async",
