@@ -516,11 +516,14 @@ class MegatronTrainRayActor(TrainRayActor):
                 if self.args.use_critic:
                     if external_data is not None and get_parallel_state().is_pp_last_stage:
                         values_ref = external_data.get("values")
-                        if values_ref is not None:
-                            rollout_data["values"] = [
-                                value.to(device=torch.cuda.current_device(), non_blocking=True)
-                                for value in ray.get(values_ref.inner)
-                            ]
+                        assert values_ref is not None, (
+                            "actor and critic share the same parallel topology, so the critic rank "
+                            "paired with a pp-last-stage actor rank must have shipped 'values'"
+                        )
+                        rollout_data["values"] = [
+                            value.to(device=torch.cuda.current_device(), non_blocking=True)
+                            for value in ray.get(values_ref.inner)
+                        ]
                 if self._active_model_tag != "actor":
                     self._switch_model("actor")
 
