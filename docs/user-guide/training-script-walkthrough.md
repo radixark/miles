@@ -300,7 +300,7 @@ Enable it with two changes to the launch script:
 | Sync *(default)* | Lower | Lower overall | Strict on-policy, debugging |
 | Async | Higher | Up to 2× | Rollout-bound jobs, long runs |
 
-See the [Fully Async Rollout guide](/user-guide/fully-async) for the full
+See the [Fully Async Rollout example](/examples/fully-async) for the full
 walkthrough including the worker implementation.
 
 ## Colocation: share GPUs or don't

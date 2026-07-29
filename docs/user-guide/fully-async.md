@@ -95,9 +95,7 @@ signal. Fast [P2P weight transfer](/advanced/p2p-weight-transfer) keeps the
 rollout engines closer to the latest actor weights so fewer groups get recycled by
 `--max-weight-staleness`.
 
-## Reference implementation
+## Example implementation
 
-The reference worker lives at
-[`examples/infra_features/fully_async/fully_async_rollout.py`](https://github.com/radixark/miles/blob/main/examples/infra_features/fully_async/fully_async_rollout.py).
-For a launcher that wires it up end to end, see
-[`examples/swe-agent/run-glm47-flash-agentic-async.py`](https://github.com/radixark/miles/blob/main/examples/swe-agent/run-glm47-flash-agentic-async.py).
+For a complete Qwen3 launch script and worker implementation, see the
+[Fully Async Rollout example](/examples/fully-async).

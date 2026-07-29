@@ -3,7 +3,8 @@ title: Examples
 description: Annotated end-to-end walkthroughs for the workflows people actually want to build.
 ---
 The model recipes show you how to train a model. The examples below show you how to
-*build something useful* with Miles — tools, search, multi-agent, and plain SFT.
+*build something useful* with Miles — tools, search, multi-agent, distillation, and
+async rollout.
 
 Each example follows the same template:
 
@@ -20,6 +21,13 @@ Each example follows the same template:
 ## The catalog
 
 <CardGroup cols={2}>
+
+  <Card title="Fully Async Rollout" icon="bolt" href="/examples/fully-async">
+
+    Continuous background generation with a queue between rollout and training.
+    Up to 2× end-to-end speedup.
+
+  </Card>
 
   <Card title="Search-R1 (Tool Use)" icon="magnifying-glass" href="/examples/search-r1">
 
@@ -52,7 +60,7 @@ Each example follows the same template:
 
 ## Where to start
 
+* **Never used Miles for anything beyond GRPO?** → [Fully Async Rollout](/examples/fully-async).
 * **Want tool use / RAG?** → [Search-R1](/examples/search-r1).
 * **VLM / multi-agent?** → [Multi-Agent Co-Evolution](/examples/multi-agent).
 * **Replay an old result?** → [Reproducibility Recipe](/examples/reproducibility).
-* **Decouple generation from training?** → [Fully Async Rollout](/user-guide/fully-async).
