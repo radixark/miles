@@ -15,6 +15,7 @@ import httpx
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 WORKER_PATH = "tests.fast.utils.workers.e2e.e2e_worker.make_worker"
+ENV_FN_PATH = "tests.fast.utils.workers.e2e.e2e_worker.compute_env_vars"
 
 READY_TIMEOUT_SECONDS = 60.0
 STOP_TIMEOUT_SECONDS = 15.0
@@ -75,6 +76,7 @@ def spawn_server(
     log_path: Path,
     port: int | None = None,
     worker_argv: list[str] | None = None,
+    env_var_fn: bool = True,
     extra_env: dict[str, str] | None = None,
     worker_path: str = WORKER_PATH,
 ) -> ServerProcess:
@@ -85,7 +87,9 @@ def spawn_server(
     env["PYTHONUNBUFFERED"] = "1"
     env.update(extra_env or {})
 
-    argv = [sys.executable, "-m", "miles.utils.workers.serving.serve_inner", "--worker", worker_path]
+    argv = [sys.executable, "-m", "miles.utils.workers.serving.serve", "--worker", worker_path]
+    if env_var_fn:
+        argv += ["--env-var-fn", ENV_FN_PATH]
     argv += ["--host", "127.0.0.1", "--port", str(port)]
     argv += ["--", "--state-dir", str(state_dir)]
     argv += worker_argv or []
