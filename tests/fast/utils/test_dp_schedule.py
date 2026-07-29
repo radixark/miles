@@ -25,12 +25,28 @@ def make_args(
     use_dynamic_batch_size=False,
     max_tokens_per_gpu=None,
     balance_data=False,
+    balance_by_flops=False,
 ):
     return SimpleNamespace(
         micro_batch_size=micro_batch_size,
         use_dynamic_batch_size=use_dynamic_batch_size,
         max_tokens_per_gpu=max_tokens_per_gpu,
         balance_data=balance_data,
+        balance_by_flops=balance_by_flops,
+        # Minimal model config for calculate_fwd_flops (balance_by_flops path).
+        hidden_size=16,
+        num_attention_heads=2,
+        num_query_groups=2,
+        vocab_size=32,
+        ffn_hidden_size=64,
+        num_experts=None,
+        num_layers=2,
+        kv_channels=8,
+        q_lora_rank=None,  # no MLA in the stub config
+        kv_lora_rank=None,
+        qk_pos_emb_head_dim=0,
+        qk_head_dim=8,
+        v_head_dim=8,
     )
 
 
@@ -368,6 +384,45 @@ def test_randomized_invariants_dynamic():
             total_lengths=total_lengths,
             max_per_bin=max_tokens,
         )
+
+
+def test_balance_by_flops_packs_and_distributes():
+    """balance_by_flops: KK-on-FLOPs packing, invariants preserved (the token cap
+    is intentionally NOT enforced in this mode)."""
+    total_lengths = [10, 200, 30, 400, 50, 600, 70, 800]
+    rollout_indices = list(range(8))
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=600, balance_by_flops=True)
+    tp = make_tp(dp_size=2)
+
+    partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=8, rollout_indices=rollout_indices
+    )
+
+    assert gbs_per_step == [8]
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=2,
+        expected_global_sample_indices=range(8),
+        total_lengths=total_lengths,
+        max_per_bin=None,  # cap not enforced in FLOPs mode
+    )
+
+
+def test_balance_by_flops_singleton_fallback():
+    """When ceil(total/cap) >= n samples, every sample gets its own mbs."""
+    total_lengths = [100] * 4
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=100, balance_by_flops=True)
+    tp = make_tp(dp_size=2)
+
+    partitions, mbi, nmb, _ = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=4, rollout_indices=list(range(4))
+    )
+    assert sum(nmb) * 2 == 4  # 4 singleton mbs over 2 ranks
+    for r in range(2):
+        for mbs in mbi[r]:
+            assert len(mbs) == 1
 
 
 def test_has_full_schedule_config():
