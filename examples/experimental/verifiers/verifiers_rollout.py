@@ -641,7 +641,7 @@ class VerifiersRolloutFn(BaseRolloutFn):
         self.ctx = runtime.ModelContext(client=self.client, model=self.model, sampling=self.sampling)
         self.eval_ctx = runtime.ModelContext(client=self.eval_client, model=self.model, sampling=self.eval_sampling)
 
-        from miles.utils.misc import load_function
+        from miles.utils.function_registry import load_function
 
         self.dynamic_filter = load_function(self.args.dynamic_sampling_filter_path)
         self._tasks = list(self.env.taskset.load())
@@ -720,7 +720,7 @@ class VerifiersRolloutFn(BaseRolloutFn):
             sample.reward = reward
 
     async def _postprocess_train_samples(self, data, all_data) -> None:
-        from miles.utils.misc import load_function
+        from miles.utils.function_registry import load_function
 
         if function := load_function(self.args.rollout_sample_filter_path):
             function(self.args, data)

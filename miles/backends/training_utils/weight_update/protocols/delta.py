@@ -95,7 +95,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         # (e.g. uploading them to the backing object store) before the engines can see them.
         self._post_write_hook: Callable | None = None
         if args.custom_update_weight_post_write_path:
-            from miles.utils.misc import load_function
+            from miles.utils.function_registry import load_function
 
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
 
