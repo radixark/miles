@@ -4,9 +4,13 @@ import time
 from collections.abc import AsyncIterator
 
 import httpx
+import pytest
 
 from miles.utils.workers.rpc.server import core as core_module
 from miles.utils.workers.rpc.server.app import create_rpc_app
+
+EXPECTED_BOOT_UUID_HEADER = "x-miles-expected-boot-uuid"
+BOOT_UUID_HEADER = "x-miles-boot-uuid"
 
 
 async def _submit(raw, method: str, call_id: str, query: dict, **extra):
@@ -80,12 +84,6 @@ class TestEnvelopeValidation:
 
 
 class TestQueryValidation:
-    async def test_coercible_strings_accepted(self, raw, tag):
-        """Coercible values are accepted, pinning the non-strict query behaviour."""
-        assert (await _submit(raw, "demo_sync", tag, {"a": "3", "b": "4"})).status_code == 200
-        body = (await raw.get(f"/v1/calls/{tag}", params={"timeout": 5.0})).json()
-        assert body["result"] == 7
-
     async def test_unknown_kwarg_400(self, raw, tag):
         """An argument the method does not declare is rejected."""
         response = await _submit(raw, "demo_sync", tag, {"a": 1, "b": 2, "c": 3})
@@ -99,6 +97,12 @@ class TestQueryValidation:
     async def test_wrong_type_400(self, raw, tag):
         """An argument that cannot be coerced is rejected."""
         assert (await _submit(raw, "demo_sync", tag, {"a": "not-int", "b": 2})).status_code == 400
+
+    async def test_coercible_strings_accepted(self, raw, tag):
+        """Coercible values are accepted, pinning the non-strict query behaviour."""
+        assert (await _submit(raw, "demo_sync", tag, {"a": "3", "b": "4"})).status_code == 200
+        body = (await raw.get(f"/v1/calls/{tag}", params={"timeout": 5.0})).json()
+        assert body["result"] == 7
 
 
 class TestCallLookup:
@@ -152,3 +156,35 @@ class TestPollTimeoutClamp:
 
             assert response.json()["status"] == "pending"
             assert elapsed < 3.0
+
+
+class TestHeaders:
+    @pytest.mark.parametrize(
+        "case",
+        ["ok", "unknown_method", "malformed_body", "unknown_call", "stale_boot_uuid"],
+    )
+    async def test_every_response_carries_the_boot_uuid(self, raw, tag, case):
+        """Success and failure responses alike identify the serving process."""
+        if case == "ok":
+            response = await _submit(raw, "demo_sync", tag, {"a": 1, "b": 1})
+        elif case == "unknown_method":
+            response = await _submit(raw, "nope", tag, {})
+        elif case == "malformed_body":
+            response = await raw.post("/v1/demo_sync", json={"call_id": tag})
+        elif case == "unknown_call":
+            response = await raw.get("/v1/calls/missing", params={"timeout": 0.0})
+        else:
+            response = await raw.post(
+                "/v1/demo_sync",
+                headers={EXPECTED_BOOT_UUID_HEADER: "0" * 32},
+                json={"call_id": tag, "query": {"a": 1, "b": 1}},
+            )
+
+        assert BOOT_UUID_HEADER in response.headers
+
+    async def test_boot_uuid_is_stable_within_a_process(self, raw, tag):
+        """One server keeps one boot uuid across endpoints."""
+        health = (await raw.get("/v1/health")).headers[BOOT_UUID_HEADER]
+        submit = (await _submit(raw, "demo_sync", tag, {"a": 1, "b": 1})).headers[BOOT_UUID_HEADER]
+        poll = (await raw.get(f"/v1/calls/{tag}", params={"timeout": 5.0})).headers[BOOT_UUID_HEADER]
+        assert health == submit == poll and len(health) == 32
