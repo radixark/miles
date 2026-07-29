@@ -1,17 +1,22 @@
 import logging
 import multiprocessing
 import random
+import sys
 import uuid
 
-from sglang_router.launch_router import RouterArgs
-
+from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import run_session_server
 from miles.router.config import compute_miles_router_config
-from miles.router.router import run_router as run_miles_router
-from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, is_port_available
-from miles.utils.http_utils import run_router as run_sglang_router
-from miles.utils.http_utils import wait_for_server_ready
+from miles.utils.http_utils import (
+    _wrap_ipv6,
+    find_available_port,
+    get_host_info,
+    is_port_available,
+    wait_for_server_ready,
+)
+from miles.utils.workers import process_utils
+from miles.utils.workers.argv_utils import config_to_argv
 
 logger = logging.getLogger(__name__)
 
@@ -41,25 +46,19 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
     if args.use_miles_router:
         assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
 
-        run_router = run_miles_router
-        router_args = compute_miles_router_config(args, host=router_ip, port=router_port)
+        router_config = compute_miles_router_config(args, host=router_ip, port=router_port)
+        launch_argv = [sys.executable, "-m", "miles.router.router", *config_to_argv(router_config)]
 
     else:
-        run_router = run_sglang_router
-        router_args = RouterArgs.from_cli_args(args, use_router_prefix=True)
-        router_args.host = router_ip
-        router_args.port = router_port
-        router_args.prometheus_port = find_available_port(random.randint(4000, 5000))
-        router_args.log_level = "warn"
-        router_args.request_timeout_secs = args.sglang_router_request_timeout_secs
-
-        if args.sglang_router_policy:
-            router_args.policy = args.sglang_router_policy
-
-        if has_pd_disaggregation:
-            router_args.pd_disaggregation = True
-
+        router_args = compute_sglang_router_args(
+            args,
+            host=router_ip,
+            port=router_port,
+            prometheus_port=find_available_port(random.randint(4000, 5000)),
+            has_pd_disaggregation=has_pd_disaggregation,
+        )
         logger.info(f"Launch router with args: {router_args}")
+        launch_argv = [sys.executable, "-m", "sglang_router.launch_router", *router_args_to_argv(router_args)]
 
     port = router_port
     if not is_port_available(port):
@@ -68,14 +67,7 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
             f"Run 'pkill -9 python' to kill it, then retry."
         )
 
-    # spawn (not fork): the child must not inherit threads/finalizers from this
-    # Ray actor (e.g. wandb's service thread), which deadlock a forked child.
-    process = multiprocessing.get_context("spawn").Process(
-        target=run_router,
-        args=(router_args,),
-    )
-    process.daemon = True
-    process.start()
+    process = process_utils.launch_bound_subprocess(launch_argv, envs={})
     wait_for_server_ready(router_ip, router_port, process, timeout=_SERVER_READY_TIMEOUT_SECS)
     logger.info(f"Router launched at {router_ip}:{router_port}")
     return router_ip, router_port
@@ -124,7 +116,8 @@ def start_session_server(args):
 
     # Spawn all children before waiting on any: each child pays the ~10s
     # transformers import, so N servers start in ~one import of wall-time.
-    # spawn (not fork): see start_router for rationale.
+    # spawn (not fork): the child must not inherit threads/finalizers from this
+    # Ray actor (e.g. wandb's service thread), which deadlock a forked child.
     instance_ids: dict[int, str] = {}
     processes = []
     for port in ports:

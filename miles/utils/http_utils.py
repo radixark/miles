@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import random
 import socket
+import subprocess
 import time
 
 import httpx
@@ -45,7 +46,7 @@ def is_port_available(port):
 def wait_for_server_ready(
     host: str,
     port: int,
-    process: "multiprocessing.Process | None" = None,
+    process: "multiprocessing.Process | subprocess.Popen | None" = None,
     timeout: float = 30,
 ) -> None:
     """Poll until a TCP port is accepting connections.
@@ -54,7 +55,7 @@ def wait_for_server_ready(
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if process is not None and not process.is_alive():
+        if process is not None and not _is_process_running(process):
             raise RuntimeError(f"Server process died before port {port} became ready")
         try:
             with socket.create_connection((host, port), timeout=1):
@@ -62,6 +63,12 @@ def wait_for_server_ready(
         except OSError:
             time.sleep(0.5)
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
+
+
+def _is_process_running(process: "multiprocessing.Process | subprocess.Popen") -> bool:
+    if isinstance(process, subprocess.Popen):
+        return process.poll() is None
+    return process.is_alive()
 
 
 def get_host_info():
