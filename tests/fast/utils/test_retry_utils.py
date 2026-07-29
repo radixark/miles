@@ -1,6 +1,8 @@
+import logging
+
 import pytest
 
-from miles.utils.retry_utils import retry
+from miles.utils.retry_utils import retry, retry_until_deadline
 
 pytestmark = pytest.mark.asyncio
 
@@ -17,6 +19,7 @@ class _FakeSleep:
 
 class TestRetryBasic:
     async def test_succeeds_immediately(self):
+        """A successful first attempt does not sleep or retry."""
         call_count = 0
         fake_sleep = _FakeSleep()
 
@@ -30,6 +33,7 @@ class TestRetryBasic:
         assert fake_sleep.delays == []
 
     async def test_retries_then_succeeds(self):
+        """Retry keeps attempting until the callback succeeds."""
         call_count = 0
         fake_sleep = _FakeSleep()
 
@@ -45,6 +49,7 @@ class TestRetryBasic:
         assert len(fake_sleep.delays) == 3
 
     async def test_single_retry(self):
+        """One failure followed by success produces one retry."""
         call_count = 0
         fake_sleep = _FakeSleep()
 
@@ -76,6 +81,7 @@ class TestRetryBasic:
 
 class TestRetryLogging:
     async def test_logs_on_retry(self, caplog):
+        """Each retry emits a warning log."""
         call_count = 0
 
         async def fn(_attempt):
@@ -91,6 +97,8 @@ class TestRetryLogging:
         assert len(retry_messages) == 2
 
     async def test_no_log_on_first_success(self, caplog):
+        """A successful first attempt emits no retry warning."""
+
         async def fn(_attempt):
             pass
 
@@ -100,6 +108,7 @@ class TestRetryLogging:
         assert not any("retrying" in r.message for r in caplog.records)
 
     async def test_logs_include_exc_info(self, caplog):
+        """Retry warnings retain exception information."""
         call_count = 0
 
         async def fn(_attempt):
@@ -116,6 +125,7 @@ class TestRetryLogging:
         assert retry_records[0].exc_info is not None
 
     async def test_log_message_includes_delay(self, caplog):
+        """A retry warning includes its sleep delay."""
         call_count = 0
 
         async def fn(_attempt):
@@ -219,6 +229,7 @@ class TestRetryMaxAttempts:
 
 class TestRetryBackoff:
     async def test_delay_doubles_each_retry(self):
+        """Default exponential backoff doubles each delay."""
         call_count = 0
         fake_sleep = _FakeSleep()
 
@@ -233,6 +244,7 @@ class TestRetryBackoff:
         assert fake_sleep.delays == [1.0, 2.0, 4.0, 8.0]
 
     async def test_delay_capped_at_max(self):
+        """Backoff delays stop growing at max_delay."""
         call_count = 0
         fake_sleep = _FakeSleep()
 
@@ -247,6 +259,7 @@ class TestRetryBackoff:
         assert fake_sleep.delays == [1.0, 2.0, 3.0, 3.0, 3.0]
 
     async def test_custom_backoff_factor(self):
+        """A custom backoff factor scales each retry delay."""
         call_count = 0
         fake_sleep = _FakeSleep()
 
@@ -261,6 +274,7 @@ class TestRetryBackoff:
         assert fake_sleep.delays == [1.0, 3.0, 9.0]
 
     async def test_zero_initial_delay(self):
+        """A zero initial delay keeps immediate retries nonblocking."""
         call_count = 0
         fake_sleep = _FakeSleep()
 
@@ -276,6 +290,7 @@ class TestRetryBackoff:
         assert fake_sleep.delays == [0.0, 0.0]
 
     async def test_default_params_are_reasonable(self):
+        """The public retry defaults remain stable."""
         from miles.utils.retry_utils import _DEFAULT_BACKOFF_FACTOR, _DEFAULT_INITIAL_DELAY, _DEFAULT_MAX_DELAY
 
         assert _DEFAULT_INITIAL_DELAY == 1.0
@@ -297,3 +312,122 @@ class TestRetryBackoff:
 
         # 1, 2, 4, 5, 5, 5, 5, 5
         assert fake_sleep.delays == [1.0, 2.0, 4.0, 5.0, 5.0, 5.0, 5.0, 5.0]
+
+
+class TestRetryUntilDeadline:
+    async def test_returns_the_value_of_the_first_success(self):
+        """The helper hands back whatever the attempt returned."""
+        result = await retry_until_deadline(lambda remaining: _immediately(7), total_seconds=1.0, retry_on=ValueError)
+        assert result == 7
+
+    async def test_retries_until_success(self):
+        """A retryable failure is retried and the later success is returned."""
+        attempts = []
+
+        async def attempt(remaining: float) -> str:
+            attempts.append(remaining)
+            if len(attempts) < 3:
+                raise ValueError("not yet")
+            return "done"
+
+        result = await retry_until_deadline(
+            attempt, total_seconds=5.0, retry_on=ValueError, initial_delay=0.01, max_delay=0.05
+        )
+        assert result == "done" and len(attempts) == 3
+
+    async def test_remaining_budget_shrinks(self):
+        """Each attempt is told how much of the budget is left."""
+        seen: list[float] = []
+
+        async def attempt(remaining: float) -> None:
+            seen.append(remaining)
+            raise ValueError("always")
+
+        with pytest.raises(ValueError):
+            await retry_until_deadline(attempt, total_seconds=0.2, retry_on=ValueError, initial_delay=0.05)
+        assert len(seen) >= 2 and seen[1] < seen[0]
+
+    async def test_unlisted_error_propagates_immediately(self):
+        """An error outside retry_on is not retried."""
+        attempts = []
+
+        async def attempt(remaining: float) -> None:
+            attempts.append(1)
+            raise TypeError("fatal")
+
+        with pytest.raises(TypeError):
+            await retry_until_deadline(attempt, total_seconds=5.0, retry_on=ValueError, initial_delay=0.01)
+        assert len(attempts) == 1
+
+    async def test_last_error_reraised_when_budget_runs_out(self):
+        """The budget bounds the retries and the final failure surfaces."""
+
+        async def attempt(remaining: float) -> None:
+            raise ValueError("still down")
+
+        with pytest.raises(ValueError, match="still down"):
+            await retry_until_deadline(attempt, total_seconds=0.1, retry_on=ValueError, initial_delay=0.02)
+
+    async def test_failed_attempts_emit_structured_info_logs(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Each failed attempt emits its structured retry diagnostics."""
+        attempts = 0
+
+        async def attempt(remaining: float) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 2:
+                raise ValueError(f"failure-{attempts}")
+            return "done"
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.retry_utils"):
+            result = await retry_until_deadline(
+                attempt,
+                total_seconds=1.0,
+                retry_on=ValueError,
+                initial_delay=0.0,
+                jitter_ratio=0.0,
+            )
+
+        records = [
+            record
+            for record in caplog.records
+            if "op=retry_until_deadline" in record.message and "phase=attempt_failed" in record.message
+        ]
+        assert result == "done"
+        assert len(records) == 2
+        for attempt_number, record in enumerate(records, start=1):
+            assert f"attempt={attempt_number}" in record.message
+            assert "sleep_s=0.0" in record.message
+            assert "remaining_s=" in record.message
+            assert f"error=ValueError('failure-{attempt_number}')" in record.message
+
+    async def test_caller_log_fields_are_merged_into_the_attempt_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Caller-supplied fields land in the retry log and may override the default op."""
+        attempts = 0
+
+        async def attempt(remaining: float) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ValueError("failure")
+            return "done"
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.retry_utils"):
+            await retry_until_deadline(
+                attempt,
+                total_seconds=1.0,
+                retry_on=ValueError,
+                initial_delay=0.0,
+                jitter_ratio=0.0,
+                log_fields={"op": "submit", "call": "c1"},
+            )
+
+        records = [record for record in caplog.records if "phase=attempt_failed" in record.message]
+        assert len(records) == 1
+        assert "op=submit" in records[0].message
+        assert "call=c1" in records[0].message
+        assert "op=retry_until_deadline" not in records[0].message
+
+
+async def _immediately(value):
+    return value
