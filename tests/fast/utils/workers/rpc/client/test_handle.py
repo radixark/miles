@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import pytest
 from pydantic import ValidationError
+from tests.fast.utils.workers.rpc.client.fake_transports import PollWindowRecordingTransport, StallingPollTransport
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.rpc.client import call as rpc_client_module
@@ -77,6 +78,19 @@ class _HookTransport(httpx.AsyncBaseTransport):
 
     def polls(self) -> list[httpx.Request]:
         return [r for r in self.seen if r.method == "GET" and "/v1/calls/" in str(r.url)]
+
+
+class _PollRecordingTransport(_HookTransport):
+    def __init__(self, app: Any) -> None:
+        super().__init__(app)
+        self.poll_statuses: list[str] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        response = await super().handle_async_request(request)
+        if request.method == "GET" and "/v1/calls/" in str(request.url):
+            await response.aread()
+            self.poll_statuses.append(response.json()["status"])
+        return response
 
 
 def _fail_hook(
@@ -215,6 +229,15 @@ class TestSubmitRetry:
             async with _handle_over(transport) as handle:
                 assert await handle.demo_default_arg(a=1, b=2) == 3
 
+    async def test_pool_timeout_submit_is_retried_until_success(self, fast_retries: None) -> None:
+        """A submit that never got a connection out of the pool is retried until one succeeds."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=_fail_hook(2, "POST", error_type=httpx.PoolTimeout))
+            async with _handle_over(transport) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+            assert len([r for r in transport.seen if r.method == "POST"]) == 3
+
     async def test_server_error_submit_gives_up_without_retry(self, fast_retries: None) -> None:
         """A 5xx submit may have reached the worker, so it is never retried."""
         async with _running_app(_Worker()) as app:
@@ -349,6 +372,90 @@ class TestCallTimeout:
             with pytest.raises(TimeoutError):
                 await handle.demo_hang()
             worker.block_forever.set()
+
+
+class TestLongPoll:
+    async def test_poll_leaves_the_server_room_to_answer_pending(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The client asks the server to hang for less than it will wait, so a pending answer arrives."""
+        monkeypatch.setattr(rpc_client_module, "DEFAULT_POLL_TIMEOUT_SECONDS", 0.4)
+        worker = _Worker()
+        async with _running_app(worker) as app:
+            transport = _PollRecordingTransport(app)
+            async with _handle_over(transport, call_timeout_seconds=5.0) as handle:
+                pending = asyncio.create_task(handle.demo_hang())
+                await asyncio.sleep(1.0)
+                worker.block_forever.set()
+
+                assert await pending == "done"
+                assert "pending" in transport.poll_statuses
+                assert all(float(request.url.params["timeout"]) < 0.4 for request in transport.polls())
+
+    async def test_each_poll_waits_only_for_its_own_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A poll's local http timeout follows the poll window, not the whole remaining call budget."""
+        monkeypatch.setattr(rpc_client_module, "DEFAULT_POLL_TIMEOUT_SECONDS", 0.4)
+        worker = _Worker()
+
+        class _PollTimeoutRecordingTransport(_HookTransport):
+            def __init__(self, app: Any) -> None:
+                super().__init__(app)
+                self.poll_read_timeouts: list[float] = []
+
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                if request.method == "GET" and "/v1/calls/" in str(request.url):
+                    self.poll_read_timeouts.append(request.extensions["timeout"]["read"])
+                return await super().handle_async_request(request)
+
+        async with _running_app(worker) as app:
+            transport = _PollTimeoutRecordingTransport(app)
+            async with _handle_over(transport, call_timeout_seconds=30.0) as handle:
+                pending = asyncio.create_task(handle.demo_hang())
+                await asyncio.sleep(1.0)
+                worker.block_forever.set()
+
+                assert await pending == "done"
+
+        assert transport.poll_read_timeouts
+        assert max(transport.poll_read_timeouts) <= 0.4
+
+    async def test_outer_poll_timeout_is_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A poll abandoned by its own abort deadline is repolled instead of failing the call."""
+        monkeypatch.setattr(rpc_client_module, "DEFAULT_POLL_TIMEOUT_SECONDS", 0.1)
+        monkeypatch.setattr(rpc_misc_module, "_ABORT_SLACK_SECONDS", 0.05)
+
+        async with _running_app(_Worker()) as app:
+            transport = StallingPollTransport(app, stalled_polls=2)
+            async with _handle_over(transport, call_timeout_seconds=5.0) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        assert transport.polls >= 3
+
+    @pytest.mark.parametrize("slack_seconds", [5.0, 0.1])
+    async def test_poll_window_keeps_positive_server_wait_and_bounded_client_slack(
+        self, monkeypatch: pytest.MonkeyPatch, slack_seconds: float
+    ) -> None:
+        """Every poll asks the server for a positive share of the window while keeping client-side slack."""
+        monkeypatch.setattr(rpc_client_module, "DEFAULT_POLL_TIMEOUT_SECONDS", 0.4)
+        monkeypatch.setattr(rpc_client_module, "POLL_SLACK_SECONDS", slack_seconds)
+        worker = _Worker()
+
+        async with _running_app(worker) as app:
+            transport = PollWindowRecordingTransport(app)
+            async with _handle_over(transport, call_timeout_seconds=5.0) as handle:
+                pending = asyncio.create_task(handle.demo_hang())
+                await asyncio.sleep(1.0)
+                worker.block_forever.set()
+
+                assert await pending == "done"
+
+        assert len(transport.poll_windows) >= 2
+        for window in transport.poll_windows:
+            assert 0.0 < window.server_seconds < window.client_seconds <= 0.4
+            assert window.server_seconds >= window.client_seconds / 2
+            assert window.client_seconds - window.server_seconds <= slack_seconds
+
+    async def test_poll_slack_default_stays_put(self) -> None:
+        """The poll slack keeps the value that lets the server answer before the client gives up."""
+        assert rpc_client_module.POLL_SLACK_SECONDS == 5.0
 
 
 class TestWaitReady:
