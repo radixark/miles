@@ -25,7 +25,7 @@ from miles.rollout.session.v2.session_state import (
     prepare_pretokenized,
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 
 logger = logging.getLogger(__name__)
 

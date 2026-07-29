@@ -20,7 +20,7 @@ import logging
 from argparse import Namespace
 
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnInput
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 
 __all__ = [
     "retarget_args",

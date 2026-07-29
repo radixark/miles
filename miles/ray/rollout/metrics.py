@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 
+from miles.utils.function_registry import load_function
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
     compute_pass_rate,
@@ -12,7 +13,6 @@ from miles.utils.metric_utils import (
     dict_add_prefix,
     has_repetition,
 )
-from miles.utils.misc import load_function
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import AdapterRef, Sample
 
