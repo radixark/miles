@@ -183,6 +183,8 @@ def prepare_data(args: ScriptArgs) -> None:
     Path(args.data_dir).mkdir(parents=True, exist_ok=True)
     dataset = "zhuzilin/gsm8k" if args.task == "gsm8k" else "zhuzilin/dapo-math-17k"
     U.hf_download_dataset(dataset, data_dir=args.data_dir)
+    if args.task != "gsm8k":
+        U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
 
 def _execute_train(args: ScriptArgs) -> None:
