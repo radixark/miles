@@ -355,7 +355,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @event_logger_context(
-        lambda _self, rollout_id, rollout_data_ref, witness_info=None, attempt=0, external_data=None, options=None: dict(
+        lambda _self, rollout_id, rollout_data_ref, witness_info=None, attempt=0, external_data=None: dict(
             rollout_id=rollout_id, attempt=attempt
         )
     )
@@ -366,11 +366,10 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None = None,
         attempt: int = 0,
         external_data=None,
-        options: dict | None = None,
     ):
         self._heartbeat.bump()
         self._last_rollout_id = rollout_id
-        if self.args.offload_train:
+        if self.args.offload_train and self._asleep:
             self.wake_up()
 
         with ExitStack() as stack:
@@ -394,10 +393,6 @@ class MegatronTrainRayActor(TrainRayActor):
                     witness_info=witness_info,
                     attempt=attempt,
                 )
-
-            if (options or {}).get("sleep_after_train"):
-                del rollout_data
-                self.sleep()
 
             return result
 
@@ -639,16 +634,10 @@ class MegatronTrainRayActor(TrainRayActor):
                 ray.get(get_multi_lora_controller().free_slot.remote(name))
 
     @timer
-    def save_model(self, rollout_id: int, force_sync: bool = False, options: dict | None = None) -> None:
+    def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         self._heartbeat.bump()
         if self.args.debug_rollout_only:
             return
-
-        wake_for_save = (options or {}).get("wake_up_before_save")
-        if wake_for_save:
-            self.wake_up()
-        elif self.args.offload_train:
-            reload_process_groups()
 
         if self.args.async_save:
             from megatron.training.async_utils import maybe_finalize_async_save
@@ -659,10 +648,6 @@ class MegatronTrainRayActor(TrainRayActor):
             from miles.backends.megatron_utils.multi_lora_utils import save_due_adapter_checkpoints
 
             if not save_due_adapter_checkpoints(self.args, self.model):
-                if wake_for_save:
-                    self.sleep()
-                elif self.args.offload_train:
-                    destroy_process_groups()
                 return
         else:
             save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
@@ -692,11 +677,6 @@ class MegatronTrainRayActor(TrainRayActor):
             post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
             post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
 
-        if wake_for_save:
-            self.sleep()
-        elif self.args.offload_train:
-            destroy_process_groups()
-
     @with_logs
     @timer
     def update_weights(self, info: "EnginesAndLock") -> None:
@@ -711,7 +691,8 @@ class MegatronTrainRayActor(TrainRayActor):
         engine_gpu_offsets = info.engine_gpu_offsets
         del info
 
-        if self.args.offload_train:
+        process_groups_are_temporary = self.args.offload_train and self._asleep
+        if process_groups_are_temporary:
             reload_process_groups()
 
         if has_new_engines or not self.weight_updater.is_rollout_engines_fresh():
@@ -728,7 +709,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
                 logger.warning("Skipping actor-to-rollout weight update because " "--debug-skip-weight-update is set.")
-            if self.args.offload_train:
+            if process_groups_are_temporary:
                 destroy_process_groups()
             return
 
@@ -770,7 +751,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 else:
                     self.weights_backuper.backup("old_actor")
 
-        if self.args.offload_train:
+        if process_groups_are_temporary:
             destroy_process_groups()
 
     @with_logs

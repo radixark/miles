@@ -74,7 +74,7 @@ class RayTrainGroup:
             indep_dp_info=indep_dp_info,
         )
 
-    async def train(self, rollout_id, rollout_data_pack, external_data=None, options: dict | None = None):
+    async def train(self, rollout_id, rollout_data_pack, external_data=None):
         """Do one rollout training"""
         rollout_data_ref = rollout_data_pack["data_ref"]
         if external_data is None:
@@ -84,7 +84,6 @@ class RayTrainGroup:
                 rollout_data_ref,
                 witness_info=None,
                 attempt=0,
-                options=options,
             )
         if isinstance(external_data, list):
             if len(external_data) != len(self._actor_handles):
@@ -96,7 +95,6 @@ class RayTrainGroup:
                     witness_info=None,
                     attempt=0,
                     external_data=rank_data,
-                    options=options,
                 )
                 for actor, rank_data in zip(self._actor_handles, external_data, strict=False)
             ]
@@ -108,12 +106,11 @@ class RayTrainGroup:
             witness_info=None,
             attempt=0,
             external_data=external_data,
-            options=options,
         )
 
-    async def save_model(self, rollout_id, force_sync=False, options: dict | None = None):
+    async def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
-        await self._broadcast("save_model", rollout_id, force_sync=force_sync, options=options)
+        await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights from rank 0 to all other ranks."""

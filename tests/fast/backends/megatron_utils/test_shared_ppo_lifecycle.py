@@ -59,17 +59,18 @@ def actor_module():
             sys.modules["torch_memory_saver"] = saved_saver
 
 
-def _worker(actor_module, role):
+def _worker(actor_module, role, *, asleep=True):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(offload_train=True, debug_rollout_only=False)
     worker.role = role
+    worker._asleep = asleep
     worker._heartbeat = Mock()
     worker.wake_up = Mock()
     worker.sleep = Mock()
     return worker
 
 
-def test_critic_train_wakes_on_config_and_sleeps_on_options(actor_module, monkeypatch):
+def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "critic")
     worker.train_critic = Mock(return_value={"values": ["cpu-value"]})
     monkeypatch.setattr(
@@ -84,16 +85,16 @@ def test_critic_train_wakes_on_config_and_sleeps_on_options(actor_module, monkey
 
     monkeypatch.setattr(actor_module, "timer", capture_timer)
 
-    result = worker.train(3, object(), options={"sleep_after_train": True})
+    result = worker.train(3, object())
 
     worker.wake_up.assert_called_once_with()
     worker.train_critic.assert_called_once()
-    worker.sleep.assert_called_once_with()
+    worker.sleep.assert_not_called()
     assert result == {"values": ["cpu-value"]}
     assert phases == ["data_preprocess", "critic_train"]
 
 
-def test_actor_receives_critic_payload_between_wake_and_sleep(actor_module, monkeypatch):
+def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor")
     worker.train_actor = Mock(return_value=None)
     monkeypatch.setattr(
@@ -101,17 +102,17 @@ def test_actor_receives_critic_payload_between_wake_and_sleep(actor_module, monk
     )
     values = {"values": ["cpu-value"]}
 
-    result = worker.train(4, object(), external_data=values, options={"sleep_after_train": True})
+    result = worker.train(4, object(), external_data=values)
 
     worker.wake_up.assert_called_once_with()
     worker.train_actor.assert_called_once()
     assert worker.train_actor.call_args.kwargs["external_data"] is values
-    worker.sleep.assert_called_once_with()
+    worker.sleep.assert_not_called()
     assert result is None
 
 
-def test_train_without_options_keeps_model_resident(actor_module, monkeypatch):
-    worker = _worker(actor_module, "actor")
+def test_train_keeps_model_resident(actor_module, monkeypatch):
+    worker = _worker(actor_module, "actor", asleep=False)
     worker.train_actor = Mock(return_value=None)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
@@ -119,8 +120,72 @@ def test_train_without_options_keeps_model_resident(actor_module, monkeypatch):
 
     worker.train(5, object())
 
-    worker.wake_up.assert_called_once_with()
+    worker.wake_up.assert_not_called()
     worker.sleep.assert_not_called()
+
+
+def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        async_save=False,
+        custom_megatron_post_save_hook_path=None,
+        debug_rollout_only=False,
+        save_hf=None,
+    )
+    worker.role = "actor"
+    worker._heartbeat = Mock()
+    worker.model = object()
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker.wake_up = Mock()
+    worker.sleep = Mock()
+    save = Mock()
+    reload_groups = Mock()
+    destroy_groups = Mock()
+    monkeypatch.setattr(actor_module, "save", save)
+    monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: False)
+    monkeypatch.setattr(actor_module, "reload_process_groups", reload_groups)
+    monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
+
+    worker.save_model(6)
+
+    save.assert_called_once_with(6, worker.model, worker.optimizer, worker.opt_param_scheduler)
+    worker.wake_up.assert_not_called()
+    worker.sleep.assert_not_called()
+    reload_groups.assert_not_called()
+    destroy_groups.assert_not_called()
+
+
+@pytest.mark.parametrize("asleep", [False, True])
+def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_module, monkeypatch, asleep):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        debug_rollout_only=False,
+        debug_skip_weight_update=True,
+        debug_train_only=False,
+        offload_train=True,
+    )
+    worker._asleep = asleep
+    worker._heartbeat = Mock()
+    worker.weight_updater = Mock()
+    worker.weight_updater.is_rollout_engines_fresh.return_value = True
+    info = Namespace(
+        engine_gpu_counts=[],
+        engine_gpu_offsets=[],
+        has_new_engines=False,
+        rollout_engine_lock=None,
+        rollout_engines=[],
+    )
+    reload_groups = Mock()
+    destroy_groups = Mock()
+    monkeypatch.setattr(actor_module, "reload_process_groups", reload_groups)
+    monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
+    monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
+
+    worker.update_weights(info)
+
+    assert reload_groups.call_count == int(asleep)
+    assert destroy_groups.call_count == int(asleep)
 
 
 def _lifecycle_worker(actor_module, monkeypatch, asleep):
