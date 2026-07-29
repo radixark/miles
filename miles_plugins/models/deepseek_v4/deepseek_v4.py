@@ -35,6 +35,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.utils import dsv4_query_rms_norm
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
 
 
@@ -159,6 +160,7 @@ class DeepSeekV4Attention(MegatronModule):
         )
         self.softmax_scale = self.head_dim**-0.5
         self.sequence_parallel = config.sequence_parallel
+        self.batch_invariant_mode = getattr(config, "batch_invariant_mode", False)
 
         if self.compress_ratio:
             self.compressor = DeepSeekV4Compressor(
@@ -242,8 +244,11 @@ class DeepSeekV4Attention(MegatronModule):
         qr = q = self.q_norm(q_after_wq_a)
         q_after_wq_b = self.wq_b(q)[0]
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
-        q_fp32 = q.float()
-        q = (q_fp32 * torch.rsqrt(q_fp32.square().mean(-1, keepdim=True) + self.eps)).to(q.dtype)
+        q = dsv4_query_rms_norm(
+            q,
+            eps=self.eps,
+            batch_invariant=self.batch_invariant_mode,
+        )
         q = q.clone()
         apply_rotary_emb(q[..., -rd:], freqs_cis)
 
