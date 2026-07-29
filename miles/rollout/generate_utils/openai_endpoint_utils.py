@@ -54,6 +54,7 @@ class OpenAIEndpointTracer:
     async def collect_samples(self, input_sample: Sample, *, max_seq_len: int | None) -> SamplesReply:
         """Fetch server-assembled training samples for this session."""
         try:
+            # `asyncio.TimeoutError` propagates after cleanup is attempted for `agentic_tool_call.generate` to handle.
             payload = await post_bytes_no_retry(
                 f"{self.base_url}/samples",
                 {"max_seq_len": max_seq_len},
