@@ -10,9 +10,6 @@ logger = logging.getLogger(__name__)
 def postprocess_rollout_data(args, data, train_parallel_config):
     metadata = {}
 
-    # Enforce the rollout_id contract before flattening: any compact / subagent
-    # list[Sample] encountered in the nested output must have rollout_id set on
-    # every element so the loss reducer counts the rollout once instead of N times.
     validate_rollout_id_annotated(data)
 
     # Multi-LoRA: record group boundaries (heterogeneous per-adapter group sizes)
@@ -51,19 +48,8 @@ def postprocess_rollout_data(args, data, train_parallel_config):
 
 
 def validate_rollout_id_annotated(node, depth=0):
-    """Walk the rollout function's nested output and validate ``rollout_id`` only
-    when a compact / subagent pattern is detected.
-
-    "Compact" = the rollout function wraps multiple training samples from one
-    rollout execution into a ``list[Sample]``. In miles's convention the
-    default rollout shape is ``list[list[Sample]]`` (depth-2: prompt × rollout)
-    so its leaf ``list[Sample]`` lands at depth 1 and we skip validation,
-    preserving backward compatibility. A compact rollout adds a third level:
-    ``list[list[list[Sample]]]`` (prompt × rollout × samples-from-one-rollout),
-    so the leaf ``list[Sample]`` lands at depth >= 2. At that point we require
-    every sibling to carry a non-None ``rollout_id`` and to share the same
-    value, so the loss reducer counts the rollout once instead of N times.
-    """
+    """Require compact leaves (``list[Sample]`` at depth >= 2, >1 sibling) to
+    share a non-None ``rollout_id``; default rollout shapes skip validation."""
     if isinstance(node, Sample):
         return
     assert isinstance(node, list), f"unexpected rollout output node type: {type(node).__name__}"

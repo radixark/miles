@@ -78,9 +78,6 @@ def convert_samples_to_train_data(
         "raw_reward": raw_rewards,
         "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
         "sample_indices": [sample.index for sample in samples],
-        # One id per rollout execution; defaults to sample.index (unique) so the
-        # default one-sample-per-rollout path is unchanged. Compact / subagent
-        # samples share their siblings' rollout_id.
         "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
 

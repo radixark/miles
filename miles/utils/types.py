@@ -28,11 +28,8 @@ class Sample:
 
     group_index: int | None = None
     index: int | None = None
-    # Id of the rollout execution this sample came from. None falls back to
-    # ``index`` downstream, so the default path (one execution = one training
-    # sample) is unchanged. Compact / subagent rollouts that split one
-    # execution into multiple training samples must set the same rollout_id on
-    # every sibling so loss/metric aggregation counts the rollout once.
+    # Rollout execution id; None falls back to ``index``. Compact / subagent
+    # siblings must share it so the rollout is counted once.
     rollout_id: int | None = None
     # prompt
     prompt: str | list[dict[str, str]] = ""
