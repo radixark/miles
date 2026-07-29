@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from miles.utils.ft_utils.control_server.models import Cell, CellList, CellPatch, CellPatchSpec, TriState
+from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, CellPatchSpec, TriState
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -26,7 +26,7 @@ def maybe_start_mini_ft_controller(args: Any) -> None:
         return
 
     runner = _MiniFTControllerRunner(
-        control_server_url=f"http://127.0.0.1:{args.control_server_port}",
+        api_server_url=f"http://127.0.0.1:{args.api_server_port}",
         poll_interval=args.mini_ft_controller_poll_interval,
         resume_delay=args.mini_ft_controller_resume_delay,
     )
@@ -46,11 +46,11 @@ class _MiniFTControllerRunner:
     def __init__(
         self,
         *,
-        control_server_url: str,
+        api_server_url: str,
         poll_interval: float,
         resume_delay: float,
     ) -> None:
-        url = control_server_url.rstrip("/")
+        url = api_server_url.rstrip("/")
         self._client = httpx.AsyncClient(base_url=url, timeout=30.0)
         self._controller = _MiniFTController(
             get_cells=self._get_cells,

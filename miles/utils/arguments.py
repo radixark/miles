@@ -992,10 +992,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
             )
             parser.add_argument(
-                "--control-server-port",
+                "--api-server-port",
                 type=int,
                 default=0,
-                help="Port for HTTP control server. 0 = disabled.",
+                help="Port for HTTP api server. 0 = disabled.",
             )
             parser.add_argument(
                 "--mini-ft-controller-enable",
@@ -2901,8 +2901,8 @@ def miles_validate_args(args):
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
 
-    if args.mini_ft_controller_enable and args.control_server_port == 0:
-        raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
+    if args.mini_ft_controller_enable and args.api_server_port == 0:
+        raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
 
     if "train" in args.ft_components:
         args.indep_dp = True
