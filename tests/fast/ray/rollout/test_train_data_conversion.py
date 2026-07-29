@@ -146,6 +146,32 @@ class TestConvertSamplesToTrainData:
         )
         assert out["raw_reward"][0] == 9.0
 
+    def test_rollout_ids_default_to_sample_index(self):
+        args = make_args(rewards_normalization=False)
+        samples = [make_sample(index=i) for i in range(3)]
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        assert out["rollout_ids"] == [0, 1, 2]
+
+    def test_rollout_ids_use_explicit_rollout_id_when_set(self):
+        args = make_args(rewards_normalization=False)
+        samples = [make_sample(index=i) for i in range(4)]
+        # two compact siblings sharing one rollout execution
+        samples[1].rollout_id = samples[2].rollout_id = 1
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        assert out["rollout_ids"] == [0, 1, 1, 3]
+
     def test_custom_convert_func_short_circuits(self):
         args = make_args()
         sentinel = {"foo": "bar"}
