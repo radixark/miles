@@ -53,6 +53,7 @@ from transformers import AutoTokenizer
 from miles.utils.chat_template_utils import MismatchType, apply_chat_template, resolve_fixed_chat_template
 from miles.utils.chat_template_utils.tito_tokenizer import (
     ALL_APPEND_ROLES,
+    DeepSeekV4TITOTokenizer,
     DeepSeekV32TITOTokenizer,
     FixedTemplate,
     GLM47TITOTokenizer,
@@ -251,6 +252,16 @@ class TestConfig:
         tito = DeepSeekV32TITOTokenizer(tokenizer, chat_template_kwargs=chat_template_kwargs)
 
         assert tito.chat_template_kwargs["thinking"] is expected
+
+    @pytest.mark.parametrize("tito_cls", [DeepSeekV32TITOTokenizer, DeepSeekV4TITOTokenizer])
+    def test_deepseek_request_thinking_overrides_startup_mode(self, tito_cls):
+        tokenizer = MagicMock()
+        tokenizer.convert_tokens_to_ids.return_value = 1
+        startup_tito = tito_cls(tokenizer, chat_template_kwargs={"enable_thinking": False})
+
+        request_tito = startup_tito.clone_with_chat_template_kwargs({"thinking": True})
+
+        assert request_tito.chat_template_kwargs == {"drop_thinking": False, "thinking": True}
 
     def test_comparator_inherits_trailing_ids(self, qwen3_tito: Qwen3TITOTokenizer):
         """create_comparator propagates trailing_token_ids to the comparator's trim set."""
