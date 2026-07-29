@@ -17,11 +17,11 @@ def launch_bound_subprocess(argv: list[str], *, envs: dict[str, str]) -> subproc
         start_new_session=True,
         preexec_fn=_set_parent_death_signal if _LIBC is not None else None,
     )
-    atexit.register(_terminate_process_tree, process)
+    atexit.register(terminate_process_tree, process)
     return process
 
 
-def _terminate_process_tree(process: subprocess.Popen, *, sigkill_timeout: float = 5.0) -> None:
+def terminate_process_tree(process: subprocess.Popen, *, sigkill_timeout: float = 5.0) -> None:
     if process.poll() is not None:
         return
 
@@ -31,6 +31,10 @@ def _terminate_process_tree(process: subprocess.Popen, *, sigkill_timeout: float
     except subprocess.TimeoutExpired:
         _signal_process_group(process.pid, signal.SIGKILL)
         process.wait()
+
+
+def kill_process_tree(process: subprocess.Popen) -> None:
+    _signal_process_group(process.pid, signal.SIGKILL)
 
 
 def _signal_process_group(process_group_id: int, signal_number: int) -> None:
