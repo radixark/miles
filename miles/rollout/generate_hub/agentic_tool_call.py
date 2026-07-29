@@ -80,9 +80,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         logger.warning(f"{log_prefix} Agent function failed: {e}", exc_info=True)
 
     finally:
-        # The session server assembles the samples on the owning instance; records
-        # never leave it. Runs even when the agent function failed, like the old
-        # collect_records; a collect failure (422/5xx/timeout) raises loudly.
+        # Collect even if the agent failed.
         logger.debug(f"{log_prefix} Calling collect_samples...")
         result = await tracer.collect_samples(
             input.sample,

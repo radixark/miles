@@ -73,11 +73,8 @@ def setup_session_routes(app, backend, args):
 
     @app.post("/sessions/{session_id}/samples")
     async def collect_samples(request: Request, session_id: str):
-        # Must stay registered BEFORE the catch-all session_proxy below: Starlette
-        # matches in registration order, and the catch-all would otherwise swallow
-        # this path and forward it to the inference backend.
-        # Request params are parsed here, OUTSIDE core.collect_samples's 422 lane:
-        # a malformed body is a protocol violation (500), not an assembly failure.
+        # Starlette matches routes in registration order; keep this before session_proxy.
+        # Parse here so malformed input is not reported as an assembly error (422).
         body = await request.body()
         params = json.loads(body) if body else {}
         return await core.collect_samples(

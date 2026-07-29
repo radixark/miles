@@ -52,17 +52,7 @@ class OpenAIEndpointTracer:
         )
 
     async def collect_samples(self, input_sample: Sample, *, max_seq_len: int | None) -> SamplesReply:
-        """Fetch the server-assembled training samples for this session.
-
-        Single direct POST, no retries: a 5xx means the owning instance died and
-        the session's records died with it, and a 422 is a deterministic
-        assembly failure whose assertion text is
-        the body — both must raise loudly, immediately. A timeout raises too
-        (assembly is seconds server-side; the old records path silently ABORTed
-        the sample on timeout and lost data). The session DELETE is attempted
-        on every path, success or failure, matching the old cleanup semantics;
-        a DELETE failure is only a warning.
-        """
+        """Fetch server-assembled training samples for this session."""
         try:
             payload = await post_bytes_no_retry(
                 f"{self.base_url}/samples",

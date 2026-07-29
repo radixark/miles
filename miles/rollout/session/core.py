@@ -185,20 +185,9 @@ class SessionCore:
         )
 
     async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
-        """Assemble training Samples from this session's records, on the server.
+        """Assemble training Samples from this session's records.
 
-        Runs synchronously on the server loop — no await between reading the
-        session state and finishing the reply — the same invariant that makes
-        the lock-free `get_session` safe against concurrent chat updates. Do
-        not offload the assembly to an executor without snapshotting records
-        or holding the session lock.
-
-        Deterministic assembly failures map to 422 with the assertion text as
-        the body. They are caught HERE so they never escape
-        as an unhandled 500; the ValueError catch also
-        covers corrupt stored R3 payloads (binascii/reshape errors) — equally
-        deterministic record damage. Unknown exceptions still propagate (a real
-        bug must not masquerade as 422).
+        Validation failures return 422; unexpected errors propagate.
         """
         session = self.registry.get_session(session_id)
         metadata = self._session_metadata(session_id, session)
