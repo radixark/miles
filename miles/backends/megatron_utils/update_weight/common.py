@@ -52,6 +52,10 @@ def _get_model_atomic_update_groups(model_name) -> list[AtomicUpdateGroup]:
         from ..megatron_to_hf.deepseekv4 import get_deepseek_v4_atomic_update_groups
 
         return get_deepseek_v4_atomic_update_groups()
+    if "kimi_k3" in model_name:
+        from ..megatron_to_hf.kimi_k3 import get_kimi_k3_atomic_update_groups
+
+        return get_kimi_k3_atomic_update_groups()
     return []
 
 
@@ -263,7 +267,7 @@ def named_params_and_buffers(
 def _maybe_get_cpu_backup(x: torch.Tensor):
     from torch_memory_saver import torch_memory_saver
 
-    if (cpu_tensor := torch_memory_saver.get_cpu_backup(x)) is not None:
+    if (cpu_tensor := torch_memory_saver.get_cpu_backup(x, zero_copy=True)) is not None:
         return cpu_tensor
 
     return x

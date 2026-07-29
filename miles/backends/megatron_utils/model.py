@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
+from .fp32_param_utils import enforce_marked_param_dtypes
 from .lora_utils import save_lora_checkpoint
 
 
@@ -139,8 +140,20 @@ def setup_model_and_optimizer(
 
     if is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge":
         model = _setup_lora_model_via_bridge(args)
+        enforce_marked_param_dtypes(model)
     else:
-        model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+        provider_func = get_model_provider_func(args, role)
+        if is_lora_enabled(args) and role == "actor":
+            if "kimi_k3" not in (args.model_name or "").lower():
+                raise NotImplementedError("LoRA with --megatron-to-hf-mode raw is only implemented for Kimi K3")
+            from miles_plugins.models.kimi_k3.lora import wrap_model_provider_with_kimi_k3_lora
+
+            from .lora_utils import patch_param_grad_buffer_for_colocate_mode_lora
+
+            provider_func = wrap_model_provider_with_kimi_k3_lora(provider_func, args)
+            if args.offload_train:
+                patch_param_grad_buffer_for_colocate_mode_lora()
+        model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
@@ -585,6 +598,9 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
+    from .lora_utils import reduce_marked_lora_grads
+
+    reduce_marked_lora_grads(args[0])
     return finalize_model_grads(*args, **kwargs)
 
 

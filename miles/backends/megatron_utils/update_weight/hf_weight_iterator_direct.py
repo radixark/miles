@@ -32,6 +32,68 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
     def get_hf_weight_chunks(self, megatron_local_weights, weight_type="base"):
         rank = dist.get_rank()
 
+        if weight_type == "lora":
+            if "kimi_k3" not in self.model_name.lower():
+                raise NotImplementedError(f"Raw LoRA export is not implemented for model {self.model_name!r}")
+            from miles.backends.megatron_utils.lora_utils import _is_adapter_param_name
+            from miles_plugins.models.kimi_k3.lora import export_kimi_k3_lora_hf_chunks
+
+            cpu_backup_by_parameter = {
+                id(parameter): megatron_local_weights[name]
+                for name, parameter in named_params_and_buffers(self.args, self.model)
+                if _is_adapter_param_name(name)
+            }
+            if not cpu_backup_by_parameter:
+                raise RuntimeError("Kimi K3 LoRA export found no adapter CPU backups")
+
+            def materialize_from_cpu_backup(parameter):
+                backup = cpu_backup_by_parameter.get(id(parameter))
+                if backup is None:
+                    raise RuntimeError("Kimi K3 LoRA parameter is missing from the CPU backup")
+                return backup.cuda()
+
+            pp = get_parallel_state().pp
+            if pp.size == 1:
+                yield from export_kimi_k3_lora_hf_chunks(
+                    self.model,
+                    materialize_parameter=materialize_from_cpu_backup,
+                )
+                return
+
+            # Each rank exports only its pipeline stage's adapters, but every
+            # engine feeder rank must carry the identical full adapter stream
+            # (engine TP groups can span pipeline stages). Replay each stage's
+            # chunk stream across the PP group in stage order, mirroring the
+            # base path's cross-PP broadcast.
+            pp_group_ranks = dist.get_process_group_ranks(pp.group)
+            for pp_src, src_rank in enumerate(pp_group_ranks):
+                if pp.rank == pp_src:
+                    for chunk in export_kimi_k3_lora_hf_chunks(
+                        self.model,
+                        materialize_parameter=materialize_from_cpu_backup,
+                    ):
+                        meta = [(name, tuple(tensor.shape), tensor.dtype) for name, tensor in chunk]
+                        dist.broadcast_object_list([meta], src=src_rank, group=pp.group)
+                        for _, tensor in chunk:
+                            dist.broadcast(tensor, src=src_rank, group=pp.group)
+                        yield chunk
+                    dist.broadcast_object_list([None], src=src_rank, group=pp.group)
+                else:
+                    while True:
+                        holder = [None]
+                        dist.broadcast_object_list(holder, src=src_rank, group=pp.group)
+                        meta = holder[0]
+                        if meta is None:
+                            break
+                        chunk = [
+                            (name, torch.empty(shape, dtype=dtype, device=torch.cuda.current_device()))
+                            for name, shape, dtype in meta
+                        ]
+                        for _, tensor in chunk:
+                            dist.broadcast(tensor, src=src_rank, group=pp.group)
+                        yield chunk
+            return
+
         for megatron_local_param_infos in tqdm(
             self.megatron_local_param_info_buckets, disable=rank != 0, desc="Update weights"
         ):
@@ -167,9 +229,13 @@ def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Mo
     pp_size = get_parallel_state().pp.size
     ep_size = get_parallel_state().ep.size
 
+    from ..lora_utils import _is_adapter_param_name
+
     param_infos = {}
     rank = dist.get_rank()
     for name, param in named_params_and_buffers(args, model):
+        if _is_adapter_param_name(name):
+            continue
         param_infos[name] = ParamInfo(
             name=name,
             dtype=param.dtype,

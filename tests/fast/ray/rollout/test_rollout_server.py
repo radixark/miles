@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_dataclass_group
 

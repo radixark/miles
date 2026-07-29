@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from miles.backends.megatron_utils.lora_utils import (
+    _configure_lora_buffer_cpu_backup,
     _get_lora_class_name,
     _is_adapter_param_name,
     build_lora_sync_config,
@@ -17,6 +18,7 @@ from miles.backends.megatron_utils.lora_utils import (
     convert_target_modules_to_megatron,
     is_lora_enabled,
     is_lora_weight_name,
+    lora_rollout_base_retained,
     parse_exclude_modules,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME
@@ -216,6 +218,22 @@ class TestIsLoraEnabled:
         assert is_lora_enabled(args) is False
 
 
+@pytest.mark.parametrize(
+    "offload_rollout,offload_rollout_level,expected",
+    [
+        (False, ["kv_cache", "weight"], True),
+        (True, ["kv_cache"], True),
+        (True, ["kv_cache", "weight"], False),
+    ],
+)
+def test_lora_rollout_base_retained(offload_rollout, offload_rollout_level, expected):
+    args = Namespace(
+        offload_rollout=offload_rollout,
+        offload_rollout_level=offload_rollout_level,
+    )
+    assert lora_rollout_base_retained(args) is expected
+
+
 # ---------------------------------------------------------------------------
 # is_lora_weight_name / _is_adapter_param_name
 # ---------------------------------------------------------------------------
@@ -269,6 +287,24 @@ class TestIsAdapterParamName:
     )
     def test_negative(self, name):
         assert _is_adapter_param_name(name) is False
+
+
+@pytest.mark.parametrize("disable_param_backup", [False, True])
+def test_configure_lora_buffer_cpu_backup_preserves_param_setting(disable_param_backup):
+    """Adapter *param* buffers must keep their CPU backup so update_weights can
+    read them while the trainer sleeps; only *grad* buffers go to the
+    no-backup region. Disabling both (the original patch) leaves the weight
+    sync reading paused memory.
+    """
+    kwargs = {
+        "disable_param_buffers_cpu_backup": disable_param_backup,
+        "disable_grad_buffers_cpu_backup": False,
+    }
+
+    _configure_lora_buffer_cpu_backup(kwargs)
+
+    assert kwargs["disable_param_buffers_cpu_backup"] is disable_param_backup
+    assert kwargs["disable_grad_buffers_cpu_backup"] is True
 
 
 # ---------------------------------------------------------------------------

@@ -57,7 +57,6 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     from sglang.srt.entrypoints.http_server import launch_server
 
     multiprocessing.set_start_method("spawn", force=True)
-    server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
     p.start()
 
@@ -213,6 +212,7 @@ class SGLangEngine(RayActor):
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
+        server_args_dict = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
@@ -337,17 +337,21 @@ class SGLangEngine(RayActor):
         self,
         lora_name: str,
         config_dict: dict,
-        serialized_named_tensors: list,
+        serialized_tensors: str | list[str],
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
+        is_first_chunk: bool = True,
+        is_last_chunk: bool = True,
     ):
-        """Load a LoRA adapter. ``serialized_named_tensors[tp_rank]`` is bytes for TP rank N."""
+        """Load a LoRA adapter chunk; SGLang applies TP/EP slicing internally."""
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
-            "serialized_named_tensors": serialized_named_tensors,
+            "serialized_tensors": serialized_tensors,
             "pinned": pinned,
+            "is_first_chunk": is_first_chunk,
+            "is_last_chunk": is_last_chunk,
         }
         if load_format is not None:
             payload["load_format"] = load_format

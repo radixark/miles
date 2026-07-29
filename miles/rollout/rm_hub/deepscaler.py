@@ -36,7 +36,12 @@ def _grade_boxed_solution(model_solution, label):
 
 
 def get_deepscaler_rule_based_reward(response, label):
-    if "</think>" in response:
+    if "<|open|>response<|sep|>" in response:
+        # Kimi K-series emits a thinking channel then a response channel
+        # (`…<|close|>think<|sep|><|open|>response<|sep|>…`) instead of </think>.
+        # Grade only the response channel, where the final \boxed answer lives.
+        model_solution = response.split("<|open|>response<|sep|>")[-1]
+    elif "</think>" in response:
         model_solution = response.split("</think>")[-1]
     elif "###Response" in response:
         model_solution = response.split("###Response")[1]

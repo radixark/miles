@@ -12,6 +12,7 @@ from megatron.training.training import get_model
 import miles_plugins.mbridge  # noqa: F401
 from mbridge import AutoBridge
 from miles.backends.megatron_utils.arguments import set_default_megatron_args
+from miles.backends.megatron_utils.fp32_param_utils import enforce_marked_param_dtypes
 from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.logging_utils import configure_logger_raw
@@ -55,7 +56,15 @@ def get_args():
     def ceildiv(a, b):
         return -(a // -b)
 
-    if args.pipeline_model_parallel_size == 1 and world_size > 1:
+    auto_pipeline_parallel = (
+        args.pipeline_model_parallel_size == 1
+        and args.tensor_model_parallel_size == 1
+        and args.context_parallel_size == 1
+        and args.expert_model_parallel_size == 1
+        and args.expert_tensor_parallel_size == 1
+        and world_size > 1
+    )
+    if auto_pipeline_parallel:
         pp_size = world_size
         while True:
             args.pipeline_model_parallel_size = pp_size
@@ -113,6 +122,7 @@ def main():
     args = get_args()
     init(args)
     model = get_model(get_model_provider_func(args), ModelType.encoder_or_decoder, wrap_with_ddp=False)
+    enforce_marked_param_dtypes(model)
 
     # Load model
     hf_model_path = args.hf_checkpoint

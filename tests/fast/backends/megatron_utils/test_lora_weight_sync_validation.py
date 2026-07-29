@@ -24,7 +24,12 @@ from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.mixin import (
     DistBucketedWeightUpdateMixin,
 )
-from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import (
+    UpdateWeightFromTensor,
+    _send_to_colocated_engine,
+    _should_skip_lora_base_sync,
+    _wait_for_colocated_transfer,
+)
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 _UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
@@ -72,6 +77,132 @@ def _make_args(**overrides):
     )
     defaults.update(overrides)
     return Namespace(**defaults)
+
+
+@pytest.mark.parametrize(
+    ("is_lora", "retains_rollout_base", "check_weight_update_equal", "lora_base_synced", "expected"),
+    [
+        (False, True, False, False, False),
+        (True, False, False, False, False),
+        (True, True, False, False, True),
+        (True, True, True, False, False),
+        (True, True, True, True, True),
+    ],
+)
+def test_should_skip_lora_base_sync(
+    is_lora, retains_rollout_base, check_weight_update_equal, lora_base_synced, expected
+):
+    """Skipping the base sync is only safe when the engine still holds valid
+    base weights. Skipping when it does not leaves the engine serving whatever
+    was in the weight buffers; not skipping when it does costs a full base
+    transfer every rollout.
+    """
+    assert (
+        _should_skip_lora_base_sync(
+            is_lora=is_lora,
+            retains_rollout_base=retains_rollout_base,
+            check_weight_update_equal=check_weight_update_equal,
+            lora_base_synced=lora_base_synced,
+        )
+        is expected
+    )
+
+
+def test_colocated_transfer_keeps_producers_alive_until_receiver_finishes():
+    """The producer ranks own the CUDA IPC storage the receiver is importing,
+    so they may not release it until the receiver has acked *and* every
+    producer in the engine group has reached the barrier. Reordering these
+    frees memory that is still mapped in the engine process.
+    """
+    events = []
+    group = MagicMock()
+
+    with (
+        patch(f"{_UW_MODULE}.ray.get", side_effect=lambda _refs: events.append("receiver_done") or []),
+        patch(
+            f"{_UW_MODULE}._check_weight_sync_results", side_effect=lambda *_args, **_kwargs: events.append("checked")
+        ),
+        patch(
+            f"{_UW_MODULE}.dist.barrier", side_effect=lambda **_kwargs: events.append("producer_barrier")
+        ) as barrier,
+    ):
+        _wait_for_colocated_transfer([], group, is_lora=True)
+
+    assert events == ["receiver_done", "checked", "producer_barrier"]
+    barrier.assert_called_once_with(group=group)
+
+
+@patch(f"{_UW_MODULE}.dist")
+@patch(f"{_UW_MODULE}.HfWeightIteratorBase")
+def test_ipc_group_ignores_partial_trainer_tail(mock_iter_base, mock_dist):
+    """64 trainer ranks with a 48-GPU engine leaves a 16-rank tail reserved as
+    placeholder GPU slots. Those ranks must get no gather group at all -- the
+    off-by-one that builds a short final group makes them join a collective
+    the engine ranks never enter, and the weight sync hangs.
+    """
+    mock_dist.get_world_size.return_value = 64
+    mock_dist.get_rank.return_value = 60
+    mock_iter_base.create.return_value = MagicMock()
+
+    updater = UpdateWeightFromTensor(
+        args=_make_args(rollout_num_gpus_per_engine=48),
+        model=[MagicMock()],
+        weights_getter=lambda: {},
+        model_name="kimi_k3",
+        quantization_config=None,
+    )
+
+    mock_dist.new_group.assert_called_once_with(ranks=list(range(48)), backend="gloo")
+    assert updater._ipc_gather_group is None
+    assert updater._ipc_gather_src is None
+
+
+@pytest.mark.parametrize(
+    ("rank", "expected_engine", "expected_src"),
+    [(0, 0, 0), (8, 1, 8), (16, None, None)],
+)
+@patch(f"{_UW_MODULE}.dist")
+@patch(f"{_UW_MODULE}.HfWeightIteratorBase")
+def test_two_tp8_engines_map_trainer_ranks_and_placeholders(
+    mock_iter_base, mock_dist, rank, expected_engine, expected_src
+):
+    """Companion to the partial-tail case: each trainer rank must resolve to
+    the engine that owns its GPU offset, and ranks past the last engine
+    (rank 16 of 64 with two TP8 engines) must resolve to no engine at all.
+    """
+    mock_dist.get_world_size.return_value = 64
+    mock_dist.get_rank.return_value = rank
+    mock_dist.new_group.side_effect = lambda **kwargs: tuple(kwargs["ranks"])
+    mock_iter_base.create.return_value = MagicMock()
+
+    updater = UpdateWeightFromTensor(
+        args=_make_args(
+            rollout_num_gpus_per_engine=8,
+            actor_num_nodes=16,
+            actor_num_gpus_per_node=4,
+        ),
+        model=[MagicMock()],
+        weights_getter=lambda: {},
+        model_name="kimi_k3",
+        quantization_config=None,
+        is_lora=True,
+    )
+    engines = [MagicMock(name="engine_0"), MagicMock(name="engine_1")]
+
+    updater.connect_rollout_engines(
+        engines,
+        MagicMock(),
+        engine_gpu_counts=[8, 8],
+        engine_gpu_offsets=[0, 8],
+    )
+
+    assert updater.use_distribute is False
+    if expected_engine is None:
+        assert updater._ipc_engine is None
+        assert updater._ipc_gather_group is None
+    else:
+        assert updater._ipc_engine is engines[expected_engine]
+        assert updater._ipc_gather_src == expected_src
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +373,156 @@ class TestUpdateWeightsZeroChunks:
         updater.update_weights()
 
 
+class TestUpdateWeightsSessionOrdering:
+    @patch(f"{_UW_MODULE}.torch.cuda.ipc_collect")
+    @patch(f"{_UW_MODULE}.torch.cuda.empty_cache")
+    @patch(f"{_UW_MODULE}.torch.cuda.synchronize")
+    @patch(f"{_UW_MODULE}._check_weight_sync_results")
+    @patch(f"{_UW_MODULE}.end_weight_update")
+    @patch(f"{_UW_MODULE}.begin_weight_update")
+    @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
+    @patch(f"{_UW_MODULE}.ray")
+    @patch(f"{_UW_MODULE}.dist")
+    @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
+    def test_closes_base_session_before_materializing_lora(
+        self,
+        mock_iter_base,
+        mock_dist,
+        mock_ray,
+        _mock_gloo,
+        mock_begin,
+        mock_end,
+        _mock_check,
+        mock_synchronize,
+        mock_empty_cache,
+        mock_ipc_collect,
+    ):
+        """SGLang restores the unpacked base weights for the duration of a base
+        update session. Bridge's LoRA export then runs its own TP/EP gathers,
+        and both resident at once exceeds colocated memory. The base session
+        must be closed (and the allocator drained) before the first LoRA chunk
+        is materialized -- the failure is an OOM at 64-GPU scale, invisible in
+        any single-rank test that does not assert the phase order.
+        """
+        mock_dist.get_world_size.return_value = 1
+        mock_dist.get_rank.return_value = 0
+        mock_dist.new_group.return_value = MagicMock()
+
+        events = []
+
+        def chunks(_weights, weight_type):
+            if weight_type == "base":
+                events.append("base")
+                yield SAMPLE_BASE_ONLY_WEIGHTS
+            else:
+                events.append("lora")
+                yield SAMPLE_LORA_WEIGHTS
+                yield SAMPLE_LORA_WEIGHTS
+
+        iterator = MagicMock()
+        iterator.get_hf_weight_chunks.side_effect = chunks
+        mock_iter_base.create.return_value = iterator
+        mock_end.side_effect = lambda _engines: events.append("end_base")
+        mock_synchronize.side_effect = lambda: events.append("synchronize")
+        mock_empty_cache.side_effect = lambda: events.append("empty_cache")
+        mock_ipc_collect.side_effect = lambda: events.append("ipc_collect")
+
+        args = _make_args(
+            offload_rollout=True,
+            offload_rollout_level=["kv_cache", "weight"],
+        )
+        updater = UpdateWeightFromTensor(
+            args=args,
+            model=[MagicMock()],
+            weights_getter=lambda: {},
+            model_name="qwen",
+            quantization_config=None,
+            is_lora=True,
+        )
+        updater.rollout_engines = [MagicMock()]
+        updater.use_distribute = False
+        updater._send_base_params = MagicMock(return_value=([], []))
+        updater._send_lora_params = MagicMock(return_value=([], []))
+
+        updater.update_weights()
+
+        assert events == [
+            "base",
+            "end_base",
+            "synchronize",
+            "empty_cache",
+            "lora",
+            "ipc_collect",
+            "ipc_collect",
+            "ipc_collect",
+            "empty_cache",
+        ]
+        mock_begin.assert_called_once_with(updater.rollout_engines)
+        mock_end.assert_called_once_with(updater.rollout_engines)
+
+    @patch(f"{_UW_MODULE}.torch.cuda.ipc_collect")
+    @patch(f"{_UW_MODULE}.torch.cuda.empty_cache")
+    @patch(f"{_UW_MODULE}.torch.cuda.synchronize")
+    @patch(f"{_UW_MODULE}._check_weight_sync_results")
+    @patch(f"{_UW_MODULE}.end_weight_update")
+    @patch(f"{_UW_MODULE}.begin_weight_update")
+    @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
+    @patch(f"{_UW_MODULE}.ray")
+    @patch(f"{_UW_MODULE}.dist")
+    @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
+    def test_reaps_each_lora_chunk_after_engine_barrier(
+        self,
+        mock_iter_base,
+        mock_dist,
+        mock_ray,
+        _mock_gloo,
+        _mock_begin,
+        _mock_end,
+        _mock_check,
+        _mock_synchronize,
+        _mock_empty_cache,
+        mock_ipc_collect,
+    ):
+        """Each flattened LoRA bucket is collected only after the receiver ack
+        plus the per-engine producer barrier, never before the next send."""
+        mock_dist.get_world_size.return_value = 1
+        mock_dist.get_rank.return_value = 0
+        mock_dist.new_group.return_value = MagicMock(name="ipc_group")
+
+        def chunks(_weights, weight_type):
+            if weight_type == "base":
+                return iter([])
+            return iter([SAMPLE_LORA_WEIGHTS, SAMPLE_LORA_WEIGHTS, SAMPLE_LORA_WEIGHTS])
+
+        iterator = MagicMock()
+        iterator.get_hf_weight_chunks.side_effect = chunks
+        mock_iter_base.create.return_value = iterator
+
+        updater = UpdateWeightFromTensor(
+            args=_make_args(),
+            model=[MagicMock()],
+            weights_getter=lambda: {},
+            model_name="kimi_k3",
+            quantization_config=None,
+            is_lora=True,
+        )
+        updater.rollout_engines = [MagicMock()]
+        updater.use_distribute = False
+
+        events = []
+        ipc_group = updater._ipc_gather_group
+        updater._send_lora_params = MagicMock(side_effect=lambda *_a, **_k: (events.append("send"), ([], []))[1])
+        mock_dist.barrier.side_effect = lambda group=None: events.append(
+            "engine_barrier" if group is ipc_group else "global_barrier"
+        )
+        mock_ipc_collect.side_effect = lambda: events.append("ipc_collect")
+
+        updater.update_weights(resume_generation=False)
+
+        lora_events = [e for e in events if e != "global_barrier"]
+        assert lora_events == ["send", "engine_barrier", "ipc_collect"] * 3 + ["ipc_collect"]
+
+
 # ---------------------------------------------------------------------------
 # FlattenedTensorBucket round-trip correctness
 # ---------------------------------------------------------------------------
@@ -370,8 +651,123 @@ class _FakeRemote:
 
 class _FakeEngine:
     def __init__(self, load_result=None):
+        self.load_lora_adapter_from_tensors = _FakeRemote(result=load_result)
         self.load_lora_adapter_from_distributed = _FakeRemote(result=load_result)
         self.unload_lora_adapter = _FakeRemote()
+        self.update_weight_version = _FakeRemote(result="version-ref")
+
+
+def test_colocated_lora_sync_sends_one_local_ipc_payload_per_engine_rank():
+    """Cross-repo wire contract with SGLang's
+    ``LoadLoRAAdapterFromTensorsReqInput``: one CUDA IPC payload per engine
+    rank under ``serialized_tensors`` (the old ``serialized_named_tensors``
+    shape sent rank 0's handle to every rank), and the weight version is
+    published only after the adapter is complete.
+    """
+    engine = _FakeEngine(load_result="load-ref")
+
+    with (
+        patch(f"{_UW_MODULE}.dist") as dist_mock,
+        patch(f"{_UW_MODULE}.MultiprocessingSerializer.serialize", return_value="rank0-payload"),
+    ):
+        dist_mock.get_rank.return_value = 0
+        dist_mock.get_world_size.return_value = 2
+
+        def gather_object(_local, object_gather_list, **_kwargs):
+            object_gather_list[:] = [["rank0-payload"], ["rank1-payload"]]
+
+        dist_mock.gather_object.side_effect = gather_object
+        refs, _ = _send_to_colocated_engine(
+            SAMPLE_LORA_WEIGHTS,
+            ipc_engine=engine,
+            ipc_gather_src=0,
+            ipc_gather_group=MagicMock(),
+            weight_version=7,
+            lora_config={"r": 32},
+            lora_name=LORA_ADAPTER_NAME,
+        )
+
+    assert refs == ["load-ref", "version-ref"]
+    kwargs = engine.load_lora_adapter_from_tensors.calls[0]
+    assert kwargs["serialized_tensors"] == ["rank0-payload", "rank1-payload"]
+    assert kwargs["is_first_chunk"] is True
+    assert kwargs["is_last_chunk"] is True
+    assert "serialized_named_tensors" not in kwargs
+    assert kwargs["load_format"] == "flattened_bucket"
+    assert engine.update_weight_version.calls == [{"weight_version": "7"}]
+    dist_mock.gather_object.assert_called_once()
+
+
+def test_colocated_lora_sync_does_not_finalize_an_intermediate_chunk():
+    """K3's adapter is sent in many chunks. Unload fires only on the first and
+    the version bump only on the last: unloading mid-stream drops the chunks
+    already delivered, and bumping the version early advertises a partial
+    adapter as the current policy.
+    """
+    engine = _FakeEngine(load_result="load-ref")
+
+    with (
+        patch(f"{_UW_MODULE}.dist") as dist_mock,
+        patch(f"{_UW_MODULE}.MultiprocessingSerializer.serialize", return_value="rank0-payload"),
+    ):
+        dist_mock.get_rank.return_value = 0
+        dist_mock.get_world_size.return_value = 1
+
+        def gather_object(_local, object_gather_list, **_kwargs):
+            object_gather_list[:] = [["rank0-payload"]]
+
+        dist_mock.gather_object.side_effect = gather_object
+        refs, _ = _send_to_colocated_engine(
+            SAMPLE_LORA_WEIGHTS,
+            ipc_engine=engine,
+            ipc_gather_src=0,
+            ipc_gather_group=MagicMock(),
+            weight_version=7,
+            lora_config={"r": 32},
+            lora_name=LORA_ADAPTER_NAME,
+            lora_loaded=True,
+            lora_is_first_chunk=False,
+            lora_is_last_chunk=False,
+        )
+
+    assert refs == ["load-ref"]
+    assert engine.unload_lora_adapter.calls == []
+    assert engine.update_weight_version.calls == []
+    kwargs = engine.load_lora_adapter_from_tensors.calls[0]
+    assert kwargs["is_first_chunk"] is False
+    assert kwargs["is_last_chunk"] is False
+
+
+def test_colocated_lora_sync_non_source_contributes_local_ipc_payload():
+    """``gather_object`` is collective over the engine group, so a non-source
+    rank must still build its bucket and enter the gather even though it sends
+    nothing to the engine itself. An early return on non-source ranks hangs the
+    sync instead of failing.
+    """
+    engine = _FakeEngine(load_result="load-ref")
+
+    with (
+        patch(f"{_UW_MODULE}.dist") as dist_mock,
+        patch(f"{_UW_MODULE}.FlattenedTensorBucket") as bucket_mock,
+        patch(f"{_UW_MODULE}.MultiprocessingSerializer.serialize", return_value="rank1-payload") as serialize_mock,
+    ):
+        dist_mock.get_rank.return_value = 1
+        refs, long_lived_tensors = _send_to_colocated_engine(
+            SAMPLE_LORA_WEIGHTS,
+            ipc_engine=engine,
+            ipc_gather_src=0,
+            ipc_gather_group=MagicMock(),
+            weight_version=7,
+            lora_config={"r": 32},
+            lora_name=LORA_ADAPTER_NAME,
+        )
+
+    assert refs == []
+    assert len(long_lived_tensors) == 1
+    assert set(long_lived_tensors[0]) == {"flattened_tensor", "metadata"}
+    bucket_mock.assert_called_once_with(named_tensors=SAMPLE_LORA_WEIGHTS)
+    serialize_mock.assert_called_once()
+    dist_mock.gather_object.assert_called_once()
 
 
 class TestDistLoraUpdateOrchestration:

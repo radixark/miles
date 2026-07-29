@@ -21,14 +21,17 @@ delays (5s / 10s / 20s) without actually waiting.  The trick:
 This lets us simulate 20 seconds of polling in <1ms of real time.
 """
 
+import asyncio
 import multiprocessing
 import socket
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+import miles.utils.http_utils as http_utils
 from miles.utils.http_utils import wait_for_server_ready
 
 
@@ -194,3 +197,44 @@ class TestWaitForServerReadySimulatedDelays:
 
         # The fake clock should have advanced past the timeout
         assert fake_time[0] >= timeout
+
+
+def test_http_client_is_created_per_event_loop(monkeypatch):
+    clients = []
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.closed = False
+            clients.append(self)
+
+        async def aclose(self):
+            self.closed = True
+
+    monkeypatch.setattr(http_utils, "_http_clients", {})
+    monkeypatch.setattr(http_utils.httpx, "AsyncClient", FakeAsyncClient)
+    http_utils.init_http_client(
+        SimpleNamespace(
+            rollout_num_gpus=64,
+            rollout_num_gpus_per_engine=48,
+            sglang_server_concurrency=16,
+            use_distributed_post=False,
+        )
+    )
+
+    async def get_client_twice():
+        first = http_utils._get_http_client()
+        second = http_utils._get_http_client()
+        return first, second
+
+    first_loop_clients = asyncio.run(get_client_twice())
+    second_loop_clients = asyncio.run(get_client_twice())
+
+    assert first_loop_clients[0] is first_loop_clients[1]
+    assert second_loop_clients[0] is second_loop_clients[1]
+    assert first_loop_clients[0] is not second_loop_clients[0]
+    assert len(clients) == 2
+    for client in clients:
+        limits = client.kwargs["limits"]
+        assert limits.max_connections == 16 * 64 // 48
+        assert limits.max_keepalive_connections == 0

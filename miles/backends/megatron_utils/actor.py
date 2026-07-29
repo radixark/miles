@@ -55,7 +55,6 @@ from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
-from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 if TYPE_CHECKING:
@@ -225,6 +224,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
                 update_weight_cls = UpdateWeightFromDiskDelta
             else:
+                from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
+
                 update_weight_cls = UpdateWeightP2P
         self.weight_updater = update_weight_cls(
             self.args,
@@ -263,8 +264,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
         destroy_process_groups()
 
-        tag = "default" if is_lora_enabled(self.args) else None
-        torch_memory_saver.pause(tag=tag)
+        if is_lora_enabled(self.args):
+            torch_memory_saver.pause(tag="grad_buffer")
+            torch_memory_saver.pause(tag="default")
+        else:
+            torch_memory_saver.pause(tag=None)
 
         print_memory("after offload model")
 
@@ -277,8 +281,11 @@ class MegatronTrainRayActor(TrainRayActor):
         assert self.args.offload_train
         print_memory("before wake_up model")
 
-        tag = "default" if is_lora_enabled(self.args) else None
-        torch_memory_saver.resume(tag=tag)
+        if is_lora_enabled(self.args):
+            torch_memory_saver.resume(tag="default")
+            torch_memory_saver.resume(tag="grad_buffer")
+        else:
+            torch_memory_saver.resume(tag=None)
 
         clear_memory()
         reload_process_groups()
@@ -549,6 +556,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 maybe_finalize_async_save(blocking=True)
 
             from megatron.training.checkpointing import get_checkpoint_name
+
             from miles.utils.misc import load_function
 
             checkpoint_dir = get_checkpoint_name(self.args.save, rollout_id, return_base_dir=True)
@@ -600,7 +608,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
-            self.weight_updater.update_weights()
+            if self.args.colocate:
+                self.weight_updater.update_weights(resume_generation=not self.args.offload_train)
+            else:
+                self.weight_updater.update_weights()
+            torch.cuda.ipc_collect()
             print_memory("after update_weights")
 
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
@@ -624,6 +636,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             destroy_process_groups()
+            print_memory("after update_weights process-group cleanup")
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
