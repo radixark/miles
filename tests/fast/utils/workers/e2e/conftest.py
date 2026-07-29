@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
@@ -80,6 +81,10 @@ async def server(shared_server, request) -> AsyncIterator[ServerProcess]:
     )
 
     yield shared_server
+
+    async with httpx.AsyncClient(base_url=shared_server.url, timeout=30.0, trust_env=False) as client:
+        with contextlib.suppress(Exception):
+            await RpcWorkerHandle(E2eWorker, server_url=shared_server.url, http_client=client).release_every_gate()
 
     if request.node.rep_call is not None and request.node.rep_call.failed:
         print(f"\n--- shared server log tail ---\n{shared_server.logs()[-4000:]}")
