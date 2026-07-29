@@ -276,6 +276,48 @@ def test_trims_trailing_rollouts_that_dont_fill_a_step():
     )
 
 
+def test_partial_final_step_opt_in():
+    """--allow-partial-train-step: 5 rollouts, gbs=2 -> 2 full steps + 1 partial
+    step of the trailing rollout, covering every sample."""
+    rollout_indices = [0, 0, 1, 2, 2, 3, 4, 4]
+    total_lengths = [3] * 8
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
+    args.allow_partial_train_step = True
+    tp = make_tp(dp_size=1)
+
+    partitions, mbi, nmb, gbs_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=2, rollout_indices=rollout_indices
+    )
+
+    assert gbs_per_step == [2, 2, 1]
+    assert len(nmb) == 3
+    assert_invariants(
+        partitions,
+        mbi,
+        nmb,
+        dp_size=1,
+        expected_global_sample_indices=range(8),
+        total_lengths=total_lengths,
+        max_per_bin=12,
+    )
+
+
+def test_partial_final_step_skipped_when_below_dp_size():
+    """A trailing rollout with fewer samples than dp_size cannot form a step."""
+    rollout_indices = [0, 0, 1, 1, 2]
+    total_lengths = [3] * 5
+    args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
+    args.allow_partial_train_step = True
+    tp = make_tp(dp_size=2)
+
+    _, _, nmb, gbs_per_step = build_dp_schedule(
+        args, tp, total_lengths, global_batch_size=2, rollout_indices=rollout_indices
+    )
+
+    assert gbs_per_step == [2]
+    assert len(nmb) == 1
+
+
 def test_rejects_when_fewer_rollouts_than_gbs():
     """gbs=4 with only 3 distinct rollouts -> cannot form one step."""
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=12)
