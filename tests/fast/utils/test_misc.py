@@ -1,8 +1,10 @@
 import logging
+import socket
+from contextlib import ExitStack
 
 import pytest
 
-from miles.utils.misc import filter_keys
+from miles.utils.misc import NodeProbeMixin, filter_keys, get_free_port
 
 
 class TestFilterKeys:
@@ -37,3 +39,26 @@ class TestFilterKeys:
             with pytest.raises(KeyError):
                 filter_keys(d, ["a", "missing"])
         assert any("filter_keys" in record.message for record in caplog.records)
+
+
+class TestNodeProbeMixin:
+    def test_get_node_ip_returns_nonempty_string(self):
+        """The node ip probe answers with a usable address string."""
+        node_ip = NodeProbeMixin._get_node_ip()
+        assert isinstance(node_ip, str) and node_ip
+
+    def test_get_free_port_block_returns_bindable_consecutive_ports(self) -> None:
+        """A block request returns five ports that can be bound simultaneously."""
+        candidate_start: int = get_free_port(start_port=15000, consecutive=10)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied_socket:
+            occupied_socket.bind(("", candidate_start + 4))
+            occupied_socket.listen()
+            first_port: int = NodeProbeMixin._get_free_port_block(start_port=candidate_start, count=5)
+
+            with ExitStack() as stack:
+                for port in range(first_port, first_port + 5):
+                    available_socket: socket.socket = stack.enter_context(
+                        socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    )
+                    available_socket.bind(("", port))
