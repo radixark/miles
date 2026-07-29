@@ -4,7 +4,7 @@ import os
 
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils import object_store
-from miles.utils.arguments import parse_args
+from miles.utils.arguments import parse_args, validate_async_off_policy_correction
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
@@ -18,9 +18,10 @@ from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 logger = logging.getLogger(__name__)
 
 
-# The framework supports other asynchronous approaches such as fully async (which is shown in examples/full_async).
+# The framework supports other asynchronous approaches such as fully async (which is shown in examples/fully_async).
 async def train(args):
     assert not args.colocate, "Colocation is not supported for async training."
+    validate_async_off_policy_correction(args)
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
     # allocate the GPUs

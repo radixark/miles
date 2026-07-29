@@ -93,6 +93,21 @@ def extract_tool_dicts(tools: list[dict] | None) -> list[dict] | None:
     return [tool.model_dump() for tool in validated]
 
 
+def merge_chat_template_kwargs(
+    base: dict[str, Any],
+    overrides: dict[str, Any],
+    *,
+    alias_keys: Collection[str] = (),
+) -> dict[str, Any]:
+    """Merge one config layer, replacing base aliases as a group."""
+    merged = dict(base)
+    if any(key in overrides for key in alias_keys):
+        for key in alias_keys:
+            merged.pop(key, None)
+    merged.update(overrides)
+    return merged
+
+
 def apply_chat_template_from_str(
     chat_template: str,
     messages: list[dict],

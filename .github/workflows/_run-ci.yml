@@ -134,7 +134,27 @@ jobs:
 
       - name: Reconcile Miles dependencies
         shell: bash
-        run: python -m pip install -r "$GITHUB_WORKSPACE/requirements.txt" --break-system-packages
+        run: |
+          # The image pins cuDNN deliberately: transformer_engine's fused attention needs a
+          # newer build than torch's own exact pin, so the Dockerfile installs it last. This
+          # resolve drags it back down to whatever torch asks for, which makes fused attention
+          # backward fail with CUDNN_STATUS_BAD_PARAM. Record what the image shipped and put it
+          # back afterwards; --no-deps so nothing else in the resolved set moves.
+          pinned=""
+          for pkg in nvidia-cudnn-cu13 nvidia-cudnn-cu12; do
+            v=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}' || true)
+            if [ -n "$v" ]; then pinned="$pinned $pkg==$v"; fi
+          done
+          python -m pip install -r "$GITHUB_WORKSPACE/requirements.txt" --break-system-packages
+          for spec in $pinned; do
+            pkg=${spec%%==*}
+            want=${spec##*==}
+            got=$(python -m pip show "$pkg" 2>/dev/null | awk '/^Version:/{print $2}' || true)
+            if [ -n "$got" ] && [ "$got" != "$want" ]; then
+              echo "Restoring image pin: $pkg $got -> $want"
+              python -m pip install --no-deps --break-system-packages "$spec"
+            fi
+          done
 
       - name: Sync dependency sources
         if: ${{ !inputs.skip_dependency_install }}

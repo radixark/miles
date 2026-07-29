@@ -12,12 +12,6 @@ try:
 except ImportError:
     per_block_cast_to_fp8 = None
 
-# mxfp8
-try:
-    from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
-except ImportError:
-    mxfp8_group_quantize = None
-
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
 except ImportError:
@@ -31,7 +25,6 @@ except ImportError:
     from sglang.srt.model_executor.model_runner import FlattenedTensorBucket  # type: ignore[import]
 
 __all__ = [
-    "mxfp8_group_quantize",
     "per_block_cast_to_fp8",
     "quant_weight_ue8m0",
     "transform_scale_ue8m0",

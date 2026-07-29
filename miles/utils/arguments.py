@@ -1279,13 +1279,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--custom-tis-function-path",
                 type=str,
                 default=None,
-                help="Path to the custom TIS/RS function (e.g., examples/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
+                help="Path to the custom TIS/RS function (e.g., examples/infra_features/train_infer_mismatch_helper/mis.py:compute_mis_weights_with_cp).",
             )
             parser.add_argument(
                 "--custom-pg-loss-reducer-function-path",
                 type=str,
                 default=None,
-                help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/Dr.GRPO/custom_reducer.py:get_pg_loss_reducer).",
+                help="Path to a custom reducer function for pg_loss only. When set, pg_loss will use this custom reducer while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean. (e.g., examples/experimental/DrGRPO/custom_reducer.py:get_pg_loss_reducer).",
             )
 
             parser.add_argument(
@@ -2947,6 +2947,27 @@ def miles_validate_args(args):
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
     _maybe_apply_dumper_overrides(args)
+
+
+def validate_async_off_policy_correction(args) -> None:
+    """Require an explicit behavior-policy choice for async PPO training.
+
+    In the async train loop the next rollout is generated before the current
+    weight update is published, so samples can come from a stale policy. With
+    the default flags the PPO ratio denominator (``log_probs``) is recomputed
+    by the *current* actor, silently anchoring clipping (and KL-shaped
+    advantages) to a policy that never generated the trajectory; the recorded
+    ``weight_versions`` are a metric, not an enforcement mechanism.
+    """
+    if not args.use_critic:
+        return
+    assert args.use_rollout_logprobs or args.use_tis or args.keep_old_actor, (
+        "Async PPO training requires an explicit behavior-policy correction, because rollouts are "
+        "generated before the current weight update while log probs are recomputed by the current "
+        "actor by default. Pass one of: --use-rollout-logprobs (use the rollout engine's log probs "
+        "as the ratio denominator), --use-tis (truncated importance sampling correction), or "
+        "--keep-old-actor (recompute the denominator with the weights the rollout engines used)."
+    )
 
 
 def _maybe_apply_dumper_overrides(args) -> None:

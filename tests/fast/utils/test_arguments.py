@@ -13,6 +13,7 @@ from miles.utils.arguments import (
     _resolve_ft_components,
     get_miles_extra_args_provider,
     miles_validate_args,
+    validate_async_off_policy_correction,
 )
 from miles.utils.misc import function_registry
 
@@ -502,3 +503,27 @@ def test_sglang_parallel_size_aliases_keep_last_value():
     args = parser.parse_args(["--sglang-data-parallel-size", "2", "--sglang-dp-size", "3"])
 
     assert args.sglang_dp_size == 3
+
+
+def _make_async_ppo_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        use_critic=True,
+        use_rollout_logprobs=False,
+        use_tis=False,
+        keep_old_actor=False,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class TestValidateAsyncOffPolicyCorrection:
+    def test_ppo_without_correction_is_rejected(self):
+        with pytest.raises(AssertionError, match="behavior-policy correction"):
+            validate_async_off_policy_correction(_make_async_ppo_args())
+
+    @pytest.mark.parametrize("flag", ["use_rollout_logprobs", "use_tis", "keep_old_actor"])
+    def test_ppo_with_any_correction_passes(self, flag):
+        validate_async_off_policy_correction(_make_async_ppo_args(**{flag: True}))
+
+    def test_non_ppo_estimators_are_unaffected(self):
+        validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))

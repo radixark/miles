@@ -108,8 +108,8 @@ canonical recipe leaves it commented out by default but the flag is available.
 
 Reference recipes:
 
-* [`examples/low_precision/run-qwen3-4b-fp8.sh`](https://github.com/radixark/miles/blob/main/examples/low_precision/run-qwen3-4b-fp8.sh) — single-node Qwen3-4B.
-* [`examples/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh`](https://github.com/radixark/miles/blob/main/examples/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh) — two-node Qwen3-30B-A3B.
+* [`examples/infra_features/low_precision/run-qwen3-4b-fp8.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-4b-fp8.sh) — single-node Qwen3-4B.
+* [`examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh) — two-node Qwen3-30B-A3B.
 
 ### 3. Unified MXFP8 (Blackwell)
 
@@ -170,7 +170,7 @@ config is rewritten with:
 
 **Reference recipe**: [`scripts/run_qwen3_30b_a3b.py`](https://github.com/radixark/miles/blob/main/scripts/run_qwen3_30b_a3b.py)
 with `--rollout-mxfp8 --train-mxfp8 --hardware B200`. There is no dedicated
-shell script under `examples/low_precision/` yet.
+shell script under `examples/infra_features/low_precision/` yet.
 
 ### 4. NVFP4 (experimental)
 

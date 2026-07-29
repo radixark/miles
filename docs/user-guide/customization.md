@@ -52,7 +52,7 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
 `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when
 `enable_experimental_rollout_refactor()` is on.
 
-**Reference:** [`examples/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/multi_agent/rollout_with_multi_agents.py).
+**Reference:** [`examples/experimental/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/experimental/multi_agent/rollout_with_multi_agents.py).
 
 ### `--custom-generate-function-path`
 
@@ -64,7 +64,7 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
     ...
 ```
 
-**Reference:** [`examples/search-r1/generate_with_search.py`](https://github.com/radixark/miles/blob/main/examples/search-r1/generate_with_search.py).
+**Reference:** [`examples/experimental/search-r1/generate_with_search.py`](https://github.com/radixark/miles/blob/main/examples/experimental/search-r1/generate_with_search.py).
 
 ### `--data-source-path`
 
@@ -176,7 +176,7 @@ objectives or multi-objective work.
 Importance sampling correction for off-policy training when train and inference
 diverge.
 
-**Reference:** [`examples/train_infer_mismatch_helper/mis.py`](https://github.com/radixark/miles/blob/main/examples/train_infer_mismatch_helper/mis.py).
+**Reference:** [`examples/infra_features/train_infer_mismatch_helper/mis.py`](https://github.com/radixark/miles/blob/main/examples/infra_features/train_infer_mismatch_helper/mis.py).
 
 ### `--custom-pg-loss-reducer-function-path`
 
@@ -191,7 +191,7 @@ def get_pg_loss_reducer(
 ```
 
 Use case: Dr.GRPO divides by a constant instead of effective token count.
-**Reference:** [`examples/DrGRPO/custom_reducer.py`](https://github.com/radixark/miles/blob/main/examples/DrGRPO/custom_reducer.py).
+**Reference:** [`examples/experimental/DrGRPO/custom_reducer.py`](https://github.com/radixark/miles/blob/main/examples/experimental/DrGRPO/custom_reducer.py).
 
 ### `--custom-convert-samples-to-train-data-path`
 

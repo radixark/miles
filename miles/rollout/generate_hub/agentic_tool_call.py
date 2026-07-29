@@ -125,17 +125,13 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=sample)
 
-    if not input.args.generate_multi_samples:
-        samples = merge_samples(samples, input.state.tokenizer)
-        samples.metadata.update(session_metadata)
-    else:
-        samples[-1].metadata.update(session_metadata)
-    return GenerateFnOutput(samples=samples)
+    sample = merge_samples(samples, input.state.tokenizer)
+    sample.metadata.update(session_metadata)
+    return GenerateFnOutput(samples=sample)
 
 
 def _add_arguments(parser: argparse.ArgumentParser):
     parser.add_argument("--custom-agent-function-path", type=str)
-    parser.add_argument("--generate-multi-samples", action="store_true", default=False)
     parser.add_argument(
         "--max-seq-len",
         type=int,

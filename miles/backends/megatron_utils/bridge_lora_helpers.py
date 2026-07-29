@@ -144,6 +144,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.recompute_num_layers = args.recompute_num_layers
     provider.recompute_modules = args.recompute_modules
     provider.distribute_saved_activations = args.distribute_saved_activations
+    provider.attention_backend = args.attention_backend
     provider.variable_seq_lengths = True
     provider.moe_token_dispatcher_type = "alltoall"
     provider.moe_router_load_balancing_type = "none"
