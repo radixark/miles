@@ -4,7 +4,6 @@ import logging
 import multiprocessing
 import os
 
-import httpx
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 
@@ -123,7 +122,7 @@ class SGLangEngine(RayActor):
         ip_part, port_part = dist_init_addr.rsplit(":", 1)
         dist_init_addr = f"{format_v6_uri(ip_part)}:{port_part}"
 
-        server_args_dict, external_engine_need_check_fields = _compute_server_args(
+        server_args_dict = _compute_server_args(
             self.args,
             self.rank,
             dist_init_addr,
@@ -144,30 +143,7 @@ class SGLangEngine(RayActor):
 
         self.server_url = build_server_url(self.server_host, self.server_port)
 
-        if self.args.rollout_external:
-            self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)
-        else:
-            self._init_normal(server_args_dict)
-
-    def _init_external(self, expect_server_args, external_engine_need_check_fields):
-        logger.info(f"Use external SGLang engine (rank={self.rank}, expect_server_args={expect_server_args})")
-
-        def _get_actual_server_args():
-            response = httpx.get(f"{self.server_url}/get_server_info", timeout=None)
-            response.raise_for_status()
-            return response.json()
-
-        def _sanity_check_server_args(actual_server_args, expect_server_args):
-            for name in external_engine_need_check_fields:
-                expect_value = expect_server_args.get(name)
-                actual_value = actual_server_args.get(name)
-                assert (
-                    actual_value == expect_value
-                ), f"{name=} {expect_value=} {actual_value=} {expect_server_args=} {actual_server_args=}"
-
-        async_utils.run(wait_server_healthy(server_url=self.server_url, api_key=None, is_process_alive=lambda: True))
-        actual_server_args = _get_actual_server_args()
-        _sanity_check_server_args(actual_server_args, expect_server_args)
+        self._init_normal(server_args_dict)
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
@@ -178,18 +154,12 @@ class SGLangEngine(RayActor):
         self.process = launch_server_process(server_args)
 
     def shutdown(self):
-        if self.args.rollout_external:
-            return
-
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
         kill_process_tree(self.process.pid)
 
     def simulate_crash(self):
-        if self.args.rollout_external or not getattr(self, "process", None):
-            logger.info(
-                "simulate_crash called but no local engine process exists (rollout_external=%s); skip kill",
-                self.args.rollout_external,
-            )
+        if not getattr(self, "process", None):
+            logger.info("simulate_crash called but no local engine process exists; skip kill")
             return
 
         logger.info(f"Simulating crash on engine {self.server_host}:{self.server_port}...")
@@ -319,17 +289,4 @@ def _compute_server_args(
         for key in unused_keys:
             kwargs.pop(key)
 
-    return kwargs, external_engine_need_check_fields
-
-
-_EXTERNAL_ENGINE_SKIP_CHECK_FIELDS = [
-    "model_path",
-    "trust_remote_code",
-    "random_seed",
-    "nccl_port",
-    "dist_init_addr",
-    "skip_server_warmup",
-    "enable_draft_weights_cpu_backup",
-    "enable_metrics",
-    "mem_fraction_static",
-]
+    return kwargs
