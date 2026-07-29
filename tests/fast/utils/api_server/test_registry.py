@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from miles.utils.ft_utils.control_server.registry import _CellRegistry
+from miles.utils.ft_utils.api_server.registry import _CellRegistry
 
 from .conftest import MockHandle
 
