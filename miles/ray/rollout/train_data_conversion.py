@@ -98,15 +98,7 @@ def convert_samples_to_train_data(
         loss_masks.append(sample.loss_mask)
     train_data["loss_masks"] = loss_masks
 
-    # Per-rollout aggregate, precomputed here (where every sample of every
-    # rollout is visible) and broadcast per-sample so the per-mb loss reducer
-    # uses the correct whole-rollout denominator even when a rollout's samples
-    # land in different micro-batches:
-    #
-    #   ``rollout_mask_sums[i]`` — sum of loss-mask totals over every sample in
-    #   sample i's rollout. Used as the reducer's denominator so summing
-    #   partial contributions across mbs yields one token-weighted mean per
-    #   rollout. Equals ``sum(loss_masks[i])`` when 1 rollout = 1 sample.
+    # rollout_mask_sums[i]: whole-rollout loss-mask total, broadcast per sample.
     rollout_id_list = train_data["rollout_ids"]
     mask_sums_per_sample = [sum(m) for m in loss_masks]
     rollout_total_mask: dict[int, int] = {}

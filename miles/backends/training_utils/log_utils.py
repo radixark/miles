@@ -181,10 +181,6 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                         "opd_reverse_kl",
                         "entropy",
                     ]:
-                        # Same per-rollout denominators as the training loss, so
-                        # reported log_probs / returns / advantages live in the
-                        # same mean space as the gradient signal. No-op while
-                        # 1 rollout = 1 sample.
                         sum_of_sample_mean = get_sum_of_sample_mean(
                             total_lengths,
                             response_lengths,
@@ -302,10 +298,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             for p, val in correct_response_length_percentile.items():
                 rollout_data[f"correct_length/{p}"] = [val] * num_correct_responses
             if len(correct_entropy) > 0:
-                # NOTE: per-sample mean over the correct subset, not per-rollout —
-                # a rollout's siblings may not all be correct, and slicing
-                # ``rollout_mask_sums`` here would leave a denominator that still
-                # includes incorrect siblings.
+                # per-sample mean over the correct subset, not per-rollout
                 sum_of_sample_mean = get_sum_of_sample_mean(
                     correct_total_lengths, correct_response_lengths, correct_loss_masks, sample_denoms=None
                 )
@@ -400,13 +393,8 @@ def aggregate_train_losses(
     Args:
         losses_reduced: List of log_dict from each micro-batch.
             Each log_dict has format: {"keys": list[str], "values": torch.Tensor}
-        step_global_batch_size: Sample count for this step (total across DP).
-            When set (megatron, per-rollout-mean metrics), the divisor is this
-            constant and no CP factor applies: each metric is a sum of
-            per-sample means whose CP-chunked partial numerators reconstruct
-            exactly once under the DP*CP all-reduce. None keeps the legacy
-            reduction: divisor = all-reduced ``values[0]`` (CP-inflated sample
-            count), cancelled by the ``cp_size`` multiplier.
+        step_global_batch_size: constant divisor (no CP factor); None keeps
+            the legacy values[0]-based reduction.
 
     Returns:
         Dictionary mapping metric names to averaged values.
@@ -432,7 +420,6 @@ def aggregate_train_losses(
     loss_reduced = {}
     values = values.tolist()
     if step_global_batch_size is not None and values[0] == 0:
-        # Per-rollout-mean mode: constant divisor, no CP inflation to cancel.
         num_samples_or_tokens = step_global_batch_size
         cp_factor = 1
     else:

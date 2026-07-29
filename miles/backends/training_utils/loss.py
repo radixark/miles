@@ -182,11 +182,7 @@ def loss_function(
         if apply_megatron_loss_scaling:
             loss = loss * parallel_state.cp.size
 
-    # values[0] is the reducer's denominator after the DP*CP all-reduce. For
-    # per-token loss it must be the all-reduced token total. When the caller
-    # provides step_global_batch_size the divisor is that constant, so leave a
-    # 0 placeholder and let aggregate_train_losses substitute it; legacy
-    # callers (fsdp/torchtitan) keep the all-reduced sample count.
+    # values[0]: reducer denominator; 0 = constant step_global_batch_size mode.
     if args.calculate_per_token_loss:
         denominator = num_tokens
     elif step_global_batch_size is not None:

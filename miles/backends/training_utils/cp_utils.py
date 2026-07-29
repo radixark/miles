@@ -98,18 +98,8 @@ def get_sum_of_sample_mean(
     max_seq_lens: list[int] | None = None,
     sample_denoms: list[torch.Tensor] | torch.Tensor | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
-    """
-    Calculate correct sample mean for CP.
-
-    The default (``sample_denoms=None``) is the legacy per-sample mean: each
-    sample's denominator is its own ``loss_mask.sum()``. Callers that want a
-    per-rollout token-weighted mean pass precomputed per-sample denominators
-    (``rollout_mask_sums``, already GPU tensors) where every sample in the same
-    rollout carries the same value — the sum of that rollout's mask totals
-    across every sibling sample in the step. Precomputing at the step level
-    rather than per-mb is required, otherwise a rollout whose samples land in
-    different micro-batches would get a partial denominator on each side.
-    """
+    """Calculate correct sample mean for CP; ``sample_denoms`` overrides the
+    per-sample ``loss_mask.sum()`` denominators (e.g. ``rollout_mask_sums``)."""
     if sample_denoms is None:
         sample_denoms = [m.sum() for m in loss_masks]
 
