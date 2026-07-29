@@ -62,3 +62,9 @@ class TestNodeProbeMixin:
                         socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     )
                     available_socket.bind(("", port))
+
+    def test_get_gpu_uuids_returns_one_entry_per_gpu(self):
+        """The uuid probe is best-effort: without NVML it still answers per gpu."""
+        uuids = NodeProbeMixin._get_gpu_uuids([0, 1, 2])
+        assert len(uuids) == 3
+        assert all(uuid is None or isinstance(uuid, str) for uuid in uuids)

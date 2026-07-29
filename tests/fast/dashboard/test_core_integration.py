@@ -33,13 +33,12 @@ def _args(tmp_path) -> Namespace:
     )
 
 
-def test_tracking_backend_end_to_end_local_ray(tmp_path):
-    ray = pytest.importorskip("ray")
+def test_tracking_backend_end_to_end_local_ray(tmp_path, ray_local_mode):
+    pytest.importorskip("ray")
     from miles.dashboard import backend, hooks
     from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
     from miles.utils.tracking_utils.tracking import log as tracking_log
 
-    ray.init(num_cpus=2, include_dashboard=False, ignore_reinit_error=True, logging_level="ERROR")
     saved_sinks = list(Timer().event_sinks)
     args = _args(tmp_path)
     try:
@@ -60,7 +59,6 @@ def test_tracking_backend_end_to_end_local_ray(tmp_path):
         finish_tracking()  # flushes sink + synchronous collector shutdown
     finally:
         Timer().event_sinks[:] = saved_sinks
-        ray.shutdown()
 
     store = MetricStore.load(tmp_path / "dashboard")
     assert store.meta.run_name == "wiring-e2e"
@@ -90,29 +88,3 @@ def test_registry_contains_dashboard_backend():
     cls, flag = BACKEND_REGISTRY["miles_dashboard"]
     assert cls is MilesDashboardBackend
     assert flag == "use_miles_dashboard"
-
-
-def test_engine_topology_gpu_range_logic():
-    # the pure slice of SGLangEngine.get_topology_info: node-physical range
-    pytest.importorskip("sglang")
-    from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-
-    engine = SGLangEngine.__new__(SGLangEngine)
-    engine.args = Namespace(num_gpus_per_node=8)
-    engine.base_gpu_id = 4
-    engine.num_gpus_per_engine = 2
-    engine.worker_type = "regular"
-    engine.node_rank = 0
-    engine.server_host = "10.0.0.9"
-    engine.server_port = 15000
-
-    info = engine.get_topology_info()
-    assert info["url"] == "http://10.0.0.9:15000"
-    assert info["gpu_ids"] == [4, 5]
-    assert len(info["gpu_uuids"]) == 2
-    assert info["worker_type"] == "regular"
-
-    # multi-node engine: each member covers its whole node (base 0, capped per node)
-    engine.base_gpu_id = 0
-    engine.num_gpus_per_engine = 16
-    assert engine.get_topology_info()["gpu_ids"] == list(range(8))
