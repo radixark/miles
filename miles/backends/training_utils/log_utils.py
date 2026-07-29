@@ -150,6 +150,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "multimodal_train_inputs",
                 "loss_masks",
                 "sample_indices",
+                "rollout_ids",
                 "rollout_routed_experts",
                 "rollout_indexer_topk",
                 "max_seq_lens",

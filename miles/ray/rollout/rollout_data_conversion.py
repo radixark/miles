@@ -2,12 +2,18 @@ import itertools
 import logging
 
 from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
 
 def postprocess_rollout_data(args, data, train_parallel_config):
     metadata = {}
+
+    # Enforce the rollout_id contract before flattening: any compact / subagent
+    # list[Sample] encountered in the nested output must have rollout_id set on
+    # every element so the loss reducer counts the rollout once instead of N times.
+    validate_rollout_id_annotated(data)
 
     # Multi-LoRA: record group boundaries (heterogeneous per-adapter group sizes)
     # and lift the collection loop's batch-level step decision out of sample metadata,
@@ -42,6 +48,38 @@ def postprocess_rollout_data(args, data, train_parallel_config):
         logger.info(f"Final collected {len(data)} samples from rollout to train")
 
     return data, metadata
+
+
+def validate_rollout_id_annotated(node, depth=0):
+    """Walk the rollout function's nested output and validate ``rollout_id`` only
+    when a compact / subagent pattern is detected.
+
+    "Compact" = the rollout function wraps multiple training samples from one
+    rollout execution into a ``list[Sample]``. In miles's convention the
+    default rollout shape is ``list[list[Sample]]`` (depth-2: prompt × rollout)
+    so its leaf ``list[Sample]`` lands at depth 1 and we skip validation,
+    preserving backward compatibility. A compact rollout adds a third level:
+    ``list[list[list[Sample]]]`` (prompt × rollout × samples-from-one-rollout),
+    so the leaf ``list[Sample]`` lands at depth >= 2. At that point we require
+    every sibling to carry a non-None ``rollout_id`` and to share the same
+    value, so the loss reducer counts the rollout once instead of N times.
+    """
+    if isinstance(node, Sample):
+        return
+    assert isinstance(node, list), f"unexpected rollout output node type: {type(node).__name__}"
+    if node and isinstance(node[0], Sample):
+        if depth >= 2 and len(node) > 1:
+            rids = [s.rollout_id for s in node]
+            missing = [i for i, r in enumerate(rids) if r is None]
+            assert not missing, (
+                f"Compact rollout returned {len(node)} samples but rollout_id is unset on "
+                f"positions {missing}. Set Sample.rollout_id on every sibling so the loss "
+                "reducer can aggregate them as one rollout instead of N."
+            )
+            assert len(set(rids)) == 1, f"Sibling samples from one compact rollout must share rollout_id; got {rids}."
+        return
+    for item in node:
+        validate_rollout_id_annotated(item, depth + 1)
 
 
 def _first_sample(group):
