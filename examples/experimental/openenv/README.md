@@ -82,7 +82,7 @@ from upstream main (editable: the recipe embeds the package source, which
 needs `pyproject.toml` present next to the package):
 
 ```bash
-git clone https://github.com/huggingface/OpenEnv.git   # >= the #965/#972 merge (39c91bfd); pin that sha if you need frozen reward semantics across a long run
+git clone https://github.com/huggingface/OpenEnv.git   # >= the #1012 merge (04d259ea6, the full canonical contract for both modes); pin that sha if you need frozen reward semantics across a long run
 pip install -e OpenEnv/envs/tbench2_env
 ```
 
