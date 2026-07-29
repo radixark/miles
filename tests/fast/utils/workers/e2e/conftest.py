@@ -8,7 +8,13 @@ from pathlib import Path
 import httpx
 import pytest
 from tests.fast.utils.workers.e2e.e2e_worker import E2eWorker
-from tests.fast.utils.workers.e2e.harness import READY_TIMEOUT_SECONDS, ServerProcess, spawn_server, wait_until_serving
+from tests.fast.utils.workers.e2e.harness import (
+    READY_TIMEOUT_SECONDS,
+    FlakyProxy,
+    ServerProcess,
+    spawn_server,
+    wait_until_serving,
+)
 
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 
@@ -94,7 +100,7 @@ async def server(shared_server, request) -> AsyncIterator[ServerProcess]:
 async def make_handle() -> AsyncIterator[Callable[..., RpcWorkerHandle]]:
     clients: list[httpx.AsyncClient] = []
 
-    def build(target: ServerProcess | str, *, worker_cls: type = E2eWorker, **kwargs) -> RpcWorkerHandle:
+    def build(target: ServerProcess | FlakyProxy | str, *, worker_cls: type = E2eWorker, **kwargs) -> RpcWorkerHandle:
         url = target if isinstance(target, str) else target.url
         client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0), trust_env=False)
         clients.append(client)
@@ -117,3 +123,28 @@ async def handle(server, make_handle) -> AsyncIterator[RpcWorkerHandle]:
 async def raw(server) -> AsyncIterator[httpx.AsyncClient]:
     async with httpx.AsyncClient(base_url=server.url, timeout=30.0, trust_env=False) as client:
         yield client
+
+
+@pytest.fixture
+async def proxy_to(server) -> AsyncIterator[Callable[[], FlakyProxy]]:
+    proxies: list[FlakyProxy] = []
+
+    async def build() -> FlakyProxy:
+        proxy = FlakyProxy(upstream_port=server.port)
+        await proxy.start()
+        proxies.append(proxy)
+        return proxy
+
+    yield build
+
+    for proxy in proxies:
+        await proxy.stop()
+
+
+@pytest.fixture
+async def dead_proxy() -> AsyncIterator[FlakyProxy]:
+    proxy = FlakyProxy(upstream_port=None)
+    proxy.record_only = True
+    await proxy.start()
+    yield proxy
+    await proxy.stop()
