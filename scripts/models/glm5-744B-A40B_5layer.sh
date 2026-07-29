@@ -1,8 +1,8 @@
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/glm5-744B-A40B.sh"
 
-# Override for 4-layer pruned model (first 4 layers: 3 dense + 1 MoE)
-N_MOE_LAYERS=1
+# Override for 5-layer pruned model (first 5 layers: 3 dense + 2 MoE)
+N_MOE_LAYERS=2
 
 for ((i=0; i<${#MODEL_ARGS[@]}; i++)); do
     case "${MODEL_ARGS[$i]}" in

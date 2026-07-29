@@ -4,20 +4,20 @@
 # Supports broadcast and p2p weight transfer modes.
 #
 # Configurations (from run_glm5_744b_a40b.py):
-#   GLM-5_4layer   2 nodes  (1 train + 1 rollout)   TP=4 PP=1 EP=8
+#   GLM-5_5layer   2 nodes  (1 train + 1 rollout)   TP=4 PP=1 EP=8
 #   GLM-5_20layer  12 nodes (6 train + 6 rollout)   TP=4 PP=3 EP=16
 #   GLM-5          32 nodes (16 train + 16 rollout)  TP=4 PP=4 CP=2 EP=32
 #
 # Usage:
 #   bash run-glm5-disagg-profile.sh <MODEL_NAME> <MODE> <NODE_RANK> <HEAD_NODE_IP>
 #
-#   MODEL_NAME    : GLM-5_4layer | GLM-5_20layer | GLM-5
+#   MODEL_NAME    : GLM-5_5layer | GLM-5_20layer | GLM-5
 #   MODE          : broadcast | p2p
 #   NODE_RANK     : 0 (head node) | 1..N (worker nodes)
 #   HEAD_NODE_IP  : IP address of the head node
 #
 # Examples:
-#   bash run-glm5-disagg-profile.sh GLM-5_4layer  broadcast 0 10.0.0.1
+#   bash run-glm5-disagg-profile.sh GLM-5_5layer  broadcast 0 10.0.0.1
 #   bash run-glm5-disagg-profile.sh GLM-5_20layer p2p       0 10.0.0.1
 #   bash run-glm5-disagg-profile.sh GLM-5         p2p       0 10.0.0.1
 
@@ -30,7 +30,7 @@ export PYTHONBUFFERED=16
 # ---------------------------------------------------------------------------
 if [ $# -lt 4 ]; then
     echo "Usage: $0 <MODEL_NAME> <MODE> <NODE_RANK> <HEAD_NODE_IP>"
-    echo "  MODEL_NAME    : GLM-5_4layer | GLM-5_20layer | GLM-5"
+    echo "  MODEL_NAME    : GLM-5_5layer | GLM-5_20layer | GLM-5"
     echo "  MODE          : broadcast | p2p"
     echo "  NODE_RANK     : 0 (head) | 1..N (workers)"
     echo "  HEAD_NODE_IP  : IP of the head node"
@@ -64,8 +64,8 @@ BUCKET_SIZE_GB="${BUCKET_SIZE_GB:-1.0}"
 ENABLE_NCCL_NVLS=1
 
 case "${MODEL_NAME}" in
-    GLM-5_4layer)
-        MODEL_TYPE="glm5-744B-A40B_4layer"
+    GLM-5_5layer)
+        MODEL_TYPE="glm5-744B-A40B_5layer"
         NNODES=2
         NUM_TRAIN_GPUS=8      # 1 node
         NUM_ROLLOUT_GPUS=8    # 1 node
@@ -108,7 +108,7 @@ case "${MODEL_NAME}" in
         ENABLE_OPTIMIZER_OFFLOAD=1
         ;;
     *)
-        echo "ERROR: Unknown model '${MODEL_NAME}'. Use GLM-5_4layer, GLM-5_20layer, or GLM-5."
+        echo "ERROR: Unknown model '${MODEL_NAME}'. Use GLM-5_5layer, GLM-5_20layer, or GLM-5."
         exit 1
         ;;
 esac
