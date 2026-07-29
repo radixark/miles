@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 RETRIEVED_TTL_SECONDS = 300.0
 
 
+class DuplicateCallError(Exception):
+    pass
+
+
 class CallStore:
     def __init__(self, *, retrieved_ttl_seconds: float = RETRIEVED_TTL_SECONDS) -> None:
         self._retrieved_ttl_seconds = retrieved_ttl_seconds
@@ -21,6 +25,9 @@ class CallStore:
 
     def begin(self, *, call_id: str) -> None:
         self._purge_expired()
+
+        if call_id in self._records:
+            raise DuplicateCallError(f"call {call_id} already submitted")
 
         self._records[call_id] = _CallRecord(finished_event=asyncio.Event())
         log_structured(
