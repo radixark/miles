@@ -2869,6 +2869,13 @@ def miles_validate_args(args):
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
 
+    if args.offload_train_target == "disk" or args.stream_optimizer_state_to_disk:
+        if args.offload_train_disk_dir is None:
+            uid = os.getuid() if hasattr(os, "getuid") else 0
+            args.offload_train_disk_dir = os.path.join(
+                os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}"
+            )
+
     if args.offload_train_target == "disk":
         assert args.offload_train, "--offload-train-target=disk requires --offload-train"
         assert (
@@ -2880,11 +2887,6 @@ def miles_validate_args(args):
             "not from a CPU backup."
         )
         assert args.offload_train_disk_chunk_mb > 0, "--offload-train-disk-chunk-mb must be positive"
-        if args.offload_train_disk_dir is None:
-            uid = os.getuid() if hasattr(os, "getuid") else 0
-            args.offload_train_disk_dir = os.path.join(
-                os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}"
-            )
         logger.info(
             f"Train offload target=disk, dir={args.offload_train_disk_dir}, "
             f"chunk={args.offload_train_disk_chunk_mb}MB"
@@ -2914,9 +2916,7 @@ def miles_validate_args(args):
         assert (
             not args.enable_witness
         ), "--enable-witness reads the master optimizer's per-param state, which the NVMe store owns"
-        assert args.offload_train_target == "disk", (
-            "--stream-optimizer-state-to-disk is only supported alongside " "--offload-train-target=disk; pass both."
-        )
+        assert args.offload_train_disk_chunk_mb > 0, "--offload-train-disk-chunk-mb must be positive"
         logger.info(
             f"Streaming optimizer state to disk, dir={args.offload_train_disk_dir}, "
             f"chunk={args.offload_train_disk_chunk_mb}MB, moments={args.stream_optimizer_state_moment_dtype}"
