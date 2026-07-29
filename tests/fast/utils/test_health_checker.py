@@ -1,6 +1,6 @@
 import asyncio
 
-from miles.utils.ft_utils.control_server.models import TriState
+from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import NoopHealthChecker, SimpleHealthChecker
 from miles.utils.test_utils.clock import FakeClock
 

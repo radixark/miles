@@ -11,7 +11,7 @@ from miles.ray.train.cell_state import (
     StatePending,
     StateStopped,
 )
-from miles.utils.ft_utils.control_server.models import TriState
+from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 

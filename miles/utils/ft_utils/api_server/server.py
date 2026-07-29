@@ -9,16 +9,9 @@ from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
 
 from miles.ray.train.group import RayTrainGroup
-from miles.utils.ft_utils.control_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
-from miles.utils.ft_utils.control_server.models import (
-    Cell,
-    CellList,
-    CellPatch,
-    FaultInjection,
-    K8sStatus,
-    _OkResponse,
-)
-from miles.utils.ft_utils.control_server.registry import _CellRegistry
+from miles.utils.ft_utils.api_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
+from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
+from miles.utils.ft_utils.api_server.registry import _CellRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +19,7 @@ logger = logging.getLogger(__name__)
 # -------------------------- entrypoint ------------------------------
 
 
-def start_control_server(
+def start_api_server(
     *,
     actor_model: RayTrainGroup,
     inference_controller: object,
@@ -49,24 +42,24 @@ def start_control_server(
                 )
             )
 
-    _start_control_server_raw(registry=registry, port=port)
+    _start_api_server_raw(registry=registry, port=port)
 
 
-def _start_control_server_raw(registry: _CellRegistry, port: int) -> None:
-    app = _create_control_app(registry)
+def _start_api_server_raw(registry: _CellRegistry, port: int) -> None:
+    app = _create_api_app(registry)
 
     def _run() -> None:
         uvicorn.run(app, host="0.0.0.0", port=port)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    logger.info("Control server started on port %d", port)
+    logger.info("Api server started on port %d", port)
 
 
 # -------------------------- main app ------------------------------
 
 
-def _create_control_app(registry: _CellRegistry) -> FastAPI:
+def _create_api_app(registry: _CellRegistry) -> FastAPI:
     app = FastAPI()
 
     # -------------------------- exceptions ------------------------------
