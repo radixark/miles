@@ -239,13 +239,13 @@ Type: non-comparison (no baseline, no compare)
 Steps: 30 (default), configurable via --num-steps
 
 Architecture (external fault injection, not inside training loop):
-  1. Start training with indep_dp + control server (port 18080) + mini FT controller
+  1. Start training with indep_dp + api server (port 18080) + mini FT controller
   2. Start a background daemon thread that:
      a. Sleeps a random interval (exponential, mean = 60s / crash_probability ≈ 120s at the default)
      b. GET /api/v1/cells — read each cell's Healthy condition
      c. Count the genuinely-alive cells — reported Healthy, minus cells we injected that have
         not finished a down->up recovery (RecoveryGate) — and skip if injecting would leave
-        <=1 of them. The control server reports a just-killed cell Healthy for ~95s >> the
+        <=1 of them. The api server reports a just-killed cell Healthy for ~95s >> the
         inject interval, so excluding still-recovering cells is what keeps >=1 live replica
         (indep_dp cannot heal from zero survivors).
      d. Otherwise POST /api/v1/cells/{name}/inject-fault with a random failure mode
@@ -273,7 +273,7 @@ Type: non-comparison (no baseline run; reference = the baseline test's wandb cur
 Recipe: Qwen2.5-0.5B, GRPO, 250 rollouts; parallelism mirrors dp2_cp2_real_rollout
         (2 cells x CP2 on 4 train GPUs + 4 rollout engines x 1 GPU, disaggregated)
 Faults: same external random injection loop as scenario_ft_random
-        (train cells via control server)
+        (train cells via api server)
 
 Assertion: --ci-metric-checker-key eval/gsm8k with a threshold that must stay
   identical to the no-fault baseline's (0.55): fault recovery must not cost
