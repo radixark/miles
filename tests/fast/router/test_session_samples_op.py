@@ -16,13 +16,13 @@ last, overrides the agent's).
 
 import json
 import uuid
-from types import SimpleNamespace
 
 import numpy as np
 import pybase64
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 from tests.fast.rollout.session.test_samples import _make_record
 
 from miles.rollout.session.core import SessionCore
@@ -36,18 +36,22 @@ from miles.utils.types import Sample
 NUM_LAYERS = 3
 TOPK = 2
 
-_ARGS = SimpleNamespace(
-    miles_router_timeout=30,
-    hf_checkpoint="Qwen/Qwen3-0.6B",
-    chat_template_path=None,
-    apply_chat_template_kwargs={"enable_thinking": False},
-    tito_model="default",
-    session_server_instance_id=uuid.uuid4().hex,
-    num_layers=NUM_LAYERS,
-    moe_router_topk=TOPK,
-    save_debug_trajectory_data=None,
-    sglang_speculative_algorithm=None,
-)
+def _make_config(**overrides):
+    return make_session_server_config(
+        timeout=30,
+        hf_checkpoint="Qwen/Qwen3-0.6B",
+        chat_template_path=None,
+        apply_chat_template_kwargs={"enable_thinking": False},
+        tito_model="default",
+        instance_id=uuid.uuid4().hex,
+        num_layers=NUM_LAYERS,
+        moe_router_topk=TOPK,
+        sglang_speculative_algorithm=None,
+        **overrides,
+    )
+
+
+_CONFIG = _make_config()
 
 
 class _UnusedBackend:
@@ -57,18 +61,19 @@ class _UnusedBackend:
         raise AssertionError("collect_samples must not touch the proxy backend")
 
 
-def _build_core() -> SessionCore:
+def _build_core(config=None) -> SessionCore:
     # Mirrors setup_session_routes (sessions.py): tokenizer + registry + core.
+    config = config if config is not None else _CONFIG
     tokenizer = load_tokenizer(
-        _ARGS.hf_checkpoint, chat_template_path=_ARGS.chat_template_path, trust_remote_code=True
+        config.hf_checkpoint, chat_template_path=config.chat_template_path, trust_remote_code=True
     )
     tito_tokenizer = get_tito_tokenizer(
         tokenizer,
-        tokenizer_type=_ARGS.tito_model,
-        chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
+        tokenizer_type=config.tito_model,
+        chat_template_kwargs=config.apply_chat_template_kwargs,
     )
-    registry = SessionRegistry(_ARGS, tokenizer, tito_tokenizer=tito_tokenizer)
-    return SessionCore(_UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id)
+    registry = SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer)
+    return SessionCore(_UnusedBackend(), registry, config, config.instance_id)
 
 
 @pytest.fixture(scope="module")
@@ -218,8 +223,8 @@ async def test_truncation_golden(core):
     assert [segment["turn"] for segment in last.metadata["lifecycle"]] == [1, 2]
 
 
-async def test_debug_messages_cross_samples_wire(core, monkeypatch):
-    monkeypatch.setattr(core.args, "save_debug_trajectory_data", "/unused/{rollout_id}.jsonl")
+async def test_debug_messages_cross_samples_wire():
+    core = _build_core(_make_config(save_debug_trajectory_data="/unused/{rollout_id}.jsonl"))
     records = _two_turn_records()
     sid = await _make_session(core, records, _ACCUMULATED)
     _, payload = await _collect_via_op(core, sid)
@@ -288,7 +293,7 @@ async def test_broken_chain_returns_422_and_server_survives(core):
 @pytest.fixture(scope="module")
 def app_client():
     app = FastAPI()
-    setup_session_routes(app, _UnusedBackend(), _ARGS)
+    setup_session_routes(app, _UnusedBackend(), _CONFIG)
     with TestClient(app) as client:
         yield client
 
