@@ -44,18 +44,24 @@ def precompute_freqs_cis(
     return freqs_cis.to(device) if device is not None else freqs_cis
 
 
-def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = False) -> torch.Tensor:
+def apply_rotary_emb(
+    x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = False, thd: bool = False
+) -> torch.Tensor:
     """Apply RoPE in-place to the last dim of ``x``.
 
     ``x`` has shape ``[..., dim]`` where ``dim`` is even; the last-dim pairs are
     treated as complex numbers multiplied by ``freqs_cis``. When ``inverse=True``
     the conjugate rotation is applied (used for the indexer's inverse rope).
+    ``thd=True`` takes packed ``[total, batch, dim]`` with one ``freqs_cis`` row
+    per token, since packed positions restart at every segment boundary.
     """
     y = x
     x = torch.view_as_complex(x.float().unflatten(-1, (-1, 2)))
     if inverse:
         freqs_cis = freqs_cis.conj()
-    if x.ndim == 3:
+    if thd:
+        freqs_cis = freqs_cis.view(x.size(0), 1, x.size(-1))
+    elif x.ndim == 3:
         freqs_cis = freqs_cis.view(1, x.size(1), x.size(-1))
     else:
         freqs_cis = freqs_cis.view(1, x.size(1), 1, x.size(-1))

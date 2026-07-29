@@ -8,7 +8,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_fre
 from miles_plugins.models.deepseek_v4.ops.kernel.precision_aligned_ops import linear_bf16_fp32
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
-from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
+from miles_plugins.models.deepseek_v4.ops.utils import batch_of_row, rotate_activation
 
 
 class RMSNorm(nn.Module):
@@ -44,6 +44,27 @@ def _overlap_transform(tensor: torch.Tensor, *, compress_ratio: int, head_dim: i
     new_tensor = tensor.new_full((b, s, 2 * compress_ratio, head_dim), value)
     new_tensor[:, :, compress_ratio:] = tensor[:, :, :, head_dim:]
     new_tensor[:, 1:, :compress_ratio] = tensor[:, :-1, :, :head_dim]
+    return new_tensor
+
+
+def _overlap_transform_thd(
+    tensor: torch.Tensor, *, compress_ratio: int, head_dim: int, is_first: torch.Tensor, value=0
+) -> torch.Tensor:
+    """Overlap-transform for packed THD groups.
+
+    Same rearrangement as :func:`_overlap_transform`, but groups are flat along dim 0
+    and a segment's first group has no predecessor to pull from.
+
+    Args:
+        tensor: ``[total_comp, ratio, batch, 2 * head_dim]``
+        is_first: ``[total_comp]`` bool, True for the first group of each segment.
+    """
+    total_comp, ratio, bsz, _ = tensor.size()
+    new_tensor = tensor.new_full((total_comp, 2 * ratio, bsz, head_dim), value)
+    new_tensor[:, ratio:] = tensor[:, :, :, head_dim:]
+    prev = torch.roll(tensor[:, :, :, :head_dim], shifts=1, dims=0)
+    prev[is_first] = value
+    new_tensor[:, :ratio] = prev
     return new_tensor
 
 
@@ -170,13 +191,107 @@ class DeepSeekV4Compressor(nn.Module):
 
         return kv
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def _forward_thd(self, x: torch.Tensor, cu_seqlens: torch.Tensor):
+        """Compress a THD-packed stream, grouping tokens within each segment.
+
+        The trailing ``seqlen % compress_ratio`` tokens of a segment get no compressed
+        entry and rely on the sliding window instead. This matches inference, where a
+        decode token sitting in an incomplete buffer has no compressed entry either, and
+        avoids the train/inference mismatch that padding to compress_ratio would introduce.
+
+        Args:
+            x: [total, batch, dim] packed SBHD layout.
+            cu_seqlens: [n_seg + 1] token-space segment boundaries.
+        Returns:
+            (k, cu_seqlens_compressed) with k [total_comp, batch, head_dim], or
+            (None, cu_seqlens_compressed) when no segment reaches compress_ratio.
+        """
+        assert self.ape.dtype == torch.float32
+        assert self.wkv.weight.dtype == torch.bfloat16
+        assert self.wgate.weight.dtype == torch.bfloat16
+
+        total_tokens = x.size(0)
+        ratio, overlap = self.compress_ratio, self.overlap
+        dtype = x.dtype
+
+        seg_comp_lens = (cu_seqlens[1:] - cu_seqlens[:-1]) // ratio
+        cu_seqlens_compressed = torch.cat(
+            [
+                torch.zeros(1, dtype=cu_seqlens.dtype, device=cu_seqlens.device),
+                seg_comp_lens.cumsum(0).to(cu_seqlens.dtype),
+            ]
+        )
+        total_comp = int(cu_seqlens_compressed[-1])
+        if total_comp == 0:
+            return None, cu_seqlens_compressed
+
+        kv = linear_bf16_fp32(x, self.wkv.weight)
+        score = linear_bf16_fp32(x, self.wgate.weight)
+
+        batch_ids = batch_of_row(cu_seqlens_compressed, total_comp)
+        local_pos = torch.arange(total_comp, device=x.device) - cu_seqlens_compressed[batch_ids]
+        gather_idx = (cu_seqlens[batch_ids] + local_pos * ratio).unsqueeze(1) + torch.arange(
+            ratio, device=x.device
+        )
+
+        kv = kv[gather_idx]
+        score = score[gather_idx] + self.ape.view(1, ratio, 1, -1)
+
+        if overlap:
+            is_first = local_pos == 0
+            kv = _overlap_transform_thd(
+                kv, compress_ratio=ratio, head_dim=self.head_dim, is_first=is_first, value=0
+            )
+            score = _overlap_transform_thd(
+                score,
+                compress_ratio=ratio,
+                head_dim=self.head_dim,
+                is_first=is_first,
+                value=float("-inf"),
+            )
+
+        score_softmax = score.softmax(dim=1)
+        kv = (kv * score_softmax).sum(dim=1)
+
+        kv = self.norm(kv.to(dtype))
+
+        freqs_cis = wrapped_precompute_freqs_cis(
+            self.config,
+            self.rope_head_dim,
+            self.config.dsv4_compress_rope_theta,
+            False,
+            total_tokens,
+            x.device,
+        )
+        apply_rotary_emb(
+            kv[..., -self.rope_head_dim :],
+            freqs_cis.index_select(0, local_pos * ratio),
+            thd=True,
+        )
+
+        if self.rotate:
+            kv = rotate_activation(kv)
+            if self.use_fp8_qat:
+                kv = fp8_simulate_qat(kv, 128)
+        else:
+            if self.use_fp8_qat:
+                kv = kv.clone()
+                kv[..., : self.nope_head_dim] = fp8_simulate_qat(kv[..., : self.nope_head_dim], 64)
+
+        return kv, cu_seqlens_compressed
+
+    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor | None = None):
         """
         Args:
-            x: [seqlen, batch, dim] SBHD layout (Megatron standard)
+            x: [seqlen, batch, dim] SBHD layout (Megatron standard); [total, batch, dim]
+                when cu_seqlens is given.
+            cu_seqlens: [n_seg + 1] segment boundaries, set for THD packing.
         Returns:
-            k: [seqlen // compress_ratio, batch, head_dim] SBHD layout
+            k: [seqlen // compress_ratio, batch, head_dim] SBHD layout, or
+                (k, cu_seqlens_compressed) for THD packing.
         """
+        if cu_seqlens is not None:
+            return self._forward_thd(x, cu_seqlens)
         x_bshd = einops.rearrange(x, "s b d -> b s d")
         k_bshd = self.forward_raw(x_bshd)
         k = einops.rearrange(k_bshd, "b sc d -> sc b d")
