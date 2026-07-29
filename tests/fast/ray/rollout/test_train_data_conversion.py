@@ -619,6 +619,7 @@ class TestSplitTrainDataByDpScheduled:
                 assert new[key] == old[key], f"rank {rank} {key} changed"
             # global_batch_size=8, dp=2, mbs=2 -> 2 mbs per rank, 1 step
             assert new["num_microbatches"] == [2]
+            assert new["global_batch_sizes"] == [8]
             flat = [i for mbs in new["micro_batch_indices"] for i in mbs]
             assert flat == list(range(len(new["tokens"])))
 
@@ -651,3 +652,4 @@ class TestSplitTrainDataByDpScheduled:
 
         assert shards[0]["num_microbatches"] == [2, 2]
         assert shards[0]["dynamic_global_batch_size"] == 8
+        assert shards[0]["global_batch_sizes"] == [8, 8]

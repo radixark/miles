@@ -386,6 +386,7 @@ def train_one_step(
     optimizer: MegatronOptimizer | None,
     opt_param_scheduler: OptimizerParamScheduler | None,
     num_microbatches: int,
+    step_global_batch_size: int,
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
@@ -408,6 +409,8 @@ def train_one_step(
         optimizer: Optimizer instance.
         opt_param_scheduler: LR/WD scheduler.
         num_microbatches: Number of microbatches to process.
+        step_global_batch_size: Sample count for this step (total across DP);
+            loss normalizer and LR scheduler increment.
 
     Returns:
         Tuple of (reduced loss dict, gradient norm, step outcome).
@@ -519,7 +522,14 @@ def train_one_step(
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
 
-        return output_tensor, partial(loss_function, args, batch, num_microbatches, apply_megatron_loss_scaling=True)
+        return output_tensor, partial(
+            loss_function,
+            args,
+            batch,
+            num_microbatches,
+            apply_megatron_loss_scaling=True,
+            step_global_batch_size=step_global_batch_size,
+        )
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
@@ -587,9 +597,10 @@ def train_one_step(
             # Update parameters.
             update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
 
-            # Update learning rate.
+            # Update learning rate. Use the per-step sample count so the
+            # scheduler's samples-seen counter tracks reality.
             assert update_successful
-            opt_param_scheduler.step(increment=args.global_batch_size)
+            opt_param_scheduler.step(increment=step_global_batch_size)
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)
@@ -636,6 +647,7 @@ def train(
     opt_param_scheduler: OptimizerParamScheduler | None,
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
+    global_batch_sizes: Sequence[int],
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
@@ -652,10 +664,17 @@ def train(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
+        global_batch_sizes (Sequence[int]): Sample count per step (total across
+            DP); same length as ``num_microbatches``.
     """
     parallel_state = get_parallel_state()
     args = get_args()
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
+
+    assert len(num_microbatches) == len(global_batch_sizes), (
+        f"num_microbatches and global_batch_sizes must have the same length, "
+        f"got {len(num_microbatches)} vs {len(global_batch_sizes)}"
+    )
 
     for iterator in data_iterator:
         iterator.reset()
@@ -736,6 +755,7 @@ def train(
             optimizer,
             opt_param_scheduler,
             num_microbatches[step_id],
+            global_batch_sizes[step_id],
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
