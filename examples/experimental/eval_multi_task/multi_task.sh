@@ -24,7 +24,7 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
 source "${REPO_ROOT}/scripts/models/qwen3-4B.sh"
 EVAL_CONFIG_PATH="${REPO_ROOT}/examples/experimental/eval_multi_task/multi_task.yaml"
 

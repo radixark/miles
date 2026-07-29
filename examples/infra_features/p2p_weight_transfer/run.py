@@ -521,7 +521,7 @@ RUN_CONFIGS: dict[str, RunConfig] = {
 # Helpers
 # ---------------------------------------------------------------------------
 
-MILES_ROOT = Path(__file__).resolve().parents[2]
+MILES_ROOT = Path(__file__).resolve().parents[3]
 
 
 def run_cmd(cmd: str, check: bool = True) -> int:

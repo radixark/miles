@@ -16,7 +16,7 @@ set -ex
 export PYTHONBUFFERED=16
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/../../scripts/models/qwen2.5-3B.sh"
+source "${SCRIPT_DIR}/../../../scripts/models/qwen2.5-3B.sh"
 
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen2.5-3B/

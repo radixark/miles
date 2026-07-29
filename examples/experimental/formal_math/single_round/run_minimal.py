@@ -8,7 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
-repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
+repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[4]
 
 MODEL_NAME, MODEL_TYPE = "Qwen3-8B", "qwen3-8B"
 
