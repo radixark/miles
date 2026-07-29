@@ -194,11 +194,7 @@ def first_fit_pack(total_lengths, max_tokens_per_bin):
 
 
 def first_fit_decreasing_pack(total_lengths, max_tokens_per_bin):
-    """First-fit over indices sorted by length descending (FFD).
-
-    Same contract as :func:`first_fit_pack` but never produces more bins
-    (classic 11/9 * OPT + 6/9 guarantee vs first-fit's 17/10 * OPT); fewer
-    bins means fewer micro-batches per training step."""
+    """First-fit over indices sorted by length descending (FFD); never more bins than first-fit."""
     order = sorted(range(len(total_lengths)), key=lambda i: -total_lengths[i])
     bins: list[list[int]] = []
     bin_sums: list[int] = []

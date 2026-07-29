@@ -61,8 +61,6 @@ def _pack_step_into_mbs(
     """Group a step's samples into mbs. Returns ``mbs[k]`` = local indices into ``step_lengths``."""
     if use_dynamic_batch_size:
         assert max_per_bin is not None
-        # FFD packs at least as tightly as arrival-order first-fit; fewer
-        # bins = fewer micro-batches per training step.
         return first_fit_decreasing_pack(step_lengths, max_per_bin)
     assert micro_batch_size is not None
     n = len(step_lengths)
