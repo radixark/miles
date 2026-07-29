@@ -296,14 +296,12 @@ class SessionRegistry:
 
     def __init__(
         self,
-        args,
         tokenizer: Any,
         *,
         tito_tokenizer: TITOTokenizer,
         message_matcher: SessionMessageMatcher | None = None,
     ):
         self.sessions: dict[str, LinearTrajectory] = {}
-        self.args = args
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
         self.comparator = tito_tokenizer.create_comparator()

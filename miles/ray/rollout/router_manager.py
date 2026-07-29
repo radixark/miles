@@ -1,4 +1,3 @@
-import copy
 import logging
 import multiprocessing
 import random
@@ -6,6 +5,7 @@ import uuid
 
 from sglang_router.launch_router import RouterArgs
 
+from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import run_session_server
 from miles.router.config import compute_miles_router_config
 from miles.router.router import run_router as run_miles_router
@@ -128,13 +128,12 @@ def start_session_server(args):
     instance_ids: dict[int, str] = {}
     processes = []
     for port in ports:
-        child_args = copy.copy(args)
-        child_args.session_server_port = port
-        child_args.session_server_instance_id = uuid.uuid4().hex
-        instance_ids[port] = child_args.session_server_instance_id
-        process = multiprocessing.get_context("spawn").Process(
-            target=run_session_server, args=(child_args, router_url)
+        instance_id = uuid.uuid4().hex
+        instance_ids[port] = instance_id
+        config = compute_session_server_config(
+            args, host=ip, port=port, instance_id=instance_id, backend_url=router_url
         )
+        process = multiprocessing.get_context("spawn").Process(target=run_session_server, args=(config,))
         process.daemon = True
         process.start()
         processes.append((port, process))

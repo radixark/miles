@@ -5,7 +5,6 @@ logic in isolation (no HTTP server, no real tokenizer).
 """
 
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -72,9 +71,8 @@ def _make_mock_tito(tito_cls, allowed_append_roles: list[str]) -> TITOTokenizer:
 
 
 def _make_registry(allowed_append_roles: list[str]) -> SessionRegistryV2:
-    args = SimpleNamespace()
     mock_tito = _make_mock_tito(_MockTITOTokenizer, allowed_append_roles)
-    return SessionRegistryV2(args, tokenizer=None, tito_tokenizer=mock_tito)
+    return SessionRegistryV2(tokenizer=None, tito_tokenizer=mock_tito)
 
 
 def _commit(
@@ -484,7 +482,7 @@ class TestCarriedAssistant:
 
     def test_carried_assistant_before_user_allowed(self):
         mock_tito = _make_mock_tito(_MockTITOTokenizer, ["tool", "user", "assistant"])
-        registry = SessionRegistryV2(SimpleNamespace(), tokenizer=None, tito_tokenizer=mock_tito)
+        registry = SessionRegistryV2(tokenizer=None, tito_tokenizer=mock_tito)
         sid = registry.create_session()
         session = registry.get_session(sid)
         _commit(session, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
