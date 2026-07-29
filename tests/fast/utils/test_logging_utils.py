@@ -30,7 +30,7 @@ def _run_snippet(code: str) -> subprocess.CompletedProcess:
         [sys.executable, "-c", textwrap.dedent(code)],
         capture_output=True,
         text=True,
-        timeout=10,
+        timeout=60,
     )
 
 

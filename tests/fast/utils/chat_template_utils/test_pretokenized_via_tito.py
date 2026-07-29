@@ -5,6 +5,7 @@ that omits the ``\\n`` insertion at the ``<|im_end|>`` boundary.
 """
 
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 from tests.ci.ci_register import register_cpu_ci
@@ -26,19 +27,18 @@ from miles.utils.test_utils.mock_trajectories import SingleToolTrajectory
 def _setup_tokenizer_with_registered_template(
     model_id: str,
     family: TITOTokenizerType,
-    roles: list[str],
 ):
     """Mirror what production wiring does at startup.
 
-    Loads tokenizer, looks up the registered ``SUPPORTED_TEMPLATES`` row for
-    ``(family, roles)``, and applies the resolved fixed template (if any) onto
+    Loads tokenizer, resolves the family's ``FIXED_TEMPLATE`` (resolution is
+    role-independent), and applies the fixed template (if any) onto
     ``tokenizer.chat_template``. Returns ``(tokenizer, extra_kwargs)``.
 
     A fresh tokenizer instance per call avoids state-mutation hazards from
     overwriting ``chat_template``.
     """
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    fixed_path, extra_kwargs = resolve_fixed_chat_template(family, roles)
+    fixed_path, extra_kwargs = resolve_fixed_chat_template(family)
     if fixed_path is not None:
         with open(fixed_path) as f:
             tokenizer.chat_template = f.read()
@@ -46,47 +46,63 @@ def _setup_tokenizer_with_registered_template(
 
 
 # ---------------------------------------------------------------------------
-# (1) PASS on registered families × role surfaces
+# (1) PASS on registered families
 # ---------------------------------------------------------------------------
 
 
 _PASS_PARAMS = [
-    pytest.param(TITOTokenizerType.QWEN3, "Qwen/Qwen3-0.6B", frozenset({"tool"}), id="qwen3-tool"),
-    pytest.param(TITOTokenizerType.QWEN3, "Qwen/Qwen3-0.6B", frozenset({"tool", "user"}), id="qwen3-tool_user"),
-    pytest.param(TITOTokenizerType.QWEN35, "Qwen/Qwen3.5-0.8B", frozenset({"tool"}), id="qwen35-tool"),
-    pytest.param(TITOTokenizerType.QWEN35, "Qwen/Qwen3.5-0.8B", frozenset({"tool", "user"}), id="qwen35-tool_user"),
-    pytest.param(TITOTokenizerType.QWENNEXT, "Qwen/Qwen3-4B-Thinking-2507", frozenset({"tool"}), id="qwennext-tool"),
-    pytest.param(
-        TITOTokenizerType.QWENNEXT,
-        "Qwen/Qwen3-4B-Thinking-2507",
-        frozenset({"tool", "user"}),
-        id="qwennext-tool_user",
-    ),
-    pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash", frozenset({"tool"}), id="glm47-tool"),
-    pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash", frozenset({"tool", "user"}), id="glm47-tool_user"),
-    pytest.param(
-        TITOTokenizerType.GLM47,
-        "zai-org/GLM-4.7-Flash",
-        frozenset({"tool", "user", "system"}),
-        id="glm47-tool_user_system",
-    ),
+    pytest.param(TITOTokenizerType.QWEN3, "Qwen/Qwen3-0.6B", id="qwen3"),
+    pytest.param(TITOTokenizerType.QWEN35, "Qwen/Qwen3.5-0.8B", id="qwen35"),
+    pytest.param(TITOTokenizerType.QWENNEXT, "Qwen/Qwen3-4B-Thinking-2507", id="qwennext"),
+    pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash", id="glm47"),
 ]
 
 
-@pytest.mark.parametrize("family,model_id,roles", _PASS_PARAMS)
-def test_via_tito_pass_on_registered_families(family, model_id, roles):
+@pytest.mark.parametrize("family,model_id", _PASS_PARAMS)
+def test_via_tito_pass_on_registered_families(family, model_id):
     """All 4 registered TITO families round-trip cleanly via decode-roundtrip."""
-    tokenizer, extra_kwargs = _setup_tokenizer_with_registered_template(model_id, family, sorted(roles))
+    tokenizer, extra_kwargs = _setup_tokenizer_with_registered_template(model_id, family)
     results = run_all_checks_via_tito(
         tokenizer,
         family,
-        allowed_append_roles=set(roles),
         thinking="both",
         extra_template_kwargs=extra_kwargs,
     )
     failures = [r for r in results if not r.passed]
     assert not failures, (
-        f"Expected all PASS for {family.value} × {sorted(roles)} via TITO primitive; "
+        f"Expected all PASS for {family.value} via TITO primitive; "
+        f"got {len(failures)} FAIL(s) out of {len(results)}:\n"
+        + "\n".join(f"  [{r.case_name}] {r.error}" for r in failures[:5])
+    )
+
+
+# ---------------------------------------------------------------------------
+# (1b) PASS on DeepSeek V4 (official-encoder family, local checkpoint only)
+# ---------------------------------------------------------------------------
+
+
+_DEEPSEEK_V4_MODEL = "/cluster-storage/models/deepseek-ai/DeepSeek-V4-Flash"
+
+
+def test_via_tito_pass_on_deepseek_v4():
+    """DSv4's encoder folds contiguous tool/user turns into one ``<｜User｜>``
+    block and auto-appends the assistant opener after a user tail; the
+    subclass's real-history diff + opener strip must round-trip on both
+    registered surfaces (the ``{tool, user}`` cuts land mid-user-block).
+    """
+    if not Path(_DEEPSEEK_V4_MODEL).exists():
+        pytest.skip(f"DeepSeek V4 tokenizer not found: {_DEEPSEEK_V4_MODEL}")
+    tokenizer = AutoTokenizer.from_pretrained(_DEEPSEEK_V4_MODEL, trust_remote_code=True)
+    _fixed_path, extra_kwargs = resolve_fixed_chat_template(TITOTokenizerType.DEEPSEEKV4)
+    results = run_all_checks_via_tito(
+        tokenizer,
+        TITOTokenizerType.DEEPSEEKV4,
+        thinking="both",
+        extra_template_kwargs=dict(extra_kwargs),
+    )
+    failures = [r for r in results if not r.passed]
+    assert not failures, (
+        f"Expected all PASS for deepseekv4 via TITO primitive; "
         f"got {len(failures)} FAIL(s) out of {len(results)}:\n"
         + "\n".join(f"  [{r.case_name}] {r.error}" for r in failures[:5])
     )
@@ -114,7 +130,6 @@ def test_via_tito_fail_on_original_qwen3_template():
     results = run_all_checks_via_tito(
         tokenizer,
         TITOTokenizerType.QWEN3,
-        allowed_append_roles={"tool", "user"},
         thinking="both",
     )
     failures = [r for r in results if not r.passed]
@@ -137,15 +152,15 @@ class _BuggyQwen3TITOTokenizer(Qwen3TITOTokenizer):
     """
 
     def merge_tokens(self, old_messages, new_messages, pretokenized_token_ids, tools=None):
-        incremental = self.tokenize_additional_non_assistant(old_messages, new_messages, tools)
+        incremental = self.tokenize_additional_messages(old_messages, new_messages, tools)
         # Intentionally omit the `+\n` insertion — that's the bug we're catching.
         return list(pretokenized_token_ids) + incremental
 
 
 def test_via_tito_fail_on_buggy_qwen3_subclass():
     """A buggy ``merge_tokens`` produces a junction-level diff that the verifier surfaces."""
-    tokenizer, _ = _setup_tokenizer_with_registered_template("Qwen/Qwen3-0.6B", TITOTokenizerType.QWEN3, ["tool"])
-    buggy = _BuggyQwen3TITOTokenizer(tokenizer, allowed_append_roles=["tool"])
+    tokenizer, _ = _setup_tokenizer_with_registered_template("Qwen/Qwen3-0.6B", TITOTokenizerType.QWEN3)
+    buggy = _BuggyQwen3TITOTokenizer(tokenizer)
 
     result = verify_append_only_via_tito_instance(
         buggy,

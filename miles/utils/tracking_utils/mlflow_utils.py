@@ -109,8 +109,6 @@ def log_metrics(metrics: dict[str, Any], step: int | None = None) -> None:
 
     sanitized: dict[str, float] = {}
     for k, v in metrics.items():
-        if k.endswith("/step"):
-            continue
         try:
             sanitized[_sanitize_key(k)] = float(v)
         except (TypeError, ValueError):

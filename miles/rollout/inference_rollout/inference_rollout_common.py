@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import uuid
 from argparse import Namespace
 from copy import deepcopy
 from typing import Any
@@ -15,6 +16,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainOutput,
 )
 from miles.rollout.generate_hub.single_turn import generate
+from miles.rollout.generate_utils.generate_endpoint_utils import policy_uses_routing_key
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -124,6 +126,11 @@ async def generate_and_rm_group(
 
     if state.aborted:
         return group
+
+    if policy_uses_routing_key(args):
+        for sample in group:
+            if sample.routing_key is None:
+                sample.routing_key = str(uuid.uuid4())
 
     log_prefix = f"[group indices={[getattr(s, 'index', '?') for s in group]}]"
     logger.debug(f"{log_prefix} Starting group with {len(group)} samples")

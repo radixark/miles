@@ -3,7 +3,7 @@ import inspect
 import logging
 import re
 from argparse import Namespace
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 
 import ray
 import torch
@@ -276,6 +276,8 @@ def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Itera
             return f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}"
 
         for name, param in model_module.named_parameters():
+            if getattr(param, "_is_witness_param", False):
+                continue
             yield _compute_fqn(name), param
 
         for name, buffer in model_module.named_buffers():
@@ -306,6 +308,8 @@ def _named_params_and_buffers_global(
         else:
             layer_offset = get_transformer_layer_offset(model_module.config)
         for name, param in model_module.named_parameters():
+            if getattr(param, "_is_witness_param", False):
+                continue
             # for model without ddp wrap
             if not name.startswith("module.module."):
                 name = "module." + name
@@ -383,25 +387,35 @@ def collect_named_tensors_for_weight_transfer(
             yield name, tensor
 
 
-def post_process_weights(
-    rollout_engines: Sequence[ActorHandle],
-    restore_weights_before_load: bool = False,
-    post_process_quantization: bool = False,
-    post_load_weights: bool = False,
-):
+def begin_weight_update(rollout_engines: Sequence[ActorHandle]):
+    """Open a weight-update session on all rollout engines (restore packed weights)."""
+    ray.get([engine.begin_weight_update.remote() for engine in rollout_engines])
+
+
+def end_weight_update(rollout_engines: Sequence[ActorHandle]):
+    """Close the weight-update session (post-load + quant post-process on the full model)."""
+    ray.get([engine.end_weight_update.remote() for engine in rollout_engines])
+
+
+def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:
+    """Validate return values from rollout engine weight-sync RPCs.
+
+    Raises RuntimeError if any engine reports failure, preventing silent
+    failures when SGLang versions are incompatible.
     """
-    Trigger post-process on all rollout engines,
-    including:
-        - int4/fp4 quantization
-        - post_load_weights (should be enabled when using p2p weights updating)
-    """
-    ray.get(
-        [
-            engine.post_process_weights.remote(
-                restore_weights_before_load=restore_weights_before_load,
-                post_process_quantization=post_process_quantization,
-                post_load_weights=post_load_weights,
+    sync_type = "LoRA" if is_lora else "Base model"
+    for result in results:
+        if isinstance(result, Mapping):
+            success = result.get("success")
+            error_msg = result.get("error_message") or result.get("error") or "unknown error"
+        elif hasattr(result, "success"):
+            success = result.success
+            error_msg = getattr(result, "error_message", "unknown error")
+        else:
+            continue
+
+        if success is False:
+            raise RuntimeError(
+                f"{sync_type} weight sync failed on rollout engine: {error_msg}. "
+                f"Check SGLang version compatibility."
             )
-            for engine in rollout_engines
-        ]
-    )

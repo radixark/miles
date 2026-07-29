@@ -3,7 +3,7 @@
 Each test file in this directory owns a single ``ModelConfig`` and drives it
 through ``run_one(cfg)``.  The runner is a thin wrapper around
 ``miles.utils.test_utils.session_verify_runner.run_session_verify`` with the
-4-GPU H200 ``num_gpus`` override applied centrally.
+model-specific GPU topology applied centrally.
 """
 
 import argparse
@@ -22,9 +22,12 @@ class ModelConfig:
     reasoning_parser: str
     tool_call_parser: str | None
     tito_model: str
-    allowed_append_roles: tuple[str, ...]
     num_gpus: int = 4
     tp_size: int = 1
+    # sglang expert-parallel size.  MoE archs like DeepSeek V4 hit a fused-moe
+    # shape assert at ep=1; mirror the family's serving recipe (usually =tp).
+    ep_size: int = 1
+    enable_spec: bool = False
     cycles: int = 3
     n_samples_per_prompt: int = 4
     # Soft-threshold override for assistant_text mismatch ratio.  Default
@@ -40,10 +43,12 @@ class ModelConfig:
 
 
 def run_one(cfg: ModelConfig) -> None:
+    invariants = dict(SESSION_VERIFY_INVARIANT_ARGS)
+    invariants["sglang_ep_size"] = cfg.ep_size
+    invariants["enable_spec"] = cfg.enable_spec
     args = argparse.Namespace(
         hf_checkpoint=cfg.model_name,
         tito_model=cfg.tito_model,
-        tito_allowed_append_roles=list(cfg.allowed_append_roles),
         sglang_reasoning_parser=cfg.reasoning_parser,
         sglang_tool_call_parser=cfg.tool_call_parser,
         rollout_num_gpus_per_engine=cfg.tp_size,
@@ -53,6 +58,6 @@ def run_one(cfg: ModelConfig) -> None:
         session_verify_cycles=cfg.cycles,
         tool_call_failure_mode=cfg.tool_call_failure_mode,
         assistant_text_threshold=cfg.assistant_text_threshold,
-        **SESSION_VERIFY_INVARIANT_ARGS,
+        **invariants,
     )
     run_session_verify(args=args)

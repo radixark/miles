@@ -124,8 +124,7 @@ def execute(args: ScriptArgs):
         "--sglang-speculative-num-steps 2 "
         "--sglang-speculative-eagle-topk 1 "
         "--sglang-speculative-num-draft-tokens 3 "
-        # miles router with rollout routing replay
-        "--use-miles-router "
+        # rollout routing replay
         "--use-rollout-routing-replay "
     )
 

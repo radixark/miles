@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from miles.backends.megatron_utils.lora_utils import (
-    LORA_ADAPTER_NAME,
     _get_lora_class_name,
     _is_adapter_param_name,
     build_lora_sync_config,
@@ -20,6 +19,7 @@ from miles.backends.megatron_utils.lora_utils import (
     is_lora_weight_name,
     parse_exclude_modules,
 )
+from miles.utils.lora import LORA_ADAPTER_NAME
 
 # ---------------------------------------------------------------------------
 # _get_lora_class_name
@@ -56,6 +56,11 @@ def _make_lora_type(name: str):
 
 
 class TestConvertTargetModulesToMegatron:
+    def test_gdn_hf_names_collapse_to_fused_in_proj(self):
+        lora = _make_lora_type("LoRA")
+        result = convert_target_modules_to_megatron(["in_proj_qkvz", "in_proj_ba", "out_proj"], lora_type=lora)
+        assert result == ["in_proj", "out_proj"]
+
     # --- "all-linear" variants ------------------------------------------------
 
     @pytest.mark.parametrize("shorthand", ["all", "all-linear", "all_linear"])
@@ -142,6 +147,24 @@ class TestConvertTargetModulesToHf:
 
     def test_standard_linear_fc2(self):
         assert convert_target_modules_to_hf(["linear_fc2"]) == ["down_proj"]
+
+    def test_gdn_in_proj_expands_to_sglang_modules(self):
+        assert convert_target_modules_to_hf(["in_proj"]) == ["in_proj_qkvz", "in_proj_ba"]
+
+    @pytest.mark.parametrize(
+        "module,expected",
+        [
+            ("out_proj", ["out_proj"]),  # same-name passthrough
+            ("language_model.decoder.layers.*.self_attention.out_proj", ["out_proj"]),  # wildcard path
+            ("language_model.decoder.layers.0.self_attention.out_proj", ["out_proj"]),  # dotted path, passthrough
+            (
+                "language_model.decoder.layers.0.self_attention.linear_qkv",  # dotted path, table-mapped
+                ["q_proj", "k_proj", "v_proj"],
+            ),
+        ],
+    )
+    def test_paths_reduce_to_leaf_before_mapping(self, module, expected):
+        assert convert_target_modules_to_hf([module]) == expected
 
     def test_canonical_split_modules(self):
         result = convert_target_modules_to_hf(["linear_q", "linear_k", "linear_v"])

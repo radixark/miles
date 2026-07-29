@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
 
-from miles.ray.rollout.metrics import _compute_metrics_from_samples, _compute_zero_std_metrics
+from miles.ray.rollout.metrics import (
+    _compute_metrics_from_samples,
+    _compute_passrate_from_samples,
+    _compute_zero_std_metrics,
+)
 
 
 class TestComputeZeroStdMetrics:
@@ -88,3 +92,46 @@ class TestTitoMismatchMetrics:
             s.metadata = {"tito_session_mismatch": []}
         out = _compute_metrics_from_samples(args, samples)
         assert out["tito_session_mismatch_rate/assistant_text"] > 0
+
+
+class TestComputePassrateFromSamples:
+    def test_returns_empty_when_group_size_is_one(self):
+        args = make_args(n_samples_per_prompt=1)
+        samples = make_samples_grouped(4, 1, rewards=[1.0, 0.0, 1.0, 0.0])
+
+        assert _compute_passrate_from_samples(args, samples) == {}
+
+    @pytest.mark.parametrize("reward, expected", [(1.0, 1.0), (0.0, 0.0)])
+    def test_uniform_rewards(self, reward, expected):
+        args = make_args(n_samples_per_prompt=4, reward_key=None)
+        samples = make_samples_grouped(2, 4, rewards=[reward] * 8)
+
+        out = _compute_passrate_from_samples(args, samples)
+
+        assert out == {
+            "pass@1": pytest.approx(expected),
+            "pass@2": pytest.approx(expected),
+            "pass@4": pytest.approx(expected),
+        }
+
+    def test_mixed_rewards_pass_at_k_increases_with_k(self):
+        args = make_args(n_samples_per_prompt=4, reward_key=None)
+        rewards = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        samples = make_samples_grouped(2, 4, rewards=rewards)
+
+        out = _compute_passrate_from_samples(args, samples)
+
+        assert out["pass@1"] < out["pass@2"] < out["pass@4"]
+
+    def test_excludes_incomplete_groups(self):
+        args = make_args(n_samples_per_prompt=4, reward_key=None)
+        samples = make_samples_grouped(2, 4, rewards=[1.0] * 4 + [0.0] * 4)
+        samples.pop()
+
+        out = _compute_passrate_from_samples(args, samples)
+
+        assert out == {
+            "pass@1": pytest.approx(1.0),
+            "pass@2": pytest.approx(1.0),
+            "pass@4": pytest.approx(1.0),
+        }

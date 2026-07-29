@@ -13,7 +13,6 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
-from miles.backends.megatron_utils.lora_utils import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.compatibility import load_generate_function
@@ -22,16 +21,24 @@ from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post
-from miles.utils.misc import SingletonMeta, load_function
+from miles.utils.lifecycle import TrajectoryLifecycle
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
+from miles.utils.multi_lora import make_rid, slot_lora_name
 from miles.utils.processing_utils import (
     call_processor,
     encode_image_for_rollout_engine,
+    extract_multimodal_train_inputs,
     load_processor,
     load_tokenizer,
 )
 from miles.utils.types import Sample
 
-from .generate_utils.generate_endpoint_utils import get_indexer_topk_from_response
+from .generate_utils.generate_endpoint_utils import (
+    compute_routing_headers,
+    get_indexer_topk_from_response,
+    policy_uses_routing_key,
+)
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .rm_hub import async_rm, batched_async_rm
 
@@ -146,9 +153,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
         prompt_ids = prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
-        sample.multimodal_train_inputs = {
-            k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
-        } or None
+        sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
     else:
         prompt_ids = state.tokenizer.encode(sample.prompt, add_special_tokens=False)
 
@@ -167,8 +172,27 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
+    opd_top_k = getattr(args, "opd_log_prob_top_k", 0) or 0
+    opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
+    if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
+        payload["top_logprobs_num"] = opd_top_k
 
-    if is_lora_enabled(args):
+    if sample.adapter is not None:
+        from miles.ray.multi_lora.controller import AdaptersCache
+
+        if (adapter := await AdaptersCache().get(sample.adapter.name)) is None:
+            # Adapter deregistered: don't POST, or an orphan the abort round can't see
+            # would keep decoding under the slot's next tenant and pollute its group.
+            logger.warning(
+                f"Dropping generation for adapter '{sample.adapter.name}' (slot {sample.adapter.slot}): "
+                "adapter is no longer sampleable"
+            )
+            sample.status = Sample.Status.ABORTED
+            return sample
+        payload["lora_path"] = slot_lora_name(sample.adapter.slot)
+        payload["rid"] = make_rid(sample.adapter.name)
+        payload["extra_key"] = f"{sample.adapter.name}:v{adapter.version}"
+    elif is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:
@@ -188,12 +212,14 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         if not sample.tokens:  # Initialize sample.tokens for the first turn
             sample.tokens = prompt_ids
 
-    # Use session_id for consistent hashing routing if router uses consistent_hashing policy
-    headers = None
-    if args.sglang_router_policy == "consistent_hashing" and sample.session_id:
-        headers = {"X-SMG-Routing-Key": sample.session_id}
+    headers = compute_routing_headers(args, sample)
 
     output = await post(url, payload, headers=headers)
+    if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
+        output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
+        if output_top_logprobs is not None:
+            sample.metadata.setdefault("opd_student_top_logprobs", [])
+            sample.metadata["opd_student_top_logprobs"].extend(output_top_logprobs)
 
     if "output_token_logprobs" in output["meta_info"]:
         new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
@@ -251,11 +277,21 @@ async def generate_and_rm(
 
     state = GenerateState(args)
 
+    # dashboard lifecycle probe (design §18.3): the semaphore wait IS the
+    # queue; attempt_end fires once generation is over, before reward
+    sink = None if evaluation else TrajectoryLifecycle().sink
+    if sink is not None:
+        sink.attempt_start(sample)
+
     # generate
     async with state.semaphore:
         if state.aborted:
             sample.status = Sample.Status.ABORTED
+            if sink is not None:
+                sink.attempt_end(sample)
             return sample
+        if sink is not None:
+            sink.gen_start(sample)
 
         with state.dp_rank_context() as _:
             # Check sample.generate_function_path for per-sample custom_generate_function_path (e.g., from eval dataset config)
@@ -269,6 +305,9 @@ async def generate_and_rm(
                 sample = output.samples
             else:
                 sample = await generate(args, sample, sampling_params)
+
+    if sink is not None:
+        sink.attempt_end(sample)
 
     # for the rm that need the whole group, we will not do the rm here
     if args.group_rm:
@@ -304,11 +343,11 @@ async def generate_and_rm_group(
     if state.aborted:
         return group
 
-    # Generate a unique session_id for each sample in the group (consistent hashing only)
-    if args.sglang_router_policy == "consistent_hashing":
+    # Generate a unique routing_key for each sample in the group (routing-key policies only)
+    if policy_uses_routing_key(args):
         for sample in group:
-            if sample.session_id is None:
-                sample.session_id = str(uuid.uuid4())
+            if sample.routing_key is None:
+                sample.routing_key = str(uuid.uuid4())
 
     tasks = []
     for idx, sample in enumerate(group):
@@ -351,6 +390,10 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     for url, result in zip(urls, abort_results, strict=False):
         if isinstance(result, Exception):
             logger.warning(f"Failed to abort worker at {url}: {result}")
+
+    # Let the agent integration tear down its in-flight trials so they stop hitting
+    # SGLang, instead of running on until their own max_seq_len / timeout.
+    await call_agent_abort_hook(args)
 
     # make sure all the pending tasks are finished
     count = 0
@@ -552,6 +595,8 @@ async def eval_rollout_single_dataset(
             sample_index += 1
             sample.metadata = dataset_cfg.inject_metadata(getattr(sample, "metadata", None))
             sample.generate_function_path = getattr(dataset_cfg, "custom_generate_function_path", None)
+            if policy_uses_routing_key(args):
+                sample.routing_key = str(uuid.uuid4())
             sampling_params = base_sampling_params
             if getattr(args, "sglang_enable_deterministic_inference", False):
                 sampling_params = base_sampling_params.copy()

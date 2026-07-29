@@ -169,9 +169,16 @@ class DeepSeekV4Attention(MegatronModule):
                 cp_group=self.cp_group,
             )
             if self.compress_ratio == 4:
-                if os.environ.get("V4_INDEXER_IMPL", "tilelang") == "tilelang":
+                indexer_impl = os.environ.get("V4_INDEXER_IMPL", "tilelang")
+                topk_backend = config.miles_dsa_topk_backend
+                if indexer_impl == "tilelang":
                     self.indexer = V4Indexer(config=config, pg_collection=pg_collection)
                 else:
+                    if topk_backend != "torch":
+                        raise ValueError(
+                            "DeepSeek V4 miles DSA topk backend is only supported with V4_INDEXER_IMPL=tilelang; "
+                            f"got {topk_backend=} with {indexer_impl=}."
+                        )
                     indexer_submodules = DSAIndexerSubmodules(
                         linear_wq_b=TELinear,
                         linear_wk=TELinear,
@@ -181,13 +188,6 @@ class DeepSeekV4Attention(MegatronModule):
                     self.indexer = DSAIndexer(config=config, submodules=indexer_submodules)
             else:
                 self.indexer = None
-
-        rope_base = config.dsv4_compress_rope_theta if self.compress_ratio else config.rotary_base
-        yarn_disabled = not self.compress_ratio
-        freqs_cis = wrapped_precompute_freqs_cis(
-            config, rope_head_dim=self.rope_head_dim, base=rope_base, yarn_disabled=yarn_disabled
-        )
-        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
 
     def sharded_state_dict(
         self,
@@ -229,7 +229,11 @@ class DeepSeekV4Attention(MegatronModule):
         x = einops.rearrange(hidden_states, "s b d -> b s d")
 
         bsz, seqlen_local, _ = x.size()
-        freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen_local, self.cp_size, self.cp_group)
+        rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
+        freqs_cis = wrapped_precompute_freqs_cis(
+            self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size, x.device
+        )
+        freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group)
         win = self.window_size
         ratio = self.compress_ratio
         rd = self.rope_head_dim
@@ -339,6 +343,7 @@ def get_dsv4_spec(args, config, vp_stage):
     """
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
+    config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):

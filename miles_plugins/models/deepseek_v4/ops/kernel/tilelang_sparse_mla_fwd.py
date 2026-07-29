@@ -61,6 +61,13 @@ def sparse_mqa_fwd(
 
     H_per_block = padded_H if REPLICATE_H == 1 else 64
 
+    is_hip = getattr(torch.version, "hip", None)
+    if is_hip:
+        # Limit pipeline buffering for 64-head HIP tiles to reduce LDS use.
+        kernel_num_stages = min(num_stages, 1) if H_per_block == 64 else num_stages
+    else:
+        kernel_num_stages = num_stages
+
     @T.prim_func
     def main(
         Q: T.Tensor(q_shape, dtype),  # type: ignore
@@ -98,7 +105,7 @@ def sparse_mqa_fwd(
 
             T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared)
 
-            for i_i in T.Pipelined(NI, num_stages=num_stages):
+            for i_i in T.Pipelined(NI, num_stages=kernel_num_stages):
                 for bi_i in T.Parallel(BI):
                     mask[bi_i] = Indices[b_i, s_i, i_i * BI + bi_i] != -1
 

@@ -10,6 +10,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
+from miles.utils.logging_utils import configure_logger_raw
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,6 +19,8 @@ def run_router(args):
     """
     Run the Miles router with the specified configuration.
     """
+    # Spawned as a fresh interpreter, so it inherits no logging config.
+    configure_logger_raw("miles_router")
     # Visible to `pkill -9 miles`; without this the daemon inherits "python".
     setproctitle.setproctitle("miles-router")
 
@@ -162,7 +166,11 @@ class MilesRouter:
         content = result["response_body"]
         status_code = result["status_code"]
         headers = result["headers"]
-        headers = {k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
+        headers = {
+            k: v
+            for k, v in headers.items()
+            if k.lower() not in ("content-length", "transfer-encoding", "server", "date")
+        }
         content_type = headers.get("content-type", "")
         try:
             data = json.loads(content)

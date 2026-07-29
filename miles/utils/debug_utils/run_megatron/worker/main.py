@@ -124,6 +124,7 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
     args.hf_checkpoint = str(args.script_hf_checkpoint)
     args.__dict__.setdefault("megatron_to_hf_mode", "raw")
     args.__dict__.setdefault("decrease_batch_size_if_needed", False)
+    args.__dict__.setdefault("debug_deterministic_collective", False)
     set_default_megatron_args(args)
     validate_args(args)
 

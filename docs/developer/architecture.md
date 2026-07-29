@@ -2,9 +2,6 @@
 title: Architecture Overview
 description: The 30-minute tour of how Miles is organized internally.
 ---
-
-# Architecture Overview
-
 A reading guide before you start patching.
 
 ## The processes
@@ -108,7 +105,7 @@ loop and uses a continuously-running worker.
 ## Extension points (the right way)
 
 The trainer is plug-in-friendly. Most extensions don't need a code change inside Miles —
-just pass a `--something-path my_pkg.thing`. See [Customization](../user-guide/customization.md)
+just pass a `--something-path my_pkg.thing`. See [Customization](/user-guide/customization)
 for the full list.
 
 If you find yourself patching the trainer to make something work, that's a sign we're
@@ -124,8 +121,8 @@ tests/
 └── e2e/              # end-to-end (spins up Ray + SGLang); GPU or CPU CI, registered explicitly
 ```
 
-CI discovery is location-based. `tests/fast/` may hold **only CPU CI**: every `test_*.py` there
-auto-registers as `stage-a-cpu`, so no boilerplate is needed — write a literal `register_cpu_ci(...)`
+CI discovery is location-based. The `tests/fast/` folder may hold **only CPU CI**: every `test_*.py`
+there auto-registers as `stage-a-cpu`, so no boilerplate is needed — write a literal `register_cpu_ci(...)`
 only to override the defaults, and a `register_cuda_ci` under `tests/fast/` is an error (move the file
 to `tests/fast-gpu/`). Every other folder may hold **GPU or CPU CI** and must register each test
 explicitly with `register_cpu_ci` / `register_cuda_ci`. The runner collects `tests/fast/`,

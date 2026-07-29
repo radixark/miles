@@ -2,14 +2,11 @@
 title: DeepSeek-V4 Flash
 description: Launch recipe for DeepSeek-V4-Flash (284 B) — FP8 rollout / BF16 train, 8-node H200 (64 GPUs).
 ---
-
-# DeepSeek-V4 Flash
-
 DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/radixark/miles/issues/1046).
 
 ## 1. Model Introduction
 
-[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE model with a substantially different attention stack from V3/R1. The miles + Megatron-Core (`mcore`) integration is shipped together in the [`radixark/miles#1045`](https://github.com/radixark/miles/pull/1045) and [`radixark/Megatron-LM#28`](https://github.com/radixark/Megatron-LM/pull/28) pull requests, and ships in the `radixark/miles:dev` image.
+[DeepSeek-V4-Flash](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) is a 13 B-active / 284 B-total MoE model with a substantially different attention stack from V3/R1. It ships in the `radixark/miles:latest` image. The larger [DeepSeek-V4-Pro](/models/deepseek/deepseek-v4-pro) shares the same V4 architecture family at Pro scale.
 
 **Key highlights:**
 
@@ -32,8 +29,8 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 One command runs the full pipeline — dataset download, FP8 → BF16 cast, distributed `torch_dist` conversion, and the training loop:
 
 ```bash
-# Pull the dev image:
-docker pull radixark/miles:dev
+# Pull the image:
+docker pull radixark/miles:latest
 
 # 8-node Flash run (colocated), inside the container
 cd /root/miles
@@ -73,7 +70,7 @@ In this section, we explain what `full-train` does under the hood, and how to dr
 ### 4.1 Download model + datasets
 
 ```bash
-# inside the radixark/miles:dev container
+# inside the radixark/miles:latest container
 hf download sgl-project/DeepSeek-V4-Flash-FP8 --local-dir /root/models/DeepSeek-V4-Flash-FP8
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/datasets/aime-2024
@@ -111,7 +108,7 @@ The Python launcher's `prepare-spmd` subcommand drives the same conversion.
 
 ### 4.3 Multi-node fan-out
 
-The Python launcher manages Ray internally — start each pod with the `radixark/miles:dev` image and a working shared filesystem mounted at the same path on every node, then on the head node:
+The Python launcher manages Ray internally — start each pod with the `radixark/miles:latest` image and a working shared filesystem mounted at the same path on every node, then on the head node:
 
 ```bash
 ray start --head --num-gpus 8 --disable-usage-stats
@@ -137,7 +134,7 @@ These are the validated layouts shipped with the launcher; All parallelisms are 
 | GB300 | 8 × 4 = 32 | 8 | 4 | 1 | 8 | 1 | first 11 / last 10 layers |
 | GB300 | 8 × 4 = 32 | 2 | 8 | 2 | 4 | 1 | first 4 / last 3 layers |
 
-The Nodes × GPUs column counts **training nodes** — in disaggregated mode (see [§3.3](#33-colocated-vs-disaggregated-rollout)) rollout nodes come on top of these.
+The Nodes × GPUs column counts **actor (training) nodes** — in disaggregated mode (see [§3.3](#33-colocated-vs-disaggregated-rollout)) rollout nodes come on top of these.
 
 ### 5.2 Algorithm
 
@@ -192,5 +189,5 @@ The `--low-memory-resume` flag (off by default) puts optimizer states on CPU dur
 
 ## 6. Pairs Well With
 
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
-- [Architecture Support](../../advanced/architecture-support.md) — the V4 plugin lives under `miles_plugins/models/deepseek_v4/`.
+- [FP8 & Low Precision](/advanced/fp8-low-precision)
+- [Architecture Support](/advanced/architecture-support) — the V4 plugin lives under `miles_plugins/models/deepseek_v4/`.

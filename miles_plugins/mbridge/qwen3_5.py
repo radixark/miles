@@ -111,6 +111,21 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         "mlp.experts.linear_fc2": ["mtp.layers.{layer_number}.mlp.experts.down_proj"],
     }
 
+    # Main-layer experts can ALSO ship unfused (per-expert .weight files) — e.g. a
+    # checkpoint round-tripped out through convert_torch_dist_to_hf, whose experts
+    # are stored split rather than as the fused 3-D ``gate_up_proj``/``down_proj``
+    # tensors the public Qwen3.5-35B-A3B release uses. ``_experts_fused()``
+    # autodetects from the safetensor index, mirroring ``_mtp_experts_fused()``.
+    _MLP_EXPERTS_MAPPING_UNFUSED = {
+        "mlp.experts.linear_fc1": [
+            "model.language_model.layers.{layer_number}.mlp.experts.{expert_id}.gate_proj.weight",
+            "model.language_model.layers.{layer_number}.mlp.experts.{expert_id}.up_proj.weight",
+        ],
+        "mlp.experts.linear_fc2": [
+            "model.language_model.layers.{layer_number}.mlp.experts.{expert_id}.down_proj.weight"
+        ],
+    }
+
     # Override to make ffn_hidden_size optional (Qwen3.5 MoE has no intermediate_size)
     _CONFIG_MAPPING = {
         "num_layers": "num_hidden_layers",
@@ -180,11 +195,34 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             ret["mtp_block_spec"] = mtp_block_spec
         return ret
 
+    def _experts_fused(self) -> bool:
+        """Detect whether MAIN-layer MoE expert weights are fused 3-D tensors.
+
+        Fused (public Qwen3.5-35B-A3B): ``...mlp.experts.gate_up_proj``.
+        Unfused (round-tripped checkpoints): ``...mlp.experts.{i}.gate_proj.weight``.
+        Same lazy/cached resolution from ``safetensor_io.index`` as
+        ``_mtp_experts_fused()``; defaults to fused when the index is unavailable
+        so pre-init access keeps the historical behaviour.
+        """
+        cached = getattr(self, "_experts_fused_cached", None)
+        if cached is not None:
+            return cached
+        io = getattr(self, "safetensor_io", None)
+        index = getattr(io, "index", None) if io is not None else None
+        if not index:
+            return True
+        fused = any("model.language_model.layers." in k and k.endswith("mlp.experts.gate_up_proj") for k in index)
+        self._experts_fused_cached = fused
+        return fused
+
     def _weight_name_mapping_mlp(self, name: str) -> list[str]:
-        """Override to handle fused expert weights."""
+        """Override to handle fused (default) or unfused per-expert weights."""
         layer_number = name.split(".")[2]
+        mapping = self._MLP_MAPPING
+        if "mlp.experts.linear_fc" in name and not self._experts_fused():
+            mapping = {**self._MLP_MAPPING, **self._MLP_EXPERTS_MAPPING_UNFUSED}
         convert_names = []
-        for keyword, mapping_names in self._MLP_MAPPING.items():
+        for keyword, mapping_names in mapping.items():
             if keyword in name:
                 if "{expert_id}" in mapping_names[0]:
                     expert_id = name.split("weight")[-1]

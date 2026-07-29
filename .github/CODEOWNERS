@@ -2,10 +2,10 @@
 /.github/workflows/ @yushengsu-thu @guapisolo @yueming-yuan
 /miles/ @fzyzcjy @yueming-yuan
 /miles/backends/ @fzyzcjy @yueming-yuan @maocheng23 @Zhichenzzz @Shi-Dong
-/miles/backends/megatron_utils/ @fzyzcjy @yueming-yuan @maocheng23 @yushengsu-thu @Zhichenzzz
-/miles/backends/sglang_utils/ @fzyzcjy @yueming-yuan @maocheng23 @yushengsu-thu @Zhichenzzz
+/miles/backends/megatron_utils/ @fzyzcjy @yueming-yuan @maocheng23 @yushengsu-thu @Zhichenzzz @Shi-Dong
+/miles/backends/sglang_utils/ @fzyzcjy @yueming-yuan @maocheng23 @yushengsu-thu @Zhichenzzz @Shi-Dong
 /miles/ray/ @fzyzcjy @yueming-yuan @maocheng23
 /miles/rollout/ @fzyzcjy @yueming-yuan @guapisolo @Shi-Dong
-/miles/rollout/session/ @fzyzcjy @yueming-yuan @guapisolo @maocheng23 @jybsuper
+/miles/rollout/session/ @fzyzcjy @yueming-yuan @guapisolo @maocheng23 @jybsuper @Shi-Dong
 /miles/router/ @fzyzcjy @yueming-yuan @guapisolo
 /miles/utils/ @fzyzcjy @yueming-yuan @guapisolo @maocheng23 @jybsuper @Zhichenzzz @Shi-Dong

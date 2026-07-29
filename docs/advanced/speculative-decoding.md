@@ -2,9 +2,6 @@
 title: Speculative Decoding
 description: Draft + target speculative rollout, with online SFT for MTP-style drafts.
 ---
-
-# Speculative Decoding
-
 Speculative decoding accelerates rollout by letting a lightweight draft model
 generate ahead a few tokens and then verifying them with a single batched
 forward of the target model. When the draft is correct the target produces N
@@ -81,10 +78,10 @@ rollouts and reload it.
 
 ## Pairs with
 
-* [Unified FP8](fp8-low-precision.md). Draft and target both quantized the
+* [Unified FP8](/advanced/fp8-low-precision). Draft and target both quantized the
   same way.
-* [INT4 QAT](int4-qat.md). A quantized draft is cheaper to verify.
-* [R3](miles-router.md). R3 captures routing for the verified tokens emitted
+* [INT4 QAT](/advanced/int4-qat). A quantized draft is cheaper to verify.
+* [R3](/advanced/miles-router). R3 captures routing for the verified tokens emitted
   by the target.
 
 ## When to skip

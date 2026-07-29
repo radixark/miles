@@ -29,6 +29,7 @@ def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
         log_probs_chunk_size=-1,
         true_on_policy_mode=False,
         allgather_cp=False,
+        observe_training_entropy=False,
     )
 
 
@@ -104,7 +105,7 @@ def test_train_rollout_logprob_abs_diff_uses_policy_loss_reference_logprobs(
     monkeypatch.setattr(
         loss_utils,
         "compute_policy_loss",
-        lambda ppo_kl, advantages, eps_clip, eps_clip_high: (
+        lambda ppo_kl, advantages, eps_clip, eps_clip_high, eps_clip_c=None: (
             torch.zeros_like(ppo_kl),
             torch.zeros_like(ppo_kl),
         ),
@@ -143,7 +144,7 @@ def test_zero_weighted_entropy_nan_does_not_poison_policy_loss(monkeypatch):
     monkeypatch.setattr(
         loss_utils,
         "compute_policy_loss",
-        lambda ppo_kl, advantages, eps_clip, eps_clip_high: (
+        lambda ppo_kl, advantages, eps_clip, eps_clip_high, eps_clip_c=None: (
             torch.zeros_like(ppo_kl),
             torch.zeros_like(ppo_kl),
         ),
@@ -186,7 +187,7 @@ def test_zero_weighted_kl_nan_does_not_poison_policy_loss(monkeypatch):
     monkeypatch.setattr(
         loss_utils,
         "compute_policy_loss",
-        lambda ppo_kl, advantages, eps_clip, eps_clip_high: (
+        lambda ppo_kl, advantages, eps_clip, eps_clip_high, eps_clip_c=None: (
             torch.zeros_like(ppo_kl),
             torch.zeros_like(ppo_kl),
         ),

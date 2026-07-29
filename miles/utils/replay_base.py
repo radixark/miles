@@ -197,7 +197,7 @@ class BaseReplayManager:
         threshold = float(os.environ.get("MILES_TEST_R3_THRESHOLD", self.replay_check_max_mismatch_fraction))
         mismatch_threshold = threshold * orig_flat.shape[0]
         mismatch_indices = is_mismatch.nonzero(as_tuple=False).squeeze(1)
-        for idx in mismatch_indices:
+        for idx in mismatch_indices[:10]:
             i = idx.item()
             lines = []
             for j in range(max(0, i - 3), min(len(orig_flat), i + 4)):

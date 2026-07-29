@@ -70,7 +70,8 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
     "ci_test": True,
     "colocate": True,
     "train_backend": "fsdp",
-    "sglang_expert_parallel_size": 1,
+    "sglang_ep_size": 1,
+    "enable_spec": False,
 }
 
 
@@ -137,7 +138,6 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
     level) so the runner stays pinned to whatever the caller's Namespace
     declared, regardless of any drift in miles' upstream default.
     """
-    allowed_roles_arg = " ".join(ns.tito_allowed_append_roles)
     parts: list[str] = [
         f"--hf-checkpoint {ns.hf_checkpoint}",
         f"--prompt-data {ns.prompt_data}",
@@ -153,7 +153,6 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         f"--session-verify-cycles {ns.session_verify_cycles}",
         f"--tool-call-failure-mode {ns.tool_call_failure_mode}",
         f"--tito-model {ns.tito_model}",
-        f"--tito-allowed-append-roles {allowed_roles_arg}",
         f"--rollout-num-gpus-per-engine {ns.rollout_num_gpus_per_engine}",
         f"--sglang-reasoning-parser {ns.sglang_reasoning_parser}",
         f"--rm-type {ns.rm_type}",
@@ -166,8 +165,17 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
     # DeepSeek V3.2 (and other NSA/MoE archs) requires expert-parallel > 1 in
     # sglang; the default is 1, which is fatal at engine init.  Only emit the
     # flag when the caller asks for ep>1 so single-expert models stay untouched.
-    if ns.sglang_expert_parallel_size > 1:
-        parts.append(f"--sglang-expert-parallel-size {ns.sglang_expert_parallel_size}")
+    if ns.sglang_ep_size > 1:
+        parts.append(f"--sglang-expert-parallel-size {ns.sglang_ep_size}")
+    if ns.enable_spec:
+        parts.extend(
+            [
+                "--sglang-speculative-algorithm EAGLE",
+                "--sglang-speculative-num-steps 2",
+                "--sglang-speculative-eagle-topk 1",
+                "--sglang-speculative-num-draft-tokens 3",
+            ]
+        )
     if ns.use_session_server:
         parts.append("--use-session-server")
     if ns.debug_rollout_only:
@@ -193,7 +201,7 @@ def run_session_verify(args: argparse.Namespace) -> None:
     path or by spreading ``SESSION_VERIFY_INVARIANT_ARGS`` into
     ``argparse.Namespace(...)`` for tests.
 
-    Mutates ``args`` in three places before composing train_args:
+    Mutates ``args`` in two places before composing train_args:
     - ``args.sglang_reasoning_parser`` / ``args.sglang_tool_call_parser`` are
       resolved against the TITO subclass's bound values via
       ``resolve_reasoning_and_tool_call_parser`` — caller-passed values that
@@ -201,15 +209,10 @@ def run_session_verify(args: argparse.Namespace) -> None:
       GPU work starts.
     - ``args.hf_checkpoint`` is replaced with the local download path so the
       composed train_args points at the downloaded model, not the HF id.
-    - ``args.tito_allowed_append_roles`` is normalized (lowercase, dedup,
-      ensure ``'tool'`` is in) to match the schedule contract in
-      ``session_verify_agent._SUPPORTED_ROLE_SURFACES``.
     """
     args.sglang_reasoning_parser, args.sglang_tool_call_parser = resolve_reasoning_and_tool_call_parser(
         args.tito_model, args.sglang_reasoning_parser, args.sglang_tool_call_parser
     )
-    args.tito_allowed_append_roles = sorted(set(r.lower() for r in args.tito_allowed_append_roles) | {"tool"})
-
     _ensure_prompt_data()
     _clear_proxy_env()
     args.hf_checkpoint = _ensure_model_downloaded(args.hf_checkpoint)

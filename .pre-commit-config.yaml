@@ -1,6 +1,10 @@
 default_language_version:
   python: python3
 
+# The vendored upstream module stays byte-diffable against its source; keep
+# formatters and linters away so upstream-tracking diffs remain minimal.
+exclude: '^miles/utils/chat_template_utils/templates/encoding_dsv32\.py$'
+
 ci:
   autofix_prs: true
   autoupdate_commit_msg: '[pre-commit.ci] pre-commit suggestions'
@@ -60,3 +64,9 @@ repos:
         entry: '(AutoConfig|AutoTokenizer)\.from_pretrained'
         types: [python]
         exclude: '(miles/utils/hf_config\.py|miles/utils/processing_utils\.py|tests/|test_utils/|miles_plugins/|examples/)'
+
+      - id: ban-huggingface-cli
+        name: Ban deprecated huggingface-cli (use hf)
+        language: pygrep
+        entry: 'huggingface-cli'
+        types: [python]

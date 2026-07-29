@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import IO
 
 import requests
+import torch
 
 from miles.utils.http_utils import find_available_port
 
@@ -72,6 +73,13 @@ def start_sglang_server(
         cmd.append("--enable-deterministic-inference")
     if extra_args:
         cmd.extend(extra_args)
+
+    # Use Triton as the deterministic-inference attention backend on ROCm.
+    is_rocm = torch.version.hip is not None
+    has_attention_backend = any(arg.startswith("--attention-backend") for arg in cmd)
+
+    if enable_deterministic_inference and is_rocm and not has_attention_backend:
+        cmd.extend(["--attention-backend", "triton"])
 
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")

@@ -13,7 +13,7 @@ from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_roll
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.utils import dumper_utils
 from miles.utils.http_utils import get, post
-from miles.utils.misc import as_completed_async, load_function
+from miles.utils.misc import as_completed_async, call_agent_abort_hook, load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,10 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
     urls = await get_worker_urls(args)
     logger.info(f"Abort request for {urls}")
     await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
+
+    # Let the agent integration tear down its in-flight trials so they stop hitting
+    # SGLang, instead of running on until their own max_seq_len / timeout.
+    await call_agent_abort_hook(args)
 
     # make sure all the pending tasks are finished
     aborted_samples = []

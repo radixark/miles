@@ -16,6 +16,7 @@ pkill -9 python
 set -ex
 
 SKILLS_OPENAI_MODEL_NAME=${SKILLS_OPENAI_MODEL_NAME:-"miles-openai-model"}
+MILES_OPTIMIZER=${MILES_OPTIMIZER:-adam}
 
 
 export PYTHONBUFFERED=16
@@ -92,14 +93,21 @@ GRPO_ARGS=(
    --eps-clip-high 0.28
 )
 
+if [ "${MILES_OPTIMIZER}" != "adam" ] && [ "${MILES_OPTIMIZER}" != "muon" ]; then
+   echo "Unsupported MILES_OPTIMIZER=${MILES_OPTIMIZER}; expected adam or muon" >&2
+   exit 1
+fi
 OPTIMIZER_ARGS=(
-   --optimizer adam
+   --optimizer "${MILES_OPTIMIZER}"
    --lr 1e-6
    --lr-decay-style constant
    --weight-decay 0.1
    --adam-beta1 0.9
    --adam-beta2 0.98
 )
+if [ "${MILES_OPTIMIZER}" = "muon" ]; then
+   OPTIMIZER_ARGS+=(--muon-momentum 0.9)
+fi
 
 WANDB_ARGS=(
    --use-wandb

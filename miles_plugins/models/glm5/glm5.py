@@ -31,6 +31,28 @@ from miles.utils.replay_base import indexer_replay_manager
 from .ops.indexer import generate_varlen_mask_params, lighting_indexer
 from .ops.sparse_mla import SparseMLA
 
+# Names of the indexer submodules. On a DSA model with *cross-layer index
+# sharing* these only exist on "computing" layers; "skip" layers drop them.
+_INDEXER_SUBMODULE_NAMES = ("wq_b", "wk", "k_norm", "weights_proj")
+
+
+def is_skip_topk_layer(layer_number: int, skip_topk_offset: int, topk_freq: int) -> bool:
+    """Whether the (1-indexed) Megatron ``layer_number`` reuses a previous layer's top-k.
+
+    Mirrors ``glm-train-prod``'s ``_get_skip_topk_flags``: a layer *computes* its
+    own top-k when ``max(layer_number - offset, 0) % freq == 0``; otherwise it is a
+    skip layer that reuses the most recent computing layer's indices.
+    """
+    return (max(layer_number - skip_topk_offset, 0) % topk_freq) != 0
+
+
+def source_compute_layer(layer_number: int, skip_topk_offset: int, topk_freq: int) -> int:
+    """The computing layer whose ``topk_indices`` a skip layer reuses."""
+    layer = layer_number
+    while is_skip_topk_layer(layer, skip_topk_offset, topk_freq):
+        layer -= 1
+    return layer
+
 
 @dataclass
 class DSASelfAttentionSubmodules:
@@ -66,6 +88,7 @@ class DSAMultiLatentAttention(Attention):
         layer_number: int,
         attn_mask_type: AttnMaskType,
         attention_type: str,
+        topk_backend: str = "torch",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -138,7 +161,34 @@ class DSAMultiLatentAttention(Attention):
         )
 
         self.index_topk = 2048
+        if topk_backend not in ("torch", "flashinfer"):
+            raise ValueError(f"Unsupported miles DSA topk backend: {topk_backend}")
+        self.topk_backend = topk_backend
         indexer_replay_manager.register_to_module(self, "indexer_replay", stream_idx=self.layer_number - 1)
+
+        # Cross-layer index sharing (optional). When the HF config provides
+        # ``index_topk_freq`` / ``index_skip_topk_offset`` (see ``get_glm5_spec``),
+        # only a subset of "computing" layers run the indexer top-k; the remaining
+        # "skip" layers reuse the most recent computing layer's ``topk_indices``.
+        # When those attrs are absent (``freq`` defaults to 1) every layer computes
+        # its own top-k and ``skip_topk`` is always False -- i.e. the plain DSA path.
+        self.index_topk_freq = getattr(self.config, "index_topk_freq", 1) or 1
+        self.skip_topk_offset = getattr(self.config, "index_skip_topk_offset", 0) or 0
+        self.index_share = self.index_topk_freq > 1
+        self.skip_topk = self.index_share and is_skip_topk_layer(
+            self.layer_number, self.skip_topk_offset, self.index_topk_freq
+        )
+        self._source_layer = (
+            source_compute_layer(self.layer_number, self.skip_topk_offset, self.index_topk_freq)
+            if self.index_share
+            else self.layer_number
+        )
+
+    # Attribute name of the per-microbatch top-k holder we attach to the
+    # ``packed_seq_params`` object (a plain dict: source layer_number -> topk_indices).
+    # Used only on index-share models; see ``forward`` for why it lives on
+    # ``packed_seq_params`` (per-microbatch isolation + recompute safety under PP).
+    _HOLDER_ATTR = "_dsa_index_share_topk_holder"
 
     def forward(
         self,
@@ -204,6 +254,7 @@ class DSAMultiLatentAttention(Attention):
                     starts_block,
                     ends_block,
                     self.index_topk,
+                    topk_backend=self.topk_backend,
                 )
 
                 indexer_topk_scores_block = torch.softmax(indexer_topk_scores_block, dim=-1)
@@ -211,13 +262,47 @@ class DSAMultiLatentAttention(Attention):
                 topk_indices.append(topk_indices_block)
             return torch.cat(indexer_topk_scores, dim=0), torch.cat(topk_indices, dim=0).unsqueeze(1)
 
-        starts, ends = generate_varlen_mask_params(packed_seq_params.cu_seqlens_q)
-        index_key = index_key.squeeze(1)
-        head_weights = head_weights.unsqueeze(-1)
+        if self.index_share:
+            # Cross-layer index sharing. The top-k holder lives on the per-microbatch
+            # ``packed_seq_params`` object: it is closure-captured by Megatron's
+            # activation-checkpoint ``custom_forward``, so the same instance is reused at
+            # recompute time. That gives per-microbatch isolation (no cross-microbatch
+            # clobber under PP 1F1B) AND recompute safety. A stage always starts on a
+            # computing layer (asserted in ``get_glm5_spec``), so a skip layer's source is
+            # always in-stage.
+            holder = getattr(packed_seq_params, self._HOLDER_ATTR, None)
+            if holder is None:
+                holder = {}
+                setattr(packed_seq_params, self._HOLDER_ATTR, holder)
 
-        starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
-        ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
-        _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
+            if self.skip_topk:
+                if self._source_layer not in holder:
+                    raise AssertionError(
+                        "DSA index-share: skip layer "
+                        f"(layer_number={self.layer_number}) needs the top-k of its source "
+                        f"computing layer (layer_number={self._source_layer}), but that layer "
+                        "did not run in this pipeline stage's forward. Cross-PP top-k sharing "
+                        "is not supported; ensure every pipeline stage starts on a computing "
+                        f"layer (index_topk_freq={self.index_topk_freq}, "
+                        f"index_skip_topk_offset={self.skip_topk_offset}). "
+                        f"Holder has layers {sorted(holder)}."
+                    )
+                topk_indices = holder[self._source_layer]
+            else:
+                starts, ends = generate_varlen_mask_params(packed_seq_params.cu_seqlens_q)
+                index_key = index_key.squeeze(1)
+                head_weights = head_weights.unsqueeze(-1)
+                starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
+                ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
+                _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
+                holder[self.layer_number] = topk_indices
+        else:
+            starts, ends = generate_varlen_mask_params(packed_seq_params.cu_seqlens_q)
+            index_key = index_key.squeeze(1)
+            head_weights = head_weights.unsqueeze(-1)
+            starts = scatter_to_sequence_parallel_region(starts, group=parallel_state.get_context_parallel_group())
+            ends = scatter_to_sequence_parallel_region(ends, group=parallel_state.get_context_parallel_group())
+            _, topk_indices = fused_select_topk(index_query, index_key, head_weights, starts, ends)
 
         core_attn_out, _ = SparseMLA.apply(q, kv, topk_indices, self.softmax_scale)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, wv)
@@ -249,6 +334,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
         submodules: DSASelfAttentionSubmodules,
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
+        topk_backend: str = "torch",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -260,6 +346,7 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
             layer_number=layer_number,
             attn_mask_type=attn_mask_type,
             attention_type="self",
+            topk_backend=topk_backend,
             is_mtp_layer=is_mtp_layer,
             cp_comm_type=cp_comm_type,
             model_comm_pgs=model_comm_pgs,
@@ -415,6 +502,14 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
                 for param in module.parameters():
                     param.requires_grad = False
 
+        # Index-share skip layers carry no indexer weights -- drop the modules built
+        # above so the parameter set matches the checkpoint (which only stores indexer
+        # weights on computing layers) and weight export to HF omits them on skip layers.
+        if self.skip_topk:
+            for name in _INDEXER_SUBMODULE_NAMES:
+                if hasattr(self, name):
+                    delattr(self, name)
+
     def get_absorb_query_key_value_tensors(
         self,
         hidden_states,
@@ -522,6 +617,11 @@ class DSAMLASelfAttention(DSAMultiLatentAttention):
 
         query = query.contiguous()
         key = key.contiguous()
+
+        if self.skip_topk:
+            # Index-share skip layer: reuse a previous layer's top-k, so the indexer
+            # projections are not run here. Return None for the index tensors.
+            return query, key, w_vc, None, None, None
 
         # =========================================
         # Indexer
@@ -642,6 +742,12 @@ def get_glm5_spec(args, config, vp_stage):
     config.index_head_dim = hf_config.index_head_dim
     config.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
     config.freeze_indexer = getattr(args, "freeze_indexer", False)
+    # Optional cross-layer index-sharing schedule. Present on DSA checkpoints that only
+    # store indexer weights on a subset of "computing" layers (e.g. GLM-5.2). When absent,
+    # every layer computes its own top-k (plain DSA) and DSAMLASelfAttention runs the
+    # non-shared path.
+    config.index_topk_freq = getattr(hf_config, "index_topk_freq", 1) or 1
+    config.index_skip_topk_offset = getattr(hf_config, "index_skip_topk_offset", 0) or 0
     # Define the decoder block spec
     kwargs = {
         "use_transformer_engine": True,
@@ -650,11 +756,39 @@ def get_glm5_spec(args, config, vp_stage):
         kwargs["vp_stage"] = vp_stage
     transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
     num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
+
+    # Cross-layer index sharing keeps the shared top-k in a per-microbatch holder on
+    # ``packed_seq_params``, which does not cross PP boundaries. A skip layer must run in
+    # the same pipeline stage as the computing layer it reuses, so a (virtual) pipeline
+    # stage may not *start* on a skip layer. Forbid that split here (supporting it would
+    # need PP send/recv of the top-k).
+    if config.index_topk_freq > 1:
+        from megatron.core.transformer.transformer_block import get_transformer_layer_offset
+
+        layer_offset = get_transformer_layer_offset(config, vp_stage=vp_stage)
+        for local_id in range(num_layers_to_build):
+            layer_number = local_id + layer_offset + 1  # Megatron layer_number is 1-indexed
+            if local_id == 0 and is_skip_topk_layer(
+                layer_number, config.index_skip_topk_offset, config.index_topk_freq
+            ):
+                src = source_compute_layer(layer_number, config.index_skip_topk_offset, config.index_topk_freq)
+                raise AssertionError(
+                    "DSA index-share pipeline split is invalid: this stage starts at global "
+                    f"layer_number={layer_number} which is a skip layer whose source computing "
+                    f"layer={src} is on a previous pipeline stage. Cross-layer top-k sharing does "
+                    "not cross PP boundaries. Choose a pipeline layout where every stage begins on "
+                    "a computing layer (index_topk_freq="
+                    f"{config.index_topk_freq}, index_skip_topk_offset={config.index_skip_topk_offset})."
+                )
+
     backend = TESpecProvider()
 
     self_attn_module_spec = ModuleSpec(
         module=DSAMLASelfAttention,
-        params={"attn_mask_type": AttnMaskType.causal},
+        params={
+            "attn_mask_type": AttnMaskType.causal,
+            "topk_backend": args.miles_dsa_topk_backend,
+        },
         submodules=DSASelfAttentionSubmodules(
             linear_q_down_proj=backend.linear(),
             linear_q_up_proj=backend.column_parallel_layer_norm_linear(),

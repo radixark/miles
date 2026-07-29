@@ -2,9 +2,6 @@
 title: Experimental Features
 description: Backends and features that exist in tree but are not production-ready — opt-in at your own risk.
 ---
-
-# Experimental Features
-
 These features live in the Miles tree but are **not** production-ready. They typically
 have rough edges, missing parallelism, or known bugs against current dependency
 versions. Use them when you want to iterate quickly or co-develop a feature, not for
@@ -12,7 +9,7 @@ the long-running training jobs you'd publish results from.
 
 ## FSDP backend
 
-A PyTorch FSDP2 training backend lives at `miles/backends/fsdp_utils/`.
+A PyTorch FSDP2 training backend lives at `miles/backends/experimental/fsdp_utils/`.
 It trades maximum throughput for **zero conversion overhead**: there is no
 `torch_dist` step, Miles reads architecture information from the HuggingFace
 `config.json`, and weights load directly via `AutoModelForCausalLM.from_pretrained()`.
@@ -34,7 +31,7 @@ models, not for production runs.
 - You want a HuggingFace-native checkpoint at every step with no conversion.
 
 For large MoE models, multi-rack jobs, or anything where TP / PP / CP / EP matters,
-use the production [Megatron-LM backend](../user-guide/usage.md#megatron-lm) instead.
+use the production [Megatron-LM backend](/user-guide/usage#megatron-lm) instead.
 
 ### Enabling it
 
@@ -64,18 +61,14 @@ Most RL-level flags carry over unchanged. Backend-specific differences:
 ### Quick start
 
 ```bash
-# Optional: wandb
 export WANDB_API_KEY=<key>
-
-# Model + data
-hf download Qwen/Qwen3-4B                                       --local-dir /root/Qwen3-4B
-hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024              --local-dir /root/aime-2024
 
 # Code
 git clone https://github.com/radixark/miles.git && cd miles
 pip install -e . --no-deps
 
-# Launch — no conversion step
-bash scripts/run-qwen3-4B-fsdp.sh
+# Launch — downloads model + datasets itself, no conversion step
+python3 scripts/run_qwen3_0_6b_fsdp.py
 ```
+
+Per-model launchers with the same recipe shape: `scripts/run_qwen3_0_6b_fsdp.py`, `scripts/run_nemotron_3_nano_4b_fsdp.py`, `scripts/run_qwen3_30b_a3b_fsdp.py`.

@@ -2,9 +2,6 @@
 title: NVIDIA H / B Series
 description: H100, H200, B100, B200 — Miles's primary target.
 ---
-
-# NVIDIA GPUs
-
 NVIDIA Blackwell (GB300 / GB200 / B200 / B100) and Hopper (H200 / H100) are Miles's first-class targets.
 
 ## Recommended setup
@@ -67,6 +64,11 @@ NCCL_TIMEOUT=900
 NVTE_FUSED_ATTN=1            # default, but verify
 TORCHINDUCTOR_CACHE_DIR=/data/.inductor
 ```
+
+miles sets `NVSHMEM_DISABLE_NCCL=1` on rollout and training actors automatically. DeepEP
+initializes NVSHMEM, whose built-in NCCL path opens a second NCCL communicator that collides
+with miles' own NCCL and hangs during SGLang CUDA-graph replay. Export `NVSHMEM_DISABLE_NCCL=0`
+to opt out.
 
 ## NVLink + IB topology
 

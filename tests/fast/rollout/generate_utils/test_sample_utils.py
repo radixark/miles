@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import numpy
 import pytest
 
-from miles.rollout.generate_utils.sample_utils import _merge_sample_pair
+from miles.rollout.generate_utils.sample_utils import _merge_sample_pair, merge_samples
 from miles.utils.types import Sample
 
 
@@ -175,3 +175,33 @@ class TestMergeSamples:
 
         with pytest.raises(AssertionError, match="loss_mask length"):
             _merge_sample_pair(a, b, mock_tokenizer)
+
+    def test_merge_sample_pair_routed_experts_gap_raises_clear_error(self, mock_tokenizer):
+        # An aborted turn omits routed_experts; merging a routed turn into it must
+        # raise a clear assertion rather than an AttributeError on None.shape.
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        a.rollout_routed_experts = numpy.zeros((2, 2, 3), dtype=numpy.int32)
+        b.rollout_routed_experts = None
+
+        with pytest.raises(AssertionError, match="a has rollout_routed_experts but b does not"):
+            _merge_sample_pair(a, b, mock_tokenizer)
+
+    def test_merge_samples_stops_at_routing_gap(self, mock_tokenizer):
+        # merge_samples should keep the last fully-captured turn when a later turn
+        # lacks the replay payload, instead of crashing while extending into it.
+        t0 = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        t1 = make_sample(
+            tokens=[1, 2, 10, 20, 30],
+            response_length=1,
+            loss_mask=[1],
+            status=Sample.Status.TRUNCATED,
+        )
+        t0.rollout_routed_experts = numpy.zeros((2, 2, 3), dtype=numpy.int32)
+        t1.rollout_routed_experts = None
+
+        merged = merge_samples([t0, t1], mock_tokenizer)
+
+        assert merged is t0
+        assert merged.tokens == t0.tokens
+        assert merged.rollout_routed_experts is not None

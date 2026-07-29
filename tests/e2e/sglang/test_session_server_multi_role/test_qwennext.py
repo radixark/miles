@@ -14,7 +14,6 @@ CONFIG = ModelConfig(
     reasoning_parser="qwen3",
     tool_call_parser="qwen25",
     tito_model="qwennext",
-    allowed_append_roles=("tool", "user"),
     tp_size=4,
     cycles=2,
     n_samples_per_prompt=1,

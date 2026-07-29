@@ -71,8 +71,8 @@ ROLLOUT_ARGS=(
 )
 
 RM_ARGS=(
-   --custom-rm-path examples.on_policy_distillation.on_policy_distillation.reward_func
-   --custom-reward-post-process-path examples.on_policy_distillation.on_policy_distillation.post_process_rewards
+   --custom-rm-path miles.rollout.on_policy_distillation.reward_func
+   --custom-reward-post-process-path miles.rollout.on_policy_distillation.post_process_rewards
    --rm-url http://$TEACHER_IP:$TEACHER_PORT/generate
 )
 
@@ -106,6 +106,9 @@ GRPO_ARGS=(
    --use-opd
    --opd-type sglang
    --opd-kl-coef 1.0
+   --opd-log-prob-top-k 16
+   --opd-top-k-strategy only-student
+   --opd-reward-weight-mode student_p
    --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl
@@ -184,7 +187,6 @@ pkill -9 python
 sleep 3
 pkill -9 ray
 pkill -9 python
-
 
 
 

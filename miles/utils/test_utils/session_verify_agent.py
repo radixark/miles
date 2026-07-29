@@ -11,12 +11,19 @@ from __future__ import annotations
 import json
 import logging
 import os
-from enum import Enum, StrEnum
+from enum import Enum
+
+try:
+    from enum import StrEnum
+except ImportError:
+    from backports.strenum import StrEnum
 
 import httpx
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_hub.agentic_tool_call import generate as _base_generate
+from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, TITOTokenizerType
+from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +32,7 @@ class DriverAction(Enum):
     TOOL_RESULT = "tool_result"
     USER_FOLLOWUP = "user_followup"
     SYSTEM_REMINDER = "system_reminder"
+    ASSISTANT_INPUT = "assistant_input"
     ROLLBACK = "rollback"
     FORCE_FINAL = "force_final"
 
@@ -32,6 +40,7 @@ class DriverAction(Enum):
 _T = DriverAction.TOOL_RESULT
 _U = DriverAction.USER_FOLLOWUP
 _S = DriverAction.SYSTEM_REMINDER
+_A = DriverAction.ASSISTANT_INPUT
 _R = DriverAction.ROLLBACK
 _F = DriverAction.FORCE_FINAL
 
@@ -44,9 +53,8 @@ class ToolCallFailureMode(StrEnum):
                    ``tool`` role must follow an assistant with ``tool_calls``
                    (e.g. MiniMax-M2.7) will reject the next request at server-side.
     APPEND_USER  : Splice a ``user`` message carrying the same failure text as
-                   APPEND_TOOL.  Requires "user" in ``allowed_append_roles`` —
-                   raises ValueError at agent start otherwise, so misconfig is
-                   immediately visible instead of silently downgrading.
+                   APPEND_TOOL.  Requires the selected family's fixed template
+                   to support "user"; raises ValueError at agent start otherwise.
     ROLLBACK     : Pop the offending assistant and let the loop's chat call at
                    the bottom re-inference.  Universal — no role-surface
                    dependency — and the default.
@@ -84,11 +92,12 @@ _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
 # response budget should drop to 2 to avoid context overflow.
 DEFAULT_CYCLES = 3
 
-_SUPPORTED_ROLE_SURFACES: tuple[frozenset[str], ...] = (
-    frozenset({"tool"}),
-    frozenset({"tool", "user"}),
-    frozenset({"tool", "user", "system"}),
-)
+
+def fixed_template_append_roles(tito_model: TITOTokenizerType | str) -> tuple[str, ...]:
+    """Return the selected family's fixed append capability in canonical order."""
+    tokenizer_type = TITOTokenizerType(tito_model)
+    supported = TITOTokenizerType.get_tokenizer_class(tokenizer_type).FIXED_TEMPLATE.allowed_append_roles
+    return tuple(role for role in VALID_APPEND_ROLES if role in supported)
 
 
 def _build_cycle(role_surface: frozenset[str]) -> list[DriverAction]:
@@ -106,6 +115,11 @@ def _build_cycle(role_surface: frozenset[str]) -> list[DriverAction]:
 # and tool-call parsing are tuned against.
 USER_FOLLOWUP_TEXT = "Now check the weather in Shanghai."
 SYSTEM_REMINDER_TEXT = "Note: from now on, answer in a single sentence; skip all pleasantries."
+ASSISTANT_INPUT_TEXTS = (
+    "The earlier Beijing weather result was 22 degrees Celsius and sunny.",
+    "The earlier Shanghai weather result was 30 degrees Celsius and rainy.",
+)
+ASSISTANT_INPUT_FOLLOWUP_TEXT = "Summarize the two weather results above in one sentence without calling a tool."
 FORCE_FINAL_TEXT = "Please summarize all results inside <final_answer>...</final_answer> tags."
 
 TOOLS = [
@@ -147,11 +161,13 @@ INITIAL_USER_PROMPT = "What's the weather in Beijing?"
 
 
 def select_schedule(allowed_roles, *, cycles: int = DEFAULT_CYCLES) -> list[DriverAction]:
-    """Pick the schedule for ``frozenset(allowed_roles)``; raises on unregistered."""
+    """Build a schedule from the selected FixedTemplate capability."""
     key = frozenset(allowed_roles)
-    if key not in _SUPPORTED_ROLE_SURFACES:
-        registered = sorted(sorted(k) for k in _SUPPORTED_ROLE_SURFACES)
-        raise ValueError(f"No schedule registered for allowed_roles={sorted(key)}. Registered: {registered}")
+    invalid = key - set(VALID_APPEND_ROLES)
+    if invalid:
+        raise ValueError(f"Unknown append roles: {sorted(invalid)}")
+    if "tool" not in key:
+        raise ValueError(f"The session verifier requires 'tool' capability, got {sorted(key)}")
     if cycles < 1:
         raise ValueError(f"cycles must be >= 1, got {cycles}")
     cycle = _build_cycle(key)
@@ -160,6 +176,10 @@ def select_schedule(allowed_roles, *, cycles: int = DEFAULT_CYCLES) -> list[Driv
     schedule = list(cycle) + [_R] + cycle * (cycles - 1)
     if "user" in key:
         schedule.append(_F)
+    # Keep injected assistants after every rollback: they are prompt messages,
+    # not generated checkpoints, so rollback across them is a separate contract.
+    if "assistant" in key:
+        schedule.append(_A)
     return schedule
 
 
@@ -173,6 +193,11 @@ def build_initial_messages() -> list[dict]:
 
 async def _chat(client, base_url, messages, request_kwargs, *, label):
     payload = {"messages": messages, "tools": TOOLS, **request_kwargs}
+    # Streaming is the e2e default: black-box agent harnesses mostly consume
+    # chat completions as SSE, so exercise the session server's fake-streaming
+    # path unless the caller opts out with stream=False in request_kwargs.
+    if payload.pop("stream", True):
+        return await stream_chat_completions(client, f"{base_url}/v1/chat/completions", payload, label=label)
     resp = await client.post(f"{base_url}/v1/chat/completions", json=payload)
     assert resp.status_code == 200, f"{label} failed ({resp.status_code}): {resp.text}"
     return resp.json()
@@ -181,27 +206,26 @@ async def _chat(client, base_url, messages, request_kwargs, *, label):
 async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     """Custom-agent entry point.  Returns ``{"driver_events": [...], **counters}``.
 
-    ``allowed_append_roles`` must be present in ``metadata`` (the ``generate``
-    wrapper below injects it from ``args.tito_allowed_append_roles``).
+    ``tito_model`` must be present in ``metadata`` (the ``generate`` wrapper
+    below injects it from ``args.tito_model``).  The driver schedule is derived
+    from that family's ``FixedTemplate.allowed_append_roles``.
     ``prompt`` is ignored — the driver synthesizes its own initial conversation
     from ``build_initial_messages`` so runs are reproducible.
     """
-    allowed_roles = metadata.get("allowed_append_roles")
-    if allowed_roles is None:
-        raise ValueError(
-            "session_verify_agent.run_agent requires allowed_append_roles in metadata; "
-            "the generate wrapper should inject it from args.tito_allowed_append_roles."
-        )
+    tito_model = metadata.get("tito_model")
+    if tito_model is None:
+        raise ValueError("session_verify_agent.run_agent requires tito_model in metadata")
+    allowed_roles = fixed_template_append_roles(tito_model)
     cycles = metadata.get("session_verify_cycles", DEFAULT_CYCLES)
     schedule = select_schedule(allowed_roles, cycles=cycles)
 
     failure_mode = ToolCallFailureMode(metadata.get("tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE))
-    # APPEND_USER injects a user message — only valid if 'user' is in
-    # allowed_append_roles.  Refuse up front instead of silently downgrading.
+    # APPEND_USER injects a user message, so the fixed template must support it.
+    # Refuse up front instead of silently downgrading.
     if failure_mode is ToolCallFailureMode.APPEND_USER and "user" not in allowed_roles:
         raise ValueError(
-            f"tool_call_failure_mode=APPEND_USER requires 'user' in allowed_append_roles, "
-            f"got {sorted(allowed_roles)}.  Pick ROLLBACK (universal) or APPEND_TOOL "
+            f"tool_call_failure_mode=APPEND_USER requires the {tito_model!r} fixed template "
+            f"to support 'user', got {sorted(allowed_roles)}. Pick ROLLBACK (universal) or APPEND_TOOL "
             "(lenient-template) for tool-only surfaces."
         )
 
@@ -212,6 +236,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
         "rollback_count": 0,
         "user_count": 0,
         "system_count": 0,
+        "assistant_input_count": 0,
         "tool_result_count": 0,
         "tool_call_count": 0,
     }
@@ -302,6 +327,13 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 counters["system_count"] += 1
                 events.append("append_system")
 
+            elif action is DriverAction.ASSISTANT_INPUT:
+                messages.extend({"role": "assistant", "content": text} for text in ASSISTANT_INPUT_TEXTS)
+                messages.append({"role": "user", "content": ASSISTANT_INPUT_FOLLOWUP_TEXT})
+                counters["assistant_input_count"] += len(ASSISTANT_INPUT_TEXTS)
+                counters["user_count"] += 1
+                events.append("append_assistant")
+
             elif action is DriverAction.ROLLBACK:
                 # Pop the last assistant from our local copy.  The next
                 # request therefore has one fewer message than what the
@@ -338,15 +370,16 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom-generate wrapper that asserts driver-action coverage.
 
     - Per-sample: every sample must contain ``rollback``, plus ``append_user``
-      / ``append_system`` when those roles are allowed.
+      / ``append_system`` / ``append_assistant`` when those roles are allowed.
     - Cross-sample: at least one sample must contain ``append_tool``
       (model-dependent on emitting a tool_call).
     """
-    allowed_roles = list(input.args.tito_allowed_append_roles)
+    tito_model = input.args.tito_model
+    allowed_roles = list(fixed_template_append_roles(tito_model))
     cycles = getattr(input.args, "session_verify_cycles", DEFAULT_CYCLES)
     failure_mode = getattr(input.args, "tool_call_failure_mode", DEFAULT_TOOL_CALL_FAILURE_MODE)
     # Sample.metadata is mutable even when the outer dataclass is frozen.
-    input.sample.metadata["allowed_append_roles"] = allowed_roles
+    input.sample.metadata["tito_model"] = tito_model
     input.sample.metadata["session_verify_cycles"] = cycles
     input.sample.metadata["tool_call_failure_mode"] = failure_mode
 
@@ -361,6 +394,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         required_per_sample.append("append_user")
     if "system" in allowed_roles:
         required_per_sample.append("append_system")
+    if "assistant" in allowed_roles:
+        required_per_sample.append("append_assistant")
 
     for i, events in enumerate(events_per_sample):
         missing = [req for req in required_per_sample if req not in events]
@@ -434,10 +469,11 @@ def _add_arguments(parser):
         type=int,
         default=DEFAULT_CYCLES,
         help="Number of driver schedule cycles per sample for session-server "
-        "TITO verification.  Each cycle exercises every action in the role "
-        "surface plus a rollback; more cycles stress the TITO accumulator "
-        "longer but expand context length.  Drop to 2 on tighter-context "
-        "models (e.g. Qwen3 32K with 4K response budget).",
+        "TITO verification.  Each cycle exercises recurrent role actions plus "
+        "a rollback; assistant input is exercised once as the terminal action. "
+        "More cycles stress the TITO accumulator longer but expand context "
+        "length.  Drop to 2 on tighter-context models (e.g. Qwen3 32K with 4K "
+        "response budget).",
     )
     parser.add_argument(
         "--tool-call-failure-mode",
@@ -448,7 +484,7 @@ def _add_arguments(parser):
         "assistant.  'rollback' (default, universal) pops the assistant and "
         "re-inferences.  'append_tool' splices a sentinel tool message (only "
         "works on lenient templates).  'append_user' splices a user message "
-        "with the same failure text — requires 'user' in allowed_append_roles.",
+        "with the same failure text — requires the fixed template to support 'user'.",
     )
 
 

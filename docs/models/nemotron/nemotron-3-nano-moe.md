@@ -2,9 +2,6 @@
 title: Nemotron-3-Nano MoE
 description: Launch recipe for NVIDIA Nemotron-3-Nano-30B-A3B (Mamba+Attention+MoE hybrid) via Megatron AutoBridge.
 ---
-
-# Nemotron-3-Nano MoE
-
 ## 1. Model Introduction
 
 [NVIDIA Nemotron-3-Nano-30B-A3B-BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16)
@@ -113,13 +110,12 @@ SGLANG_ARGS=(
    --sglang-mem-fraction-static 0.7
    # Replay the exact rollout routing during training forward so
    # train logprobs match rollout logprobs (needed for MoE).
-   --use-miles-router
    --use-rollout-routing-replay
 )
 ```
 
-`--use-miles-router --use-rollout-routing-replay` is what keeps train and rollout
-logprobs aligned for the sigmoid-routed MoE — drop them and you'll see the same
+The `--use-rollout-routing-replay` flag is what keeps train and rollout
+logprobs aligned for the sigmoid-routed MoE — drop it and you'll see the same
 ~0.28 drift the bridge shim was added to fix.
 
 ### 5.4 Optimizer
@@ -140,11 +136,11 @@ From `scripts/models/nemotron-3-nano-30b-a3b.sh` and `scripts/run-nemotron-3-nan
 - `--position-embedding-type none`, `--vocab-size 131072 --make-vocab-size-divisible-by 128`.
 - `--attention-backend auto` (Mamba layers select their own kernel).
 
-See [Backends Beyond Megatron](../../advanced/architecture-support.md) for how the bridge
+See [Backends Beyond Megatron](/advanced/architecture-support) for how the bridge
 shim layers `routed_scaling_factor` / `n_group` / `topk_group` onto the Megatron provider.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](../../advanced/architecture-support.md)
-- [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md)
-- [FP8 & Low Precision](../../advanced/fp8-low-precision.md)
+- [Backends Beyond Megatron](/advanced/architecture-support)
+- [P2P Weight Transfer](/advanced/p2p-weight-transfer)
+- [FP8 & Low Precision](/advanced/fp8-low-precision)

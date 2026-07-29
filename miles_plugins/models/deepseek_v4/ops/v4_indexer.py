@@ -16,6 +16,7 @@ from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
+from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
 
 class V4Indexer(MegatronModule):
@@ -29,6 +30,7 @@ class V4Indexer(MegatronModule):
         self.index_n_heads = config.dsa_indexer_n_heads
         self.index_head_dim = config.dsa_indexer_head_dim
         self.index_topk = config.dsa_indexer_topk
+        self.topk_backend = config.miles_dsa_topk_backend
         self.rope_head_dim = config.qk_pos_emb_head_dim
         self.compress_ratio = 4
         self.use_fp8_qat = config.fp8 is not None
@@ -67,10 +69,6 @@ class V4Indexer(MegatronModule):
             cp_group=pg_collection.cp,
         )
 
-        rope_base = config.dsv4_compress_rope_theta if self.compress_ratio else config.rotary_base
-        freqs_cis = wrapped_precompute_freqs_cis(config, rope_head_dim=self.rope_head_dim, base=rope_base)
-        self.register_buffer("freqs_cis", freqs_cis, persistent=False)
-
     def forward(self, x: torch.Tensor, qr: torch.Tensor, mask=None, packed_seq_params=None):
         """Forward pass.
 
@@ -99,7 +97,11 @@ class V4Indexer(MegatronModule):
         rd = self.rope_head_dim
         cp_size = parallel_state.get_context_parallel_world_size()
         cp_group = self.pg_collection.cp if hasattr(self.pg_collection, "cp") else None
-        freqs_cis = get_freqs_cis_for_cp(self.freqs_cis, seqlen, cp_size, cp_group, stride=1)
+        rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
+        freqs_cis = wrapped_precompute_freqs_cis(
+            self.config, self.rope_head_dim, rope_base, False, seqlen * cp_size, x.device
+        )
+        freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen, cp_size, cp_group, stride=1)
         q = q.clone()
         q = einops.rearrange(q, "s b ... -> b s ...")
         apply_rotary_emb(q[..., -rd:], freqs_cis)
@@ -129,6 +131,6 @@ class V4Indexer(MegatronModule):
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
 
         topk_count = min(self.index_topk, index_scores.size(-1))
-        topk_indices = index_scores.topk(topk_count, dim=-1)[1]
+        topk_indices = get_dsa_topk_fn(self.topk_backend)(index_scores, topk_count)
 
         return topk_indices

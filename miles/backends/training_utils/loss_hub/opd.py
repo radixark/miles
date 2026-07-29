@@ -29,6 +29,31 @@ def apply_opd_kl_to_advantages(
     if student_log_probs is None:
         return
 
+    precomputed_reverse_kls = rollout_data.get("opd_reverse_kl")
+    if precomputed_reverse_kls is not None:
+        if len(advantages) != len(precomputed_reverse_kls):
+            raise ValueError(
+                f"OPD length mismatch: advantages={len(advantages)}, "
+                f"opd_reverse_kl={len(precomputed_reverse_kls)}."
+            )
+
+        reverse_kls = []
+        for i, adv in enumerate(advantages):
+            reverse_kl = precomputed_reverse_kls[i]
+            if not torch.is_tensor(reverse_kl):
+                reverse_kl = torch.tensor(reverse_kl, dtype=torch.float32)
+            reverse_kl = reverse_kl.to(device=adv.device)
+            if adv.shape != reverse_kl.shape:
+                raise ValueError(
+                    f"OPD shape mismatch at sample {i}: advantages={tuple(adv.shape)}, "
+                    f"opd_reverse_kl={tuple(reverse_kl.shape)}."
+                )
+            advantages[i] = adv - args.opd_kl_coef * reverse_kl
+            reverse_kls.append(reverse_kl)
+
+        rollout_data["opd_reverse_kl"] = reverse_kls
+        return
+
     teacher_log_probs = rollout_data.get("teacher_log_probs")
     if teacher_log_probs is None:
         raise ValueError(f"OPD with opd_type='{args.opd_type}' requires teacher_log_probs, but it is missing.")

@@ -3,15 +3,19 @@ from argparse import Namespace
 from collections.abc import Callable
 from copy import deepcopy
 
-from miles.utils import tracking_utils
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.timer import Timer
+from miles.utils.tracking_utils import tracking
 
 logger = logging.getLogger(__name__)
 
 
 def log_perf_data_raw(
-    rollout_id: int, args: Namespace, is_primary_rank: bool, compute_total_fwd_flops: Callable
+    rollout_id: int,
+    args: Namespace,
+    is_primary_rank: bool,
+    compute_total_fwd_flops: Callable,
+    extra_metrics: dict | None = None,
 ) -> None:
     timer_instance = Timer()
     log_dict_raw = deepcopy(timer_instance.log_dict())
@@ -21,6 +25,8 @@ def log_perf_data_raw(
         return
 
     log_dict = {f"perf/{key}_time": val for key, val in log_dict_raw.items()}
+    if extra_metrics:
+        log_dict.update(extra_metrics)
 
     if ("perf/actor_train_time" in log_dict) and (compute_total_fwd_flops is not None):
         total_fwd_flops = compute_total_fwd_flops(seq_lens=timer_instance.seq_lens)
@@ -45,4 +51,4 @@ def log_perf_data_raw(
 
     step = compute_rollout_step(args, rollout_id)
     log_dict["rollout/step"] = step
-    tracking_utils.log(args, log_dict, step_key="rollout/step")
+    tracking.log(args, log_dict, step_key="rollout/step")

@@ -2,9 +2,6 @@
 title: Qwen3.5 MoE
 description: Launch recipe for Qwen3.5-35B-A3B with MTP training and EAGLE speculative rollout.
 ---
-
-# Qwen3.5 MoE
-
 ## 1. Model Introduction
 
 [Qwen3.5-35B-A3B](https://github.com/QwenLM/Qwen3) is the MoE branch of the Qwen3.5 line — 3 B active / 35 B total — combining the gated-attention architecture with a built-in MTP head.
@@ -29,7 +26,6 @@ description: Launch recipe for Qwen3.5-35B-A3B with MTP training and EAGLE specu
 ```bash
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
 hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
-# Place the model checkpoint at /root/Qwen3.5-35B-A3B
 ```
 
 ### 3.2 HF → Megatron `torch_dist` conversion
@@ -102,9 +98,9 @@ CPU Adam is enabled (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --
 ### 5.5 Notable quirks
 
 - The Megatron side uses `--moe-token-dispatcher-type flex`; DeepEP isn't enabled here, unlike Qwen3-Next.
-- The model config (`scripts/models/qwen3.5-35B-A3B.sh`) reuses the Qwen3.5 spec: `--attention-output-gate`, `--rotary-base 10000000`, `--rotary-percent 0.25`, `A_log` kept in FP32 via the bridge. See [Backends Beyond Megatron](../../advanced/architecture-support.md).
+- The model config (`scripts/models/qwen3.5-35B-A3B.sh`) reuses the Qwen3.5 spec: `--attention-output-gate`, `--rotary-base 10000000`, `--rotary-percent 0.25`, `A_log` kept in FP32 via the bridge. See [Backends Beyond Megatron](/advanced/architecture-support).
 
 ## 6. Pairs Well With
 
-- [Speculative Decoding](../../advanced/speculative-decoding.md)
-- [Backends Beyond Megatron](../../advanced/architecture-support.md)
+- [Speculative Decoding](/advanced/speculative-decoding)
+- [Backends Beyond Megatron](/advanced/architecture-support)

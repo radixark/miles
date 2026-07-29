@@ -14,13 +14,13 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 import copy
-import inspect
 import json
-from pathlib import Path
 
 import pytest
+from sglang.srt.entrypoints.openai import encoding_dsv32 as upstream
 
-from miles.utils.chat_template_utils import apply_chat_template, deepseek_v32
+from miles.utils.chat_template_utils import apply_chat_template, deepseek
+from miles.utils.chat_template_utils.templates import encoding_dsv32 as vendored
 
 _MSGS_BASIC = [{"role": "user", "content": "Hello"}]
 
@@ -45,9 +45,7 @@ def _tok_with_model_type(tmp_path, model_type: str) -> _FakeTokenizer:
 def _reference_encode(messages, *, thinking: bool = False, drop_thinking: bool = True) -> str:
     """The canonical V3.2 rendering: a direct ``encode_messages`` call. Locks
     ``render_messages`` to this thin-bridge contract (no preprocessing of its own)."""
-    from sglang.srt.entrypoints.openai import encoding_dsv32
-
-    return encoding_dsv32.encode_messages(
+    return vendored.encode_messages(
         messages, thinking_mode="thinking" if thinking else "chat", drop_thinking=drop_thinking
     )
 
@@ -58,39 +56,39 @@ def _reference_encode(messages, *, thinking: bool = False, drop_thinking: bool =
 
 
 def test_detect_dsv32_by_config(tmp_path):
-    assert deepseek_v32.is_deepseek_v32(_tok_with_model_type(tmp_path, "deepseek_v32")) is True
+    assert deepseek.model_type(_tok_with_model_type(tmp_path, "deepseek_v32")) == "deepseek_v32"
 
 
 def test_detect_non_dsv32(tmp_path):
-    assert deepseek_v32.is_deepseek_v32(_tok_with_model_type(tmp_path, "qwen3")) is False
+    assert deepseek.model_type(_tok_with_model_type(tmp_path, "qwen3")) != "deepseek_v32"
 
 
 def test_detect_ignores_name(tmp_path):
     # Directory name looks like DeepSeek V3.2 but config says otherwise -> HF path.
     d = tmp_path / "deepseek-v3.2-base"
     d.mkdir()
-    assert deepseek_v32.is_deepseek_v32(_tok_with_model_type(d, "qwen3")) is False
+    assert deepseek.model_type(_tok_with_model_type(d, "qwen3")) != "deepseek_v32"
 
 
 def test_detect_missing_config_falls_back(tmp_path):
     # No config.json -> empty model_type -> not dsv32, no exception.
-    assert deepseek_v32.is_deepseek_v32(_FakeTokenizer(str(tmp_path))) is False
+    assert deepseek.model_type(_FakeTokenizer(str(tmp_path))) != "deepseek_v32"
 
 
 def test_detect_invalid_config_falls_back(tmp_path):
     # Malformed JSON must fall back to HF, not raise.
     (tmp_path / "config.json").write_text("{ not valid json", encoding="utf-8")
-    assert deepseek_v32.is_deepseek_v32(_FakeTokenizer(str(tmp_path))) is False
+    assert deepseek.model_type(_FakeTokenizer(str(tmp_path))) != "deepseek_v32"
 
 
 def test_detect_non_object_config_falls_back(tmp_path):
     # Valid JSON that is not an object (e.g. a list) must fall back to HF, not raise.
     (tmp_path / "config.json").write_text("[]", encoding="utf-8")
-    assert deepseek_v32.is_deepseek_v32(_FakeTokenizer(str(tmp_path))) is False
+    assert deepseek.model_type(_FakeTokenizer(str(tmp_path))) != "deepseek_v32"
 
 
 def test_detect_empty_name_or_path():
-    assert deepseek_v32.is_deepseek_v32(_FakeTokenizer("")) is False
+    assert deepseek.model_type(_FakeTokenizer("")) != "deepseek_v32"
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +117,7 @@ _PARITY_SCENARIOS = {
 def test_render_matches_direct_encode_messages(scenario, thinking):
     messages = _PARITY_SCENARIOS[scenario]
     thinking_mode = "thinking" if thinking else "chat"
-    assert deepseek_v32.render_messages(messages, thinking_mode=thinking_mode) == _reference_encode(
+    assert deepseek.V32.render_messages(messages, thinking_mode=thinking_mode) == _reference_encode(
         messages, thinking=thinking
     )
 
@@ -132,7 +130,7 @@ def test_apply_chat_template_tokenize_matches_render(tmp_path, scenario, thinkin
     messages = _PARITY_SCENARIOS[scenario]
     thinking_mode = "thinking" if thinking else "chat"
     ids = apply_chat_template(messages, tokenizer=tok, tokenize=True, thinking_mode=thinking_mode)
-    assert ids == [ord(c) for c in deepseek_v32.render_messages(messages, thinking_mode=thinking_mode)]
+    assert ids == [ord(c) for c in deepseek.V32.render_messages(messages, thinking_mode=thinking_mode)]
 
 
 def test_dict_arguments_equal_string_arguments(tmp_path):
@@ -156,9 +154,117 @@ def test_dict_arguments_equal_string_arguments(tmp_path):
 
 
 def test_thinking_mode_changes_output():
-    assert deepseek_v32.render_messages(_MSGS_BASIC, thinking_mode="thinking") != deepseek_v32.render_messages(
+    assert deepseek.V32.render_messages(_MSGS_BASIC, thinking_mode="thinking") != deepseek.V32.render_messages(
         _MSGS_BASIC, thinking_mode="chat"
     )
+
+
+# ---------------------------------------------------------------------------
+# Miles extension: render-level drop_thinking=False (vendored encoder)
+# ---------------------------------------------------------------------------
+
+_THINKING_HISTORY = [
+    {"role": "user", "content": "q1"},
+    {"role": "assistant", "content": "a1", "reasoning_content": "r1"},
+    {"role": "user", "content": "q2"},
+    {"role": "assistant", "content": "a2", "reasoning_content": "r2"},
+]
+
+_TOOL_TAIL_HISTORY = [
+    {"role": "user", "content": "q"},
+    {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "r",
+        "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": '{"a": 1}'}}],
+    },
+    {"role": "tool", "content": "out", "tool_call_id": "c0"},
+]
+
+
+def test_drop_thinking_false_renders_historical_thinking():
+    dropped = _reference_encode(_THINKING_HISTORY, thinking=True, drop_thinking=True)
+    kept = _reference_encode(_THINKING_HISTORY, thinking=True, drop_thinking=False)
+    assert "r1" not in dropped
+    assert "r1" in kept and "r2" in kept
+
+
+@pytest.mark.parametrize("history", [_THINKING_HISTORY, _TOOL_TAIL_HISTORY], ids=["user-turns", "tool-tail"])
+def test_drop_thinking_false_is_append_only_across_user_append(history):
+    # The point of the render-level drop_thinking=False extension: a new user
+    # turn must extend the rendered history byte-for-byte.  Upstream's
+    # last_user_idx gates break this (the tool tail flips its trailing <think>
+    # to </think>; earlier assistants lose their thinking block).
+    before = _reference_encode(history, thinking=True, drop_thinking=False)
+    after = _reference_encode(history + [{"role": "user", "content": "next"}], thinking=True, drop_thinking=False)
+    assert after.startswith(before)
+
+
+@pytest.mark.parametrize("history", [_THINKING_HISTORY, _TOOL_TAIL_HISTORY], ids=["user-turns", "tool-tail"])
+def test_drop_thinking_true_is_not_append_only_across_user_append(history):
+    # Regression guard for why every V3.2 surface pins drop_thinking=False.
+    before = _reference_encode(history, thinking=True, drop_thinking=True)
+    after = _reference_encode(history + [{"role": "user", "content": "next"}], thinking=True, drop_thinking=True)
+    assert not after.startswith(before)
+
+
+def test_tool_only_history_drop_false_matches_drop_true():
+    # Pure tool-loop histories (the pre-existing {tool} surface) render
+    # byte-identically under either drop mode: every assistant sits after the
+    # single user turn, so the pinned drop_thinking=False changes nothing for
+    # existing tool-only configs.
+    history = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "r1",
+            "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": '{"a": 1}'}}],
+        },
+        {"role": "tool", "content": "out1", "tool_call_id": "c0"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "r2",
+            "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": '{"a": 2}'}}],
+        },
+        {"role": "tool", "content": "out2", "tool_call_id": "c1"},
+    ]
+    assert _reference_encode(history, thinking=True, drop_thinking=False) == _reference_encode(
+        history, thinking=True, drop_thinking=True
+    )
+
+
+# Upstream parity: every drop_thinking=True path must keep rendering
+# byte-identically to the installed sglang encoder the file was vendored from.
+
+_UPSTREAM_PARITY_SCENARIOS = {
+    **_PARITY_SCENARIOS,
+    "developer": [{"role": "developer", "content": "do the thing"}],
+    "thinking_history": _THINKING_HISTORY,
+    "tool_tail": _TOOL_TAIL_HISTORY,
+}
+
+
+@pytest.mark.parametrize("scenario", list(_UPSTREAM_PARITY_SCENARIOS), ids=list(_UPSTREAM_PARITY_SCENARIOS))
+@pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
+def test_drop_thinking_true_matches_upstream_sglang(scenario, thinking):
+    messages = _UPSTREAM_PARITY_SCENARIOS[scenario]
+    thinking_mode = "thinking" if thinking else "chat"
+    assert _reference_encode(messages, thinking=thinking, drop_thinking=True) == upstream.encode_messages(
+        messages, thinking_mode=thinking_mode, drop_thinking=True
+    )
+
+
+def test_drop_thinking_true_raise_parity_with_upstream():
+    # thinking mode + a post-last-user assistant without reasoning_content or
+    # tool_calls raises upstream; the vendored copy keeps that contract.
+    bad = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+    with pytest.raises(vendored.DS32EncodingError):
+        vendored.encode_messages(bad, thinking_mode="thinking", drop_thinking=True)
+    with pytest.raises(upstream.DS32EncodingError):
+        upstream.encode_messages(bad, thinking_mode="thinking", drop_thinking=True)
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +285,7 @@ _TOOLS = [
 
 def test_render_with_tools_injects_into_system_functions_block():
     # tools= is accepted (not rejected) and rendered into the system <functions> block.
-    out = deepseek_v32.render_messages([{"role": "user", "content": "hi"}], tools=_TOOLS, thinking_mode="chat")
+    out = deepseek.V32.render_messages([{"role": "user", "content": "hi"}], tools=_TOOLS, thinking_mode="chat")
     assert "<functions>" in out
     assert "get_weather" in out
 
@@ -192,16 +298,16 @@ def test_render_with_tools_matches_manual_system_injection():
 
     canonical = [Tool.model_validate(t).model_dump() for t in _TOOLS]
     msgs = [{"role": "user", "content": "weather?"}]
-    expected = deepseek_v32.render_messages(
+    expected = deepseek.V32.render_messages(
         [{"role": "system", "content": "", "tools": canonical}, *msgs], thinking_mode="chat"
     )
-    assert deepseek_v32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat") == expected
+    assert deepseek.V32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat") == expected
 
 
 def test_render_with_tools_reuses_existing_system_message():
     # When a system message is already present, tools attach to it (no extra system inserted).
     msgs = [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "hi"}]
-    out = deepseek_v32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat")
+    out = deepseek.V32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat")
     assert "You are helpful." in out
     assert "<functions>" in out
 
@@ -209,7 +315,7 @@ def test_render_with_tools_reuses_existing_system_message():
 def test_render_with_tools_does_not_mutate_input():
     msgs = [{"role": "user", "content": "hi"}]
     snapshot = copy.deepcopy(msgs)
-    deepseek_v32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat")
+    deepseek.V32.render_messages(msgs, tools=_TOOLS, thinking_mode="chat")
     assert msgs == snapshot
 
 
@@ -217,7 +323,7 @@ def test_apply_chat_template_with_tools_dispatches_to_bridge(tmp_path):
     tok = _tok_with_model_type(tmp_path, "deepseek_v32")
     msgs = [{"role": "user", "content": "hi"}]
     via_apply = apply_chat_template(msgs, tokenizer=tok, tools=_TOOLS, tokenize=False)
-    assert via_apply == deepseek_v32.render_messages(msgs, tools=_TOOLS)
+    assert via_apply == deepseek.V32.render_messages(msgs, tools=_TOOLS)
 
 
 # ---------------------------------------------------------------------------
@@ -246,12 +352,12 @@ def test_does_not_mutate_input(tmp_path):
 
 
 def test_reject_unknown_kwargs():
-    with pytest.raises(ValueError, match="unsupported kwargs"):
-        deepseek_v32.render_messages(_MSGS_BASIC, some_unknown_kwarg=1)
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        deepseek.V32.render_messages(_MSGS_BASIC, some_unknown_kwarg=1)
 
 
 def test_accept_none_tools_and_known_kwargs():
-    deepseek_v32.render_messages(_MSGS_BASIC, tools=None, thinking_mode="thinking", drop_thinking=False)
+    deepseek.V32.render_messages(_MSGS_BASIC, tools=None, thinking_mode="thinking", drop_thinking=False)
 
 
 # ---------------------------------------------------------------------------
@@ -260,45 +366,45 @@ def test_accept_none_tools_and_known_kwargs():
 
 
 def test_enable_thinking_true_maps_to_thinking():
-    assert deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=True) == deepseek_v32.render_messages(
+    assert deepseek.V32.render_messages(_MSGS_BASIC, enable_thinking=True) == deepseek.V32.render_messages(
         _MSGS_BASIC, thinking_mode="thinking"
     )
 
 
 def test_enable_thinking_false_maps_to_chat():
-    assert deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=False) == deepseek_v32.render_messages(
+    assert deepseek.V32.render_messages(_MSGS_BASIC, enable_thinking=False) == deepseek.V32.render_messages(
         _MSGS_BASIC, thinking_mode="chat"
     )
 
 
 def test_enable_thinking_absent_defaults_to_thinking():
     # No enable_thinking and no thinking_mode -> the cfg default ("thinking").
-    assert deepseek_v32.render_messages(_MSGS_BASIC) == deepseek_v32.render_messages(
+    assert deepseek.V32.render_messages(_MSGS_BASIC) == deepseek.V32.render_messages(
         _MSGS_BASIC, thinking_mode="thinking"
     )
 
 
 def test_enable_thinking_none_defaults_to_thinking():
     # Explicit None is treated as absent: falls through to the "thinking" default.
-    assert deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=None) == deepseek_v32.render_messages(
+    assert deepseek.V32.render_messages(_MSGS_BASIC, enable_thinking=None) == deepseek.V32.render_messages(
         _MSGS_BASIC, thinking_mode="thinking"
     )
 
 
 def test_explicit_thinking_mode_wins_over_enable_thinking():
-    assert deepseek_v32.render_messages(
+    assert deepseek.V32.render_messages(
         _MSGS_BASIC, enable_thinking=False, thinking_mode="thinking"
-    ) == deepseek_v32.render_messages(_MSGS_BASIC, thinking_mode="thinking")
+    ) == deepseek.V32.render_messages(_MSGS_BASIC, thinking_mode="thinking")
 
 
 def test_enable_thinking_is_consumed_not_rejected():
     # enable_thinking is translated away, so it is not rejected as an unknown kwarg.
-    deepseek_v32.render_messages(_MSGS_BASIC, enable_thinking=True)
+    deepseek.V32.render_messages(_MSGS_BASIC, enable_thinking=True)
 
 
 def test_build_config_does_not_mutate_input_kwargs():
     kwargs = {"enable_thinking": True}
-    deepseek_v32._build_deepseek_encode_config(kwargs)
+    deepseek.V32._build_encode_config(kwargs)
     assert kwargs == {"enable_thinking": True}
 
 
@@ -309,30 +415,63 @@ def test_build_config_does_not_mutate_input_kwargs():
 
 def test_dsv32_detector_does_not_match_dsv4(tmp_path):
     # V3.2 detection keys off model_type exactly, so a deepseek_v4 checkpoint is
-    # not mistaken for V3.2 -- V4 is routed by its own deepseek_v4 bridge.
-    assert deepseek_v32.is_deepseek_v32(_tok_with_model_type(tmp_path, "deepseek_v4")) is False
+    # not mistaken for V3.2 -- V4 dispatches to its own family instance.
+    assert deepseek.model_type(_tok_with_model_type(tmp_path, "deepseek_v4")) != "deepseek_v32"
 
 
 # ---------------------------------------------------------------------------
-# Generation-prompt behavior: no knob, no suffix surgery
+# Generation-prompt behavior: the encoder's auto opener honors the knob
 # ---------------------------------------------------------------------------
 
 
-def test_render_has_no_add_generation_prompt_param():
-    assert "add_generation_prompt" not in inspect.signature(deepseek_v32.render_messages).parameters
+@pytest.mark.parametrize("role", ["user", "developer"])
+def test_add_generation_prompt_false_strips_the_auto_opener(role):
+    for mode, opener in (("thinking", "<｜Assistant｜><think>"), ("chat", "<｜Assistant｜></think>")):
+        messages = [{"role": role, "content": "Hello"}]
+        with_opener = deepseek.V32.render_messages(messages, thinking_mode=mode)
+        without = deepseek.V32.render_messages(messages, thinking_mode=mode, add_generation_prompt=False)
+        assert with_opener == without + opener
 
 
-def test_no_generation_prompt_suffix_strip():
-    src = Path(deepseek_v32.__file__).read_text(encoding="utf-8")
-    assert "_GENERATION_PROMPT_SUFFIX" not in src
-    assert "<｜Assistant｜>" not in src  # no hard-coded assistant-suffix surgery
+def test_add_generation_prompt_false_strips_the_tool_tail_suffix():
+    messages = _PARITY_SCENARIOS["tool_calls_and_result"]
+    for mode, suffix in (("thinking", "\n\n<think>"), ("chat", "\n\n</think>")):
+        with_suffix = deepseek.V32.render_messages(messages, thinking_mode=mode)
+        without = deepseek.V32.render_messages(messages, thinking_mode=mode, add_generation_prompt=False)
+        assert with_suffix == without + suffix
 
 
-def test_apply_chat_template_add_generation_prompt_is_noop(tmp_path):
+def test_add_generation_prompt_false_noop_on_partial_tool_results():
+    messages = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"type": "function", "function": {"name": "f", "arguments": "{}"}},
+                {"type": "function", "function": {"name": "g", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "content": "first", "tool_call_id": "c0"},
+    ]
+    for mode in ("thinking", "chat"):
+        assert deepseek.V32.render_messages(
+            messages, thinking_mode=mode, add_generation_prompt=False
+        ) == deepseek.V32.render_messages(messages, thinking_mode=mode)
+
+
+def test_add_generation_prompt_false_noop_on_assistant_tail():
+    # reasoning_content is required by the thinking-mode encoder for a
+    # last-round assistant message.
+    msgs = _MSGS_BASIC + [{"role": "assistant", "content": "done", "reasoning_content": "r"}]
+    assert deepseek.V32.render_messages(msgs, add_generation_prompt=False) == deepseek.V32.render_messages(msgs)
+
+
+def test_apply_chat_template_forwards_add_generation_prompt(tmp_path):
     tok = _tok_with_model_type(tmp_path, "deepseek_v32")
-    with_prompt = apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False, add_generation_prompt=True)
     without_prompt = apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False, add_generation_prompt=False)
-    assert with_prompt == without_prompt
+    assert without_prompt == deepseek.V32.render_messages(_MSGS_BASIC, add_generation_prompt=False)
+    assert apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False) != without_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +481,7 @@ def test_apply_chat_template_add_generation_prompt_is_noop(tmp_path):
 
 def test_apply_chat_template_dispatches_to_bridge(tmp_path):
     tok = _tok_with_model_type(tmp_path, "deepseek_v32")
-    assert apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False) == deepseek_v32.render_messages(_MSGS_BASIC)
+    assert apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False) == deepseek.V32.render_messages(_MSGS_BASIC)
 
 
 def test_apply_chat_template_is_generation_ready(tmp_path):
@@ -350,3 +489,33 @@ def test_apply_chat_template_is_generation_ready(tmp_path):
     out = apply_chat_template(_MSGS_BASIC, tokenizer=tok, tokenize=False)
     assert "<｜User｜>" in out
     assert "<｜Assistant｜>" in out
+
+
+# ---------------------------------------------------------------------------
+# Miles extension: injected system / assistant appends (role-independent)
+# ---------------------------------------------------------------------------
+
+_INJECT_SHAPES = {
+    "system": [{"role": "system", "content": "mid-session system"}],
+    "assistant": [{"role": "assistant", "content": "injected"}],
+    "assistant_then_user": [
+        {"role": "assistant", "content": "injected"},
+        {"role": "user", "content": "next question"},
+    ],
+    "consecutive_assistants_then_user": [
+        {"role": "assistant", "content": "first injected"},
+        {"role": "assistant", "content": "second injected"},
+        {"role": "user", "content": "next question"},
+    ],
+}
+
+
+@pytest.mark.parametrize("shape", list(_INJECT_SHAPES), ids=list(_INJECT_SHAPES))
+def test_drop_thinking_false_injected_appends_are_append_only(shape):
+    # With drop_thinking=False the vendored encoder renders position-
+    # independently AND accepts injected assistant input without
+    # reasoning_content (the upstream reasoning-required raise only guards the
+    # drop_thinking=True path).
+    before = _reference_encode(_THINKING_HISTORY, thinking=True, drop_thinking=False)
+    after = _reference_encode(_THINKING_HISTORY + _INJECT_SHAPES[shape], thinking=True, drop_thinking=False)
+    assert after.startswith(before)

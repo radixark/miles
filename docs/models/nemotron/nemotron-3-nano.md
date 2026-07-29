@@ -2,9 +2,6 @@
 title: Nemotron-3-Nano
 description: Launch recipe for the dense NVIDIA Nemotron-3-Nano-4B (Mamba+Attention hybrid) via Megatron AutoBridge.
 ---
-
-# Nemotron-3-Nano
-
 ## 1. Model Introduction
 
 [NVIDIA Nemotron-3-Nano-4B-BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16)
@@ -123,9 +120,9 @@ From `scripts/models/nemotron-3-nano-4b.sh` and `scripts/run-nemotron-3-nano-4b.
 - `--attention-backend auto` (the Mamba layers select their own kernel; flash-only is not safe here).
 - Bridge load is required for hybrid `nemotron_h`: the AutoBridge wires `mamba_num_heads`, `mamba_state_dim`, `hybrid_override_pattern`. PP additionally needs miles' PP-unwrap shim (already on the `feat/nemotron-gemma4-rl` branch).
 
-See [Backends Beyond Megatron](../../advanced/architecture-support.md) for the AutoBridge wiring.
+See [Backends Beyond Megatron](/advanced/architecture-support) for the AutoBridge wiring.
 
 ## 6. Pairs Well With
 
-- [Backends Beyond Megatron](../../advanced/architecture-support.md)
-- [P2P Weight Transfer](../../advanced/p2p-weight-transfer.md)
+- [Backends Beyond Megatron](/advanced/architecture-support)
+- [P2P Weight Transfer](/advanced/p2p-weight-transfer)

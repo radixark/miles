@@ -2,9 +2,6 @@
 title: CLI Reference
 description: Every command-line flag Miles accepts, grouped by subsystem.
 ---
-
-# CLI Reference
-
 Miles is configured through command-line flags passed to `train.py` or
 `train_async.py`. The Megatron flags (such as `--num-layers`, `--rotary-base`,
 `--recompute-granularity`) are inherited via Megatron's argument parser; Miles adds
@@ -30,7 +27,7 @@ This page has two passes.
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
 
-See [Training Script Walkthrough: Colocation](training-script-walkthrough.md#colocation-share-gpus-or-dont)
+See [Training Script Walkthrough: Colocation](/user-guide/training-script-walkthrough#colocation-share-gpus-or-dont)
 for what `--colocate` flips on under the hood.
 
 ### Batch sizing
@@ -73,6 +70,7 @@ then push up until you OOM.
 | `--kl-loss-coef` | `0.0` | Weight of KL in the loss (0 means monitor only). |
 | `--kl-loss-type` | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
 | `--entropy-coef` | `0.0` | Entropy bonus weight. |
+| `--observe-training-entropy` | off | Log training entropy even when `--entropy-coef` is `0.0`; detached from backward when the coefficient is zero. |
 | `--eps-clip` | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | `–` | Asymmetric high clip (DAPO-style). |
 | `--use-tis` | off | Truncated Importance Sampling for train/inference precision mismatch. |
@@ -147,7 +145,7 @@ Sections mirror the launch-script argument groups.
 | `--actor-num-gpus-per-node` | int | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
 | `--rollout-num-gpus-per-engine` | int | `1` | TP size of each SGLang engine. |
-| `--colocate` | flag | off | Share GPUs between actor and rollout. Implicitly enables `--offload-train`, `--offload-rollout`, and `--sglang-disable-piecewise-cuda-graph`. |
+| `--colocate` | flag | off | Share GPUs between actor and rollout. Implicitly enables `--offload-train`, `--offload-rollout`, and defaults `--sglang-cuda-graph-backend-prefill=disabled`. |
 
 ### Model and checkpoints
 
@@ -159,6 +157,8 @@ Sections mirror the launch-script argument groups.
 | `--load` | path | – | Actor checkpoint to resume from. |
 | `--save` | path | – | Actor checkpoint write directory. |
 | `--save-interval` | int | – | Rollouts between saves. |
+| `--save-trigger-sentinel` | path | – | If this file exists at a save point, save a checkpoint now (regardless of `--save-interval`) and remove the file. |
+| `--custom-megatron-post-save-hook-path` | `<module>.<fn>` | – | Rank-0 callback after each checkpoint save. |
 | `--model-name` | str | – | Set in multi-node to avoid `transformers` file-system race. |
 | `--spec` | `<module> <fn>` | – | Plugin spec for custom architectures (e.g. `miles_plugins.models.qwen3_5 get_qwen3_5_spec`). |
 
@@ -167,8 +167,8 @@ Sections mirror the launch-script argument groups.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--prompt-data` | str | – | Path to a single JSONL file. |
-| `--input-key` | str | `prompt` | JSONL key to `Sample.prompt`. |
-| `--label-key` | str | `label` | JSONL key to `Sample.label`. |
+| `--input-key` | str | `input` | JSONL key to `Sample.prompt`. |
+| `--label-key` | str | `None` | JSONL key to `Sample.label`. |
 | `--metadata-key` | str | `metadata` | JSONL key to `Sample.metadata`. |
 | `--apply-chat-template` | flag | off | Apply tokenizer chat template. |
 | `--rollout-shuffle` | flag | off | Shuffle prompts each rollout. |
@@ -176,7 +176,7 @@ Sections mirror the launch-script argument groups.
 | `--rollout-batch-size` | int | – | Prompts per rollout. |
 | `--n-samples-per-prompt` | int | `1` | Responses per prompt. |
 | `--global-batch-size` | int | derived | Samples per optimizer step. |
-| `--num-steps-per-rollout` | int | `1` | Optimizer steps per rollout. |
+| `--num-steps-per-rollout` | int | – | Optimizer steps per rollout. Alternative to `--global-batch-size`; setting one derives the other. |
 | `--over-sampling-batch-size` | int | – | Oversample size for dynamic sampling (DAPO). |
 | `--balance-data` | flag | off | Balance per-rank token count. |
 
@@ -232,6 +232,7 @@ Sections mirror the launch-script argument groups.
 | `--kl-loss-coef` | float | `0.0` | KL weight in loss (0 means monitor). |
 | `--kl-loss-type` | enum | `k1` | `k1`, `k2`, `k3`, `low_var_kl`. |
 | `--entropy-coef` | float | `0.0` | Entropy bonus weight. |
+| `--observe-training-entropy` | flag | off | Log detached training entropy when entropy bonus weight is zero. |
 | `--eps-clip` | float | `0.2` | PPO/GRPO low clip. |
 | `--eps-clip-high` | float | – | Asymmetric high clip. |
 | `--use-tis` | flag | off | Truncated Importance Sampling. |
@@ -265,7 +266,7 @@ Sections mirror the launch-script argument groups.
 | `--rm-type` | enum | – | Built-in reward: `math`, `dapo`, `deepscaler`, `f1`, `gpqa`, `ifbench`, `remote_rm`, `random`. |
 | `--rm-url` | str | – | Endpoint when `--rm-type remote_rm`. |
 | `--group-rm` | flag | off | Batched reward computation. |
-| `--custom-rm-path` | str | – | Custom reward function (see [Customization](customization.md)). |
+| `--custom-rm-path` | str | – | Custom reward function (see [Customization](/user-guide/customization)). |
 | `--dynamic-sampling-filter-path` | str | – | Group filter (DAPO-style). |
 | `--buffer-filter-path` | str | – | Buffer dequeue filter. |
 | `--rollout-sample-filter-path` | str | – | Per-sample filter. |
@@ -289,7 +290,7 @@ Common `--sglang-*` flags:
 --sglang-enable-dp-attention
 --sglang-enable-deepep
 --sglang-enable-overlap-schedule
---sglang-enforce-piecewise-cuda-graph     # off by default in colocate mode
+--sglang-cuda-graph-backend-prefill       # prefill graphs default to disabled in colocate mode
 ```
 
 ### MTP / speculative decoding
@@ -349,5 +350,5 @@ Common `--sglang-*` flags:
 
 ### Customization
 
-See [Customization](customization.md) for the full catalogue of `--*-path` flags
-that replace or extend Miles's behaviour.
+See [Customization](/user-guide/customization) for the full catalog of `--*-path` flags
+that replace or extend Miles's behavior.

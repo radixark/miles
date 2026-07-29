@@ -6,6 +6,22 @@ import numpy
 import torch
 
 
+@dataclass(frozen=True)
+class AdapterRef:
+    """Which LoRA adapter a sample is bound to (training slot routing, inference lora_path); ``None`` = no adapter."""
+
+    name: str
+    slot: int
+
+
+@dataclass(frozen=True)
+class RewardSpec:
+    """Per-sample spec of how the response is scored; intentionally decoupled from adapter routing."""
+
+    rm_type: str | None = None
+    custom_rm_path: str | None = None
+
+
 @dataclass
 class Sample:
     """The sample generated"""
@@ -33,6 +49,7 @@ class Sample:
     )
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
+    opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
 
     class Status(Enum):
         PENDING = "pending"
@@ -51,9 +68,13 @@ class Sample:
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 
-    # Session ID for consistent hashing routing (used when router policy is consistent_hashing)
-    # TODO: Its definition needs to merge with the session server's session id in the new rollout function.
-    session_id: str | None = None
+    # MultiLoRA: which adapter this sample trains/infers with
+    adapter: AdapterRef | None = None
+    # Per-sample reward dispatch override (e.g., per-adapter RM in multi-LoRA)
+    reward_spec: RewardSpec | None = None
+
+    # Per-sample routing key for the router's consistent_hashing policy (sent as X-SMG-Routing-Key)
+    routing_key: str | None = None
 
     non_generation_time: float = 0.0  # time spent in non-generation steps
 
@@ -174,6 +195,10 @@ class Sample:
             assert (
                 len(self.teacher_log_probs) == self.response_length
             ), f"teacher_log_probs length ({len(self.teacher_log_probs)}) != response_length ({self.response_length})"
+        if self.opd_reverse_kl is not None:
+            assert (
+                len(self.opd_reverse_kl) == self.response_length
+            ), f"opd_reverse_kl length ({len(self.opd_reverse_kl)}) != response_length ({self.response_length})"
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
@@ -196,6 +221,10 @@ class Sample:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
         if self.teacher_log_probs is not None:
             self.teacher_log_probs = self.teacher_log_probs[:-n]
+        if self.opd_reverse_kl is not None:
+            self.opd_reverse_kl = self.opd_reverse_kl[:-n]
+        if self.metadata and "opd_student_top_logprobs" in self.metadata:
+            self.metadata["opd_student_top_logprobs"] = self.metadata["opd_student_top_logprobs"][:-n]
         if self.loss_mask is not None:
             self.loss_mask = self.loss_mask[:-n]
         self.response = tokenizer.decode(self.tokens[-self.response_length :]) if self.response_length > 0 else ""
@@ -208,7 +237,7 @@ class Sample:
         """Reset generated outputs so the original prompt can be re-sampled.
 
         Keeps identity / prompt fields (group_index, index, prompt, label,
-        multimodal_inputs, metadata, generate_function_path, session_id) and
+        multimodal_inputs, metadata, generate_function_path, routing_key) and
         restores everything else to dataclass defaults.
         """
         self.tokens = []

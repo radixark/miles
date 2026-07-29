@@ -268,15 +268,25 @@ def quantize_params_compressed_tensors(converted_named_params, quantization_conf
     group_size = w_cfg["group_size"]
     is_symmetric = w_cfg["symmetric"]
     ignore_rules = quantization_config.get("ignore", [])
+    # Base names of params the checkpoint actually stores packed (see
+    # HfWeightIteratorBridge). The published ignore list of multimodal
+    # checkpoints (e.g. Kimi-K2.5 VL) only covers LLM submodules, so relying
+    # on it alone would wrongly quantize the vision tower / projector.
+    quantized_basenames = quantization_config.get("_miles_quantized_basenames")
 
     results = []
 
     for name, param in converted_named_params:
-        is_ignored = any(
-            (r.startswith("re:") and re.match(r[3:], name)) or r == name or name.startswith(r) for r in ignore_rules
-        )
+        if quantized_basenames is not None:
+            should_quantize = name.endswith(".weight") and name.removesuffix(".weight") in quantized_basenames
+        else:
+            is_ignored = any(
+                (r.startswith("re:") and re.match(r[3:], name)) or r == name or name.startswith(r)
+                for r in ignore_rules
+            )
+            should_quantize = not is_ignored and name.endswith(".weight") and param.dim() >= 2
 
-        if is_ignored or not name.endswith(".weight") or param.dim() < 2:
+        if not should_quantize:
             results.append((name, param))
             continue
 

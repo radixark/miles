@@ -81,7 +81,7 @@ def postprocess(
     pass_configs={
         tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: True,
+        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: False,
     },
 )
 def bwd(
@@ -116,7 +116,13 @@ def bwd(
     attn_sink_shape = [H]
 
     padded_H = max(tilelang.math.next_power_of_2(H), 16)
-    block_H = min(64, padded_H)
+    is_hip = getattr(torch.version, "hip", None)
+    if is_hip:
+        # Split large HIP head tiles to reduce LDS use.
+        max_block_H = 32 if padded_H >= 64 else 64
+    else:
+        max_block_H = 64
+    block_H = min(max_block_H, padded_H)
     assert padded_H % block_H == 0
     NH = padded_H // block_H
     BS = block_size

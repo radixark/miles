@@ -1,11 +1,8 @@
 ---
 title: Customization
-description: The 22 plug-points where you can drop in your own Python without forking Miles.
+description: The plug-points where you can drop in your own Python without forking Miles.
 ---
-
-# Customization
-
-Most of Miles's behaviour can be replaced with user-supplied Python by passing a
+Most of Miles's behavior can be replaced with user-supplied Python by passing a
 `--*-path` flag. This page lists every such hook, the function signature it expects,
 and the default it replaces.
 
@@ -31,6 +28,7 @@ and the default it replaces.
 | **Megatron hooks** | `--custom-megatron-init-path` | After Megatron init |
 | | `--custom-megatron-before-log-prob-hook-path` | Before logprob compute |
 | | `--custom-megatron-before-train-step-hook-path` | Before each train step |
+| | `--custom-megatron-post-save-hook-path` | After each checkpoint save |
 | **Logging** | `--custom-rollout-log-function-path` | Train-rollout logging |
 | | `--custom-eval-rollout-log-function-path` | Eval-rollout logging |
 | **Model** | `--custom-model-provider-path` | Megatron model factory |
@@ -92,7 +90,6 @@ configured.
 ### `--custom-rm-path`
 
 ```python
-# Single-sample mode
 async def custom_rm(args, sample: Sample) -> float:
     ...
 
@@ -227,9 +224,12 @@ def convert_samples_to_train_data(args, samples) -> dict:
 | `--custom-megatron-init-path` | `def custom_init(args) -> None` |
 | `--custom-megatron-before-log-prob-hook-path` | `def custom_hook(args, model, store_prefix) -> None` |
 | `--custom-megatron-before-train-step-hook-path` | `def custom_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler) -> None` |
+| `--custom-megatron-post-save-hook-path` | `def hook(args, rollout_id: int, checkpoint_dir: str, hf_checkpoint_dir: str | None) -> None` |
 
-These give per-step access to the live Megatron model and optimizer, useful for
-custom probes, weight clipping, or surgical interventions.
+The Megatron init, log-prob, and train-step hooks give access to the live model
+and optimizer, useful for custom probes, weight clipping, or surgical interventions.
+The post-save hook runs on rank 0 after checkpoint save completion and receives
+the saved checkpoint paths instead of live model objects.
 
 ---
 
@@ -281,4 +281,4 @@ ROLLOUT_ARGS+=(
 
 That is the entire delta from the stock GRPO recipe, with no source changes to Miles.
 
-→ Next: [Server arguments reference](cli-reference.md)
+→ Next: [Server arguments reference](/user-guide/cli-reference)
