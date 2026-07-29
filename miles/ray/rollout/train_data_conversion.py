@@ -211,15 +211,10 @@ def split_train_data_by_dp(args, data, dp_size):
 def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_config: dict | None) -> bool:
     """Whether the rollout side can precompute the full DP/mbs schedule.
 
-    Requires the training backend to have advertised a full schedule config
-    (megatron, non-indep_dp). Excluded on top of that:
-      - multi-LoRA — keeps the legacy per-rank scheduling with its
-        slot-contiguity handling;
-      - multimodal batches — media-token expansion on the train side changes
-        ``total_lengths`` after the schedule would have been computed, so the
-        token-cap packing must stay train-side;
-      - sample counts not divisible by the (dynamic) global batch size —
-        legacy behavior silently drops the remainder per-rank; keep it there.
+    Requires a full schedule config (megatron, non-indep_dp). Also excluded:
+    multi-LoRA (slot-contiguity stays on the legacy path), multimodal batches
+    (train-side media-token expansion changes ``total_lengths``), and sample
+    counts not divisible by the (dynamic) global batch size.
     """
     if not has_full_schedule_config(train_parallel_config):
         return False
@@ -232,12 +227,10 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
 
 
 def split_train_data_by_dp_scheduled(args, data: dict[str, Any], train_parallel_config: dict):
-    """DP split with the micro-batch schedule precomputed on the rollout side.
+    """DP split with the mbs schedule precomputed on the rollout side.
 
-    Same shard layout as :func:`split_train_data_by_dp`, plus two extra keys
-    per shard consumed by ``training_utils.data.get_data_iterator``:
-      - ``num_microbatches`` — per training step, identical on every rank;
-      - ``micro_batch_indices`` — this rank's mbs schedule (local row indices).
+    Same shard layout as :func:`split_train_data_by_dp`, plus ``num_microbatches``
+    and ``micro_batch_indices`` consumed by ``get_data_iterator``.
     """
     shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     store = object_store.get_instance()

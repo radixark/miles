@@ -142,10 +142,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
             dist.barrier(group=get_gloo_group())
 
-        # A full config (all miles.utils.dp_schedule.SCHEDULE_CONFIG_KEYS) advertises
-        # that the rollout side may precompute the DP/mbs schedule. indep_dp keeps
-        # ``{}``: dp_size can change at runtime via FT healing, so the schedule must
-        # stay on the training side (delay_split_train_data_by_dp).
+        # A full config (SCHEDULE_CONFIG_KEYS) lets the rollout side precompute the
+        # DP/mbs schedule. indep_dp keeps {}: dp_size can change via FT healing.
         self.train_parallel_config = (
             {}
             if args.indep_dp

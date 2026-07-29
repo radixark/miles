@@ -178,12 +178,8 @@ def get_seqlen_balanced_partitions(seqlen_list: list[int], k_partitions: int, eq
 
 
 def first_fit_pack(total_lengths, max_tokens_per_bin):
-    """First-fit bin packing.
-
-    Returns ``list[list[int]]`` — each bin is a list of indices into ``total_lengths``.
-    Bin sums are ``<= max_tokens_per_bin`` whenever every individual ``length`` fits;
-    an oversized sample lands alone in its own bin with sum equal to its length.
-    """
+    """First-fit bin packing; each bin is a list of indices into ``total_lengths``.
+    Bin sums stay ``<= max_tokens_per_bin``; an oversized sample lands alone."""
     bins: list[list[int]] = []
     bin_sums: list[int] = []
     for idx, length in enumerate(total_lengths):
@@ -199,13 +195,8 @@ def first_fit_pack(total_lengths, max_tokens_per_bin):
 
 
 def _split_bin_by_tokens(bin_indices: list[int], lengths) -> list[list[int]]:
-    """Split a bin's indices into two halves balanced by total tokens (LPT heuristic).
-
-    Returns ``[left, right]`` where both lists together cover ``bin_indices``. Because
-    each half is a strict subset of ``bin_indices``, both have token sums ``<=`` the
-    original bin's sum — useful when you need to grow a bin packing without ever
-    creating a bin larger than the originals.
-    """
+    """Split a bin into two token-balanced halves (LPT); each half's sum is
+    ``<=`` the parent's, so splitting never exceeds the original cap."""
     halves: list[list[int]] = [[], []]
     sums = [0, 0]
     for idx in sorted(bin_indices, key=lambda i: -lengths[i]):
@@ -216,9 +207,8 @@ def _split_bin_by_tokens(bin_indices: list[int], lengths) -> list[list[int]]:
 
 
 def expand_bins_by_splitting(bins: list[list[int]], target_count: int, lengths) -> None:
-    """Grow ``bins`` in place to ``target_count`` by repeatedly splitting the largest
-    multi-sample bin via :func:`_split_bin_by_tokens`. Stops early if every remaining
-    bin is a singleton (no bin can be split further)."""
+    """Grow ``bins`` in place to ``target_count`` by splitting the largest
+    multi-sample bin; stops early once every bin is a singleton."""
     while len(bins) < target_count:
         candidates = [(sum(lengths[i] for i in b), idx) for idx, b in enumerate(bins) if len(b) > 1]
         if not candidates:

@@ -1,25 +1,13 @@
-"""Per-rollout DP/microbatch scheduling.
+"""Per-rollout DP/microbatch scheduling, computed on the rollout side.
 
-Pure-Python logic that decides, for one (already-trimmed) rollout's worth of
-sample lengths, which global sample goes to which DP rank and how each rank
-groups its samples into micro-batches. Lives outside the ray/sglang-importing
-modules so it can be unit-tested under CPU-only CI.
+Pure Python (no ray/sglang imports) so it is unit-testable under CPU-only CI.
+Trim and dynamic-gbs resolution stay on the caller's side.
 
-Trim, dynamic-global_batch_size resolution, and per-rank rollout_data
-packaging all stay on the caller's side; this module only computes the
-schedule itself.
-
-Invariants guaranteed by :func:`build_dp_schedule` (asserted by the tests):
-  - every DP rank holds the same number of samples (``num_samples // dp_size``);
-  - every DP rank runs the same ``num_microbatches`` per training step
-    (required for PP sync);
-  - every mbs holds ``<= max_tokens_per_gpu * cp_size`` tokens, with one
-    exception — an individual sample larger than that cap lands alone in its
-    own mbs (and that mbs is the only one allowed to exceed the cap);
-  - the union of per-rank sample indices equals ``range(num_samples)`` and
-    the per-rank index sets are disjoint;
-  - flattening ``micro_batch_indices`` for a rank yields
-    ``range(num_samples_rank)``.
+Invariants (asserted by tests/fast/utils/test_dp_schedule.py):
+  - equal sample count per DP rank; same ``num_microbatches`` per rank (PP sync);
+  - each mbs holds <= ``max_tokens_per_gpu * cp_size`` tokens, except an
+    oversized sample, which lands alone in its own mbs;
+  - per-rank partitions are disjoint and cover all samples exactly once.
 """
 
 from __future__ import annotations
@@ -32,11 +20,8 @@ SCHEDULE_CONFIG_KEYS = ("dp_size", "cp_size", "vpp_size", "microbatch_group_size
 
 
 def has_full_schedule_config(train_parallel_config: dict | None) -> bool:
-    """True when the training backend advertised every field build_dp_schedule needs.
-
-    Backends that don't (fsdp/torchtitan report only ``dp_size``; indep_dp reports
-    ``{}``) keep the legacy train-side scheduling path.
-    """
+    """True when the backend advertised every field build_dp_schedule needs
+    (fsdp/torchtitan report only ``dp_size``; indep_dp reports ``{}``)."""
     if not train_parallel_config:
         return False
     return all(key in train_parallel_config for key in SCHEDULE_CONFIG_KEYS)
@@ -51,34 +36,18 @@ def build_dp_schedule(
 ) -> tuple[list[list[int]], list[list[list[int]]], list[int]]:
     """Compute the per-rank DP partition and micro-batch schedule.
 
-    For each training step (chunk of ``global_batch_size`` samples):
-      a. Split samples to DP ranks with equal counts (``balance_data`` => token-
-         balanced via Karmarkar-Karp, otherwise strided).
-      b. Static path: chunk each rank's samples into mbs of ``args.micro_batch_size``.
-         Dynamic path: per-rank first-fit (``<= max_tokens_per_gpu * cp_size``), take
-         ``MAX`` across ranks for PP/VPP alignment, then expand each rank to that
-         count by splitting its largest multi-sample bins. Split halves are ``<=``
-         their parent, so the cap is preserved.
-
-    Samples are appended to ``partitions[r]`` in mbs order so each mbs occupies a
-    contiguous range of positions there; ``micro_batch_indices[r][k]`` is that range.
-
-    Args:
-        args: Namespace with ``micro_batch_size``, ``use_dynamic_batch_size``,
-            ``max_tokens_per_gpu``, ``balance_data``.
-        train_parallel_config: ``{"dp_size", "cp_size", "vpp_size",
-            "microbatch_group_size_per_vp_stage"}``.
-        total_lengths: token count per sample, length must be a multiple of
-            ``global_batch_size``.
-        global_batch_size: samples per training step.
+    Per step of ``global_batch_size`` samples: split samples to DP ranks
+    (Karmarkar-Karp if ``balance_data`` else strided), then chunk each rank into
+    mbs — fixed ``micro_batch_size`` (static) or first-fit under
+    ``max_tokens_per_gpu * cp_size`` with a DP-wide MAX + bin splitting for
+    PP/VPP alignment (dynamic).
 
     Returns:
         ``(partitions, micro_batch_indices, num_microbatches)``:
-          - ``partitions[r]`` — global sample indices going to rank r, concatenated
-            across all steps in mbs order.
-          - ``micro_batch_indices[r][k]`` — local indices into ``partitions[r]`` for
-            the k-th mbs of rank r (flat across all steps).
-          - ``num_microbatches[s]`` — mbs count for step s; same value on every rank.
+          - ``partitions[r]`` — global sample indices of rank r, in mbs order;
+          - ``micro_batch_indices[r][k]`` — local indices into ``partitions[r]``
+            for the k-th mbs (flat across steps);
+          - ``num_microbatches[s]`` — mbs count for step s, same on every rank.
     """
     dp_size = train_parallel_config["dp_size"]
     cp_size = train_parallel_config["cp_size"]
