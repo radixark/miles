@@ -423,9 +423,6 @@ def get_data_iterator(
     Returns `(data_iterators, num_microbatches)` where:
     - `data_iterators`: list of `DataIterator`, one per VPP stage (size 1 if VPP disabled)
     - `num_microbatches`: list[int], one per local step in the rollout (length = steps)
-
-    A schedule precomputed on the rollout side (`micro_batch_indices` in
-    `rollout_data`) is consumed directly — no collectives.
     """
     expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
 

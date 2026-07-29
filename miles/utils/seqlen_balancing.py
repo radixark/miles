@@ -178,8 +178,7 @@ def get_seqlen_balanced_partitions(seqlen_list: list[int], k_partitions: int, eq
 
 
 def first_fit_pack(total_lengths, max_tokens_per_bin):
-    """First-fit bin packing; each bin is a list of indices into ``total_lengths``.
-    Bin sums stay ``<= max_tokens_per_bin``; an oversized sample lands alone."""
+    """First-fit bin packing; bins hold indices, oversized samples land alone."""
     bins: list[list[int]] = []
     bin_sums: list[int] = []
     for idx, length in enumerate(total_lengths):
@@ -195,8 +194,7 @@ def first_fit_pack(total_lengths, max_tokens_per_bin):
 
 
 def _split_bin_by_tokens(bin_indices: list[int], lengths) -> list[list[int]]:
-    """Split a bin into two token-balanced halves (LPT); each half's sum is
-    ``<=`` the parent's, so splitting never exceeds the original cap."""
+    """Split a bin into two token-balanced halves (LPT)."""
     halves: list[list[int]] = [[], []]
     sums = [0, 0]
     for idx in sorted(bin_indices, key=lambda i: -lengths[i]):
@@ -207,8 +205,7 @@ def _split_bin_by_tokens(bin_indices: list[int], lengths) -> list[list[int]]:
 
 
 def expand_bins_by_splitting(bins: list[list[int]], target_count: int, lengths) -> None:
-    """Grow ``bins`` in place to ``target_count`` by splitting the largest
-    multi-sample bin; stops early once every bin is a singleton."""
+    """Grow ``bins`` in place to ``target_count`` by splitting the largest bins."""
     while len(bins) < target_count:
         candidates = [(sum(lengths[i] for i in b), idx) for idx, b in enumerate(bins) if len(b) > 1]
         if not candidates:

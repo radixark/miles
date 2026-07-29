@@ -39,7 +39,6 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "raw_reward": ValueSpec(codec="auto"),
     "total_lengths": ValueSpec(codec="auto"),
     "dynamic_global_batch_size": ValueSpec(codec="auto"),
-    # Rollout-side precomputed mbs schedule (split_train_data_by_dp_scheduled).
     "num_microbatches": ValueSpec(codec="auto"),
     "micro_batch_indices": ValueSpec(codec="auto"),
 }
@@ -209,13 +208,7 @@ def split_train_data_by_dp(args, data, dp_size):
 
 
 def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_config: dict | None) -> bool:
-    """Whether the rollout side can precompute the full DP/mbs schedule.
-
-    Requires a full schedule config (megatron, non-indep_dp). Also excluded:
-    multi-LoRA (slot-contiguity stays on the legacy path), multimodal batches
-    (train-side media-token expansion changes ``total_lengths``), and sample
-    counts not divisible by the (dynamic) global batch size.
-    """
+    """Whether the rollout side can precompute the full DP/mbs schedule."""
     if not has_full_schedule_config(train_parallel_config):
         return False
     if is_multi_lora_enabled(args):
@@ -227,11 +220,7 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
 
 
 def split_train_data_by_dp_scheduled(args, data: dict[str, Any], train_parallel_config: dict):
-    """DP split with the mbs schedule precomputed on the rollout side.
-
-    Same shard layout as :func:`split_train_data_by_dp`, plus ``num_microbatches``
-    and ``micro_batch_indices`` consumed by ``get_data_iterator``.
-    """
+    """DP split with the mbs schedule precomputed on the rollout side."""
     shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     store = object_store.get_instance()
     return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
