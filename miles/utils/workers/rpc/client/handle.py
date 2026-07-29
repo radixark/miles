@@ -7,7 +7,12 @@ import httpx
 
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.rpc.client.call import RpcCall
-from miles.utils.workers.rpc.client.misc import RETRY_INITIAL_DELAY_SECONDS, RETRYABLE_ERRORS, RpcTransport
+from miles.utils.workers.rpc.client.misc import (
+    RETRY_INITIAL_DELAY_SECONDS,
+    RETRYABLE_ERRORS,
+    BootUuidPin,
+    RpcTransport,
+)
 from miles.utils.workers.rpc.common.metadata import RpcMethodSpec, collect_rpc_method_specs
 from miles.utils.workers.rpc.common.protocol import HEALTH_PATH, HealthResponse
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
@@ -24,6 +29,7 @@ class RpcWorkerHandle(BaseWorkerHandle):
         worker_cls: type,
         *,
         server_url: str,
+        require_stable_boot_uuid: bool = False,
         call_timeout_seconds: float = DEFAULT_CALL_TIMEOUT_SECONDS,
         ready_timeout_seconds: float = DEFAULT_READY_TIMEOUT_SECONDS,
         http_client: httpx.AsyncClient | None = None,
@@ -36,7 +42,10 @@ class RpcWorkerHandle(BaseWorkerHandle):
         self._worker_cls_name = worker_cls.__name__
         self._call_timeout_seconds = call_timeout_seconds
         self._ready_timeout_seconds = ready_timeout_seconds
-        self._transport = RpcTransport(server_url=server_url, http_client=http_client)
+        self._boot_uuid_pin = BootUuidPin(required=require_stable_boot_uuid, worker_cls_name=worker_cls.__name__)
+        self._transport = RpcTransport(
+            server_url=server_url, http_client=http_client, boot_uuid_pin=self._boot_uuid_pin
+        )
 
     def __getattr__(self, name: str) -> Callable[..., Awaitable[Any]]:
         if name.startswith("_"):
@@ -77,5 +86,8 @@ class RpcWorkerHandle(BaseWorkerHandle):
             transport=self._transport,
             call_timeout_seconds=self._call_timeout_seconds,
         )
+
+        if self._boot_uuid_pin.needs_handshake():
+            await self.wait_ready(timeout=self._ready_timeout_seconds)
 
         return await call.run()

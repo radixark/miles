@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import uuid
 from typing import NoReturn
 
 from fastapi import HTTPException
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 class RpcServer:
     def __init__(self, *, worker: object) -> None:
+        self.boot_uuid = uuid.uuid4().hex
         self._specs = collect_rpc_method_specs(type(worker))
         self._store = CallStore()
         self._executor = RpcCallExecutor(worker=worker, specs=self._specs)
@@ -32,6 +34,7 @@ class RpcServer:
             op="server",
             phase="boot",
             worker=type(worker).__name__,
+            boot_uuid=self.boot_uuid,
             methods=len(self._specs),
             groups=self._executor.concurrency_groups,
         )

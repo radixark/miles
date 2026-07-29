@@ -163,3 +163,23 @@ class TestWaitReadyRetries:
         handle = make_handle(proxy)
 
         await handle.wait_ready(timeout=1.0)
+
+
+class TestPinnedSubmitFailure:
+    async def test_headerless_gateway_error_does_not_repin(
+        self,
+        proxy_to: Any,
+        make_handle: Any,
+        short_retry_window: None,
+        tag: str,
+    ) -> None:
+        """A pinned handle keeps its pin and gives up on a submit 503."""
+        proxy = await proxy_to()
+        handle = make_handle(proxy, require_stable_boot_uuid=True)
+        await handle.wait_ready(timeout=1.0)
+        proxy.reject_next(count=1, status=503)
+
+        with pytest.raises(WorkerUnreachableError):
+            await handle.demo_count_sync(tag=tag)
+
+        assert len(proxy.submits("demo_count_sync")) == 1

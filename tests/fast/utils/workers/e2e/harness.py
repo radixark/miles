@@ -112,6 +112,12 @@ def wait_until_serving(server: ServerProcess, timeout: float = READY_TIMEOUT_SEC
     raise AssertionError(f"server never became ready within {timeout}s:\n{server.logs()}")
 
 
+def port_is_refused(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.0)
+        return sock.connect_ex(("127.0.0.1", port)) != 0
+
+
 @dataclasses.dataclass
 class ProxyRequest:
     at: float
@@ -130,6 +136,8 @@ class FlakyProxy:
         self.reject_status: int | None = None
         self.reject_remaining = 0
         self.drop_remaining = 0
+        self.strip_boot_uuid = False
+        self.rewrite_boot_uuid: str | None = None
         self.record_only = False
 
     @property
@@ -186,7 +194,7 @@ class FlakyProxy:
                 self.drop_remaining -= 1
                 return
 
-            writer.write(response)
+            writer.write(self._maybe_rewrite(response))
             await writer.drain()
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
             pass
@@ -194,6 +202,20 @@ class FlakyProxy:
             with contextlib.suppress(Exception):
                 writer.close()
                 await writer.wait_closed()
+
+    def _maybe_rewrite(self, response: bytes) -> bytes:
+        if not self.strip_boot_uuid and self.rewrite_boot_uuid is None:
+            return response
+
+        head, separator, body = response.partition(b"\r\n\r\n")
+        kept = []
+        for line in head.split(b"\r\n"):
+            if line.lower().startswith(b"x-miles-boot-uuid:"):
+                if self.strip_boot_uuid:
+                    continue
+                line = b"x-miles-boot-uuid: " + self.rewrite_boot_uuid.encode()
+            kept.append(line)
+        return b"\r\n".join(kept) + separator + body
 
 
 async def _forward(upstream_port: int, request: bytes) -> bytes:
