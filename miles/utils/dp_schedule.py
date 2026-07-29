@@ -33,7 +33,7 @@ def build_dp_schedule(
     total_lengths: list[int],
     *,
     global_batch_size: int,
-) -> tuple[list[list[int]], list[list[list[int]]], list[int]]:
+) -> tuple[list[list[int]], list[list[list[int]]], list[int], list[int]]:
     """Compute the per-rank DP partition and micro-batch schedule.
 
     Per step of ``global_batch_size`` samples: split samples to DP ranks
@@ -43,11 +43,13 @@ def build_dp_schedule(
     PP/VPP alignment (dynamic).
 
     Returns:
-        ``(partitions, micro_batch_indices, num_microbatches)``:
+        ``(partitions, micro_batch_indices, num_microbatches, global_batch_sizes)``:
           - ``partitions[r]`` — global sample indices of rank r, in mbs order;
           - ``micro_batch_indices[r][k]`` — local indices into ``partitions[r]``
             for the k-th mbs (flat across steps);
-          - ``num_microbatches[s]`` — mbs count for step s, same on every rank.
+          - ``num_microbatches[s]`` — mbs count for step s, same on every rank;
+          - ``global_batch_sizes[s]`` — sample count for step s (total across DP).
+            Constant today; will vary once uneven per-step sizes land.
     """
     dp_size = train_parallel_config["dp_size"]
     cp_size = train_parallel_config["cp_size"]
@@ -67,10 +69,12 @@ def build_dp_schedule(
     partitions: list[list[int]] = [[] for _ in range(dp_size)]
     micro_batch_indices: list[list[list[int]]] = [[] for _ in range(dp_size)]
     num_microbatches: list[int] = []
+    global_batch_sizes: list[int] = []
 
     for step_i in range(num_steps):
         step_start = step_i * global_batch_size
         step_lengths = total_lengths[step_start : step_start + global_batch_size]
+        global_batch_sizes.append(len(step_lengths))
 
         if args.balance_data:
             rank_parts = get_seqlen_balanced_partitions(step_lengths, dp_size, equal_size=True)
@@ -106,4 +110,4 @@ def build_dp_schedule(
                 partitions[r].extend(step_start + rank_parts[r][i] for i in mbs_local)
                 micro_batch_indices[r].append(list(range(local_start, local_start + len(mbs_local))))
 
-    return partitions, micro_batch_indices, num_microbatches
+    return partitions, micro_batch_indices, num_microbatches, global_batch_sizes

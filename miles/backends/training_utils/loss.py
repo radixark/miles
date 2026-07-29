@@ -99,6 +99,7 @@ def loss_function(
     num_microbatches: int,
     logits: torch.Tensor,
     apply_megatron_loss_scaling: bool = False,
+    step_global_batch_size: int | None = None,
 ) -> tuple[torch.Tensor, int | torch.Tensor, dict[str, list[str] | torch.Tensor]]:
     """Dispatch to the configured loss and rescale for Megatron integration.
 
@@ -114,6 +115,10 @@ def loss_function(
             keys required by the selected loss function.
         num_microbatches: Number of gradient accumulation steps.
         logits: Model outputs (policy or value head).
+        step_global_batch_size: Sample count of the current training step (total
+            across DP), used as the loss normalizer. None (fsdp/torchtitan and
+            other legacy callers) falls back to the batch's
+            ``dynamic_global_batch_size`` or ``args.global_batch_size``.
 
     Returns:
         Tuple of `(scaled_loss, normalizer, logging_dict)` where:
@@ -154,8 +159,11 @@ def loss_function(
         loss = loss + 0 * logits.sum()
 
     # Here we need to divide by cp_size because to cancel the multiply in Megatron.
-    assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in batch)
-    global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
+    if step_global_batch_size is not None:
+        global_batch_size = step_global_batch_size
+    else:
+        assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in batch)
+        global_batch_size = batch.get("dynamic_global_batch_size", args.global_batch_size)
     # Multi-LoRA: samples enter the gradient buffers with weight 1; per-adapter
     # normalization (1/adapter_global_batch_size, a constant known in advance)
     # is applied to the accumulated slot gradient at optimizer-step time.
