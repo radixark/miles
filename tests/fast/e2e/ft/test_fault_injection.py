@@ -38,7 +38,7 @@ def test_fresh_gate_counts_every_healthy_cell_as_alive() -> None:
 
 
 def test_injected_cell_is_excluded_while_its_crash_is_still_undetected() -> None:
-    """The control server's stale 'still healthy' view must not count a just-killed cell."""
+    """The api server's stale 'still healthy' view must not count a just-killed cell."""
     gate = RecoveryGate()
     cells = [_cell("c0", healthy=True), _cell("c1", healthy=True)]
     gate.note_injected("c0")

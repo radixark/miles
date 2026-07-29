@@ -5,9 +5,9 @@ import asyncio
 import httpx
 import pytest
 
-from miles.utils.ft_utils.control_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
-from miles.utils.ft_utils.control_server.registry import _CellRegistry
-from miles.utils.ft_utils.control_server.server import _create_control_app
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
+from miles.utils.ft_utils.api_server.registry import _CellRegistry
+from miles.utils.ft_utils.api_server.server import _create_api_app
 
 
 class MockHandle:
@@ -146,7 +146,7 @@ class MockRayTrainCell:
         return self._is_stopped
 
     def cell_status(self) -> CellStatus:
-        from miles.utils.ft_utils.control_server.models import CellCondition, CellStatus
+        from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus
 
         return CellStatus(
             phase=self._phase,
@@ -171,6 +171,6 @@ def registry() -> _CellRegistry:
 
 @pytest.fixture
 def async_client(registry: _CellRegistry) -> httpx.AsyncClient:
-    app = _create_control_app(registry)
+    app = _create_api_app(registry)
     transport = httpx.ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url="http://test")

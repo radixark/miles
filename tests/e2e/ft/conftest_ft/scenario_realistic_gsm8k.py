@@ -8,7 +8,7 @@ from typing import Annotated
 import typer
 
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
-from tests.e2e.ft.conftest_ft.fault_injection import CONTROL_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
+from tests.e2e.ft.conftest_ft.fault_injection import API_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
 
 import miles.utils.external_utils.command_utils as U
 
@@ -146,7 +146,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
     fault_tolerance_args = (
         "--use-fault-tolerance "
         "--ft-components train "
-        f"--control-server-port {CONTROL_SERVER_PORT} "
+        f"--api-server-port {API_SERVER_PORT} "
         "--mini-ft-controller-enable "
     )
 
