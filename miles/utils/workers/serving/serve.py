@@ -5,6 +5,7 @@ import os
 import sys
 
 from miles.utils.function_registry import load_function
+from miles.utils.workers.argv_utils import python_argv_prefix
 from miles.utils.workers.serving.utils import split_worker_argv
 
 
@@ -23,7 +24,7 @@ def main() -> None:
         env.update(computed_env_vars)
 
     inner_argv = [
-        sys.executable,
+        *python_argv_prefix(),
         "-m",
         "miles.utils.workers.serving.serve_inner",
         *inner_own_argv,

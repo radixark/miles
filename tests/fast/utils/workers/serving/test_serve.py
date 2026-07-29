@@ -134,6 +134,50 @@ class TestOuterServeForwarding:
         assert captured["env"]["MILES_TEST_UNTOUCHED"] == "kept"
 
 
+class TestOuterServeInterpreterFlags:
+    def test_the_parent_interpreter_flags_are_carried_into_the_inner_process(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An -O parent that re-execs a bare interpreter silently switches assertions back on inside the worker."""
+        captured: dict[str, object] = {}
+
+        def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
+            captured.update(path=path, argv=argv, env=env)
+
+        monkeypatch.setattr(serve_module.os, "execve", fake_execve)
+        monkeypatch.setattr(
+            sys,
+            "orig_argv",
+            [
+                sys.executable,
+                "-O",
+                "-X",
+                "faulthandler",
+                "-m",
+                "miles.utils.workers.serving.serve",
+                "--worker",
+                "package.worker",
+            ],
+        )
+        monkeypatch.setattr(sys, "argv", ["serve.py", "--worker", "package.worker"])
+
+        serve_module.main()
+
+        assert captured["argv"] == [
+            sys.executable,
+            "-O",
+            "-X",
+            "faulthandler",
+            "-m",
+            "miles.utils.workers.serving.serve_inner",
+            "--worker",
+            "package.worker",
+            "--",
+        ]
+        assert captured["path"] == sys.executable
+
+
 def _spawn_serve(port: int) -> subprocess.Popen:
     env = dict(os.environ)
     env["PYTHONPATH"] = f"{_REPO_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"

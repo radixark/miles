@@ -20,8 +20,22 @@ ALLOWED_LIGHT_ENTRYPOINT_IMPORTS = frozenset(
     }
 )
 
+# Real dependencies the light entrypoint is allowed to import before the
+# env-var hook runs; each entry is a deliberate decision that the module is
+# acceptably light, unlike the site-initialization noise listed above.
+ACCEPTED_LIGHT_ENTRYPOINT_DEPENDENCIES = frozenset(
+    {
+        "pydantic",
+        "pydantic_core",
+        "annotated_types",
+        "typing_extensions",
+        "typing_inspection",
+    }
+)
+
 
 _INSTALLER_SHIM_PREFIX = "__editable__"
+_SYSCONFIGDATA_PREFIX = "_sysconfigdata"
 
 
 def imported_top_level_modules() -> set[str]:
@@ -29,7 +43,9 @@ def imported_top_level_modules() -> set[str]:
     return {
         name
         for name in top_level_names
-        if name not in sys.stdlib_module_names and not name.startswith(_INSTALLER_SHIM_PREFIX)
+        if name not in sys.stdlib_module_names
+        and not name.startswith(_INSTALLER_SHIM_PREFIX)
+        and not name.startswith(_SYSCONFIGDATA_PREFIX)
     }
 
 
@@ -39,4 +55,4 @@ def report_imported_top_level_modules() -> str:
 
 def unexpected_light_entrypoint_imports(reported: str) -> list[str]:
     imported = {name for name in reported.split(IMPORTED_MODULES_SEPARATOR) if name}
-    return sorted(imported - ALLOWED_LIGHT_ENTRYPOINT_IMPORTS)
+    return sorted(imported - ALLOWED_LIGHT_ENTRYPOINT_IMPORTS - ACCEPTED_LIGHT_ENTRYPOINT_DEPENDENCIES)
