@@ -11,7 +11,7 @@ By default, miles divides the policy gradient loss by the number of effective to
 Use `--custom-pg-loss-reducer-function-path` to apply the custom reducer **only to pg_loss**, while other metrics (pg_clipfrac, ppo_kl, entropy_loss, etc.) still use the default sum_of_sample_mean:
 
 ```bash
---custom-pg-loss-reducer-function-path examples.Dr.GRPO.custom_reducer.get_pg_loss_reducer
+--custom-pg-loss-reducer-function-path examples.DrGRPO.custom_reducer.get_pg_loss_reducer
 ```
 
 ## Customization
@@ -43,7 +43,7 @@ Instead of dividing by `loss_mask_i.sum()` (the number of effective tokens), it 
 ```bash
 GRPO_ARGS=(
    --advantage-estimator grpo
-   --custom-pg-loss-reducer-function-path examples.Dr.GRPO.custom_reducer:get_pg_loss_reducer
+   --custom-pg-loss-reducer-function-path examples.DrGRPO.custom_reducer.get_pg_loss_reducer
    # ... other arguments
 )
 ```
