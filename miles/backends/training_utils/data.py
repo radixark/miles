@@ -435,8 +435,7 @@ def get_data_iterator(
         assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
         micro_batch_indices = rollout_data["micro_batch_indices"]
         data_iterator = [
-            DataIterator(rollout_data, micro_batch_indices=micro_batch_indices)
-            for _ in range(parallel_state.vpp_size)
+            DataIterator(rollout_data, micro_batch_indices=micro_batch_indices) for _ in range(parallel_state.vpp_size)
         ]
         return data_iterator, rollout_data["num_microbatches"]
 

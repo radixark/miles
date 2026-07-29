@@ -244,9 +244,7 @@ def test_randomized_invariants_dynamic():
         tp = make_tp(dp_size=dp_size)
         partitions, mbi, nmb = build_dp_schedule(args, tp, total_lengths, global_batch_size=gbs)
 
-        assert_invariants(
-            partitions, mbi, nmb, dp_size=dp_size, total_lengths=total_lengths, max_per_bin=max_tokens
-        )
+        assert_invariants(partitions, mbi, nmb, dp_size=dp_size, total_lengths=total_lengths, max_per_bin=max_tokens)
 
 
 def test_has_full_schedule_config():

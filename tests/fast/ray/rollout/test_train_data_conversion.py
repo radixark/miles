@@ -610,9 +610,7 @@ class TestSplitTrainDataByDpScheduled:
         args = make_args(balance_data=False, micro_batch_size=2, use_dynamic_batch_size=False)
         data = _make_split_data(8)
         legacy = split_train_data_by_dp_raw(args, dict(data), dp_size=2)
-        scheduled = split_train_data_by_dp_scheduled_raw(
-            args, dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG
-        )
+        scheduled = split_train_data_by_dp_scheduled_raw(args, dict(data), train_parallel_config=FULL_SCHEDULE_CONFIG)
 
         assert len(scheduled) == 2
         for rank, (old, new) in enumerate(zip(legacy, scheduled, strict=True)):
