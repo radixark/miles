@@ -32,6 +32,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "truncated": ValueSpec(codec="ndarray", dtype="int64"),
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
     "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
@@ -77,6 +78,10 @@ def convert_samples_to_train_data(
         "raw_reward": raw_rewards,
         "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
         "sample_indices": [sample.index for sample in samples],
+        # One id per rollout execution; defaults to sample.index (unique) so the
+        # default one-sample-per-rollout path is unchanged. Compact / subagent
+        # samples share their siblings' rollout_id.
+        "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
 
     # loss mask
@@ -290,6 +295,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "loss_masks",
             "round_number",
             "sample_indices",
+            "rollout_ids",
             "rollout_log_probs",
             "rollout_routed_experts",
             "rollout_indexer_topk",
