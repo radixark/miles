@@ -12,8 +12,14 @@ on every turn of the multi-turn episode.
 Env vars:
   OPENENV_ENV_URL    base_url of the env server (default: http://localhost:8003).
   OPENENV_MAX_TURNS  multi-turn cap (default: 30)
-  OPENENV_MESSAGE_TIMEOUT_S  per-message WS recv timeout (default: 600; docker-mode
-                     reset/exec/pytest routinely exceed the client default of 60)
+  OPENENV_MESSAGE_TIMEOUT_S  per-message WS recv timeout (default: 1200). Must
+                     exceed the longest single env op the server may
+                     legitimately run: in practice the largest
+                     [verifier].timeout_sec in your task set (server default
+                     900; the official suite declares up to 3600) plus margin
+                     -- evaluate times out client-side AFTER the full
+                     trajectory was generated, the most expensive point to
+                     fail. Also covers cold-image reset (first pull).
   OPENENV_MAX_ROLLOUT_TIME_SECONDS  hard wall-clock cap for one episode (default:
                      3600). An episode that does not return within the limit is
                      terminated and scored reward 0 (bounds long-trajectory
@@ -86,9 +92,13 @@ TB2_AGENT_SYSTEM_PROMPT = (
     "TASK_COMPLETE (with no code block)."
 )
 
-# Per-message WS recv timeout. Docker-mode tbench2 reset (container create),
-# exec, and evaluate (pytest) each routinely exceed the EnvClient default of 60s.
-_MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "600"))
+# Per-message WS recv timeout. One knob covers three op profiles (reset:
+# container create / first image pull; exec: agent commands; evaluate: the
+# task's own verifier budget -- task.toml [verifier].timeout_sec, server
+# default 900). The default clears the server's default budget with margin;
+# raise it (and OPENENV_MAX_ROLLOUT_TIME_SECONDS) for tasks declaring larger
+# verifier budgets.
+_MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "1200"))
 
 # Hard wall-clock cap for one episode. The per-message timeout above bounds a
 # single env op, and OPENENV_MAX_TURNS bounds the turn count, but neither bounds
