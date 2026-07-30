@@ -6,9 +6,9 @@ from typing import Any
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
-from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+from miles.utils.workers.addr_allocator import PortAllocator
 
 logger = logging.getLogger(__name__)
 

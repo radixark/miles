@@ -10,9 +10,8 @@ import ray
 from tests.fast.ray.rollout.conftest import make_args
 from tests.fast.ray.rollout.real_ray.conftest import build_cells, kill_cells, start_cells
 
-from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.rollout_server import RolloutServer
-
+from miles.utils.workers.addr_allocator import PortAllocator
 
 # ----------------------------- single-engine kill + recover -----------------------------
 

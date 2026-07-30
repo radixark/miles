@@ -81,7 +81,7 @@ async def start_cells(cells, allocator=None, *, mark_alive: bool = False):
     """Start every cell's engines through one shared allocator."""
     import asyncio
 
-    from miles.ray.rollout.addr_allocator import PortAllocator
+    from miles.utils.workers.addr_allocator import PortAllocator
 
     allocator = allocator if allocator is not None else PortAllocator()
     await asyncio.gather(*[cell.start_engines(allocator) for cell in cells])
