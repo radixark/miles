@@ -10,6 +10,8 @@ globally-numbered ``cu_seqlens``, while ``deepseek_v4`` all-gathers the KV. Pass
 absolute, so the KV layout is unchanged.
 """
 
+import math
+
 import torch
 from torch import Tensor
 
@@ -130,3 +132,116 @@ def get_indexer_cu_seqlens_thd(
     cu_ks = cu_seqlens_compressed[batch_ids]
     cu_ke = torch.minimum(cu_ks + (pos_in_seg + 1) // ratio, cu_seqlens_compressed[batch_ids + 1])
     return cu_ks.int(), cu_ke.int()
+
+
+# --------------------------------------------------------------------------------------
+# Context-parallel compressor input
+#
+# Adapted from https://github.com/NVIDIA/Megatron-LM/blob/95e4bafebaa799d166975ef82066a3c46648e004/megatron/core/transformer/experimental_attention_variant/csa_cp_layout_kernels.py
+# --------------------------------------------------------------------------------------
+
+
+def compressor_boundary_width(ratio: int) -> int:
+    """Hidden rows a rank needs from its left CP neighbour.
+
+    A group straddling the split needs up to ``ratio - 1`` rows the previous rank owns. The
+    ratio=4 layers additionally overlap-transform against the preceding group, which
+    ``torch.roll`` reads from the row before, so the compact buffer must start one whole
+    group early; the wider window is what guarantees that.
+    """
+    return 8 if ratio == 4 else ratio
+
+
+def compact_group_capacity(l_local: int, ratio: int) -> int:
+    """Fixed per-rank compressed-group count, since all-gather needs equal sends."""
+    d_comp = compressor_boundary_width(ratio)
+    alignment = 32 // math.gcd(32, ratio)
+    capacity = max(1, (l_local + d_comp) // ratio)
+    return ((capacity + alignment - 1) // alignment) * alignment
+
+
+def compact_gather_index(
+    cu_seqlens: Tensor, *, global_start: int, l_local: int, ratio: int, c_cap: int
+) -> tuple[Tensor, Tensor]:
+    """Source rows feeding each row of a rank's compact compressor input.
+
+    A compressed group belongs to the rank holding its last token, and the group's own tokens
+    may start on the previous rank, so sources address the concatenated
+    ``[boundary(d_comp) | local(l_local)]`` rows rather than the local rows alone. Trailing
+    ``seqlen % ratio`` tokens get no group, matching the non-CP path.
+
+    Returns:
+        ``(gather_idx [c_cap * ratio], comp_ids [c_cap])``, both ``-1`` past the groups this
+        rank actually produces, which the fixed capacity over-allocates for.
+    """
+    device = cu_seqlens.device
+    d_comp = compressor_boundary_width(ratio)
+    n_seg = cu_seqlens.size(0) - 1
+    range_start, range_end = global_start, global_start + l_local
+
+    seg_start = cu_seqlens[:-1]
+    seg_stop = torch.minimum(cu_seqlens[1:], torch.full_like(cu_seqlens[1:], range_end))
+    first_group = torch.div(
+        (range_start - d_comp - seg_start).clamp(min=0) + ratio - 1, ratio, rounding_mode="floor"
+    )
+    stop_group = torch.div(seg_stop - seg_start, ratio, rounding_mode="floor")
+    n_groups = (stop_group - first_group).clamp(min=0)
+    n_groups = torch.where((seg_start < seg_stop) & (range_start < seg_stop), n_groups, 0)
+
+    cu_groups = torch.cat([torch.zeros_like(n_groups[:1]), n_groups.cumsum(0)])
+    slot = torch.arange(c_cap, device=device, dtype=cu_seqlens.dtype)
+    seg_ids = torch.bucketize(slot, cu_groups[1:], right=True).clamp(max=max(n_seg - 1, 0))
+    valid = slot < cu_groups[-1]
+
+    comp_ids = first_group[seg_ids] + (slot - cu_groups[seg_ids])
+    group_head = seg_start[seg_ids] + comp_ids * ratio
+    # The boundary rows precede the local ones, so both sides of the split share one offset.
+    gather_idx = (
+        group_head.unsqueeze(1)
+        + torch.arange(ratio, device=device, dtype=cu_seqlens.dtype)
+        - (range_start - d_comp)
+    )
+    gather_idx = torch.where(valid.unsqueeze(1), gather_idx, -1).flatten()
+    return gather_idx.long(), torch.where(valid, comp_ids, -1).int()
+
+
+class CompressorInputCompact(torch.autograd.Function):
+    """Gather each visible compressed group's source tokens into a fixed-capacity buffer.
+
+    Replaces mcore's CuTe kernel, which exists to keep shapes host-known and CUDA-graph
+    capturable rather than for the arithmetic: this is integer indexing plus one gather.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        hidden_local: Tensor,
+        boundary: Tensor,
+        cu_seqlens: Tensor,
+        global_start: int,
+        ratio: int,
+        c_cap: int,
+    ):
+        gather_idx, comp_ids = compact_gather_index(
+            cu_seqlens,
+            global_start=global_start,
+            l_local=hidden_local.size(0),
+            ratio=ratio,
+            c_cap=c_cap,
+        )
+        keep = (gather_idx >= 0).view(-1, *([1] * (hidden_local.dim() - 1)))
+        source = torch.cat([boundary, hidden_local], dim=0)
+        compact = source.index_select(0, gather_idx.clamp(min=0)) * keep
+        ctx.save_for_backward(gather_idx, keep)
+        ctx.row_split = [boundary.size(0), hidden_local.size(0)]
+        return compact, comp_ids
+
+    @staticmethod
+    def backward(ctx, grad_compact: Tensor, _grad_comp_ids: Tensor):
+        gather_idx, keep = ctx.saved_tensors
+        # A token belongs to exactly one group, so gather_idx is injective where it is valid
+        # and index_add_ never accumulates; keep stops capacity padding reaching row 0.
+        grad_source = grad_compact.new_zeros((sum(ctx.row_split),) + grad_compact.shape[1:])
+        grad_source.index_add_(0, gather_idx.clamp(min=0), grad_compact * keep)
+        grad_boundary, grad_local = grad_source.split(ctx.row_split, dim=0)
+        return grad_local, grad_boundary, None, None, None, None
