@@ -31,6 +31,42 @@ def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     return torch.float32
 
 
+def _load_opsd_support(
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    key: str,
+    dtype: torch.dtype,
+) -> list[torch.Tensor]:
+    support = []
+    for index, (values, total_length, response_length) in enumerate(
+        zip(
+            rollout_data[key],
+            rollout_data["total_lengths"],
+            rollout_data["response_lengths"],
+            strict=True,
+        )
+    ):
+        tensor = torch.as_tensor(values)
+        expected_values = response_length * args.opsd_teacher_top_k
+        if tensor.numel() != expected_values:
+            raise ValueError(
+                f"OPSD {key} has an invalid flattened length: "
+                f"sample={index}, expected={expected_values}, actual={tensor.numel()}."
+            )
+        tensor = tensor.reshape(response_length, args.opsd_teacher_top_k)
+        max_seq_len = rollout_data["max_seq_lens"][index] if args.qkv_format == "bshd" else None
+        support.append(
+            slice_log_prob_with_cp(
+                tensor,
+                total_length,
+                response_length,
+                args.qkv_format,
+                max_seq_len,
+            ).to(device=torch.cuda.current_device(), dtype=dtype)
+        )
+    return support
+
+
 def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
@@ -114,6 +150,23 @@ def get_rollout_data(
                     )
                 )
             ]
+    has_opsd_ids = "opsd_teacher_token_ids" in rollout_data
+    has_opsd_scores = "opsd_teacher_scores" in rollout_data
+    if has_opsd_ids != has_opsd_scores:
+        raise ValueError("OPSD compact support requires both teacher token ids and scores.")
+    if has_opsd_ids:
+        rollout_data["opsd_teacher_token_ids"] = _load_opsd_support(
+            args,
+            rollout_data,
+            "opsd_teacher_token_ids",
+            torch.long,
+        )
+        rollout_data["opsd_teacher_scores"] = _load_opsd_support(
+            args,
+            rollout_data,
+            "opsd_teacher_scores",
+            torch.float32,
+        )
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
     if "rollout_indexer_topk" in rollout_data:

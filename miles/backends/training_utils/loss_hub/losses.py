@@ -10,7 +10,11 @@ from miles.backends.training_utils.cp_utils import (
     get_sum_of_sample_mean,
 )
 from miles.backends.training_utils.loss_hub.corrections import vanilla_tis_function
-from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values
+from miles.backends.training_utils.loss_hub.logit_processors import (
+    get_log_probs_and_entropy,
+    get_responses,
+    get_values,
+)
 from miles.backends.training_utils.loss_hub.math_utils import (
     compute_approx_kl,
     compute_ess_ratio_contribution,
@@ -18,6 +22,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_opsm_mask,
     compute_policy_loss,
 )
+from miles.backends.training_utils.loss_hub.opsd import compute_topk_forward_kl, gather_selected_logits
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.misc import load_function
 from miles.utils.types import RolloutBatch
@@ -477,6 +482,77 @@ def sft_loss_function(
     )
 
 
+def opsd_loss_function(
+    args: Namespace,
+    batch: RolloutBatch,
+    logits: torch.Tensor,
+    sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    response_logits = get_responses(
+        logits,
+        args=args,
+        unconcat_tokens=batch["unconcat_tokens"],
+        total_lengths=batch["total_lengths"],
+        response_lengths=batch["response_lengths"],
+        max_seq_lens=batch.get("max_seq_lens"),
+    )
+    parallel_state = get_parallel_state()
+    vocab_size = getattr(args, "vocab_size", None) or logits.shape[-1] * parallel_state.tp.size
+    losses = []
+    forward_kls = []
+    clip_fractions = []
+
+    for (student_logits, _), teacher_ids, teacher_scores in zip(
+        response_logits,
+        batch["opsd_teacher_token_ids"],
+        batch["opsd_teacher_scores"],
+        strict=True,
+    ):
+        if teacher_ids.shape != teacher_scores.shape:
+            raise ValueError(
+                "OPSD teacher token ids and scores must have matching shapes, "
+                f"got ids={tuple(teacher_ids.shape)} and scores={tuple(teacher_scores.shape)}."
+            )
+        if teacher_ids.shape[0] != student_logits.shape[0]:
+            raise ValueError(
+                "OPSD teacher support must align with the local student response, "
+                f"got teacher={teacher_ids.shape[0]} and student={student_logits.shape[0]} tokens."
+            )
+        student_scores = gather_selected_logits(
+            logits=student_logits,
+            token_ids=teacher_ids.to(device=student_logits.device),
+            process_group=parallel_state.tp.group,
+            vocab_size=vocab_size,
+        )
+        sample_loss, forward_kl, clip_fraction = compute_topk_forward_kl(
+            student_scores=student_scores.float(),
+            teacher_scores=teacher_scores.to(device=student_logits.device, dtype=torch.float32),
+            pointwise_clip=args.opsd_pointwise_kl_clip,
+        )
+        losses.append(sample_loss)
+        forward_kls.append(forward_kl)
+        clip_fractions.append(clip_fraction)
+
+    token_losses = torch.cat(losses, dim=0)
+    token_forward_kls = torch.cat(forward_kls, dim=0)
+    token_clip_fractions = torch.cat(clip_fractions, dim=0)
+    loss = sum_of_sample_mean(token_losses)
+    forward_kl = sum_of_sample_mean(token_forward_kls)
+    clip_fraction = sum_of_sample_mean(token_clip_fractions)
+
+    if token_losses.numel() == 0:
+        loss = loss + 0 * logits.sum()
+
+    return (
+        loss,
+        {
+            "loss": loss.detach().clone(),
+            "opsd_forward_kl_topk": forward_kl.detach().clone(),
+            "opsd_clip_fraction": clip_fraction.detach().clone(),
+        },
+    )
+
+
 def get_loss_function(args: Namespace) -> LossFunction:
     match args.loss_type:
         case "policy_loss":
@@ -485,6 +561,8 @@ def get_loss_function(args: Namespace) -> LossFunction:
             return value_loss_function
         case "sft_loss":
             return sft_loss_function
+        case "opsd_loss":
+            return opsd_loss_function
         case "custom_loss":
             return load_function(args.custom_loss_function_path)
         case _:
