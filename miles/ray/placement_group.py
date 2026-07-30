@@ -208,7 +208,7 @@ async def create_rollout_components(args, pg) -> RolloutComponents:
 
     rollout_executor = RolloutExecutor.options(
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
-    ).remote(args)
+    ).remote(args=args)
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
