@@ -255,7 +255,7 @@ def _compute_server_args(
             kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
         if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
-            kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
+            kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
         elif args.lora_adapter_path is not None:
             logger.info("dummy base load: skipping startup lora_paths; adapter comes via weight-sync")
         else:
