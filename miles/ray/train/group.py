@@ -27,7 +27,7 @@ from miles.utils.ft_utils.health_checker import NoopHealthChecker, SimpleHealthC
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.retry_utils import retry
-from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
+from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
 if TYPE_CHECKING:
@@ -130,7 +130,7 @@ class RayTrainGroup:
         if self._witness_allocator is not None and args.save_debug_event_data is not None:
             self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
 
-        self._test_action_executor = FTTestActionGroupExecutor.from_args(args, group=self)
+        self._test_action_executor = FTTestActionControllerExecutor.from_args(args, group=self)
 
     # ------------------------ API :: train ------------------------
 

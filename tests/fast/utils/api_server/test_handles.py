@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.api_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
 from miles.utils.test_utils.fault_injector import FailureMode
 
