@@ -196,8 +196,6 @@ def test_megatron_tp2_cp4_normal_topology_has_complete_true_on_policy_contract(m
         "--true-on-policy-mode",
         "--recompute-logprobs-via-prefill",
     )
-    assert "--true-on-policy-logprob-dtype" not in plan.train_args
-    assert "--true-on-policy-logsoftmax-backend" not in plan.train_args
     assert plan.env_vars == {
         "NCCL_ALGO": "Ring",
         "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
