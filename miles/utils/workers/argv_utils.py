@@ -31,11 +31,13 @@ def render_cli_argv(
     *,
     make_parser: Callable[[], argparse.ArgumentParser],
     from_parsed: Callable[[argparse.Namespace], _ArgsT],
+    required_argv: list[str] | None = None,
 ) -> list[str]:
     def parse(argv: list[str]) -> _ArgsT:
         return from_parsed(make_parser().parse_args(argv))
 
-    argv = _render_cli_argv(args_obj, cli_defaults=parse([]))
+    base_argv = list(required_argv or [])
+    argv = base_argv + _render_cli_argv(args_obj, cli_defaults=parse(base_argv))
 
     parsed = parse(argv)
     assert parsed == args_obj, f"cli argv roundtrip mismatch: {parsed!r} != {args_obj!r}"
