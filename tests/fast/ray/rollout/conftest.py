@@ -45,6 +45,8 @@ def make_args(**overrides: Any) -> Namespace:
         num_rollout=1,
         # batch / training
         global_batch_size=8,
+        loss_type="policy_loss",
+        opsd_type=None,
         use_dynamic_global_batch_size=False,
         wandb_always_use_train_step=False,
         disable_rollout_trim_samples=False,

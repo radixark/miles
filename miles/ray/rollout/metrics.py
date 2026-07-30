@@ -169,8 +169,9 @@ def _compute_perf_metrics_from_samples(args, samples, rollout_time):
 
 
 def _compute_zero_std_metrics(args, all_samples: list[Sample]):
-    # only compute in GRPO-like algorithms where one prompt has multiple responses
-    if args.advantage_estimator == "ppo":
+    if args.advantage_estimator == "ppo" or any(
+        isinstance(sample.get_reward_value(args), dict) for sample in all_samples
+    ):
         return {}
 
     def _is_zero_std(samples: list[Sample]):
