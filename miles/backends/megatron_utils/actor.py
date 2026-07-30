@@ -63,7 +63,7 @@ from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import EnginesAndLock
+    from miles.ray.rollout.inference_controller import UpdatableEngines
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -729,13 +729,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: "EnginesAndLock") -> None:
+    def update_weights(self, info: "UpdatableEngines") -> None:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
         rollout_engines = info.rollout_engines
-        rollout_engine_lock = info.rollout_engine_lock
         has_new_engines = info.has_new_engines
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
@@ -748,7 +747,6 @@ class MegatronTrainRayActor(TrainRayActor):
         if has_new_engines or not self.weight_updater.is_rollout_engines_fresh():
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
-                rollout_engine_lock,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
             )

@@ -28,7 +28,7 @@ from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
 
 if TYPE_CHECKING:
-    from ray.actor import ActorHandle
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -91,13 +91,12 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: ActorHandle,
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
-        # No NCCL groups: the transport is the shared filesystem. The rollout_engine_lock the
-        # NCCL path uses isn't needed either — the engine-side apply is serialized by a per-host
-        # flock behind /pull_weights.
+        # No NCCL groups: the transport is the shared filesystem. The engine lock the NCCL path
+        # uses isn't needed either — the engine-side apply is serialized by a per-host flock
+        # behind /pull_weights.
         self.rollout_engines = rollout_engines
         self._connection_stale = False
         self._group_name = "miles-disk-delta"

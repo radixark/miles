@@ -125,16 +125,16 @@ class TestInferenceControllerInit:
     ):
         """End-to-end smoke: production ``create`` + ``start_rollout_servers``
         runs against MockSGLangEngine; the resulting engines are addressable over
-        http via the public ``get_updatable_engines_and_lock``, and their launcher
+        http via the public ``get_updatable_engines``, and their launcher
         actors are reachable through the engine slots."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
         controller = InferenceController(args, pg)
         await controller.init()
-        eal = await controller.get_updatable_engines_and_lock()
-        assert len(eal.rollout_engines) == 2
-        for api_client in eal.rollout_engines:
+        updatable = await controller.get_updatable_engines()
+        assert len(updatable.rollout_engines) == 2
+        for api_client in updatable.rollout_engines:
             assert isinstance(api_client, SGLangApiClient)
             assert await api_client.health_generate(timeout=5.0) is True
         for cell in _cells(controller):
@@ -156,7 +156,7 @@ class TestStartStopCell:
 
         controller = InferenceController(args, pg)
         await controller.init()
-        await controller.get_updatable_engines_and_lock()
+        await controller.get_updatable_engines()
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
         await controller.stop_cell("actor-0")
@@ -178,19 +178,19 @@ class TestStartStopCell:
 
         controller = InferenceController(args, pg)
         await controller.init()
-        eal_before = await controller.get_updatable_engines_and_lock()
+        updatable_before = await controller.get_updatable_engines()
         actor0_before = _cells(controller)[0].primary_actor_handle
-        url_before = eal_before.rollout_engines[0].server_url
+        url_before = updatable_before.rollout_engines[0].server_url
 
         await controller.stop_cell("actor-0")
         await controller.start_cell("actor-0")
 
-        eal_after = await controller.get_updatable_engines_and_lock()
+        updatable_after = await controller.get_updatable_engines()
         actor0_after = _cells(controller)[0].primary_actor_handle
 
         assert actor0_after is not actor0_before, "start_cell must produce a fresh actor"
-        assert eal_after.rollout_engines[0].server_url != url_before, "the recovered engine serves on a new port"
-        assert await eal_after.rollout_engines[0].health_generate(timeout=5.0) is True
+        assert updatable_after.rollout_engines[0].server_url != url_before, "the recovered engine serves on a new port"
+        assert await updatable_after.rollout_engines[0].health_generate(timeout=5.0) is True
         assert isinstance(ray.get(actor0_after.get_calls.remote()), list)
 
     async def test_stop_cell_targets_high_id_correctly(
@@ -207,7 +207,7 @@ class TestStartStopCell:
 
         controller = InferenceController(args, pg)
         await controller.init()
-        await controller.get_updatable_engines_and_lock()
+        await controller.get_updatable_engines()
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
         await controller.stop_cell("actor-1")
@@ -229,7 +229,7 @@ class TestStartStopCell:
 
         controller = InferenceController(args, pg)
         await controller.init()
-        await controller.get_updatable_engines_and_lock()  # ensure engines are alive
+        await controller.get_updatable_engines()  # ensure engines are alive
 
         await controller.stop_cell("actor-0")
         await controller.stop_cell("actor-0")  # must not raise
@@ -266,7 +266,7 @@ class TestCellDispatchAcrossModels:
 
 
 @pytest.mark.asyncio
-class TestGetUpdatableEnginesAndLock:
+class TestGetUpdatableEngines:
     async def test_returns_only_updatable_servers_engines_in_multi_model_setup(
         self,
         ray_local_mode,
@@ -275,17 +275,17 @@ class TestGetUpdatableEnginesAndLock:
         patch_low_level,
     ):
         """With actor (update_weights=True) + ref (update_weights=False), the
-        returned EnginesAndLock contains the actor's engines only."""
+        returned UpdatableEngines contains the actor's engines only."""
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         pg = placement_group_factory(4)
 
         controller = InferenceController(args, pg)
         await controller.init()
-        eal = await controller.get_updatable_engines_and_lock()
-        assert len(eal.rollout_engines) == 2  # actor's 2, not ref's 2
-        assert eal.engine_gpu_counts == [1, 1]
-        assert all(isinstance(api_client, SGLangApiClient) for api_client in eal.rollout_engines)
-        assert await eal.rollout_engines[0].health_generate(timeout=5.0) is True
+        updatable = await controller.get_updatable_engines()
+        assert len(updatable.rollout_engines) == 2  # actor's 2, not ref's 2
+        assert updatable.engine_gpu_counts == [1, 1]
+        assert all(isinstance(api_client, SGLangApiClient) for api_client in updatable.rollout_engines)
+        assert await updatable.rollout_engines[0].health_generate(timeout=5.0) is True
 
     async def test_returns_empty_when_no_updatable_model(
         self,
@@ -295,18 +295,16 @@ class TestGetUpdatableEnginesAndLock:
         patch_low_level,
     ):
         """If every model has ``update_weights=False`` (e.g. inference-only
-        deployment), the returned EnginesAndLock has empty engines list and
-        the lock handle is still present (callers always need a lock)."""
+        deployment), the returned UpdatableEngines has an empty engines list."""
         args = _make_test_args(tmp_path, models=[("ref", False)])
         pg = placement_group_factory(2)
 
         controller = InferenceController(args, pg)
         await controller.init()
-        eal = await controller.get_updatable_engines_and_lock()
-        assert eal.rollout_engines == []
-        assert eal.engine_gpu_counts == []
-        assert eal.has_new_engines is False
-        assert eal.rollout_engine_lock is not None
+        updatable = await controller.get_updatable_engines()
+        assert updatable.rollout_engines == []
+        assert updatable.engine_gpu_counts == []
+        assert updatable.has_new_engines is False
 
     async def test_has_new_engines_flag_lifecycle(
         self,
@@ -323,16 +321,16 @@ class TestGetUpdatableEnginesAndLock:
 
         controller = InferenceController(args, pg)
         await controller.init()
-        eal_init = await controller.get_updatable_engines_and_lock()
+        eal_init = await controller.get_updatable_engines()
         assert eal_init.has_new_engines is True
 
         await controller.clear_updatable_has_new_engines()
-        eal_cleared = await controller.get_updatable_engines_and_lock()
+        eal_cleared = await controller.get_updatable_engines()
         assert eal_cleared.has_new_engines is False
 
         await controller.stop_cell("actor-0")
         await controller.start_cell("actor-0")
-        eal_recovered = await controller.get_updatable_engines_and_lock()
+        eal_recovered = await controller.get_updatable_engines()
         assert eal_recovered.has_new_engines is True
 
     async def test_clear_does_not_affect_non_updatable_server(
@@ -372,7 +370,7 @@ class TestGetUpdatableEnginesAndLock:
         controller = InferenceController(args, pg)
         await controller.init()
         with pytest.raises(ValueError, match="Multiple servers"):
-            await controller.get_updatable_engines_and_lock()
+            await controller.get_updatable_engines()
 
 
 @pytest.mark.asyncio
@@ -392,7 +390,7 @@ class TestCheckWeights:
 
         controller = InferenceController(args, pg)
         await controller.init()
-        await controller.get_updatable_engines_and_lock()  # wait for engines to be alive
+        await controller.get_updatable_engines()  # wait for engines to be alive
 
         results = await controller.check_weights(action="pre_update")
 
@@ -442,7 +440,7 @@ class TestRecoverUpdatableEngines:
 
         controller = InferenceController(args, pg)
         await controller.init()
-        await controller.get_updatable_engines_and_lock()
+        await controller.get_updatable_engines()
         actor0_before = _cells(controller)[0].primary_actor_handle
 
         # Kill engine 0 directly + mark stopped (simulates a fault before any
@@ -469,7 +467,7 @@ class TestRecoverUpdatableEngines:
 
         controller = InferenceController(args, pg)
         await controller.init()
-        await controller.get_updatable_engines_and_lock()
+        await controller.get_updatable_engines()
         actor0_before = _cells(controller)[0].primary_actor_handle
 
         ray.kill(actor0_before)

@@ -267,10 +267,10 @@ class RayTrainGroup:
         """Broadcast weights to rollout engines."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
-        # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
-        # ranks observe a consistent engine set; the actor releases the lock itself.
+        # Fetch the updatable engines once (like V1 RayActorGroup) so all
+        # ranks observe a consistent engine set.
         await self._inference_controller.health_monitoring_pause()
-        info = await self._inference_controller.get_updatable_engines_and_lock()
+        info = await self._inference_controller.get_updatable_engines()
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
             lambda _: self._execute_first_alive("update_weights", info=info),
