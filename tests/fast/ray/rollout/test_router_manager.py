@@ -6,10 +6,34 @@ from unittest.mock import MagicMock, patch
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.router_manager import _resolve_session_server_ports, start_router, start_session_server
+from miles.ray.rollout.router_manager import (
+    _launch_command_on_head,
+    _resolve_session_server_ports,
+    start_router,
+    start_session_server,
+)
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
 from miles.utils.workers.argv_utils import parse_config_argv
+from miles.utils.workers.command_actor import CommandActor
+
+
+class TestLaunchCommandOnHead:
+    def test_runs_the_joined_command_on_a_head_command_actor(self, monkeypatch):
+        """The command runs inside a head-pinned CommandActor, not a driver subprocess."""
+        captured: dict = {}
+
+        def _create(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.create_head_worker_actor", _create)
+
+        actor_handle = _launch_command_on_head(["python", "-m", "x", "--flag", "a b"])
+
+        assert captured["worker_cls"] is CommandActor
+        assert captured["env_vars"] == {}
+        actor_handle.run.remote.assert_called_once_with(cmd="python -m x --flag 'a b'", envs={})
 
 
 class TestStartRouter:
@@ -48,16 +72,14 @@ class TestStartRouterLaunchCommand:
     def captured_launches(self, monkeypatch):
         launches: list[list[str]] = []
 
-        def fake_launch(argv, *, envs):
-            launches.append(argv)
+        def fake_launch(launch_argv):
+            launches.append(launch_argv)
             return MagicMock()
 
         monkeypatch.setattr("miles.ray.rollout.router_manager.get_host_info", lambda: ("h", "127.0.0.1"))
         monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
-        monkeypatch.setattr("miles.utils.workers.process_utils.launch_bound_subprocess", fake_launch)
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.wait_for_server_ready", lambda *fn_args, **fn_kwargs: None
-        )
+        monkeypatch.setattr("miles.ray.rollout.router_manager._launch_command_on_head", fake_launch)
+        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", lambda *fn_args, **fn_kwargs: None)
         return launches
 
     def test_sgl_router_launches_the_native_cli(self, captured_launches, monkeypatch):
@@ -101,12 +123,10 @@ class TestStartSessionServerLaunchCommand:
         """Each resolved port gets its own subprocess with a lossless config."""
         launches: list[list[str]] = []
         monkeypatch.setattr(
-            "miles.utils.workers.process_utils.launch_bound_subprocess",
-            lambda argv, *, envs: launches.append(argv) or MagicMock(),
+            "miles.ray.rollout.router_manager._launch_command_on_head",
+            lambda launch_argv: launches.append(launch_argv) or MagicMock(),
         )
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.wait_for_server_ready", lambda *fn_args, **fn_kwargs: None
-        )
+        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", lambda *fn_args, **fn_kwargs: None)
         monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
 
         args = make_args(
