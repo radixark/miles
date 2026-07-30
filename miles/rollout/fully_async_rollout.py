@@ -6,12 +6,12 @@ worker's output queue. Rollout production and training consumption run in parall
 so per-iteration wall time moves from ``rollout_time + train_time`` toward
 ``max(rollout_time, train_time)``.
 
-Requires the class-based rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``)::
+Selected by ``train_async.py --fully-async``, which also requires the class-based
+rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``).
 
-    --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
-
-Evaluation is not served by this function; point ``--eval-function-path`` at
-``miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn``.
+Evaluation is not served by this function; ``--fully-async`` therefore points
+``--eval-function-path`` at the standard inference rollout unless it is set
+explicitly.
 """
 
 import asyncio

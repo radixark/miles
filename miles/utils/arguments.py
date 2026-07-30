@@ -24,6 +24,38 @@ from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 logger = logging.getLogger(__name__)
 
 
+def default_rollout_function_path() -> str:
+    """The standard rollout function, used when nothing selects another one."""
+    if enable_experimental_rollout_refactor():
+        return "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
+    return "miles.rollout.sglang_rollout.generate_rollout"
+
+
+def resolve_rollout_function_path(args) -> str:
+    """The rollout function the arguments select."""
+    if args.fully_async:
+        return "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+    return args.rollout_function_path or default_rollout_function_path()
+
+
+def _resolve_rollout_functions(args) -> None:
+    if args.fully_async:
+        assert enable_experimental_rollout_refactor(), (
+            "--fully-async needs the class-based rollout API: set MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 "
+            "(and propagate it through runtime_env when submitting via Ray)"
+        )
+        assert (
+            args.rollout_function_path is None
+        ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
+        assert not args.colocate, "--fully-async cannot colocate: rollout must keep generating while training runs"
+
+    args.rollout_function_path = resolve_rollout_function_path(args)
+
+    if args.eval_function_path is None:
+        # Fully async does not serve eval, so eval keeps the standard rollout function.
+        args.eval_function_path = default_rollout_function_path() if args.fully_async else args.rollout_function_path
+
+
 def reset_arg(parser, name, **kwargs):
     """
     Reset the default value of a Megatron argument.
@@ -365,11 +397,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-function-path",
                 type=str,
-                default=(
-                    "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-                    if enable_experimental_rollout_refactor()
-                    else "miles.rollout.sglang_rollout.generate_rollout"
-                ),
+                default=None,
                 help=(
                     "Path to the rollout generation function. "
                     "Use this to create your own custom rollout function and set this to its path. "
@@ -380,6 +408,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "(see `miles.rollout.sglang_rollout.generate_rollout` for the default impl). "
                     "Within each output sample, set at least `tokens`, `response_length`, `reward`, "
                     "and `truncated`."
+                ),
+            )
+            parser.add_argument(
+                "--fully-async",
+                action="store_true",
+                default=False,
+                help=(
+                    "Run fully async rollout: a persistent worker keeps generating while the trainer "
+                    "drains completed groups. Selects `FullyAsyncRolloutFn` as the rollout function; "
+                    "evaluation keeps the standard rollout function, which fully async does not serve. "
+                    "Requires train_async.py and MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1."
                 ),
             )
             parser.add_argument(
@@ -2231,7 +2270,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             except SystemExit:
                 return parser
             for path in [
-                args_partial.rollout_function_path,
+                resolve_rollout_function_path(args_partial),
                 args_partial.custom_generate_function_path,
             ]:
                 try:
@@ -2853,8 +2892,7 @@ def miles_validate_args(args):
             f"so one group already puts n_samples_per_prompt trajectories in flight"
         )
 
-    if args.eval_function_path is None:
-        args.eval_function_path = args.rollout_function_path
+    _resolve_rollout_functions(args)
 
     if args.num_steps_per_rollout is not None:
         global_batch_size = args.rollout_batch_size * args.n_samples_per_prompt // args.num_steps_per_rollout

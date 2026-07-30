@@ -38,7 +38,7 @@ CKPT_ARGS=(
 PROMPT_SET=/path/to/dapo-math-17k.jsonl
 
 ROLLOUT_ARGS=(
-   --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
+   --fully-async
    --prompt-data ${PROMPT_SET}
    --input-key prompt
    --label-key label

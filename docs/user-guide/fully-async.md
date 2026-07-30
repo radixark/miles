@@ -27,13 +27,18 @@ where generation dominates the iteration.
 ## Enable it
 
 Switch the entrypoint from `train.py` to `train_async.py`, enable the class-based
-rollout API, and select the rollout function that owns the background worker:
+rollout API, and pass `--fully-async`:
 
 ```diff
 - python3 train.py ...
 + MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 python3 train_async.py ...
-+   --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
++   --fully-async
 ```
+
+`--fully-async` selects the built-in rollout worker and, unless you pass
+`--eval-function-path` yourself, points evaluation at the standard inference rollout
+(the fully async worker does not serve eval). When submitting through Ray, propagate
+`MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` in the job's `runtime_env`.
 
 Everything else belongs in the same [argument groups](/user-guide/argument-groups) as a
 synchronous run.
