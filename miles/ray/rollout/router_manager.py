@@ -3,7 +3,6 @@ import logging
 import random
 import shlex
 import sys
-import uuid
 
 import ray
 
@@ -105,8 +104,8 @@ def start_session_server(args):
     # transformers import, so N servers start in ~one import of wall-time.
     instance_ids: dict[int, str] = {}
     launches = []
-    for port in ports:
-        instance_id = uuid.uuid4().hex
+    for instance_index, port in enumerate(ports):
+        instance_id = f"{args.run_uuid}-{instance_index}"
         instance_ids[port] = instance_id
         config = compute_session_server_config(
             args, host=ip, port=port, instance_id=instance_id, backend_url=router_url

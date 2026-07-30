@@ -96,6 +96,7 @@ def make_args(**overrides: Any) -> Namespace:
         session_server_ip=None,
         session_server_port=None,
         session_server_workers=32,
+        run_uuid="0123456789abcdef",
         # external rollout
         rollout_external=False,
         rollout_external_engine_addrs=None,

@@ -149,6 +149,34 @@ class TestStartSessionServerLaunchCommand:
         assert {config.host for config in configs} == {"127.0.0.1"}
         assert {config.instance_id for config in configs} == set(args.session_server_instance_ids.values())
 
+    def test_instance_ids_are_the_run_uuid_plus_the_instance_index(self, monkeypatch):
+        """Ids stay unique across runs through the run uuid and unique within one through the index."""
+        monkeypatch.setattr("miles.ray.rollout.router_manager._launch_command_on_head", lambda launch_cmd: MagicMock())
+        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", lambda *fn_args, **fn_kwargs: None)
+        monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
+
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            sglang_router_ip="127.0.0.1",
+            sglang_router_port=3000,
+            session_server_port=[5005, 5008],
+            run_uuid="00112233445566aa",
+            miles_router_timeout=None,
+            chat_template_path=None,
+            tito_model="default",
+            apply_chat_template_kwargs=None,
+            tito_allowed_append_roles=["tool"],
+            use_rollout_indexer_replay=False,
+        )
+        start_session_server(args)
+
+        assert args.session_server_instance_ids == {
+            5005: "00112233445566aa-0",
+            5006: "00112233445566aa-1",
+            5007: "00112233445566aa-2",
+        }
+
 
 class TestStartSessionServer:
     def test_disabled_returns_silently(self):
