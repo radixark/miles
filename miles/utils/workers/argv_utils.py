@@ -48,6 +48,7 @@ def render_cli_argv(
     *,
     make_parser: Callable[[], argparse.ArgumentParser],
     from_parsed: Callable[[argparse.Namespace], _ArgsT],
+    required_argv: list[str] | None = None,
     dest_prefix: str = "",
     field_to_dest: Mapping[str, str] | None = None,
 ) -> list[str]:
@@ -56,9 +57,10 @@ def render_cli_argv(
     def parse(argv: list[str]) -> _ArgsT:
         return from_parsed(make_parser().parse_args(argv))
 
-    argv = _render_cli_argv(
+    base_argv = list(required_argv or [])
+    argv = base_argv + _render_cli_argv(
         args_obj,
-        cli_defaults=parse([]),
+        cli_defaults=parse(base_argv),
         parser=parser,
         dest_prefix=dest_prefix,
         field_to_dest=field_to_dest or {},
@@ -77,7 +79,7 @@ def _render_cli_argv(
     dest_prefix: str,
     field_to_dest: Mapping[str, str],
 ) -> list[str]:
-    actions_by_dest = {action.dest: action for action in parser._actions}
+    actions_by_dest = _actions_by_dest(parser)
 
     argv: list[str] = []
     for field in dataclasses.fields(args_obj):
@@ -90,6 +92,13 @@ def _render_cli_argv(
         )
         argv.extend(_render_action_argv(action, value))
     return argv
+
+
+def _actions_by_dest(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
+    actions_by_dest: dict[str, argparse.Action] = {}
+    for action in parser._actions:
+        actions_by_dest.setdefault(action.dest, action)
+    return actions_by_dest
 
 
 def _resolve_action(
@@ -119,7 +128,7 @@ def _render_action_argv(action: argparse.Action, value: object) -> list[str]:
     if isinstance(action, argparse.BooleanOptionalAction):
         return [_boolean_option_string(action, value=bool(value))]
 
-    if isinstance(action, argparse._StoreTrueAction | argparse._StoreFalseAction):
+    if action.nargs == 0:
         flag = _long_option_string(action)
         assert (
             value == action.const
