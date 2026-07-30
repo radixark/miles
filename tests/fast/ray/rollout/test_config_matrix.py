@@ -167,8 +167,8 @@ class TestPdDisaggregation:
 class TestRolloutExternalPath:
     async def test_starting_engines_in_external_mode_is_not_implemented(self):
         """The external allocator was removed; starting engines must fail loudly until the replacement lands."""
-        from miles.ray.rollout.addr_allocator import PortAllocator
         from miles.ray.rollout.server_cell import ServerCell
+        from miles.utils.workers.addr_allocator import PortAllocator
 
         cell = ServerCell(
             args=make_args(num_gpus_per_node=8, rollout_external=True), worker_type="regular", cell_id="cell-0"
