@@ -4,12 +4,12 @@ import argparse
 import dataclasses
 import functools
 import json
-import tempfile
 from argparse import Namespace
-from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.fast.backends.sglang_utils.conftest import make_engine_args as _args
+from tests.fast.backends.sglang_utils.conftest import tiny_model_path
 
 pytest.importorskip("sglang")
 
@@ -23,25 +23,6 @@ from miles.backends.sglang_utils.server_args_utils import (
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 from miles.utils.workers.argv_utils import _actions_by_dest, _render_action_argv, _resolve_action
 
-_TINY_MODEL_CONFIG: dict[str, Any] = {
-    "architectures": ["LlamaForCausalLM"],
-    "model_type": "llama",
-    "bos_token_id": 1,
-    "eos_token_id": 2,
-    "hidden_act": "silu",
-    "hidden_size": 128,
-    "initializer_range": 0.02,
-    "intermediate_size": 256,
-    "max_position_embeddings": 2048,
-    "num_attention_heads": 4,
-    "num_hidden_layers": 2,
-    "num_key_value_heads": 4,
-    "rms_norm_eps": 1e-05,
-    "tie_word_embeddings": False,
-    "torch_dtype": "bfloat16",
-    "vocab_size": 1000,
-}
-
 _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "custom_sigquit_handler": "A Python-only callable hook; sglang registers no CLI option for it.",
     "stat_loggers": "A Python-only injection point; sglang registers no CLI option for it.",
@@ -51,35 +32,6 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
         "instance, so no generically rendered token parses back to the same value."
     ),
 }
-
-
-@functools.lru_cache(maxsize=1)
-def _tiny_model_path() -> Path:
-    model_path = Path(tempfile.mkdtemp(prefix="miles-tiny-model-"))
-    (model_path / "config.json").write_text(json.dumps(_TINY_MODEL_CONFIG))
-    return model_path
-
-
-def _args(**overrides: Any) -> Namespace:
-    defaults: dict[str, Any] = dict(
-        hf_checkpoint=str(_tiny_model_path()),
-        seed=42,
-        offload_rollout=False,
-        num_gpus_per_node=8,
-        rollout_num_gpus_per_engine=1,
-        sglang_dp_size=1,
-        sglang_pp_size=1,
-        sglang_ep_size=1,
-        use_rollout_routing_replay=False,
-        use_rollout_indexer_replay=False,
-        fp16=False,
-        lora_rank=0,
-        lora_adapter_path=None,
-        multi_lora=False,
-        colocate=False,
-    )
-    defaults.update(overrides)
-    return Namespace(**defaults)
 
 
 def _server_args(
@@ -97,11 +49,11 @@ def _server_args(
     overrides = {"device": "cuda", **(sglang_overrides or {})}
     server_args_dict = _compute_server_args(
         args or _args(),
-        rank,
-        dist_init_addr,
-        20031,
-        "10.0.0.1",
-        30000,
+        rank=rank,
+        dist_init_addr=dist_init_addr,
+        nccl_port=20031,
+        host="10.0.0.1",
+        port=30000,
         worker_type=worker_type,
         disaggregation_bootstrap_port=disaggregation_bootstrap_port,
         base_gpu_id=0,
@@ -289,7 +241,7 @@ def _baseline_namespace() -> Namespace:
 
 
 def _model_argv() -> list[str]:
-    return ["--model-path", str(_tiny_model_path())]
+    return ["--model-path", str(tiny_model_path())]
 
 
 def _first_roundtripping_value(*, action: argparse.Action, default_value: object) -> object | None:
