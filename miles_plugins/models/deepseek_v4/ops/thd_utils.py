@@ -160,6 +160,18 @@ def compact_group_capacity(l_local: int, ratio: int) -> int:
     return ((capacity + alignment - 1) // alignment) * alignment
 
 
+def _first_visible_group(range_start: Tensor | int, seg_start: Tensor, ratio: int) -> Tensor:
+    """First compressed group a rank starting at ``range_start`` puts in its compact buffer.
+
+    Shared by the compaction and the row map so the slot a group is written to and the slot it
+    is looked up in cannot drift apart.
+    """
+    d_comp = compressor_boundary_width(ratio)
+    return torch.div(
+        (range_start - d_comp - seg_start).clamp(min=0) + ratio - 1, ratio, rounding_mode="floor"
+    )
+
+
 def compact_gather_index(
     cu_seqlens: Tensor, *, global_start: int, l_local: int, ratio: int, c_cap: int
 ) -> tuple[Tensor, Tensor]:
@@ -181,9 +193,7 @@ def compact_gather_index(
 
     seg_start = cu_seqlens[:-1]
     seg_stop = torch.minimum(cu_seqlens[1:], torch.full_like(cu_seqlens[1:], range_end))
-    first_group = torch.div(
-        (range_start - d_comp - seg_start).clamp(min=0) + ratio - 1, ratio, rounding_mode="floor"
-    )
+    first_group = _first_visible_group(range_start, seg_start, ratio)
     stop_group = torch.div(seg_stop - seg_start, ratio, rounding_mode="floor")
     n_groups = (stop_group - first_group).clamp(min=0)
     n_groups = torch.where((seg_start < seg_stop) & (range_start < seg_stop), n_groups, 0)
@@ -245,3 +255,45 @@ class CompressorInputCompact(torch.autograd.Function):
         grad_source.index_add_(0, gather_idx.clamp(min=0), grad_compact * keep)
         grad_boundary, grad_local = grad_source.split(ctx.row_split, dim=0)
         return grad_local, grad_boundary, None, None, None, None
+
+
+def compressed_rank_layout(
+    cu_seqlens: Tensor,
+    cu_seqlens_compressed: Tensor,
+    *,
+    l_local: int,
+    cp_size: int,
+    ratio: int,
+    c_cap: int,
+) -> Tensor:
+    """Map sequence-major compressed rows to their rows in the all-gathered buffer.
+
+    All-gather concatenates fixed-capacity per-rank blocks, so a group's sequence-major id is
+    not its row: rank ``r`` owns slots ``[r * c_cap, (r + 1) * c_cap)`` and the unused tail of
+    each block is padding. A group belongs to the rank holding its last token.
+
+    Returns:
+        ``[(l_local * cp_size) // ratio]`` int32, ``-1`` for a row no rank produced.
+    """
+    device = cu_seqlens.device
+    n_seg = cu_seqlens.size(0) - 1
+    logical_rows = torch.arange(
+        (l_local * cp_size) // ratio, device=device, dtype=cu_seqlens.dtype
+    )
+    seg_ids = torch.bucketize(logical_rows, cu_seqlens_compressed[1:], right=True).clamp(
+        max=max(n_seg - 1, 0)
+    )
+    comp_ids = logical_rows - cu_seqlens_compressed[seg_ids]
+    group_last = cu_seqlens[seg_ids] + (comp_ids + 1) * ratio - 1
+    owner = torch.div(group_last, l_local, rounding_mode="floor").clamp(0, cp_size - 1)
+
+    rank_starts = torch.arange(cp_size, device=device, dtype=cu_seqlens.dtype) * l_local
+    first_seg = torch.bucketize(rank_starts, cu_seqlens[1:], right=True).clamp(
+        max=max(n_seg - 1, 0)
+    )
+    first_logical = cu_seqlens_compressed[first_seg] + _first_visible_group(
+        rank_starts, cu_seqlens[first_seg], ratio
+    )
+
+    rank_rows = owner * c_cap + (logical_rows - first_logical[owner])
+    return torch.where(logical_rows < cu_seqlens_compressed[-1], rank_rows, -1).int()
