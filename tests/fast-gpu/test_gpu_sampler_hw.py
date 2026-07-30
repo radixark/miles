@@ -17,7 +17,7 @@ class PushSpy:
 
 
 def test_auto_detection_picks_the_backend_matching_the_hardware():
-    sampler = GpuSampler(PushSpy(), node="ci")
+    sampler = GpuSampler(push=PushSpy(), node="ci")
     assert sampler.available, "no GPU telemetry backend initialized on a GPU runner"
     expected = "AMD SMI" if torch.version.hip else "NVML"
     assert sampler._provider.name == expected
@@ -26,7 +26,7 @@ def test_auto_detection_picks_the_backend_matching_the_hardware():
 def test_every_device_reports_telemetry_and_processes():
     push = PushSpy()
     push_processes = PushSpy()
-    sampler = GpuSampler(push, node="ci", push_processes=push_processes)
+    sampler = GpuSampler(push=push, node="ci", push_processes=push_processes)
     assert sampler.available
 
     uuids = sampler.gpu_uuids()

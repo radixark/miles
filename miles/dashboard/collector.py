@@ -98,7 +98,7 @@ def _default_spawn_sampler(node_id: str, node_ip: str, interval: float):
             scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=node_id, soft=False),
         )
         .remote(
-            _SelfGpuPush(ray.get_runtime_context().current_actor),
+            push=_SelfGpuPush(ray.get_runtime_context().current_actor),
             node=node_ip,
             interval=interval,
             push_processes=_SelfGpuProcessPush(ray.get_runtime_context().current_actor),
@@ -143,8 +143,8 @@ class DashboardCollector:
 
     def __init__(
         self,
-        config: CollectorConfig,
         *,
+        config: CollectorConfig,
         prometheus_handle_factory=None,  # () -> handle with .update.remote(dict), or None
         scraper_http_get=None,  # test hook, forwarded to SglangScraper
     ):

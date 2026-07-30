@@ -22,6 +22,7 @@ This lets us simulate 20 seconds of polling in <1ms of real time.
 """
 
 import asyncio
+import inspect
 import multiprocessing
 import socket
 import subprocess
@@ -29,11 +30,16 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
+from typing import Any, NamedTuple
 from unittest.mock import patch
 
 import httpx
 import pytest
+import ray
+from tests.fast.utils.fake_ray_ids import fake_ray_node_id
 
+from miles.utils import http_utils
 from miles.utils.http_utils import GeneralHttpClientProvider, wait_for_server_ready
 
 
@@ -377,3 +383,105 @@ class _RecordingTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.deadlines = request.extensions["timeout"]
         return httpx.Response(200)
+
+
+class TestDistributedPostActors:
+    def test_the_poster_actor_is_constructed_with_keyword_arguments(self, monkeypatch):
+        """A positional handoff silently binds to the wrong parameter once the actor grows another one."""
+        recorded: list[tuple[tuple, dict]] = []
+
+        class _FakeActorClass:
+            def options(self, **_options):
+                return self
+
+            def remote(self, *call_args, **call_kwargs):
+                recorded.append((call_args, call_kwargs))
+                return object()
+
+        monkeypatch.setattr(ray, "nodes", lambda: [{"NodeID": fake_ray_node_id(0), "Alive": True}])
+        monkeypatch.setattr(ray, "remote", lambda _cls: _FakeActorClass())
+        monkeypatch.setattr(http_utils, "_post_actors", [])
+        monkeypatch.setattr(http_utils, "_client_concurrency", 7)
+
+        http_utils._init_ray_distributed_post(SimpleNamespace(num_gpus_per_node=2))
+
+        assert recorded == [((), {"concurrency": 8})] * 2
+
+
+class _PosterActorInit(NamedTuple):
+    actor_class: type
+    calls: list[tuple[tuple, dict]]
+
+
+class _RecordingRemoteActorClass:
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple, dict]] = []
+
+    def options(self, **_options: Any) -> "_RecordingRemoteActorClass":
+        return self
+
+    def remote(self, *call_args: Any, **call_kwargs: Any) -> object:
+        self.calls.append((call_args, call_kwargs))
+        return object()
+
+
+def _run_init_ray_distributed_post(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    num_gpus_per_node: int = 1,
+    client_concurrency: int = 7,
+    nodes: list[dict] | None = None,
+) -> _PosterActorInit:
+    captured: dict[str, type] = {}
+    remote_actor_class = _RecordingRemoteActorClass()
+
+    def _fake_remote(cls: type) -> _RecordingRemoteActorClass:
+        captured["actor_class"] = cls
+        return remote_actor_class
+
+    monkeypatch.setattr(ray, "nodes", lambda: nodes or [{"NodeID": fake_ray_node_id(0), "Alive": True}])
+    monkeypatch.setattr(ray, "remote", _fake_remote)
+    monkeypatch.setattr(http_utils, "_post_actors", [])
+    monkeypatch.setattr(http_utils, "_client_concurrency", client_concurrency)
+
+    http_utils._init_ray_distributed_post(SimpleNamespace(num_gpus_per_node=num_gpus_per_node))
+
+    return _PosterActorInit(actor_class=captured["actor_class"], calls=remote_actor_class.calls)
+
+
+class TestPosterActorKeywordOnlyConstruction:
+    def test_the_poster_actor_refuses_a_positional_concurrency(self, monkeypatch):
+        """Constructing the poster actor positionally must fail so a later parameter cannot silently steal the slot."""
+        actor_class = _run_init_ray_distributed_post(monkeypatch).actor_class
+
+        with pytest.raises(TypeError):
+            actor_class(7)
+
+    def test_every_poster_actor_constructor_parameter_is_keyword_only(self, monkeypatch):
+        """No poster actor constructor parameter may be positionally bindable."""
+        actor_class = _run_init_ray_distributed_post(monkeypatch).actor_class
+
+        parameters = list(inspect.signature(actor_class.__init__).parameters.values())[1:]
+
+        assert [parameter.kind for parameter in parameters] == [inspect.Parameter.KEYWORD_ONLY] * len(parameters)
+        assert parameters
+
+    def test_the_recorded_poster_keywords_bind_to_the_actor_constructor(self, monkeypatch):
+        """The keywords the call site sends must name real poster actor constructor parameters."""
+        init = _run_init_ray_distributed_post(monkeypatch)
+        signature = inspect.signature(init.actor_class.__init__)
+
+        for call_args, call_kwargs in init.calls:
+            assert call_args == ()
+            signature.bind(object(), *call_args, **call_kwargs)
+
+    def test_the_poster_actor_is_constructed_by_keyword_on_every_node_slot(self, monkeypatch):
+        """Every actor created across nodes and per-node slots receives its concurrency by keyword."""
+        init = _run_init_ray_distributed_post(
+            monkeypatch,
+            num_gpus_per_node=2,
+            client_concurrency=10,
+            nodes=[{"NodeID": fake_ray_node_id(0), "Alive": True}, {"NodeID": fake_ray_node_id(1), "Alive": True}],
+        )
+
+        assert init.calls == [((), {"concurrency": 6})] * 4

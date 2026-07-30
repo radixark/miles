@@ -93,11 +93,11 @@ def allocate_gpus_for_actor(
             rank_dir = os.path.join(args.offload_train_disk_dir, f"cell{cell_index}_rank{rank}")
             options["runtime_env"] = {"env_vars": {**env_vars, "TMS_DISK_BACKUP_DIR": rank_dir}}
         actor = TrainRayActor.options(**options).remote(
-            args,
-            world_size,
-            rank,
-            master_addr,
-            master_port,
+            args=args,
+            world_size=world_size,
+            rank=rank,
+            master_addr=master_addr,
+            master_port=master_port,
             indep_dp_store_addr=indep_dp_store_addr,
             role=role,
             cell_index=cell_index,

@@ -345,7 +345,7 @@ def _init_ray_distributed_post(args):
     # Define the async actor
     @ray.remote
     class _HttpPosterActor:
-        def __init__(self, concurrency: int):
+        def __init__(self, *, concurrency: int):
             # Lazy creation to this actor's event loop
             self._client = httpx.AsyncClient(
                 limits=httpx.Limits(max_connections=max(1, concurrency)),
@@ -371,7 +371,7 @@ def _init_ray_distributed_post(args):
                 max_concurrency=per_actor_conc,
                 # Use tiny CPU to schedule
                 num_cpus=0.001,
-            ).remote(per_actor_conc)
+            ).remote(concurrency=per_actor_conc)
             created.append(actor)
 
     _post_actors = created
