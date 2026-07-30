@@ -88,7 +88,7 @@ async def test_train_only_ft_does_not_recover_rollout_engines():
     )
     group._inference_controller = SimpleNamespace(
         recover_updatable_engines=_AsyncCall("recover", calls),
-        get_updatable_engines_and_lock=_AsyncCall("get_engines", calls, result="info"),
+        get_updatable_engines=_AsyncCall("get_engines", calls, result="info"),
         health_monitoring_pause=_AsyncCall("pause", calls),
         clear_updatable_has_new_engines=_AsyncCall("clear", calls),
     )

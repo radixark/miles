@@ -22,7 +22,7 @@ from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, regi
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import EnginesAndLock
+    from miles.ray.rollout.inference_controller import UpdatableEngines
 
 
 logger = logging.getLogger(__name__)
@@ -171,7 +171,7 @@ class TrainRayActor(RayActor):
         raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 
     @abc.abstractmethod
-    def update_weights(self, info: "EnginesAndLock") -> None:
+    def update_weights(self, info: "UpdatableEngines") -> None:
         raise NotImplementedError
 
     @abc.abstractmethod

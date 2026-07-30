@@ -6,7 +6,6 @@ from collections.abc import Callable, Iterator, Sequence
 from typing import ClassVar
 
 import torch
-from ray.actor import ActorHandle
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
@@ -39,7 +38,6 @@ class WeightTransferProtocol(ABC):
     def connect(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: ActorHandle | None,
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,

@@ -44,7 +44,7 @@ from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import EnginesAndLock
+    from miles.ray.rollout.inference_controller import UpdatableEngines
     from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
@@ -604,13 +604,12 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self, info: "EnginesAndLock") -> None:  # type: ignore[override]
+    def update_weights(self, info: "UpdatableEngines") -> None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines (colocated or distributed; wakes params in offload mode)."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
         rollout_engines = info.rollout_engines
-        rollout_engine_lock = info.rollout_engine_lock
         has_new_engines = info.has_new_engines
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
@@ -619,7 +618,6 @@ class FSDPTrainRayActor(TrainRayActor):
         if has_new_engines:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
-                rollout_engine_lock,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
             )
