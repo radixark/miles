@@ -42,7 +42,7 @@ class TestKillAndRecover:
             assert cells[0].is_allocated
             assert cells[0].primary_actor_handle is not original_handles[0]
             calls = ray.get(cells[0].primary_actor_handle.get_calls.remote())
-            assert "init" in [c[0] for c in calls]
+            assert "run" in [c[0] for c in calls]
 
             # Cell 1 untouched, still the same actor
             assert cells[1].primary_actor_handle is original_handles[1]
@@ -136,7 +136,7 @@ class TestKillAndRecover:
             await cells[0].recover(PortAllocator())
             recovered_actor = cells[0].primary_actor_handle
             calls = ray.get(recovered_actor.get_calls.remote())
-            assert "init" in [c[0] for c in calls]
+            assert "run" in [c[0] for c in calls]
 
             paths = ray.get(recovered_actor.get_http_paths.remote())
             assert "/release_memory_occupation" in paths
@@ -211,17 +211,16 @@ class TestConcurrentRecover:
             kill_cells(b)
 
 
-# ----------------------------- simulate_crash at cell level -----------------------------
+# ----------------------------- crash injection at cell level -----------------------------
 
 
 @pytest.mark.asyncio
-class TestSimulateCrashKeepsActorReachable:
-    """``MockSGLangEngine.simulate_crash`` self-calls ``shutdown()`` (mirror
-    of real SGLangEngine). The actor stays alive at the Ray level; this is
-    important because the rollout health monitor uses follow-up ``.remote()``
-    calls to determine liveness."""
+class TestKillSubprocessKeepsMockActorReachable:
+    """``MockSGLangEngine.kill_subprocess`` mirrors the moment the engine
+    subprocess died but the actor has not exited yet: the server is gone
+    while follow-up ``.remote()`` calls still return."""
 
-    async def test_simulate_crash_then_health_check_still_returns(
+    async def test_kill_subprocess_then_health_check_still_returns(
         self,
         patched_sglang_engine,
         placement_group_factory,
@@ -232,7 +231,7 @@ class TestSimulateCrashKeepsActorReachable:
         actor = cells[0].primary_actor_handle
 
         try:
-            ray.get(actor.simulate_crash.remote())
+            ray.get(actor.kill_subprocess.remote())
             # Actor handle still reachable at Ray level — follow-up returns.
             ray.get(actor.get_calls.remote(), timeout=10.0)
         finally:

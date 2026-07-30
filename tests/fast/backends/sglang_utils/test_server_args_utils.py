@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from typing import Any
 
 import pytest
+from tests.fast.backends.sglang_utils.conftest import make_engine_args as _args
 
 pytest.importorskip("sglang")
 
@@ -11,28 +11,6 @@ from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv, server_args_to_argv
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
-
-
-def _args(**overrides: Any) -> Namespace:
-    defaults: dict[str, Any] = dict(
-        hf_checkpoint="/fake/model",
-        seed=42,
-        offload_rollout=False,
-        num_gpus_per_node=8,
-        rollout_num_gpus_per_engine=1,
-        sglang_dp_size=1,
-        sglang_pp_size=1,
-        sglang_ep_size=1,
-        use_rollout_routing_replay=False,
-        use_rollout_indexer_replay=False,
-        fp16=False,
-        lora_rank=0,
-        lora_adapter_path=None,
-        multi_lora=False,
-        colocate=False,
-    )
-    defaults.update(overrides)
-    return Namespace(**defaults)
 
 
 def _server_args(
@@ -47,11 +25,11 @@ def _server_args(
 ) -> ServerArgs:
     server_args_dict = _compute_server_args(
         args or _args(),
-        rank,
-        dist_init_addr,
-        20031,
-        "10.0.0.1",
-        30000,
+        rank=rank,
+        dist_init_addr=dist_init_addr,
+        nccl_port=20031,
+        host="10.0.0.1",
+        port=30000,
         worker_type=worker_type,
         disaggregation_bootstrap_port=disaggregation_bootstrap_port,
         base_gpu_id=0,
