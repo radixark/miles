@@ -318,7 +318,7 @@ contract, session behavior, and model-family selection.
 | `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Registered with the agentic wrapper. |
 | `--session-server-ip` | str | router IP | Session-server bind address. |
 | `--session-server-port` | int | auto | First port for standalone session-server instances. When unset, each worker port is auto-allocated. |
-| `--session-server-workers` | int | `32` | Number of instances; an explicit `--session-server-port` anchors a consecutive range. |
+| `--session-server-workers` | int | `32` | Number of instances, at least 1; an explicit `--session-server-port` anchors a consecutive range. |
 | `--session-sample-picker-path` | `<module>.<fn>` | `drop_retries` | v2 only: selects leaf samples before post-processing. |
 | `--session-sample-postprocessor-path` | `<module>.<fn>` | `default_postprocess` | v2 only: finalizes loss masks and rewards. |
 
