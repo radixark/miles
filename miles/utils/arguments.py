@@ -44,6 +44,8 @@ def _resolve_rollout_functions(args) -> None:
             "--fully-async needs the class-based rollout API: set MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 "
             "(and propagate it through runtime_env when submitting via Ray)"
         )
+        # Runs after validate_multi_lora_args, which selects a rollout function of its own.
+        assert not args.multi_lora, "--fully-async and multi-LoRA select different rollout functions"
         assert (
             args.rollout_function_path is None
         ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
