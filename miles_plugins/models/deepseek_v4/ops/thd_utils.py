@@ -82,3 +82,27 @@ def get_compress_topk_idxs_thd(
         -1,
     )
     return compress_topk_idxs.unsqueeze(0)
+
+
+def get_indexer_cu_seqlens_thd(
+    cu_seqlens: Tensor, cu_seqlens_compressed: Tensor, *, ratio: int, total_tokens: int
+) -> tuple[Tensor, Tensor]:
+    """Get the indexer kernel's per-query KV range for a packed stream.
+
+    Replaces the BSHD ``ks = 0`` convention, which would let a query score compressed
+    entries belonging to earlier segments once all samples share one flat stream.
+
+    Returns:
+        ``(cu_ks, cu_ke)`` int32 ``[total_tokens]``, a half-open range into the compressed
+        keys alone (what the indexer scores), not the concatenated KV: the query's own
+        segment, up to ``(pos_in_seg + 1) // ratio`` and never past what that segment
+        produced.
+    """
+    device = cu_seqlens.device
+    batch_ids = batch_of_row(cu_seqlens, total_tokens)
+    token_idx = torch.arange(total_tokens, device=device)
+    pos_in_seg = token_idx - cu_seqlens[batch_ids]
+
+    cu_ks = cu_seqlens_compressed[batch_ids]
+    cu_ke = torch.minimum(cu_ks + (pos_in_seg + 1) // ratio, cu_seqlens_compressed[batch_ids + 1])
+    return cu_ks.int(), cu_ke.int()
