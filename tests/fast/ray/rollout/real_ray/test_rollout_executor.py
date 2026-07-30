@@ -40,7 +40,7 @@ def patch_low_level(monkeypatch, http_client_calls):
 
 
 def _make_executor(args):
-    return RolloutExecutor.__ray_actor_class__(args)
+    return RolloutExecutor.__ray_actor_class__(args=args)
 
 
 def _make_test_args(**overrides):
