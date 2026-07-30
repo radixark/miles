@@ -35,8 +35,10 @@ def _start_engines_and_collect_addressing(
         engine.__class__ = ray.actor.ActorHandle
         engine.run.remote.side_effect = lambda **kwargs: asyncio.sleep(0)
 
-    def _launch(*, global_rank, **kwargs):
-        return requested[global_rank]
+    ranks: list[int] = sorted(requested)
+
+    def _launch(*, gpu_index: int, **kwargs):
+        return requested[ranks[gpu_index]]
 
     with (
         patch.object(server_cell_module, "launch_sglang_ray_actor", side_effect=_launch),
@@ -239,7 +241,7 @@ class TestConcurrentNodeProbes:
             patch.object(
                 server_cell_module,
                 "launch_sglang_ray_actor",
-                side_effect=lambda *, global_rank, **kw: actors[global_rank],
+                side_effect=lambda *, gpu_index, **kw: actors[gpu_index],
             ),
             patch.object(server_cell_module, "wait_server_healthy", new=AsyncMock()),
         ):

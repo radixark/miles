@@ -106,9 +106,7 @@ class ServerCell:
             launch_sglang_ray_actor(
                 args=self.args,
                 pg=self.pg,
-                global_rank=self.rank_offset + local_index,
                 gpu_index=self.gpu_offset + local_index * num_gpu_per_engine,
-                worker_type=self.worker_type,
             )
             for local_index in range(self.num_nodes)
         ]
@@ -305,9 +303,7 @@ def launch_sglang_ray_actor(
     *,
     args: Any,
     pg: Any,
-    global_rank: int,
     gpu_index: int,
-    worker_type: str,
 ) -> ray.actor.ActorHandle:
     pg, reordered_bundle_indices, _ = pg
 
@@ -326,9 +322,7 @@ def launch_sglang_ray_actor(
             # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
             "NVSHMEM_DISABLE_NCCL": "1",
             "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
-            # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
-            # to enable this isolation.
-            "SGLANG_DG_CACHE_DIR": f"/tmp/sglang_deep_gemm/{worker_type}_rank_{global_rank}",
+            "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
             "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
             "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
