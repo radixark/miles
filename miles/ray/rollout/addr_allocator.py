@@ -14,10 +14,10 @@ class PortAllocator:
         # use small ports to prevent ephemeral port between 32768 and 65536.
         # also, ray uses port 10002-19999, thus we avoid near-10002 to avoid racing condition
         start_port = self._values.get(node_ip, 15000)
-        _, port = ray.get(
-            engine._get_current_node_ip_and_free_port.remote(
+        port = ray.get(
+            engine._get_free_port_block.remote(
                 start_port=start_port,
-                consecutive=consecutive,
+                count=consecutive,
             )
         )
         self._values[node_ip] = port + consecutive

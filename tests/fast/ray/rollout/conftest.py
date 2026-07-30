@@ -273,7 +273,7 @@ def _autouse_subprocess_leak_check(monkeypatch):
                 except Exception:
                     pass
         for p in leaked_popen:
-            process_utils._terminate_process_tree(p)
+            process_utils.terminate_process_tree(p)
         raise AssertionError(
             f"Subprocess leaked from previous test: mp={leaked_mp} popen={[p.pid for p in leaked_popen]}"
         )
@@ -313,25 +313,26 @@ def make_dataclass_cells(
 def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
     """MagicMock that mimics ``SGLangEngine`` enough for ``addr_allocator``.
 
-    Mocks ``_get_current_node_ip_and_free_port.remote(start_port, consecutive)``
-    with a deterministic ``max(seq, start_port)`` counter so allocator tests
-    can predict and assert on port assignment. The argument-less form is the
-    node-ip probe, which the cell awaits, so it returns an awaitable just like a
-    real ``ObjectRef``. It also passes ``isinstance(x, ray.actor.ActorHandle)``
+    Mocks ``_get_free_port_block.remote(start_port, count)`` with a
+    deterministic ``max(seq, start_port)`` counter so allocator tests can
+    predict and assert on port assignment. ``_get_node_ip.remote()`` is the
+    node-ip probe, which the cell awaits, so it returns an awaitable just like
+    a real ``ObjectRef``. It also passes ``isinstance(x, ray.actor.ActorHandle)``
     so it can be handed to ``mark_allocated_uninitialized``."""
     e = MagicMock()
     e._spec_class = ray.actor.ActorHandle
     e._port_cursor = port_seed
 
-    def _alloc(start_port: int = 15000, consecutive: int = 1):
+    def _alloc(start_port: int = 15000, count: int = 1):
         port = max(e._port_cursor, start_port)
-        e._port_cursor = port + consecutive
-        return (host, port)
+        e._port_cursor = port + count
+        return port
 
     async def _probe():
-        return _alloc()
+        return host
 
-    e._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: _alloc(**kw) if kw else _probe()
+    e._get_free_port_block.remote.side_effect = _alloc
+    e._get_node_ip.remote.side_effect = _probe
     return e
 
 

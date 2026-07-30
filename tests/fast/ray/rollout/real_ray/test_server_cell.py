@@ -167,7 +167,7 @@ class TestStopCellsRealKill:
 class TestStartEnginesRealAllocator:
     """Drive ``start_engines``'s inline port allocation (no stub) so that the
     actor → driver port round-trip via
-    ``_get_current_node_ip_and_free_port.remote`` actually runs."""
+    ``_get_free_port_block.remote`` actually runs."""
 
     async def test_real_allocator_assigns_distinct_ports_via_remote_calls(
         self,
@@ -202,14 +202,12 @@ class TestStartEnginesRealAllocator:
         ), f"port collision across engines: {ports_engine0} vs {ports_engine1}"
 
         # Real-allocator claim 3: the allocator actually called
-        # _get_current_node_ip_and_free_port on each cell's actor; this
+        # _get_free_port_block on each cell's actor; this
         # assertion catches a regression where the allocator silently fell
         # back to a stub or swallowed the .remote() calls.
         calls = ray.get(cells[0].primary_actor_handle.get_calls.remote())
         method_names = [name for name, _, _ in calls]
-        assert (
-            "_get_current_node_ip_and_free_port" in method_names
-        ), f"allocator never called the port-finder; saw {method_names}"
+        assert "_get_free_port_block" in method_names, f"allocator never called the port-finder; saw {method_names}"
 
         for handle in _all_actor_handles(cells):
             ray.kill(handle)
