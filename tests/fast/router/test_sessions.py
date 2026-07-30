@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import re
 import socket
 import uuid
 from contextlib import contextmanager
@@ -22,6 +21,9 @@ from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
+
+
+_INSTANCE_ID = "0123456789abcdef-0"
 
 
 def _create_session(url: str) -> str:
@@ -70,7 +72,7 @@ def router_env():
                 hf_checkpoint="Qwen/Qwen3-0.6B",
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
-                instance_id=uuid.uuid4().hex,
+                instance_id=_INSTANCE_ID,
                 pause_generation_mode="retract",
             )
             server_obj = SessionServer(config)
@@ -98,7 +100,7 @@ class TestSessionRoutes:
         second_body = second.json()
         assert first_body["status"] == "ok"
         assert second_body["status"] == "ok"
-        assert re.fullmatch(r"[0-9a-f]{32}", first_body["session_server_instance_id"])
+        assert first_body["session_server_instance_id"] == _INSTANCE_ID
         assert second_body["session_server_instance_id"] == first_body["session_server_instance_id"]
 
     def test_create_session(self, router_env):
@@ -617,19 +619,16 @@ def _serve_router(extra_args: dict | None = None):
         return ProcessResult(text="ok", finish_reason="stop")
 
     with with_mock_server(process_fn=process_fn) as backend:
-        args = SimpleNamespace(
-            miles_router_timeout=30,
+        config = make_session_server_config(
+            backend_url=backend.url,
+            timeout=30,
             hf_checkpoint="Qwen/Qwen3-0.6B",
-            chat_template_path=None,
             apply_chat_template_kwargs={"enable_thinking": False},
             tito_model="default",
-            sglang_speculative_algorithm=None,
-            trajectory_manager="linear_trajectory",
-            session_server_instance_id=uuid.uuid4().hex,
-            save_debug_trajectory_data=None,
+            instance_id=uuid.uuid4().hex,
             **({"pause_generation_mode": "retract"} | (extra_args or {})),
         )
-        server_obj = SessionServer(args, backend_url=backend.url)
+        server_obj = SessionServer(config)
         port = find_available_port(31000)
         server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
         server.start()
@@ -645,8 +644,8 @@ class TestUseAdditionR3Derivation:
 
     @pytest.mark.parametrize(("mode", "expected"), [("abort", True), ("in_place", True), ("retract", False)])
     def test_mode_mapping(self, mode, expected):
-        args = SimpleNamespace(hf_checkpoint=None, pause_generation_mode=mode)
-        assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is expected
+        config = make_session_server_config(hf_checkpoint=None, pause_generation_mode=mode)
+        assert SessionServer(config).use_addition_r3 is expected
 
 
 class TestAdditionR3RequestOffset:
