@@ -4,6 +4,8 @@ import sys
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, resolve_sglang_config
+from miles.rollout.session.config import compute_session_server_config
+from miles.rollout.session.ports import compute_num_session_server_ports
 from miles.router.config import compute_miles_router_config
 from miles.utils.workers.argv_utils import config_to_argv
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
@@ -25,18 +27,18 @@ def compute_router_pool_id(model_idx: int) -> str:
 
 def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> CommandWorkerSpec:
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
-        router_port = ctx.ports["primary"]
+        primary = ctx.self_addrs["primary"]
 
         if args.use_miles_router:
             assert not model_cfg.has_pd_disaggregation, "miles router does not support PD disaggregation."
-            router_config = compute_miles_router_config(args, host=ctx.host, port=router_port)
+            router_config = compute_miles_router_config(args, host=primary.host, port=primary.port)
             launch_argv = [sys.executable, "-m", "miles.router.router", *config_to_argv(router_config)]
         else:
             router_args = compute_sglang_router_args(
                 args,
-                host=ctx.host,
-                port=router_port,
-                prometheus_port=ctx.ports["prometheus"],
+                host=primary.host,
+                port=primary.port,
+                prometheus_port=ctx.self_addrs["prometheus"].port,
                 has_pd_disaggregation=model_cfg.has_pd_disaggregation,
             )
             logger.info(f"Launch router with args: {router_args}")
@@ -62,9 +64,38 @@ def _compute_router_primary_port_info(args, model_idx: int) -> PortInfo:
     return PortInfo(name="primary", static_port=args.sglang_router_port + model_idx)
 
 
-def specs_session_server(args) -> list[CommandWorkerSpec]:
+def spec_session_server(args) -> CommandWorkerSpec:
     _config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
-    return None  # TODO return real objects
+
+    def _compute_launch_command(ctx: LaunchCommandContext) -> str:
+        config = compute_session_server_config(
+            args,
+            host=ctx.self_addrs["primary"].host,
+            port=ctx.self_addrs["primary"].port,
+            # TODO: make the indexing it k8s native compatible
+            instance_id=compute_session_server_instance_id(args, ctx.cell_index),
+            backend_url=ctx.spec_addrs[compute_router_pool_id(0)][0]["primary"].addr,
+        )
+        launch_argv = [sys.executable, "-m", "miles.rollout.session.server", *config_to_argv(config)]
+        return shlex.join(launch_argv)
+
+    return CommandWorkerSpec(
+        name="session-server",
+        port_infos=[
+            PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+        ],
+        env_var=lambda: {},
+        scheduling=SchedulingSpec(
+            num_cells=compute_num_session_server_ports(args),
+            num_workers_per_cell=1,
+            num_gpus_per_worker=0,
+        ),
+        launch_command=_compute_launch_command,
+    )
+
+
+def compute_session_server_instance_id(args, instance_index: int) -> str:
+    return f"{args.run_uuid}-{instance_index}"
 
 
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:

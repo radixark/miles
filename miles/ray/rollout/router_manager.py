@@ -1,19 +1,21 @@
 import functools
 import logging
 import random
-import shlex
-import sys
 
 import ray
 
 from miles.backends.sglang_utils.sglang_config import ModelConfig
-from miles.ray.specs.inference import _compute_spec_router
-from miles.rollout.session.config import compute_session_server_config
+from miles.ray.specs.inference import (
+    _compute_spec_router,
+    compute_router_pool_id,
+    compute_session_server_instance_id,
+    spec_session_server,
+)
+from miles.rollout.session.ports import compute_num_session_server_ports, resolve_session_server_ports
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, is_port_available, wait_tcp_ready
-from miles.utils.workers.argv_utils import config_to_argv
 from miles.utils.workers.cell_launch import create_head_worker_actor
 from miles.utils.workers.command_actor import CommandActor
-from miles.utils.workers.worker_spec import LaunchCommandContext
+from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +32,12 @@ def start_router(args, model_idx: int, model_cfg: ModelConfig) -> tuple[str, int
     prometheus_port = find_available_port(random.randint(4000, 5000))
 
     spec = _compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
-    ports = dict(primary=router_port, prometheus=prometheus_port)
-    assert set(ports) == {info.name for info in spec.port_infos}
-    launch_command = spec.launch_command(LaunchCommandContext(host=router_ip, ports=ports))
+    self_addrs = dict(
+        primary=HostAndPort(host=router_ip, port=router_port),
+        prometheus=HostAndPort(host=router_ip, port=prometheus_port),
+    )
+    assert set(self_addrs) == {info.name for info in spec.port_infos}
+    launch_command = spec.launch_command(LaunchCommandContext(cell_index=0, self_addrs=self_addrs, spec_addrs={}))
 
     actor_handle = _launch_command_on_head(launch_command)
     wait_tcp_ready(
@@ -59,16 +64,6 @@ def _actor_is_alive(actor_handle: ray.actor.ActorHandle) -> bool:
         return False
 
 
-def _resolve_session_server_ports(start: int | None, workers: int) -> list[int]:
-    """Return the requested number of consecutive ports from the configured or auto-selected start."""
-    if workers < 1:
-        raise ValueError("--session-server-workers must be at least 1.")
-    # TODO(#1837): Refactor IP/port allocation; keep this naive for now.
-    if start is None:
-        start = find_available_port(random.randint(5000, 6000))
-    return list(range(start, start + workers))
-
-
 def start_session_server(args):
     """Start the standalone session servers when ``--use-session-server`` is set.
 
@@ -88,7 +83,8 @@ def start_session_server(args):
         args.session_server_ip = args.sglang_router_ip
 
     ip = args.session_server_ip
-    ports = _resolve_session_server_ports(args.session_server_port, args.session_server_workers)
+    ports = resolve_session_server_ports(getattr(args, "session_server_port", None))
+    assert len(ports) == compute_num_session_server_ports(args)
     for port in ports:
         if not is_port_available(port):
             raise RuntimeError(
@@ -98,20 +94,26 @@ def start_session_server(args):
     # The canonical driver-side value; rollout code picks from this list.
     args.session_server_ports = ports
 
-    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    spec = spec_session_server(args)
 
     # Spawn all children before waiting on any: each child pays the ~10s
     # transformers import, so N servers start in ~one import of wall-time.
     instance_ids: dict[int, str] = {}
     launches = []
     for instance_index, port in enumerate(ports):
-        instance_id = f"{args.run_uuid}-{instance_index}"
-        instance_ids[port] = instance_id
-        config = compute_session_server_config(
-            args, host=ip, port=port, instance_id=instance_id, backend_url=router_url
+        launch_cmd = spec.launch_command(
+            LaunchCommandContext(
+                cell_index=instance_index,
+                self_addrs=dict(primary=HostAndPort(host=ip, port=port)),
+                spec_addrs={
+                    compute_router_pool_id(0): [
+                        dict(primary=HostAndPort(host=args.sglang_router_ip, port=args.sglang_router_port))
+                    ]
+                },
+            )
         )
-        launch_argv = [sys.executable, "-m", "miles.rollout.session.server", *config_to_argv(config)]
-        launches.append((port, _launch_command_on_head(shlex.join(launch_argv))))
+        instance_ids[port] = compute_session_server_instance_id(args, instance_index)
+        launches.append((port, _launch_command_on_head(launch_cmd)))
     # The per-port map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
