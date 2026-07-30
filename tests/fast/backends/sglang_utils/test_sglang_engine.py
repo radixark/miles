@@ -23,7 +23,7 @@ def _plan(*, worker_type: str = "regular", args=None, addr_overrides: dict | Non
     addr_and_ports.update(addr_overrides or {})
     return compute_engine_launch_plan(
         args or make_engine_args(),
-        rank=0,
+        node_rank=0,
         worker_type=worker_type,
         base_gpu_id=0,
         sglang_overrides={},
