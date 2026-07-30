@@ -37,7 +37,7 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
 def _server_args(
     *,
     worker_type: str = "regular",
-    rank: int = 0,
+    node_rank: int = 0,
     dist_init_addr: str = "10.0.0.1:20000",
     args: Namespace | None = None,
     sglang_overrides: dict | None = None,
@@ -49,7 +49,7 @@ def _server_args(
     overrides = {"device": "cuda", **(sglang_overrides or {})}
     server_args_dict = _compute_server_args(
         args or _args(),
-        rank=rank,
+        node_rank=node_rank,
         dist_init_addr=dist_init_addr,
         nccl_port=20031,
         host="10.0.0.1",
@@ -115,7 +115,7 @@ class TestServerArgsToArgv:
     def test_a_multi_node_rank_roundtrips(self):
         """nnodes, node_rank and tp_size of a multi-node engine survive the boundary."""
         server_args = _server_args(
-            rank=1,
+            node_rank=1,
             num_gpus_per_engine=16,
             args=_args(rollout_num_gpus_per_engine=16),
         )

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
+from tests.fast.ray.rollout.conftest import fake_actor_handle, fake_engine, make_args
 
+import miles.ray.rollout.server_cell as server_cell_module
 from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer, format_cell_id, list_cell_ids
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+from miles.utils.test_utils.mock_sglang_engine import parse_cmd_flags
+from miles.utils.workers.addr_allocator import PortAllocator
 
 
 def _allocated_cell(num_nodes: int = 1, *, alive: bool = True, addressed: bool = True) -> ServerCell:
@@ -134,6 +139,46 @@ class TestServerCellApiCalls:
         client.check_weights.assert_awaited_once_with(
             action="report", allow_quant_error=True, selector="first", skip_list=["a"]
         )
+
+
+def _launch_command_flags(*, rank_offset: int, num_nodes: int) -> list[dict[str, Any]]:
+    num_gpus_per_engine: int = 8 * num_nodes
+    actors: list[MagicMock] = [fake_engine(host=f"10.0.0.{index + 1}", port_seed=30000) for index in range(num_nodes)]
+    for actor in actors:
+        actor.run.remote.side_effect = lambda **kwargs: asyncio.sleep(0)
+
+    cell = ServerCell(
+        args=make_args(
+            num_gpus_per_node=8,
+            sglang_pp_size=1,
+            sglang_ep_size=1,
+            multi_lora=False,
+            rollout_num_gpus_per_engine=num_gpus_per_engine,
+        ),
+        worker_type="regular",
+        cell_id="cell-1",
+        num_nodes=num_nodes,
+        num_gpus_per_engine=num_gpus_per_engine,
+        rank_offset=rank_offset,
+        pg=(None, [], list(range(8)) * num_nodes),
+    )
+
+    pending: list[MagicMock] = list(actors)
+    with (
+        patch.object(server_cell_module, "launch_sglang_ray_actor", side_effect=lambda **kwargs: pending.pop(0)),
+        patch.object(server_cell_module, "wait_server_healthy", new=AsyncMock()),
+    ):
+        asyncio.run(cell.start_engines(PortAllocator()))
+
+    return [parse_cmd_flags(actor.run.remote.call_args.kwargs["cmd"]) for actor in actors]
+
+
+class TestMultiNodeEngineNodeRank:
+    def test_the_second_two_node_cell_numbers_its_own_nodes_from_zero(self, patch_ray_get):
+        """--node-rank is cell-local, so the cell at rank_offset=2 launches node-ranks 0 and 1, not 2 and 3."""
+        flags = _launch_command_flags(rank_offset=2, num_nodes=2)
+        assert [entry["nnodes"] for entry in flags] == [2, 2]
+        assert [entry.get("node_rank", 0) for entry in flags] == [0, 1]
 
 
 def _addressed_cell(
