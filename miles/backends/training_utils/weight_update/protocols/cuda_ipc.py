@@ -7,7 +7,6 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
-from ray.actor import ActorHandle
 from sglang.srt.utils import MultiprocessingSerializer
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -63,7 +62,6 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
     def connect(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: ActorHandle | None,
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,

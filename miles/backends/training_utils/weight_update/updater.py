@@ -12,7 +12,6 @@ from collections.abc import Callable, Mapping, Sequence
 
 import torch
 import torch.distributed as dist
-from ray.actor import ActorHandle
 from tqdm import tqdm
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -75,13 +74,11 @@ class WeightUpdater:
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: ActorHandle | None,
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         self.protocol.connect(
             rollout_engines,
-            rollout_engine_lock,
             engine_gpu_counts,
             engine_gpu_offsets,
             self.parallel_state,

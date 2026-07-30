@@ -1,20 +1,20 @@
 import socket
-import time
 from argparse import Namespace
 from collections.abc import Sequence
 from concurrent.futures import Future
+from contextlib import AbstractContextManager, nullcontext
 
 import ray
 import torch
 import torch.distributed as dist
-from ray.actor import ActorHandle
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.parallel import ParallelState, get_parallel_state
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils import async_utils
+from miles.utils.distributed_lock import create_world_ticket_lock
 from miles.utils.distributed_utils import init_process_group
 
 
@@ -29,11 +29,19 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
         self._model_update_groups = None
+        parallel_state = get_parallel_state()
+        self._engine_lock: AbstractContextManager = (
+            create_world_ticket_lock(
+                prefix="miles/weight_update",
+                participates=parallel_state.intra_dp_cp.rank == 0 and parallel_state.tp.rank == 0,
+            )
+            if parallel_state.pp.size > 1
+            else nullcontext()
+        )
 
     def connect(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: ActorHandle | None,
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,
@@ -46,7 +54,6 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         self.rollout_engines = rollout_engines
         self._connection_stale = False
         self._selector = selector
-        self.rollout_engine_lock = rollout_engine_lock
         self._engine_gpu_counts = engine_gpu_counts
 
         # One sender per replica set; one NCCL group (sender + all engines) per shard.
@@ -63,10 +70,8 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
             )
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
-        """Serialize NCCL broadcasts and always release the rollout lock."""
-        while not ray.get(self.rollout_engine_lock.acquire.remote()):
-            time.sleep(0.1)
-        try:
+        """Lock → broadcast → clear → unlock. Lock prevents NCCL deadlock."""
+        with self._engine_lock:
             futures = update_weights_from_distributed(
                 self.group_name,
                 self._model_update_groups,
@@ -76,10 +81,6 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
             )
             async_utils.wait_futures(futures)
             bucket.clear()
-        finally:
-            # Leaking this lock makes the next weight sync poll forever, so the
-            # release must run after both successful and failed broadcasts.
-            ray.get(self.rollout_engine_lock.release.remote())
 
 
 def connect_rollout_engines_from_distributed(

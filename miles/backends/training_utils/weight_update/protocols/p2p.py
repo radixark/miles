@@ -14,7 +14,6 @@ from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
 from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
-from ray.actor import ActorHandle
 from sglang.srt.server_args import ServerArgs
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -124,7 +123,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
     def connect(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: ActorHandle | None,
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,
@@ -143,7 +141,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
         """
         self.rollout_engines = rollout_engines
         self._connection_stale = False
-        self.rollout_engine_lock = rollout_engine_lock
 
         self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
 

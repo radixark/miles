@@ -15,7 +15,6 @@ import safetensors.numpy
 import torch
 import torch.distributed as dist
 import zstandard
-from ray.actor import ActorHandle
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
@@ -102,16 +101,15 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     def connect(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: ActorHandle | None,
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
         selector: str,
     ) -> None:
-        # No NCCL groups: the transport is the shared filesystem. The rollout_engine_lock the
-        # NCCL path uses isn't needed either — the engine-side apply is serialized by a per-host
-        # flock behind /pull_weights.
+        # No NCCL groups: the transport is the shared filesystem. The engine lock the NCCL path
+        # uses isn't needed either — the engine-side apply is serialized by a per-host flock
+        # behind /pull_weights.
         self.rollout_engines = rollout_engines
         self._connection_stale = False
         self.group_name = "miles-disk-delta"
