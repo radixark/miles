@@ -18,6 +18,7 @@ class DummyTrainActor:
         self._calls: list[tuple[str, tuple, dict]] = []
         self._fail_methods: set[str] = set()
         self._train_return_value: Any = TrainStepOutcome.NORMAL
+        self._async_save_complete = True
         self._heartbeat = SimpleHeartbeat()
         self._heartbeat.bump()
         self._heartbeat_fail: bool = False
@@ -63,6 +64,13 @@ class DummyTrainActor:
 
     def save_model(self, *args: Any, **kwargs: Any) -> None:
         self._record("save_model", args, kwargs)
+
+    def set_async_save_complete(self, complete: bool) -> None:
+        self._async_save_complete = complete
+
+    def finalize_async_save(self, *args: Any, **kwargs: Any) -> bool:
+        self._record("finalize_async_save", args, kwargs)
+        return self._async_save_complete
 
     def update_weights(self) -> None:
         self._record("update_weights", (), {})
