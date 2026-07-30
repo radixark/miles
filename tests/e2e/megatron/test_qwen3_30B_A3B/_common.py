@@ -210,12 +210,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         misc_args += "--megatron-to-hf-mode bridge "
 
     if case.fully_async:
-        misc_args += (
-            "--rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn "
-            # FullyAsyncRolloutFn does not serve eval; it would otherwise be inherited
-            # from --rollout-function-path.
-            "--eval-function-path miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn "
-        )
+        misc_args += "--fully-async "
 
     if case.use_mooncake:
         misc_args += U.get_mooncake_object_store_args()

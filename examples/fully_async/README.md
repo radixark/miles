@@ -27,7 +27,7 @@ Started fully-async rollout worker
 * Aborted or too-stale groups are recycled back into the data source.
 
 ## Limitations
-* No evaluation mode (`--eval-function-path` must point at the standard `InferenceRolloutFn`).
+* No evaluation mode (`--fully-async` points `--eval-function-path` at the standard `InferenceRolloutFn` unless you set it).
 * Ordering is best effort (sorted at the end by index).
 
 ## Config Differences (3 Key Points)
@@ -35,10 +35,7 @@ To enable the fully async pattern there are only three changes compared to a nor
 
 1. Use the async training driver: `train_async.py` (not `train.py`).
 2. Enable the class-based rollout API: `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`.
-3. Set the rollout function path:
-	```bash
-	--rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
-	```
+3. Pass `--fully-async`.
 
 Why is it still "fully" async although `train_async.py` itself schedules rollouts step‑by‑step?
 

@@ -53,12 +53,12 @@ First rollout sample: ...
 
 ## What changes vs. the default recipe
 
-Just two flags:
+Just two changes:
 
 ```diff
 - python3 train.py ...
-+ python3 train_async.py ...
-+   --rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn
++ MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 python3 train_async.py ...
++   --fully-async
 ```
 
 Everything else — model args, optimizer, GRPO config — stays the same.
@@ -174,9 +174,9 @@ check GPU utilization.
 
 ## Limitations
 
-* **No evaluation mode.** `FullyAsyncRolloutFn` raises on eval; set
-  `--eval-function-path` to the standard
-  `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn`.
+* **No evaluation mode.** `FullyAsyncRolloutFn` raises on eval; `--fully-async`
+  therefore points `--eval-function-path` at the standard inference rollout unless you
+  set it yourself.
 * **Requires `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`.** Class-based rollout functions
   only load on the new rollout API.
 * **Best-effort ordering.** Samples are sorted by index at drain time, but exact-order

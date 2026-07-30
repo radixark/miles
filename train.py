@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 async def train(args):
+    assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
     # allocate the GPUs
