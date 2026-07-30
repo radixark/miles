@@ -1,11 +1,14 @@
 import logging
+import os
 import shlex
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, resolve_sglang_config
+from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.ports import compute_num_session_server_ports
 from miles.router.config import compute_miles_router_config
+from miles.utils import dumper_utils
 from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
 
@@ -108,3 +111,25 @@ def compute_session_server_instance_id(args, instance_index: int) -> str:
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
     _config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
     return None  # TODO return real objects
+
+
+def compute_inference_engine_env_vars(args) -> dict[str, str]:
+    env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
+        key: os.environ.get(key, default_val)
+        for key, default_val in {
+            # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
+            "NVSHMEM_DISABLE_NCCL": "1",
+            "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
+            "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
+            "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
+            "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
+            "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
+                "0" if args.colocate and args.rollout_num_gpus_per_engine > 1 else "1"
+            ),
+            "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
+            "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
+            "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+        }.items()
+    }
+    env_vars.update(dumper_utils.get_sglang_env(args))
+    return env_vars
