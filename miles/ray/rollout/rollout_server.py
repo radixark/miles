@@ -33,8 +33,6 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     megatron_num_gpus = _compute_megatron_num_gpus(args)
 
     for model_idx, model_cfg in enumerate(config.models):
-        model_cfg.resolve(args)
-
         has_pd = model_cfg.has_pd_disaggregation
         router_ip, router_port = start_router(args, has_pd_disaggregation=has_pd, force_new=(model_idx > 0))
 
