@@ -1,20 +1,19 @@
+import functools
 import logging
 import random
+import shlex
 import sys
 import uuid
+
+import ray
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
-from miles.utils.http_utils import (
-    _wrap_ipv6,
-    find_available_port,
-    get_host_info,
-    is_port_available,
-    wait_for_server_ready,
-)
-from miles.utils.workers import process_utils
+from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, is_port_available, wait_tcp_ready
 from miles.utils.workers.argv_utils import config_to_argv
+from miles.utils.workers.cell_launch import create_head_worker_actor
+from miles.utils.workers.command_actor import CommandActor
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +64,29 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
             f"Run 'pkill -9 python' to kill it, then retry."
         )
 
-    process = process_utils.launch_bound_subprocess(launch_argv, envs={})
-    wait_for_server_ready(router_ip, router_port, process, timeout=_SERVER_READY_TIMEOUT_SECS)
+    actor_handle = _launch_command_on_head(launch_argv)
+    wait_tcp_ready(
+        router_ip,
+        router_port,
+        is_alive=functools.partial(_actor_is_alive, actor_handle),
+        timeout=_SERVER_READY_TIMEOUT_SECS,
+    )
     logger.info(f"Router launched at {router_ip}:{router_port}")
     return router_ip, router_port
+
+
+def _launch_command_on_head(launch_argv: list[str]) -> ray.actor.ActorHandle:
+    actor_handle = create_head_worker_actor(worker_cls=CommandActor, env_vars={}, num_cpus=0.2, ctor_kwargs={})
+    actor_handle.run.remote(cmd=shlex.join(launch_argv), envs={})
+    return actor_handle
+
+
+def _actor_is_alive(actor_handle: ray.actor.ActorHandle) -> bool:
+    try:
+        ray.get(actor_handle._get_node_ip.remote(), timeout=30)
+        return True
+    except Exception:
+        return False
 
 
 def _resolve_session_server_ports(start: int | None, workers: int) -> list[int]:
@@ -115,7 +133,7 @@ def start_session_server(args):
     # Spawn all children before waiting on any: each child pays the ~10s
     # transformers import, so N servers start in ~one import of wall-time.
     instance_ids: dict[int, str] = {}
-    processes = []
+    launches = []
     for port in ports:
         instance_id = uuid.uuid4().hex
         instance_ids[port] = instance_id
@@ -123,10 +141,12 @@ def start_session_server(args):
             args, host=ip, port=port, instance_id=instance_id, backend_url=router_url
         )
         launch_argv = [sys.executable, "-m", "miles.rollout.session.server", *config_to_argv(config)]
-        processes.append((port, process_utils.launch_bound_subprocess(launch_argv, envs={})))
+        launches.append((port, _launch_command_on_head(launch_argv)))
     # The per-port map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
-    for port, process in processes:
-        wait_for_server_ready(ip, port, process, timeout=_SERVER_READY_TIMEOUT_SECS)
+    for port, actor_handle in launches:
+        wait_tcp_ready(
+            ip, port, is_alive=functools.partial(_actor_is_alive, actor_handle), timeout=_SERVER_READY_TIMEOUT_SECS
+        )
     logger.info(f"Session servers launched at {ip}, ports {ports} ({len(ports)} instances)")
