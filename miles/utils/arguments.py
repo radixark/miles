@@ -1381,6 +1381,39 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Weighting scheme for top-k OPD token rewards.",
             )
             parser.add_argument(
+                "--opd-top-k-scoring-block-size",
+                type=int,
+                default=32,
+                help=(
+                    "Response positions per opposite-model arbitrary-ID scoring request for "
+                    "only-student and only-teacher top-k OPD. Smaller values reduce the "
+                    "candidate Cartesian product; set to 0 to use the legacy response-wide union."
+                ),
+            )
+            parser.add_argument(
+                "--opd-scoring-timeout",
+                type=float,
+                default=600.0,
+                help=("Total deadline in seconds for one external OPD scoring request, " "shared across its retries."),
+            )
+            parser.add_argument(
+                "--opd-scoring-max-inflight",
+                type=int,
+                default=8,
+                help=(
+                    "Maximum concurrent external OPD scoring requests per process. " "Set to 0 to disable the bound."
+                ),
+            )
+            parser.add_argument(
+                "--opd-scoring-retries",
+                type=int,
+                default=1,
+                help=(
+                    "Retries after a failed external OPD scoring request or a mixed-version "
+                    "blocked student-scoring attempt. Set to 0 to fail fast."
+                ),
+            )
+            parser.add_argument(
                 "--opd-teacher-load",
                 type=str,
                 default=None,
@@ -2549,6 +2582,14 @@ def miles_validate_args(args):
             raise ValueError("--opd-log-prob-top-k must be non-negative.")
         if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
             raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
+        if args.opd_top_k_scoring_block_size < 0:
+            raise ValueError("--opd-top-k-scoring-block-size must be non-negative.")
+        if args.opd_scoring_timeout <= 0:
+            raise ValueError("--opd-scoring-timeout must be positive.")
+        if args.opd_scoring_max_inflight < 0:
+            raise ValueError("--opd-scoring-max-inflight must be non-negative.")
+        if args.opd_scoring_retries < 0:
+            raise ValueError("--opd-scoring-retries must be non-negative.")
 
         if args.opd_type == "megatron":
             if args.opd_teacher_load is None:

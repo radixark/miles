@@ -46,6 +46,10 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 source "/root/miles/scripts/models/qwen3-8B.sh"
 
+OPD_TOP_K=${OPD_TOP_K:-16}
+OPD_TOP_K_STRATEGY=${OPD_TOP_K_STRATEGY:-only-student}
+OPD_TOP_K_SCORING_BLOCK_SIZE=${OPD_TOP_K_SCORING_BLOCK_SIZE:-32}
+
 
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-8B
@@ -106,8 +110,9 @@ GRPO_ARGS=(
    --use-opd
    --opd-type sglang
    --opd-kl-coef 1.0
-   --opd-log-prob-top-k 16
-   --opd-top-k-strategy only-student
+   --opd-log-prob-top-k "${OPD_TOP_K}"
+   --opd-top-k-strategy "${OPD_TOP_K_STRATEGY}"
+   --opd-top-k-scoring-block-size "${OPD_TOP_K_SCORING_BLOCK_SIZE}"
    --opd-reward-weight-mode student_p
    --use-kl-loss
    --kl-loss-coef 0.00
@@ -187,7 +192,6 @@ pkill -9 python
 sleep 3
 pkill -9 ray
 pkill -9 python
-
 
 
 

@@ -152,6 +152,37 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     assert args.recompute_logprobs_via_prefill is True
 
 
+def test_opd_top_k_scoring_block_size_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    default_args = parser.parse_args(REQUIRED_ARGS)
+    configured_args = parser.parse_args(["--opd-top-k-scoring-block-size", "8"] + REQUIRED_ARGS)
+
+    assert default_args.opd_top_k_scoring_block_size == 32
+    assert configured_args.opd_top_k_scoring_block_size == 8
+
+
+def test_opd_top_k_scoring_block_size_must_be_non_negative():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--use-opd",
+            "--opd-type",
+            "sglang",
+            "--opd-top-k-scoring-block-size",
+            "-1",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(ValueError, match="--opd-top-k-scoring-block-size must be non-negative"):
+        miles_validate_args(args)
+
+
 def test_sglang_parallel_sizes_keep_server_args_destinations():
     parser = add_sglang_arguments(argparse.ArgumentParser())
     args = parser.parse_args(
