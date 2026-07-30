@@ -10,8 +10,8 @@ import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url, format_v6_uri
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
+from miles.backends.sglang_utils.sglang_engine import build_server_url, compute_engine_launch_plan, format_v6_uri
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.cell_state import (
@@ -24,6 +24,7 @@ from miles.ray.rollout.cell_state import (
 )
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import dumper_utils
+from miles.utils.workers.command_actor import CommandActor
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +109,6 @@ class ServerCell:
                 global_rank=self.rank_offset + local_index,
                 gpu_index=self.gpu_offset + local_index * num_gpu_per_engine,
                 worker_type=self.worker_type,
-                sglang_overrides=self.sglang_overrides,
-                num_gpus_per_engine=self.num_gpus_per_engine,
             )
             for local_index in range(self.num_nodes)
         ]
@@ -151,11 +150,38 @@ class ServerCell:
             ]
         )
 
+        if env_report := self.args.env_report:
+            await asyncio.gather(
+                *[
+                    actor._collect_env_report.remote(role="rollout", rank=rank, partial_env_report=env_report)
+                    for rank, actor in zip(global_ranks, actor_handles, strict=True)
+                ]
+            )
+
+        plans = {
+            rank: compute_engine_launch_plan(
+                self.args,
+                rank=rank,
+                worker_type=self.worker_type,
+                base_gpu_id=self.engine_gpu_ids[local_index][0],
+                sglang_overrides=self.sglang_overrides,
+                num_gpus_per_engine=self.num_gpus_per_engine,
+                addr_and_ports=addr_and_ports[rank],
+            )
+            for local_index, rank in enumerate(global_ranks)
+        }
+
         await asyncio.gather(
             *[
-                actor.init.remote(**addr_and_ports[global_rank])
+                actor.run.remote(cmd=plans[global_rank].cmd, envs={})
                 for global_rank, actor in zip(global_ranks, actor_handles, strict=True)
             ]
+        )
+
+        await wait_server_healthy(
+            server_url=self.addr_info.server_url,
+            api_key=plans[global_ranks[0]].api_key,
+            is_process_alive=functools.partial(_engine_actor_is_alive, self.primary_actor_handle),
         )
 
     async def start(
@@ -282,14 +308,11 @@ def launch_sglang_ray_actor(
     global_rank: int,
     gpu_index: int,
     worker_type: str,
-    sglang_overrides: dict,
-    num_gpus_per_engine: int,
 ) -> ray.actor.ActorHandle:
-    pg, reordered_bundle_indices, reordered_gpu_ids = pg
+    pg, reordered_bundle_indices, _ = pg
 
     num_gpus = 0.2
     num_cpus = num_gpus
-    base_gpu_id = int(reordered_gpu_ids[gpu_index])
 
     scheduling_strategy = PlacementGroupSchedulingStrategy(
         placement_group=pg,
@@ -318,7 +341,7 @@ def launch_sglang_ray_actor(
     }
     env_vars.update(dumper_utils.get_sglang_env(args))
 
-    RolloutRayActor = ray.remote(SGLangEngine)
+    RolloutRayActor = ray.remote(CommandActor)
     return RolloutRayActor.options(
         num_cpus=num_cpus,
         num_gpus=num_gpus,
@@ -326,11 +349,12 @@ def launch_sglang_ray_actor(
         runtime_env={
             "env_vars": env_vars,
         },
-    ).remote(
-        args,
-        rank=global_rank,
-        worker_type=worker_type,
-        base_gpu_id=base_gpu_id,
-        sglang_overrides=sglang_overrides,
-        num_gpus_per_engine=num_gpus_per_engine,
-    )
+    ).remote()
+
+
+def _engine_actor_is_alive(actor_handle: ray.actor.ActorHandle) -> bool:
+    try:
+        ray.get(actor_handle._get_node_ip.remote(), timeout=30)
+        return True
+    except Exception:
+        return False
