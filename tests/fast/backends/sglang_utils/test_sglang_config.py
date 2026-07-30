@@ -93,6 +93,36 @@ class TestYamlShapeValidation:
         with pytest.raises((AssertionError, ValueError), match="sglang|models"):
             _resolve_yaml(tmp_path, "other_key:\n  - name: actor\n", rollout_num_gpus=8)
 
+    def test_an_unknown_model_key_is_rejected(self, tmp_path):
+        """Typos at the model level fail parsing instead of being silently dropped."""
+        with pytest.raises(ValueError, match="typo_key"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    typo_key: 1\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_giving_both_group_spellings_is_rejected(self, tmp_path):
+        """server_groups plus engine_groups on one model is ambiguous and fails parsing."""
+        with pytest.raises(ValueError, match="engine_groups"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "    engine_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n",
+                rollout_num_gpus=8,
+            )
+
 
 class TestPrefillNumServersPath:
     def test_prefill_consuming_all_gpus_is_rejected(self):
