@@ -235,7 +235,12 @@ class DeepSeekV4Attention(MegatronModule):
         x = einops.rearrange(hidden_states, "s b d -> b s d")
 
         bsz, seqlen_local, _ = x.size()
-        cu_seqlens = packed_seq_params.cu_seqlens_q if packed_seq_params is not None else None
+        # Any other packed layout keeps the BSHD path; only thd carries segment boundaries.
+        cu_seqlens = (
+            packed_seq_params.cu_seqlens_q
+            if packed_seq_params is not None and packed_seq_params.qkv_format == "thd"
+            else None
+        )
         rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size, x.device
