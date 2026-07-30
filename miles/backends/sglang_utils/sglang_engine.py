@@ -116,11 +116,7 @@ class SGLangEngine(NodeProbeMixin):
                 partial_env_report=env_report,
             )
 
-        host = host or get_host_info()[1]
-
-        host = format_v6_uri(host)
-        ip_part, port_part = dist_init_addr.rsplit(":", 1)
-        dist_init_addr = f"{format_v6_uri(ip_part)}:{port_part}"
+        host = host or format_v6_uri(get_host_info()[1])
 
         server_args_dict = _compute_server_args(
             self.args,
