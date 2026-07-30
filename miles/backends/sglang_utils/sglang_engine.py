@@ -9,11 +9,11 @@ from sglang.srt.utils import kill_process_tree
 
 from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
 from miles.backends.sglang_utils.sglang_api_client import wait_server_healthy
-from miles.ray.ray_actor import RayActor
 from miles.utils import async_utils
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_base_cpu_backup_enabled, lora_rollout_enabled
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,7 @@ def build_server_url(host: str, port: int) -> str:
     return f"http://{format_v6_uri(host)}:{port}"
 
 
-class SGLangEngine(RayActor):
+class SGLangEngine(NodeProbeMixin):
     def __init__(
         self,
         args,
