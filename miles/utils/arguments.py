@@ -204,6 +204,27 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Whether to enable true-on-policy mode.",
             )
             parser.add_argument(
+                "--true-on-policy-logprob-dtype",
+                type=str,
+                choices=["training", "fp32"],
+                default="training",
+                help=(
+                    "Dtype used by true-on-policy log-probability scoring. "
+                    "'training' preserves the existing BF16/FP16 path; 'fp32' "
+                    "keeps logits in FP32 through log_softmax."
+                ),
+            )
+            parser.add_argument(
+                "--true-on-policy-logsoftmax-backend",
+                type=str,
+                choices=["torch", "sglang_batch_invariant"],
+                default="torch",
+                help=(
+                    "Log-softmax backend used by true-on-policy scoring. "
+                    "The SGLang batch-invariant backend is opt-in and requires FP32 scoring."
+                ),
+            )
+            parser.add_argument(
                 "--recompute-logprobs-via-prefill",
                 action="store_true",
                 default=False,
@@ -2466,6 +2487,18 @@ def miles_validate_args(args):
 
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
+
+    true_on_policy_logprob_dtype = getattr(args, "true_on_policy_logprob_dtype", "training")
+    true_on_policy_logsoftmax_backend = getattr(args, "true_on_policy_logsoftmax_backend", "torch")
+    if (
+        true_on_policy_logprob_dtype != "training" or true_on_policy_logsoftmax_backend != "torch"
+    ) and not args.true_on_policy_mode:
+        raise ValueError("Non-default true-on-policy log-probability scoring options require --true-on-policy-mode")
+    if true_on_policy_logsoftmax_backend == "sglang_batch_invariant" and true_on_policy_logprob_dtype != "fp32":
+        raise ValueError(
+            "--true-on-policy-logsoftmax-backend=sglang_batch_invariant requires "
+            "--true-on-policy-logprob-dtype=fp32"
+        )
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(

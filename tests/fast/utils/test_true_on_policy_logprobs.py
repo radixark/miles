@@ -1,5 +1,7 @@
+import pytest
 import torch
 
+import miles.backends.training_utils.loss_hub.math_utils as math_utils
 from miles.backends.training_utils.loss_hub.math_utils import (
     _calculate_log_probs_and_entropy_true_on_policy,
     _prepare_true_on_policy_full_logits,
@@ -29,8 +31,8 @@ def test_true_on_policy_logprobs_tp1_truncate_after_real_vocab():
     expected_log_probs = expected_log_probs_full.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
     expected_entropy = -(expected_log_probs_full.exp() * expected_log_probs_full).sum(dim=-1)
 
-    torch.testing.assert_close(log_probs, expected_log_probs)
-    torch.testing.assert_close(entropy, expected_entropy)
+    assert torch.equal(log_probs, expected_log_probs)
+    assert torch.equal(entropy, expected_entropy)
 
 
 def test_true_on_policy_fake_tp_vocab_gather_truncates_before_log_softmax():
@@ -64,6 +66,97 @@ def test_true_on_policy_fake_tp_vocab_gather_truncates_before_log_softmax():
 
     torch.testing.assert_close(gathered_logits, expected_full_logits)
     torch.testing.assert_close(log_probs, expected_selected)
+
+
+@pytest.mark.parametrize("transport_dtype", [torch.bfloat16, torch.float16])
+def test_fp32_batch_invariant_backend_truncates_before_softmax_and_casts_selected_after_gather(
+    monkeypatch,
+    transport_dtype,
+):
+    seen = {}
+
+    def fake_batch_invariant_log_softmax(input: torch.Tensor, dim: int = -1) -> torch.Tensor:
+        seen["shape"] = input.shape
+        seen["dtype"] = input.dtype
+        return torch.log_softmax(input, dim=dim)
+
+    monkeypatch.setattr(
+        math_utils,
+        "_load_batch_invariant_log_softmax",
+        lambda: fake_batch_invariant_log_softmax,
+    )
+
+    logits = torch.tensor(
+        [
+            [5.0, 1.0, -2.0, 0.0, 50.0, 60.0],
+            [0.0, 3.0, -4.0, 1.0, 70.0, 80.0],
+        ],
+        dtype=torch.float32,
+        requires_grad=True,
+    )
+    tokens = torch.tensor([0, 3], dtype=torch.long)
+
+    log_probs, entropy = _calculate_log_probs_and_entropy_true_on_policy(
+        logits,
+        tokens,
+        None,
+        with_entropy=True,
+        vocab_size=4,
+        logsoftmax_backend="sglang_batch_invariant",
+        logprob_output_dtype=transport_dtype,
+    )
+
+    expected_full = torch.log_softmax(logits[:, :4], dim=-1)
+    expected_selected = expected_full.gather(dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
+    expected_entropy = -(expected_full.exp() * expected_full).sum(dim=-1)
+
+    assert seen == {"shape": torch.Size([2, 4]), "dtype": torch.float32}
+    assert log_probs.dtype == transport_dtype
+    assert entropy.dtype == torch.float32
+    torch.testing.assert_close(log_probs.float(), expected_selected, atol=4e-3, rtol=4e-3)
+    torch.testing.assert_close(entropy, expected_entropy)
+
+    (log_probs.float().sum() + entropy.sum()).backward()
+    assert logits.grad is not None
+    assert torch.isfinite(logits.grad).all()
+    assert torch.count_nonzero(logits.grad) > 0
+
+
+def test_batch_invariant_backend_fails_closed_for_non_fp32_logits():
+    logits = torch.randn(2, 4, dtype=torch.bfloat16)
+    tokens = torch.tensor([0, 1], dtype=torch.long)
+
+    try:
+        _calculate_log_probs_and_entropy_true_on_policy(
+            logits,
+            tokens,
+            None,
+            logsoftmax_backend="sglang_batch_invariant",
+        )
+    except ValueError as exc:
+        assert "requires FP32 logits" in str(exc)
+    else:
+        raise AssertionError("Expected non-FP32 batch-invariant scoring to fail")
+
+
+def test_empty_fp32_scoring_preserves_entropy_dtype_and_selected_transport_dtype():
+    logits = torch.empty(0, 4, dtype=torch.float32)
+    tokens = torch.empty(0, dtype=torch.long)
+
+    log_probs, entropy = _calculate_log_probs_and_entropy_true_on_policy(
+        logits,
+        tokens,
+        None,
+        with_entropy=True,
+        logsoftmax_backend="sglang_batch_invariant",
+        logprob_output_dtype=torch.float16,
+    )
+
+    assert log_probs.shape == (0,)
+    assert log_probs.dtype == torch.float16
+    assert entropy is not None
+    assert entropy.shape == (0,)
+    assert entropy.dtype == torch.float32
 
 
 def test_true_on_policy_replicated_loss_gather_backward_splits_without_tp_sum():

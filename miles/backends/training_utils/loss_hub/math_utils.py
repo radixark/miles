@@ -18,6 +18,14 @@ from miles.backends.training_utils.parallel import get_parallel_state
 _LOG_RATIO_EXP_CLAMP = 20.0
 
 
+def _load_batch_invariant_log_softmax():
+    # Keep registration of the torch.library custom op off the default scorer
+    # import path. This capability is optional and requires a recent PyTorch.
+    from miles.backends.training_utils.loss_hub import batch_invariant_log_softmax
+
+    return batch_invariant_log_softmax.batch_invariant_log_softmax
+
+
 def _safe_clamp_log_ratio(log_ratio: torch.Tensor) -> torch.Tensor:
     log_ratio = torch.nan_to_num(
         log_ratio.float(),
@@ -941,6 +949,8 @@ def calculate_log_probs_and_entropy(
     chunk_size: int = -1,
     true_on_policy: bool = False,
     vocab_size: int | None = None,
+    true_on_policy_logsoftmax_backend: str = "torch",
+    true_on_policy_logprob_output_dtype: torch.dtype | None = None,
 ):
     if true_on_policy:
         return _calculate_log_probs_and_entropy_true_on_policy(
@@ -950,6 +960,8 @@ def calculate_log_probs_and_entropy(
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
             vocab_size=vocab_size,
+            logsoftmax_backend=true_on_policy_logsoftmax_backend,
+            logprob_output_dtype=true_on_policy_logprob_output_dtype,
         )
 
     logits = logits.contiguous()
@@ -998,6 +1010,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     with_entropy: bool = False,
     entropy_requires_grad: bool = True,
     vocab_size: int | None = None,
+    logsoftmax_backend: str = "torch",
+    logprob_output_dtype: torch.dtype | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """True-on-policy log-prob and entropy computation matching SGLang's scoring contract.
 
@@ -1011,19 +1025,34 @@ def _calculate_log_probs_and_entropy_true_on_policy(
             without attaching it to the autograd graph.
         vocab_size: Real tokenizer vocab size. If provided, padded logits are
             truncated after the full-vocab gather and before ``log_softmax``.
+        logsoftmax_backend: ``torch`` for the existing scorer or
+            ``sglang_batch_invariant`` for SGLang's FP32 batch-invariant kernel.
+        logprob_output_dtype: Optional transport dtype applied only to the
+            selected-token log-probability after the full-vocabulary softmax
+            and gather. Entropy remains in the scoring dtype.
 
     Returns:
         Tuple of ``(log_probs, entropy)`` where *log_probs* has shape ``[R]``
         and *entropy* has shape ``[R]`` or is ``None``.
     """
+    if logsoftmax_backend not in ("torch", "sglang_batch_invariant"):
+        raise ValueError(f"Unsupported true-on-policy log-softmax backend: {logsoftmax_backend!r}")
+    if logsoftmax_backend == "sglang_batch_invariant" and logits.dtype != torch.float32:
+        raise ValueError(f"sglang_batch_invariant log-softmax requires FP32 logits, got {logits.dtype}")
+
     if logits.size(0) == 0:
         log_prob = logits.new_zeros((0,))
+        if logprob_output_dtype is not None:
+            log_prob = log_prob.to(logprob_output_dtype)
         entropy = logits.new_zeros((0,)) if with_entropy else None
         return log_prob, entropy
 
     full_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
     _maybe_dump_top_logprob_backward("full_logits", full_logits)
-    log_probs_full = torch.log_softmax(full_logits, dim=-1)
+    if logsoftmax_backend == "torch":
+        log_probs_full = torch.log_softmax(full_logits, dim=-1)
+    else:
+        log_probs_full = _load_batch_invariant_log_softmax()(full_logits, dim=-1)
     _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
     log_prob = torch.gather(log_probs_full, dim=-1, index=tokens.unsqueeze(-1)).squeeze(-1)
     _maybe_dump_top_logprob_backward("log_prob", log_prob)
@@ -1033,5 +1062,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         entropy_log_probs = log_probs_full if entropy_requires_grad else log_probs_full.detach()
         probs = entropy_log_probs.exp()
         entropy = -(probs * entropy_log_probs).sum(dim=-1)
+
+    if logprob_output_dtype is not None:
+        log_prob = log_prob.to(logprob_output_dtype)
 
     return log_prob, entropy

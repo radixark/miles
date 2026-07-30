@@ -52,9 +52,16 @@ def get_responses(
         assert max_seq_lens is not None
         logits = logits.view(-1, logits.size(-1))
 
-    if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
+    true_on_policy_logprob_dtype = getattr(args, "true_on_policy_logprob_dtype", "training")
+    if true_on_policy_logprob_dtype not in ("training", "fp32"):
+        raise ValueError(f"Unsupported true-on-policy log-probability dtype: {true_on_policy_logprob_dtype!r}")
+    is_policy_logits = logits.size(-1) > 1
+    if args.true_on_policy_mode and is_policy_logits and true_on_policy_logprob_dtype == "fp32":
+        logits = logits.to(torch.float32)
+
+    if is_policy_logits and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
         logits = logits.div(args.rollout_temperature)
-    if args.true_on_policy_mode:
+    if args.true_on_policy_mode and (not is_policy_logits or true_on_policy_logprob_dtype == "training"):
         if getattr(args, "bf16", False):
             logits = logits.to(torch.bfloat16)
         elif getattr(args, "fp16", False):
@@ -167,6 +174,15 @@ def get_log_probs_and_entropy(
     parallel_state = get_parallel_state()
     log_probs_list = []
     entropy_list = []
+    true_on_policy_logprob_dtype = getattr(args, "true_on_policy_logprob_dtype", "training")
+    true_on_policy_logsoftmax_backend = getattr(args, "true_on_policy_logsoftmax_backend", "torch")
+    true_on_policy_logprob_output_dtype = None
+    if true_on_policy_logprob_dtype == "fp32":
+        if getattr(args, "bf16", False):
+            true_on_policy_logprob_output_dtype = torch.bfloat16
+        elif getattr(args, "fp16", False):
+            true_on_policy_logprob_output_dtype = torch.float16
+
     for logits_chunk, tokens_chunk in get_responses(
         logits,
         args=args,
@@ -184,6 +200,8 @@ def get_log_probs_and_entropy(
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
             vocab_size=getattr(args, "vocab_size", None),
+            true_on_policy_logsoftmax_backend=true_on_policy_logsoftmax_backend,
+            true_on_policy_logprob_output_dtype=true_on_policy_logprob_output_dtype,
         )
 
         log_probs_list.append(log_prob.squeeze(-1))

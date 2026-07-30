@@ -152,6 +152,61 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     assert args.recompute_logprobs_via_prefill is True
 
 
+def _parse_true_on_policy_scoring_args(extra_args: list[str]):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    return parser.parse_args(extra_args + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+
+def test_true_on_policy_scoring_flags_default_to_legacy_path():
+    args = _parse_true_on_policy_scoring_args([])
+
+    assert args.true_on_policy_logprob_dtype == "training"
+    assert args.true_on_policy_logsoftmax_backend == "torch"
+
+
+@pytest.mark.parametrize("backend", ["torch", "sglang_batch_invariant"])
+def test_true_on_policy_fp32_scoring_flags_are_valid(backend):
+    args = _parse_true_on_policy_scoring_args(
+        [
+            "--true-on-policy-mode",
+            "--true-on-policy-logprob-dtype",
+            "fp32",
+            "--true-on-policy-logsoftmax-backend",
+            backend,
+        ]
+    )
+
+    miles_validate_args(args)
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--true-on-policy-logprob-dtype", "fp32"],
+        ["--true-on-policy-logsoftmax-backend", "sglang_batch_invariant"],
+    ],
+)
+def test_nondefault_true_on_policy_scoring_requires_true_on_policy_mode(extra_args):
+    args = _parse_true_on_policy_scoring_args(extra_args)
+
+    with pytest.raises(ValueError, match="require --true-on-policy-mode"):
+        miles_validate_args(args)
+
+
+def test_batch_invariant_logsoftmax_requires_fp32_scoring():
+    args = _parse_true_on_policy_scoring_args(
+        [
+            "--true-on-policy-mode",
+            "--true-on-policy-logsoftmax-backend",
+            "sglang_batch_invariant",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="requires --true-on-policy-logprob-dtype=fp32"):
+        miles_validate_args(args)
+
+
 def test_sglang_parallel_sizes_keep_server_args_destinations():
     parser = add_sglang_arguments(argparse.ArgumentParser())
     args = parser.parse_args(
