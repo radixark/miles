@@ -8,9 +8,9 @@ import ray
 from tests.fast.ray.rollout.conftest import make_args
 
 import miles.ray.rollout.server_cell as server_cell_module
-from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell
+from miles.utils.workers.addr_allocator import PortAllocator
 
 
 @ray.remote(num_cpus=0)
