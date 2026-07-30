@@ -2,8 +2,9 @@ import asyncio
 import logging
 import os
 
-from miles.ray.placement_group import create_placement_groups, create_rollout_components, create_training_models
+from miles.ray.placement_group import create_rollout_components, create_training_models
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
+from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
 from miles.utils.async_utils import eager_create_task
@@ -25,8 +26,7 @@ async def train(args):
     validate_async_off_policy_correction(args)
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
-    # allocate the GPUs
-    pgs = create_placement_groups(args)
+    _handle, pgs = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
 
