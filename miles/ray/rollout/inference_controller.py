@@ -1,7 +1,6 @@
 import logging
 from dataclasses import dataclass
 
-import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -9,7 +8,6 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
-from miles.ray.utils import Lock
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +17,6 @@ class InferenceController:
         self.pg = pg
         self.args = args
         self.servers: dict[str, RolloutServer] = {}
-        self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self.eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
 
@@ -66,22 +63,20 @@ class InferenceController:
 
     # -------------------------- engine management -----------------------------
 
-    async def get_updatable_engines_and_lock(self):
+    async def get_updatable_engines(self):
         """Return engines eligible for weight updates."""
         srv = self._get_updatable_server()
         if not srv:
-            return EnginesAndLock(
+            return UpdatableEngines(
                 rollout_engines=[],
-                rollout_engine_lock=self.rollout_engine_lock,
                 has_new_engines=False,
                 engine_gpu_counts=[],
                 engine_gpu_offsets=[],
             )
 
         await srv.wait_all_engines_alive()
-        return EnginesAndLock(
+        return UpdatableEngines(
             rollout_engines=srv.api_clients,
-            rollout_engine_lock=self.rollout_engine_lock,
             has_new_engines=srv.has_new_engines,
             engine_gpu_counts=srv.engine_gpu_counts,
             engine_gpu_offsets=srv.engine_gpu_offsets,
@@ -164,7 +159,7 @@ class InferenceController:
         if not self.args.debug_train_only and self._rollout_ft_enabled:
             raise NotImplementedError(
                 "rollout fault tolerance is being rebuilt; health monitoring must pause before "
-                "get_updatable_engines_and_lock snapshots the engines"
+                "get_updatable_engines snapshots the engines"
             )
 
     @property
@@ -179,9 +174,8 @@ class InferenceController:
 
 
 @dataclass(frozen=True)
-class EnginesAndLock:
+class UpdatableEngines:
     rollout_engines: list[SGLangApiClient]
-    rollout_engine_lock: ray.actor.ActorHandle
     has_new_engines: bool
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]

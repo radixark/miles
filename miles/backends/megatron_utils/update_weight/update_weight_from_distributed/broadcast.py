@@ -1,8 +1,8 @@
 import socket
-import time
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
+from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING
 
 import ray
@@ -13,14 +13,15 @@ from tqdm import tqdm
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils import async_utils
+from miles.utils.distributed_lock import create_world_ticket_lock
 from miles.utils.distributed_utils import init_process_group
-
 from miles.utils.lora import LORA_ADAPTER_NAME
+
 from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
 
 if TYPE_CHECKING:
-    from ray.actor import ActorHandle
+    pass
 
 
 class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
@@ -50,6 +51,11 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self._model_update_groups = None
         self.rollout_engines: Sequence[SGLangApiClient] | None = None
         self._connection_stale: bool = False
+        self._engine_lock: AbstractContextManager = (
+            create_world_ticket_lock(prefix="miles/weight_update", participates=self._is_source)
+            if get_parallel_state().pp.size > 1
+            else nullcontext()
+        )
         self._init_lora(
             args=args,
             model=model,
@@ -68,7 +74,6 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: "ActorHandle",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
@@ -77,7 +82,6 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         """
         self.rollout_engines = rollout_engines
         self._connection_stale = False
-        self.rollout_engine_lock = rollout_engine_lock
         self._engine_gpu_counts = engine_gpu_counts
 
         # For TP:
@@ -110,10 +114,8 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
     ) -> None:
-        """Serialize NCCL broadcasts and always release the rollout lock."""
-        while not ray.get(self.rollout_engine_lock.acquire.remote()):
-            time.sleep(0.1)
-        try:
+        """Lock → broadcast → clear → unlock. Lock prevents NCCL deadlock."""
+        with self._engine_lock:
             futures = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
@@ -124,10 +126,6 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             )
             async_utils.wait_futures(futures)
             converted_named_tensors.clear()
-        finally:
-            # Leaking this lock makes the next weight sync poll forever, so the
-            # release must run after both successful and failed broadcasts.
-            ray.get(self.rollout_engine_lock.release.remote())
         if pbar:
             pbar.update(1)
 
