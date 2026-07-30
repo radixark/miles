@@ -5,12 +5,10 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
 
 
-import torch
 import megatron.core.transformer.custom_layers.batch_invariant_kernels as batch_invariant_kernels
+import torch
 
-from miles.backends.training_utils.loss_hub.math_utils import (
-    calculate_log_probs_and_entropy,
-)
+from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
 
 
 def test_true_on_policy_scorer_is_batch_invariant(monkeypatch):
