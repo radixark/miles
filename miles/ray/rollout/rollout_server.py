@@ -4,7 +4,11 @@ import logging
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
+from miles.backends.sglang_utils.sglang_config import (
+    _compute_megatron_num_gpus,
+    _compute_rollout_offset,
+    resolve_sglang_config,
+)
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
@@ -18,7 +22,7 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
     Returns a dict mapping model name -> ``RolloutServer``.
     """
-    config = _resolve_sglang_config(args)
+    config = resolve_sglang_config(args)
 
     servers: dict[str, RolloutServer] = {}
     gpu_offset = 0
@@ -103,48 +107,6 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
     return servers
-
-
-def _resolve_sglang_config(args) -> SglangConfig:
-    """Build a SglangConfig from args, choosing the right source."""
-    if getattr(args, "sglang_config", None) is not None:
-        config = SglangConfig.from_yaml(args.sglang_config)
-        expected = args.rollout_num_gpus
-        actual = config.total_num_gpus
-        assert actual == expected, f"sglang_config total GPUs ({actual}) != rollout_num_gpus ({expected})"
-        return config
-
-    if args.prefill_num_servers is not None:
-        return SglangConfig.from_prefill_num_servers(args)
-
-    return SglangConfig(
-        models=[
-            ModelConfig(
-                name="default",
-                server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
-            )
-        ]
-    )
-
-
-def _compute_rollout_offset(args) -> int:
-    """Offset (in PG bundle slots) where rollout GPUs start."""
-    if args.debug_train_only or args.debug_rollout_only or args.colocate:
-        return 0
-    if getattr(args, "critic_train_only", False):
-        return args.critic_num_nodes * args.critic_num_gpus_per_node
-    offset = args.actor_num_nodes * args.actor_num_gpus_per_node
-    return offset
-
-
-def _compute_megatron_num_gpus(args) -> int:
-    """Total number of megatron (actor + critic) GPU slots in the placement group."""
-    if getattr(args, "debug_rollout_only", False):
-        return 0
-    if getattr(args, "critic_train_only", False):
-        return args.critic_num_nodes * args.critic_num_gpus_per_node
-    num = args.actor_num_nodes * args.actor_num_gpus_per_node
-    return num
 
 
 @dataclasses.dataclass
