@@ -3,7 +3,6 @@ import os
 
 import ray
 import torch
-from miles.ray.ray_actor import RayActor
 
 
 # Refer to
@@ -36,7 +35,7 @@ def get_physical_gpu_id():
 
 
 @ray.remote
-class Lock(RayActor):
+class Lock:
     def __init__(self):
         self._locked = False  # False: unlocked, True: locked
 

@@ -118,12 +118,7 @@ class ServerCell:
 
         global_ranks = [self.rank_offset + local_index for local_index in range(self.num_nodes)]
 
-        node_ips = [
-            node_ip
-            for node_ip, _ in await asyncio.gather(
-                *[actor._get_current_node_ip_and_free_port.remote() for actor in actor_handles]
-            )
-        ]
+        node_ips = list(await asyncio.gather(*[actor._get_node_ip.remote() for actor in actor_handles]))
 
         addr_and_ports: dict[int, dict[str, Any]] = {}
         dist_init_addr = None

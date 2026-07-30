@@ -32,7 +32,7 @@ def _public_methods(cls) -> set[str]:
     """Public methods (and known semi-private helpers) of ``cls``."""
     if hasattr(cls, "__ray_actor_class__"):
         cls = cls.__ray_actor_class__  # unwrap @ray.remote
-    keep_underscored = {"_get_current_node_ip_and_free_port"}
+    keep_underscored = {"_get_free_port_block", "_get_node_ip", "_get_gpu_uuids"}
     return {
         name
         for name, _ in inspect.getmembers(cls, predicate=inspect.isfunction)
@@ -108,14 +108,14 @@ class TestRealRayActorLifecycle:
         )
         try:
             ray.get(actor.init.remote(host="127.0.0.1", port=get_free_port(start_port=20000)))
-            ray.get(actor._get_current_node_ip_and_free_port.remote(start_port=20100))
+            ray.get(actor._get_free_port_block.remote(start_port=20100))
             ray.get(actor.simulate_crash.remote())
 
             calls = ray.get(actor.get_calls.remote())
             method_names = [name for name, _, _ in calls]
             assert method_names == [
                 "init",
-                "_get_current_node_ip_and_free_port",
+                "_get_free_port_block",
                 "simulate_crash",
                 "shutdown",
             ]
