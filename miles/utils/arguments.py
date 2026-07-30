@@ -221,7 +221,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="torch",
                 help=(
                     "Log-softmax backend used by true-on-policy scoring. "
-                    "The SGLang batch-invariant backend is opt-in and requires FP32 scoring."
+                    "The SGLang batch-invariant backend is opt-in and supports "
+                    "BF16 or FP32 scoring."
                 ),
             )
             parser.add_argument(
@@ -2494,10 +2495,14 @@ def miles_validate_args(args):
         true_on_policy_logprob_dtype != "training" or true_on_policy_logsoftmax_backend != "torch"
     ) and not args.true_on_policy_mode:
         raise ValueError("Non-default true-on-policy log-probability scoring options require --true-on-policy-mode")
-    if true_on_policy_logsoftmax_backend == "sglang_batch_invariant" and true_on_policy_logprob_dtype != "fp32":
+    if (
+        true_on_policy_logsoftmax_backend == "sglang_batch_invariant"
+        and true_on_policy_logprob_dtype == "training"
+        and getattr(args, "fp16", False)
+    ):
         raise ValueError(
-            "--true-on-policy-logsoftmax-backend=sglang_batch_invariant requires "
-            "--true-on-policy-logprob-dtype=fp32"
+            "--true-on-policy-logsoftmax-backend=sglang_batch_invariant supports "
+            "BF16 or FP32 scoring, not FP16 training"
         )
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:

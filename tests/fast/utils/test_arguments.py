@@ -194,7 +194,7 @@ def test_nondefault_true_on_policy_scoring_requires_true_on_policy_mode(extra_ar
         miles_validate_args(args)
 
 
-def test_batch_invariant_logsoftmax_requires_fp32_scoring():
+def test_batch_invariant_logsoftmax_accepts_training_bf16_scoring():
     args = _parse_true_on_policy_scoring_args(
         [
             "--true-on-policy-mode",
@@ -202,8 +202,24 @@ def test_batch_invariant_logsoftmax_requires_fp32_scoring():
             "sglang_batch_invariant",
         ]
     )
+    args.bf16 = True
+    args.fp16 = False
 
-    with pytest.raises(ValueError, match="requires --true-on-policy-logprob-dtype=fp32"):
+    miles_validate_args(args)
+
+
+def test_batch_invariant_logsoftmax_rejects_training_fp16_scoring():
+    args = _parse_true_on_policy_scoring_args(
+        [
+            "--true-on-policy-mode",
+            "--true-on-policy-logsoftmax-backend",
+            "sglang_batch_invariant",
+        ]
+    )
+    args.bf16 = False
+    args.fp16 = True
+
+    with pytest.raises(ValueError, match="supports BF16 or FP32 scoring, not FP16"):
         miles_validate_args(args)
 
 

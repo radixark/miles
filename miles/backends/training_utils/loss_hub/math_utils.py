@@ -1026,7 +1026,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         vocab_size: Real tokenizer vocab size. If provided, padded logits are
             truncated after the full-vocab gather and before ``log_softmax``.
         logsoftmax_backend: ``torch`` for the existing scorer or
-            ``sglang_batch_invariant`` for SGLang's FP32 batch-invariant kernel.
+            ``sglang_batch_invariant`` for SGLang's BF16/FP32
+            batch-invariant kernel.
         logprob_output_dtype: Optional transport dtype applied only to the
             selected-token log-probability after the full-vocabulary softmax
             and gather. Entropy remains in the scoring dtype.
@@ -1037,8 +1038,11 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     """
     if logsoftmax_backend not in ("torch", "sglang_batch_invariant"):
         raise ValueError(f"Unsupported true-on-policy log-softmax backend: {logsoftmax_backend!r}")
-    if logsoftmax_backend == "sglang_batch_invariant" and logits.dtype != torch.float32:
-        raise ValueError(f"sglang_batch_invariant log-softmax requires FP32 logits, got {logits.dtype}")
+    if logsoftmax_backend == "sglang_batch_invariant" and logits.dtype not in (
+        torch.bfloat16,
+        torch.float32,
+    ):
+        raise ValueError(f"sglang_batch_invariant log-softmax requires BF16 or FP32 logits, got {logits.dtype}")
 
     if logits.size(0) == 0:
         log_prob = logits.new_zeros((0,))

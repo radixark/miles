@@ -93,7 +93,18 @@ def test_fp32_logprob_option_does_not_change_value_head_precision(monkeypatch):
     assert response_logits.dtype == torch.bfloat16
 
 
-def test_public_fp32_batch_invariant_scorer_uses_requested_backend_and_transport_dtype(monkeypatch):
+@pytest.mark.parametrize(
+    ("logprob_dtype", "scoring_dtype"),
+    [
+        ("training", torch.bfloat16),
+        ("fp32", torch.float32),
+    ],
+)
+def test_public_batch_invariant_scorer_uses_requested_dtype(
+    monkeypatch,
+    logprob_dtype,
+    scoring_dtype,
+):
     seen = {}
 
     def fake_batch_invariant_log_softmax(input: torch.Tensor, dim: int = -1) -> torch.Tensor:
@@ -115,7 +126,7 @@ def test_public_fp32_batch_invariant_scorer_uses_requested_backend_and_transport
         qkv_format="thd",
         rollout_temperature=1.0,
         true_on_policy_mode=True,
-        true_on_policy_logprob_dtype="fp32",
+        true_on_policy_logprob_dtype=logprob_dtype,
         true_on_policy_logsoftmax_backend="sglang_batch_invariant",
         bf16=True,
         fp16=False,
@@ -134,9 +145,9 @@ def test_public_fp32_batch_invariant_scorer_uses_requested_backend_and_transport
         with_entropy=True,
     )
 
-    assert seen == {"shape": torch.Size([2, 4]), "dtype": torch.float32}
+    assert seen == {"shape": torch.Size([2, 4]), "dtype": scoring_dtype}
     assert result["log_probs"][0].dtype == torch.bfloat16
-    assert result["entropy"][0].dtype == torch.float32
+    assert result["entropy"][0].dtype == scoring_dtype
 
 
 def test_public_value_head_output_is_unchanged_by_fp32_logprob_option(monkeypatch):
