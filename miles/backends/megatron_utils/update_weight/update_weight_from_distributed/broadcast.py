@@ -115,6 +115,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             self.weight_version,
             self.rollout_engines,
             converted_named_tensors,
+            selector=self._weight_update_selector,
         )
         ray.get(refs)
         converted_named_tensors.clear()
@@ -258,6 +259,7 @@ def update_weights_from_distributed(
     weight_version: int,
     rollout_engines: Sequence[ActorHandle],
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
+    selector: str = "all",
 ) -> list[ObjectRef]:
     """
     Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
@@ -267,6 +269,7 @@ def update_weights_from_distributed(
             names=[name for name, _ in converted_named_tensors],
             dtypes=[param.dtype for _, param in converted_named_tensors],
             shapes=[param.shape for _, param in converted_named_tensors],
+            selector=selector,
             group_name=group_name,
             weight_version=str(weight_version),
         )

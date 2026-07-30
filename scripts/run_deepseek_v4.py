@@ -608,8 +608,8 @@ def _train(args: ScriptArgs):
     if args.enable_mis:
         misc_args += (
             "--use-tis "
-            "--custom-config-path examples/train_infer_mismatch_helper/mis.yaml "
-            "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
+            "--custom-config-path examples/infra_features/train_infer_mismatch_helper/mis.yaml "
+            "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
     if args.use_fault_tolerance:

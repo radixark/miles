@@ -3,6 +3,9 @@
 Training-dynamics and efficiency dashboards for miles runs, built on top of
 `--dump-details` plus a live telemetry collector.
 
+User-facing documentation lives at `docs/user-guide/dashboard.md`; this file is the
+implementer's summary.
+
 ## Collect
 
 ```bash
@@ -27,7 +30,7 @@ raw-conversation sidecar (`trajectory/`, for the conversation view).
 ## View
 
 ```bash
-pip install -e .[dashboard]          # fastapi/uvicorn; already in the training image
+pip install fastapi uvicorn polars   # already present in the training image
 python -m miles.dashboard.serve --dump-details /path/to/dump [--follow] [--port 7788]
 ```
 

@@ -46,6 +46,23 @@ def define_new_adapter_metrics(snapshot: dict) -> None:
         define_step_key_metric_group(prefix=f"{name}/perf", step_key="rollout/step")
 
 
+# Leaf module names that can live inside MoE experts (they also name the dense MLP
+# projections); the bulk aliases expand to them during target-module resolution.
+_EXPERT_LEAF_NAMES = frozenset({"linear_fc1", "linear_fc2", "gate_proj", "up_proj", "down_proj"})
+_ALL_MODULE_ALIASES = frozenset({"all", "all-linear", "all_linear"})
+
+
+def targets_expert_leaves(target_modules: Any) -> bool:
+    """Whether ``target_modules`` can put adapters on MoE expert linears."""
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
+    entries = [str(tm).strip().lower() for tm in (target_modules or [])]
+    if any(entry in _ALL_MODULE_ALIASES for entry in entries):
+        return True
+    # Map each entry (possibly a dotted or wildcard path) to its leaf module name.
+    return any(entry.split(".")[-1] in _EXPERT_LEAF_NAMES for entry in entries)
+
+
 def validate_multi_lora_args(args: Any) -> None:
     """Set ``args.multi_lora``, then validate and default the multi-LoRA arg
     surface. Called from ``miles_validate_args``; a no-op for normal runs."""
@@ -68,6 +85,23 @@ def validate_multi_lora_args(args: Any) -> None:
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
     assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"
+    # Adapter routing is only recompute-safe without pipelining; enforce at launch.
+    assert getattr(args, "pipeline_model_parallel_size", 1) == 1, (
+        "Multi-LoRA requires --pipeline-model-parallel-size 1: no single rank holds a "
+        "complete adapter to push to the rollout engines, and a pipelined schedule would "
+        "recompute activations against a later micro-batch's adapter routing."
+    )
+    # Per-slot token spans assume sequence-major contiguous sample packing, which only 'thd' provides.
+    assert getattr(args, "qkv_format", "thd") == "thd", (
+        "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "
+        f"micro-batch packs samples contiguously, which bshd does not (got {args.qkv_format!r})."
+    )
+    assert not getattr(args, "experts_shared_outer_loras", False), (
+        "Multi-LoRA does not support --experts-shared-outer-loras; MoE expert adapters "
+        "use the per-expert layout. Drop the flag (and --sglang-experts-shared-outer-loras)."
+    )
+    # Expert-parallel sizes are checked post-finalize in _validate_multi_lora_moe_support:
+    # --expert-tensor-parallel-size stays None until Megatron's own validate_args resolves it.
     assert "muon" not in str(getattr(args, "optimizer", "")).lower(), (
         "Multi-LoRA does not support Muon: per-adapter decoupled stepping is only "
         "implemented for Adam-family per-slot optimizers"

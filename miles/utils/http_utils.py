@@ -224,6 +224,19 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
     return output
 
 
+async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> bytes:
+    """Perform one raw-bytes POST with a total timeout."""
+    assert _http_client is not None, "init_http_client() must run before post_bytes_no_retry()"
+
+    async def _do() -> bytes:
+        response = await _http_client.post(url, json=payload)
+        if not (200 <= response.status_code < 300):
+            raise RuntimeError(f"POST {url} failed with {response.status_code}: {response.text}")
+        return response.content
+
+    return await asyncio.wait_for(_do(), timeout=timeout)
+
+
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
     global _http_client, _client_concurrency, _distributed_post_enabled

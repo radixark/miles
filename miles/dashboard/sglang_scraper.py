@@ -18,7 +18,7 @@ module has no collector or Ray dependency and is fully unit-testable.
 Failure policy: a failed tick (or a failed engine in direct mode) leaves a
 gap in the series — values are never fabricated — and warnings are
 rate-limited to one per ``WARN_INTERVAL_SECONDS`` (pattern from
-``examples/random_async/random_async_sglang_metrics.py``).
+``examples/infra_features/random_async/random_async_sglang_metrics.py``).
 """
 
 from __future__ import annotations
