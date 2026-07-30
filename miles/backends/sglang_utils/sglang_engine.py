@@ -48,13 +48,7 @@ def build_server_url(host: str, port: int) -> str:
     return f"http://{format_v6_uri(host)}:{port}"
 
 
-@dataclasses.dataclass(frozen=True)
-class EngineLaunchPlan:
-    cmd: str
-    api_key: str | None
-
-
-def compute_engine_launch_plan(
+def compute_engine_launch_cmd(
     args,
     *,
     node_rank: int,
@@ -63,7 +57,7 @@ def compute_engine_launch_plan(
     sglang_overrides: dict,
     num_gpus_per_engine: int,
     addr_and_ports: dict,
-) -> EngineLaunchPlan:
+) -> str:
     server_args_dict = _compute_server_args(
         args,
         node_rank=node_rank,
@@ -80,8 +74,11 @@ def compute_engine_launch_plan(
     )
 
     launch_args = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
-    cmd = shlex.join([sys.executable, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
-    return EngineLaunchPlan(cmd=cmd, api_key=server_args_dict.get("api_key"))
+    return shlex.join([sys.executable, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
+
+
+def compute_api_key(args, *, sglang_overrides: dict) -> str | None:
+    return sglang_overrides.get("api_key", args.sglang_api_key)
 
 
 def _compute_server_args(

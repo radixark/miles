@@ -49,6 +49,7 @@ def make_engine_args(**overrides: Any) -> Namespace:
         use_rollout_indexer_replay=False,
         fp16=False,
         lora_rank=0,
+        sglang_api_key=None,
         lora_adapter_path=None,
         multi_lora=False,
         colocate=False,
