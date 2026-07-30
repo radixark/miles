@@ -78,9 +78,9 @@ class MockSGLangEngine:
         self._record("simulate_crash", (), {})
         self.shutdown()
 
-    def _get_current_node_ip_and_free_port(self, start_port: int = 15000, consecutive: int = 1):
-        self._record("_get_current_node_ip_and_free_port", (), {"start_port": start_port, "consecutive": consecutive})
-        return ("127.0.0.1", get_free_port(start_port=start_port, consecutive=consecutive))
+    def _get_free_port_block(self, *, start_port: int, count: int) -> int:
+        self._record("_get_free_port_block", (), {"start_port": start_port, "count": count})
+        return get_free_port(start_port=start_port, consecutive=count)
 
     def _get_node_ip(self):
         self._record("_get_node_ip", (), {})
