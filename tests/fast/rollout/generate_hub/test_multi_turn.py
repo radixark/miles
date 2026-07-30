@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from itertools import groupby
@@ -699,7 +698,7 @@ class TestAgentMetadata:
         expected_session_server_id = f"127.0.0.1:{session_server_port}"
         for s in samples:
             assert s.metadata["session_server_id"] == expected_session_server_id
-            assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
+            assert s.metadata["session_server_instance_id"] == f"{generation_env.args.run_uuid}-0"
 
 
 class TestAgentCollectionFailure:
