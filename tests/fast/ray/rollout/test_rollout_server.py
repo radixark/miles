@@ -5,15 +5,14 @@ from types import SimpleNamespace
 import pytest
 from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args, make_dataclass_cells, make_sglang_config_yaml
 
-from miles.ray.rollout import rollout_server
-from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.rollout_server import (
-    RolloutServer,
+from miles.backends.sglang_utils.sglang_config import (
     _compute_megatron_num_gpus,
     _compute_rollout_offset,
-    _resolve_sglang_config,
-    start_rollout_servers,
+    resolve_sglang_config,
 )
+from miles.ray.rollout import rollout_server
+from miles.ray.rollout.cell_state import AddrInfo
+from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
 
 
 class TestRolloutServerPureFunctions:
@@ -29,7 +28,7 @@ class TestRolloutServerPureFunctions:
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=8)
         with pytest.raises(AssertionError, match="total GPUs"):
-            _resolve_sglang_config(args)
+            resolve_sglang_config(args)
 
     def test_eval_fleet_inherits_rollout_engine_settings(self):
         """The eval model carries only what makes it an eval fleet; the rest is inherited."""
