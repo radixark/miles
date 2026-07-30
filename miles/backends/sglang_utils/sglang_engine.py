@@ -1,23 +1,19 @@
 import dataclasses
 import ipaddress
 import logging
-import multiprocessing
 import os
+import shlex
+import sys
 
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.utils import kill_process_tree
 
 from miles.backends.megatron_utils.lora_utils import (
     convert_target_modules_to_hf,
     lora_base_cpu_backup_enabled,
     sglang_lora_target_all_sentinel,
 )
-from miles.backends.sglang_utils.sglang_api_client import wait_server_healthy
-from miles.utils import async_utils
-from miles.utils.env_report import collect_and_print_node_env_report
-from miles.utils.http_utils import get_host_info
+from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
-from miles.utils.misc import NodeProbeMixin
 from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
@@ -51,27 +47,6 @@ def _to_local_gpu_id(physical_gpu_id: int) -> int:
     )
 
 
-def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
-    from sglang.srt.entrypoints.http_server import launch_server
-
-    multiprocessing.set_start_method("spawn", force=True)
-    p = multiprocessing.Process(target=launch_server, args=(server_args,))
-    p.start()
-
-    if server_args.node_rank != 0:
-        return
-
-    async_utils.run(
-        wait_server_healthy(
-            server_url=server_args.url(),
-            api_key=server_args.api_key,
-            is_process_alive=lambda: p.is_alive(),
-        )
-    )
-
-    return p
-
-
 def format_v6_uri(addr: str | None) -> str | None:
     if not addr or addr.startswith("["):
         return addr
@@ -87,87 +62,45 @@ def build_server_url(host: str, port: int) -> str:
     return f"http://{format_v6_uri(host)}:{port}"
 
 
-class SGLangEngine(NodeProbeMixin):
-    def __init__(
-        self,
+@dataclasses.dataclass(frozen=True)
+class EngineLaunchPlan:
+    cmd: str
+    api_key: str | None
+
+
+def compute_engine_launch_plan(
+    args,
+    *,
+    rank: int,
+    worker_type: str,
+    base_gpu_id: int,
+    sglang_overrides: dict,
+    num_gpus_per_engine: int,
+    addr_and_ports: dict,
+) -> EngineLaunchPlan:
+    server_args_dict = _compute_server_args(
         args,
-        rank: int,
-        worker_type: str = "regular",
-        base_gpu_id: int | None = None,
-        sglang_overrides: dict | None = None,
-        num_gpus_per_engine: int | None = None,
-    ):
-        self.args = args
-        self.rank = rank
-        self.worker_type = worker_type
-        self.base_gpu_id = base_gpu_id
-        self.sglang_overrides = sglang_overrides or {}
-        self.num_gpus_per_engine = num_gpus_per_engine
+        rank=rank,
+        dist_init_addr=addr_and_ports["dist_init_addr"],
+        nccl_port=addr_and_ports["nccl_port"],
+        host=addr_and_ports["host"],
+        port=addr_and_ports["port"],
+        worker_type=worker_type,
+        disaggregation_bootstrap_port=addr_and_ports.get("disaggregation_bootstrap_port"),
+        base_gpu_id=base_gpu_id,
+        engine_info_bootstrap_port=addr_and_ports.get("engine_info_bootstrap_port"),
+        sglang_overrides=sglang_overrides,
+        num_gpus_per_engine=num_gpus_per_engine,
+    )
 
-    def init(
-        self,
-        dist_init_addr,
-        port,
-        nccl_port,
-        host=None,
-        disaggregation_bootstrap_port=None,
-        engine_info_bootstrap_port=None,
-    ):
-        if env_report := self.args.env_report:
-            collect_and_print_node_env_report(
-                role="rollout",
-                rank=self.rank,
-                partial_env_report=env_report,
-            )
-
-        host = host or format_v6_uri(get_host_info()[1])
-
-        server_args_dict = _compute_server_args(
-            self.args,
-            self.rank,
-            dist_init_addr,
-            nccl_port,
-            host,
-            port,
-            self.worker_type,
-            disaggregation_bootstrap_port,
-            base_gpu_id=self.base_gpu_id,
-            engine_info_bootstrap_port=engine_info_bootstrap_port,
-            sglang_overrides=self.sglang_overrides,
-            num_gpus_per_engine=self.num_gpus_per_engine,
-        )
-
-        self.node_rank = server_args_dict["node_rank"]
-        self.server_host = server_args_dict["host"]  # with [] if ipv6
-        self.server_port = server_args_dict["port"]
-
-        self.server_url = build_server_url(self.server_host, self.server_port)
-
-        self._init_normal(server_args_dict)
-
-    def _init_normal(self, server_args_dict):
-        logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
-        # ServerArgs refuses writes once its declarations materialise, so the ipv6
-        # host loses its brackets here rather than at the launch sites. The dict
-        # keeps the bracketed form, which self.server_host uses to build urls.
-        server_args = ServerArgs(**{**server_args_dict, "host": server_args_dict["host"].strip("[]")})
-        self.process = launch_server_process(server_args)
-
-    def shutdown(self):
-        logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
-        kill_process_tree(self.process.pid)
-
-    def simulate_crash(self):
-        if not getattr(self, "process", None):
-            logger.info("simulate_crash called but no local engine process exists; skip kill")
-            return
-
-        logger.info(f"Simulating crash on engine {self.server_host}:{self.server_port}...")
-        self.shutdown()
+    launch_args = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
+    cmd = shlex.join([sys.executable, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
+    return EngineLaunchPlan(cmd=cmd, api_key=server_args_dict.get("api_key"))
 
 
 def _compute_server_args(
     args,
+    *,
     rank,
     dist_init_addr,
     nccl_port,

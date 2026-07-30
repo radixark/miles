@@ -38,10 +38,10 @@ class TestStartEnginesShortCircuits:
 
 class TestStartEnginesRealActors:
     """Drives the actor-creation loop end-to-end. Verifies the actors are
-    real Ray actors (via ``get_calls()`` round-trip) and that ``init`` was
-    invoked with the addr/port kwargs from the allocator."""
+    real Ray actors (via ``get_calls()`` round-trip) and that ``run`` was
+    invoked with a command carrying the addr/ports from the allocator."""
 
-    async def test_creates_real_actors_and_init_runs(self, patched_sglang_engine, placement_group_factory):
+    async def test_creates_real_actors_and_run_launches(self, patched_sglang_engine, placement_group_factory):
         pg = placement_group_factory(2)
         cells = build_cells(pg_tuple=pg, num_cells=2)
 
@@ -51,10 +51,10 @@ class TestStartEnginesRealActors:
             assert cell.is_allocated
             calls = ray.get(cell.primary_actor_handle.get_calls.remote())
             method_names = [name for name, _, _ in calls]
-            assert "init" in method_names
-            init_kwargs = ray.get(cell.primary_actor_handle.get_init_kwargs.remote())
-            assert init_kwargs["host"] == "127.0.0.1"
-            assert cell.addr_info.server_url == build_server_url(host=init_kwargs["host"], port=init_kwargs["port"])
+            assert "run" in method_names
+            server_args = ray.get(cell.primary_actor_handle.get_server_args.remote())
+            assert server_args["host"] == "127.0.0.1"
+            assert cell.addr_info.server_url == build_server_url(host=server_args["host"], port=server_args["port"])
 
         # Cleanup: kill the actors we created.
         for handle in _all_actor_handles(cells):
@@ -179,18 +179,18 @@ class TestStartEnginesRealAllocator:
 
         await start_cells(cells)
 
-        # init kwargs == the addr_and_ports map produced by the real allocator
+        # the launch command == the addr_and_ports map produced by the real allocator
         kwargs0, kwargs1 = ray.get(
             [
-                cells[0].primary_actor_handle.get_init_kwargs.remote(),
-                cells[1].primary_actor_handle.get_init_kwargs.remote(),
+                cells[0].primary_actor_handle.get_server_args.remote(),
+                cells[1].primary_actor_handle.get_server_args.remote(),
             ]
         )
 
         # Real-allocator claim 1: each engine got a fully-formed addr/port set
         for k in kwargs0, kwargs1:
             for key in ("host", "port", "nccl_port", "dist_init_addr"):
-                assert key in k, f"missing {key} in init kwargs from real allocator"
+                assert key in k, f"missing {key} in the launch command from the real allocator"
             assert k["host"] == "127.0.0.1"
 
         # Real-allocator claim 2: ports are distinct between engines (the
@@ -232,8 +232,8 @@ class TestStartEnginesRealAllocator:
 
         await start_cells(b, allocator)
 
-        kwargs_a = ray.get([handle.get_init_kwargs.remote() for handle in _all_actor_handles(a)])
-        kwargs_b = ray.get([handle.get_init_kwargs.remote() for handle in _all_actor_handles(b)])
+        kwargs_a = ray.get([handle.get_server_args.remote() for handle in _all_actor_handles(a)])
+        kwargs_b = ray.get([handle.get_server_args.remote() for handle in _all_actor_handles(b)])
         ports_a = {p for kw in kwargs_a for p in (kw["port"], kw["nccl_port"])}
         ports_b = {p for kw in kwargs_b for p in (kw["port"], kw["nccl_port"])}
 

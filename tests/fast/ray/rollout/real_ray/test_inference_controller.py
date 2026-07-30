@@ -30,7 +30,7 @@ class _NoopRouterApiClient:
 @pytest.fixture
 def patch_low_level(monkeypatch):
     """Replace, in the test process:
-    - ``SGLangEngine`` → ``MockSGLangEngine`` so created actors are mocks
+    - ``CommandActor`` → ``MockSGLangEngine`` so created actors are mocks
       (the real addr allocator runs; each mock serves HTTP on its port).
     - ``SGLangRouterApiClient`` → no-op (no router runs at the placeholder address).
     - ``start_session_server`` → no-op (the production default touches network)."""
@@ -39,7 +39,7 @@ def patch_low_level(monkeypatch):
     import miles.ray.rollout.server_cell as scell
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
-    monkeypatch.setattr(scell, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
+    monkeypatch.setattr(scell, "CommandActor", MockSGLangEngine.__ray_actor_class__)
     # multi-model tests would otherwise spawn a real router subprocess for
     # ``model_idx > 0`` (force_new=True bypasses the args.sglang_router_ip cache).
     monkeypatch.setattr(
