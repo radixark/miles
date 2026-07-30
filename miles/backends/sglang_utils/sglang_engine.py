@@ -106,7 +106,8 @@ def _compute_server_args(
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
-        "random_seed": args.seed + rank,
+        # NOTE: do not pass random seed and let SGLang pick random ones
+        # "random_seed": args.seed + rank,
         # memory
         "enable_memory_saver": args.offload_rollout,
         # distributed
