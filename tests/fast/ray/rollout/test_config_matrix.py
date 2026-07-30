@@ -3,16 +3,20 @@ from __future__ import annotations
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
-from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
-from miles.ray.rollout.rollout_server import _resolve_sglang_config
+from miles.backends.sglang_utils.sglang_config import (
+    ModelConfig,
+    ServerGroupConfig,
+    SglangConfig,
+    resolve_sglang_config,
+)
 
-# ----------------------------- _resolve_sglang_config matrix -----------------------------
+# ----------------------------- resolve_sglang_config matrix -----------------------------
 
 
 class TestResolveSglangConfigPaths:
     def test_default_path_when_no_yaml_or_prefill(self):
         args = make_args(rollout_num_gpus=8, sglang_config=None, prefill_num_servers=None)
-        cfg = _resolve_sglang_config(args)
+        cfg = resolve_sglang_config(args)
         assert len(cfg.models) == 1
         assert cfg.models[0].name == "default"
         assert cfg.models[0].server_groups[0].worker_type == "regular"
@@ -25,7 +29,7 @@ class TestResolveSglangConfigPaths:
             prefill_num_servers=4,
             sglang_config=None,
         )
-        cfg = _resolve_sglang_config(args)
+        cfg = resolve_sglang_config(args)
         # Two groups: prefill + decode
         groups = cfg.models[0].server_groups
         assert len(groups) == 2
@@ -36,7 +40,7 @@ class TestResolveSglangConfigPaths:
         cfg_path = tmp_path / "actor.yaml"
         cfg_path.write_text(make_sglang_config_yaml(name="actor"))
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=8)
-        cfg = _resolve_sglang_config(args)
+        cfg = resolve_sglang_config(args)
         assert len(cfg.models) == 1
         assert cfg.models[0].name == "actor"
 
@@ -60,7 +64,7 @@ class TestResolveSglangConfigPaths:
             "        num_gpus_per_engine: 1\n"
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=12)
-        cfg = _resolve_sglang_config(args)
+        cfg = resolve_sglang_config(args)
         assert [m.name for m in cfg.models] == ["actor", "ref"]
         assert cfg.total_num_gpus == 12
 
