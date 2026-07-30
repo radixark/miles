@@ -196,6 +196,13 @@ class SglangConfig:
 
 def resolve_sglang_config(args) -> SglangConfig:
     """Build a SglangConfig from args, choosing the right source."""
+    config = _compute_raw_sglang_config(args)
+    for model in config.models:
+        model.resolve(args)
+    return config
+
+
+def _compute_raw_sglang_config(args) -> SglangConfig:
     if getattr(args, "sglang_config", None) is not None:
         config = SglangConfig.from_yaml(args.sglang_config)
         expected = args.rollout_num_gpus
