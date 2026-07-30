@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import shlex
 import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
 from miles.ray.rollout.router_manager import (
     _launch_command_on_head,
     _resolve_session_server_ports,
@@ -18,8 +20,22 @@ from miles.utils.workers.argv_utils import parse_config_argv
 from miles.utils.workers.command_actor import CommandActor
 
 
+def _make_model_cfg(*worker_types: str) -> ModelConfig:
+    groups = [
+        ServerGroupConfig(
+            worker_type=worker_type,
+            num_gpus=4,
+            num_gpus_per_engine=4,
+            gpu_offset=0,
+            needs_offload=False,
+        )
+        for worker_type in worker_types
+    ]
+    return ModelConfig(name="default", model_path=None, server_groups=groups, update_weights=True)
+
+
 class TestLaunchCommandOnHead:
-    def test_runs_the_joined_command_on_a_head_command_actor(self, monkeypatch):
+    def test_runs_the_command_on_a_head_command_actor(self, monkeypatch):
         """The command runs inside a head-pinned CommandActor, not a driver subprocess."""
         captured: dict = {}
 
@@ -29,7 +45,7 @@ class TestLaunchCommandOnHead:
 
         monkeypatch.setattr("miles.ray.rollout.router_manager.create_head_worker_actor", _create)
 
-        actor_handle = _launch_command_on_head(["python", "-m", "x", "--flag", "a b"])
+        actor_handle = _launch_command_on_head("python -m x --flag 'a b'")
 
         assert captured["worker_cls"] is CommandActor
         assert captured["env_vars"] == {}
@@ -43,7 +59,7 @@ class TestStartRouter:
             "miles.ray.rollout.router_manager.find_available_port", return_value=20000
         ):
             with pytest.raises(AssertionError, match="miles router does not support PD"):
-                start_router(args, has_pd_disaggregation=True)
+                start_router(args, model_idx=0, model_cfg=_make_model_cfg("prefill", "decode"))
 
 
 class TestStartRouterLaunchCommand:
@@ -51,8 +67,8 @@ class TestStartRouterLaunchCommand:
     def captured_launches(self, monkeypatch):
         launches: list[list[str]] = []
 
-        def fake_launch(launch_argv):
-            launches.append(launch_argv)
+        def fake_launch(launch_cmd):
+            launches.append(shlex.split(launch_cmd))
             return MagicMock()
 
         monkeypatch.setattr("miles.ray.rollout.router_manager.get_host_info", lambda: ("h", "127.0.0.1"))
@@ -66,7 +82,7 @@ class TestStartRouterLaunchCommand:
             "miles.ray.rollout.router_manager.find_available_port", lambda start: 20000 if start < 4000 else 4001
         )
         args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
-        ip, port = start_router(args)
+        ip, port = start_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
 
         (argv,) = captured_launches
         assert argv[0] == sys.executable
@@ -86,7 +102,7 @@ class TestStartRouterLaunchCommand:
             miles_router_health_check_failure_threshold=3,
             rollout_health_check_interval=10.0,
         )
-        ip, port = start_router(args)
+        ip, port = start_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
 
         (argv,) = captured_launches
         assert argv[:3] == [sys.executable, "-m", "miles.router.router"]
@@ -102,7 +118,7 @@ class TestStartSessionServerLaunchCommand:
         launches: list[list[str]] = []
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager._launch_command_on_head",
-            lambda launch_argv: launches.append(launch_argv) or MagicMock(),
+            lambda launch_cmd: launches.append(shlex.split(launch_cmd)) or MagicMock(),
         )
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", lambda *fn_args, **fn_kwargs: None)
         monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)

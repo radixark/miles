@@ -51,7 +51,7 @@ def _make_mock_args(
 def _patch_actor_alloc():
     """Persist allocate_gpus_for_actor patch across the whole test (incl. healing path).
 
-    Previously _make_group used `with patch(...)` which expired when _make_group
+    Previously _make_controller used `with patch(...)` which expired when _make_controller
     returned, so any later `allocate_gpus_for_actor` call during _refresh_cells
     healing hit the real implementation (which dereferences mock args fields).
     """
@@ -64,7 +64,7 @@ def _patch_actor_alloc():
         yield
 
 
-def _make_group(
+def _make_controller(
     *,
     num_cells: int = 3,
     actor_count_per_cell: int = 1,
@@ -85,34 +85,34 @@ def _make_group(
     )
 
 
-async def _init_group(group: RayTrainGroup) -> None:
+async def _init_controller(group: RayTrainGroup) -> None:
     """Call init and wait for all cells to become alive."""
     await group.init()
 
 
-async def _make_alive_group(*, num_cells: int = 3, **kwargs) -> RayTrainGroup:
+async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> RayTrainGroup:
     """Create a group and init all cells to alive."""
-    group = _make_group(num_cells=num_cells, **kwargs)
-    await _init_group(group)
+    group = _make_controller(num_cells=num_cells, **kwargs)
+    await _init_controller(group)
     return group
 
 
 class TestInit:
     def test_creates_correct_number_of_cells(self):
-        group = _make_group(num_cells=3)
+        group = _make_controller(num_cells=3)
 
         assert len(group._cells) == 3
         assert [c.cell_index for c in group._cells] == [0, 1, 2]
 
     def test_cells_are_allocated_after_init(self):
-        group = _make_group(num_cells=2)
+        group = _make_controller(num_cells=2)
 
         for cell in group._cells:
             assert cell.is_allocated
             assert not cell.is_alive
 
     def test_each_cell_has_own_actors(self):
-        group = _make_group(num_cells=3, actor_count_per_cell=2)
+        group = _make_controller(num_cells=3, actor_count_per_cell=2)
 
         handles_per_cell = [cell._get_actor_handles() for cell in group._cells]
         assert all(len(h) == 2 for h in handles_per_cell)
@@ -138,9 +138,9 @@ class TestInit:
         assert group._indep_dp_store is None
 
     async def test_init_marks_all_cells_alive(self):
-        group = _make_group(num_cells=3)
+        group = _make_controller(num_cells=3)
 
-        await _init_group(group)
+        await _init_controller(group)
 
         for cell in group._cells:
             assert cell.is_alive
@@ -154,7 +154,7 @@ class TestInit:
 
 class TestStopStartCell:
     async def test_stop_cell_transitions_to_stopped(self):
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         group.stop_cell(1)
 
@@ -162,7 +162,7 @@ class TestStopStartCell:
         assert group._cells[0].is_alive
 
     async def test_start_cell_transitions_to_pending(self):
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
         group.stop_cell(1)
 
         group.start_cell(1)
@@ -198,7 +198,7 @@ class TestSetRolloutExecutor:
 
 class TestExecuteFirstAlive:
     async def test_picks_first_alive_cell(self):
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         await group._execute_first_alive("save_model", 42)
 
@@ -212,7 +212,7 @@ class TestExecuteFirstAlive:
                 assert not any(c[0] == "save_model" for c in calls)
 
     async def test_skips_stopped_picks_next(self):
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
         group._cells[0].stop()
 
         await group._execute_first_alive("update_weights")
@@ -224,7 +224,7 @@ class TestExecuteFirstAlive:
 
 class TestComputeIndepDPInfo:
     def test_all_alive(self):
-        group = _make_group(num_cells=3)
+        group = _make_controller(num_cells=3)
 
         info = group._compute_indep_dp_info(cell_index=2, alive_cell_indices=[0, 1, 2])
 
@@ -233,7 +233,7 @@ class TestComputeIndepDPInfo:
         assert info.cell_index == 2
 
     def test_with_gap(self):
-        group = _make_group(num_cells=3)
+        group = _make_controller(num_cells=3)
 
         info = group._compute_indep_dp_info(cell_index=2, alive_cell_indices=[0, 2])
 
@@ -243,7 +243,7 @@ class TestComputeIndepDPInfo:
 
 class TestExecuteAllAliveAndCatch:
     async def test_skips_stopped_cells(self):
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
         group._cells[1].stop()
 
         await group._execute_all_alive_and_catch("train")
@@ -253,7 +253,7 @@ class TestExecuteAllAliveAndCatch:
             assert any(c[0] == "train" for c in calls)
 
     async def test_asserts_on_no_alive_cells(self):
-        group = await _make_alive_group(num_cells=1)
+        group = await _make_alive_controller(num_cells=1)
         group._cells[0].stop()
 
         with pytest.raises(AssertionError, match="No alive cells"):
@@ -263,7 +263,7 @@ class TestExecuteAllAliveAndCatch:
 class TestRefreshCellsReconfigure:
     async def test_reconfigure_triggers_on_alive_change(self):
         """When a cell is stopped, _refresh_cells reconfigures remaining alive cells."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Stop cell 1
         group.stop_cell(1)
@@ -293,7 +293,7 @@ class TestRefreshCellsReconfigure:
                 assert any(c[0] == "reconfigure_indep_dp" for c in calls)
 
     async def test_no_reconfigure_when_unchanged(self):
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         await group._refresh_cells(rollout_id=0)
 
@@ -303,7 +303,7 @@ class TestRefreshCellsReconfigure:
 class TestRefreshCellsHealing:
     async def test_pending_cell_gets_healed(self):
         """A pending cell goes through allocate + healing with correct alive_rank."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Stop cell 2, then start it (pending)
         group.stop_cell(2)
@@ -334,7 +334,7 @@ class TestRefreshCellsHealing:
 
     async def test_multiple_pending_cells_healed(self):
         """Multiple pending cells healed simultaneously."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
         group.stop_cell(1)
         group.stop_cell(2)
         group.start_cell(1)
@@ -356,7 +356,7 @@ class TestRefreshCellsHealing:
 
     async def test_healed_cell_receives_set_rollout_executor(self):
         """A healed cell is handed the executor handle again after init."""
-        group = await _make_alive_group(num_cells=2, rollout_executor="executor-handle")
+        group = await _make_alive_controller(num_cells=2, rollout_executor="executor-handle")
         group.stop_cell(1)
         group.start_cell(1)
 
@@ -372,7 +372,7 @@ class TestRefreshCellsHealing:
 
     async def test_pending_cell_with_stopped_cell(self):
         """Pending + stopped: only alive and pending participate, stopped excluded."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # cell 1 stopped (not restarted), cell 2 pending
         group.stop_cell(1)
@@ -405,7 +405,7 @@ class TestRefreshCellsReconfigureEvent:
 
     async def test_healing_emits_event_with_src_and_healed_cells(self, _event_log_dir: Path):
         """A healing reconfigure emits one CellReconfigureEvent naming rollout, src cell, and healed cells."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
         group.stop_cell(2)
         group.start_cell(2)
 
@@ -421,7 +421,7 @@ class TestRefreshCellsReconfigureEvent:
 
     async def test_shrink_emits_event_without_src(self, _event_log_dir: Path):
         """A pure-shrink reconfigure emits one CellReconfigureEvent with no src and no healed cells."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
         group.stop_cell(1)
 
         await group._refresh_cells(rollout_id=4)
@@ -435,7 +435,7 @@ class TestRefreshCellsReconfigureEvent:
 
     async def test_noop_refresh_emits_no_event(self, _event_log_dir: Path):
         """A refresh that needs no reconfigure emits no CellReconfigureEvent."""
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         await group._refresh_cells(rollout_id=1)
 
@@ -443,7 +443,7 @@ class TestRefreshCellsReconfigureEvent:
 
     async def test_failed_healing_emits_no_event(self, _event_log_dir: Path):
         """When cooperative prepare fails, no CellReconfigureEvent is emitted (witness stays absent)."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
         group.stop_cell(2)
         group.start_cell(2)
         group._cells[2].actor_factory = _make_failing_actor_factory()
@@ -456,7 +456,7 @@ class TestRefreshCellsReconfigureEvent:
 class TestRefreshCellsNoOp:
     async def test_repeated_refresh_without_change_does_not_reconfigure(self):
         """Calling _refresh_cells multiple times without state changes dispatches no actor calls."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # Clear init calls by noting current call count
         init_call_counts = {}
@@ -477,7 +477,7 @@ class TestRefreshCellsNoOp:
                 assert len(calls) == init_call_counts[id(handle)]
 
     async def test_refresh_after_reconfigure_is_noop_on_second_call(self):
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
         group.stop_cell(1)
         await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 1
@@ -489,7 +489,7 @@ class TestRefreshCellsNoOp:
 class TestConsecutiveStopStartCycles:
     async def test_stop_train_stop_train_start_train(self):
         """Consecutive: stop 1 → refresh → stop 2 → refresh → start 1 → refresh."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Stop cell 1
         group.stop_cell(1)
@@ -517,7 +517,7 @@ class TestConsecutiveStopStartCycles:
 
 class TestTrain:
     async def test_train_refreshes_and_dispatches(self):
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
@@ -527,7 +527,7 @@ class TestTrain:
                 assert any(c[0] == "train" for c in calls)
 
     async def test_train_with_stopped_cell_only_dispatches_to_alive(self):
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
         group.stop_cell(1)
 
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
@@ -541,7 +541,7 @@ class TestTrain:
 
     async def test_consecutive_train_no_reconfigure_overhead(self):
         """Multiple train calls with no state changes — no reconfigure overhead."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # Note init call count
         init_counts = {}
@@ -564,7 +564,7 @@ class TestTrain:
 
     async def test_rapid_stop_start_before_train(self):
         """Cell stopped and immediately started before next train — healed in one shot."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         group.stop_cell(1)
         group.start_cell(1)
@@ -577,7 +577,7 @@ class TestTrain:
 
     async def test_full_lifecycle_through_train(self):
         """End-to-end: normal → degraded → steady degraded → healing → full."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Normal training (no reconfigure)
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
@@ -608,7 +608,7 @@ class TestTrain:
 class TestPerCellErrorIsolation:
     async def test_one_cell_failure_marks_errored_others_ok(self):
         """One cell's actor fails during broadcast, that cell is killed and stopped, others complete normally."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Make cell 1's actors fail on train
         for handle in group._cells[1]._get_actor_handles():
@@ -630,7 +630,7 @@ class TestPerCellErrorIsolation:
 
     async def test_errored_cell_skipped_in_next_broadcast(self):
         """After marking a cell errored, subsequent broadcasts skip it."""
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         # Step 1: Make cell 0 fail
         for handle in group._cells[0]._get_actor_handles():
@@ -651,7 +651,7 @@ class TestPerCellErrorIsolation:
 class TestExecuteFirstAliveFallback:
     async def test_first_cell_fails_retry_falls_back_to_next(self):
         """If the first alive cell fails, retry in save_model kills+stops it and picks the next."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Make cell 0 fail on save_model
         for handle in group._cells[0]._get_actor_handles():
@@ -670,7 +670,7 @@ class TestExecuteFirstAliveFallback:
 
     async def test_single_execute_first_alive_raises_on_failure(self):
         """A single _execute_first_alive call raises (no retry) when the first cell fails."""
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         for handle in group._cells[0]._get_actor_handles():
             ray.get(handle.set_fail_methods.remote(["save_model"]))
@@ -696,7 +696,7 @@ class TestRefreshCellsErrorHandling:
     async def test_healing_failure_marks_pending_cell_errored_keeps_alive(self):
         """When healing init fails, the pending cell is killed and stopped (via _execute_raw's
         except path, which marks errored then confirms-dead), alive cells unaffected."""
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Stop cell 2 and start it (pending)
         group.stop_cell(2)
@@ -717,7 +717,7 @@ class TestRefreshCellsErrorHandling:
 class TestHeartbeatMonitor:
     async def test_heartbeat_normal_does_not_mark_errored(self):
         """When heartbeat returns recent timestamp, cells stay alive."""
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         for cell in group._cells:
             await cell.health_checker._check_fn()
@@ -729,7 +729,7 @@ class TestHeartbeatMonitor:
         liveness, not training progress, so a cell legitimately blocked in a cross-cell
         collective (whose training loop stops bumping the heartbeat) must not be reported
         unhealthy as long as the heartbeat RPC still returns."""
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         # Drive cell 1's last-active timestamp to the epoch (maximally stale); the
         # liveness check must ignore staleness while the heartbeat RPC keeps returning.
@@ -744,7 +744,7 @@ class TestHeartbeatMonitor:
 
     async def test_heartbeat_timeout_marks_errored(self):
         """When heartbeat call fails (actor unresponsive), cell is marked errored."""
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         for handle in group._cells[0]._get_actor_handles():
             ray.get(handle.set_heartbeat_fail.remote(True))
@@ -754,7 +754,7 @@ class TestHeartbeatMonitor:
 
     async def test_pause_resume(self):
         """Pause/resume on cell propagates to its checker."""
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         for cell in group._cells:
             cell.health_checker.pause()
@@ -876,7 +876,7 @@ def _count_train_calls(group: RayTrainGroup, cell_index: int) -> int:
 class TestTrainRetry:
     async def test_no_retry_on_normal(self):
         """All cells return NORMAL → no retry, train called once per cell."""
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
@@ -885,7 +885,7 @@ class TestTrainRetry:
 
     async def test_retry_on_all_discarded_then_normal(self):
         """First attempt: all DISCARDED. Second attempt: all NORMAL. Train called twice."""
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
         await _set_all_train_return(group, TrainStepOutcome.DISCARDED_SHOULD_RETRY)
 
         # After first train call, switch to NORMAL so second attempt succeeds
@@ -905,7 +905,7 @@ class TestTrainRetry:
 
     async def test_retry_multiple_times_then_succeed(self):
         """DISCARDED 3 times, then NORMAL on 4th attempt."""
-        group = await _make_alive_group(num_cells=2)
+        group = await _make_alive_controller(num_cells=2)
 
         # Use a counter-based actor to track attempts
         await _set_all_train_return(group, TrainStepOutcome.DISCARDED_SHOULD_RETRY)
@@ -934,7 +934,7 @@ class TestTrainRetry:
         normal, we do *not* retry. This may happen when some cells fails *after*
         exchanging gradients w/ others.' So alive cells get exactly 1 train call.
         """
-        group = await _make_alive_group(num_cells=3)
+        group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Make cell 1 fail (exception)
         for handle in group._cells[1]._get_actor_handles():
@@ -952,7 +952,7 @@ class TestTrainRetry:
 class TestAllocateWitnessInfo:
     def test_returns_none_when_disabled(self):
         """When _witness_allocator is None, _allocate_witness_info returns None."""
-        group = _make_group(num_cells=1)
+        group = _make_controller(num_cells=1)
         group._witness_allocator = None
 
         result = group._allocate_witness_info(rollout_id=0, attempt=0, sample_indices=[10, 20, 30])
@@ -961,7 +961,7 @@ class TestAllocateWitnessInfo:
 
     def test_returns_witness_info_when_enabled(self):
         """When witness is enabled, _allocate_witness_info returns a WitnessInfo with correct number of ids."""
-        group = _make_group(num_cells=1)
+        group = _make_controller(num_cells=1)
         group._witness_allocator = WitnessIdAllocator(buffer_size=100)
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=False):
@@ -975,7 +975,7 @@ class TestAllocateWitnessInfo:
 class TestLogStepEndEvent:
     def test_with_normal_and_error_cells(self):
         """Passes correct cell_outcomes to event logger for a mix of normal and errored cells."""
-        group = _make_group(num_cells=3)
+        group = _make_controller(num_cells=3)
 
         mock_cell_0 = MagicMock()
         mock_cell_0.cell_index = 0
@@ -1031,7 +1031,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
         """Without an initialized event logger, no check_weights request is issued."""
         inference_ctl = MagicMock()
         inference_ctl.check_weights = MagicMock()
-        group = _make_group(num_cells=1, inference_controller=inference_ctl)
+        group = _make_controller(num_cells=1, inference_controller=inference_ctl)
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=False):
             await group._maybe_log_inference_engine_weight_checksums(rollout_id=0)
@@ -1042,7 +1042,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
         """The initial out-of-loop sync (rollout_id=None) still logs an event with rollout_id=None."""
         inference_ctl = MagicMock()
         inference_ctl.check_weights = AsyncMock(return_value=_checksum_response([{"w": "e0"}]))
-        group = _make_group(num_cells=1, inference_controller=inference_ctl)
+        group = _make_controller(num_cells=1, inference_controller=inference_ctl)
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True), patch(
             "miles.ray.train.group.get_event_logger"
@@ -1060,7 +1060,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
         """Without real rollout engines (debug_train_only), no check_weights request is issued."""
         inference_ctl = MagicMock()
         inference_ctl.check_weights = MagicMock()
-        group = _make_group(num_cells=1, inference_controller=inference_ctl)
+        group = _make_controller(num_cells=1, inference_controller=inference_ctl)
         group.args.debug_train_only = True
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True):
@@ -1072,7 +1072,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
         """Without real train engines pushing weights (debug_rollout_only), no check_weights request is issued."""
         inference_ctl = MagicMock()
         inference_ctl.check_weights = MagicMock()
-        group = _make_group(num_cells=1, inference_controller=inference_ctl)
+        group = _make_controller(num_cells=1, inference_controller=inference_ctl)
         group.args.debug_rollout_only = True
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True):
@@ -1084,7 +1084,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
         """With event logger on and real engines, one event holds every engine's checksums."""
         inference_ctl = MagicMock()
         inference_ctl.check_weights = AsyncMock(return_value=_checksum_response([{"w": "e0"}, {"w": "e1"}]))
-        group = _make_group(num_cells=1, inference_controller=inference_ctl)
+        group = _make_controller(num_cells=1, inference_controller=inference_ctl)
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True), patch(
             "miles.ray.train.group.get_event_logger"
