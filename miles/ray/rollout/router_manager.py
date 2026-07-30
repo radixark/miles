@@ -23,22 +23,10 @@ logger = logging.getLogger(__name__)
 _SERVER_READY_TIMEOUT_SECS = 120
 
 
-def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool = False) -> tuple[str, int]:
-    """Start sgl router or miles router and return (router_ip, router_port).
-
-    If ``args.sglang_router_ip`` is already set and ``force_new`` is False,
-    skip launching and return the existing values.
-    """
-    if not force_new and args.sglang_router_ip is not None:
-        return args.sglang_router_ip, args.sglang_router_port
-
+def start_router(args, *, has_pd_disaggregation: bool = False) -> tuple[str, int]:
+    """Start sgl router or miles router and return (router_ip, router_port)."""
     router_ip = _wrap_ipv6(get_host_info()[1])
-    if force_new:
-        router_port = find_available_port(random.randint(3000, 4000))
-    else:
-        router_port = args.sglang_router_port
-        if router_port is None:
-            router_port = find_available_port(random.randint(3000, 4000))
+    router_port = find_available_port(random.randint(3000, 4000))
 
     if args.use_miles_router:
         assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
@@ -56,13 +44,6 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
         )
         logger.info(f"Launch router with args: {router_args}")
         launch_argv = [sys.executable, "-m", "sglang_router.launch_router", *router_args_to_argv(router_args)]
-
-    port = router_port
-    if not is_port_available(port):
-        raise RuntimeError(
-            f"Port {port} is already in use — a stale router process may still be running. "
-            f"Run 'pkill -9 python' to kill it, then retry."
-        )
 
     actor_handle = _launch_command_on_head(launch_argv)
     wait_tcp_ready(

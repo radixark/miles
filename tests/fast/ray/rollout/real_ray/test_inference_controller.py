@@ -40,12 +40,12 @@ def patch_low_level(monkeypatch):
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
     monkeypatch.setattr(scell, "CommandActor", MockSGLangEngine.__ray_actor_class__)
-    # multi-model tests would otherwise spawn a real router subprocess for
-    # ``model_idx > 0`` (force_new=True bypasses the args.sglang_router_ip cache).
+    # each model would otherwise spawn a real router subprocess; return a
+    # placeholder address nothing listens on instead.
     monkeypatch.setattr(
         rsrv,
         "start_router",
-        lambda args, **kw: (args.sglang_router_ip, args.sglang_router_port),
+        lambda args, **kw: ("127.0.0.1", 30000),
     )
 
     monkeypatch.setattr(rsrv, "SGLangRouterApiClient", _NoopRouterApiClient)
@@ -82,9 +82,6 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
     return make_args(
         sglang_config=cfg,
         rollout_num_gpus=rollout_num_gpus,
-        # short-circuit start_router (returns early when ip+port already set)
-        sglang_router_ip="127.0.0.1",
-        sglang_router_port=30000,
         # disable everything else that would spawn subprocesses or hit network
         use_session_server=False,
         use_fault_tolerance=False,
