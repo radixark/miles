@@ -10,7 +10,12 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
-from miles.backends.sglang_utils.sglang_engine import build_server_url, compute_engine_launch_plan, format_v6_uri
+from miles.backends.sglang_utils.sglang_engine import (
+    build_server_url,
+    compute_api_key,
+    compute_engine_launch_cmd,
+    format_v6_uri,
+)
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.cell_state import (
     AddrInfo,
@@ -154,8 +159,8 @@ class ServerCell:
                 ]
             )
 
-        plans = {
-            rank: compute_engine_launch_plan(
+        launch_cmds = {
+            rank: compute_engine_launch_cmd(
                 self.args,
                 node_rank=local_index,
                 worker_type=self.worker_type,
@@ -169,14 +174,14 @@ class ServerCell:
 
         await asyncio.gather(
             *[
-                actor.run.remote(cmd=plans[global_rank].cmd, envs={})
+                actor.run.remote(cmd=launch_cmds[global_rank], envs={})
                 for global_rank, actor in zip(global_ranks, actor_handles, strict=True)
             ]
         )
 
         await wait_server_healthy(
             server_url=self.addr_info.server_url,
-            api_key=plans[global_ranks[0]].api_key,
+            api_key=compute_api_key(self.args, sglang_overrides=self.sglang_overrides),
             is_process_alive=functools.partial(_engine_actor_is_alive, self.primary_actor_handle),
         )
 
