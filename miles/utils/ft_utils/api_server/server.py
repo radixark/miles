@@ -8,7 +8,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
 
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.api_server.handles import _ActorCellHandle, _CellHandle, _RolloutCellHandle
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry

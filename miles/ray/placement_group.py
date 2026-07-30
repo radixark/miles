@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def _select_train_group_class():
     if enable_experimental_ft_trainer():
-        from miles.ray.train.group import RayTrainGroup
+        from miles.ray.train.group import TrainerController
     else:
         from miles.ray.actor_group import RayTrainGroup
     return RayTrainGroup

@@ -16,8 +16,8 @@ def _port_info_name(port_info: "PortInfo | dict") -> str:
 class PortInfo(FrozenStrictBaseModel):
     name: str
     static_port: int
-    mode: Literal["per_worker", "master"]
-    allow_dynamic: bool
+    mode: Literal["per_worker", "master"] = "per_worker"
+    allow_dynamic: bool = False
     num_consecutive: int = 1
     offset_by_cell: bool = False
 
@@ -34,6 +34,14 @@ class SchedulingSpec(FrozenStrictBaseModel):
     num_workers_per_cell: int
     num_gpus_per_worker: float
 
+    @classmethod
+    def single(cls, num_gpus_per_worker: float) -> "SchedulingSpec":
+        return SchedulingSpec(
+            num_cells=1,
+            num_workers_per_cell=1,
+            num_gpus_per_worker=num_gpus_per_worker,
+        )
+
 
 class BaseWorkerSpec(FrozenStrictBaseModel):
     name: str
@@ -42,8 +50,13 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
     scheduling: SchedulingSpec
 
 
+class LaunchCommandContext(FrozenStrictBaseModel):
+    host: str
+    ports: dict[str, int]
+
+
 class CommandWorkerSpec(BaseWorkerSpec):
-    launch_command: str
+    launch_command: Callable[[LaunchCommandContext], str]
 
 
 class ServeWorkerSpec(BaseWorkerSpec):
