@@ -155,7 +155,7 @@ class MockRayTrainCell:
 
 
 def make_mock_group(cells: list[MockRayTrainCell]) -> object:
-    from miles.ray.train.group import RayTrainGroup
+    from miles.ray.train.group import TrainerController
 
     group = object.__new__(RayTrainGroup)
     group._cells = cells

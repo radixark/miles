@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from miles.utils.test_utils.ft_test_actions import _ACTOR_ACTIONS, _GROUP_ACTIONS, FTTestAction, _load_actions
+from miles.utils.test_utils.ft_test_actions import _ACTOR_ACTIONS, _CONTROLLER_ACTIONS, FTTestAction, _load_actions
 
 
 def _args(ci_ft_test_actions: object) -> SimpleNamespace:
@@ -13,7 +13,7 @@ def _args(ci_ft_test_actions: object) -> SimpleNamespace:
 
 def test_load_actions_returns_empty_when_attr_is_none() -> None:
     """None ci_ft_test_actions yields an empty action list without parsing."""
-    assert _load_actions(_args(None), _GROUP_ACTIONS) == []
+    assert _load_actions(_args(None), _CONTROLLER_ACTIONS) == []
 
 
 def test_load_actions_returns_empty_when_attr_is_empty_string() -> None:
@@ -23,7 +23,7 @@ def test_load_actions_returns_empty_when_attr_is_empty_string() -> None:
 
 def test_load_actions_returns_empty_when_attr_missing() -> None:
     """A missing ci_ft_test_actions attribute defaults to None and yields []."""
-    assert _load_actions(SimpleNamespace(), _GROUP_ACTIONS) == []
+    assert _load_actions(SimpleNamespace(), _CONTROLLER_ACTIONS) == []
 
 
 def test_load_actions_parses_single_crash_action_with_defaults() -> None:
@@ -49,7 +49,7 @@ def test_load_actions_filters_to_only_matching_actions() -> None:
             {"at_rollout": 3, "action": "start_cell_at_end"},
         ]
     )
-    group_actions = _load_actions(_args(raw), _GROUP_ACTIONS)
+    group_actions = _load_actions(_args(raw), _CONTROLLER_ACTIONS)
     assert [a.action for a in group_actions] == ["stop_cell_at_end", "start_cell_at_end"]
     actor_actions = _load_actions(_args(raw), _ACTOR_ACTIONS)
     assert [a.action for a in actor_actions] == ["crash_before_allreduce"]
@@ -58,21 +58,21 @@ def test_load_actions_filters_to_only_matching_actions() -> None:
 def test_load_actions_returns_empty_when_no_action_matches_filter() -> None:
     """Valid actions that fall outside the filter set produce an empty result."""
     raw = json.dumps([{"at_rollout": 1, "action": "crash_before_allreduce"}])
-    assert _load_actions(_args(raw), _GROUP_ACTIONS) == []
+    assert _load_actions(_args(raw), _CONTROLLER_ACTIONS) == []
 
 
 def test_load_actions_rejects_extra_field() -> None:
     """An unexpected JSON field is rejected because the model forbids extras."""
     raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "bogus": 5}])
     with pytest.raises(ValidationError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_rejects_invalid_action_literal() -> None:
     """An action string outside the allowed Literal set raises a validation error."""
     raw = json.dumps([{"at_rollout": 1, "action": "not_a_real_action"}])
     with pytest.raises(ValidationError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 def test_resolve_cell_index_uses_last_cell_for_default() -> None:
@@ -87,10 +87,10 @@ def test_resolve_cell_index_keeps_explicit_index() -> None:
     assert action.resolve_cell_index(num_cells=4) == 1
 
 
-from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
+from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 
 
-class FakeGroup:
+class FakeController:
     def __init__(self, num_cells: int) -> None:
         self.num_cells = num_cells
         self.stopped: list[int] = []
@@ -117,56 +117,56 @@ class TestResolveCellIndex:
 
 class TestRunAfterStep:
     def test_stop_cell_fires_on_matching_rollout(self):
-        """stop_cell_at_end triggers group.stop_cell with the resolved cell index on its rollout."""
-        group = FakeGroup(num_cells=3)
+        """stop_cell_at_end triggers controller.stop_cell with the resolved cell index on its rollout."""
+        controller = FakeController(num_cells=3)
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        executor = FTTestActionGroupExecutor(actions=[action], group=group)
+        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
 
         executor.run_after_step(5)
 
-        assert group.stopped == [1]
-        assert group.started == []
+        assert controller.stopped == [1]
+        assert controller.started == []
 
     def test_no_action_on_non_matching_rollout(self):
         """run_after_step does nothing when no action's at_rollout matches the given rollout."""
-        group = FakeGroup(num_cells=3)
+        controller = FakeController(num_cells=3)
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        executor = FTTestActionGroupExecutor(actions=[action], group=group)
+        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
 
         executor.run_after_step(4)
 
-        assert group.stopped == []
-        assert group.started == []
+        assert controller.stopped == []
+        assert controller.started == []
 
     def test_start_cell_with_default_index_resolves_to_last_cell(self):
-        """start_cell_at_end with cell_index -1 calls group.start_cell on the last cell."""
-        group = FakeGroup(num_cells=3)
+        """start_cell_at_end with cell_index -1 calls controller.start_cell on the last cell."""
+        controller = FakeController(num_cells=3)
         action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_index=-1)
-        executor = FTTestActionGroupExecutor(actions=[action], group=group)
+        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
 
         executor.run_after_step(2)
 
-        assert group.started == [2]
-        assert group.stopped == []
+        assert controller.started == [2]
+        assert controller.stopped == []
 
     def test_two_actions_same_rollout_both_fire(self):
-        """Two actions sharing the same rollout both dispatch to their respective group methods."""
-        group = FakeGroup(num_cells=3)
+        """Two actions sharing the same rollout both dispatch to their respective controller methods."""
+        controller = FakeController(num_cells=3)
         stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_index=0)
         start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_index=2)
-        executor = FTTestActionGroupExecutor(actions=[stop_action, start_action], group=group)
+        executor = FTTestActionControllerExecutor(actions=[stop_action, start_action], controller=controller)
 
         executor.run_after_step(7)
 
-        assert group.stopped == [0]
-        assert group.started == [2]
+        assert controller.stopped == [0]
+        assert controller.started == [2]
 
     def test_empty_actions_is_noop(self):
-        """An executor with no actions performs no group calls."""
-        group = FakeGroup(num_cells=3)
-        executor = FTTestActionGroupExecutor(actions=[], group=group)
+        """An executor with no actions performs no controller calls."""
+        controller = FakeController(num_cells=3)
+        executor = FTTestActionControllerExecutor(actions=[], controller=controller)
 
         executor.run_after_step(5)
 
-        assert group.stopped == []
-        assert group.started == []
+        assert controller.stopped == []
+        assert controller.started == []

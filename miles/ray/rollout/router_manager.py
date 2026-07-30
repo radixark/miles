@@ -7,13 +7,14 @@ import uuid
 
 import ray
 
-from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
+from miles.backends.sglang_utils.sglang_config import ModelConfig
+from miles.ray.specs.inference import _compute_spec_router
 from miles.rollout.session.config import compute_session_server_config
-from miles.router.config import compute_miles_router_config
 from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, is_port_available, wait_tcp_ready
 from miles.utils.workers.argv_utils import config_to_argv
 from miles.utils.workers.cell_launch import create_head_worker_actor
 from miles.utils.workers.command_actor import CommandActor
+from miles.utils.workers.worker_spec import LaunchCommandContext
 
 logger = logging.getLogger(__name__)
 
@@ -23,29 +24,18 @@ logger = logging.getLogger(__name__)
 _SERVER_READY_TIMEOUT_SECS = 120
 
 
-def start_router(args, *, has_pd_disaggregation: bool = False) -> tuple[str, int]:
+def start_router(args, model_idx: int, model_cfg: ModelConfig) -> tuple[str, int]:
     """Start sgl router or miles router and return (router_ip, router_port)."""
     router_ip = _wrap_ipv6(get_host_info()[1])
     router_port = find_available_port(random.randint(3000, 4000))
+    prometheus_port = find_available_port(random.randint(4000, 5000))
 
-    if args.use_miles_router:
-        assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
+    spec = _compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
+    ports = dict(primary=router_port, prometheus=prometheus_port)
+    assert set(ports) == {info.name for info in spec.port_infos}
+    launch_command = spec.launch_command(LaunchCommandContext(host=router_ip, ports=ports))
 
-        router_config = compute_miles_router_config(args, host=router_ip, port=router_port)
-        launch_argv = [sys.executable, "-m", "miles.router.router", *config_to_argv(router_config)]
-
-    else:
-        router_args = compute_sglang_router_args(
-            args,
-            host=router_ip,
-            port=router_port,
-            prometheus_port=find_available_port(random.randint(4000, 5000)),
-            has_pd_disaggregation=has_pd_disaggregation,
-        )
-        logger.info(f"Launch router with args: {router_args}")
-        launch_argv = [sys.executable, "-m", "sglang_router.launch_router", *router_args_to_argv(router_args)]
-
-    actor_handle = _launch_command_on_head(launch_argv)
+    actor_handle = _launch_command_on_head(launch_command)
     wait_tcp_ready(
         router_ip,
         router_port,
@@ -56,9 +46,9 @@ def start_router(args, *, has_pd_disaggregation: bool = False) -> tuple[str, int
     return router_ip, router_port
 
 
-def _launch_command_on_head(launch_argv: list[str]) -> ray.actor.ActorHandle:
+def _launch_command_on_head(launch_cmd: str) -> ray.actor.ActorHandle:
     actor_handle = create_head_worker_actor(worker_cls=CommandActor, env_vars={}, num_cpus=0.2, ctor_kwargs={})
-    actor_handle.run.remote(cmd=shlex.join(launch_argv), envs={})
+    actor_handle.run.remote(cmd=launch_cmd, envs={})
     return actor_handle
 
 
@@ -122,7 +112,7 @@ def start_session_server(args):
             args, host=ip, port=port, instance_id=instance_id, backend_url=router_url
         )
         launch_argv = [sys.executable, "-m", "miles.rollout.session.server", *config_to_argv(config)]
-        launches.append((port, _launch_command_on_head(launch_argv)))
+        launches.append((port, _launch_command_on_head(shlex.join(launch_argv))))
     # The per-port map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids

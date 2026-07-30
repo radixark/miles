@@ -37,10 +37,10 @@ async def test_v1_pauses_health_checks_before_snapshotting_the_engines():
 @pytest.mark.asyncio
 async def test_v2_pauses_health_checks_before_snapshotting_the_engines():
     """Same ordering requirement on the fault-tolerant trainer group."""
-    from miles.ray.train.group import RayTrainGroup as FaultTolerantTrainGroup
+    from miles.ray.train.group import TrainerController as FaultTolerantTrainGroup
 
     order: list[str] = []
-    group = FaultTolerantTrainGroup.__new__(FaultTolerantTrainGroup)
+    group = TrainerController.__new__(TrainerController)
     group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
     group._inference_controller = _OrderRecordingInferenceController(order)
     group._execute_first_alive = AsyncMock()
