@@ -9,10 +9,10 @@ from tests.fast.backends.sglang_utils.conftest import make_engine_args
 pytest.importorskip("sglang")
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_plan
+from miles.backends.sglang_utils.sglang_engine import compute_api_key, compute_engine_launch_cmd
 
 
-def _plan(*, worker_type: str = "regular", args=None, addr_overrides: dict | None = None, **kwargs):
+def _cmd(*, worker_type: str = "regular", args=None, addr_overrides: dict | None = None, **kwargs) -> str:
     addr_and_ports = dict(
         host="10.0.0.1",
         port=30000,
@@ -21,7 +21,7 @@ def _plan(*, worker_type: str = "regular", args=None, addr_overrides: dict | Non
         dist_init_addr="10.0.0.1:20000",
     )
     addr_and_ports.update(addr_overrides or {})
-    return compute_engine_launch_plan(
+    return compute_engine_launch_cmd(
         args or make_engine_args(),
         node_rank=0,
         worker_type=worker_type,
@@ -33,11 +33,10 @@ def _plan(*, worker_type: str = "regular", args=None, addr_overrides: dict | Non
     )
 
 
-class TestComputeEngineLaunchPlan:
+class TestComputeEngineLaunchCmd:
     def test_the_command_launches_sglang_with_the_allocated_addressing(self):
-        """The plan renders one launch_server command carrying the addr map."""
-        plan = _plan()
-        tokens = shlex.split(plan.cmd)
+        """The rendered launch_server command carries the addr map."""
+        tokens = shlex.split(_cmd())
         assert tokens[:3] == [sys.executable, "-m", "sglang.launch_server"]
         parsed = parse_server_args_argv(tokens[3:])
         assert parsed.host == "10.0.0.1" and parsed.port == 30000
@@ -53,24 +52,36 @@ class TestComputeEngineLaunchPlan:
 
     def test_a_bracketed_v6_host_is_stripped_for_the_server_but_kept_in_dist_addr(self):
         """sglang binds a bare v6 host while the rendezvous addr stays bracketed."""
-        plan = _plan(addr_overrides=dict(host="[fd00::2]", port=31007, dist_init_addr="[fd00::1]:15003"))
-        parsed = parse_server_args_argv(shlex.split(plan.cmd)[3:])
+        cmd = _cmd(addr_overrides=dict(host="[fd00::2]", port=31007, dist_init_addr="[fd00::1]:15003"))
+        parsed = parse_server_args_argv(shlex.split(cmd)[3:])
         assert parsed.host == "fd00::2"
         assert parsed.dist_init_addr == "[fd00::1]:15003"
 
-    def test_a_prefill_plan_carries_the_bootstrap_port(self):
+    def test_a_prefill_command_carries_the_bootstrap_port(self):
         """PD-disaggregation prefill flags survive into the command."""
-        plan = _plan(worker_type="prefill", addr_overrides=dict(disaggregation_bootstrap_port=20090))
-        parsed = parse_server_args_argv(shlex.split(plan.cmd)[3:])
+        cmd = _cmd(worker_type="prefill", addr_overrides=dict(disaggregation_bootstrap_port=20090))
+        parsed = parse_server_args_argv(shlex.split(cmd)[3:])
         assert parsed.disaggregation_mode == "prefill"
         assert parsed.disaggregation_bootstrap_port == 20090
 
-    def test_the_plan_exposes_the_api_key_for_the_health_wait(self):
-        """The driver-side health wait needs the same api key the server got."""
-        args = make_engine_args()
-        args.sglang_api_key = "secret"
-        assert _plan(args=args).api_key == "secret"
+    def test_the_command_carries_the_api_key_from_args(self):
+        """--sglang-api-key reaches the server through the generic passthrough."""
+        cmd = _cmd(args=make_engine_args(sglang_api_key="secret"))
+        parsed = parse_server_args_argv(shlex.split(cmd)[3:])
+        assert parsed.api_key == "secret"
 
-    def test_the_plan_has_no_api_key_when_the_server_has_none(self):
+
+class TestComputeApiKey:
+    def test_the_args_key_is_used_when_no_override_exists(self):
+        """The health wait needs the same key the generic passthrough gave the server."""
+        args = make_engine_args(sglang_api_key="secret")
+        assert compute_api_key(args, sglang_overrides={}) == "secret"
+
+    def test_an_override_key_wins_over_the_args_key(self):
+        """Overrides beat args exactly like they do in the rendered command."""
+        args = make_engine_args(sglang_api_key="from-args")
+        assert compute_api_key(args, sglang_overrides={"api_key": "from-override"}) == "from-override"
+
+    def test_no_key_anywhere_means_the_health_wait_sends_none(self):
         """No key configured means the health wait sends none."""
-        assert _plan().api_key is None
+        assert compute_api_key(make_engine_args(), sglang_overrides={}) is None
