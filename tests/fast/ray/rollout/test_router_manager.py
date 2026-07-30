@@ -37,34 +37,13 @@ class TestLaunchCommandOnHead:
 
 
 class TestStartRouter:
-    def test_returns_existing_when_already_configured(self):
-        """Happy path: ``sglang_router_ip`` and ``sglang_router_port`` are
-        already set and ``force_new=False`` → skip subprocess launch entirely
-        and return the existing tuple."""
-        args = make_args(
-            use_miles_router=False,
-            sglang_router_ip="10.1.2.3",
-            sglang_router_port=4567,
-        )
-        # No mocks needed — the function returns before touching anything.
-        ip, port = start_router(args, force_new=False)
-        assert (ip, port) == ("10.1.2.3", 4567)
-
     def test_pd_disagg_with_miles_router_asserts(self):
         args = make_args(use_miles_router=True, sglang_router_ip=None, sglang_router_port=None)
         with patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")), patch(
             "miles.ray.rollout.router_manager.find_available_port", return_value=20000
         ):
             with pytest.raises(AssertionError, match="miles router does not support PD"):
-                start_router(args, has_pd_disaggregation=True, force_new=False)
-
-    def test_port_conflict_raises_runtime_error(self):
-        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
-        with patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")), patch(
-            "miles.ray.rollout.router_manager.find_available_port", return_value=20000
-        ), patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
-            with pytest.raises(RuntimeError, match="already in use"):
-                start_router(args)
+                start_router(args, has_pd_disaggregation=True)
 
 
 class TestStartRouterLaunchCommand:
@@ -77,7 +56,6 @@ class TestStartRouterLaunchCommand:
             return MagicMock()
 
         monkeypatch.setattr("miles.ray.rollout.router_manager.get_host_info", lambda: ("h", "127.0.0.1"))
-        monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
         monkeypatch.setattr("miles.ray.rollout.router_manager._launch_command_on_head", fake_launch)
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", lambda *fn_args, **fn_kwargs: None)
         return launches

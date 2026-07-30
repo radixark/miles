@@ -179,9 +179,9 @@ A router sits in front of the SGLang workers. Pass router-side flags with the
 --router-balance-abs-threshold 0   # force uniform distribution (lowers prefix-cache hit rate)
 ```
 
-If `--sglang-router-ip` and `--sglang-router-port` are set, Miles treats them as an
-**external** router and skips starting its own — engines register via `/add_worker`
-at startup.
+Miles always starts its own router per model; external router mode
+(`--sglang-router-ip`/`--sglang-router-port`) was removed and is expected to
+return with the k8s-native mode.
 
 ---
 
