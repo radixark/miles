@@ -143,6 +143,17 @@ class TestAddressingOfStartedEngines:
         all_ports = _all_ports(addr_and_ports)
         assert len(all_ports) == len(set(all_ports)), f"port collision across engines on the same node: {all_ports}"
 
+    def test_an_ipv6_node_gets_bracketed_host_and_dist_init_addr(self, patch_ray_get):
+        """The builder hands out display-ready v6 values, so consumers never re-bracket."""
+        args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
+        engines = [(0, fake_engine(host="fd00::1", port_seed=30000))]
+        addr_and_ports = _alloc_single_engine_cells(args, PortAllocator(), engines)
+
+        assert addr_and_ports[0]["host"] == "[fd00::1]"
+        host, _, port_str = addr_and_ports[0]["dist_init_addr"].rpartition(":")
+        assert host == "[fd00::1]"
+        assert int(port_str) >= 30000
+
     def test_prefill_worker_gets_disagg_bootstrap_port(self, patch_ray_get):
         """A prefill engine's disaggregation bootstrap port is distinct from its other ports."""
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
