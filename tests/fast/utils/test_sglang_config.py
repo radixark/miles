@@ -32,17 +32,15 @@ class TestSglangConfigUpdateWeights:
             },
             tmp_path,
         )
-        config = SglangConfig.from_yaml(path)
-        assert len(config.models) == 1
-        # Before resolve, update_weights is None (not yet inferred)
-        assert config.models[0].update_weights is None
-        # After resolve with matching hf_checkpoint, defaults to True
         args = Namespace(hf_checkpoint="/path/to/model", rollout_num_gpus_per_engine=1)
-        config.models[0].resolve(args)
+        config = SglangConfig.from_yaml(args, path)
+        assert len(config.models) == 1
         assert config.models[0].update_weights is True
 
     def test_update_weights_explicit_false(self, tmp_path):
         """Models with update_weights: false should be parsed correctly."""
+        from argparse import Namespace
+
         from miles.backends.sglang_utils.sglang_config import SglangConfig
 
         path = _write_yaml(
@@ -63,7 +61,8 @@ class TestSglangConfigUpdateWeights:
             },
             tmp_path,
         )
-        config = SglangConfig.from_yaml(path)
+        args = Namespace(hf_checkpoint="/path/to/model", rollout_num_gpus_per_engine=1)
+        config = SglangConfig.from_yaml(args, path)
         assert len(config.models) == 2
         assert config.models[0].name == "actor"
         assert config.models[0].update_weights is True
@@ -73,6 +72,8 @@ class TestSglangConfigUpdateWeights:
 
     def test_multi_model_total_gpus(self, tmp_path):
         """total_num_gpus should sum across all models."""
+        from argparse import Namespace
+
         from miles.backends.sglang_utils.sglang_config import SglangConfig
 
         path = _write_yaml(
@@ -91,7 +92,8 @@ class TestSglangConfigUpdateWeights:
             },
             tmp_path,
         )
-        config = SglangConfig.from_yaml(path)
+        args = Namespace(hf_checkpoint="/path/to/model", rollout_num_gpus_per_engine=1)
+        config = SglangConfig.from_yaml(args, path)
         assert config.total_num_gpus == 12
 
 

@@ -84,52 +84,60 @@ class TestServerGroupConfigValidation:
 
 class TestModelConfigResolve:
     def test_resolve_inherits_num_gpus_per_engine_from_args(self):
-        m = ModelConfig(
+        args = make_args(rollout_num_gpus_per_engine=2, hf_checkpoint="/x")
+        m = ModelConfig.resolve(
+            args=args,
             name="actor",
             server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=4)],
         )
-        args = make_args(rollout_num_gpus_per_engine=2, hf_checkpoint="/x")
-        m.resolve(args)
         assert m.server_groups[0].num_gpus_per_engine == 2
 
     def test_resolve_inherits_model_path_into_overrides(self):
-        m = ModelConfig(
+        args = make_args(rollout_num_gpus_per_engine=2, hf_checkpoint="/path/actor")
+        m = ModelConfig.resolve(
+            args=args,
             name="actor",
             server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=4)],
         )
-        args = make_args(rollout_num_gpus_per_engine=2, hf_checkpoint="/path/actor")
-        m.resolve(args)
         assert m.server_groups[0].overrides["model_path"] == "/path/actor"
 
+    def test_resolve_does_not_mutate_the_passed_server_groups(self):
+        """The factory deep-copies groups, so the caller's objects stay unresolved."""
+        args = make_args(rollout_num_gpus_per_engine=2, hf_checkpoint="/x")
+        groups = [ServerGroupConfig(worker_type="regular", num_gpus=4)]
+        ModelConfig.resolve(args=args, name="actor", server_groups=groups)
+        assert groups[0].num_gpus_per_engine is None
+        assert "model_path" not in groups[0].overrides
+
     def test_resolve_auto_infers_update_weights_false_for_diff_path(self):
-        m = ModelConfig(
+        args = make_args(rollout_num_gpus_per_engine=1, hf_checkpoint="/actor/model")
+        m = ModelConfig.resolve(
+            args=args,
             name="ref",
             model_path="/ref/model",
             server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=4)],
         )
-        args = make_args(rollout_num_gpus_per_engine=1, hf_checkpoint="/actor/model")
-        m.resolve(args)
         assert m.update_weights is False
 
     def test_resolve_auto_infers_update_weights_true_for_same_path(self):
-        m = ModelConfig(
+        args = make_args(rollout_num_gpus_per_engine=1, hf_checkpoint="/actor/model")
+        m = ModelConfig.resolve(
+            args=args,
             name="actor",
             model_path="/actor/model",
             server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=4)],
         )
-        args = make_args(rollout_num_gpus_per_engine=1, hf_checkpoint="/actor/model")
-        m.resolve(args)
         assert m.update_weights is True
 
     def test_resolve_explicit_update_weights_not_overridden(self):
-        m = ModelConfig(
+        args = make_args(hf_checkpoint="/actor/model")
+        m = ModelConfig.resolve(
+            args=args,
             name="ref",
             model_path="/actor/model",
             update_weights=False,  # explicit
             server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=4)],
         )
-        args = make_args(hf_checkpoint="/actor/model")
-        m.resolve(args)
         assert m.update_weights is False  # not flipped
 
 

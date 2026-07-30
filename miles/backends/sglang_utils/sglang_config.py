@@ -2,6 +2,7 @@
 
 import dataclasses
 import logging
+from copy import deepcopy
 
 import yaml
 
@@ -60,36 +61,55 @@ class ModelConfig:
     server_groups: list[ServerGroupConfig] = dataclasses.field(default_factory=list)
     update_weights: bool | None = None
 
-    def resolve(self, args) -> None:
+    @staticmethod
+    def resolve(
+        *,
+        args,
+        name: str,
+        model_path: str | None = None,
+        num_gpus_per_engine: int | None = None,
+        server_groups: list[ServerGroupConfig],
+        update_weights: bool | None = None,
+    ) -> "ModelConfig":
         """Resolve per-group defaults from model-level then args-level values."""
-        default_gpus_per_engine = self.num_gpus_per_engine or args.rollout_num_gpus_per_engine
-        default_model_path = self.model_path or args.hf_checkpoint
-        for g in self.server_groups:
+        server_groups = deepcopy(server_groups)
+
+        default_gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
+        default_model_path = model_path or args.hf_checkpoint
+        for g in server_groups:
             if g.num_gpus_per_engine is None:
                 g.num_gpus_per_engine = default_gpus_per_engine
             if "model_path" not in g.overrides:
                 g.overrides["model_path"] = default_model_path
 
-        if self.server_groups:
-            model_paths = {g.overrides["model_path"] for g in self.server_groups}
+        if server_groups:
+            model_paths = {g.overrides["model_path"] for g in server_groups}
             assert len(model_paths) == 1, (
-                f"Model '{self.name}' has server groups with different model_path values: "
+                f"Model '{name}' has server groups with different model_path values: "
                 f"{model_paths}. All server groups within a model must use the same model_path."
             )
             effective_model_path = model_paths.pop()
         else:
             effective_model_path = default_model_path
 
-        if self.update_weights is None:
+        if update_weights is None:
             if effective_model_path != args.hf_checkpoint:
                 logger.warning(
-                    f"Model '{self.name}' uses model_path='{effective_model_path}' which differs "
+                    f"Model '{name}' uses model_path='{effective_model_path}' which differs "
                     f"from hf_checkpoint='{args.hf_checkpoint}'. Defaulting update_weights to False. "
                     f"Set update_weights explicitly in the config to suppress this warning."
                 )
-                self.update_weights = False
+                update_weights = False
             else:
-                self.update_weights = True
+                update_weights = True
+
+        return ModelConfig(
+            name=name,
+            model_path=model_path,
+            num_gpus_per_engine=num_gpus_per_engine,
+            server_groups=server_groups,
+            update_weights=update_weights,
+        )
 
     @property
     def has_pd_disaggregation(self) -> bool:
@@ -143,7 +163,7 @@ class SglangConfig:
     models: list[ModelConfig]
 
     @staticmethod
-    def from_yaml(path: str) -> "SglangConfig":
+    def from_yaml(args, path: str) -> "SglangConfig":
         with open(path) as f:
             data = yaml.safe_load(f)
 
@@ -156,7 +176,8 @@ class SglangConfig:
             raw_groups = m.get("server_groups") or m.get("engine_groups") or []
             groups = [ServerGroupConfig(**g) for g in raw_groups]
             models.append(
-                ModelConfig(
+                ModelConfig.resolve(
+                    args=args,
                     name=m["name"],
                     model_path=m.get("model_path"),
                     num_gpus_per_engine=m.get("num_gpus_per_engine"),
@@ -175,7 +196,8 @@ class SglangConfig:
         assert decode_gpus > 0, f"No decode GPUs: total {total_gpus}, prefill {prefill_gpus}"
         return SglangConfig(
             models=[
-                ModelConfig(
+                ModelConfig.resolve(
+                    args=args,
                     name="default",
                     server_groups=[
                         ServerGroupConfig(worker_type="prefill", num_gpus=prefill_gpus),

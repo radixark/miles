@@ -29,8 +29,6 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     megatron_num_gpus = _compute_megatron_num_gpus(args)
 
     for model_idx, model_cfg in enumerate(config.models):
-        model_cfg.resolve(args)
-
         has_pd = model_cfg.has_pd_disaggregation
         router_ip, router_port = start_router(args, has_pd_disaggregation=has_pd, force_new=(model_idx > 0))
 
@@ -108,7 +106,7 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 def _resolve_sglang_config(args) -> SglangConfig:
     """Build a SglangConfig from args, choosing the right source."""
     if getattr(args, "sglang_config", None) is not None:
-        config = SglangConfig.from_yaml(args.sglang_config)
+        config = SglangConfig.from_yaml(args, args.sglang_config)
         expected = args.rollout_num_gpus
         actual = config.total_num_gpus
         assert actual == expected, f"sglang_config total GPUs ({actual}) != rollout_num_gpus ({expected})"
@@ -119,7 +117,8 @@ def _resolve_sglang_config(args) -> SglangConfig:
 
     return SglangConfig(
         models=[
-            ModelConfig(
+            ModelConfig.resolve(
+                args=args,
                 name="default",
                 server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
             )
