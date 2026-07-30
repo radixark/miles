@@ -35,6 +35,12 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import (
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import sparse_attn_tilelang
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.thd_utils import (
+    get_compress_topk_idxs_thd,
+    get_indexer_cu_seqlens_thd,
+    get_q_positions_thd,
+    get_window_topk_idxs_thd,
+)
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
 
 
@@ -229,11 +235,15 @@ class DeepSeekV4Attention(MegatronModule):
         x = einops.rearrange(hidden_states, "s b d -> b s d")
 
         bsz, seqlen_local, _ = x.size()
+        cu_seqlens = packed_seq_params.cu_seqlens_q if packed_seq_params is not None else None
         rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size, x.device
         )
         freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group)
+        if cu_seqlens is not None:
+            # Packed positions restart at every segment boundary.
+            freqs_cis = freqs_cis.index_select(0, get_q_positions_thd(cu_seqlens, seqlen_local))
         win = self.window_size
         ratio = self.compress_ratio
         rd = self.rope_head_dim
@@ -256,11 +266,30 @@ class DeepSeekV4Attention(MegatronModule):
             kv_vanilla[..., : self.nope_head_dim] = fp8_simulate_qat(kv_vanilla[..., : self.nope_head_dim], 64)
 
         seqlen_global = seqlen_local * self.cp_size
-        q_positions = get_q_positions_for_cp(
-            seqlen_local, cp_size=self.cp_size, cp_group=self.cp_group, device=x.device
+        # Only the BSHD helpers take stream positions; the _thd ones derive them from cu_seqlens.
+        q_positions = (
+            get_q_positions_for_cp(seqlen_local, cp_size=self.cp_size, cp_group=self.cp_group, device=x.device)
+            if cu_seqlens is None
+            else None
         )
 
-        topk_idxs = get_window_topk_idxs_cp(q_positions, window_size=win, cp_size=self.cp_size, bsz=bsz)
+        kv_compress = None
+        cu_seqlens_compressed = None
+        if self.compress_ratio:
+            # Compress before building indices: THD compressed-group counts come from the compressor.
+            x_sbd = einops.rearrange(x, "b s d -> s b d")
+            compressor_out = self.compressor(x_sbd, cu_seqlens)
+            if cu_seqlens is None:
+                kv_compress_sbd = compressor_out
+            else:
+                kv_compress_sbd, cu_seqlens_compressed = compressor_out
+            if kv_compress_sbd is not None:
+                kv_compress = einops.rearrange(kv_compress_sbd, "s b d -> b s d")
+
+        if cu_seqlens is None:
+            topk_idxs = get_window_topk_idxs_cp(q_positions, window_size=win, cp_size=self.cp_size, bsz=bsz)
+        else:
+            topk_idxs = get_window_topk_idxs_thd(cu_seqlens, window_size=win, total_tokens=seqlen_local)
 
         if self.compress_ratio:
             kv_compress_offset = seqlen_global
@@ -271,24 +300,33 @@ class DeepSeekV4Attention(MegatronModule):
                     x_sbd = scatter_to_sequence_parallel_region(x_sbd, group=self.tp_group)
                     qr_sbd = scatter_to_sequence_parallel_region(qr_sbd, group=self.tp_group)
                 if isinstance(self.indexer, V4Indexer):
-                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd)
+                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd, cu_seqlens=cu_seqlens)
                 else:
+                    assert cu_seqlens is None, "DSAIndexer is BSHD-only; THD needs V4_INDEXER_IMPL=tilelang."
                     indexer_mask = self._compute_indexer_mask(q_positions=q_positions, seqlen_global=seqlen_global)
                     compress_topk_idxs = self.indexer(x_sbd, qr_sbd, mask=indexer_mask, packed_seq_params=None)
-                q_first_invalid_group = (q_positions + 1).unsqueeze(1) // ratio
-                topk_idx_mask = (compress_topk_idxs >= q_first_invalid_group) | (compress_topk_idxs < 0)
-                compress_topk_idxs = torch.where(topk_idx_mask, -1, compress_topk_idxs + kv_compress_offset)
-            else:
+                if cu_seqlens is None:
+                    q_first_invalid_group = (q_positions + 1).unsqueeze(1) // ratio
+                    valid = (compress_topk_idxs >= 0) & (compress_topk_idxs < q_first_invalid_group)
+                else:
+                    # The range the indexer kernel scored within, so a pick from another segment dies here.
+                    cu_ks, cu_ke = get_indexer_cu_seqlens_thd(
+                        cu_seqlens, cu_seqlens_compressed, ratio=ratio, total_tokens=seqlen_local
+                    )
+                    valid = (compress_topk_idxs >= cu_ks.unsqueeze(1)) & (compress_topk_idxs < cu_ke.unsqueeze(1))
+                compress_topk_idxs = torch.where(valid, compress_topk_idxs + kv_compress_offset, -1)
+            elif cu_seqlens is None:
                 compress_topk_idxs = get_compress_topk_idxs_cp(q_positions, ratio=ratio, cp_size=self.cp_size, bsz=bsz)
+            else:
+                compress_topk_idxs = get_compress_topk_idxs_thd(
+                    cu_seqlens,
+                    cu_seqlens_compressed,
+                    ratio=ratio,
+                    total_tokens=seqlen_local,
+                    max_n_compressed=packed_seq_params.max_seqlen_q // ratio,
+                )
             topk_idxs = torch.cat([topk_idxs, compress_topk_idxs], dim=-1)
         topk_idxs = topk_idxs.int()
-
-        kv_compress = None
-        if self.compress_ratio:
-            x_sbd = einops.rearrange(x, "b s d -> s b d")
-            kv_compress_sbd = self.compressor(x_sbd)
-            if kv_compress_sbd is not None:
-                kv_compress = einops.rearrange(kv_compress_sbd, "s b d -> b s d")
 
         assert self.attn_sink.dtype == torch.float32
 
