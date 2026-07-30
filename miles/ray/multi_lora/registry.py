@@ -217,6 +217,14 @@ class AdapterRegistry:
             record.step = step
             record.start_step = step
 
+    def advance_step(self, name: str) -> int:
+        """Advance a service-owned adapter after one external optimizer step."""
+        record = self.find(name)
+        if record is None:
+            return 0
+        record.step += 1
+        return record.step
+
     def step_count(self, name: str) -> int:
         record = self.find(name)
         return record.step if record is not None else 0

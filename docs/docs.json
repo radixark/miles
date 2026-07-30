@@ -172,6 +172,7 @@
        "user-guide/rollout-endpoints",
        "user-guide/fully-async",
        "user-guide/agentic-chat-template",
+       "user-guide/tinker-api",
        "user-guide/cli-reference"
       ]
      },

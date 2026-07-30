@@ -162,6 +162,19 @@ Sections mirror the launch-script argument groups.
 | `--model-name` | str | – | Set in multi-node to avoid `transformers` file-system race. |
 | `--spec` | `<module> <fn>` | – | Plugin spec for custom architectures (e.g. `miles_plugins.models.qwen3_5 get_qwen3_5_spec`). |
 
+### Tinker-compatible API
+
+These arguments apply to the [`train_tinker.py`](/user-guide/tinker-api) service
+entrypoint.
+
+| Flag | Type | Default | Notes |
+|---|---|---|---|
+| `--tinker-model-name` | str | `--hf-checkpoint` | Public base-model name accepted from Tinker SDK clients. |
+| `--tinker-tokenizer-id` | str | `--tinker-model-name` | Tokenizer identifier returned by `get_info`. |
+| `--tinker-checkpoint-dir` | path | `SAVE/tinker` or `/tmp/miles/tinker` | Local root for training and sampler snapshots. |
+| `--tinker-api-key` | str | – | Optional key required in the SDK's `X-API-Key` header and redacted from parsed argument logs. Prefer the `TINKER_API_KEY` environment variable so the secret does not enter process arguments. Authentication is disabled when unset. |
+| `--tinker-max-concurrent-samples` | int | `256` | Sampling concurrency advertised to SDK clients. |
+
 ### Rollout: data and batching
 
 | Flag | Type | Default | Notes |

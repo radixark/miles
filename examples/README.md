@@ -17,6 +17,7 @@ recipes that are not fully verified.
 - **[on_policy_distillation](./on_policy_distillation)**: Example implementation for on-policy distillation, extending the reinforcement learning pipeline to support teacher–student distillation directly within on-policy training.
 - **[retool_v2](./retool_v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
 - **[swe-agent](./swe-agent)**: Trains coding and terminal agents with Harbor-managed sandboxes and verifier rewards.
+- **[tinker](./tinker)**: Serve Megatron LoRA training and SGLang sampling through the public Tinker Python SDK.
 
 ### [infra_features](./infra_features)
 

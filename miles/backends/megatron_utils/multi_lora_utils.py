@@ -296,6 +296,101 @@ def save_multi_lora_checkpoints(
             dist.barrier()
 
 
+def _tinker_module_group(base_linear_name: str) -> str:
+    """Map a Megatron module path to Tinker's attention/MLP/unembed groups."""
+    leaf = base_linear_name.rsplit(".", 1)[-1]
+    if leaf in {"output_layer", "lm_head", "unembed_tokens"}:
+        return "unembed"
+    if (
+        ".mlp." in base_linear_name
+        or ".experts." in base_linear_name
+        or leaf
+        in {
+            "linear_fc1",
+            "linear_fc1_gate",
+            "linear_fc1_up",
+            "linear_fc2",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        }
+    ):
+        return "mlp"
+    return "attn"
+
+
+def _multi_lora_module_name(module) -> str:
+    """Return the wrapped linear name across Bridge multi-LoRA variants.
+
+    ``MultiLoRAGroupedExpertLinear`` publishes the name on the wrapper, while
+    the current dense ``MultiLoRALinear`` keeps it on each slot adapter.
+    """
+    name = getattr(module, "base_linear_name", None)
+    if isinstance(name, str) and name:
+        return name
+    adapters = getattr(module, "adapters", ())
+    if len(adapters):
+        name = getattr(adapters[0], "base_linear_name", None)
+        if isinstance(name, str) and name:
+            return name
+    raise RuntimeError(f"cannot determine wrapped linear name for {type(module).__name__}")
+
+
+def _reset_adapter_slot_with_seed(model, slot: int, seed: int) -> None:
+    """Initialize a slot reproducibly without advancing Megatron's tracked RNG streams."""
+    from megatron.bridge.peft.multi_lora_layers import (
+        MultiLoRAGroupedExpertLinear,
+        _iter_multi_lora_modules,
+    )
+    from megatron.bridge.peft.utils import ParallelLinearAdapter
+
+    parallel_state = get_parallel_state()
+    modules = sorted(_iter_multi_lora_modules(model), key=_multi_lora_module_name)
+    dense_modules = [module for module in modules if not isinstance(module, MultiLoRAGroupedExpertLinear)]
+    expert_modules = [module for module in modules if isinstance(module, MultiLoRAGroupedExpertLinear)]
+
+    def initialize(selected_modules, module_seed: int) -> None:
+        if not selected_modules:
+            return
+        torch.cuda.manual_seed(module_seed)
+        for module in selected_modules:
+            adapter = module.adapters[slot]
+            column_init = ParallelLinearAdapter._get_init_fn(None, module._column_init_method)
+            row_init = ParallelLinearAdapter._get_init_fn(None, module._row_init_method)
+            column_init(adapter.linear_in.weight.data)
+            row_init(adapter.linear_out.weight.data)
+
+    device = torch.cuda.current_device()
+    with torch.random.fork_rng(devices=[device]):
+        initialize(dense_modules, seed + 2718 + parallel_state.tp.rank)
+        initialize(
+            expert_modules,
+            seed + 1024 + 100 * parallel_state.ep.rank + parallel_state.etp.rank,
+        )
+
+
+def _apply_tinker_module_groups(config, model, slot: int) -> None:
+    """Disable slot deltas for Tinker module groups that were not requested."""
+    requested = {
+        "unembed": getattr(config, "train_unembed", True),
+        "mlp": getattr(config, "train_mlp", True),
+        "attn": getattr(config, "train_attn", True),
+    }
+    if all(requested.values()):
+        return
+
+    from megatron.bridge.peft.multi_lora_layers import _iter_multi_lora_modules
+
+    with torch.no_grad():
+        for module in _iter_multi_lora_modules(model):
+            if requested[_tinker_module_group(_multi_lora_module_name(module))]:
+                continue
+            module.alpha_values[slot] = 0
+            # Keep the exported PEFT adapter a true no-op too: SGLang has one
+            # global alpha and cannot consume Megatron's per-module alpha mask.
+            module.adapters[slot].linear_out.weight.zero_()
+
+
 def _register_adapter(adapter: AdapterRun, model) -> int:
     """Install one adapter on this rank's local model shard. Returns the step
     of the checkpoint it resumed from (0 for a fresh adapter)."""
@@ -316,6 +411,8 @@ def _register_adapter(adapter: AdapterRun, model) -> int:
     if ckpt is None:
         logger.info(f"{log_prefix} no checkpoint, starting from random init")
         step = 0
+        if (seed := getattr(config, "seed", None)) is not None:
+            _reset_adapter_slot_with_seed(model, slot, seed)
     else:
         state_dict = torch.load(ckpt, map_location="cpu", weights_only=True)
         loaded = load_adapter(model, slot, state_dict)
@@ -326,6 +423,7 @@ def _register_adapter(adapter: AdapterRun, model) -> int:
         logger.info(f"{log_prefix} loaded from {ckpt} ({loaded} tensors)")
 
     init_adapter_slot(model, slot, rank=config.rank, alpha=config.alpha)
+    _apply_tinker_module_groups(config, model, slot)
     logger.info(f"{log_prefix} installed at slot {slot}")
     return step
 

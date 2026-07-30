@@ -17,22 +17,34 @@ from megatron.core.process_groups_config import ProcessGroupCollection
 logger = logging.getLogger(__name__)
 
 
-def adapter_slot_parameters(model, slot: int) -> list[torch.nn.Parameter]:
-    """All parameters belonging to one adapter slot, across model chunks."""
+def named_adapter_slot_parameters(model, slot: int) -> list[tuple[str, torch.nn.Parameter]]:
+    """All parameters belonging to one adapter slot, with slot-independent names.
+
+    The names deliberately stop at the ``MultiLoRALinear`` wrapper and then append
+    the adapter-local parameter name.  This makes the same logical LoRA tensor use
+    the same key in every slot, which is required when moving optimizer state
+    between Tinker training clients.
+    """
     from megatron.bridge.peft.multi_lora_layers import MultiLoRALinear
 
-    parameters = []
+    parameters: list[tuple[str, torch.nn.Parameter]] = []
     seen = set()
     model_chunks = model if isinstance(model, (list, tuple)) else [model]
-    for model_chunk in model_chunks:
-        for module in model_chunk.modules():
+    for chunk_index, model_chunk in enumerate(model_chunks):
+        for module_name, module in model_chunk.named_modules():
             if not isinstance(module, MultiLoRALinear):
                 continue
-            for param in module.adapters[slot].parameters():
+            for adapter_name, param in module.adapters[slot].named_parameters():
                 if id(param) not in seen:
-                    parameters.append(param)
+                    name = f"model{chunk_index}.{module_name}.{adapter_name}"
+                    parameters.append((name, param))
                     seen.add(id(param))
     return parameters
+
+
+def adapter_slot_parameters(model, slot: int) -> list[torch.nn.Parameter]:
+    """All parameters belonging to one adapter slot, across model chunks."""
+    return [param for _, param in named_adapter_slot_parameters(model, slot)]
 
 
 def _adam_init_state_fn(opt, config=None):
@@ -159,18 +171,22 @@ def step_adapter_slots(
     model,
     step_batch_sizes: dict[int, int],
     clip_grad: float,
+    *,
+    normalize_by_batch_size: bool = True,
 ) -> dict[int, float]:
     """Step exactly the slots in ``step_batch_sizes`` (slot -> batch size), retaining all other slots' gradients;
-    scales each slot's accumulated grad sum by 1/batch_size and returns the grad norm per stepped slot."""
+    optionally scales each slot's accumulated grad sum by 1/batch_size and returns the grad norm per stepped slot."""
     grad_norms: dict[int, float] = {}
 
     for slot, batch_size in step_batch_sizes.items():
+        if batch_size <= 0:
+            raise ValueError(f"adapter slot {slot} batch size must be positive")
         children = _slot_children(optimizer, slot)
         # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the adapter-batch mean.
         for child in children:
             child.prepare_grads()
             for main_param in child.get_parameters():
-                if main_param.grad is not None:
+                if normalize_by_batch_size and main_param.grad is not None:
                     main_param.grad.mul_(1.0 / batch_size)
 
         # Per-slot grad norm over the slot's children, reduced across the whole world (whole-param DP scatter).

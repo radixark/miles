@@ -31,6 +31,8 @@ _STANDARD_LORA_HF_TO_MEGATRON = {
     # GDN (Qwen3.5/Qwen3-Next): both slices live in the single fused megatron in_proj
     "in_proj_qkvz": "in_proj",
     "in_proj_ba": "in_proj",
+    "lm_head": "output_layer",
+    "unembed_tokens": "output_layer",
 }
 
 _STANDARD_LORA_ALL_MODULES = ["linear_qkv", "linear_proj", "linear_fc1", "linear_fc2"]
@@ -46,6 +48,8 @@ _CANONICAL_LORA_HF_TO_MEGATRON = {
     "down_proj": "linear_fc2",
     "in_proj_qkvz": "in_proj",
     "in_proj_ba": "in_proj",
+    "lm_head": "output_layer",
+    "unembed_tokens": "output_layer",
 }
 
 _CANONICAL_LORA_ALL_MODULES = [
@@ -74,6 +78,9 @@ _MEGATRON_TO_HF_MODULES = {
     "linear_fc1_up": ["up_proj"],
     # GDN linear attention: SGLang serves the fused in_proj as two modules
     "in_proj": ["in_proj_qkvz", "in_proj_ba"],
+    "output_layer": ["lm_head"],
+    "lm_head": ["lm_head"],
+    "unembed_tokens": ["lm_head"],
 }
 
 _HF_MODULE_NAMES = {
@@ -86,6 +93,8 @@ _HF_MODULE_NAMES = {
     "down_proj",
     "in_proj_qkvz",
     "in_proj_ba",
+    "lm_head",
+    "unembed_tokens",
 }
 
 # DeepSeek / Kimi MLA (HF names on checkpoint; Megatron uses linear_* from Megatron-Bridge mappings).

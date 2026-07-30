@@ -106,6 +106,14 @@ class RayTrainGroup:
         (load new, cleanup gone). Called by the trainer before generate."""
         await self._broadcast("reconcile_adapters")
 
+    async def tinker_execute(self, operation: dict) -> dict:
+        """Execute one Tinker operation on all Megatron ranks."""
+        outputs = await self._broadcast("tinker_execute", operation)
+        try:
+            return next(output for output in outputs if output is not None)
+        except StopIteration:
+            raise RuntimeError("Tinker operation returned no result from the trainer") from None
+
     async def onload(self):
         await self._broadcast("wake_up")
 

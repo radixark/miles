@@ -10,6 +10,7 @@ import logging
 from argparse import Namespace
 from dataclasses import dataclass
 
+import torch
 from megatron.core.utils import get_attr_wrapped_model
 
 from miles.utils.hf_config import load_hf_config
@@ -31,6 +32,39 @@ class _BridgeWrapperConfig:
 
 def _ensure_model_list(model):
     return model if isinstance(model, list) else [model]
+
+
+def _add_parameterless_output_anchors(model_chunks, target_modules: list[str]) -> list[torch.nn.Module]:
+    """Give tied output layers a temporary device/dtype parameter.
+
+    Megatron omits ``output_layer.weight`` when input embeddings and the
+    unembedding are tied, passing the shared embedding weight into ``forward``
+    instead. MultiLoRALinear only needs a parameter while it constructs its
+    buffers, so install a zero-sized anchor during the Bridge transform and
+    remove it before DDP sees the model.
+    """
+    if "output_layer" not in {target.rsplit(".", 1)[-1] for target in target_modules}:
+        return []
+
+    anchored = []
+    for model_chunk in _ensure_model_list(model_chunks):
+        source = next(model_chunk.parameters(), None)
+        if source is None:
+            continue
+        for name, module in model_chunk.named_modules():
+            if name.rsplit(".", 1)[-1] != "output_layer" or next(module.parameters(), None) is not None:
+                continue
+            module.register_parameter(
+                "_miles_lora_device_anchor",
+                torch.nn.Parameter(source.new_empty(0), requires_grad=False),
+            )
+            anchored.append(module)
+    return anchored
+
+
+def _remove_parameterless_output_anchors(modules: list[torch.nn.Module]) -> None:
+    for module in modules:
+        delattr(module, "_miles_lora_device_anchor")
 
 
 def _make_value_model_hook(hidden_size: int, sequence_parallel: bool):
@@ -177,7 +211,11 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         lora = create_lora_instance(args)
 
     def apply_lora_hook(model_chunks):
-        transformed = lora(model_chunks, training=True)
+        anchors = _add_parameterless_output_anchors(model_chunks, lora.target_modules)
+        try:
+            transformed = lora(model_chunks, training=True)
+        finally:
+            _remove_parameterless_output_anchors(anchors)
         lora.set_params_to_save(transformed)
         return transformed
 

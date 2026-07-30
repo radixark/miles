@@ -268,6 +268,18 @@ class RayTrainGroup:
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
 
+    async def reconcile_adapters(self) -> None:
+        """Reconcile multi-LoRA slots on the first alive trainer cell."""
+        await self._execute_first_alive("reconcile_adapters")
+
+    async def tinker_execute(self, operation: dict) -> dict:
+        """Execute one Tinker operation on all ranks of the first alive cell."""
+        outputs = await self._execute_first_alive("tinker_execute", operation)
+        try:
+            return next(output for output in outputs if output is not None)
+        except StopIteration:
+            raise RuntimeError("Tinker operation returned no result from the trainer") from None
+
     async def _maybe_log_inference_engine_weight_checksums(self, *, rollout_id: int | None) -> None:
         if not is_event_logger_initialized():
             return

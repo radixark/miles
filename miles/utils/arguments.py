@@ -24,6 +24,16 @@ from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 logger = logging.getLogger(__name__)
 
 
+class _RedactedString(str):
+    """A CLI secret that keeps its value while hiding normal log rendering."""
+
+    def __str__(self) -> str:
+        return "<redacted>"
+
+    def __repr__(self) -> str:
+        return "<redacted>"
+
+
 def reset_arg(parser, name, **kwargs):
     """
     Reset the default value of a Megatron argument.
@@ -1541,6 +1551,45 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "How long a generate call waits for the first poppable group before "
                     "failing with an empty-batch timeout (default: 30)."
                 ),
+            )
+            parser.add_argument(
+                "--tinker-model-name",
+                type=str,
+                default=None,
+                help=(
+                    "Public base-model identifier accepted by the Tinker-compatible API. "
+                    "Defaults to --hf-checkpoint."
+                ),
+            )
+            parser.add_argument(
+                "--tinker-tokenizer-id",
+                type=str,
+                default=None,
+                help=(
+                    "Tokenizer identifier returned to Tinker SDK clients. "
+                    "Defaults to --tinker-model-name."
+                ),
+            )
+            parser.add_argument(
+                "--tinker-checkpoint-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Root directory for Tinker training and sampler snapshots "
+                    "(default: SAVE/tinker, or /tmp/miles/tinker when SAVE is unset)."
+                ),
+            )
+            parser.add_argument(
+                "--tinker-api-key",
+                type=_RedactedString,
+                default=None,
+                help="Optional API key required by the Tinker-compatible API (redacted from argument logs).",
+            )
+            parser.add_argument(
+                "--tinker-max-concurrent-samples",
+                type=int,
+                default=256,
+                help="Maximum sampling concurrency advertised to Tinker SDK clients (default: 256).",
             )
             return parser
 

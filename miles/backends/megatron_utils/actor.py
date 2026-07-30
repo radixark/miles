@@ -601,6 +601,22 @@ class MegatronTrainRayActor(TrainRayActor):
             for name in cleanup_names - loaded_names:
                 ray.get(get_multi_lora_controller().free_slot.remote(name))
 
+    @with_logs
+    @timer
+    def tinker_execute(self, operation: dict) -> dict | None:
+        """Execute one Tinker API operation collectively on the trainer."""
+        self._heartbeat.bump()
+        from miles.backends.megatron_utils.tinker import execute_tinker_operation
+
+        return execute_tinker_operation(
+            self.args,
+            self.model,
+            self.optimizer,
+            self.loaded_adapters,
+            self._multi_lora_pending_push,
+            operation,
+        )
+
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         self._heartbeat.bump()

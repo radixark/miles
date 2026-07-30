@@ -100,6 +100,9 @@ class MultiLoRAController:
     def set_adapter_step(self, name: str, step: int) -> None:
         self.backend.registry.set_step(name, step)
 
+    def advance_adapter_step(self, name: str) -> int:
+        return self.backend.registry.advance_step(name)
+
     def adapter_step(self, name: str) -> int:
         return self.backend.registry.step_count(name)
 
@@ -111,6 +114,32 @@ class MultiLoRAController:
 
     def api_port(self) -> int:
         return self.server.actual_api_port
+
+    def mark_external_ready(self) -> None:
+        mark_ready = getattr(self.backend, "mark_ready", None)
+        if mark_ready is None:
+            raise RuntimeError(f"{type(self.backend).__name__} has no external readiness state")
+        mark_ready()
+
+    async def next_external_operation(self, timeout_s: float | None = None) -> dict | None:
+        """Return the next request for a service backend that owns an external
+        operation queue (for example the Tinker API)."""
+        next_operation = getattr(self.backend, "next_operation", None)
+        if next_operation is None:
+            raise RuntimeError(f"{type(self.backend).__name__} has no external operation queue")
+        return await next_operation(timeout_s)
+
+    async def complete_external_operation(self, request_id: str, result: dict | None) -> None:
+        complete_operation = getattr(self.backend, "complete_operation", None)
+        if complete_operation is None:
+            raise RuntimeError(f"{type(self.backend).__name__} cannot complete external operations")
+        await complete_operation(request_id, result)
+
+    async def fail_external_operation(self, request_id: str, error: str, category: str = "server") -> None:
+        fail_operation = getattr(self.backend, "fail_operation", None)
+        if fail_operation is None:
+            raise RuntimeError(f"{type(self.backend).__name__} cannot fail external operations")
+        await fail_operation(request_id, error, category)
 
 
 def create_multilora_controller(args, router_url: str, host: str = "0.0.0.0"):
