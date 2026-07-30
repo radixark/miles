@@ -50,9 +50,23 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
     scheduling: SchedulingSpec
 
 
-class LaunchCommandContext(FrozenStrictBaseModel):
+class HostAndPort(FrozenStrictBaseModel):
     host: str
-    ports: dict[str, int]
+    port: int
+
+    @property
+    def addr(self):
+        return f"http://{self.host}:{self.port}"
+
+
+# dict key: name
+NamedHostAndPorts = dict[str, HostAndPort]
+
+
+class LaunchCommandContext(FrozenStrictBaseModel):
+    cell_index: int
+    self_addrs: NamedHostAndPorts
+    spec_addrs: dict[str, list[NamedHostAndPorts]]
 
 
 class CommandWorkerSpec(BaseWorkerSpec):
