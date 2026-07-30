@@ -43,6 +43,36 @@ class TestNumGpusPerEnginePrecedence:
         )
         assert cfg.models[0].server_groups[0].num_gpus_per_engine == 2
 
+    def test_a_group_asking_for_zero_gpus_per_engine_is_rejected_not_defaulted(self, tmp_path):
+        """Falling back on any falsy value hid the typo and silently started engines with the wrong tp topology."""
+        with pytest.raises(ValueError, match="greater than 0"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        num_gpus_per_engine: 0\n",
+                rollout_num_gpus=8,
+                rollout_num_gpus_per_engine=1,
+            )
+
+    def test_a_model_asking_for_zero_gpus_per_engine_is_rejected_not_defaulted(self, tmp_path):
+        """The model-level default took the same falsy fallback, so its groups silently inherited the args value."""
+        with pytest.raises(ValueError, match="greater than 0"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    num_gpus_per_engine: 0\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n",
+                rollout_num_gpus=8,
+                rollout_num_gpus_per_engine=1,
+            )
+
 
 class TestOverridesResolution:
     def test_an_explicit_model_path_override_is_not_replaced(self, tmp_path):
