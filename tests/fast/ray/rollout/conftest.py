@@ -347,6 +347,6 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
 def patch_ray_get(monkeypatch):
     """Make ``ray.get(remote_call(...))`` return the MagicMock's value directly,
     so allocator tests don't need a real Ray cluster."""
-    import miles.ray.rollout.addr_allocator as mod
+    import miles.utils.workers.addr_allocator as mod
 
     monkeypatch.setattr(mod.ray, "get", lambda x: x)
