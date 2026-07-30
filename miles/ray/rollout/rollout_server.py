@@ -18,6 +18,11 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
     Returns a dict mapping model name -> ``RolloutServer``.
     """
+    assert args.sglang_router_ip is None, (
+        "external router mode was removed: miles always starts its own routers "
+        "(expected to return with the k8s-native mode)"
+    )
+
     config = resolve_sglang_config(args)
 
     servers: dict[str, RolloutServer] = {}
@@ -26,7 +31,7 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
     for model_idx, model_cfg in enumerate(config.models):
         has_pd = model_cfg.has_pd_disaggregation
-        router_ip, router_port = start_router(args, has_pd_disaggregation=has_pd, force_new=(model_idx > 0))
+        router_ip, router_port = start_router(args, has_pd_disaggregation=has_pd)
 
         if model_idx == 0:
             args.sglang_router_ip = router_ip
