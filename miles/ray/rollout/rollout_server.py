@@ -30,8 +30,7 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     port_allocator = PortAllocator()
 
     for model_idx, model_cfg in enumerate(config.models):
-        has_pd = model_cfg.has_pd_disaggregation
-        router_ip, router_port = start_router(args, has_pd_disaggregation=has_pd)
+        router_ip, router_port = start_router(args, model_idx, model_cfg)
 
         if model_idx == 0:
             args.sglang_router_ip = router_ip
