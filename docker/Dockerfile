@@ -9,6 +9,13 @@
 # A multi-arch build runs the recipe once per platform; it installs the wheels
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
+#
+# Layers are ordered by ascending change frequency so the persistent builder's
+# cache survives as long as possible: stable tooling and pinned third-party
+# installs first, the requirements.txt resolve after them, and the fast-moving
+# source trees (Megatron → sglang → miles) last. pip never re-negotiates the
+# environment past a layer's own install: wheel/pinned layers use --no-deps and
+# the resolving layers pin everything already installed via a constraints file.
 
 ARG SGLANG_IMAGE_TAG=v0.5.16
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
@@ -45,9 +52,14 @@ WORKDIR /root/
 
 # ======================================== Apt dependencies =============================================
 
-RUN apt update
+# Keep downloaded packages so the apt cache mounts below actually persist anything.
+RUN rm -f /etc/apt/apt.conf.d/docker-clean && \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+
 # ethtool for network diagnostics
-RUN apt install -y nvtop rsync dnsutils ethtool
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt update && apt install -y nvtop rsync dnsutils ethtool
 
 # nccl-tests for diagnostics
 RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
@@ -62,7 +74,13 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 # `wheel[s]/` is a glob — silently no-ops when wheels/ is absent (CI's path).
 COPY wheel[s]/ /tmp/wheels/
 
-RUN case "${TARGETARCH}" in \
+# The /wheels-cache mount persists downloads across builds on the node (per-arch
+# subdir); docker/fetch_wheels.py reuses a cached asset only when its release asset
+# id matches, since rolling releases replace assets under the same filename. The
+# layer itself re-runs whenever the WHEELS_FP build-arg changes.
+RUN --mount=type=cache,target=/wheels-cache \
+    --mount=type=bind,source=docker/fetch_wheels.py,target=/tmp/fetch_wheels.py \
+    case "${TARGETARCH}" in \
       amd64) WHEELS_TAG="${WHEELS_TAG_X86}"; WHEELS_FP="${WHEELS_FP_X86}" ;; \
       arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}"; WHEELS_FP="${WHEELS_FP_ARM64}" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
@@ -71,47 +89,51 @@ RUN case "${TARGETARCH}" in \
       echo "wheels fingerprint build-arg for ${TARGETARCH} is required (docker/resolve_upstream.py provides it)" >&2; exit 1; \
     fi && \
     echo "Fetching wheels release ${WHEELS_TAG} (assets fingerprint ${WHEELS_FP})" && \
-    mkdir -p /tmp/wheels && \
-    curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
-    | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
-[subprocess.run(['curl','-fSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) \
- for a in json.load(sys.stdin).get('assets',[]) \
- if a['name'].endswith(('.whl', '.tar.gz')) and not os.path.exists(os.path.join(w,a['name']))]" && \
+    mkdir -p /tmp/wheels "/wheels-cache/${TARGETARCH}" && \
+    curl -sfSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" > /tmp/release.json && \
+    CACHE_DIR="/wheels-cache/${TARGETARCH}" python3 /tmp/fetch_wheels.py && \
+    rm /tmp/release.json && \
     ls -lh /tmp/wheels/
 
-# ====================================== Python dependencies ============================================
+# ============================== Prebuilt release wheels (no-deps) ==============================
 
-# flash-attn
-RUN pip install /tmp/wheels/flash_attn-*.whl
-
-# flash-attn hopper (FA3): Hopper-only (sm_90a). Coexists with FA2.
-# The wheel ships flash_attn_interface top-level (what transformer_engine imports)
+# flash-attn + flash-attn hopper (FA3, Hopper-only sm_90a, coexists with FA2) + apex +
+# int4_qat, one --no-deps layer: their runtime deps are already in the base image.
+# The FA3 wheel ships flash_attn_interface top-level (what transformer_engine imports)
 # plus a flash_attn_3.flash_attn_interface re-export shim, so there is nothing to
 # fetch separately. Do not overwrite the shim with a copy of the full module: it
 # re-runs @torch.library.custom_op("flash_attn_3::...") and double-registers.
-RUN pip install /tmp/wheels/flash_attn_3-*.whl
+RUN pip install --no-deps \
+      /tmp/wheels/flash_attn-*.whl \
+      /tmp/wheels/flash_attn_3-*.whl \
+      /tmp/wheels/apex-*.whl \
+      /tmp/wheels/fake_int4_quant_cuda-*.whl
 
-RUN pip install git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c --no-deps
+# ====================================== Pinned third-party installs ============================================
 
-RUN pip install flash-linear-attention==0.4.2
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install flash-linear-attention==0.4.2
 # required for DeepSeek V4
-RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
-RUN pip install --no-deps tile_kernels==1.0.0
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
 # SHA-pinned like the other git installs: an unpinned HEAD install is invisible to the
 # layer cache, which would silently freeze whatever revision the layer last built.
-RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git@821fd9d37ede18fdc2a4e707fefe3770bfc32e58"
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git@821fd9d37ede18fdc2a4e707fefe3770bfc32e58"
 # Prefer the prebuilt wheel; fall back to a source build while the current
 # arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
 # builds are the expensive path this avoids).
-RUN if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; then \
-      pip install /tmp/wheels/fast_hadamard_transform-*.whl; \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if ls /tmp/wheels/fast_hadamard_transform-*.whl 2>/dev/null | grep -q .; then \
+      pip install --no-deps /tmp/wheels/fast_hadamard_transform-*.whl; \
     else \
       pip install "git+https://github.com/Dao-AILab/fast-hadamard-transform.git@e7706faf8d1c3b9f241e36860640ad1dac644ede" --no-build-isolation; \
     fi
 
 # Mamba kernels for nemotron_h hybrid (mamba+attention) models.
-RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
        ls /tmp/wheels/mamba_ssm-*.whl 2>/dev/null | grep -q .; then \
       pip install /tmp/wheels/causal_conv1d-*.whl /tmp/wheels/mamba_ssm-*.whl; \
     else \
@@ -123,7 +145,8 @@ RUN if ls /tmp/wheels/causal_conv1d-*.whl 2>/dev/null | grep -q . && \
 # pull a conflicting core dist. That also drops transformer_engine_torch's own
 # runtime deps, which still have to be installed: transformer_engine.pytorch
 # imports onnxscript unconditionally (module/_common -> export -> onnx_extensions).
-RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/verify_transformer_engine.py \
     if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       TE_CORE_DIST=transformer_engine_cu13; \
     else \
@@ -159,36 +182,31 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
       done; \
     fi && rm -rf /tmp/patches
 
-# apex
-RUN pip install /tmp/wheels/apex-*.whl
+# Packages whose runtime deps are already present: one --no-deps layer, pip never
+# re-negotiates the environment for them.
+COPY docker/requirements-nodeps.txt /tmp/requirements-nodeps.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-deps -r /tmp/requirements-nodeps.txt
 
-# Clone without -b: miles-main may be rebased, and a full clone keeps the pinned SHA
-# reachable regardless; submodules sync after the checkout so they match the pin.
-RUN test -n "${MEGATRON_COMMIT}" || { echo "MEGATRON_COMMIT build-arg is required (docker/resolve_upstream.py provides it)" >&2; exit 1; } && \
-    git clone https://github.com/${MEGATRON_REPO}.git Megatron-LM && \
-    cd Megatron-LM && \
-    git checkout ${MEGATRON_COMMIT} && \
-    git submodule update --init --recursive && \
-    pip install -e .
+# radixark/Megatron-Bridge#24 (TE 2.17 grouped-linear contract), merged to @bridge.
+# Pinned by SHA, not branch: buildkit caches this layer on the instruction text, so a
+# branch that moves leaves the old revision baked into the image with nothing to show it.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install git+https://github.com/radixark/Megatron-Bridge.git@7f0fb3456f8ffe47599b5fd167b454605d85f932 --no-deps --no-build-isolation
 
 # Muon optimizer support: megatron/core/optimizer/muon.py requires this for Newton-Schulz
 # orthogonalization; not on PyPI (only a dependency-confusion stub), so install from the
 # git source Megatron-LM itself pins in pyproject.toml.
-RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.1.0"
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.1.0"
 
 # torch_memory_saver's source build needs TMS_CUDA_MAJOR; take it from torch.
-RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@74d68c5e4bedf2b6774f2c92ed0f81b7c8d91ed0 --no-cache-dir --force-reinstall
-RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-# radixark/Megatron-Bridge#24 (TE 2.17 grouped-linear contract), merged to @bridge.
-# Pinned by SHA, not branch: buildkit caches this layer on the instruction text, so a
-# branch that moves leaves the old revision baked into the image with nothing to show it.
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@7f0fb3456f8ffe47599b5fd167b454605d85f932 --no-deps --no-build-isolation
-RUN pip install megatron-energon --no-deps
-RUN pip install multi-storage-client --no-deps
 
-COPY requirements.txt /tmp/requirements.txt
-RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 
 # The apt copy shadows the pip one in ldconfig and the loader interleaves the two,
 # so transformer_engine gets a mixed set of libcudnn sub-libraries. The packages are
@@ -198,41 +216,19 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then CU=13; else CU=12; fi; \
     libcudnn9-cuda-${CU} libcudnn9-dev-cuda-${CU} libcudnn9-headers-cuda-${CU} \
   && rm -rf /var/lib/apt/lists/*
 
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
     pip install nvidia-cudnn-cu13==9.22.0.52; \
   else \
     pip install nvidia-cudnn-cu12==9.22.0.52; \
   fi
 
-
-RUN rm -rf /root/.cache/pip /root/flash-attention
-
-# ====================================== Install sglang-miles ============================================
-
-# Install sglang at the pinned sglang-miles commit. The SHA is fetched directly
-# (not via the branch name): the base image's clone is shallow and sglang-miles gets
-# rebased, so a branch fetch can't guarantee the pinned commit is reachable.
-# The CUDA 12 sglang images sed their dependency markers from cu13 to cu12 in
-# python/pyproject.toml and never commit it, so a plain checkout aborts on the dirty
-# file. Force it, then re-apply the same rewrite: the tree we just checked out carries
-# the cu13 markers, and sglang's editable install makes them visible to every later pip
-# resolve, which would drag cu13 packages onto a cu12 image.
-RUN test -n "${SGLANG_COMMIT}" || { echo "SGLANG_COMMIT build-arg is required (docker/resolve_upstream.py provides it)" >&2; exit 1; } && \
-    cd /sgl-workspace/sglang && \
-    git fetch origin ${SGLANG_COMMIT} && \
-    git checkout -f ${SGLANG_COMMIT} && \
-    if [ "${ENABLE_CUDA_13}" != "1" ]; then \
-      sed -i 's/cuda-python>=13\.0/cuda-python>=12,<13/' python/pyproject.toml && \
-      sed -i 's/flashinfer_python\[cu13\]/flashinfer_python[cu12]/' python/pyproject.toml && \
-      sed -i 's/nvidia-cutlass-dsl\[cu13\]/nvidia-cutlass-dsl/' python/pyproject.toml; \
-    fi && \
-    pip install -e "python[all]" --no-deps
-
 # =========================== Mooncake structured object store wheel ===========================
 
 # Miles' Mooncake backend requires the structured object store API. Install the selected
 # CUDA 13 wheel as one coherent Python/native package; CUDA 12 keeps its base Mooncake.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       set -- /tmp/wheels/mooncake_transfer_engine*-*.whl; \
       if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then \
         echo "expected exactly one mooncake wheel for cu13/${TARGETARCH}" >&2; exit 1; \
@@ -242,18 +238,6 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
     else \
       echo "CUDA 12 variant: keeping the base image's mooncake"; \
     fi
-
-# ====================================== Install main package ============================================
-
-ARG MILES_COMMIT=""
-RUN test -n "${MILES_COMMIT}" || { echo "MILES_COMMIT build-arg is required (docker/resolve_upstream.py provides it)" >&2; exit 1; } && \
-    git clone https://github.com/radixark/miles.git /root/miles && \
-    cd /root/miles && \
-    git checkout ${MILES_COMMIT} && \
-    pip install -e . --no-deps
-
-# int4_qat
-RUN pip install /tmp/wheels/fake_int4_quant_cuda-*.whl
 
 # ====================================== Install sgl-model-gateway ============================================
 #   SGL_ROUTER_USE_WHEELS=0:
@@ -287,6 +271,66 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
     fi
 
+# ====================================== Miles runtime requirements ============================================
+
+# Constrained resolve: everything already installed is frozen via a constraints file
+# generated on the spot, so this layer may add packages but a version conflict with
+# the layers above fails loudly instead of silently reinstalling them.
+COPY requirements.txt /tmp/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
+    pip list --format=freeze > /tmp/constraints.txt && \
+    pip install -r /tmp/requirements.txt -c /tmp/constraints.txt && \
+    rm /tmp/constraints.txt
+
+# ====================================== Source trees ============================================
+# Ordered by descending stability: Megatron-LM, then sglang, then miles — the pins
+# that move most often sit deepest so their rebuilds invalidate the least.
+
+# Clone without -b: miles-main may be rebased, and a full clone keeps the pinned SHA
+# reachable regardless; submodules sync after the checkout so they match the pin.
+# The editable install resolves Megatron's deps under the same constraints discipline
+# as requirements.txt above: new packages may install, moving installed ones fails loudly.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    test -n "${MEGATRON_COMMIT}" || { echo "MEGATRON_COMMIT build-arg is required (docker/resolve_upstream.py provides it)" >&2; exit 1; } && \
+    git clone https://github.com/${MEGATRON_REPO}.git Megatron-LM && \
+    cd Megatron-LM && \
+    git checkout ${MEGATRON_COMMIT} && \
+    git submodule update --init --recursive && \
+    pip list --format=freeze > /tmp/constraints.txt && \
+    pip install -e . -c /tmp/constraints.txt && \
+    rm /tmp/constraints.txt
+
+# Install sglang at the pinned sglang-miles commit. The SHA is fetched directly
+# (not via the branch name): the base image's clone is shallow and sglang-miles gets
+# rebased, so a branch fetch can't guarantee the pinned commit is reachable.
+# The CUDA 12 sglang images sed their dependency markers from cu13 to cu12 in
+# python/pyproject.toml and never commit it, so a plain checkout aborts on the dirty
+# file. Force it, then re-apply the same rewrite: the tree we just checked out carries
+# the cu13 markers, and sglang's editable install makes them visible to every later pip
+# resolve, which would drag cu13 packages onto a cu12 image.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    test -n "${SGLANG_COMMIT}" || { echo "SGLANG_COMMIT build-arg is required (docker/resolve_upstream.py provides it)" >&2; exit 1; } && \
+    cd /sgl-workspace/sglang && \
+    git fetch origin ${SGLANG_COMMIT} && \
+    git checkout -f ${SGLANG_COMMIT} && \
+    if [ "${ENABLE_CUDA_13}" != "1" ]; then \
+      sed -i 's/cuda-python>=13\.0/cuda-python>=12,<13/' python/pyproject.toml && \
+      sed -i 's/flashinfer_python\[cu13\]/flashinfer_python[cu12]/' python/pyproject.toml && \
+      sed -i 's/nvidia-cutlass-dsl\[cu13\]/nvidia-cutlass-dsl/' python/pyproject.toml; \
+    fi && \
+    pip install -e "python[all]" --no-deps
+
+# ====================================== Install main package ============================================
+
+ARG MILES_COMMIT=""
+RUN --mount=type=cache,target=/root/.cache/pip \
+    test -n "${MILES_COMMIT}" || { echo "MILES_COMMIT build-arg is required (docker/resolve_upstream.py provides it)" >&2; exit 1; } && \
+    git clone https://github.com/radixark/miles.git /root/miles && \
+    cd /root/miles && \
+    git checkout ${MILES_COMMIT} && \
+    pip install -e . --no-deps
+
 # ==================== Reconcile apache-tvm-ffi with sglang's pin ====================
 # sglang v0.5.16 bumped nvidia-cutlass-dsl 4.5.2 -> 4.6.0 while leaving its
 # apache-tvm-ffi pin at 0.1.11. cutlass-dsl 4.6.0's tvm_ffi provider calls
@@ -297,13 +341,16 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 #   TypeError: make_kwargs_wrapper() got an unexpected keyword argument 'map_dataclass_to_tuple'
 # Restore sglang's own pin after every other install, and fail the build loudly if it
 # does not take effect rather than shipping an image that only breaks under CI.
-RUN pip install --force-reinstall --no-deps "apache-tvm-ffi==0.1.11" && \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --force-reinstall --no-deps "apache-tvm-ffi==0.1.11" && \
     python3 -c "import inspect; from tvm_ffi.utils import kwargs_wrapper as k; \
 p = inspect.signature(k.make_kwargs_wrapper).parameters; \
 assert 'map_dataclass_to_tuple' in p, \
   'apache-tvm-ffi resolves to a build too old for nvidia-cutlass-dsl 4.6.0: %s' % list(p)"
 
-RUN rm -rf /tmp/wheels
+# /root/flash-attention is baked-in base-image build residue; pip's cache lives in a
+# mount now, so there is nothing of it to clean out of the layers.
+RUN rm -rf /tmp/wheels /root/flash-attention
 
 # The cu130 sglang base ships its baked Rust toolchain outside the default PATH.
 ENV PATH="/root/.cargo/bin:${PATH}"
