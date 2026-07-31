@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# Inkling-Small (276B) full-parameter GRPO on 4 nodes x 8 H200 — the validated
-# profile: TP4 SP PP8 EP4 (DP1), ctx 4096 / response 2048, lr 6e-6,
-# rollout 64 prompts x 8 samples (gbs 128).  Measured: reward +0.006/rollout.
-#
-# Assumes HF weights and the converted torch_dist checkpoint are staged (see
-# docs/models/thinkingmachines/inkling-small.md), and a Ray cluster is already
-# up across the 4 nodes (head + workers).
+# Inkling-Small (276B) full-parameter GRPO on 4 nodes x 8 H200:
+# TP4 SP PP8 EP4, ctx 4096 / response 2048, lr 6e-6, rollout 64 prompts x 8 samples.
+# Assumes staged HF weights + torch_dist checkpoint and a running Ray cluster
+# (see docs/models/thinkingmachines/inkling-small.md).
 set -euxo pipefail
 cd "$(dirname "$0")/.."
 

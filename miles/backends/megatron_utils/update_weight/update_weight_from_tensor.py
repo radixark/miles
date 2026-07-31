@@ -507,7 +507,7 @@ def _send_to_colocated_engine(
         if is_lora:
             try:
                 ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
-            except Exception as _unload_err:  # noqa: BLE001 - first sync: nothing to unload
+            except Exception as _unload_err:
                 logger.debug("lora unload before load skipped: %s", _unload_err)
 
             expected_checksums = None

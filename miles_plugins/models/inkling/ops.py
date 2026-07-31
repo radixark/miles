@@ -22,9 +22,6 @@ except Exception:  # pragma: no cover
     flex_attention = create_block_mask = None
 
 
-# ---------------------- CP / SP helpers ----------------------
-
-
 def cp_world():
     """(cp_size, cp_rank, cp_group) — cp_size 1 means no context parallelism."""
     cp = ps.get_context_parallel_world_size()
@@ -80,9 +77,6 @@ def seqlens_from_packed(packed_seq_params, T):
     if acc < T:
         seqlens.append(T - acc)
     return seqlens
-
-
-# ---------------------- triton swiglu (sglang silu_and_mul parity) ----------------------
 
 
 @triton.jit
@@ -202,9 +196,6 @@ class _SwigluFP32Triton(torch.autograd.Function):
 def swiglu_fp32_triton(fc1_out: torch.Tensor, per_token_scale: torch.Tensor | None = None) -> torch.Tensor:
     """Triton swiglu, forward bit-identical to sglang's silu_and_mul kernel."""
     return _SwigluFP32Triton.apply(fc1_out, per_token_scale)
-
-
-# ---------------------- triton packed residual sconv (sglang parity) ----------------------
 
 
 @triton.jit
@@ -345,9 +336,6 @@ def sconv_fp32_triton(x: torch.Tensor, weight: torch.Tensor, seqlens=None) -> to
     return _SconvFP32Triton.apply(x, weight, seqlens)
 
 
-# ---------------------- precision-aligned fp32 ops ----------------------
-
-
 def _maybe_compile(fn):
     return torch.compile(fn, dynamic=True)
 
@@ -481,8 +469,6 @@ def inkling_sconv_fp32_packed(
     return y.to(x.dtype)
 
 
-# ---------------------- FA4 relative-bias score mod ----------------------
-
 try:
     import cutlass.cute as cute
     from cutlass.cute import Float32
@@ -529,8 +515,6 @@ def get_inkling_relative_attention_score_mod(rel_extent: int) -> Callable:
 
     return score_mod_rel_bias
 
-
-# ---------------------- attention backends ----------------------
 
 _FLEX_COMPILED = None
 

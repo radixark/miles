@@ -17,10 +17,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.moe.router import TopKRouter
 
-from miles_plugins.models.inkling.ops import (
-    cp_all_gather,
-    cp_world,
-)
+from miles_plugins.models.inkling.ops import cp_all_gather, cp_world
 from miles_plugins.models.inkling.ops import create_block_mask as _create_block_mask
 from miles_plugins.models.inkling.ops import flex_compiled as _flex
 from miles_plugins.models.inkling.ops import (

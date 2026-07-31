@@ -169,67 +169,6 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
                 g.copy_(red)
 
 
-_LORA_LAYER_NORM_LOGS = [0]
-
-
-def log_lora_grad_layer_norms(model: Sequence[torch.nn.Module], max_logs: int = 2) -> None:
-    """Log per-layer adapter grad-norm profile for the first few train steps."""
-    if _LORA_LAYER_NORM_LOGS[0] >= max_logs:
-        return
-    import re
-    from collections import defaultdict
-
-    sq = defaultdict(float)
-    found = False
-    for chunk in model:
-        for name, p in chunk.named_parameters():
-            if "lora" not in name or not p.requires_grad:
-                continue
-            g = getattr(p, "main_grad", None)
-            if g is None:
-                g = p.grad
-            if g is None:
-                continue
-            found = True
-            m = re.search(r"layers\.(\d+)\.", name)
-            sq[int(m.group(1)) if m else -1] += g.float().pow(2).sum().item()
-    if not found:
-        return
-    _LORA_LAYER_NORM_LOGS[0] += 1
-    prof = " ".join(f"L{k}:{v ** 0.5:.3e}" for k, v in sorted(sq.items()))
-    logger.info("[inkling-lora] per-layer adapter grad norms: %s", prof)
-    if _LORA_LAYER_NORM_LOGS[0] == 1:
-        import json
-
-        per_param = {}
-        for chunk in model:
-            for name, p in chunk.named_parameters():
-                if "lora" not in name or not p.requires_grad:
-                    continue
-                g = getattr(p, "main_grad", None)
-                if g is None:
-                    g = p.grad
-                if g is None:
-                    continue
-                per_param[name] = float(g.float().norm())
-        a_max = max((v for k, v in per_param.items() if k.endswith("_A") or "lora_A" in k), default=-1.0)
-        b_min = min((v for k, v in per_param.items() if k.endswith("_B") or "lora_B" in k), default=-1.0)
-        b_max = max((v for k, v in per_param.items() if k.endswith("_B") or "lora_B" in k), default=-1.0)
-        logger.info(
-            "[inkling-lora] step-1 grad invariant: max|dA|=%.3e (expect 0 for fresh adapter) "
-            "min|dB|=%.3e max|dB|=%.3e (expect finite nonzero)",
-            a_max,
-            b_min,
-            b_max,
-        )
-        try:
-            rank = dist.get_rank() if dist.is_initialized() else 0
-            with open(f"/tmp/lora_grad_dump_rank{rank}.json", "w") as f:
-                json.dump(per_param, f, indent=1, sort_keys=True)
-        except OSError:
-            pass
-
-
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
     """Check if model has LoRA layers applied."""
     for model_chunk in model:
@@ -555,7 +494,7 @@ def save_lora_checkpoint(
 
             os.sync()
             logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
-    except Exception as hf_export_err:  # noqa: BLE001 - nicety, never fatal
+    except Exception as hf_export_err:
         logger.warning(
             f"HF PEFT adapter export skipped ({hf_export_err}); the per-rank native "
             f"shards + training state are sufficient for training resume."

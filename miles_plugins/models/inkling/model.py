@@ -54,9 +54,7 @@ class InklingExtra:
         self.logits_mup_width_multiplier = t.get("logits_mup_width_multiplier", None)
         self.route_norm = t.get("route_norm", None)
         self.use_global_scale = t.get("use_global_scale", False)
-        # Debug/experiment knobs, resolved once here so every consumer reads config.inkling.
-        # Defaults are the production-validated recipe; env vars override for kernel-parity
-        # debugging on a single node (multi-node launchers should stick to the defaults).
+        # Debug knobs: defaults are the production recipe; MILES_INKLING_* env vars override.
         self.attn_backend = os.environ.get("MILES_INKLING_ATTN_BACKEND", "flex")  # flex | te | fa4
         self.sconv_impl = os.environ.get("MILES_INKLING_SCONV_IMPL", "triton")  # triton | torch
         self.sconv_packed = os.environ.get("MILES_INKLING_SCONV_PACKED", "0") == "1"

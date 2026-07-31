@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
-# Inkling-Small (276B) LoRA GRPO (r=32, alpha=32, all-linear) on 4 nodes x
-# 8 H200 — the validated profile: same parallel layout as full-parameter,
-# ctx 4096 / response 2048, rollout 64 prompts x 8 samples (gbs 128), and
-# lr 2e-4.  Measured: reward +0.011/rollout.
-#
-# The lr is deliberately ~30x the full-parameter one: LoRA's B factors start
-# at zero, so |delta-W| = |B@A| accumulates at ~lr x steps x |A|; at a
-# full-parameter-style lr the adapter needs hundreds of rollouts before the
-# policy visibly moves.  No optimizer offload: the adapter states are tiny.
+# Inkling-Small (276B) LoRA GRPO (r=32, alpha=32, all-linear) on 4 nodes x 8 H200:
+# same parallel layout as full-parameter, ctx 4096 / response 2048, rollout 64x8.
+# lr is ~30x the full-parameter one on purpose: LoRA's B starts at zero, so
+# |B@A| grows ~ lr x steps and a small lr keeps the policy frozen for hundreds
+# of rollouts. No optimizer offload: adapter states are tiny.
 set -euxo pipefail
 cd "$(dirname "$0")/.."
 

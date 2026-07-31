@@ -646,10 +646,9 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
-    from .lora_utils import log_lora_grad_layer_norms, reduce_marked_lora_grads
+    from .lora_utils import reduce_marked_lora_grads
 
     reduce_marked_lora_grads(args[0])
-    log_lora_grad_layer_norms(args[0])
     return finalize_model_grads(*args, **kwargs)
 
 
@@ -985,8 +984,7 @@ def initialize_model_and_optimizer(
         load_ctx = nullcontext()
 
     load_dir = getattr(args, "load", None)
-    # An unset --load is Megatron's business: setup_model_and_optimizer has already
-    # asserted a pretrained_checkpoint stands in for it.
+    # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
     if load_dir is None or _has_loadable_ckpt(load_dir):
         with load_ctx:
             iteration, _ = load_checkpoint(
