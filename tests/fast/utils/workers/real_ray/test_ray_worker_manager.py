@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 
 import pytest
 import ray
@@ -312,3 +313,45 @@ class TestStopCellOnRealRay:
 
         probe.wait_until_gone(stopped_pids)
         assert all(is_process_running(pid) for pid in surviving_pids)
+
+
+class TestWorkerInfosOnRealRay:
+    def test_a_driver_can_describe_and_reach_the_workers_of_one_cell(self, manager_factory, worker_probe_factory):
+        """Worker infos survive the trip to the driver, including usable actor handles."""
+        probe = worker_probe_factory()
+        manager_factory(
+            [make_command_spec("engine", num_cells=2, num_workers_per_cell=2, launch_command=probe.launch_command)]
+        )
+        records = probe.wait_for_records(4)
+
+        infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine", 1))
+
+        assert [info.name for info in infos] == ["engine-1-0", "engine-1-1"]
+        assert [info.generation for info in infos] == [1, 1]
+        assert [info.gpu_ids for info in infos] == [[], []]
+        for worker_in_cell_index, info in enumerate(infos):
+            recorded = records[f"1-{worker_in_cell_index}"]["context"]["self_addrs"]["primary"]
+            assert {"host": info.self_addrs["primary"].host, "port": info.self_addrs["primary"].port} == recorded
+            node_ip = ray.get(info.actor_handle._get_node_ip.remote())
+            assert info.self_addrs["primary"].host.strip("[]") == node_ip
+
+
+class TestWorkerDeathOnRealRay:
+    def test_an_actor_dies_with_the_command_it_babysits(self, manager_factory, worker_probe_factory):
+        """The actor's whole reason to exist is its subprocess, so its death must be visible to the driver."""
+        probe = worker_probe_factory()
+        manager_factory([make_command_spec("engine", num_workers_per_cell=2, launch_command=probe.launch_command)])
+        probe.wait_for_records(2)
+        infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine", 0))
+
+        ray.get(infos[0].actor_handle.kill_subprocess.remote())
+
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                ray.get(infos[0].actor_handle._get_node_ip.remote(), timeout=5)
+            except (ray.exceptions.RayActorError, ray.exceptions.GetTimeoutError):
+                break
+            assert time.monotonic() < deadline, "the actor of a dead command is still alive"
+            time.sleep(0.5)
+        assert ray.get(infos[1].actor_handle._get_node_ip.remote(), timeout=30)
