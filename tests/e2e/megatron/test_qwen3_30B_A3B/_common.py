@@ -31,8 +31,6 @@ class CaseConfig:
     rollout_num_gpus: int = None
     update_weight_transfer_mode: str = None
     num_rollout: int = 2
-    # Fully-async rollout: a persistent worker keeps generating while the trainer
-    # drains completed groups (train_async.py + FullyAsyncRolloutFn).
     fully_async: bool = False
 
     def __post_init__(self):
