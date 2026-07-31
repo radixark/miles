@@ -10,8 +10,6 @@ globally-numbered ``cu_seqlens``, while ``deepseek_v4`` all-gathers the KV. Pass
 absolute, so the KV layout is unchanged.
 """
 
-import math
-
 import torch
 import torch.distributed as dist
 from torch import Tensor
@@ -70,6 +68,16 @@ def get_window_topk_idxs_thd(
     return topk_idxs.unsqueeze(0)
 
 
+def to_rank_major_rows(idxs: Tensor, seq_to_rank_row: Tensor, valid: Tensor) -> tuple[Tensor, Tensor]:
+    """Translate sequence-major compressed ids to their rows in the all-gathered buffer.
+
+    Both the rule-based indices and the indexer's top-k are produced in sequence-major order,
+    while CP all-gathers fixed-capacity per-rank blocks; ``-1`` drops a row no rank produced.
+    """
+    rows = seq_to_rank_row[idxs.clamp(min=0).long()]
+    return rows, valid & (rows >= 0)
+
+
 def get_compress_topk_idxs_thd(
     cu_seqlens: Tensor,
     cu_seqlens_compressed: Tensor,
@@ -110,8 +118,7 @@ def get_compress_topk_idxs_thd(
     seq_major_idx = cu_seqlens_compressed[batch_ids].unsqueeze(1) + col_idx
     visible = col_idx < n_visible.unsqueeze(1)
     if seq_to_rank_row is not None:
-        seq_major_idx = seq_to_rank_row[seq_major_idx.clamp(min=0).long()]
-        visible = visible & (seq_major_idx >= 0)
+        seq_major_idx, visible = to_rank_major_rows(seq_major_idx, seq_to_rank_row, visible)
     compress_topk_idxs = torch.where(visible, kv_offset + seq_major_idx, -1)
     return compress_topk_idxs.unsqueeze(0)
 
@@ -164,11 +171,13 @@ def compressor_boundary_width(ratio: int) -> int:
 
 
 def compact_group_capacity(l_local: int, ratio: int) -> int:
-    """Fixed per-rank compressed-group count, since all-gather needs equal sends."""
-    d_comp = compressor_boundary_width(ratio)
-    alignment = 32 // math.gcd(32, ratio)
-    capacity = max(1, (l_local + d_comp) // ratio)
-    return ((capacity + alignment - 1) // alignment) * alignment
+    """Fixed per-rank compressed-group count, since all-gather needs equal sends.
+
+    A rank's buffer spans ``l_local + d_comp`` global positions, so that many tokens bound the
+    groups it can hold. mcore rounds this up for its CuTe tile alignment; the gather here takes
+    any length, and every rank derives the same count from the same inputs.
+    """
+    return max(1, (l_local + compressor_boundary_width(ratio)) // ratio)
 
 
 def _first_visible_group(range_start: Tensor | int, seg_start: Tensor, ratio: int) -> Tensor:
