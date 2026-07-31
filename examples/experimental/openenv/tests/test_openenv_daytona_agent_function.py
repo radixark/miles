@@ -6,8 +6,8 @@ when touching the adapter:
     pytest examples/experimental/openenv/tests/ -q
 
 Covers what a live episode cannot cheaply prove:
-  - episode dispatch: this module's run_episode sends raw exec commands and
-    scores via the standard `evaluate` action;
+  - episode dispatch: this module's run_episode passes exec commands through
+    unmodified and scores via the standard `evaluate` action;
   - sandbox-create throttling: Daytona rate-limit errors are retried with
     backoff and a bounded budget, anything else propagates immediately; a
     cancel mid-create reaps the orphaned sandbox instead of leaking it.
@@ -38,8 +38,10 @@ def run_async(coro):
 
 
 def test_daytona_leg_dispatch(monkeypatch):
-    """The daytona run_episode: exec raw (server resolves the workdir), scoring
-    via the standard `evaluate` action, no canonical exec, no rm-hack."""
+    """The daytona run_episode: exec commands pass through unmodified (the
+    server resolves the workdir), scoring via the standard `evaluate` action —
+    and unlike the shared leg, no trial-dir purge (the sandbox is deleted
+    when the episode ends)."""
     monkeypatch.setattr(oaf, "_load_tbench2", lambda: _CLASSES)
 
     @asynccontextmanager
@@ -57,7 +59,6 @@ def test_daytona_leg_dispatch(monkeypatch):
     assert reward == 1.0
     assert execs[0].command == "echo hi"
     assert any(a.action_type == "evaluate" for a in actions)
-    assert not any("test.sh" in (a.command or "") for a in execs)
     assert not any("/tmp/tbench2_env_runs" in (a.command or "") for a in execs)
     assert metrics["turns"] == 2 and metrics["tool_calls"] == 1
 
