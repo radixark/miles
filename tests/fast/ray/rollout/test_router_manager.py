@@ -12,7 +12,6 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.router_manager import _launch_command_on_head, start_session_server, wait_router_ready
 from miles.rollout.session.config import SessionServerConfig
-from miles.rollout.session.ports import resolve_session_server_ports
 from miles.utils.workers.argv_utils import parse_config_argv
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.worker_spec import HostAndPort
@@ -80,13 +79,14 @@ class TestStartSessionServerLaunchCommand:
         )
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", lambda *fn_args, **fn_kwargs: None)
         monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
+        monkeypatch.setattr("miles.ray.rollout.router_manager.find_available_port", lambda base_port: 5005)
 
         args = make_args(
             use_session_server=True,
             hf_checkpoint="/fake/model",
             sglang_router_ip="127.0.0.1",
             sglang_router_port=3000,
-            session_server_port=[5005, 5007],
+            session_server_workers=2,
             miles_router_timeout=None,
             chat_template_path=None,
             tito_model="default",
@@ -112,13 +112,14 @@ class TestStartSessionServerLaunchCommand:
         monkeypatch.setattr("miles.ray.rollout.router_manager._launch_command_on_head", lambda launch_cmd: MagicMock())
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", lambda *fn_args, **fn_kwargs: None)
         monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
+        monkeypatch.setattr("miles.ray.rollout.router_manager.find_available_port", lambda base_port: 5005)
 
         args = make_args(
             use_session_server=True,
             hf_checkpoint="/fake/model",
             sglang_router_ip="127.0.0.1",
             sglang_router_port=3000,
-            session_server_port=[5005, 5008],
+            session_server_workers=3,
             run_uuid="00112233445566aa",
             miles_router_timeout=None,
             chat_template_path=None,
@@ -163,29 +164,11 @@ class TestStartSessionServer:
             hf_checkpoint="/fake/model",
             sglang_router_ip="127.0.0.1",
             sglang_router_port=20000,
-            session_server_ip="127.0.0.1",
-            session_server_port=20001,
+            session_server_workers=1,
         )
-        with patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
+        with (
+            patch("miles.ray.rollout.router_manager.find_available_port", return_value=20001),
+            patch("miles.ray.rollout.router_manager.is_port_available", return_value=False),
+        ):
             with pytest.raises(RuntimeError, match="already in use"):
                 start_session_server(args)
-
-
-class TestResolveSessionServerPorts:
-    def test_none_auto_allocates_one_port(self):
-        with patch("miles.ray.rollout.router_manager.find_available_port", return_value=20002):
-            assert resolve_session_server_ports(None) == [20002]
-
-    def test_single_value_is_a_single_server(self):
-        assert resolve_session_server_ports([30000]) == [30000]
-
-    def test_two_values_expand_to_half_open_range(self):
-        assert resolve_session_server_ports([30000, 30004]) == [30000, 30001, 30002, 30003]
-
-    def test_empty_range_raises(self):
-        with pytest.raises(ValueError, match="empty"):
-            resolve_session_server_ports([30004, 30000])
-
-    def test_more_than_two_values_raises(self):
-        with pytest.raises(ValueError, match="one port or a start/end range"):
-            resolve_session_server_ports([30000, 30001, 30002])
