@@ -354,6 +354,7 @@ class DeepSeekV4Attention(MegatronModule):
                         hidden_compact=hidden_compact,
                         compressed_group_ids=comp_ids,
                         seq_to_rank_row=seq_to_rank_row,
+                        max_seqlen=packed_seq_params.max_seqlen_q if cu_seqlens is not None else None,
                     )
                 else:
                     assert cu_seqlens is None, "DSAIndexer is BSHD-only; THD needs V4_INDEXER_IMPL=tilelang."
