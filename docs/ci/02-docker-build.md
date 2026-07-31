@@ -55,7 +55,7 @@ The cu13 variants share one multi-arch CUDA base image and differ only in platfo
 
 The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
 
-A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`.
+A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, `--build-arg` (repeatable `KEY=VALUE` forwarded verbatim to `docker buildx build`, appended after the variant's own build-args so an explicit value wins).
 
 ## PR build check (in `pr-test.yml`)
 
@@ -75,10 +75,10 @@ Non-docker PRs are untouched: `docker-paths` reports no change, `docker-build` s
 
 The only automated builder of `radixark/miles`. Two jobs:
 
-- **`check-upstream`** (schedule / `simulate_schedule` only) — polls the inputs the image bakes: the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the source branches it builds — plus a fingerprint of the selected `yueming-yuan/miles-wheels` rolling release, so a rebuilt sgl-router or other wheel also triggers a build (re-uploads to the same tag are caught by fingerprint, not commit SHA). It compares against the values cached from the last build and sets `should_build=true` if any moved. `miles` itself is intentionally not polled. This is what stops the 12-hour cron from rebuilding an unchanged image.
-- **`build-and-push`** (self-hosted runner) — calls `docker/build.py` to build + push, then conditionally points `latest` at the new `dev` and prunes old timestamped tags.
+- **`resolve-upstream`** (always runs) — resolves the inputs the image bakes: the HEAD SHAs of sglang `sglang-miles` (`sgl-project/sglang`), Megatron-LM `miles-main` (`radixark/Megatron-LM`), and miles itself (the pushed commit on push events, else `main` HEAD), plus a fingerprint of each `yueming-yuan/miles-wheels` rolling release (re-uploads to the same tag are caught by fingerprint, not commit SHA). All values are exposed as job outputs; an empty resolution fails the job. On **schedule / `simulate_schedule`** the values additionally gate the rebuild: compared against the cache from the last gated build, `should_build=true` only if something moved — this is what stops the 12-hour cron from rebuilding an unchanged image. `miles` is intentionally not part of the gate (pushes already trigger their own build).
+- **`build-and-push`** (self-hosted `docker-build` runner) — calls `docker/build.py` to build + push, then conditionally points `latest` at the new `dev` and prunes old timestamped tags.
 
-`build-and-push` runs when `check-upstream` was skipped, or ran and reported `should_build=true`.
+`build-and-push` requires `resolve-upstream` to succeed (a failed resolve blocks the build rather than building unpinned), and on schedule additionally requires `should_build=true`.
 
 ### Triggers: automatic vs manual
 
@@ -86,12 +86,12 @@ The only automated builder of `radixark/miles`. Two jobs:
 - **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. Only the `rocm-*` images have **no automatic path** (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
 
-| Trigger                                     | `check-upstream`                   | builds                | `latest` move     | prune      |
+| Trigger                                     | rebuild gate (`resolve-upstream`)  | builds                | `latest` move     | prune      |
 | ------------------------------------------- | ---------------------------------- | --------------------- | ----------------- | ---------- |
-| schedule (cron 00:00 / 12:00 UTC)           | runs; build only if upstream moved | `cu13` + `cu12-x86`   | yes (both)        | yes (both) |
-| push to `main` touching `docker/Dockerfile`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | `cu13` + `cu12-x86`   | no                | no         |
-| `workflow_dispatch`                         | skipped                            | the one input variant | no                | no         |
-| `workflow_dispatch` + `simulate_schedule`   | runs                               | the one input variant | no                | no         |
+| schedule (cron 00:00 / 12:00 UTC)           | gates; build only if upstream moved | `cu13` + `cu12-x86`   | yes (both)        | yes (both) |
+| push to `main` touching `docker/Dockerfile`, `docker/verify_transformer_engine.py`, or `requirements.txt` | resolves only, no gate             | `cu13` + `cu12-x86`   | no                | no         |
+| `workflow_dispatch`                         | resolves only, no gate             | the one input variant | no                | no         |
+| `workflow_dispatch` + `simulate_schedule`   | reports the gate signal, doesn't gate | the one input variant | no                | no         |
 
 
 ### Tags & where it pushes
@@ -108,7 +108,7 @@ What **moves a shared tag**: `--image-tag dev` overwrites `:dev` (or `:dev-cu12`
 
 ### Trigger a build yourself
 
-Manual builds run through `workflow_dispatch` — by default the image is built straight from the inputs you pass; with `simulate_schedule`, `check-upstream` runs first for signal but does not gate the manual build (see the `workflow_dispatch` rows in the table above for how this differs from schedule). Start one two ways:
+Manual builds run through `workflow_dispatch` — by default the image is built straight from the inputs you pass; with `simulate_schedule`, `resolve-upstream` additionally reports the gate signal but does not gate the manual build (see the `workflow_dispatch` rows in the table above for how this differs from schedule). Start one two ways:
 
 - **Web UI** — Actions → "Docker Build & Push" → **Run workflow**, then fill the inputs below.
 - **CLI** — `gh` dispatches on the repo's default branch; pass `--ref <branch>` to build another branch's workflow.
@@ -125,7 +125,7 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 | `image_tag` | yes | `dev` / `latest` / `custom` |
 | `custom_tag` | no | tag name; required when `image_tag=custom` |
 | `dockerfile` | no | path to Dockerfile (default `docker/Dockerfile`) |
-| `simulate_schedule` | no | `true` runs the `check-upstream` poll first (default `false`) |
+| `simulate_schedule` | no | `true` makes `resolve-upstream` report the rebuild-gate signal (default `false`) |
 
 ### Steps (`build-and-push`)
 
@@ -143,7 +143,7 @@ Pushes use a Docker Hub credential, not your identity:
 
 ### Pinning specific repo versions
 
-`docker/Dockerfile` already takes `MEGATRON_BRANCH` / `SGLANG_COMMIT` / `MILES_COMMIT` build-args, but `build.py` does not yet forward arbitrary build-args and `workflow_dispatch` exposes no input for them — so commit-pinning from the workflow needs two changes first: a passthrough in `build.py` and matching inputs in `docker-build.yml`.
+`docker/Dockerfile` takes `MEGATRON_BRANCH` / `SGLANG_COMMIT` / `MILES_COMMIT` build-args, and `build.py --build-arg` forwards arbitrary `KEY=VALUE` pairs to the build, so local pinned builds work today (e.g. `--build-arg SGLANG_COMMIT=<sha>`). `resolve-upstream` resolves the current upstream SHAs on every CI run; wiring those outputs (or `workflow_dispatch` inputs) into the build's `--build-arg` flags is the next step of the build refactor (`docker/build-refactor-design.md` §3.3) — until then CI builds still follow branch HEADs inside the Dockerfile.
 
 ## Image retention (open)
 

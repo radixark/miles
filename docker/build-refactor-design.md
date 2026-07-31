@@ -98,7 +98,7 @@ Dockerfile 增加 `ARG TORCH_CUDA_ARCH_LIST`（含 nccl-tests 的对应 `NVCC_GE
 
 - **runner 拓扑**：每台 build node（H200 机器，若干台）= 原 CI runner 实例（label 照旧，接 CI job，并发 1）+ 新 build runner 实例（label `docker-build`，接 docker build job，并发 1）。单机上 build 串行排队；跨机器可并行（cu13/cu12 拆 job）。compute mode 一次性确认（§3.1）对每台 labeled 机器执行。
 - **SHA 解析点**：workflow 单一步骤解析全部上游引用（schedule/push/dispatch 三种触发统一走这条路），输出 SHA 组 → 既做 should_build 判断（对比缓存的上次值，逻辑不变）又做 build-arg 注入 + image label。
-- **`build.py` 改动**：透传任意 `--build-arg`（02 doc 已记录这是缺口）；接持久 builder（`--builder <name>`）；可选 `--cache-to/--cache-from` 参数留二级缓存口子。
+- **`build.py` 改动**：只加两个真实需要的通道——透传任意 `--build-arg`（SHA 注入的硬前提；02 doc 已记录此缺口）、接持久 builder（`--builder <name>`，显式优于机器侧 `buildx use` 的有状态默认）。不预置 `--cache-to/--cache-from` 参数——registry 二级缓存按 §3.2 条件触发时再加，不留投机口子。改 build.py 而非 workflow 裸写 buildx 的原因：build.py 是既定的 buildx 唯一咽喉（single source of truth），绕开它会把 truth 劈进 workflow YAML、并使本地与 CI 构建路径分叉。
 - **QEMU 原则（迁自 sglang）**："编译必须原生，薄层随便 QEMU"。sglang 自己在 ubuntu-latest 上 QEMU 构建多架构 overlay 镜像（`release-docker-dev.yml`，现场生成 `FROM 镜像 + snippet` 两行 Dockerfile）——QEMU 可接受的条件是层里无编译。miles 的 arm64 链在 P2（§6 wheel 化）完成后退化为此类薄层。
 - **cu13/cu12 关系（fact）**：`FROM` tag 不同 → 零层共享，缓存各自独立；两者在同一钉子机上串行（warm 后各自收缩，串行可接受）。
 
