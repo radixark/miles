@@ -435,7 +435,7 @@ def _train(args: ScriptArgs):
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load
-        "--qkv-format bshd "
+        "--qkv-format thd "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
         "--rollout-health-check-interval 300 "
