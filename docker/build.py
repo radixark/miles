@@ -103,6 +103,7 @@ def build_and_push(
     push: bool = False,
     custom_tag: str = "",
     build_args: list[str] | None = None,
+    builder: str = "",
 ) -> None:
     config = VARIANTS[variant]
     # A variant may pin its own Dockerfile (e.g. ROCm); otherwise use the CLI default.
@@ -131,6 +132,11 @@ def build_and_push(
         "-f",
         dockerfile,
     ]
+
+    # Explicit builder selection (CI passes its persistent node-local builder);
+    # stateful `docker buildx use` defaults stay out of the picture.
+    if builder:
+        cmd += ["--builder", builder]
 
     if platforms:
         cmd += ["--platform", ",".join(platforms)]
@@ -211,6 +217,7 @@ def main() -> None:
         metavar="KEY=VALUE",
         help="Extra KEY=VALUE forwarded to docker buildx build (repeatable).",
     )
+    parser.add_argument("--builder", default="", help="buildx builder to use (default: current).")
     args = parser.parse_args()
     build_and_push(
         args.variant,
@@ -220,6 +227,7 @@ def main() -> None:
         push=args.push,
         custom_tag=args.custom_tag,
         build_args=args.build_args,
+        builder=args.builder,
     )
 
 

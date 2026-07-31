@@ -57,7 +57,7 @@ The cu13 variants share one multi-arch CUDA base image and differ only in platfo
 
 The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
 
-A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, `--build-arg` (repeatable `KEY=VALUE` forwarded verbatim to `docker buildx build`, appended after the variant's own build-args so an explicit value wins).
+A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, `--build-arg` (repeatable `KEY=VALUE` forwarded verbatim to `docker buildx build`, appended after the variant's own build-args so an explicit value wins), `--builder` (buildx builder to use; CI passes its persistent `miles-builder`).
 
 ## PR build check (in `pr-test.yml`)
 
@@ -131,7 +131,7 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 
 ### Steps (`build-and-push`)
 
-1. checkout → Buildx → Docker Hub login. No host package installs: `build.py` is stdlib-only, so build nodes need just docker and stock `python3`.
+1. checkout → ensure the persistent `miles-builder` buildx builder (node-local layer cache; created once per node, reused by every build including PR builds) → Docker Hub login. No host package installs: `build.py` is stdlib-only, so build nodes need just docker and stock `python3`.
 2. **Build + push** via `build.py` — automatic runs build **both** `cu13` and `cu12-x86`; a manual dispatch builds only the one variant you picked.
 3. **schedule only** — point `latest`→`dev` and `latest-cu12`→`dev-cu12`.
 4. **schedule only** — prune each timestamp series to the newest 20.

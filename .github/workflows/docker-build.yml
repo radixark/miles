@@ -170,12 +170,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
+      - name: Ensure persistent buildx builder
+        # A named docker-container builder persists on the build node across runs and
+        # is the layer cache — correct now that every image input is pinned by
+        # SHA/fingerprint build-args. setup-buildx-action would create (and tear down)
+        # a fresh builder per run, discarding all state: every build was fully cold.
+        run: |
+          docker buildx inspect miles-builder >/dev/null 2>&1 || \
+            docker buildx create --name miles-builder --driver docker-container \
+              --driver-opt image=moby/buildkit:latest --driver-opt network=host \
+              --bootstrap
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -196,6 +200,7 @@ jobs:
             --build-arg SGLANG_COMMIT=${{ needs.resolve-upstream.outputs.sglang_sha }} \
             --build-arg MEGATRON_COMMIT=${{ needs.resolve-upstream.outputs.megatron_sha }} \
             --build-arg MILES_COMMIT=${{ needs.resolve-upstream.outputs.miles_sha }} \
+            --builder miles-builder \
             --push
 
       - name: Build and push cu12-x86 (automatic builds only)
@@ -207,6 +212,7 @@ jobs:
             --build-arg SGLANG_COMMIT=${{ needs.resolve-upstream.outputs.sglang_sha }} \
             --build-arg MEGATRON_COMMIT=${{ needs.resolve-upstream.outputs.megatron_sha }} \
             --build-arg MILES_COMMIT=${{ needs.resolve-upstream.outputs.miles_sha }} \
+            --builder miles-builder \
             --push
 
       - name: Point latest to current dev

@@ -104,7 +104,7 @@ Dockerfile 增加 `ARG TORCH_CUDA_ARCH_LIST`（含 nccl-tests 的对应 `NVCC_GE
 
 ## 5. 实施切分与验证
 
-实施权限未授予；以下为建议切分，每刀独立可回滚。
+进度：PR-1 已落地（`18e1c4e70` runs-on 迁移 + `ec2a73cbe` 移除宿主机 apt/pip 变更、build.py 转 stdlib-only——首次真跑暴露的必要补刀）；PR-2 已落地（`3fdf5e8f2` SHA/指纹必填 pin + 单一解析器 `docker/resolve_upstream.py`；后续 commit 建持久 `miles-builder` 开启缓存）。以下为原始切分记录。
 
 1. **PR-1 机器迁移**：build node 双 runner 实例 + runs-on 切换。此刀**不开层缓存**（builder 保持一次性或显式 `--no-cache`），因为 SHA 注入未落地前层缓存不安全。收益：GPU 池占用归零。验证：一次 dispatch build 全绿，产物 digest 与旧路径等价（`pip freeze` diff 为空）。
 2. **PR-2 SHA 注入 + 开启持久缓存**：`check-upstream` 重构为统一解析步骤，`build.py` 透传 build-args，Dockerfile clone 层改 SHA checkout（空 SHA 硬失败），建持久 builder（不带自动 prune，见 §3.2）。验证：同 SHA 组连打两次，第二次近全命中且 wall clock 达标；伪造单个 SHA 变化，确认只有预期层失效；`pip freeze` diff 为空。
