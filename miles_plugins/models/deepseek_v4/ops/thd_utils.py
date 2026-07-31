@@ -73,8 +73,13 @@ def to_rank_major_rows(idxs: Tensor, seq_to_rank_row: Tensor, valid: Tensor) -> 
 
     Both the rule-based indices and the indexer's top-k are produced in sequence-major order,
     while CP all-gathers fixed-capacity per-rank blocks; ``-1`` drops a row no rank produced.
+
+    ``valid`` rules a lane out only after the gather, so both ends are clamped first: a segment
+    shorter than the longest one never fills its columns, and the indexer leaves its unused
+    top-k slots at whatever the kernel wrote. A lane ``valid`` keeps already addresses a row
+    the table holds, so the clamp moves no live index.
     """
-    rows = seq_to_rank_row[idxs.clamp(min=0).long()]
+    rows = seq_to_rank_row[idxs.clamp(0, seq_to_rank_row.numel() - 1).long()]
     return rows, valid & (rows >= 0)
 
 
