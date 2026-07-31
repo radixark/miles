@@ -74,6 +74,8 @@ def _compute_router_primary_port_info(args, model_idx: int) -> PortInfo:
 
 
 def spec_session_server(args) -> CommandWorkerSpec:
+    from miles.ray.rollout.router_manager import compute_num_session_server_ports
+
     _config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
     interpreter_prefix = python_argv_prefix()
 
