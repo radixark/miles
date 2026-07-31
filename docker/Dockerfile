@@ -274,12 +274,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # ====================================== Miles runtime requirements ============================================
 
 # Constrained resolve: everything already installed is frozen via a constraints file
-# generated on the spot, so this layer may add packages but a version conflict with
-# the layers above fails loudly instead of silently reinstalling them.
+# generated on the spot, so this layer may add packages but transitive resolution
+# cannot silently move the layers above. Packages requirements.txt itself names are
+# excluded from the freeze — its explicit pins are miles' declared contract and may
+# override a base-image version (e.g. xxhash), which a full freeze would veto.
 COPY requirements.txt /tmp/requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && \
-    pip list --format=freeze > /tmp/constraints.txt && \
+    pip list --format=freeze | python3 -c "import sys,re; own={re.split(r'[<>=!~;\[ ]', l.strip(), 1)[0].lower().replace('_','-') for l in open('/tmp/requirements.txt') if l.strip() and not l.strip().startswith(('#','-'))}; sys.stdout.writelines(l for l in sys.stdin if l.split('==')[0].lower().replace('_','-') not in own)" > /tmp/constraints.txt && \
     pip install -r /tmp/requirements.txt -c /tmp/constraints.txt && \
     rm /tmp/constraints.txt
 
