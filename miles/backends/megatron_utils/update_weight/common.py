@@ -143,6 +143,19 @@ def _gather_with_stride(
     return torch.cat(interleaved, dim=partition_dim)
 
 
+def _is_unmarked_grouped_expert_weight(name: str, param: torch.nn.Parameter) -> bool:
+    """TEGroupedLinear never marks its per-expert weight0..weightN, so Megatron fills in
+    the defaults (tensor_model_parallel=False, partition_dim=-1) and the tensor claims to
+    be unsharded. It is expert-TP sharded whenever etp > 1, so the gather must still run.
+    """
+    return (
+        ".experts." in name
+        and ("linear_fc1.weight" in name or "linear_fc2.weight" in name)
+        and not param.tensor_model_parallel
+        and get_parallel_state().etp.size > 1
+    )
+
+
 def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, partition_dim: int) -> tuple[int, int]:
     """Validate partition_stride values for known parameter patterns.
 
@@ -152,9 +165,11 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     """
     if "linear_fc1.weight" in name and args.swiglu:
         partition_stride = 2
+        if partition_dim < 0:
+            partition_dim = 0
     elif "linear_fc2.weight" in name:
         assert partition_stride == 1, f"Expected partition_stride=1 for {name}, got {partition_stride}"
-        if partition_dim == 0:
+        if partition_dim <= 0:
             partition_dim = 1
     else:
         assert partition_stride == 1, f"Expected partition_stride=1 for {name}, got {partition_stride}"
@@ -171,7 +186,9 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
         return param
 
     assert hasattr(param, "tensor_model_parallel"), f"{name} does not have tensor_model_parallel attribute"
-    if not param.tensor_model_parallel or getattr(param, "parallel_mode", None) == "duplicated":
+    if getattr(param, "parallel_mode", None) == "duplicated":
+        return param.data
+    if not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(name, param):
         return param.data
 
     if ".experts." in name and ".shared_experts." not in name:
@@ -212,7 +229,9 @@ def all_gather_params_async(
         if "expert_bias" in info.name:
             gather_tasks.append((info, param, None, None, None, None))
             handles.append(None)
-        elif not param.tensor_model_parallel or getattr(param, "parallel_mode", None) == "duplicated":
+        elif getattr(param, "parallel_mode", None) == "duplicated" or (
+            not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(info.name, param)
+        ):
             gather_tasks.append((info, param.data, None, None, None, None))
             handles.append(None)
         else:
@@ -401,9 +420,20 @@ def collect_named_tensors_for_weight_transfer(
             yield name, tensor
 
 
-def begin_weight_update(rollout_engines: Sequence[ActorHandle]):
-    """Open a weight-update session on all rollout engines (restore packed weights)."""
-    ray.get([engine.begin_weight_update.remote() for engine in rollout_engines])
+def begin_weight_update(rollout_engines: Sequence[ActorHandle], selector: str = "all"):
+    """Open a weight-update session on the selected rollout engines (restore packed weights)."""
+    ray.get([engine.begin_weight_update.remote(selector=selector) for engine in rollout_engines])
+
+
+def weight_update_selector(args) -> str:
+    """Exclude the draft only when the trainer provably has no MTP block to send it."""
+    if (
+        getattr(args, "sglang_speculative_algorithm", None)
+        and not getattr(args, "mtp_num_layers", None)
+        and getattr(args, "megatron_to_hf_mode", "raw") != "bridge"
+    ):
+        return "target"
+    return "all"
 
 
 def end_weight_update(rollout_engines: Sequence[ActorHandle]):

@@ -76,7 +76,8 @@
         "group": "Thinking Machines",
         "root": "models/thinkingmachines/index",
         "pages": [
-         "models/thinkingmachines/inkling"
+         "models/thinkingmachines/inkling",
+         "models/thinkingmachines/inkling-small"
         ],
         "expanded": false
        },
@@ -167,6 +168,7 @@
        "user-guide/usage",
        "user-guide/training-script-walkthrough",
        "user-guide/monitoring",
+       "user-guide/dashboard",
        "user-guide/customization",
        "user-guide/rollout-endpoints",
        "user-guide/fully-async",
@@ -179,7 +181,8 @@
       "root": "user-guide/environments",
       "pages": [
        "user-guide/harbor",
-       "user-guide/openenv"
+       "user-guide/openenv",
+       "user-guide/nemo-gym"
       ]
      }
     ]
@@ -238,7 +241,6 @@
       "pages": [
        "examples/fully-async",
        "examples/search-r1",
-       "examples/retool",
        "examples/multi-agent",
        "examples/reproducibility",
        "examples/openhermes-sft"

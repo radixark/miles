@@ -229,9 +229,6 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 def execute(case: CaseConfig, *, wandb_file: str) -> None:
     train_args = build_train_args(case, wandb_file=wandb_file)
 
-    if case.use_mooncake:
-        U.start_mooncake_master()
-
     extra_env_vars = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
     if case.use_int4_rollout:
         extra_env_vars |= {
@@ -243,5 +240,6 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
         train_args=train_args,
         num_gpus_per_node=case.num_gpus_per_node + (0 if case.colocate else case.rollout_num_gpus),
         megatron_model_type=MODEL_TYPE,
+        before_ray_job_submit=U.start_mooncake_master if case.use_mooncake else None,
         extra_env_vars=extra_env_vars,
     )

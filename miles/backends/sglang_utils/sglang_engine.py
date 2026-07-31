@@ -34,9 +34,6 @@ def get_base_gpu_id(args, rank):
     else:
         num_actor_gpus = 0 if args.debug_rollout_only else args.actor_num_gpus_per_node * args.actor_num_nodes
         start_index = (num_actor_gpus + rank * num_gpus) % args.num_gpus_per_node
-        if args.use_critic:
-            num_critic_gpus = args.critic_num_gpus_per_node * args.critic_num_nodes
-            start_index = (num_actor_gpus + num_critic_gpus + rank * num_gpus) % args.num_gpus_per_node
     return start_index
 
 
@@ -322,6 +319,7 @@ class SGLangEngine(RayActor):
         load_format: str | None = None,
         flush_cache: bool = False,
         weight_version: str | None = None,
+        selector: str = "all",
     ):
         """
         Update model weights from tensor data. The HTTP server will only post meta data, and the real weights will be copied directly from GPUs.
@@ -333,6 +331,7 @@ class SGLangEngine(RayActor):
             "serialized_named_tensors": serialized_named_tensors,
             "load_format": load_format,
             "flush_cache": flush_cache,
+            "selector": selector,
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
@@ -597,7 +596,14 @@ class SGLangEngine(RayActor):
             pass
 
     def update_weights_from_distributed(
-        self, names, dtypes, shapes, group_name, flush_cache=False, weight_version: str | None = None
+        self,
+        names,
+        dtypes,
+        shapes,
+        group_name,
+        flush_cache=False,
+        weight_version: str | None = None,
+        selector: str = "all",
     ):
         payload = {
             "names": names,
@@ -605,6 +611,7 @@ class SGLangEngine(RayActor):
             "shapes": shapes,
             "group_name": group_name,
             "flush_cache": flush_cache,
+            "selector": selector,
         }
         if weight_version is not None:
             payload["weight_version"] = weight_version
@@ -626,18 +633,18 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
-    def begin_weight_update(self):
+    def begin_weight_update(self, selector: str = "all"):
         """Open a weight-update session on the engine (restores packed weights for loading)."""
-        return self._weight_update_session_request("begin_weight_update")
+        return self._weight_update_session_request("begin_weight_update", {"selector": selector})
 
     def end_weight_update(self):
         """Close the weight-update session (post-load + quant post-process on the full model)."""
         return self._weight_update_session_request("end_weight_update")
 
-    def _weight_update_session_request(self, endpoint: str):
+    def _weight_update_session_request(self, endpoint: str, payload: dict | None = None):
         """Call a packed-weight session endpoint; 404 (dev-lineage sglang) is treated as success."""
         try:
-            return self._make_request(endpoint, {})
+            return self._make_request(endpoint, payload or {})
         except requests.exceptions.HTTPError as e:
             if e.response is not None and e.response.status_code == 404:
                 logger.warning(f"{endpoint} endpoint absent (dev-lineage sglang); skipping")

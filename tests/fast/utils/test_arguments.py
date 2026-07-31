@@ -13,6 +13,7 @@ from miles.utils.arguments import (
     _resolve_ft_components,
     get_miles_extra_args_provider,
     miles_validate_args,
+    validate_async_off_policy_correction,
 )
 from miles.utils.misc import function_registry
 
@@ -289,6 +290,65 @@ class TestTitoFixedTemplateConfiguration:
         }
 
 
+def test_bridge_mode_rejects_critic(tmp_path):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--advantage-estimator",
+            "ppo",
+            "--megatron-to-hf-mode",
+            "bridge",
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(
+        AssertionError,
+        match="Critic models are not supported with --megatron-to-hf-mode bridge",
+    ):
+        miles_validate_args(args)
+
+
+def test_critic_rejects_experimental_ft_trainer(tmp_path, monkeypatch):
+    monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--advantage-estimator", "ppo", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
+        miles_validate_args(args)
+
+
+def test_critic_rejects_reward_level_kl(tmp_path):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--advantage-estimator",
+            "ppo",
+            "--kl-coef",
+            "0.05",
+            "--ref-load",
+            str(tmp_path),
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="does not support reward-level KL"):
+        miles_validate_args(args)
+
+
 class TestMultiLoRAValidation:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
@@ -367,6 +427,37 @@ class TestMultiLoRAValidation:
 
         with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
             miles_validate_args(args)
+
+    def test_rejects_pipeline_parallelism(self):
+        # Adapter routing is not recompute-safe under a pipelined schedule.
+        args = self._parse([])
+        args.pipeline_model_parallel_size = 2
+        with pytest.raises(AssertionError, match="pipeline-model-parallel-size 1"):
+            miles_validate_args(args)
+
+    def test_rejects_bshd_qkv_format(self):
+        # bshd interleaves samples in the sequence-major flattening the spans assume.
+        args = self._parse([])
+        args.qkv_format = "bshd"
+        with pytest.raises(AssertionError, match="qkv-format thd"):
+            miles_validate_args(args)
+
+    def test_rejects_shared_outer_expert_loras(self):
+        # Per-expert layout only; the flag would switch sglang to a layout training never produces.
+        args = self._parse([])
+        args.experts_shared_outer_loras = True
+        with pytest.raises(AssertionError, match="experts-shared-outer-loras"):
+            miles_validate_args(args)
+
+    def test_accepts_expert_leaf_targets_without_expert_tp_flag(self):
+        # --expert-tensor-parallel-size stays None until Megatron's own validate_args;
+        # comparing the raw value here rejected every run that omitted the flag.
+        args = self._parse(["--target-modules", "gate_proj,up_proj,down_proj"])
+        args.expert_tensor_parallel_size = None
+
+        miles_validate_args(args)
+
+        assert args.multi_lora is True
 
 
 class TestResolveFtComponents:
@@ -471,3 +562,27 @@ def test_sglang_parallel_size_aliases_keep_last_value():
     args = parser.parse_args(["--sglang-data-parallel-size", "2", "--sglang-dp-size", "3"])
 
     assert args.sglang_dp_size == 3
+
+
+def _make_async_ppo_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        use_critic=True,
+        use_rollout_logprobs=False,
+        use_tis=False,
+        keep_old_actor=False,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class TestValidateAsyncOffPolicyCorrection:
+    def test_ppo_without_correction_is_rejected(self):
+        with pytest.raises(AssertionError, match="behavior-policy correction"):
+            validate_async_off_policy_correction(_make_async_ppo_args())
+
+    @pytest.mark.parametrize("flag", ["use_rollout_logprobs", "use_tis", "keep_old_actor"])
+    def test_ppo_with_any_correction_passes(self, flag):
+        validate_async_off_policy_correction(_make_async_ppo_args(**{flag: True}))
+
+    def test_non_ppo_estimators_are_unaffected(self):
+        validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))

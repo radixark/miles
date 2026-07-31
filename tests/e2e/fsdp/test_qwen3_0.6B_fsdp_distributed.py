@@ -7,7 +7,7 @@ import miles.utils.external_utils.command_utils as U
 register_cuda_ci(
     est_time=2200,
     suite="stage-c-4-gpu-h200",
-    labels=["fsdp"],
+    labels=["long"],
 )
 
 MODEL_NAME = "Qwen3-0.6B"

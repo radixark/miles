@@ -19,7 +19,7 @@ hook.
 ## Try it
 
 The maintained recipe lives in
-[`examples/experimental/swe-agent-v2`](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-v2),
+[`examples/swe-agent`](https://github.com/radixark/miles/tree/main/examples/swe-agent),
 with synchronous and fully-async launchers. Follow the
-[recipe README](https://github.com/radixark/miles/blob/main/examples/experimental/swe-agent-v2/README.md)
+[recipe README](https://github.com/radixark/miles/blob/main/examples/swe-agent/README.md)
 for the architecture, Harbor server setup, task format, and launch scripts.

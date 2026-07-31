@@ -45,7 +45,7 @@ VARIANTS = {
         "tag_postfix": "-cu12",
         "build_args": {
             "ENABLE_CUDA_13": "0",
-            "SGLANG_IMAGE_TAG": "v0.5.15-cu129",
+            "SGLANG_IMAGE_TAG": "v0.5.16-cu129",
             "WHEELS_TAG_X86": "cu129-x86_64",
         },
     },
