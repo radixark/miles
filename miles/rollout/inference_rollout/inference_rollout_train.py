@@ -57,7 +57,7 @@ async def get_worker_urls(args: Namespace):
         return response["urls"]
     else:
         response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        return [worker["url"] for worker in response["workers"]]
+        return list(dict.fromkeys(worker.get("base_url", worker["url"]) for worker in response["workers"]))
 
 
 def submit_generate_tasks(state: GenerateState, samples: list[list[Sample]]):
