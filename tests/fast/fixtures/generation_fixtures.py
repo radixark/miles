@@ -243,6 +243,7 @@ def with_session_server(
         chat_template_path=args.chat_template_path,
         tito_model=args.tito_model,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
+        sglang_speculative_algorithm=args.sglang_speculative_algorithm,
         # Sample assembly runs inside the server, so the R3 decode shape args
         # must reach the server namespace (set them via args_kwargs BEFORE the
         # server starts; assigning to the driver args afterwards has no effect).
