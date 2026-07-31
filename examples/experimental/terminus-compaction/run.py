@@ -173,7 +173,7 @@ def _agent_args(args: ScriptArgs) -> str:
         "--use-session-server v2 "
         f"{bind_arg}"
         "--session-server-port 30000 "
-        "--session-server-workers 32 "
+        "--num-session-servers 32 "
     )
 
 

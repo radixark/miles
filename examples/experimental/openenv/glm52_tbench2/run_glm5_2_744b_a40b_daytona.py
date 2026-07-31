@@ -173,7 +173,7 @@ def _execute_train(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
-        "--session-server-workers 32 "
+        "--num-session-servers 32 "
     )
 
     # 32-GPU training half. CP4 splits --max-seq-len across the CP ranks;
