@@ -96,3 +96,35 @@ class TestComputeSpecRouterLaunchCommand:
         assert config.host == "127.0.0.1"
         assert config.port == 20000
         assert config.max_connections == 100
+
+
+class TestInferenceSpecPinToHead:
+    @pytest.mark.parametrize("pinned", [False, True])
+    def test_router_and_session_specs_follow_the_rollout_manager_flag(self, pinned: bool):
+        """Both driver-adjacent specs are pinned exactly when the rollout manager is."""
+        from miles.ray.specs.inference import _compute_spec_router, spec_session_server
+
+        args = make_args(
+            pin_rollout_manager_to_head=pinned,
+            use_miles_router=False,
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            num_session_servers=1,
+            chat_template_path=None,
+            tito_model="default",
+            apply_chat_template_kwargs=None,
+            use_rollout_indexer_replay=False,
+            sglang_speculative_algorithm=None,
+            num_layers=None,
+            moe_router_topk=None,
+            save_debug_trajectory_data=None,
+            lora_rank=0,
+            lora_adapter_path=None,
+            miles_router_timeout=None,
+        )
+
+        router = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+        session = spec_session_server(args)
+
+        assert router.scheduling.pin_to_head is pinned
+        assert session.scheduling.pin_to_head is pinned
