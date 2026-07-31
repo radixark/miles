@@ -532,6 +532,21 @@ class TestSplitTrainDataRaw:
             assert len(part["rollout_indexer_topk"]) == 2
             assert len(part["opd_reverse_kl"]) == 2
 
+    def test_custom_loss_metadata_split_across_dp(self) -> None:
+        metadata = [{"choice_token_ids": [i, i + 1]} for i in range(4)]
+        data = {
+            "tokens": [[1, 2], [3, 4], [5, 6], [7, 8]],
+            "response_lengths": [1, 1, 1, 1],
+            "loss_masks": [[0, 1], [0, 1], [0, 1], [0, 1]],
+            "metadata": metadata,
+        }
+
+        args = MagicMock(balance_data=False)
+        result = split_train_data_by_dp_raw(args, data, dp_size=2)
+
+        assert result[0]["metadata"] == [metadata[0], metadata[2]]
+        assert result[1]["metadata"] == [metadata[1], metadata[3]]
+
     def test_no_witness_ids_when_absent(self) -> None:
         tokens = [[1, 2], [3, 4]]
         data = {

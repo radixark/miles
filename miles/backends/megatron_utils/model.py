@@ -489,6 +489,7 @@ def train_one_step(
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
+                "metadata",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,

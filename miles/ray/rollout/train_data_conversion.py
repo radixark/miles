@@ -240,6 +240,7 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",
+            "metadata",
         ]:
             if key not in data:
                 continue
