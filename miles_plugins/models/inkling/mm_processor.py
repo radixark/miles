@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 
-from miles_plugins.models.inkling.ops.image_processing import InklingImagePatchifier
+from miles_plugins.models.inkling.image_processing import InklingImagePatchifier
 
 IMAGE_TOKEN_ID = -101
 AUDIO_TOKEN_ID = -102
@@ -197,7 +197,7 @@ class InklingTrainProcessor:
         vision_cfg = cfg.get("vision_config") or {}
         self.patchifier = InklingImagePatchifier(patch_size=vision_cfg.get("patch_size", 40))
         audio_cfg = cfg.get("audio_config") or {}
-        from miles_plugins.models.inkling.ops.audio_processing import InklingAudioDmelExtractor
+        from miles_plugins.models.inkling.audio_processing import InklingAudioDmelExtractor
 
         self.dmel_extractor = InklingAudioDmelExtractor(
             params={

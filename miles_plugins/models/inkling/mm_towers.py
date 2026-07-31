@@ -5,8 +5,8 @@ import json
 import torch
 import torch.nn as nn
 
-from miles_plugins.models.inkling.ops.vision_encoder import HMLPPatchEncoder, InklingVisionConfig, RMSNorm
 from miles_plugins.models.inkling.options import inkling_opt
+from miles_plugins.models.inkling.vision_encoder import HMLPPatchEncoder, InklingVisionConfig, RMSNorm
 
 
 class InklingAudioEncoder(nn.Module):

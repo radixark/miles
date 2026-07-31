@@ -17,15 +17,24 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core.transformer.moe.moe_layer import MoELayer
 from megatron.core.transformer.moe.router import TopKRouter
 
-from miles_plugins.models.inkling.ops.cp_utils import cp_all_gather, cp_world, seqlens_from_packed, sp_residual_conv
-from miles_plugins.models.inkling.ops.kernel.attention import create_block_mask as _create_block_mask
-from miles_plugins.models.inkling.ops.kernel.attention import flex_compiled as _flex
-from miles_plugins.models.inkling.ops.kernel.precision_aligned_ops import sconv_fp32_packed, sum_fp32, swiglu_fp32
+from miles_plugins.models.inkling.ops import (
+    cp_all_gather,
+    cp_world,
+)
+from miles_plugins.models.inkling.ops import create_block_mask as _create_block_mask
+from miles_plugins.models.inkling.ops import flex_compiled as _flex
+from miles_plugins.models.inkling.ops import (
+    inkling_sconv_fp32_packed,
+    inkling_sp_residual_conv,
+    inkling_sum_fp32,
+    inkling_swiglu_fp32,
+    seqlens_from_packed,
+)
 from miles_plugins.models.inkling.options import inkling_opt
 
 _cp_world = cp_world
 _cp_all_gather = cp_all_gather
-_sp_residual_conv = sp_residual_conv
+_sp_residual_conv = inkling_sp_residual_conv
 _seqlens_from_packed = seqlens_from_packed
 
 
@@ -36,7 +45,7 @@ class _Sconv(nn.Module):
         self.k = kernel
 
     def forward(self, x, seqlens=None):
-        return sconv_fp32_packed(x, self.weight, seqlens)
+        return inkling_sconv_fp32_packed(x, self.weight, seqlens)
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
         from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
@@ -166,7 +175,7 @@ class InklingSelfAttention(SelfAttention):
 
     def _attend(self, q, k, v, r, seqlens):
         if self.attn_backend == "fa4":
-            from miles_plugins.models.inkling.ops.kernel.attention import inkling_fa4_attention as _fa4
+            from miles_plugins.models.inkling.ops import inkling_fa4_attention as _fa4
 
             T, nh_l, hd = q.shape
             rel_logits = torch.einsum("thd,de->the", r.float(), self.rel_proj.float())
@@ -448,10 +457,10 @@ class InklingSharedExperts(MegatronModule):
         ys = []
         for j, mlp in enumerate(self.experts):
             fc1_out, _ = mlp.linear_fc1(hidden_states)
-            act = swiglu_fp32(fc1_out, per_token_scale=sw32[:, :, j : j + 1])
+            act = inkling_swiglu_fp32(fc1_out, per_token_scale=sw32[:, :, j : j + 1])
             yj, _ = mlp.linear_fc2(act)
             ys.append(yj)
-        return sum_fp32(ys)
+        return inkling_sum_fp32(ys)
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
         sd = super().sharded_state_dict(prefix, sharded_offsets, metadata)
@@ -516,7 +525,7 @@ class InklingDenseMLP(MLP):
         if hidden_states.dtype != self.config.params_dtype:
             hidden_states = hidden_states.to(self.config.params_dtype)
         fc1_out, _ = self.linear_fc1(hidden_states)
-        act = swiglu_fp32(fc1_out)
+        act = inkling_swiglu_fp32(fc1_out)
         out, bias = self.linear_fc2(act)
         if self.global_scale is not None:
             out = out * self.global_scale.to(out.dtype)
