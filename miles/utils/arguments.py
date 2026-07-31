@@ -24,18 +24,18 @@ from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 logger = logging.getLogger(__name__)
 
 
-def default_rollout_function_path() -> str:
-    """The standard rollout function, used when nothing selects another one."""
+def resolve_rollout_function_paths(args) -> tuple[str, str]:
+    """The (rollout, eval) function paths the arguments select."""
     if enable_experimental_rollout_refactor():
-        return "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-    return "miles.rollout.sglang_rollout.generate_rollout"
-
-
-def resolve_rollout_function_path(args) -> str:
-    """The rollout function the arguments select."""
+        standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
+    else:
+        standard_path = "miles.rollout.sglang_rollout.generate_rollout"
+    rollout_path = args.rollout_function_path or standard_path
+    # Resolved before the fully-async override: fully async does not serve eval.
+    eval_path = args.eval_function_path or rollout_path
     if args.fully_async:
-        return "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
-    return args.rollout_function_path or default_rollout_function_path()
+        rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+    return rollout_path, eval_path
 
 
 def _resolve_rollout_functions(args) -> None:
@@ -58,11 +58,7 @@ def _resolve_rollout_functions(args) -> None:
             args.rollout_all_samples_process_path is None
         ), "--fully-async does not support --rollout-all-samples-process-path"
 
-    args.rollout_function_path = resolve_rollout_function_path(args)
-
-    if args.eval_function_path is None:
-        # Fully async does not serve eval, so eval keeps the standard rollout function.
-        args.eval_function_path = default_rollout_function_path() if args.fully_async else args.rollout_function_path
+    args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
 
 
 def reset_arg(parser, name, **kwargs):
@@ -2285,7 +2281,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             except SystemExit:
                 return parser
             for path in [
-                resolve_rollout_function_path(args_partial),
+                resolve_rollout_function_paths(args_partial)[0],
                 args_partial.custom_generate_function_path,
             ]:
                 try:
