@@ -38,6 +38,7 @@ def _make_spec(
     env_var: dict[str, str] | None = None,
     launch_command: Callable[[LaunchCommandContext], str] | None = None,
     num_gpus_per_worker: float = 0,
+    pin_to_head: bool = False,
 ) -> CommandWorkerSpec:
     return CommandWorkerSpec(
         name=name,
@@ -49,6 +50,7 @@ def _make_spec(
             num_cells=num_cells,
             num_workers_per_cell=num_workers_per_cell,
             num_gpus_per_worker=num_gpus_per_worker,
+            pin_to_head=pin_to_head,
         ),
         launch_command=launch_command if launch_command is not None else (lambda ctx: "sleep 600"),
     )
@@ -373,3 +375,33 @@ class TestGetWorkerAddr:
 
         with pytest.raises(AssertionError):
             manager.get_worker_addr("engine-2-0")
+
+
+class TestPinToHead:
+    async def test_a_pinned_worker_keeps_its_resources_and_gains_head_affinity(
+        self, fake_ray_cluster: FakeRayCluster, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Pinning adds the head-affinity strategy without dropping the other actor options."""
+        monkeypatch.setattr(
+            "miles.utils.workers.ray_worker_manager.compute_ray_pin_head_options",
+            lambda: {"scheduling_strategy": "head-affinity"},
+        )
+        await _launch([_make_spec("router", pin_to_head=True, env_var={"A": "1"})])
+
+        options = fake_ray_cluster.handles[0].options
+        assert options["scheduling_strategy"] == "head-affinity"
+        assert options["num_cpus"] == 0.2
+        assert options["runtime_env"] == {"env_vars": {"A": "1"}}
+
+    async def test_an_unpinned_worker_never_resolves_the_head_node(
+        self, fake_ray_cluster: FakeRayCluster, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Unpinned workers must not even look the head node up, let alone all land on it."""
+
+        def _fail() -> dict:
+            raise AssertionError("the head node must not be resolved for unpinned workers")
+
+        monkeypatch.setattr("miles.utils.workers.ray_worker_manager.compute_ray_pin_head_options", _fail)
+        await _launch([_make_spec("router")])
+
+        assert "scheduling_strategy" not in fake_ray_cluster.handles[0].options
