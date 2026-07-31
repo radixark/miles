@@ -175,3 +175,49 @@ class TestManagerRelaunchOnRealRay:
         manager_factory([make_command_spec("router", launch_command=second_probe.launch_command)])
 
         assert second_probe.wait_for_records(1)["0-0"]["pid"] != first_probe.read_records()["0-0"]["pid"]
+
+
+class TestCrossSpecWiringOnRealRay:
+    def test_a_dependent_workers_command_sees_the_addresses_of_the_spec_it_depends_on(
+        self, manager_factory, worker_probe_factory
+    ):
+        """A session-server-shaped worker can only find its router because the manager renders after all allocation."""
+        router_probe = worker_probe_factory()
+        session_probe = worker_probe_factory()
+        handle = manager_factory(
+            [
+                make_command_spec("inference-router-0", launch_command=router_probe.launch_command),
+                make_command_spec("session-server", num_cells=2, launch_command=session_probe.launch_command),
+            ]
+        )
+
+        router_probe.wait_for_records(1)
+        session_records = session_probe.wait_for_records(2)
+        addrs = ray.get(handle.get_addrs.remote())
+
+        router_addr = addrs["inference-router-0"][0]["primary"]
+        for record in session_records.values():
+            spec_addrs = record["context"]["spec_addrs"]
+            assert sorted(spec_addrs) == ["inference-router-0", "session-server"]
+            assert spec_addrs["inference-router-0"][0]["primary"] == {
+                "host": router_addr.host,
+                "port": router_addr.port,
+            }
+            assert len(spec_addrs["session-server"]) == 2
+
+    def test_each_spec_only_gets_its_own_env(self, manager_factory, worker_probe_factory):
+        """Env vars of one spec must not reach another spec's workers."""
+        router_probe = worker_probe_factory(env_names=("ROUTER_ONLY", "ENGINE_ONLY"))
+        engine_probe = worker_probe_factory(env_names=("ROUTER_ONLY", "ENGINE_ONLY"))
+        manager_factory(
+            [
+                make_command_spec("router", launch_command=router_probe.launch_command, env_var={"ROUTER_ONLY": "r"}),
+                make_command_spec("engine", launch_command=engine_probe.launch_command, env_var={"ENGINE_ONLY": "e"}),
+            ]
+        )
+
+        router_record = router_probe.wait_for_records(1)["0-0"]
+        engine_record = engine_probe.wait_for_records(1)["0-0"]
+
+        assert router_record["env"] == {"ROUTER_ONLY": "r", "ENGINE_ONLY": None}
+        assert engine_record["env"] == {"ROUTER_ONLY": None, "ENGINE_ONLY": "e"}
