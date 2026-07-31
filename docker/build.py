@@ -101,6 +101,7 @@ def build_and_push(
     dry_run: bool,
     dockerfile: str,
     push: bool = False,
+    load: bool = False,
     custom_tag: str = "",
     build_args: list[str] | None = None,
     builder: str = "",
@@ -143,6 +144,10 @@ def build_and_push(
 
     if push:
         cmd += ["--push"]
+    if load:
+        if platforms and len(platforms) > 1:
+            raise SystemExit("--load requires a single-platform variant (buildx cannot load a manifest list)")
+        cmd += ["--load"]
 
     # Proxy args (pass through if set in environment, check both cases)
     for arg_name in ["HTTP_PROXY", "HTTPS_PROXY"]:
@@ -218,6 +223,11 @@ def main() -> None:
         help="Extra KEY=VALUE forwarded to docker buildx build (repeatable).",
     )
     parser.add_argument("--builder", default="", help="buildx builder to use (default: current).")
+    parser.add_argument(
+        "--load",
+        action="store_true",
+        help="Load the image into the local docker store (single-platform variants only).",
+    )
     args = parser.parse_args()
     build_and_push(
         args.variant,
@@ -225,6 +235,7 @@ def main() -> None:
         args.dry_run,
         args.dockerfile,
         push=args.push,
+        load=args.load,
         custom_tag=args.custom_tag,
         build_args=args.build_args,
         builder=args.builder,

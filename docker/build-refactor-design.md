@@ -68,12 +68,12 @@ build node 上预建持久命名 buildx builder，层缓存与 `--mount=type=cac
 - 副产品：同一组 SHA → 同一镜像，可按历史 SHA 重建旧镜像；配合 image label 记录 SHA 组（参照 sglang `docker_build_metadata_args.py` 的 build-commit/build-url label 实践），回应 02 doc 的 retention 悬案。
 - 现状盘点（C3 已落地）：`SGLANG_COMMIT`/`MEGATRON_COMMIT`/`MILES_COMMIT` 均为必填 build-arg，空值硬失败；`WHEELS_FP_X86/ARM64` 按构建架构必填并被下载层引用为缓存键；解析逻辑单一来源 `docker/resolve_upstream.py`（CI 的 resolve-upstream job 与 build.py 本地自动补齐共用，指纹算法与旧 bash 逐字兼容）；wheels 指纹不由 workflow 静态传入而由 build.py 按 variant 解析（避免手动 dispatch cu12 拿到 cu13 指纹的缓存键错配）；残余未 pin 的 FlashQLA 已钉到 `821fd9d3`；`SGLANG_BRANCH`/`MEGATRON_BRANCH` args 删除（sglang 层直接 fetch SHA——基础镜像 clone 是 shallow 且 sglang-miles 会 rebase，按 branch fetch 不保证 SHA 可达；Megatron 改全量 clone + checkout + submodule 同步）。
 
-### 3.4 GPU 冒烟门：build 后、tag 晋升前
+### 3.4 GPU 冒烟门：push 之前 `--load` 本地探针（C6 落地形态）
 
-build node 上 `docker run --gpus all <刚构建的镜像>` 跑秒级探针集，通过才晋升 `dev`/`pr-<num>` tag。探针集内容待定稿（§6），最小集合方向：`torch.cuda.is_available()`、TE 真实 import + 一个小 op（覆盖 onnxscript 类事故）、sglang/miles import、nccl-tests 二进制存在。
+实施时简化了机制：不做"先推 timestamped tag 再 imagetools 晋升"的两段式，而是 **push 之前**用同一 builder 缓存 `--load` 出 amd64 镜像到本机 docker，`docker run --gpus all` 跑 `docker/smoke_test.py`（`torch.cuda` + tensor 运算、TE/sglang/miles 真实 import、nccl-tests 二进制），探针不过则任何 tag 都不动。省掉晋升机制与 timestamped-tag 捕获，手动/自动路径统一过门；随后的 push build 全量命中 gate build 的层缓存，代价仅一次本地镜像导出 + 秒级探针（probe 后 `docker rmi` 释放）。
 
-- 边界（fact）：x86 node 只能冒烟 amd64 镜像；arm64 镜像验证接受空缺，将来有 ARM GPU 机器再补。
-- GPU 在 build node 上的唯一角色就是这个门；build 本身仍然无 GPU。
+- 边界（fact）：x86 node 只能冒烟 amd64 镜像；arm64 半边接受空缺，将来有 ARM GPU 机器再补；`rocm-*`/`cu13-aarch64` 跳过。冷构建的多架构 wall clock 略增（amd64+探针先行，arm64 随后，并行度让位于门的顺序性）。
+- GPU 在 build node 上的唯一角色就是这个门；build 本身仍然无 GPU。前置运维确认：各 build 节点 compute mode 应为 Default（`nvidia-smi -q | grep -i "compute mode"`）。
 
 ### 3.5 层序重排 + 依赖单一清单 + 全面 cache mount（sglang deps/source 分层模式）
 
@@ -104,7 +104,7 @@ Dockerfile 增加 `ARG TORCH_CUDA_ARCH_LIST`（含 nccl-tests 的对应 `NVCC_GE
 
 ## 5. 实施切分与验证
 
-进度：PR-1 已落地（`18e1c4e70` runs-on 迁移 + `ec2a73cbe` 移除宿主机 apt/pip 变更、build.py 转 stdlib-only——首次真跑暴露的必要补刀）；PR-2 已落地（`3fdf5e8f2` SHA/指纹必填 pin + 单一解析器 `docker/resolve_upstream.py`；`7250cb459` 持久 `miles-builder` 开启缓存，实测同节点同输入 8min→10s、38/38 层命中）；PR-3 已落地（层序重排 + 桶收编 + 全面 cache mount + `docker/fetch_wheels.py` 资产 id 校验的下载缓存）。以下为原始切分记录。
+进度：PR-1 已落地（`18e1c4e70` runs-on 迁移 + `ec2a73cbe` 移除宿主机 apt/pip 变更、build.py 转 stdlib-only——首次真跑暴露的必要补刀）；PR-2 已落地（`3fdf5e8f2` SHA/指纹必填 pin + 单一解析器 `docker/resolve_upstream.py`；`7250cb459` 持久 `miles-builder` 开启缓存，实测同节点同输入 8min→10s、38/38 层命中）；PR-3 已落地（层序重排 + 桶收编 + 全面 cache mount + `docker/fetch_wheels.py` 资产 id 校验的下载缓存；constraints 防线两轮真实拦截：xxhash 契约覆盖、cudnn 归位 post-resolve overrides 尾部）；PR-4 已落地（`docker/smoke_test.py` + push 前 `--load` 冒烟门，见 §3.4 落地形态）。以下为原始切分记录。
 
 1. **PR-1 机器迁移**：build node 双 runner 实例 + runs-on 切换。此刀**不开层缓存**（builder 保持一次性或显式 `--no-cache`），因为 SHA 注入未落地前层缓存不安全。收益：GPU 池占用归零。验证：一次 dispatch build 全绿，产物 digest 与旧路径等价（`pip freeze` diff 为空）。
 2. **PR-2 SHA 注入 + 开启持久缓存**：`check-upstream` 重构为统一解析步骤，`build.py` 透传 build-args，Dockerfile clone 层改 SHA checkout（空 SHA 硬失败），建持久 builder（不带自动 prune，见 §3.2）。验证：同 SHA 组连打两次，第二次近全命中且 wall clock 达标；伪造单个 SHA 变化，确认只有预期层失效；`pip freeze` diff 为空。

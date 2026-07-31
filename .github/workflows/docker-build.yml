@@ -10,6 +10,7 @@ on:
       - 'docker/resolve_upstream.py'
       - 'docker/fetch_wheels.py'
       - 'docker/requirements-nodeps.txt'
+      - 'docker/smoke_test.py'
       - 'docker/verify_transformer_engine.py'
       - 'docker/patch/**'
       - 'requirements.txt'
@@ -185,6 +186,34 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Gate: boot the amd64 image on this node's GPU before anything is pushed — a
+      # broken image must never reach a tag (a --no-deps install once dropped
+      # onnxscript and shipped a green image that failed every GPU job). Built with
+      # --load from the same builder cache the push builds hit afterwards, so the
+      # gate costs one local image export plus seconds of probing. arm64 halves ship
+      # unprobed (no ARM GPU nodes); rocm variants use different recipes/hardware.
+      - name: GPU smoke gate (amd64)
+        if: ${{ !startsWith(inputs.variant, 'rocm') && inputs.variant != 'cu13-aarch64' }}
+        run: |
+          set -euo pipefail
+          for v in ${{ inputs.variant || 'cu13 cu12-x86' }}; do
+            case "$v" in
+              cu13|cu13-x86) GV=cu13-x86; TAG=radixark/miles:smoke-gate ;;
+              cu12-x86)      GV=cu12-x86; TAG=radixark/miles:smoke-gate-cu12 ;;
+              *) echo "no amd64 smoke mapping for variant $v" >&2; exit 1 ;;
+            esac
+            python3 docker/build.py --variant "$GV" --image-tag custom --custom-tag smoke-gate \
+              --build-arg SGLANG_COMMIT=${{ needs.resolve-upstream.outputs.sglang_sha }} \
+              --build-arg MEGATRON_COMMIT=${{ needs.resolve-upstream.outputs.megatron_sha }} \
+              --build-arg MILES_COMMIT=${{ needs.resolve-upstream.outputs.miles_sha }} \
+              --builder miles-builder \
+              --load
+            docker run --rm --gpus all \
+              -v "$PWD/docker/smoke_test.py:/tmp/smoke_test.py:ro" \
+              "$TAG" python3 /tmp/smoke_test.py
+            docker rmi "$TAG"
+          done
 
       # The source SHAs come from resolve-upstream (the same values the rebuild gate
       # saw); the per-variant wheels fingerprints are left to build.py, which resolves

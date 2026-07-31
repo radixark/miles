@@ -63,7 +63,7 @@ A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push
 
 Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this breakage lands on `main` first.
 
-When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/resolve_upstream.py`, `docker/fetch_wheels.py`, `docker/requirements-nodeps.txt`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
+When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/resolve_upstream.py`, `docker/fetch_wheels.py`, `docker/smoke_test.py`, `docker/requirements-nodeps.txt`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
 
 | Job | What it does |
 | --- | --- |
@@ -132,9 +132,10 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 ### Steps (`build-and-push`)
 
 1. checkout → ensure the persistent `miles-builder` buildx builder (node-local layer cache; created once per node, reused by every build including PR builds) → Docker Hub login. No host package installs: `build.py` is stdlib-only, so build nodes need just docker and stock `python3`.
-2. **Build + push** via `build.py` — automatic runs build **both** `cu13` and `cu12-x86`; a manual dispatch builds only the one variant you picked.
-3. **schedule only** — point `latest`→`dev` and `latest-cu12`→`dev-cu12`.
-4. **schedule only** — prune each timestamp series to the newest 20.
+2. **GPU smoke gate** — before anything is pushed, the amd64 image is `--load`ed from the builder cache and booted on the build node's GPU running `docker/smoke_test.py` (CUDA visible + tensor math, real TE/sglang/miles imports, nccl-tests binaries). A broken image never reaches a tag; the CUDA-variant builds all pass through it (arm64 halves ship unprobed — no ARM GPU nodes; `rocm-*` and `cu13-aarch64` skip it).
+3. **Build + push** via `build.py` — automatic runs build **both** `cu13` and `cu12-x86` (amd64 layers all cache hits from the gate build); a manual dispatch builds only the one variant you picked.
+4. **schedule only** — point `latest`→`dev` and `latest-cu12`→`dev-cu12`.
+5. **schedule only** — prune each timestamp series to the newest 20.
 
 ### Push auth & permissions
 
