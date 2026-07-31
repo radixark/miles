@@ -50,7 +50,11 @@ def patch_low_level(monkeypatch):
     monkeypatch.setattr(rsrv, "wait_router_ready", _fake_router_ready)
 
     monkeypatch.setattr(rsrv, "SGLangRouterApiClient", _NoopRouterApiClient)
-    monkeypatch.setattr(ictl, "start_session_server", lambda args: None)
+
+    async def _no_session_server(args):
+        return None
+
+    monkeypatch.setattr(ictl, "start_session_server", _no_session_server)
 
 
 def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
