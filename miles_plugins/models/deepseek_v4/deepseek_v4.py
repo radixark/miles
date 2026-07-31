@@ -77,6 +77,7 @@ class DeepSeekV4Attention(MegatronModule):
         self.tp_group = self.pg_collection.tp
         self.cp_group = pg_collection.cp if hasattr(pg_collection, "cp") else None
         self.cp_size = self.cp_group.size() if self.cp_group else 1
+        self.cp_rank = self.cp_group.rank() if self.cp_group else 0
 
         layer_id = layer_number - 1
         del layer_number
