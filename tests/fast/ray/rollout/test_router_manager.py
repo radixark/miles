@@ -1,36 +1,12 @@
 from __future__ import annotations
 
-import shlex
-import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.router_manager import _launch_command_on_head, start_session_server, wait_router_ready
-from miles.rollout.session.config import SessionServerConfig
-from miles.utils.workers.argv_utils import parse_config_argv
-from miles.utils.workers.command_actor import CommandActor
+from miles.ray.rollout.router_manager import wait_router_ready, wait_session_server_ready
 from miles.utils.workers.worker_spec import HostAndPort
-
-
-class TestLaunchCommandOnHead:
-    def test_runs_the_command_on_a_head_command_actor(self, monkeypatch):
-        """The command runs inside a head-pinned CommandActor, not a driver subprocess."""
-        captured: dict = {}
-
-        def _create(**kwargs):
-            captured.update(kwargs)
-            return MagicMock()
-
-        monkeypatch.setattr("miles.ray.rollout.router_manager.create_head_worker_actor", _create)
-
-        actor_handle = _launch_command_on_head("python -m x --flag 'a b'")
-
-        assert captured["worker_cls"] is CommandActor
-        assert captured["env_vars"] == {}
-        actor_handle.run.remote.assert_called_once_with(cmd="python -m x --flag 'a b'", envs={})
 
 
 class TestWaitRouterReady:
@@ -60,99 +36,84 @@ class TestWaitRouterReady:
         assert addr == HostAndPort(host="10.0.0.9", port=12345)
 
 
-class TestStartSessionServerLaunchCommand:
-    def test_one_launch_per_port_with_parseable_configs(self, monkeypatch):
-        """Each resolved port gets its own subprocess with a lossless config."""
-        launches: list[list[str]] = []
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager._launch_command_on_head",
-            lambda launch_cmd: launches.append(shlex.split(launch_cmd)) or MagicMock(),
-        )
-        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", lambda *fn_args, **fn_kwargs: None)
-        monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
-        monkeypatch.setattr("miles.ray.rollout.router_manager.find_available_port", lambda base_port: 5005)
-
-        args = make_args(
-            use_session_server=True,
-            hf_checkpoint="/fake/model",
-            sglang_router_ip="127.0.0.1",
-            sglang_router_port=3000,
-            num_session_servers=2,
-            miles_router_timeout=None,
-            chat_template_path=None,
-            tito_model="default",
-            apply_chat_template_kwargs=None,
-            tito_allowed_append_roles=["tool"],
-            use_rollout_indexer_replay=False,
-        )
-        start_session_server(args)
-
-        assert len(launches) == 2
-        configs = []
-        for argv in launches:
-            assert argv[:3] == [sys.executable, "-m", "miles.rollout.session.server"]
-            configs.append(parse_config_argv(SessionServerConfig, argv[3:]))
-
-        assert {config.backend_url for config in configs} == {"http://127.0.0.1:3000"}
-        assert {config.port for config in configs} == {5005, 5006}
-        assert {config.host for config in configs} == {"127.0.0.1"}
-        assert {config.instance_id for config in configs} == set(args.session_server_instance_ids.values())
-
-    def test_instance_ids_are_the_run_uuid_plus_the_instance_index(self, monkeypatch):
-        """Ids stay unique across runs through the run uuid and unique within one through the index."""
-        monkeypatch.setattr("miles.ray.rollout.router_manager._launch_command_on_head", lambda launch_cmd: MagicMock())
-        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", lambda *fn_args, **fn_kwargs: None)
-        monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
-        monkeypatch.setattr("miles.ray.rollout.router_manager.find_available_port", lambda base_port: 5005)
-
-        args = make_args(
-            use_session_server=True,
-            hf_checkpoint="/fake/model",
-            sglang_router_ip="127.0.0.1",
-            sglang_router_port=3000,
-            num_session_servers=3,
-            run_uuid="00112233445566aa",
-            miles_router_timeout=None,
-            chat_template_path=None,
-            tito_model="default",
-            apply_chat_template_kwargs=None,
-            tito_allowed_append_roles=["tool"],
-            use_rollout_indexer_replay=False,
-        )
-        start_session_server(args)
-
-        assert args.session_server_instance_ids == {
-            5005: "00112233445566aa-0",
-            5006: "00112233445566aa-1",
-            5007: "00112233445566aa-2",
-        }
-
-
-class TestStartSessionServer:
-    def test_disabled_returns_silently(self):
-        """Happy no-op: ``use_session_server=False`` → return without raising,
-        without touching any other config."""
+class TestWaitSessionServerReady:
+    async def test_disabled_returns_silently(self):
+        """Happy no-op: ``use_session_server=False`` returns without touching any other config."""
         args = make_args(use_session_server=False)
-        start_session_server(args)
+        await wait_session_server_ready(args)
 
-    def test_enabled_without_hf_checkpoint_raises(self):
+    async def test_enabled_without_hf_checkpoint_raises(self):
+        """Enabling the session server without a tokenizer source fails fast."""
         args = make_args(use_session_server=True, hf_checkpoint=None)
         with pytest.raises(ValueError, match="hf-checkpoint"):
-            start_session_server(args)
+            await wait_session_server_ready(args)
 
-    def test_enabled_port_conflict_raises_runtime_error(self):
-        """When a configured ``session_server_port`` is already bound, fail
-        loud rather than silently re-using the stale process."""
+    async def test_publishes_the_manager_addrs_and_instance_ids(self, monkeypatch):
+        """The driver-side contract (ip, ports, instance ids) comes from the worker manager addrs."""
+        requested: list[str] = []
+
+        class _FakeProvider:
+            async def get_addr(self, worker_name: str) -> HostAndPort:
+                requested.append(worker_name)
+                return HostAndPort(host="10.0.0.9", port=5004 + len(requested))
+
+        waited: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
+        )
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_tcp_ready",
+            lambda host, port, timeout: waited.append((host, port)),
+        )
+
         args = make_args(
             use_session_server=True,
             hf_checkpoint="/fake/model",
-            sglang_router_ip="127.0.0.1",
-            sglang_router_port=20000,
-            num_session_servers=1,
+            num_session_servers=2,
+            run_uuid="00112233445566aa",
         )
-        with (
-            patch("miles.ray.rollout.router_manager.find_available_port", return_value=20001),
-            patch("miles.ray.rollout.router_manager.is_port_available", return_value=False),
-        ):
-            with pytest.raises(RuntimeError, match="already in use"):
-                start_session_server(args)
+        await wait_session_server_ready(args)
+
+        assert requested == ["session-server-0-0", "session-server-1-0"]
+        assert args.session_server_ip == "10.0.0.9"
+        assert args.session_server_ports == [5005, 5006]
+        assert args.session_server_instance_ids == {5005: "00112233445566aa-0", 5006: "00112233445566aa-1"}
+        assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
+
+    async def test_servers_on_different_hosts_are_each_addressed_in_full(self, monkeypatch):
+        """Placement may spread the servers across hosts, so no instance may be addressed by a
+        port under a host borrowed from another one."""
+
+        class _FakeProvider:
+            def __init__(self):
+                self._counter = 0
+
+            async def get_addr(self, worker_name: str) -> HostAndPort:
+                self._counter += 1
+                return HostAndPort(host=f"10.0.0.{self._counter}", port=5005)
+
+        waited: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
+        )
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_tcp_ready",
+            lambda host, port, timeout: waited.append((host, port)),
+        )
+
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            num_session_servers=2,
+            run_uuid="00112233445566aa",
+        )
+        await wait_session_server_ready(args)
+
+        assert args.session_server_addrs == ["10.0.0.1:5005", "10.0.0.2:5005"]
+        assert args.session_server_instance_ids == {
+            "10.0.0.1:5005": "00112233445566aa-0",
+            "10.0.0.2:5005": "00112233445566aa-1",
+        }
+        assert waited == [("10.0.0.1", 5005), ("10.0.0.2", 5005)]
