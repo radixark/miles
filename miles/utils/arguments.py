@@ -50,6 +50,13 @@ def _resolve_rollout_functions(args) -> None:
             args.rollout_function_path is None
         ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
         assert not args.colocate, "--fully-async cannot colocate: rollout must keep generating while training runs"
+        assert not args.partial_rollout, "--fully-async does not support --partial-rollout"
+        assert (
+            not args.recompute_logprobs_via_prefill
+        ), "--fully-async does not support --recompute-logprobs-via-prefill"
+        assert (
+            args.rollout_all_samples_process_path is None
+        ), "--fully-async does not support --rollout-all-samples-process-path"
 
     args.rollout_function_path = resolve_rollout_function_path(args)
 
