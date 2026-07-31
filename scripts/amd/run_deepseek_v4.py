@@ -285,6 +285,9 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--decoder-first-pipeline-num-layers 11 "
                 "--decoder-last-pipeline-num-layers 10 "
                 "--context-parallel-size 1 "
+                # Raising context parallelism also needs --allgather-cp: DeepSeek V4 has no
+                # zigzag CP path, and arguments.py asserts on the flag rather than setting it.
+                # "--allgather-cp "
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
