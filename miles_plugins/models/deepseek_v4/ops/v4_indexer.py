@@ -123,9 +123,11 @@ class V4Indexer(MegatronModule):
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config, self.rope_head_dim, rope_base, False, seqlen * cp_size, x.device
         )
-        freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen, cp_size, cp_group, stride=1)
-        if cu_seqlens is not None:
-            # Packed positions restart at every segment boundary.
+        if cu_seqlens is None:
+            freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen, cp_size, cp_group, stride=1)
+        else:
+            # Packed positions restart at every segment boundary and index the whole table, so
+            # the rank's rows are selected here rather than by slicing it first.
             freqs_cis = freqs_cis.index_select(
                 0,
                 get_q_positions_thd(

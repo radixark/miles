@@ -252,11 +252,13 @@ class DeepSeekV4Attention(MegatronModule):
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size, x.device
         )
-        freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group)
         # CP splits the packed stream contiguously, so this rank's rows start here globally.
         global_start = self.cp_rank * seqlen_local if cu_seqlens is not None else 0
-        if cu_seqlens is not None:
-            # Packed positions restart at every segment boundary.
+        if cu_seqlens is None:
+            freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group)
+        else:
+            # Packed positions restart at every segment boundary and index the whole table, so
+            # the rank's rows are selected here rather than by slicing it first.
             freqs_cis = freqs_cis.index_select(
                 0, get_q_positions_thd(cu_seqlens, seqlen_local, global_start)
             )
