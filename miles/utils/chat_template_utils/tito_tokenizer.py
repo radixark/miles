@@ -718,19 +718,20 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
 
 
 class InklingTITOTokenizer(TITOTokenizer):
-    """Inkling family (Inkling / Inkling-Small) — HF-native jinja template.
+    """Inkling family (Inkling / Inkling-Small).
 
     The runtime serves Inkling through sglang's token-level renderer
-    (``chat_encoding_spec == "inkling"``); the HF repos ship an equivalent
-    ``chat_template.jinja`` that TITO renders and diffs.  The Stage 2 / Stage 3
-    verifiers guard that equivalence — no boundary overrides until they demand
-    evidence-based ones.
+    (``chat_encoding_spec == "inkling"``).  The fixed template matches its
+    empty scalar-content behavior: no empty text block, and no bare assistant
+    terminator when the turn contains no rendered blocks.  All four message-role
+    sentinels remain comparator boundaries so non-assistant mismatches are hard
+    failures after an assistant turn.
     """
 
     reasoning_parser = "inkling"
     tool_call_parser = "inkling"
 
-    FIXED_TEMPLATE = FixedTemplate(template=None)
+    FIXED_TEMPLATE = FixedTemplate(template="inkling_fixed.jinja")
 
     _DEFAULT_ASSISTANT_START = "<|message_model|>"
 
@@ -747,6 +748,8 @@ class InklingTITOTokenizer(TITOTokenizer):
             special_token_ids={
                 tokenizer.convert_tokens_to_ids("<|message_user|>"),
                 tokenizer.convert_tokens_to_ids("<|message_model|>"),
+                tokenizer.convert_tokens_to_ids("<|message_system|>"),
+                tokenizer.convert_tokens_to_ids("<|message_tool|>"),
             },
         )
 
