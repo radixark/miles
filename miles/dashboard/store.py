@@ -721,11 +721,12 @@ class MetricStore:
 
     def _phase_events(self, t0: float | None, t1: float | None) -> list[PhaseEvent]:
         # closed phases partition by END hour (lower bound exact, slack one
-        # max phase duration FORWARD — design §17); OPEN markers partition by
-        # their START hour, so the lower bound gets the same slack BACKWARD
-        lower = None if t0 is None else t0 - self.MAX_WINDOW_S
+        # max phase duration FORWARD — design §17). OPEN markers partition by
+        # their START hour and may be arbitrarily old (a stalled run can sit
+        # in one phase for many hours), so no lower bound: the stream is
+        # low-rate enough that reading every partition stays cheap
         upper = None if t1 is None else t1 + self.MAX_WINDOW_S
-        return self._readers[Stream.PHASES].window(lower, upper)
+        return self._readers[Stream.PHASES].window(None, upper)
 
     def has_stream(self, stream: Stream) -> bool:
         if stream in self.PARTITIONED_STREAMS:
