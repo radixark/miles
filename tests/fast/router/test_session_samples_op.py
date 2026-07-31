@@ -46,6 +46,7 @@ _ARGS = SimpleNamespace(
     num_layers=NUM_LAYERS,
     moe_router_topk=TOPK,
     save_debug_trajectory_data=None,
+    sglang_speculative_algorithm=None,
 )
 
 

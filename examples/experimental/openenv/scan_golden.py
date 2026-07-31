@@ -93,16 +93,26 @@ async def golden_one(task_id: str, capture_logs: bool = False) -> tuple[str, flo
                 t = time.monotonic()
                 res = await env.step(action(action_type="evaluate"))
                 m = {
-                    "reward": float(getattr(res, "reward", 0.0) or 0.0),
                     "solve_exit": solve_exit,
                     "solve_s": round(solve_s, 1),
                     "eval_s": round(time.monotonic() - t, 1),
                 }
-                if capture_logs and m["reward"] < 1.0:
-                    # The native-evaluate server's output carries the test.sh
-                    # log tail itself; the on-disk copy lives under
-                    # /logs/verifier only for the verify window (no more
-                    # /tmp/tb2_testsh.log to read back).
+                # Same no-verdict semantics as the agent loop's guard: a
+                # server-side scoring failure or a non-canonical harness is
+                # reported as ERR, not as a fake 0.0 that would misattribute
+                # an infra problem to the task.
+                raw_reward = getattr(res, "reward", None)
+                eval_error = oaf._obs_field(res, "error")
+                harness = str(oaf._obs_info(res).get("harness", ""))
+                if raw_reward is None or eval_error or harness != "tests/test.sh":
+                    m["reward"] = None
+                    m["error"] = f"no canonical verdict (error={eval_error!r}, harness={harness!r})"
+                else:
+                    m["reward"] = float(raw_reward)
+                if capture_logs and (m["reward"] is None or m["reward"] < 1.0):
+                    # The server's evaluate output carries the test.sh log
+                    # tail; the on-disk copy lives under /logs/verifier only
+                    # for the verify window.
                     m["test_log_tail"] = (oaf._obs_field(res, "output") or "")[-800:]
                     res = await env.step(action(action_type="exec", command="tail -c 1200 /tmp/solve.log 2>&1"))
                     m["solve_log_tail"] = oaf._obs_field(res, "output")

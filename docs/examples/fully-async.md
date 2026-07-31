@@ -31,8 +31,8 @@ instead of the sum.
 ## Files
 
 ```text
+miles/rollout/fully_async_rollout.py # AsyncRolloutWorker + entry function
 examples/fully_async/
-├── fully_async_rollout.py          # AsyncRolloutWorker + entry function
 ├── run-qwen3-4b-fully_async.sh     # launch script (Qwen3-4B)
 └── run_qwen3_30b_a3b_fully_async.py # MoE variant
 ```
@@ -59,7 +59,7 @@ Just two flags:
 ```diff
 - python3 train.py ...
 + python3 train_async.py ...
-+   --rollout-function-path fully_async_rollout.generate_rollout_fully_async
++   --rollout-function-path miles.rollout.fully_async_rollout.generate_rollout_fully_async
 ```
 
 Everything else — model args, optimizer, GRPO config — stays the same.
@@ -68,7 +68,7 @@ Everything else — model args, optimizer, GRPO config — stays the same.
 
 The interesting code is small. Here's the global worker manager:
 
-```python fully_async_rollout.py
+```python miles/rollout/fully_async_rollout.py
 _global_worker = None
 _worker_lock = threading.Lock()
 

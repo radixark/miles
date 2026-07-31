@@ -7,7 +7,6 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
-from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
@@ -67,22 +66,27 @@ async def train(args):
         await rollout_manager.eval.remote(rollout_id=0)
 
     async def offload_train():
+        if args.use_critic:
+            return
         if args.offload_train:
-            if args.use_critic:
-                await critic_model.offload()
-                if rollout_id >= args.num_critic_only_steps:
-                    await actor_model.offload()
-            else:
-                await actor_model.offload()
+            await actor_model.offload()
         else:
             await actor_model.clear_memory()
 
     async def save(rollout_id, force_sync=False):
         force_sync = force_sync or rollout_id == args.num_rollout - 1
+
+        async def save_training_model(model):
+            if args.use_critic and args.offload_train:
+                await model.onload()
+            await model.save_model(rollout_id, force_sync=force_sync)
+            if args.use_critic and args.offload_train:
+                await model.offload()
+
         if (not args.use_critic) or (rollout_id >= args.num_critic_only_steps):
-            await actor_model.save_model(rollout_id, force_sync=force_sync)
+            await save_training_model(actor_model)
         if args.use_critic:
-            await critic_model.save_model(rollout_id, force_sync=force_sync)
+            await save_training_model(critic_model)
         await rollout_manager.save.remote(rollout_id)
 
     # train loop.
@@ -91,7 +95,7 @@ async def train(args):
         if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
             await rollout_manager.eval.remote(rollout_id)
 
-        rollout_data_ref = await rollout_manager.generate.remote(rollout_id)
+        rollout_data_pack = await rollout_manager.generate.remote(rollout_id)
 
         if args.offload_rollout:
             offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
@@ -102,13 +106,16 @@ async def train(args):
             await rollout_manager.offload.remote(tags=offload_tags)
 
         if args.use_critic:
-            critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_ref))
+            values = await critic_model.train(rollout_id, rollout_data_pack)
+            if args.offload_train:
+                await critic_model.offload()
             if rollout_id >= args.num_critic_only_steps:
-                await actor_model.train(rollout_id, rollout_data_ref)
-            await critic_task
+                await actor_model.train(rollout_id, rollout_data_pack, external_data=values)
+                if args.offload_train:
+                    await actor_model.offload()
         else:
-            await actor_model.train(rollout_id, rollout_data_ref)
-        remove_rollout_data_refs(args, rollout_data_ref)
+            await actor_model.train(rollout_id, rollout_data_pack)
+        remove_rollout_data_refs(args, rollout_data_pack)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)
         if external_save or should_run_periodic_action(
