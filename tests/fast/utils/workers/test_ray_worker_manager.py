@@ -405,3 +405,48 @@ class TestPinToHead:
         await _launch([_make_spec("router")])
 
         assert "scheduling_strategy" not in fake_ray_cluster.handles[0].options
+
+
+class TestSpecAddrs:
+    async def test_every_worker_sees_the_addresses_of_all_specs(self, fake_ray_cluster: FakeRayCluster):
+        """Cross-spec wiring works because each command is rendered with the whole pool's addresses."""
+        recorder = _LaunchRecorder()
+        manager = await _launch(
+            [
+                _make_spec("inference-router-0"),
+                _make_spec("session-server", num_cells=2, launch_command=recorder.command),
+            ]
+        )
+
+        for ctx in recorder.contexts:
+            assert sorted(ctx.spec_addrs) == ["inference-router-0", "session-server"]
+            assert ctx.spec_addrs["inference-router-0"][0]["primary"] == manager.get_worker_addr(
+                "inference-router-0-0-0"
+            )
+            assert [addr["primary"] for addr in ctx.spec_addrs["session-server"]] == [
+                manager.get_worker_addr("session-server-0-0"),
+                manager.get_worker_addr("session-server-1-0"),
+            ]
+
+
+class TestGetAddrs:
+    async def test_groups_are_listed_in_cell_then_worker_order(self, fake_ray_cluster: FakeRayCluster):
+        """Consumers index this map positionally, so the order must follow cells and then workers."""
+        recorder = _LaunchRecorder()
+        manager = await _launch(
+            [_make_spec("engine", num_cells=2, num_workers_per_cell=2, launch_command=recorder.command)]
+        )
+
+        expected = [
+            manager.get_worker_addr(f"engine-{cell_index}-{worker_in_cell_index}")
+            for cell_index in range(2)
+            for worker_in_cell_index in range(2)
+        ]
+        assert [addr["primary"] for addr in manager.get_addrs()["engine"]] == expected
+
+    async def test_a_disabled_group_is_listed_as_empty(self, fake_ray_cluster: FakeRayCluster):
+        """A spec with no cells is still visible to consumers, with no addresses."""
+        manager = await _launch([_make_spec("router"), _make_spec("session-server", num_cells=0)])
+
+        assert manager.get_addrs()["session-server"] == []
+        assert len(manager.get_addrs()["router"]) == 1

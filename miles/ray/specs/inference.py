@@ -93,7 +93,7 @@ def spec_session_server(args) -> CommandWorkerSpec:
         ],
         env_var=lambda: {},
         scheduling=SchedulingSpec(
-            num_cells=args.num_session_servers,
+            num_cells=args.num_session_servers if args.use_session_server else 0,
             num_workers_per_cell=1,
             num_gpus_per_worker=0,
             pin_to_head=args.pin_rollout_manager_to_head,
