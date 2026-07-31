@@ -194,3 +194,18 @@ class TestServeWorkerSpecRpcPortInjection:
     def test_the_injected_port_is_the_one_the_serve_entrypoint_binds_by_default(self):
         """A spec advertising a port its own process does not bind leaves every caller talking to nothing."""
         assert DEFAULT_RPC_PORT == serve_inner.DEFAULT_PORT
+
+
+class TestSchedulingSpecPinToHead:
+    def test_workers_are_not_pinned_to_the_head_node_by_default(self):
+        """Pinning is opt-in, otherwise every worker of every spec would crowd onto the head node."""
+        assert SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0).pin_to_head is False
+        assert SchedulingSpec.single(num_gpus_per_worker=0).pin_to_head is False
+
+    def test_the_single_worker_shortcut_forwards_the_pin_flag(self):
+        """The convenience constructor must not silently drop the pin request."""
+        scheduling = SchedulingSpec.single(num_gpus_per_worker=0.5, pin_to_head=True)
+
+        assert (scheduling.num_cells, scheduling.num_workers_per_cell) == (1, 1)
+        assert scheduling.num_gpus_per_worker == 0.5
+        assert scheduling.pin_to_head is True
