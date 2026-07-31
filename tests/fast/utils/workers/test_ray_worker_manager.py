@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -572,3 +573,133 @@ class TestGetAddrs:
 
         assert manager.get_addrs()["session-server"] == []
         assert len(manager.get_addrs()["router"]) == 1
+
+
+class TestMasterPorts:
+    async def test_a_master_port_is_allocated_once_per_cell(self, fake_ray_cluster: FakeRayCluster):
+        """Only worker 0 reserves the cell's master port, so peers cannot each take their own."""
+        spec = _make_spec(
+            "engine",
+            num_cells=2,
+            num_workers_per_cell=3,
+            port_infos=[
+                PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+                PortInfo(name="dist_init", static_port=9000, mode="master", allow_dynamic=True, num_consecutive=5),
+            ],
+        )
+        manager = await _launch([spec])
+
+        assert [call.kwargs["count"] for call in fake_ray_cluster.calls_of("_get_free_port_block")].count(5) == 2
+        addrs = manager.get_addrs()["engine"]
+        assert [sorted(addr) for addr in addrs] == [
+            ["dist_init", "primary"],
+            ["primary"],
+            ["primary"],
+            ["dist_init", "primary"],
+            ["primary"],
+            ["primary"],
+        ]
+
+    async def test_a_static_master_port_is_recorded_only_on_worker_zero(self, fake_ray_cluster: FakeRayCluster):
+        """A pinned master port is not allocated, and still belongs to worker 0 alone."""
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=2,
+            port_infos=[
+                PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+                PortInfo(name="dist_init", static_port=9123, mode="master", allow_dynamic=False),
+            ],
+        )
+        manager = await _launch([spec])
+
+        addrs = manager.get_addrs()["engine"]
+        assert addrs[0]["dist_init"].port == 9123
+        assert "dist_init" not in addrs[1]
+        assert len(fake_ray_cluster.calls_of("_get_free_port_block")) == 2
+
+    async def test_every_worker_of_a_cell_launches_with_that_cells_master_addr(self, fake_ray_cluster: FakeRayCluster):
+        """All ranks of a cell must be told the same master endpoint, and never another cell's."""
+        recorder = _LaunchRecorder()
+        spec = _make_spec(
+            "engine",
+            num_cells=2,
+            num_workers_per_cell=2,
+            port_infos=[
+                PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+                PortInfo(name="dist_init", static_port=9000, mode="master", allow_dynamic=True),
+            ],
+            launch_command=recorder.command,
+        )
+        await _launch([spec])
+
+        masters = {
+            (cell_index, worker_in_cell_index): recorder.context_of(
+                cell_index=cell_index, worker_in_cell_index=worker_in_cell_index
+            ).self_addrs["dist_init"]
+            for cell_index in range(2)
+            for worker_in_cell_index in range(2)
+        }
+        assert masters[(0, 0)] == masters[(0, 1)]
+        assert masters[(1, 0)] == masters[(1, 1)]
+        assert masters[(0, 0)] != masters[(1, 0)]
+
+    async def test_a_master_addr_keeps_rank_zeros_host_on_another_node(self, fake_ray_cluster: FakeRayCluster):
+        """A peer on a second node must dial rank 0's host, not its own, or torch.distributed hangs."""
+        fake_ray_cluster.use_node_ips("10.0.0.1", "10.0.0.2")
+        recorder = _LaunchRecorder()
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=2,
+            port_infos=[
+                PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+                PortInfo(name="dist_init", static_port=9000, mode="master", allow_dynamic=True),
+            ],
+            launch_command=recorder.command,
+        )
+        await _launch([spec])
+
+        peer = recorder.context_of(cell_index=0, worker_in_cell_index=1).self_addrs
+        assert peer["primary"].host == "10.0.0.2"
+        assert peer["dist_init"].host == "10.0.0.1"
+
+    async def test_a_master_addr_does_not_overwrite_a_workers_own_ports(self, fake_ray_cluster: FakeRayCluster):
+        """Merging the cell's master addr must leave each worker's own addresses intact."""
+        recorder = _LaunchRecorder()
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=2,
+            port_infos=[
+                PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+                PortInfo(name="dist_init", static_port=9000, mode="master", allow_dynamic=True),
+            ],
+            launch_command=recorder.command,
+        )
+        manager = await _launch([spec])
+
+        for worker_in_cell_index in range(2):
+            ctx = recorder.context_of(cell_index=0, worker_in_cell_index=worker_in_cell_index)
+            assert ctx.self_addrs["primary"] == manager.get_worker_addr(f"engine-0-{worker_in_cell_index}")
+
+
+class TestConcurrentPhases:
+    async def test_all_cells_of_a_phase_run_concurrently(self, fake_ray_cluster: FakeRayCluster):
+        """Cells are configured concurrently, so a large pool does not start up one cell at a time."""
+        from miles.utils.workers.ray_worker_manager import _CommandActorManager
+
+        original_alloc_ports = _CommandActorManager.alloc_ports
+        entered: list[int] = []
+        release = asyncio.Event()
+
+        async def gated_alloc(self) -> None:
+            entered.append(self.parent.cell_index)
+            if len(entered) == 3:
+                release.set()
+            await asyncio.wait_for(release.wait(), timeout=5)
+            await original_alloc_ports(self)
+
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(_CommandActorManager, "alloc_ports", gated_alloc)
+            manager = await asyncio.wait_for(_launch([_make_spec("engine", num_cells=3)]), timeout=10)
+
+        assert sorted(entered) == [0, 1, 2]
+        assert len({manager.get_worker_addr(f"engine-{index}-0").port for index in range(3)}) == 3
