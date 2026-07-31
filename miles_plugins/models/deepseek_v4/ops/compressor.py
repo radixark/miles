@@ -304,18 +304,28 @@ class DeepSeekV4Compressor(nn.Module):
 
         return kv, cu_seqlens_compressed
 
-    def forward(self, x: torch.Tensor, cu_seqlens: torch.Tensor | None = None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        cu_seqlens: torch.Tensor | None = None,
+        compressed_group_ids: torch.Tensor | None = None,
+        max_seqlen: int | None = None,
+    ):
         """
         Args:
             x: [seqlen, batch, dim] SBHD layout (Megatron standard); [total, batch, dim]
                 when cu_seqlens is given.
             cu_seqlens: [n_seg + 1] segment boundaries, set for THD packing.
+            compressed_group_ids: [c_cap] group id of each pre-grouped row, set under CP.
+            max_seqlen: rotary table length, required alongside compressed_group_ids.
         Returns:
             k: [seqlen // compress_ratio, batch, head_dim] SBHD layout, or
                 (k, cu_seqlens_compressed) for THD packing.
         """
         if cu_seqlens is not None:
-            return self._forward_thd(x, cu_seqlens)
+            return self._forward_thd(
+                x, cu_seqlens, compressed_group_ids=compressed_group_ids, max_seqlen=max_seqlen
+            )
         x_bshd = einops.rearrange(x, "s b d -> b s d")
         k_bshd = self.forward_raw(x_bshd)
         k = einops.rearrange(k_bshd, "b sc d -> sc b d")
