@@ -497,6 +497,8 @@ def train_one_step(
                 "witness_ids",
                 "opd_reverse_kl",
                 "rollout_mask_sums",
+                "opsd_teacher_token_ids",
+                "opsd_teacher_scores",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
