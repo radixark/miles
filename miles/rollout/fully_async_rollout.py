@@ -57,21 +57,23 @@ class _CachedWeightVersion:
     def __init__(self, ttl: float = 1.0):
         self._ttl = ttl
         self._value: int | None = None
-        self._last_query = 0.0
+        self._last_query = float("-inf")
 
     async def get(self, args) -> int | None:
-        now = time.monotonic()
-        if self._value is not None and (now - self._last_query) < self._ttl:
+        # Throttles failures too: the drain queries once per group, and an unreachable
+        # router would otherwise cost every one of them the full timeout.
+        if (time.monotonic() - self._last_query) < self._ttl:
             return self._value
         url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/model_info"
         try:
             data = await asyncio.wait_for(get(url), timeout=WEIGHT_VERSION_QUERY_TIMEOUT_SECS)
+            self._value = int(data["weight_version"])
         except (httpx.HTTPError, asyncio.TimeoutError) as e:
             # Transient router unavailability; the staleness filter is best-effort.
             logger.debug(f"Failed to query engine weight version: {e}")
-            return self._value
-        self._value = int(data["weight_version"])
-        self._last_query = now
+        finally:
+            # Stamped on completion, so a router slower than the TTL still gets throttled.
+            self._last_query = time.monotonic()
         return self._value
 
 

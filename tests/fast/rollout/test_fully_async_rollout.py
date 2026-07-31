@@ -7,6 +7,7 @@ from argparse import Namespace
 from collections import deque
 from dataclasses import replace
 
+import httpx
 import pytest
 
 import miles.rollout.fully_async_rollout as fully_async
@@ -252,3 +253,26 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     assert all(isinstance(sample, Sample) for sample in data_source.recycled[0])
     assert len(submitted) > 1
     assert len(output.samples) == 1
+
+
+async def test_weight_version_throttles_failed_queries(monkeypatch):
+    """A drain queries once per group, so an unreachable router must not cost one timeout each."""
+    calls = []
+
+    async def unreachable_router(url):
+        calls.append(url)
+        raise httpx.ConnectError("router down")
+
+    monkeypatch.setattr(fully_async, "get", unreachable_router)
+    args = make_args()
+
+    throttled = fully_async._CachedWeightVersion(ttl=60.0)
+    assert await throttled.get(args) is None
+    assert await throttled.get(args) is None
+    assert len(calls) == 1
+
+    calls.clear()
+    expired = fully_async._CachedWeightVersion(ttl=0.0)
+    assert await expired.get(args) is None
+    assert await expired.get(args) is None
+    assert len(calls) == 2
