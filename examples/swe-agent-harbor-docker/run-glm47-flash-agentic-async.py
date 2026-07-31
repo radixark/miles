@@ -268,6 +268,7 @@ def execute(args: ScriptArgs):
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
+        "--sglang-router-port 31000 "
         f"{sglang_p2p_extra}"
     )
     sglang_extra_env_vars: dict[str, str] = {}
@@ -279,7 +280,7 @@ def execute(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
-        "--session-server-workers 32 "
+        "--num-session-servers 32 "
     )
 
     misc_args = (

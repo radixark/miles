@@ -72,14 +72,12 @@ def _compute_router_primary_port_info(args, model_idx: int) -> PortInfo:
 
 
 def spec_session_server(args) -> CommandWorkerSpec:
-    from miles.ray.rollout.router_manager import compute_num_session_server_ports
-
     _config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
 
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         config = compute_session_server_config(
             args,
-            host=ctx.self_addrs["primary"].host,
+            host=args.session_server_ip or ctx.self_addrs["primary"].host,
             port=ctx.self_addrs["primary"].port,
             # TODO: make the indexing it k8s native compatible
             instance_id=compute_session_server_instance_id(args, ctx.cell_index),
@@ -91,17 +89,23 @@ def spec_session_server(args) -> CommandWorkerSpec:
     return CommandWorkerSpec(
         name="session-server",
         port_infos=[
-            PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+            _compute_session_server_primary_port_info(args),
         ],
         env_var=lambda: {},
         scheduling=SchedulingSpec(
-            num_cells=compute_num_session_server_ports(args),
+            num_cells=args.num_session_servers,
             num_workers_per_cell=1,
             num_gpus_per_worker=0,
             pin_to_head=args.pin_rollout_manager_to_head,
         ),
         launch_command=_compute_launch_command,
     )
+
+
+def _compute_session_server_primary_port_info(args) -> PortInfo:
+    if args.session_server_port is None:
+        return PortInfo(name="primary", static_port=8000, allow_dynamic=True)
+    return PortInfo(name="primary", static_port=args.session_server_port, offset_by_cell=True)
 
 
 def compute_session_server_instance_id(args, instance_index: int) -> str:

@@ -1,10 +1,10 @@
 import logging
+import random
 
 import ray
 
 from miles.ray.specs.inference import compute_router_pool_id, compute_session_server_instance_id, spec_session_server
-from miles.rollout.session.ports import compute_num_session_server_ports, resolve_session_server_ports
-from miles.utils.http_utils import is_port_available, wait_tcp_ready
+from miles.utils.http_utils import find_available_port, is_port_available, wait_tcp_ready
 from miles.utils.workers.cell_launch import create_head_worker_actor
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_worker_name
@@ -57,8 +57,10 @@ def start_session_server(args):
         args.session_server_ip = args.sglang_router_ip
 
     ip = args.session_server_ip
-    ports = resolve_session_server_ports(getattr(args, "session_server_port", None))
-    assert len(ports) == compute_num_session_server_ports(args)
+
+    base_port = find_available_port(random.randint(5000, 6000))
+    ports = [base_port + i for i in range(args.num_session_servers)]
+
     for port in ports:
         if not is_port_available(port):
             raise RuntimeError(

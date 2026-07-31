@@ -150,7 +150,7 @@ def execute(args: ScriptArgs):
         # tailnet address); internal calls resolve it to localhost.
         "--session-server-ip 0.0.0.0 "
         "--session-server-port 30000 "
-        "--session-server-workers 32 "
+        "--num-session-servers 32 "
         "--tito-model qwen3 "
     )
 
