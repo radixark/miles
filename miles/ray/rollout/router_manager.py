@@ -33,29 +33,6 @@ def _launch_command_on_head(launch_cmd: str) -> ray.actor.ActorHandle:
     return actor_handle
 
 
-def _resolve_session_server_ports(raw: list[int] | None) -> list[int]:
-    """Resolve the ``--session-server-port`` value into the ports to serve on.
-
-    None: one auto-allocated port. One value: a single server on that port.
-    Two values: the half-open range [start, end), one server per port.
-    """
-    if raw is None:
-        return [find_available_port(random.randint(5000, 6000))]
-    if len(raw) == 1:
-        return raw
-    if len(raw) == 2:
-        start, end = raw
-        if start >= end:
-            raise ValueError(f"--session-server-port range [{start}, {end}) is empty.")
-        return list(range(start, end))
-    raise ValueError(f"--session-server-port takes one port or a start/end range, got {len(raw)} values: {raw}")
-
-
-# TODO: temporary
-def compute_num_session_server_ports(args):
-    return len(_resolve_session_server_ports(getattr(args, "session_server_port", None)))
-
-
 def start_session_server(args):
     """Start the standalone session servers when ``--use-session-server`` is set.
 
@@ -75,8 +52,10 @@ def start_session_server(args):
         args.session_server_ip = args.sglang_router_ip
 
     ip = args.session_server_ip
-    ports = _resolve_session_server_ports(getattr(args, "session_server_port", None))
-    assert len(ports) == compute_num_session_server_ports(args)
+
+    base_port = find_available_port(random.randint(5000, 6000))
+    ports = [base_port + i for i in range(args.num_session_servers)]
+
     for port in ports:
         if not is_port_available(port):
             raise RuntimeError(

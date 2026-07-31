@@ -2339,19 +2339,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Requires --hf-checkpoint and --chat-template-path to also be set.",
             )
             parser.add_argument(
-                "--session-server-ip",
-                type=str,
-                default=None,
-                help="IP address of the standalone session server. Defaults to sglang-router-ip.",
-            )
-            parser.add_argument(
-                "--session-server-port",
+                "--num-session-servers",
                 type=int,
-                nargs="+",
-                default=None,
-                help="Port(s) of the standalone session servers. One value: a single server on "
-                "that port. Two values: a half-open range [start, end), one server per port. "
-                "Auto-allocates a single port if not set.",
+                default=1,
+                help="Number of session server instances.",
             )
             parser.add_argument(
                 "--tito-model",
