@@ -102,9 +102,9 @@ class TestAddressingOfStartedEngines:
             assert len(same_rank_ports) == 4, f"rank {rank} reused a port: {addr_and_ports[rank]}"
 
         # Cursor must reflect the *node*'s next free port (single node → its ip).
-        assert set(cursors._values.keys()) == {"10.0.0.1"}
+        assert set(cursors._next_port_of_ip.keys()) == {"10.0.0.1"}
         # And it must sit past every port we handed out.
-        assert cursors._values["10.0.0.1"] >= max(_all_ports(addr_and_ports)) + 1
+        assert cursors._next_port_of_ip["10.0.0.1"] >= max(_all_ports(addr_and_ports)) + 1
 
         # Cross-rank: every numeric port across all 8 engines must be unique.
         all_ports = _all_ports(addr_and_ports)
@@ -186,7 +186,7 @@ class TestAddressingOfStartedEngines:
         # also reserves consecutive blocks for dist_init_addr that aren't all
         # visible in the output, so we can't pin to max_issued + 1).
         max_issued = max(_all_ports(addr_and_ports))
-        assert cursors._values["10.0.0.1"] > max_issued
+        assert cursors._next_port_of_ip["10.0.0.1"] > max_issued
 
 
 class TestSharedPortAllocatorAcrossCells:
