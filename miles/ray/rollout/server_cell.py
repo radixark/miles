@@ -130,7 +130,7 @@ class ServerCell:
         dist_init = None
         for local_index, (rank, actor) in enumerate(zip(global_ranks, actor_handles, strict=True)):
             node_ip = node_ips[local_index]
-            alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
+            alloc = functools.partial(port_allocator.alloc, actor, node_ip=node_ip)
 
             if local_index == 0:
                 dist_init = HostAndPort(

@@ -21,8 +21,11 @@ from miles.utils.workers.command_actor import CommandActor
 
 
 def _make_model_cfg(*worker_types: str) -> ModelConfig:
-    groups = [ServerGroupConfig(worker_type=worker_type, num_gpus=4) for worker_type in worker_types]
-    return ModelConfig(name="default", server_groups=groups)
+    groups = [
+        ServerGroupConfig(worker_type=worker_type, num_gpus=4, num_gpus_per_engine=4, needs_offload=False)
+        for worker_type in worker_types
+    ]
+    return ModelConfig(name="default", model_path=None, server_groups=groups, update_weights=True)
 
 
 class TestLaunchCommandOnHead:
@@ -50,7 +53,7 @@ class TestStartRouter:
             "miles.ray.rollout.router_manager.find_available_port", return_value=20000
         ):
             with pytest.raises(AssertionError, match="miles router does not support PD"):
-                start_router(args, model_cfg=_make_model_cfg("prefill", "decode"))
+                start_router(args, model_idx=0, model_cfg=_make_model_cfg("prefill", "decode"))
 
 
 class TestStartRouterLaunchCommand:
@@ -73,7 +76,7 @@ class TestStartRouterLaunchCommand:
             "miles.ray.rollout.router_manager.find_available_port", lambda start: 20000 if start < 4000 else 4001
         )
         args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
-        ip, port = start_router(args, model_cfg=_make_model_cfg("regular"))
+        ip, port = start_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
 
         (argv,) = captured_launches
         assert argv[0] == sys.executable
@@ -93,7 +96,7 @@ class TestStartRouterLaunchCommand:
             miles_router_health_check_failure_threshold=3,
             rollout_health_check_interval=10.0,
         )
-        ip, port = start_router(args, model_cfg=_make_model_cfg("regular"))
+        ip, port = start_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
 
         (argv,) = captured_launches
         assert argv[:3] == [sys.executable, "-m", "miles.router.router"]

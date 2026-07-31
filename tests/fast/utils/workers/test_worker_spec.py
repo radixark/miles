@@ -92,8 +92,8 @@ class TestBaseWorkerSpec:
 class TestCommandWorkerSpec:
     def test_constructs_with_launch_command(self):
         """A command spec carries the launch command besides base fields."""
-        spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command="python -m sglang.launch_server")
-        assert spec.launch_command == "python -m sglang.launch_server"
+        spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "python -m sglang.launch_server")
+        assert spec.launch_command(None) == "python -m sglang.launch_server"
         assert isinstance(spec, BaseWorkerSpec)
 
 
@@ -155,6 +155,6 @@ class TestServeWorkerSpecRpcPortInjection:
     def test_base_and_command_specs_get_no_rpc_port(self):
         """Only serve workers run the rpc server, so only they get the port."""
         base = BaseWorkerSpec(**_make_base_kwargs())
-        command = CommandWorkerSpec(**_make_base_kwargs(), launch_command="sleep 1")
+        command = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "sleep 1")
         assert RPC_PORT_NAME not in [port_info.name for port_info in base.port_infos]
         assert RPC_PORT_NAME not in [port_info.name for port_info in command.port_infos]
