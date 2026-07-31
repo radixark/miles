@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import ray
 
@@ -18,6 +20,9 @@ from miles.utils.workers.worker_spec import (
     NamedHostAndPorts,
 )
 
+if TYPE_CHECKING:
+    from miles.ray.placement_group import PlacementGroupInfo
+
 # TODO: unique name, maybe with args.run_uuid
 _ACTOR_NAME = "ray_worker_manager"
 
@@ -27,7 +32,7 @@ class RayWorkerManager:
         self.port_allocator = PortAllocator()
 
     @staticmethod
-    def launch(specs: list[BaseWorkerSpec], pgs: dict[str, Any]):
+    def launch(specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
         obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
         ray.get(obj.init.remote(specs, pgs))
         return obj
@@ -36,7 +41,7 @@ class RayWorkerManager:
     def get_handle() -> ray.actor.ActorHandle:
         return ray.get_actor(_ACTOR_NAME)
 
-    async def init(self, specs: list[BaseWorkerSpec], pgs: dict[str, Any]):
+    async def init(self, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
 
@@ -58,17 +63,17 @@ class RayWorkerManager:
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
         return {name: [a.self_addrs for c in g.cells for a in c.actors] for name, g in self._pools.items()}
 
-    async def _for_all_worker_managers(self, fn: Callable[["_BaseActorManager"], Any]):
+    async def _for_all_worker_managers(self, fn: Callable[[_BaseActorManager], Any]):
         await asyncio.gather(*[fn(a) for g in self._pools.values() for c in g.cells for a in c.actors])
 
 
 @dataclass(kw_only=True)
 class _PoolManager:
     spec: BaseWorkerSpec
-    cells: list["_CellManager"]
+    cells: list[_CellManager]
 
     @classmethod
-    def initial(cls, spec: BaseWorkerSpec, manager_ref: RayWorkerManager) -> "_PoolManager":
+    def initial(cls, spec: BaseWorkerSpec, manager_ref: RayWorkerManager) -> _PoolManager:
         return cls(
             spec=spec,
             cells=[
@@ -94,7 +99,7 @@ class _PoolManager:
 @dataclass(kw_only=True)
 class _CellManager:
     cell_index: int
-    actors: list["_BaseActorManager"]
+    actors: list[_BaseActorManager]
 
     def __post_init__(self):
         for actor in self.actors:
