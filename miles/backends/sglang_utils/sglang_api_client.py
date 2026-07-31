@@ -9,7 +9,7 @@ from miles.utils.http_utils import GeneralHttpClientProvider
 logger = logging.getLogger(__name__)
 
 
-async def wait_server_healthy(server_url, api_key, is_process_alive):
+async def wait_server_healthy(server_url, api_key):
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "Authorization": f"Bearer {api_key}",
@@ -24,9 +24,6 @@ async def wait_server_healthy(server_url, api_key, is_process_alive):
         except httpx.HTTPError:
             pass
 
-        if not is_process_alive():
-            raise Exception("Server process terminated unexpectedly.")
-
         await asyncio.sleep(2)
 
     # use flush_cache to make sure the working queue is empty, so that we can do offload
@@ -38,9 +35,6 @@ async def wait_server_healthy(server_url, api_key, is_process_alive):
 
         except httpx.HTTPError:
             pass
-
-        if not is_process_alive():
-            raise Exception("Server process terminated unexpectedly.")
 
         await asyncio.sleep(2)
 
