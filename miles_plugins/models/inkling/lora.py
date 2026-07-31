@@ -86,7 +86,7 @@ def apply_inkling_lora(model, args):
         reduce_scatter_to_sequence_parallel_region,
     )
 
-    from miles_plugins.models.inkling.inkling import InklingDenseMLP, InklingSelfAttention, InklingSharedExperts
+    from miles_plugins.models.inkling.layers import InklingDenseMLP, InklingSelfAttention, InklingSharedExperts
 
     Adapter = _adapter_cls()
 

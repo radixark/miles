@@ -39,5 +39,5 @@ MODEL_ARGS=(
     --qk-layernorm
 
     # Inkling model provider
-    --custom-model-provider-path miles_plugins.models.inkling.inkling.inkling_model_provider
+    --custom-model-provider-path miles_plugins.models.inkling.model.inkling_model_provider
 )
