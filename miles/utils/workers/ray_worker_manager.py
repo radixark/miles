@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
 import ray
@@ -77,9 +77,8 @@ class _PoolManager:
                     actors=[
                         # TODO support Serve mode
                         _CommandActorManager(
-                            cell_index=cell_index,
                             worker_in_cell_index=worker_in_cell_index,
-                            manager_ref=manager_ref,
+                            manager=manager_ref,
                             spec=spec,
                             actor_handle=None,
                             generation=1,
@@ -97,14 +96,18 @@ class _CellManager:
     cell_index: int
     actors: list["_BaseActorManager"]
 
+    def __post_init__(self):
+        for actor in self.actors:
+            actor.parent = self
+
 
 SpecT = TypeVar("SpecT", bound=BaseWorkerSpec)
 
 
 @dataclass(kw_only=True)
 class _BaseActorManager(Generic[SpecT]):
-    manager_ref: RayWorkerManager
-    cell_index: int
+    manager: RayWorkerManager
+    parent: _CellManager = field(init=False)
     worker_in_cell_index: int
     spec: SpecT
     actor_handle: ray.actor.ActorHandle | None
@@ -124,13 +127,17 @@ class _BaseActorManager(Generic[SpecT]):
     def name(self) -> str:
         return compute_worker_name(
             pool_id=self.spec.name,
-            cell_index=self.cell_index,
+            cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
         )
 
     @property
     def primary_addr(self) -> HostAndPort:
         return self.self_addrs["primary"]
+
+    @property
+    def master_mode_addrs(self) -> NamedHostAndPorts:
+        return {info.name: self.self_addrs[info.name] for info in self.spec.port_infos if info.mode == "master"}
 
 
 @dataclass
@@ -153,8 +160,10 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
 
         node_ip = await self.actor_handle._get_node_ip.remote()
         for port_info in self.spec.port_infos:
+            if self.worker_in_cell_index != 0 and port_info.mode == "master":
+                continue
             port = (
-                self.manager_ref.port_allocator.alloc(
+                self.manager.port_allocator.alloc(
                     self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
                 )
                 if port_info.allow_dynamic
@@ -164,10 +173,13 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
 
     async def post_setup(self) -> None:
         ctx = LaunchCommandContext(
-            cell_index=self.cell_index,
+            cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
-            self_addrs=self.self_addrs,
-            spec_addrs=self.manager_ref.get_addrs(),
+            self_addrs={
+                **self.self_addrs,
+                **self.parent.actors[0].master_mode_addrs,
+            },
+            spec_addrs=self.manager.get_addrs(),
             gpu_ids=[],  # TODO
         )
         launch_cmd = self.spec.launch_command(ctx)
