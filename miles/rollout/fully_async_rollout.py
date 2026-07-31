@@ -90,7 +90,7 @@ class FullyAsyncRolloutFn:
         self.state = GenerateState(input.args)
         self._weight_version = _CachedWeightVersion()
         self._worker: asyncio.Task | None = None
-        self._output: asyncio.Queue[Group] | None = None
+        self._output: asyncio.Queue[tuple[list[Sample], Group]] | None = None
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -113,15 +113,23 @@ class FullyAsyncRolloutFn:
         return self.args.rollout_batch_size
 
     def _submit_one_group(self) -> asyncio.Task:
-        [group] = self.data_source.get_samples(1)
-        return asyncio.create_task(
-            generate_and_rm_group(
-                self.state,
-                group,
-                sampling_params=self.state.sampling_params.copy(),
-                evaluation=False,
-            )
+        [prompt_group] = self.data_source.get_samples(1)
+        return asyncio.create_task(self._generate_group(prompt_group))
+
+    async def _generate_group(self, prompt_group: list[Sample]) -> tuple[list[Sample], Group]:
+        """Return the submitted prompt group next to its result.
+
+        A retry has to resubmit the prompt group: a generate function may expand one
+        trajectory into several samples, and ``generate_and_rm_group`` does not accept
+        that shape back.
+        """
+        result = await generate_and_rm_group(
+            self.state,
+            prompt_group,
+            sampling_params=self.state.sampling_params.copy(),
+            evaluation=False,
         )
+        return prompt_group, result
 
     async def _worker_loop(self):
         active: set[asyncio.Task] = set()
@@ -136,7 +144,7 @@ class FullyAsyncRolloutFn:
 
     # -------------------------- consumer --------------------------
 
-    async def _next_group(self) -> Group:
+    async def _next_group(self) -> tuple[list[Sample], Group]:
         queue_get = asyncio.create_task(self._output.get())
         try:
             while True:
@@ -145,11 +153,13 @@ class FullyAsyncRolloutFn:
                     return_when=asyncio.FIRST_COMPLETED,
                     timeout=NO_PROGRESS_WARN_SECS,
                 )
-                if queue_get in done:
-                    return queue_get.result()
+                # Checked before the queue: the worker loop never returns normally, so a
+                # dead worker fails the step now instead of after its backlog drains.
                 if self._worker in done:
                     self._worker.result()
                     raise RuntimeError("fully-async rollout worker exited without an exception")
+                if queue_get in done:
+                    return queue_get.result()
                 logger.warning(
                     f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s (queued: {self._output.qsize()})"
                 )
@@ -169,12 +179,12 @@ class FullyAsyncRolloutFn:
         do_print = True
 
         while len(data) < target_data_size:
-            group = await self._next_group()
+            prompt_group, group = await self._next_group()
             assert len(group) == args.n_samples_per_prompt
 
             # A weight update paused generation mid-group: return it for re-sampling.
             if any(s.status == Sample.Status.ABORTED for s in _iter_samples(group)):
-                self._recycle(group)
+                self._recycle(prompt_group)
                 aborted_groups_recycled += 1
                 continue
 
@@ -185,7 +195,7 @@ class FullyAsyncRolloutFn:
                     staleness = current - oldest
                     staleness_values.append(staleness)
                     if staleness > args.max_weight_staleness:
-                        self._recycle(group)
+                        self._recycle(prompt_group)
                         stale_groups_recycled += 1
                         logger.info(
                             f"Recycled stale group (oldest_version={oldest}, current={current}, "
@@ -222,7 +232,7 @@ class FullyAsyncRolloutFn:
 
         return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
-    def _recycle(self, group: Group) -> None:
-        for sample in _iter_samples(group):
+    def _recycle(self, prompt_group: list[Sample]) -> None:
+        for sample in prompt_group:
             sample.reset_for_retry()
-        self.data_source.add_samples([group])
+        self.data_source.add_samples([prompt_group])

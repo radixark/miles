@@ -5,6 +5,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 import asyncio
 from argparse import Namespace
 from collections import deque
+from dataclasses import replace
 
 import pytest
 
@@ -207,3 +208,47 @@ async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release.set()
     output = await drain
     assert len(output.samples) == 4
+
+
+async def test_worker_failure_beats_queued_groups(monkeypatch):
+    """A dead worker fails the step even when it left completed groups behind."""
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+    async def boom():
+        raise RuntimeError("generation exploded")
+
+    fn._output = asyncio.Queue(maxsize=fully_async.OUTPUT_QUEUE_MAX_GROUPS)
+    group = make_group(1)
+    await fn._output.put((group, group))
+    fn._worker = asyncio.create_task(boom())
+    await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="generation exploded"):
+        await fn(RolloutFnTrainInput(rollout_id=0))
+
+
+async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
+    """A generate function may expand one trajectory into several samples; the retry
+    must resubmit the flat prompt group the data source handed out."""
+    prompt_group = make_group(1)
+    data_source = FakeDataSource(scripted=[prompt_group])
+    submitted = []
+
+    async def multi_sample_generate(state, group, sampling_params, evaluation=False):
+        assert all(isinstance(sample, Sample) for sample in group), "resubmitted a nested group"
+        submitted.append(group)
+        if len(submitted) > 1:
+            return group
+        expanded = []
+        for sample in group:
+            aborted = replace(sample, status=Sample.Status.ABORTED)
+            expanded.append([aborted, replace(sample)])
+        return expanded
+
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source, generate=multi_sample_generate)
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert data_source.recycled == [prompt_group]
+    assert all(isinstance(sample, Sample) for sample in data_source.recycled[0])
+    assert len(submitted) > 1
+    assert len(output.samples) == 1
