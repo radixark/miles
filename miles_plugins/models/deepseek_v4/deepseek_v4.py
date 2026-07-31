@@ -45,6 +45,7 @@ from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     get_indexer_cu_seqlens_thd,
     get_q_positions_thd,
     get_window_topk_idxs_thd,
+    to_rank_major_rows,
 )
 from miles_plugins.models.deepseek_v4.ops.v4_indexer import V4Indexer
 
@@ -370,6 +371,11 @@ class DeepSeekV4Attention(MegatronModule):
                         global_start=global_start,
                     )
                     valid = (compress_topk_idxs >= cu_ks.unsqueeze(1)) & (compress_topk_idxs < cu_ke.unsqueeze(1))
+                if seq_to_rank_row is not None:
+                    # The indexer scored sequence-major rows; the KV block is rank-major.
+                    compress_topk_idxs, valid = to_rank_major_rows(
+                        compress_topk_idxs, seq_to_rank_row, valid
+                    )
                 compress_topk_idxs = torch.where(valid, compress_topk_idxs + kv_compress_offset, -1)
             elif cu_seqlens is None:
                 compress_topk_idxs = get_compress_topk_idxs_cp(q_positions, ratio=ratio, cp_size=self.cp_size, bsz=bsz)
