@@ -230,12 +230,24 @@ class Dataset:
                 output_prompt = prompt
 
             if processor:
-                from miles.utils.processing_utils import process_vision_info
+                from miles.utils.processing_utils import (
+                    extract_deferrable_media_refs,
+                    process_vision_info,
+                )
 
                 assert isinstance(
                     prompt, list
                 ), f"prompt must be a list when processor is not None, got {type(prompt)} instead"
-                multimodal_inputs = process_vision_info(prompt, processor)
+                # When every image is a reopenable reference, keep the reference
+                # and let generate() resolve it. No window or eviction policy is
+                # needed here: reopening is just Image.open. Anything else is
+                # decoded now, so inline base64 / URLs behave exactly as before.
+                refs = extract_deferrable_media_refs(prompt, processor)
+                if refs is not None:
+                    metadata = {**metadata, "_deferred_media_refs": refs}
+                    multimodal_inputs = None
+                else:
+                    multimodal_inputs = process_vision_info(prompt, processor)
             else:
                 multimodal_inputs = None
 

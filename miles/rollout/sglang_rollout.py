@@ -150,11 +150,33 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
+    # Resolve media the dataset deferred. This is the only place the decoded
+    # images are needed -- here for the processor, and below for the payload --
+    # so they are built now and become garbage when this call returns, rather
+    # than being held for the life of the run.
+    deferred_refs = (sample.metadata or {}).get("_deferred_media_refs")
+    _media_key = None
+    if state.processor and deferred_refs and not sample.multimodal_inputs:
+        from miles.utils.processing_utils import (
+            deferred_media_cache_key,
+            resolve_deferred_media,
+        )
+
+        _media_key = deferred_media_cache_key(deferred_refs)
+        sample.multimodal_inputs = resolve_deferred_media(deferred_refs, state.processor)
+
     if state.processor and (
         isinstance(sample.prompt, (list, tuple))
         or (sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()))
     ):
-        processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
+        if _media_key is not None:
+            from miles.utils.processing_utils import call_processor_cached
+
+            processor_output = call_processor_cached(
+                state.processor, sample.prompt, sample.multimodal_inputs, _media_key
+            )
+        else:
+            processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
         prompt_ids = prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
         sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
@@ -204,7 +226,24 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_rollout_indexer_replay", False):
         payload["return_indexer_topk"] = True
 
-    if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
+    if deferred_refs and deferred_refs.get("image"):
+        if getattr(args, "rollout_media_payload_paths", False):
+            # The engine sees the dataset's filesystem, so hand it the paths.
+            # Re-encoding the decoded PIL back to PNG costs ~84 ms per page on
+            # the same asyncio thread that submits requests, and inflates each
+            # request to megabytes of base64. The engine applies the identical
+            # smart_resize to whatever it receives, so the pixels reaching the
+            # model are the same either way.
+            payload["image_data"] = list(deferred_refs["image"])
+        else:
+            payload["image_data"] = [
+                encode_image_for_rollout_engine(image) for image in sample.multimodal_inputs["images"]
+            ]
+        # Tensors are what training consumes from here; the images are
+        # reproducible from the refs, so drop the reference to them rather than
+        # let deepcopy duplicate them once per sample in the group.
+        sample.multimodal_inputs = None
+    elif sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 

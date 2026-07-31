@@ -3,6 +3,8 @@ import inspect
 import io
 import logging
 import os
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -180,6 +182,130 @@ def process_vision_info(prompt, processor):
     images, videos = qwen_process_vision_info(prompt, image_patch_size=image_patch_size)
     multimodal_inputs = {"images": images, "videos": videos}
     return multimodal_inputs
+
+
+_DEFERRED_MEDIA_CACHE: "OrderedDict[tuple, dict]" = OrderedDict()
+_DEFERRED_MEDIA_CACHE_MAX = int(os.getenv("MILES_MEDIA_CACHE_ENTRIES", "16"))
+_DEFERRED_MEDIA_LOCK = threading.Lock()
+
+
+def extract_deferrable_media_refs(prompt, processor) -> dict | None:
+    """Return {media_type: [ref, ...]} when every media item is cheap to reopen.
+
+    "Cheap" means a local file: `file://...` or a bare path, which can be
+    resolved at use time for the price of an Image.open. Decoding when the
+    Dataset is built instead costs memory proportional to the corpus -- a decoded
+    RGB page is ~5.75 MB, so a 51k-page dataset pins ~295 GB for the whole run --
+    even though the result is only read inside sglang_rollout.generate(), for one
+    sample, and is dead afterwards.
+
+    Inline base64 and remote URLs are NOT cheap to re-resolve, so this returns
+    None for them and the caller decodes eagerly, exactly as before. The same
+    bail-out covers a processor with its own ``extract_media`` (it may consume
+    modalities or context this function does not model) and any content part
+    type other than text/image/video, so anything this function cannot
+    faithfully re-resolve takes the eager path unchanged. Returns None rather
+    than {} when there is no media, so the caller can distinguish "defer this"
+    from "nothing to defer".
+    """
+    if not isinstance(prompt, list):
+        return None
+    if hasattr(processor, "extract_media"):
+        return None
+    refs: dict[str, list] = {}
+    found = False
+    for message in prompt:
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            kind = part.get("type")
+            if kind == "text":
+                continue
+            if kind not in ("image", "video"):
+                # image_url, audio, anything unknown: not modelled here, so do
+                # not defer -- a partial refs dict would silently drop media.
+                return None
+            value = part.get(kind)
+            found = True
+            if not isinstance(value, str):
+                return None
+            # A data: URI carries the bytes inline, so "re-resolving" one means
+            # holding the whole payload anyway. It also contains no "://", so it
+            # must be rejected before the bare-path test below.
+            if value.startswith("data:"):
+                return None
+            if not (value.startswith("file://") or "://" not in value):
+                return None
+            refs.setdefault(kind, []).append(value)
+    return refs if found else None
+
+
+def deferred_media_cache_key(refs: dict) -> tuple:
+    """Hashable identity for a set of refs -- the same paths mean the same media."""
+    return tuple((kind, tuple(items)) for kind, items in sorted(refs.items()))
+
+
+def resolve_deferred_media(refs: dict, processor) -> dict:
+    """Turn refs back into media, reusing the result across a GRPO group.
+
+    Rebuilds the minimal conversation process_vision_info expects, so the output
+    is identical to what the eager path would have produced: same fetch_image,
+    same to_rgb, same smart_resize.
+
+    The n samples of a group are deepcopies of one prompt and therefore share
+    refs, so without the cache this decodes the same pages n times. Entries are
+    evicted oldest-first and only groups in flight can hit, so a handful suffices.
+    """
+    key = deferred_media_cache_key(refs)
+    with _DEFERRED_MEDIA_LOCK:
+        hit = _DEFERRED_MEDIA_CACHE.get(key)
+        if hit is not None:
+            _DEFERRED_MEDIA_CACHE.move_to_end(key)
+            return hit
+
+    content = [{"type": kind, kind: ref} for kind, items in refs.items() for ref in items]
+    resolved = process_vision_info([{"role": "user", "content": content}], processor)
+
+    with _DEFERRED_MEDIA_LOCK:
+        _DEFERRED_MEDIA_CACHE[key] = resolved
+        _DEFERRED_MEDIA_CACHE.move_to_end(key)
+        while len(_DEFERRED_MEDIA_CACHE) > _DEFERRED_MEDIA_CACHE_MAX:
+            _DEFERRED_MEDIA_CACHE.popitem(last=False)
+    return resolved
+
+
+_PROCESSOR_OUTPUT_CACHE: "OrderedDict[tuple, object]" = OrderedDict()
+_PROCESSOR_OUTPUT_LOCK = threading.Lock()
+
+
+def call_processor_cached(processor, text, multimodal_inputs, cache_key):
+    """call_processor, memoised on (prompt text, media identity).
+
+    pixel_values depends only on the prompt and the images, and every sample in a
+    GRPO group has both identical -- so this runs once per group instead of once
+    per sample. That removes the redundant processor passes and, because the
+    result is shared, shrinks what Ray has to serialise to the trainer by the
+    same factor (measured: ~23 GB -> ~2.9 GB per step, a 24s stall in
+    torch._legacy_save).
+    """
+    key = (text if isinstance(text, str) else str(text), cache_key)
+    with _PROCESSOR_OUTPUT_LOCK:
+        hit = _PROCESSOR_OUTPUT_CACHE.get(key)
+        if hit is not None:
+            _PROCESSOR_OUTPUT_CACHE.move_to_end(key)
+            return hit
+
+    out = call_processor(processor, text, multimodal_inputs)
+
+    with _PROCESSOR_OUTPUT_LOCK:
+        _PROCESSOR_OUTPUT_CACHE[key] = out
+        _PROCESSOR_OUTPUT_CACHE.move_to_end(key)
+        while len(_PROCESSOR_OUTPUT_CACHE) > _DEFERRED_MEDIA_CACHE_MAX:
+            _PROCESSOR_OUTPUT_CACHE.popitem(last=False)
+    return out
 
 
 def encode_image_for_rollout_engine(image) -> str:
