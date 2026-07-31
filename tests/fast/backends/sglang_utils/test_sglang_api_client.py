@@ -313,7 +313,7 @@ async def test_every_public_method_is_a_coroutine_function():
 
 
 class TestWaitServerHealthy:
-    """``wait_server_healthy`` polls until the server answers, and gives up if the process dies."""
+    """``wait_server_healthy`` polls until the server answers on health and flush_cache."""
 
     async def test_it_polls_health_then_flush_cache(self, monkeypatch):
         """Readiness means both the health endpoint and a drained working queue."""
@@ -321,28 +321,13 @@ class TestWaitServerHealthy:
         rec.install(monkeypatch, responses=[_FakeResponse(status_code=503), _FakeResponse(), _FakeResponse()])
         monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
 
-        await sglang_api_client.wait_server_healthy(server_url=SERVER_URL, api_key="k", is_process_alive=lambda: True)
+        await sglang_api_client.wait_server_healthy(server_url=SERVER_URL, api_key="k")
 
         assert [url for _verb, url, _kwargs in rec.calls] == [
             f"{SERVER_URL}/health_generate",
             f"{SERVER_URL}/health_generate",
             f"{SERVER_URL}/flush_cache",
         ]
-
-    async def test_it_raises_once_the_server_process_is_gone(self, monkeypatch):
-        """Polling a dead process forever would hang engine startup instead of reporting it."""
-
-        class _Refusing:
-            async def get(self, url, **kwargs):
-                raise httpx.ConnectError("connection refused")
-
-        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: _Refusing())
-        monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
-
-        with pytest.raises(Exception, match="Server process terminated unexpectedly"):
-            await sglang_api_client.wait_server_healthy(
-                server_url=SERVER_URL, api_key="k", is_process_alive=lambda: False
-            )
 
 
 async def _noop_sleep(seconds):
