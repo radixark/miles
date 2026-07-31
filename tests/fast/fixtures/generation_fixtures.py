@@ -232,7 +232,7 @@ def with_session_server(
     *,
     port: int,
 ):
-    # Mirror start_session_server (router_manager.py): the id is minted into the
+    # Mirror wait_session_server_ready (router_manager.py): the id is minted into the
     # caller's per-port map, where OpenAIEndpointTracer.create reads it from.
     instance_id = f"{args.run_uuid}-0"
     args.session_server_instance_ids = {port: instance_id}
@@ -304,7 +304,7 @@ def generation_env(request, variant):
         with cm:
             if is_agentic:
                 # Point session server address to the SessionServer we just started,
-                # mirroring the driver-side contract set by start_session_server.
+                # mirroring the driver-side contract set by wait_session_server_ready.
                 args.session_server_ip = "127.0.0.1"
                 args.session_server_ports = [server_port]
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")

@@ -55,6 +55,9 @@ class RayWorkerManager:
         assert len(matches) == 1, f"{matches=}"
         return matches[0]
 
+    def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
+        return {name: [a.self_addrs for c in g.cells for a in c.actors] for name, g in self._pools.items()}
+
     async def _for_all_worker_managers(self, fn: Callable[["_BaseActorManager"], Any]):
         await asyncio.gather(*[fn(a) for g in self._pools.values() for c in g.cells for a in c.actors])
 
@@ -171,7 +174,7 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
             cell_index=self.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
             self_addrs=self.self_addrs,
-            pool_addrs={},  # TODO
+            pool_addrs=self.manager_ref.get_addrs(),
             gpu_ids=[],  # TODO
         )
         launch_cmd = self.spec.launch_command(ctx)
