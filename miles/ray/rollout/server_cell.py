@@ -179,7 +179,6 @@ class ServerCell:
         await wait_server_healthy(
             server_url=self.addr_info.server_url,
             api_key=compute_api_key(self.args, sglang_overrides=self.sglang_overrides),
-            is_process_alive=functools.partial(_engine_actor_is_alive, self.primary_actor_handle),
         )
 
     async def start(
@@ -342,11 +341,3 @@ def launch_sglang_ray_actor(
             "env_vars": env_vars,
         },
     ).remote()
-
-
-def _engine_actor_is_alive(actor_handle: ray.actor.ActorHandle) -> bool:
-    try:
-        ray.get(actor_handle._get_node_ip.remote(), timeout=30)
-        return True
-    except Exception:
-        return False
