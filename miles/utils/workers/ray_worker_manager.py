@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-import logging
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
@@ -22,7 +22,6 @@ from miles.utils.workers.worker_spec import (
     NamedHostAndPorts,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -31,6 +30,15 @@ if TYPE_CHECKING:
 
 # TODO: unique name, maybe with args.run_uuid
 _ACTOR_NAME = "ray_worker_manager"
+
+
+@dataclass(kw_only=True)
+class WorkerInfo:
+    name: str
+    generation: int
+    self_addrs: NamedHostAndPorts
+    gpu_ids: list[int]
+    actor_handle: ray.actor.ActorHandle
 
 
 class RayWorkerManager:
@@ -69,6 +77,19 @@ class RayWorkerManager:
 
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
         return {name: [a.self_addrs for c in g.cells for a in c.actors] for name, g in self._group_infos.items()}
+
+    def get_worker_infos(self, spec_name: str, cell_index: int) -> list[WorkerInfo]:
+        cell = self._group_infos[spec_name].cells[cell_index]
+        return [
+            WorkerInfo(
+                name=actor.name,
+                generation=actor.generation,
+                self_addrs=actor.self_addrs,
+                gpu_ids=actor.gpu_ids,
+                actor_handle=actor.actor_handle,
+            )
+            for actor in cell.actors
+        ]
 
     async def _for_all_cells(self, fn: Callable[[_CellManager], Any]):
         await asyncio.gather(*[fn(c) for g in self._group_infos.values() for c in g.cells])
