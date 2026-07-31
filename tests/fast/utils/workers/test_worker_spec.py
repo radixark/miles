@@ -158,3 +158,18 @@ class TestServeWorkerSpecRpcPortInjection:
         command = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "sleep 1")
         assert RPC_PORT_NAME not in [port_info.name for port_info in base.port_infos]
         assert RPC_PORT_NAME not in [port_info.name for port_info in command.port_infos]
+
+
+class TestSchedulingSpecPinToHead:
+    def test_workers_are_not_pinned_to_the_head_node_by_default(self):
+        """Pinning is opt-in, otherwise every worker of every spec would crowd onto the head node."""
+        assert SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0).pin_to_head is False
+        assert SchedulingSpec.single(num_gpus_per_worker=0).pin_to_head is False
+
+    def test_the_single_worker_shortcut_forwards_the_pin_flag(self):
+        """The convenience constructor must not silently drop the pin request."""
+        scheduling = SchedulingSpec.single(num_gpus_per_worker=0.5, pin_to_head=True)
+
+        assert (scheduling.num_cells, scheduling.num_workers_per_cell) == (1, 1)
+        assert scheduling.num_gpus_per_worker == 0.5
+        assert scheduling.pin_to_head is True
