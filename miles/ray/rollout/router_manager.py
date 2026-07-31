@@ -1,4 +1,3 @@
-import functools
 import logging
 import random
 
@@ -41,13 +40,8 @@ def start_router(args, model_idx: int, model_cfg: ModelConfig) -> tuple[str, int
         LaunchCommandContext(cell_index=0, worker_in_cell_index=0, self_addrs=self_addrs, spec_addrs={}, gpu_ids=[])
     )
 
-    actor_handle = _launch_command_on_head(launch_command)
-    wait_tcp_ready(
-        router_ip,
-        router_port,
-        is_alive=functools.partial(_actor_is_alive, actor_handle),
-        timeout=_SERVER_READY_TIMEOUT_SECS,
-    )
+    _actor_handle = _launch_command_on_head(launch_command)
+    wait_tcp_ready(router_ip, router_port, timeout=_SERVER_READY_TIMEOUT_SECS)
     logger.info(f"Router launched at {router_ip}:{router_port}")
     return router_ip, router_port
 
@@ -56,14 +50,6 @@ def _launch_command_on_head(launch_cmd: str) -> ray.actor.ActorHandle:
     actor_handle = create_head_worker_actor(worker_cls=CommandActor, env_vars={}, num_cpus=0.2, ctor_kwargs={})
     actor_handle.run.remote(cmd=launch_cmd, envs={})
     return actor_handle
-
-
-def _actor_is_alive(actor_handle: ray.actor.ActorHandle) -> bool:
-    try:
-        ray.get(actor_handle._get_node_ip.remote(), timeout=30)
-        return True
-    except Exception:
-        return False
 
 
 def start_session_server(args):
@@ -124,8 +110,6 @@ def start_session_server(args):
     # The per-port map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
-    for port, actor_handle in launches:
-        wait_tcp_ready(
-            ip, port, is_alive=functools.partial(_actor_is_alive, actor_handle), timeout=_SERVER_READY_TIMEOUT_SECS
-        )
+    for port, _ in launches:
+        wait_tcp_ready(ip, port, timeout=_SERVER_READY_TIMEOUT_SECS)
     logger.info(f"Session servers launched at {ip}, ports {ports} ({len(ports)} instances)")
