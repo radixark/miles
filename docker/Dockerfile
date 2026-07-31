@@ -208,21 +208,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 
-# The apt copy shadows the pip one in ldconfig and the loader interleaves the two,
-# so transformer_engine gets a mixed set of libcudnn sub-libraries. The packages are
-# held, hence --allow-change-held-packages.
-RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then CU=13; else CU=12; fi; \
-  apt-get remove -y --purge --allow-change-held-packages \
-    libcudnn9-cuda-${CU} libcudnn9-dev-cuda-${CU} libcudnn9-headers-cuda-${CU} \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN --mount=type=cache,target=/root/.cache/pip \
-    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
-    pip install nvidia-cudnn-cu13==9.22.0.52; \
-  else \
-    pip install nvidia-cudnn-cu12==9.22.0.52; \
-  fi
-
 # =========================== Mooncake structured object store wheel ===========================
 
 # Miles' Mooncake backend requires the structured object store API. Install the selected
@@ -332,6 +317,27 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps
+
+# ====================================== Post-resolve forced overrides ============================================
+# Everything below deliberately contradicts some package's declared metadata, so it must
+# run after every pip resolve in this file: a resolver running later would either veto
+# these versions (under constraints) or silently undo them (unconstrained).
+
+# cudnn bump: torch 2.11+cu130 pins nvidia-cudnn-cu13==9.19.0.56, but TE needs 9.22.
+# The apt copy shadows the pip one in ldconfig and the loader interleaves the two,
+# so transformer_engine gets a mixed set of libcudnn sub-libraries. The packages are
+# held, hence --allow-change-held-packages.
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then CU=13; else CU=12; fi; \
+  apt-get remove -y --purge --allow-change-held-packages \
+    libcudnn9-cuda-${CU} libcudnn9-dev-cuda-${CU} libcudnn9-headers-cuda-${CU} \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ "${ENABLE_CUDA_13}" = "1" ]; then \
+    pip install nvidia-cudnn-cu13==9.22.0.52; \
+  else \
+    pip install nvidia-cudnn-cu12==9.22.0.52; \
+  fi
 
 # ==================== Reconcile apache-tvm-ffi with sglang's pin ====================
 # sglang v0.5.16 bumped nvidia-cutlass-dsl 4.5.2 -> 4.6.0 while leaving its
