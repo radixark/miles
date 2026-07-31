@@ -65,6 +65,7 @@ def make_args(**overrides: Any) -> Namespace:
         reward_key=None,
         log_reward_category=None,
         log_passrate=False,
+        pin_rollout_manager_to_head=False,
         # placement / colocation
         debug_train_only=False,
         debug_rollout_only=False,
