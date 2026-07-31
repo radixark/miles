@@ -123,7 +123,7 @@ def _compute_sample_from_openai_record(
         case "abort":
             sample.status = Sample.Status.ABORTED
 
-    if args.sglang_speculative_algorithm:
+    if getattr(args, "sglang_speculative_algorithm", None):
         sample.spec_info.add(choice.get("meta_info", {}))
     sample.prefix_cache_info.add(choice.get("meta_info", {}))
     if "weight_version" in choice["meta_info"]:
