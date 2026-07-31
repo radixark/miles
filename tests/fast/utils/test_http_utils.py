@@ -31,7 +31,7 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.http_utils import GeneralHttpClientProvider, wait_for_server_ready
+from miles.utils.http_utils import GeneralHttpClientProvider, wait_for_server_ready, wait_tcp_ready
 
 
 def _find_free_port() -> int:
@@ -196,6 +196,54 @@ class TestWaitForServerReadySimulatedDelays:
 
         # The fake clock should have advanced past the timeout
         assert fake_time[0] >= timeout
+
+
+class TestWaitTcpReady:
+    def test_keeps_retrying_until_the_port_accepts(self):
+        """Readiness depends on the endpoint alone, retrying while it refuses connections."""
+        attempts: list[tuple[tuple[str, int], float | None]] = []
+        sleeps: list[float] = []
+        fake_time = [0.0]
+
+        def fake_sleep(duration):
+            sleeps.append(duration)
+            fake_time[0] += duration
+
+        def fake_connect(addr, timeout=None):
+            attempts.append((addr, timeout))
+            if len(attempts) < 3:
+                raise OSError("Connection refused")
+            return _FakeSocket()
+
+        with (
+            patch("miles.utils.http_utils.time.time", side_effect=lambda: fake_time[0]),
+            patch("miles.utils.http_utils.time.sleep", side_effect=fake_sleep),
+            patch("miles.utils.http_utils.socket.create_connection", side_effect=fake_connect),
+        ):
+            wait_tcp_ready("[2001:db8::7]", 23456, timeout=30)
+
+        assert attempts == [(("2001:db8::7", 23456), 1)] * 3
+        assert sleeps == [0.5, 0.5]
+
+    def test_gives_up_when_the_deadline_passes(self):
+        """A port that never opens fails with a timeout instead of blocking forever."""
+        fake_time = [0.0]
+
+        def fake_sleep(duration):
+            fake_time[0] += duration
+
+        def fake_connect(addr, timeout=None):
+            raise OSError("Connection refused")
+
+        with (
+            patch("miles.utils.http_utils.time.time", side_effect=lambda: fake_time[0]),
+            patch("miles.utils.http_utils.time.sleep", side_effect=fake_sleep),
+            patch("miles.utils.http_utils.socket.create_connection", side_effect=fake_connect),
+        ):
+            with pytest.raises(RuntimeError, match="Server at 127.0.0.1:23456 not ready after 1s"):
+                wait_tcp_ready("127.0.0.1", 23456, timeout=1)
+
+        assert fake_time[0] >= 1
 
 
 class TestGeneralHttpClientProvider:
