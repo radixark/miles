@@ -14,6 +14,7 @@ from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_worker_name
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_spec import (
     BaseWorkerSpec,
     CommandWorkerSpec,
@@ -68,6 +69,19 @@ class RayWorkerManager:
 
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
         return {name: [a.self_addrs for c in g.cells for a in c.actors] for name, g in self._pools.items()}
+
+    def get_worker_infos(self, pool_id: str, cell_index: int) -> list[WorkerInfo]:
+        cell = self._pools[pool_id].cells[cell_index]
+        return [
+            WorkerInfo(
+                name=actor.name,
+                generation=actor.generation,
+                self_addrs=actor.self_addrs,
+                gpu_ids=actor.gpu_ids,
+                actor_handle=actor.actor_handle,
+            )
+            for actor in cell.actors
+        ]
 
     async def _for_all_cells(self, fn: Callable[[_CellManager], Any]):
         await asyncio.gather(*[fn(c) for g in self._pools.values() for c in g.cells])

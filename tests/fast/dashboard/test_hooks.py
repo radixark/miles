@@ -7,6 +7,9 @@ from miles.dashboard import backend, hooks
 from miles.dashboard.hooks import BATCH_MAX_EVENTS, BATCH_MAX_SECONDS, _Identity
 from miles.dashboard.store import Role
 from miles.utils.timer import Timer
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_info import WorkerInfo
+from miles.utils.workers.worker_spec import HostAndPort
 
 
 class FakeRemoteMethod:
@@ -138,48 +141,62 @@ class _FakeProbe:
     def __init__(self, value_fn):
         self._value_fn = value_fn
 
-    def remote(self, *args):
-        return self._value_fn(*args)  # hooks._ray_get is patched to the identity function
+    def remote(self, *args, **kwargs):
+        return self._value_fn(*args, **kwargs)  # hooks._ray_get is patched to the identity function
 
 
 class FakeEngineHandle:
-    def __init__(self, node_ip):
-        self._get_node_ip = _FakeProbe(lambda: node_ip)
+    def __init__(self):
         self._get_gpu_uuids = _FakeProbe(lambda gpu_ids: [None] * len(gpu_ids))
 
 
-class FakeCell:
-    """Duck-typed ServerCell: the hooks read the driver-side placement facts."""
+class FakeManagerHandle:
+    """Duck-typed RayWorkerManager handle serving per-cell worker infos."""
 
-    def __init__(self, members, alive=True):
-        self.actor_handles = [FakeEngineHandle(node_ip) for _, node_ip, _ in members]
-        self.addr_infos = [type("FakeAddrInfo", (), {"server_url": url})() for url, _, _ in members]
-        self.engine_gpu_ids = [gpu_ids for _, _, gpu_ids in members]
+    def __init__(self, infos_by_cell):
+        self.get_worker_infos = _FakeProbe(lambda *, pool, cell_index: infos_by_cell[(pool, cell_index)])
+
+
+class FakeCell:
+    """Duck-typed ServerCell: the hooks read only the driver-side routing facts."""
+
+    def __init__(self, url, cell_index=0, alive=True):
+        self.model_idx = 0
+        self.group_index = 0
+        self.cell_index = cell_index
+        self.addr_info = type("FakeAddrInfo", (), {"server_url": url})()
         self.worker_type = "regular"
         self.is_alive = alive
 
 
-def _cell(*members, alive=True):
-    return [FakeCell(list(members), alive=alive)]
+def _worker_info(name, node, gpus, generation=1):
+    return WorkerInfo(
+        name=name,
+        generation=generation,
+        self_addrs={"primary": HostAndPort(host=node, port=30001)},
+        gpu_ids=gpus,
+        actor_handle=FakeEngineHandle(),
+    )
 
 
-def _info(url, node, gpus):
-    return (url, node, gpus)
-
-
-def _servers(*cell_lists):
-    cells = [cell for cells in cell_lists for cell in cells]
+def _servers(cells):
     server = type("FakeServer", (), {"server_cells": {f"cell-{i}": cell for i, cell in enumerate(cells)}})()
     return {"default": server}
 
 
 def test_register_engines_groups_multinode_and_dedups(monkeypatch):
+    """Worker-manager infos become one EngineInfo per cell; repush only on worker change."""
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
-    # one multi-node engine (master + worker node) and one single-node engine
-    multinode_cell = _cell(_info("http://a:1", "node-a", [0, 1]), _info("http://a-worker:1", "node-b", [0, 1]))
-    single_cell = _cell(_info("http://b:1", "node-a", [2, 3]))
-    servers = _servers(multinode_cell, single_cell)
+    infos_by_cell = {
+        ("inference-engine-0-0", 0): [
+            _worker_info("inference-engine-0-0-0", "node-a", [0, 1]),
+            _worker_info("inference-engine-0-0-1", "node-b", [0, 1]),
+        ],
+        ("inference-engine-0-0", 1): [_worker_info("inference-engine-0-1-0", "node-a", [2, 3])],
+    }
+    monkeypatch.setattr(RayWorkerManager, "get_handle", staticmethod(lambda: FakeManagerHandle(infos_by_cell)))
+    servers = _servers([FakeCell("http://a:1", cell_index=0), FakeCell("http://b:1", cell_index=1)])
 
     hooks.register_engines(servers)
     [(args, _)] = handle.update_topology.calls
@@ -187,30 +204,52 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     assert [e.addr for e in snapshot.engines] == ["http://a:1", "http://b:1"]
     multinode = snapshot.engines[0]
     assert multinode.gpus == [["node-a", 0], ["node-a", 1], ["node-b", 0], ["node-b", 1]]
+    assert len(multinode.gpu_uuids) == 4
 
-    hooks.register_engines(servers)  # steady state: no remote traffic
+    hooks.register_engines(servers)  # steady state: fingerprint unchanged
     assert len(handle.update_topology.calls) == 1
 
-    recovered = FakeCell([_info("http://b:2", "node-a", [2, 3])])  # recovery: new actor
-    single_cell[0].actor_handles, single_cell[0].addr_infos = recovered.actor_handles, recovered.addr_infos
-    hooks.register_engines(servers)
+    infos_by_cell[("inference-engine-0-0", 1)] = [
+        _worker_info("inference-engine-0-1-0", "node-a", [2, 3], generation=2)
+    ]
+    hooks.register_engines(servers)  # recovery: same worker, new generation
     assert len(handle.update_topology.calls) == 2
-    assert handle.update_topology.calls[-1][0][0].engines[1].addr == "http://b:2"
 
 
-def test_register_engines_skips_dead_chunks(monkeypatch):
+def test_register_engines_skips_dead_cells(monkeypatch):
+    """Cells that are not alive are left out of the snapshot and never queried."""
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
+    infos_by_cell = {("inference-engine-0-0", 0): [_worker_info("inference-engine-0-0-0", "n", [0])]}
+    monkeypatch.setattr(RayWorkerManager, "get_handle", staticmethod(lambda: FakeManagerHandle(infos_by_cell)))
+
     hooks.register_engines(
-        _servers(_cell(_info("http://a:1", "n", [0])), _cell(_info("http://b:1", "n", [1]), alive=False))
+        _servers([FakeCell("http://a:1", cell_index=0), FakeCell("http://b:1", cell_index=1, alive=False)])
     )
 
     [(args, _)] = handle.update_topology.calls
     assert [e.addr for e in args[0].engines] == ["http://a:1"]
 
 
+def test_register_engines_survives_missing_worker_manager(monkeypatch, caplog):
+    """Engines not yet owned by the worker manager degrade to a warning, not a crash."""
+    handle = FakeHandle()
+    monkeypatch.setattr(backend, "_handle", handle)
+
+    def _no_manager():
+        raise ValueError("worker manager actor not found")
+
+    monkeypatch.setattr(RayWorkerManager, "get_handle", staticmethod(_no_manager))
+    hooks._warner.reset_window_for_test()
+    with caplog.at_level(logging.WARNING):
+        hooks.register_engines(_servers([FakeCell("http://a:1")]))
+
+    assert handle.update_topology.calls == []
+    assert any("engine registration failed" in r.message for r in caplog.records)
+
+
 def test_register_engines_without_collector_is_noop():
-    hooks.register_engines(_servers(_cell(_info("http://a:1", "n", [0]))))
+    hooks.register_engines(_servers([FakeCell("http://a:1")]))
     assert hooks._engines_fingerprint is None
 
 

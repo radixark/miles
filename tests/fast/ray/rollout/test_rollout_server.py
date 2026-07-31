@@ -234,7 +234,7 @@ class TestRolloutServerCrossCellProperties:
         cells = make_dataclass_cells(num_cells=2, gpu_offset=0) + make_dataclass_cells(num_cells=2, gpu_offset=2)
         for index, cell in enumerate(cells):
             cell._mark_allocated_uninitialized([fake_actor_handle()])
-            cell._mark_addressing([AddrInfo(server_url=f"http://10.0.0.{index + 1}:30000")])
+            cell._mark_addressing(AddrInfo(server_url=f"http://10.0.0.{index + 1}:30000"))
         srv = RolloutServer(server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)})
         assert [client.server_url for client in srv.api_clients] == [
             f"http://10.0.0.{index + 1}:30000" for index in range(4)

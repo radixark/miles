@@ -43,6 +43,7 @@ class ServerCell:
     gpu_offset: int = 0
     sglang_overrides: dict = dataclasses.field(default_factory=dict)
     model_idx: int = 0
+    group_index: int = 0
     server_group_config: ServerGroupConfig | None = None
     cell_index: int = 0
     needs_offload: bool = False
@@ -78,14 +79,10 @@ class ServerCell:
         return [list(range(base, base + gpus_on_node)) for base in bases]
 
     @property
-    def addr_infos(self) -> list[AddrInfo]:
-        assert isinstance(self._state, StateAllocatedBase)
-        assert self._state.addr_infos is not None, f"{self._state=}"
-        return self._state.addr_infos
-
-    @property
     def addr_info(self) -> AddrInfo:
-        return self.addr_infos[0]
+        assert isinstance(self._state, StateAllocatedBase)
+        assert self._state.addr_info is not None, f"{self._state=}"
+        return self._state.addr_info
 
     @property
     def api_client(self) -> SGLangApiClient:
@@ -108,6 +105,7 @@ class ServerCell:
         spec = _compute_spec_inference_engine(
             self.args,
             model_idx=self.model_idx,
+            group_index=self.group_index,
             server_group_config=self.server_group_config,
         )
 
@@ -147,17 +145,16 @@ class ServerCell:
             if self.worker_type == "prefill":
                 addr_and_ports[rank]["disaggregation_bootstrap_port"] = alloc()
 
+        global_rank = global_ranks[0]
         self._mark_addressing(
-            [
-                AddrInfo(
-                    server_url=build_server_url(
-                        host=addr_and_ports[global_rank]["host"], port=addr_and_ports[global_rank]["port"]
-                    ),
-                    bootstrap_port=addr_and_ports[global_rank].get("disaggregation_bootstrap_port"),
-                )
-                for global_rank in global_ranks
-            ]
+            AddrInfo(
+                server_url=build_server_url(
+                    host=addr_and_ports[global_rank]["host"], port=addr_and_ports[global_rank]["port"]
+                ),
+                bootstrap_port=addr_and_ports[global_rank].get("disaggregation_bootstrap_port"),
+            )
         )
+        del global_rank
 
         if env_report := self.args.env_report:
             await asyncio.gather(
@@ -237,18 +234,18 @@ class ServerCell:
             "mark_allocated_uninitialized", StateStopped, StateAllocatedUninitialized(actor_handles=actor_handles)
         )
 
-    def _mark_addressing(self, addr_infos: list[AddrInfo]) -> None:
+    def _mark_addressing(self, addr_info: AddrInfo) -> None:
         self._change_state(
             "mark_addressing",
             StateAllocatedUninitialized,
-            StateAllocatedUninitialized(actor_handles=self.actor_handles, addr_infos=addr_infos),
+            StateAllocatedUninitialized(actor_handles=self.actor_handles, addr_info=addr_info),
         )
 
     def _mark_alive(self) -> None:
         self._change_state(
             "mark_alive",
             StateAllocatedUninitialized,
-            StateAllocatedAlive(actor_handles=self.actor_handles, addr_infos=self.addr_infos),
+            StateAllocatedAlive(actor_handles=self.actor_handles, addr_info=self.addr_info),
         )
 
     def _mark_stopped(self) -> None:

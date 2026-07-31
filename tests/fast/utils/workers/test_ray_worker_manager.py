@@ -791,3 +791,41 @@ class TestStopDetails:
 
         assert fake_ray_cluster.events.count(EVENT_KILL) == 3
         assert all(handle.killed for handle in fake_ray_cluster.handles)
+
+
+class TestGetWorkerInfos:
+    async def test_describes_every_worker_of_only_the_requested_cell(self, fake_ray_cluster: FakeRayCluster):
+        """A consumer asking about one cell gets that cell's workers, in rank order, fully described."""
+        spec = _make_spec(
+            "engine",
+            num_cells=2,
+            num_workers_per_cell=2,
+            num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=2,
+            pg_name="rollout",
+        )
+        manager = await _launch([spec], _make_pgs(num_slots=8))
+
+        infos = manager.get_worker_infos("engine", 1)
+
+        assert [info.name for info in infos] == ["engine-1-0", "engine-1-1"]
+        assert [info.generation for info in infos] == [1, 1]
+        assert [info.gpu_ids for info in infos] == [[4, 5], [6, 7]]
+        assert [info.self_addrs for info in infos] == manager.get_addrs()["engine"][2:]
+        assert [info.actor_handle for info in infos] == fake_ray_cluster.handles[2:]
+
+
+class TestGetWorkerInfosErrors:
+    async def test_an_unknown_pool_is_reported_instead_of_guessed(self, fake_ray_cluster: FakeRayCluster):
+        """Asking about a spec the manager never launched must fail loudly."""
+        manager = await _launch([_make_spec("engine")])
+
+        with pytest.raises(KeyError):
+            manager.get_worker_infos("router", 0)
+
+    async def test_a_cell_index_beyond_the_group_is_reported(self, fake_ray_cluster: FakeRayCluster):
+        """Asking about a cell that does not exist must fail rather than return another cell."""
+        manager = await _launch([_make_spec("engine", num_cells=2)])
+
+        with pytest.raises(IndexError):
+            manager.get_worker_infos("engine", 2)
