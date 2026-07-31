@@ -33,7 +33,7 @@ forward precision. ✅ = supported; ✗ = not supported.
 | **BF16**           | ✅ baseline | ✗ | ✗ | ✗ |
 | **FP8 block-wise** | ✅ | ✅ Hopper + Blackwell | ✗ | ✗ |
 | **MXFP8**          | ✅ | ✗ | ✅ Blackwell | ✗ |
-| **NVFP4**          | ✅ with precision drift | ✗ | ✗ | ✅ experimental |
+| **NVFP4**          | ✗ | ✗ | ✗ | 🚧 coming soon |
 
 Two rules enforced in the reference script
 (`scripts/run_qwen3_30b_a3b.py`):
@@ -41,8 +41,6 @@ Two rules enforced in the reference script
 * `--rollout-mxfp8` and `--rollout-fp8` are mutually exclusive.
 * `--train-mxfp8` requires `--rollout-mxfp8` (no MXFP8-train + FP8-rollout
   combo).
-* `--train-nvfp4-qat` requires `--rollout-nvfp4` and is mutually exclusive
-  with native `--train-nvfp4`.
 
 ## Unified training recipe
 
@@ -181,35 +179,14 @@ NVFP4 is FP4 E2M1 with 1D block scaling (group size 16) and a two-level scale
 reference. Today only **MoE expert GEMMs** are quantized; dense layers stay in
 their original precision.
 
-The reference script exposes two experimental training modes:
-
-* `--train-nvfp4-qat` keeps BF16 master weights and GEMMs, but applies the same
-  TE 1×16 NVFP4 quantize/dequantize operation to routed-expert FC1/FC2 weights
-  on every forward. Gradients pass through with a straight-through estimator.
-* `--train-nvfp4` uses native TE NVFP4 GEMMs and is a separate recipe; do not
-  combine it with fake QAT.
-
-Run the fake-QAT path together with NVFP4 rollout:
-
-```bash
-python scripts/run_qwen3_30b_a3b.py \
-  --hardware B200 \
-  --rollout-nvfp4 \
-  --train-nvfp4-qat
-```
-
-The script sets `OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG=1` for Megatron. It also
-forwards the driver's `NVTE_*` and `FLASHINFER_*` variables, so conversion,
-training, and rollout can share the same 4over6 scope, E4M3 bound, error mode,
-and fast-math settings. The quantized checkpoint does not encode those choices;
-set both backends consistently and restore the same environment when resuming.
+The full unified NVFP4 recipe is in development.
 
 ## Hardware support
 
 | GPU | BF16 | FP8 block-wise | MXFP8 | NVFP4 |
 |---|---|---|---|---|
 | NVIDIA H100 / H200 | ✅ | ✅ | ✗ | ✗ |
-| NVIDIA B200 / B300 / GB200 / GB300 | ✅ | ✅ | ✅ | ✅ experimental |
+| NVIDIA B200 / B300 / GB200 / GB300 | ✅ | ✅ | ✅ | 🚧 in development |
 | NVIDIA A100 | ✅ | ✗ | ✗ | ✗ |
 | AMD MI300X / MI325 / MI350 / MI355X | ✅ | ✗ | ✗ | ✗ |
 
@@ -220,3 +197,4 @@ set both backends consistently and restore the same environment when resuming.
 * AMD hardware today.
 * Bring-up of a new model architecture, where clean BF16 numerics simplify
   debugging.
+
