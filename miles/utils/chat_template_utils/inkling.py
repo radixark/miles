@@ -63,7 +63,7 @@ def _text_content(content: Any) -> str:
                 raise TypeError(
                     f"Inkling text-only render: unsupported content part {p!r}; "
                     "image/audio parts require the Inkling multimodal processor "
-                    "(--inkling-mm-towers, no --apply-chat-template)."
+                    "(the inkling_mm_model_provider provider path, no --apply-chat-template)."
                 )
         return "".join(parts)
     raise TypeError(f"Inkling render: content must be str or list of parts, got {type(content).__name__}")

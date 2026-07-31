@@ -15,7 +15,6 @@ from megatron.core.tensor_parallel.mappings import (
     scatter_to_sequence_parallel_region,
 )
 
-from miles_plugins.models.inkling.options import inkling_opt
 
 try:
     from torch.nn.attention.flex_attention import create_block_mask, flex_attention
@@ -349,10 +348,6 @@ def sconv_fp32_triton(x: torch.Tensor, weight: torch.Tensor, seqlens=None) -> to
 # ---------------------- precision-aligned fp32 ops ----------------------
 
 
-def _sconv_packed() -> bool:
-    return inkling_opt("inkling_sconv_packed")
-
-
 def _maybe_compile(fn):
     return torch.compile(fn, dynamic=True)
 
@@ -447,13 +442,16 @@ def inkling_sconv_fp32(x: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     return _sconv_fwd(x, weight)
 
 
-def inkling_sconv_fp32_packed(x: torch.Tensor, weight: torch.Tensor, seqlens) -> torch.Tensor:
-    """Packed-sequence sconv: one full-length conv + exact boundary re-compute."""
-    if x.is_cuda and inkling_opt("inkling_sconv_impl") == "triton":
+def inkling_sconv_fp32_packed(
+    x: torch.Tensor, weight: torch.Tensor, seqlens, impl: str = "triton", packed: bool = False
+) -> torch.Tensor:
+    """Packed-sequence sconv. impl=triton is bit-identical to serving; packed runs the whole
+    batch as one full-length conv + exact boundary re-compute instead of per-segment convs."""
+    if x.is_cuda and impl == "triton":
         return sconv_fp32_triton(x, weight, seqlens)
     if seqlens is None or len(seqlens) <= 1:
         return inkling_sconv_fp32(x, weight)
-    if not _sconv_packed():
+    if not packed:
         return torch.cat([inkling_sconv_fp32(s, weight) for s in x.split(list(seqlens))], 0)
 
     k = weight.shape[-1]

@@ -123,33 +123,6 @@ def _is_muon_optimizer(optimizer: str | None) -> bool:
     return optimizer is not None and "muon" in optimizer.lower()
 
 
-def _wrap_provider_with_gs_freeze(provider_func, args):
-    """Optionally freeze Inkling router/dense ``global_scale`` params per --inkling-freeze-global-scale."""
-    mode = getattr(args, "inkling_freeze_global_scale", "all")
-    if mode == "none":
-        return provider_func
-
-    def wrapped(*a, **kw):
-        model = provider_func(*a, **kw)
-        n = 0
-        for name, p in model.named_parameters():
-            if name.rsplit(".", 1)[-1] != "global_scale":
-                continue
-            is_router = "router.global_scale" in name
-            if mode == "all" or (mode == "router" and is_router):
-                if p.requires_grad:
-                    p.requires_grad = False
-                    n += 1
-        if is_first_replica_megatron_main_rank():
-            logger.info(
-                f"inkling-freeze-global-scale={mode}: froze {n} global_scale params "
-                f"(requires_grad=False; excluded from optimizer + grad norm)"
-            )
-        return model
-
-    return wrapped
-
-
 def setup_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
@@ -187,7 +160,6 @@ def setup_model_and_optimizer(
             from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
 
             provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
-        provider_func = _wrap_provider_with_gs_freeze(provider_func, args)
         model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:

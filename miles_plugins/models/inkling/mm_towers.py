@@ -5,7 +5,6 @@ import json
 import torch
 import torch.nn as nn
 
-from miles_plugins.models.inkling.options import inkling_opt
 from miles_plugins.models.inkling.vision_encoder import HMLPPatchEncoder, InklingVisionConfig, RMSNorm
 
 
@@ -58,7 +57,9 @@ def _load_tower_tensors(hf_checkpoint: str) -> dict[str, torch.Tensor]:
     return out
 
 
-def build_mm_towers(hf_checkpoint: str, device, dtype) -> tuple[nn.Module | None, nn.Module | None]:
+def build_mm_towers(
+    hf_checkpoint: str, device, dtype, train: bool = False
+) -> tuple[nn.Module | None, nn.Module | None]:
     """Construct + HF-load both towers; None when the checkpoint has no config for a modality."""
     cfg = json.load(open(f"{hf_checkpoint}/config.json"))
     weights = _load_tower_tensors(hf_checkpoint)
@@ -76,14 +77,16 @@ def build_mm_towers(hf_checkpoint: str, device, dtype) -> tuple[nn.Module | None
     for tower in (visual, audio):
         if tower is not None:
             tower.to(device=device, dtype=dtype)
-            tower.requires_grad_(inkling_opt("inkling_train_mm_towers"))
-            if not inkling_opt("inkling_train_mm_towers"):
+            tower.requires_grad_(train)
+            if not train:
                 tower.eval()
     return visual, audio
 
 
-def wire_mm_towers(model, hf_checkpoint: str) -> None:
-    """Wrap an InklingGPTModel's forward for multimodal training (pre_process builds+merges; later stages pass through)."""
+def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
+    """Wrap an InklingGPTModel's forward for multimodal training (pre_process builds+merges;
+    later stages pass through). train=True trains the towers instead of freezing them
+    (weight-sync/ckpt for tower params is not wired yet)."""
     import megatron.core.parallel_state as ps
 
     _orig_forward = model.forward
@@ -106,7 +109,7 @@ def wire_mm_towers(model, hf_checkpoint: str) -> None:
         return
 
     device = torch.cuda.current_device()
-    visual, audio = build_mm_towers(hf_checkpoint, device=device, dtype=model.config.params_dtype)
+    visual, audio = build_mm_towers(hf_checkpoint, device=device, dtype=model.config.params_dtype, train=train)
     model.__dict__["_mm_towers"] = (visual, audio)
 
     def _scatter(decoder_input, embeds, positions):
@@ -148,7 +151,7 @@ def wire_mm_towers(model, hf_checkpoint: str) -> None:
                 f"{mm_audio_positions.numel()} audio position(s) vs " f"{mm_audio_dmel.shape[0]} dmel frame(s)"
             )
         decoder_input = model.embedding(input_ids=input_ids, position_ids=position_ids)
-        ctx = torch.enable_grad() if inkling_opt("inkling_train_mm_towers") else torch.no_grad()
+        ctx = torch.enable_grad() if train else torch.no_grad()
         with ctx:
             if mm_vision_patches is not None:
                 v_emb = model.__dict__["_mm_towers"][0](mm_vision_patches.to(device=decoder_input.device))

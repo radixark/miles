@@ -157,8 +157,6 @@ def _train(args: ScriptArgs):
         "--micro-batch-size 1 "
     )
 
-    inkling_args = "--inkling-attn-backend flex " "--inkling-freeze-global-scale all "
-
     sglang_args = (
         "--rollout-num-gpus-per-engine 16 "
         "--sglang-mem-fraction-static 0.80 "
@@ -208,7 +206,6 @@ def _train(args: ScriptArgs):
         f"{grpo_args} "
         f"{optimizer_args} "
         f"{perf_args} "
-        f"{inkling_args} "
         f"{sglang_args} "
         f"{misc_args} "
         f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "

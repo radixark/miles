@@ -30,7 +30,6 @@ from miles_plugins.models.inkling.ops import (
     inkling_swiglu_fp32,
     seqlens_from_packed,
 )
-from miles_plugins.models.inkling.options import inkling_opt
 
 _cp_world = cp_world
 _cp_all_gather = cp_all_gather
@@ -39,13 +38,15 @@ _seqlens_from_packed = seqlens_from_packed
 
 
 class _Sconv(nn.Module):
-    def __init__(self, channels, kernel, dtype):
+    def __init__(self, channels, kernel, dtype, impl="triton", packed=False):
         super().__init__()
         self.weight = nn.Parameter(torch.zeros(channels, 1, kernel, dtype=dtype))
         self.k = kernel
+        self.impl = impl
+        self.packed = packed
 
     def forward(self, x, seqlens=None):
-        return inkling_sconv_fp32_packed(x, self.weight, seqlens)
+        return inkling_sconv_fp32_packed(x, self.weight, seqlens, impl=self.impl, packed=self.packed)
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
         from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
@@ -63,7 +64,7 @@ class InklingSelfAttention(SelfAttention):
         self.hd = t.swa_head_dim if self.is_local else t.head_dim
         self.d_rel = t.d_rel
         self.rel_extent = t.sliding_window_size if self.is_local else t.rel_extent
-        self.attn_backend = inkling_opt("inkling_attn_backend")
+        self.attn_backend = t.attn_backend
         self._bm_cache = {}
         tp = ps.get_tensor_model_parallel_world_size()
         self.nh_l = self.nh // tp
@@ -110,13 +111,14 @@ class InklingSelfAttention(SelfAttention):
         if t.use_sconv:
             dt = config.params_dtype
             sk = t.sconv_kernel_size
-            self.k_sconv = _Sconv(self.nkv_l * self.hd, sk, dt)
-            self.v_sconv = _Sconv(self.nkv_l * self.hd, sk, dt)
+            sconv_kw = {"impl": t.sconv_impl, "packed": t.sconv_packed}
+            self.k_sconv = _Sconv(self.nkv_l * self.hd, sk, dt, **sconv_kw)
+            self.v_sconv = _Sconv(self.nkv_l * self.hd, sk, dt, **sconv_kw)
             for _w in (self.k_sconv.weight, self.v_sconv.weight):
                 _w.tensor_model_parallel = True
                 _w.partition_dim = 0
                 _w.partition_stride = 1
-            self.attn_sconv = _Sconv(config.hidden_size, sk, dt)
+            self.attn_sconv = _Sconv(config.hidden_size, sk, dt, **sconv_kw)
         else:
             self.k_sconv = self.v_sconv = self.attn_sconv = None
 
@@ -488,7 +490,15 @@ class InklingMoELayer(MoELayer):
         super().__init__(*args, **kw)
         t = self.config.inkling
         self.mlp_sconv = (
-            _Sconv(self.config.hidden_size, t.sconv_kernel_size, self.config.params_dtype) if t.use_sconv else None
+            _Sconv(
+                self.config.hidden_size,
+                t.sconv_kernel_size,
+                self.config.params_dtype,
+                impl=t.sconv_impl,
+                packed=t.sconv_packed,
+            )
+            if t.use_sconv
+            else None
         )
 
     def shared_experts_compute(self, hidden_states):
@@ -513,7 +523,15 @@ class InklingDenseMLP(MLP):
         super().__init__(*args, **kw)
         t = self.config.inkling
         self.mlp_sconv = (
-            _Sconv(self.config.hidden_size, t.sconv_kernel_size, self.config.params_dtype) if t.use_sconv else None
+            _Sconv(
+                self.config.hidden_size,
+                t.sconv_kernel_size,
+                self.config.params_dtype,
+                impl=t.sconv_impl,
+                packed=t.sconv_packed,
+            )
+            if t.use_sconv
+            else None
         )
         self.global_scale = (
             nn.Parameter(torch.ones(1, dtype=self.config.params_dtype))

@@ -292,9 +292,11 @@ def _train(args: ScriptArgs):
         "--sglang-disable-custom-all-reduce "
     )
 
-    inkling_args = "--inkling-attn-backend flex " "--inkling-freeze-global-scale all "
+    inkling_args = ""
     if args.is_mm:
-        inkling_args += "--inkling-mm-towers "
+        # The mm provider wires the frozen HF vision/audio towers; it overrides the
+        # text provider from the model sh (MODEL_ARGS precede train_args; last one wins).
+        inkling_args = "--custom-model-provider-path miles_plugins.models.inkling.model.inkling_mm_model_provider "
 
     misc_args = (
         "--transformer-impl transformer_engine "

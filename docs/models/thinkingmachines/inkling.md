@@ -122,7 +122,7 @@ GRPO with truncated importance sampling. The launcher defaults: global batch siz
 
 ### 5.3 Training attention backends
 
-`--inkling-attn-backend` selects the training-side attention implementation:
+The `MILES_INKLING_ATTN_BACKEND` environment variable selects the training-side attention implementation:
 
 | Backend | Role | 8K packed, rel-extent 1024, GB300 |
 |---|---|---|

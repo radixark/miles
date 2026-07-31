@@ -3,6 +3,9 @@ GPTModel subclass + provider that miles' custom-model-provider path loads."""
 
 from __future__ import annotations
 
+import logging
+import os
+
 import torch
 import transformer_engine.pytorch as te
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_layer_with_transformer_engine_spec
@@ -18,7 +21,8 @@ from miles_plugins.models.inkling.layers import (
     InklingSelfAttention,
     InklingSharedExperts,
 )
-from miles_plugins.models.inkling.options import inkling_opt
+
+logger = logging.getLogger(__name__)
 
 
 class InklingExtra:
@@ -50,6 +54,13 @@ class InklingExtra:
         self.logits_mup_width_multiplier = t.get("logits_mup_width_multiplier", None)
         self.route_norm = t.get("route_norm", None)
         self.use_global_scale = t.get("use_global_scale", False)
+        # Debug/experiment knobs, resolved once here so every consumer reads config.inkling.
+        # Defaults are the production-validated recipe; env vars override for kernel-parity
+        # debugging on a single node (multi-node launchers should stick to the defaults).
+        self.attn_backend = os.environ.get("MILES_INKLING_ATTN_BACKEND", "flex")  # flex | te | fa4
+        self.sconv_impl = os.environ.get("MILES_INKLING_SCONV_IMPL", "triton")  # triton | torch
+        self.sconv_packed = os.environ.get("MILES_INKLING_SCONV_PACKED", "0") == "1"
+        self.freeze_global_scale = os.environ.get("MILES_INKLING_FREEZE_GLOBAL_SCALE", "all")  # all | router | none
 
 
 def build_inkling_config(
@@ -223,9 +234,30 @@ class InklingGPTModel(GPTModel):
                 return _orig(x / _m, *a, **k)
 
             _ol.forward = _ol_forward
+        self._freeze_global_scale()
+
+    def _freeze_global_scale(self):
+        """Freeze per-layer global_scale params per config.inkling.freeze_global_scale
+        (all | router | none; router = the MoE gate scale only)."""
+        mode = getattr(self.config.inkling, "freeze_global_scale", "all")
+        if mode == "none":
+            return
+        n = 0
+        for name, p in self.named_parameters():
+            if name.rsplit(".", 1)[-1] != "global_scale":
+                continue
+            if mode == "all" or (mode == "router" and "router.global_scale" in name):
+                if p.requires_grad:
+                    p.requires_grad = False
+                    n += 1
+        if n:
+            logger.info(
+                f"inkling freeze_global_scale={mode}: froze {n} global_scale params "
+                f"(requires_grad=False; excluded from optimizer + grad norm)"
+            )
 
 
-def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None):
+def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None, *, mm_towers=False):
     import json
 
     from megatron.training import get_args
@@ -260,8 +292,17 @@ def inkling_model_provider(pre_process=True, post_process=True, vp_stage=None):
         share_embeddings_and_output_weights=False,
         vp_stage=vp_stage,
     )
-    if inkling_opt("inkling_mm_towers"):
+    if mm_towers:
         from miles_plugins.models.inkling.mm_towers import wire_mm_towers
 
         wire_mm_towers(model, args.hf_checkpoint)
     return model
+
+
+def inkling_mm_model_provider(pre_process=True, post_process=True, vp_stage=None):
+    """Multimodal provider: the text model plus the frozen HF vision/audio towers.
+
+    A separate entry point instead of a CLI switch -- multimodal launch scripts pass
+    this as --custom-model-provider-path.
+    """
+    return inkling_model_provider(pre_process, post_process, vp_stage, mm_towers=True)

@@ -1400,47 +1400,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             return parser
 
-        def add_inkling_arguments(parser):
-            """Inkling plugin knobs (formerly environment switches).
-
-            Defaults are the production-validated recipe; recipe scripts under
-            the launch scripts spell out every value explicitly.
-            """
-            parser.add_argument(
-                "--inkling-attn-backend",
-                choices=["flex", "te", "fa4"],
-                default="flex",
-                help="Training-side attention kernel for Inkling: flex (default; block-sparse FlexAttention, fastest fwd+bwd and lowest memory), te (TE-DPA reference), fa4 (serving-bit-identical fa4 fwd + TE-recompute bwd).",
-            )
-            parser.add_argument(
-                "--inkling-sconv-impl",
-                choices=["triton", "torch"],
-                default="triton",
-                help="Short-conv implementation on the training side (triton fwd is bit-identical to serving).",
-            )
-            parser.add_argument(
-                "--inkling-sconv-packed",
-                action="store_true",
-                help="Run packed sequences as one full-length sconv with exact boundary re-compute.",
-            )
-            parser.add_argument(
-                "--inkling-freeze-global-scale",
-                choices=["all", "router", "none"],
-                default="all",
-                help="Freeze per-layer global_scale params (router = MoE gate only).",
-            )
-            parser.add_argument(
-                "--inkling-mm-towers",
-                action="store_true",
-                help="Enable Inkling multimodal: HF-loaded frozen vision/audio towers + the Inkling train processor.",
-            )
-            parser.add_argument(
-                "--inkling-train-mm-towers",
-                action="store_true",
-                help="Train the multimodal towers instead of freezing them (weight-sync/ckpt not wired yet).",
-            )
-            return parser
-
         def add_lora_arguments(parser):
             """Add LoRA-related arguments for Megatron backend."""
             parser.add_argument(
@@ -2313,7 +2272,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_algo_arguments(parser)
         parser = add_on_policy_distillation_arguments(parser)
         parser = add_lora_arguments(parser)
-        parser = add_inkling_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_mlflow_arguments(parser)
         parser = add_tensorboard_arguments(parser)

@@ -10,4 +10,10 @@ def inkling_model_provider(*args, **kwargs):
     return provider(*args, **kwargs)
 
 
-__all__ = ["get_inkling_spec", "inkling_model_provider"]
+def inkling_mm_model_provider(*args, **kwargs):
+    from .model import inkling_mm_model_provider as provider
+
+    return provider(*args, **kwargs)
+
+
+__all__ = ["get_inkling_spec", "inkling_mm_model_provider", "inkling_model_provider"]
