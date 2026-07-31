@@ -12,6 +12,7 @@ import httpx
 
 from miles.ray.multi_lora.registry import AdapterRegistry, AdapterState
 from miles.utils.adapter_config import AdapterRunConfig
+from miles.utils.http_utils import router_worker_base_urls
 from miles.utils.multi_lora import RID_SEPARATOR, min_groups_per_dp_split
 
 logger = logging.getLogger(__name__)
@@ -169,7 +170,7 @@ class MultiLoRABackend:
             try:
                 resp = await self.client.get(f"{self.router_url}{endpoint}")
                 if resp.status_code == 200:
-                    return extract(resp.json())
+                    return router_worker_base_urls(extract(resp.json()))
             except Exception:
                 continue
         return []
