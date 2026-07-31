@@ -284,9 +284,12 @@ class DeepSeekV4Compressor(nn.Module):
             max_seqlen if pre_grouped else total_tokens,
             x.device,
         )
+        # Capacity padding carries -1; clamp keeps the gather in range and those rows are
+        # dropped by seq_to_rank_row anyway.
+        rope_positions = local_pos.clamp(min=0) * ratio if pre_grouped else local_pos * ratio
         apply_rotary_emb(
             kv[..., -self.rope_head_dim :],
-            freqs_cis.index_select(0, local_pos * ratio),
+            freqs_cis.index_select(0, rope_positions),
             thd=True,
         )
 
