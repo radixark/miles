@@ -36,6 +36,11 @@ from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_sparse_mla import spar
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
+    CompressorInputCompact,
+    compact_group_capacity,
+    compressed_cu_seqlens,
+    compressed_rank_layout,
+    exchange_cp_boundary_hidden,
     get_compress_topk_idxs_thd,
     get_indexer_cu_seqlens_thd,
     get_q_positions_thd,
@@ -246,9 +251,13 @@ class DeepSeekV4Attention(MegatronModule):
             self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size, x.device
         )
         freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group)
+        # CP splits the packed stream contiguously, so this rank's rows start here globally.
+        global_start = self.cp_rank * seqlen_local if cu_seqlens is not None else 0
         if cu_seqlens is not None:
             # Packed positions restart at every segment boundary.
-            freqs_cis = freqs_cis.index_select(0, get_q_positions_thd(cu_seqlens, seqlen_local))
+            freqs_cis = freqs_cis.index_select(
+                0, get_q_positions_thd(cu_seqlens, seqlen_local, global_start)
+            )
         win = self.window_size
         ratio = self.compress_ratio
         rd = self.rope_head_dim
@@ -280,21 +289,52 @@ class DeepSeekV4Attention(MegatronModule):
 
         kv_compress = None
         cu_seqlens_compressed = None
+        seq_to_rank_row = None
+        hidden_compact = None
+        comp_ids = None
         if self.compress_ratio:
             # Compress before building indices: THD compressed-group counts come from the compressor.
             x_sbd = einops.rearrange(x, "b s d -> s b d")
-            compressor_out = self.compressor(x_sbd, cu_seqlens)
+            if cu_seqlens is None or self.cp_size == 1:
+                compressor_out = self.compressor(x_sbd, cu_seqlens)
+            else:
+                # A group can straddle the CP split, so pull the rows the previous rank owns
+                # and compact the groups this rank produces into fixed-capacity slots.
+                boundary = exchange_cp_boundary_hidden(x_sbd, ratio=ratio, cp_group=self.cp_group)
+                c_cap = compact_group_capacity(seqlen_local, ratio)
+                hidden_compact, comp_ids = CompressorInputCompact.apply(
+                    x_sbd, boundary, cu_seqlens, global_start, ratio, c_cap
+                )
+                compressor_out = self.compressor(
+                    hidden_compact,
+                    cu_seqlens,
+                    compressed_group_ids=comp_ids,
+                    max_seqlen=packed_seq_params.max_seqlen_q,
+                )
+                seq_to_rank_row = compressed_rank_layout(
+                    cu_seqlens,
+                    compressed_cu_seqlens(cu_seqlens, ratio),
+                    l_local=seqlen_local,
+                    cp_size=self.cp_size,
+                    ratio=ratio,
+                    c_cap=c_cap,
+                )
             if cu_seqlens is None:
                 kv_compress_sbd = compressor_out
             else:
                 kv_compress_sbd, cu_seqlens_compressed = compressor_out
+                if cu_seqlens_compressed is None:
+                    # The pre-grouped path cannot derive it; it is a pure function of cu_seqlens.
+                    cu_seqlens_compressed = compressed_cu_seqlens(cu_seqlens, ratio)
             if kv_compress_sbd is not None:
                 kv_compress = einops.rearrange(kv_compress_sbd, "s b d -> b s d")
 
         if cu_seqlens is None:
             topk_idxs = get_window_topk_idxs_cp(q_positions, window_size=win, cp_size=self.cp_size, bsz=bsz)
         else:
-            topk_idxs = get_window_topk_idxs_thd(cu_seqlens, window_size=win, total_tokens=seqlen_local)
+            topk_idxs = get_window_topk_idxs_thd(
+                cu_seqlens, window_size=win, total_tokens=seqlen_local, global_start=global_start
+            )
 
         if self.compress_ratio:
             kv_compress_offset = seqlen_global
@@ -305,7 +345,14 @@ class DeepSeekV4Attention(MegatronModule):
                     x_sbd = scatter_to_sequence_parallel_region(x_sbd, group=self.tp_group)
                     qr_sbd = scatter_to_sequence_parallel_region(qr_sbd, group=self.tp_group)
                 if isinstance(self.indexer, V4Indexer):
-                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd, cu_seqlens=cu_seqlens)
+                    compress_topk_idxs = self.indexer(
+                        x_sbd,
+                        qr_sbd,
+                        cu_seqlens=cu_seqlens,
+                        hidden_compact=hidden_compact,
+                        compressed_group_ids=comp_ids,
+                        seq_to_rank_row=seq_to_rank_row,
+                    )
                 else:
                     assert cu_seqlens is None, "DSAIndexer is BSHD-only; THD needs V4_INDEXER_IMPL=tilelang."
                     indexer_mask = self._compute_indexer_mask(q_positions=q_positions, seqlen_global=seqlen_global)
@@ -316,7 +363,11 @@ class DeepSeekV4Attention(MegatronModule):
                 else:
                     # The range the indexer kernel scored within, so a pick from another segment dies here.
                     cu_ks, cu_ke = get_indexer_cu_seqlens_thd(
-                        cu_seqlens, cu_seqlens_compressed, ratio=ratio, total_tokens=seqlen_local
+                        cu_seqlens,
+                        cu_seqlens_compressed,
+                        ratio=ratio,
+                        total_tokens=seqlen_local,
+                        global_start=global_start,
                     )
                     valid = (compress_topk_idxs >= cu_ks.unsqueeze(1)) & (compress_topk_idxs < cu_ke.unsqueeze(1))
                 compress_topk_idxs = torch.where(valid, compress_topk_idxs + kv_compress_offset, -1)
@@ -329,6 +380,9 @@ class DeepSeekV4Attention(MegatronModule):
                     ratio=ratio,
                     total_tokens=seqlen_local,
                     max_n_compressed=packed_seq_params.max_seqlen_q // ratio,
+                    kv_offset=kv_compress_offset,
+                    global_start=global_start,
+                    seq_to_rank_row=seq_to_rank_row,
                 )
             topk_idxs = torch.cat([topk_idxs, compress_topk_idxs], dim=-1)
         topk_idxs = topk_idxs.int()

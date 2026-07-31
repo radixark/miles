@@ -8,7 +8,7 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_fre
 from miles_plugins.models.deepseek_v4.ops.kernel.precision_aligned_ops import linear_bf16_fp32
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
-from miles_plugins.models.deepseek_v4.ops.thd_utils import batch_of_row
+from miles_plugins.models.deepseek_v4.ops.thd_utils import batch_of_row, compressed_cu_seqlens
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 
 
@@ -192,7 +192,13 @@ class DeepSeekV4Compressor(nn.Module):
 
         return kv
 
-    def _forward_thd(self, x: torch.Tensor, cu_seqlens: torch.Tensor):
+    def _forward_thd(
+        self,
+        x: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        compressed_group_ids: torch.Tensor | None = None,
+        max_seqlen: int | None = None,
+    ):
         """Compress a THD-packed stream, grouping tokens within each segment.
 
         The trailing ``seqlen % compress_ratio`` tokens of a segment get no compressed
@@ -201,8 +207,13 @@ class DeepSeekV4Compressor(nn.Module):
         avoids the train/inference mismatch that padding to compress_ratio would introduce.
 
         Args:
-            x: [total, batch, dim] packed SBHD layout.
+            x: [total, batch, dim] packed SBHD layout, or [c_cap * ratio, batch, dim] already
+                grouped when compressed_group_ids is given.
             cu_seqlens: [n_seg + 1] token-space segment boundaries.
+            compressed_group_ids: [c_cap] per-segment group id of each pre-grouped row, from the
+                CP compressor-input compaction. Its second return value is then None.
+            max_seqlen: rotary table length, required when pre-grouped: the group ids address
+                positions past the compacted row count.
         Returns:
             (k, cu_seqlens_compressed) with k [total_comp, batch, head_dim], or
             (None, cu_seqlens_compressed) when no segment reaches compress_ratio.
@@ -215,28 +226,37 @@ class DeepSeekV4Compressor(nn.Module):
         ratio, overlap = self.compress_ratio, self.overlap
         dtype = x.dtype
 
-        seg_comp_lens = (cu_seqlens[1:] - cu_seqlens[:-1]) // ratio
-        cu_seqlens_compressed = torch.cat(
-            [
-                torch.zeros(1, dtype=cu_seqlens.dtype, device=cu_seqlens.device),
-                seg_comp_lens.cumsum(0).to(cu_seqlens.dtype),
-            ]
-        )
-        total_comp = int(cu_seqlens_compressed[-1])
-        if total_comp == 0:
-            return None, cu_seqlens_compressed
+        pre_grouped = compressed_group_ids is not None
+        if pre_grouped:
+            if max_seqlen is None:
+                raise ValueError(
+                    "Pre-grouped compressor input needs max_seqlen: its group ids address "
+                    "positions past the compacted row count."
+                )
+            cu_seqlens_compressed = None
+            local_pos = compressed_group_ids
+            total_comp = local_pos.size(0)
+        else:
+            cu_seqlens_compressed = compressed_cu_seqlens(cu_seqlens, ratio)
+            total_comp = int(cu_seqlens_compressed[-1])
+            if total_comp == 0:
+                return None, cu_seqlens_compressed
 
         kv = linear_bf16_fp32(x, self.wkv.weight)
         score = linear_bf16_fp32(x, self.wgate.weight)
 
-        batch_ids = batch_of_row(cu_seqlens_compressed, total_comp)
-        local_pos = torch.arange(total_comp, device=x.device) - cu_seqlens_compressed[batch_ids]
-        gather_idx = (cu_seqlens[batch_ids] + local_pos * ratio).unsqueeze(1) + torch.arange(
-            ratio, device=x.device
-        )
-
-        kv = kv[gather_idx]
-        score = score[gather_idx] + self.ape.view(1, ratio, 1, -1)
+        if pre_grouped:
+            # Compaction already laid rows out as [g * ratio, (g + 1) * ratio); no gather.
+            kv = kv.unflatten(0, (total_comp, ratio))
+            score = score.unflatten(0, (total_comp, ratio)) + self.ape.view(1, ratio, 1, -1)
+        else:
+            batch_ids = batch_of_row(cu_seqlens_compressed, total_comp)
+            local_pos = torch.arange(total_comp, device=x.device) - cu_seqlens_compressed[batch_ids]
+            gather_idx = (cu_seqlens[batch_ids] + local_pos * ratio).unsqueeze(1) + torch.arange(
+                ratio, device=x.device
+            )
+            kv = kv[gather_idx]
+            score = score[gather_idx] + self.ape.view(1, ratio, 1, -1)
 
         if overlap:
             is_first = local_pos == 0
@@ -261,7 +281,7 @@ class DeepSeekV4Compressor(nn.Module):
             self.rope_head_dim,
             self.config.dsv4_compress_rope_theta,
             False,
-            total_tokens,
+            max_seqlen if pre_grouped else total_tokens,
             x.device,
         )
         apply_rotary_emb(
