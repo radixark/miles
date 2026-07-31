@@ -413,7 +413,7 @@ def _train(args: ScriptArgs):
         "SGLANG_DSV4_FP4_EXPERTS": "0",
         "SGLANG_HACK_FLASHMLA_BACKEND": "triton",
         "SGLANG_OPT_USE_TILELANG_INDEXER": "true",
-        "SGLANG_OPT_USE_COMPRESSOR_V2": "false",
+        "SGLANG_OPT_USE_JIT_NORM": "false",  # JIT norm+RoPE increases logprobdiff on ROCm
         "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "AITER_BF16_FP8_MOE_BOUND": "0",
