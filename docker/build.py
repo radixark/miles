@@ -15,6 +15,8 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+import resolve_upstream
+
 CACHE_DIR = "/tmp/miles-docker-cache"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -154,6 +156,32 @@ def build_and_push(
         if "=" not in arg or not arg.split("=", 1)[0]:
             raise SystemExit(f"--build-arg expects KEY=VALUE, got {arg!r}")
         cmd += ["--build-arg", arg]
+
+    # Pinned inputs docker/Dockerfile refuses to build without (see its ARG block).
+    # CI passes the source SHAs it gated on; whatever the caller didn't pass — always
+    # the per-variant wheels fingerprints, everything on a local build — is resolved
+    # here, so one command still builds and every pin is printed.
+    if dockerfile == "docker/Dockerfile":
+        provided = set(config.get("build_args", {}))
+        provided |= {arg.split("=", 1)[0] for arg in build_args or []}
+        for arg_name, (repo, branch) in resolve_upstream.SOURCE_PINS.items():
+            if arg_name in provided:
+                continue
+            sha = resolve_upstream.git_branch_head(repo, branch)
+            print(f"resolved {arg_name}={sha} ({repo}@{branch})", flush=True)
+            cmd += ["--build-arg", f"{arg_name}={sha}"]
+        # Tag defaults mirror the Dockerfile's WHEELS_TAG_* ARGs; variants override via build_args.
+        wheels_fp_args = {
+            "linux/amd64": ("WHEELS_FP_X86", config.get("build_args", {}).get("WHEELS_TAG_X86", "cu130-x86_64")),
+            "linux/arm64": ("WHEELS_FP_ARM64", config.get("build_args", {}).get("WHEELS_TAG_ARM64", "cu130-aarch64")),
+        }
+        for platform in platforms or []:
+            arg_name, tag = wheels_fp_args[platform]
+            if arg_name in provided:
+                continue
+            fp = resolve_upstream.wheels_fingerprint(tag)
+            print(f"resolved {arg_name}={fp} (wheels release {tag})", flush=True)
+            cmd += ["--build-arg", f"{arg_name}={fp}"]
 
     for tag in tags:
         cmd += ["-t", tag]

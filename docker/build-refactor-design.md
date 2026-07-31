@@ -66,7 +66,7 @@ build node 上预建持久命名 buildx builder，层缓存与 `--mount=type=cac
 - 硬约束（无静默回退）：SHA build-arg 为空时 Dockerfile 必须显式失败，禁止回退到 branch HEAD——否则失效机制被静默绕过。
 - 弃"粗粒度 CACHE_BUST 参数"：clone 层之后永不命中，镜像仍不可复现。
 - 副产品：同一组 SHA → 同一镜像，可按历史 SHA 重建旧镜像；配合 image label 记录 SHA 组（参照 sglang `docker_build_metadata_args.py` 的 build-commit/build-url label 实践），回应 02 doc 的 retention 悬案。
-- 现状盘点：`SGLANG_COMMIT`、`MILES_COMMIT` args 已存在；`MEGATRON_*` 只有 branch 需加 SHA arg；mbridge、fast-hadamard、TMS、Emerging-Optimizers 等 git 安装已 SHA pin（天然缓存安全）；逐个核对残余 branch pin。
+- 现状盘点（C3 已落地）：`SGLANG_COMMIT`/`MEGATRON_COMMIT`/`MILES_COMMIT` 均为必填 build-arg，空值硬失败；`WHEELS_FP_X86/ARM64` 按构建架构必填并被下载层引用为缓存键；解析逻辑单一来源 `docker/resolve_upstream.py`（CI 的 resolve-upstream job 与 build.py 本地自动补齐共用，指纹算法与旧 bash 逐字兼容）；wheels 指纹不由 workflow 静态传入而由 build.py 按 variant 解析（避免手动 dispatch cu12 拿到 cu13 指纹的缓存键错配）；残余未 pin 的 FlashQLA 已钉到 `821fd9d3`；`SGLANG_BRANCH`/`MEGATRON_BRANCH` args 删除（sglang 层直接 fetch SHA——基础镜像 clone 是 shallow 且 sglang-miles 会 rebase，按 branch fetch 不保证 SHA 可达；Megatron 改全量 clone + checkout + submodule 同步）。
 
 ### 3.4 GPU 冒烟门：build 后、tag 晋升前
 

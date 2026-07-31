@@ -15,11 +15,14 @@ FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
 
-ARG SGLANG_BRANCH=sglang-miles
+# Source pins. All three are REQUIRED (no branch-HEAD fallback): with layer caching a
+# `git clone -b <branch>` instruction never changes text, so a moved branch would be
+# silently served from cache as last week's tree. docker/resolve_upstream.py resolves
+# current values; docker/build.py fills in any the caller didn't pass.
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
-ARG MEGATRON_BRANCH=miles-main
+ARG MEGATRON_COMMIT=""
 
 ARG ENABLE_CUDA_13=1
 
@@ -29,6 +32,12 @@ ARG WHEELS_REPO=yueming-yuan/miles-wheels
 ARG TARGETARCH
 ARG WHEELS_TAG_X86=cu130-x86_64
 ARG WHEELS_TAG_ARM64=cu130-aarch64
+# REQUIRED per built arch: fingerprint of the rolling release's asset list (from
+# docker/resolve_upstream.py). Rolling tags keep their name while assets get replaced,
+# so this — referenced in the download RUN below — is what busts the layer cache when
+# the release content actually changed.
+ARG WHEELS_FP_X86=""
+ARG WHEELS_FP_ARM64=""
 
 # ======================================== Setup =============================================
 
@@ -54,11 +63,14 @@ RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
 COPY wheel[s]/ /tmp/wheels/
 
 RUN case "${TARGETARCH}" in \
-      amd64) WHEELS_TAG="${WHEELS_TAG_X86}" ;; \
-      arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}" ;; \
+      amd64) WHEELS_TAG="${WHEELS_TAG_X86}"; WHEELS_FP="${WHEELS_FP_X86}" ;; \
+      arm64) WHEELS_TAG="${WHEELS_TAG_ARM64}"; WHEELS_FP="${WHEELS_FP_ARM64}" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac && \
-    echo "Fetching wheels release ${WHEELS_TAG}" && \
+    if [ -z "${WHEELS_FP}" ]; then \
+      echo "wheels fingerprint build-arg for ${TARGETARCH} is required (docker/resolve_upstream.py provides it)" >&2; exit 1; \
+    fi && \
+    echo "Fetching wheels release ${WHEELS_TAG} (assets fingerprint ${WHEELS_FP})" && \
     mkdir -p /tmp/wheels && \
     curl -sL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; \
@@ -86,7 +98,9 @@ RUN pip install flash-linear-attention==0.4.2
 RUN pip install tilelang==0.1.8 -f https://tile-ai.github.io/whl/nightly/cu128/
 RUN pip install --no-deps tile_kernels==1.0.0
 # FlashQLA backend for Qwen GDN linear-attention layers (requires SM90+, CUDA 12.8+, PyTorch 2.8+; built on tilelang above)
-RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git"
+# SHA-pinned like the other git installs: an unpinned HEAD install is invisible to the
+# layer cache, which would silently freeze whatever revision the layer last built.
+RUN pip install -v --no-build-isolation "git+https://github.com/QwenLM/FlashQLA.git@821fd9d37ede18fdc2a4e707fefe3770bfc32e58"
 # Prefer the prebuilt wheel; fall back to a source build while the current
 # arch's wheels release doesn't carry it yet (QEMU-emulated arm64 source
 # builds are the expensive path this avoids).
@@ -148,8 +162,13 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
 # apex
 RUN pip install /tmp/wheels/apex-*.whl
 
-RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_BRANCH} Megatron-LM && \
+# Clone without -b: miles-main may be rebased, and a full clone keeps the pinned SHA
+# reachable regardless; submodules sync after the checkout so they match the pin.
+RUN test -n "${MEGATRON_COMMIT}" || { echo "MEGATRON_COMMIT build-arg is required (docker/resolve_upstream.py provides it)" >&2; exit 1; } && \
+    git clone https://github.com/${MEGATRON_REPO}.git Megatron-LM && \
     cd Megatron-LM && \
+    git checkout ${MEGATRON_COMMIT} && \
+    git submodule update --init --recursive && \
     pip install -e .
 
 # Muon optimizer support: megatron/core/optimizer/muon.py requires this for Newton-Schulz
@@ -190,19 +209,18 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 
 # ====================================== Install sglang-miles ============================================
 
-# Install sglang from sglang-miles branch
+# Install sglang at the pinned sglang-miles commit. The SHA is fetched directly
+# (not via the branch name): the base image's clone is shallow and sglang-miles gets
+# rebased, so a branch fetch can't guarantee the pinned commit is reachable.
 # The CUDA 12 sglang images sed their dependency markers from cu13 to cu12 in
 # python/pyproject.toml and never commit it, so a plain checkout aborts on the dirty
 # file. Force it, then re-apply the same rewrite: the tree we just checked out carries
 # the cu13 markers, and sglang's editable install makes them visible to every later pip
 # resolve, which would drag cu13 packages onto a cu12 image.
-RUN cd /sgl-workspace/sglang && \
-    git fetch origin ${SGLANG_BRANCH} && \
-    if [ -n "${SGLANG_COMMIT}" ]; then \
-      git checkout -f ${SGLANG_COMMIT}; \
-    else \
-      git checkout -f FETCH_HEAD; \
-    fi && \
+RUN test -n "${SGLANG_COMMIT}" || { echo "SGLANG_COMMIT build-arg is required (docker/resolve_upstream.py provides it)" >&2; exit 1; } && \
+    cd /sgl-workspace/sglang && \
+    git fetch origin ${SGLANG_COMMIT} && \
+    git checkout -f ${SGLANG_COMMIT} && \
     if [ "${ENABLE_CUDA_13}" != "1" ]; then \
       sed -i 's/cuda-python>=13\.0/cuda-python>=12,<13/' python/pyproject.toml && \
       sed -i 's/flashinfer_python\[cu13\]/flashinfer_python[cu12]/' python/pyproject.toml && \
@@ -227,8 +245,9 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
 
 # ====================================== Install main package ============================================
 
-ARG MILES_COMMIT=main
-RUN git clone https://github.com/radixark/miles.git /root/miles && \
+ARG MILES_COMMIT=""
+RUN test -n "${MILES_COMMIT}" || { echo "MILES_COMMIT build-arg is required (docker/resolve_upstream.py provides it)" >&2; exit 1; } && \
+    git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
     pip install -e . --no-deps

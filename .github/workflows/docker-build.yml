@@ -67,6 +67,9 @@ jobs:
       wheels_fp_cu12_x86: ${{ steps.resolve.outputs.wheels_fp_cu12_x86 }}
       should_build: ${{ steps.resolve.outputs.should_build }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Restore last known upstream SHAs
         uses: actions/cache/restore@v4
         with:
@@ -82,46 +85,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          # sglang (sglang-miles branch) and Megatron-LM (miles-main branch)
-          SGLANG_SHA=$(curl -sfS -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/sgl-project/sglang/commits/sglang-miles")
-          MEGATRON_SHA=$(curl -sfS -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/radixark/Megatron-LM/commits/miles-main")
-
-          # The miles ref the image bakes: the pushed commit on push, else main HEAD.
-          # miles stays out of the rebuild gate (pushes already trigger their own build).
+          # docker/resolve_upstream.py is the single resolver (build.py reuses it for
+          # local builds); it hard-fails on any unresolvable value. On push the image
+          # bakes the pushed commit, not main HEAD. miles stays out of the rebuild
+          # gate (pushes already trigger their own build).
+          MILES_ARG=""
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-            MILES_SHA="${GITHUB_SHA}"
-          else
-            MILES_SHA=$(curl -sfS -H "Accept: application/vnd.github.sha" \
-              "https://api.github.com/repos/radixark/miles/commits/main")
+            MILES_ARG="--miles-sha ${GITHUB_SHA}"
           fi
+          python3 docker/resolve_upstream.py ${MILES_ARG} > resolved.txt
+          cat resolved.txt
+          cat resolved.txt >> "$GITHUB_OUTPUT"
 
-          # Fingerprint the miles-wheels releases the images install from (sgl-router +
-          # the other prebuilt wheels). cu13 installs cu130-x86_64 / cu130-aarch64;
-          # cu12-x86 installs cu129-x86_64 — both build automatically, so track all rolling
-          # release tags they bake. Rolling tags stay fixed while assets may be replaced,
-          # so fingerprint the asset list rather than a commit SHA.
-          wheels_fp() {
-            curl -sfS "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/$1" \
-              | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
-          }
-          WHEELS_CU13_X86_FP=$(wheels_fp cu130-x86_64)
-          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-aarch64)
-          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64)
-
-          # Empty means the resolver failed or a wheels release has no assets; fail here
-          # rather than hand the build an unpinned or unbuildable input.
-          for v in SGLANG_SHA MEGATRON_SHA MILES_SHA WHEELS_CU13_X86_FP WHEELS_CU13_ARM64_FP WHEELS_CU12_X86_FP; do
-            [ -n "${!v}" ] || { echo "resolver produced empty ${v}" >&2; exit 1; }
-          done
-
-          echo "sglang HEAD:   ${SGLANG_SHA}"
-          echo "megatron HEAD: ${MEGATRON_SHA}"
-          echo "miles ref:     ${MILES_SHA}"
-          echo "wheels FP cu13 x86:   ${WHEELS_CU13_X86_FP}"
-          echo "wheels FP cu13 arm64: ${WHEELS_CU13_ARM64_FP}"
-          echo "wheels FP cu12 x86:   ${WHEELS_CU12_X86_FP}"
+          val() { grep "^$1=" resolved.txt | cut -d= -f2; }
+          SGLANG_SHA=$(val sglang_sha)
+          MEGATRON_SHA=$(val megatron_sha)
+          WHEELS_CU13_X86_FP=$(val wheels_fp_cu13_x86)
+          WHEELS_CU13_ARM64_FP=$(val wheels_fp_cu13_arm64)
+          WHEELS_CU12_X86_FP=$(val wheels_fp_cu12_x86)
 
           # Gate: compare against the values stored at the last gated build
           SHOULD_BUILD=true
@@ -202,6 +183,9 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # The source SHAs come from resolve-upstream (the same values the rebuild gate
+      # saw); the per-variant wheels fingerprints are left to build.py, which resolves
+      # them for the release tags the variant actually installs.
       - name: Build and push
         run: |
           python3 docker/build.py \
@@ -209,6 +193,9 @@ jobs:
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
+            --build-arg SGLANG_COMMIT=${{ needs.resolve-upstream.outputs.sglang_sha }} \
+            --build-arg MEGATRON_COMMIT=${{ needs.resolve-upstream.outputs.megatron_sha }} \
+            --build-arg MILES_COMMIT=${{ needs.resolve-upstream.outputs.miles_sha }} \
             --push
 
       - name: Build and push cu12-x86 (automatic builds only)
@@ -216,7 +203,11 @@ jobs:
         # image; a manual workflow_dispatch builds only the single variant the user picked.
         if: ${{ !inputs.variant }}
         run: |
-          python3 docker/build.py --variant cu12-x86 --image-tag dev --push
+          python3 docker/build.py --variant cu12-x86 --image-tag dev \
+            --build-arg SGLANG_COMMIT=${{ needs.resolve-upstream.outputs.sglang_sha }} \
+            --build-arg MEGATRON_COMMIT=${{ needs.resolve-upstream.outputs.megatron_sha }} \
+            --build-arg MILES_COMMIT=${{ needs.resolve-upstream.outputs.miles_sha }} \
+            --push
 
       - name: Point latest to current dev
         # schedule only: latest is published registry state, so — like prune — a [DEBUG]
