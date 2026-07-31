@@ -12,6 +12,7 @@ import pytest
 
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
+from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.utils.types import Sample
 
 N_SAMPLES_PER_PROMPT = 2
@@ -73,6 +74,8 @@ def make_args(**overrides) -> Namespace:
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
+        dynamic_sampling_filter_path=None,
+        rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
     )
@@ -253,6 +256,41 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     assert all(isinstance(sample, Sample) for sample in data_source.recycled[0])
     assert len(submitted) > 1
     assert len(output.samples) == 1
+
+
+async def test_dynamic_filter_drops_group_without_recycling(monkeypatch):
+    rejected = make_group(1)
+    data_source = FakeDataSource(scripted=[rejected])
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
+
+    def reject_group_1(args, group, **kwargs):
+        keep = group[0].group_index != 1
+        return DynamicFilterOutput(keep=keep, reason=None if keep else "rejected")
+
+    fn._dynamic_filter = reject_group_1
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert len(output.samples) == 1
+    assert output.samples[0][0].group_index != 1
+    # Unlike a recycle, a filtered group is not returned to the data source for re-sampling.
+    assert data_source.recycled == []
+    assert output.metrics["rollout/dynamic_filter/drop_rejected"] == 1
+
+
+async def test_sample_filter_marks_samples_without_shrinking_the_batch(monkeypatch):
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2), FakeDataSource())
+
+    def mark_first_of_each_group(args, data):
+        for group in data:
+            group[0].remove_sample = True
+
+    fn._sample_filter = mark_first_of_each_group
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert len(output.samples) == 2
+    assert [sample.remove_sample for sample in output.samples[0]] == [True, False]
 
 
 async def test_weight_version_throttles_failed_queries(monkeypatch):

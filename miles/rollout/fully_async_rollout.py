@@ -22,8 +22,10 @@ from collections.abc import Iterator
 import httpx
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnInput, RolloutFnOutput, RolloutFnTrainOutput
+from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.utils.http_utils import get
+from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,8 @@ class FullyAsyncRolloutFn:
         self.args = input.args
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
+        self._dynamic_filter = load_function(input.args.dynamic_sampling_filter_path)
+        self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._weight_version = _CachedWeightVersion()
         self._worker: asyncio.Task | None = None
         self._output: asyncio.Queue[tuple[list[Sample], Group]] | None = None
@@ -178,6 +182,7 @@ class FullyAsyncRolloutFn:
         aborted_groups_recycled = 0
         stale_groups_recycled = 0
         staleness_values: list[int] = []
+        metric_gatherer = MetricGatherer()
         do_print = True
 
         while len(data) < target_data_size:
@@ -205,6 +210,12 @@ class FullyAsyncRolloutFn:
                         )
                         continue
 
+            filter_output = call_dynamic_filter(self._dynamic_filter, args, group)
+            if not filter_output.keep:
+                # Dropped, not recycled: no usable gradient signal.
+                metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+                continue
+
             if do_print:
                 sample = group[0][0] if isinstance(group[0], list) else group[0]
                 logger.info(
@@ -223,10 +234,14 @@ class FullyAsyncRolloutFn:
 
         data.sort(key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
 
+        if self._sample_filter is not None:
+            self._sample_filter(args, data)
+
         metrics = {
             "rollout/fully_async/queue_size": self._output.qsize(),
             "rollout/fully_async/aborted_groups_recycled": aborted_groups_recycled,
             "rollout/fully_async/stale_groups_recycled": stale_groups_recycled,
+            **metric_gatherer.collect(),
         }
         if staleness_values:
             metrics["rollout/fully_async/avg_staleness"] = sum(staleness_values) / len(staleness_values)
