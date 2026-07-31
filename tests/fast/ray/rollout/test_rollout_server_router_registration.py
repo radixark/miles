@@ -52,13 +52,7 @@ def _build_server(
         )
         cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(nodes_per_engine)])
         cell._mark_addressing(
-            [
-                AddrInfo(
-                    server_url=f"http://10.0.0.{cell_start + i + 1}:3000{cell_start + i}",
-                    bootstrap_port=bootstrap_port,
-                )
-                for i in range(nodes_per_engine)
-            ]
+            AddrInfo(server_url=f"http://10.0.0.{cell_start + 1}:3000{cell_start}", bootstrap_port=bootstrap_port)
         )
         cell._mark_alive()
         cells.append(cell)

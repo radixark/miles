@@ -324,7 +324,8 @@ def register_router(args) -> None:
 def register_engines(servers) -> None:
     """Called at the top of every InferenceController.prepare_rollout(): pushes an engine
     topology snapshot whenever the set of engine actors changed (startup,
-    fault-tolerance recovery). Steady state costs one local tuple compare."""
+    fault-tolerance recovery). Steady state costs one worker-manager round trip
+    and a local tuple compare."""
     global _engines_fingerprint
     from miles.dashboard import backend
 
@@ -333,12 +334,16 @@ def register_engines(servers) -> None:
         return
     try:
         cells = _alive_engine_cells(servers)
-        fingerprint = tuple(id(actor_handle) for cell in cells for actor_handle in cell.actor_handles)
+        worker_infos_per_cell = _collect_worker_infos(cells)
+        fingerprint = tuple(
+            (info.name, info.generation, info.self_addrs["primary"].host, info.self_addrs["primary"].port)
+            for worker_infos in worker_infos_per_cell
+            for info in worker_infos
+        )
         if fingerprint == _engines_fingerprint:
             return
-        chunks = [cell.actor_handles for cell in cells]
-        infos = _collect_topology_infos(cells)
-        handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=_group_engines(chunks, infos)))
+        engines = _compute_engine_infos(cells, worker_infos_per_cell)
+        handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=engines))
         _engines_fingerprint = fingerprint
     except Exception:
         _warner.warn("dashboard engine registration failed; topology may be stale")
@@ -374,47 +379,44 @@ def _alive_engine_cells(servers) -> list:
     return cells
 
 
-def _collect_topology_infos(cells) -> list[dict]:
-    """The driver already knows each engine's url, worker type and gpu layout;
-    only the node ip and the NVML uuids must be probed on the engine's node."""
-    probe_refs = [
-        ref
-        for cell in cells
-        for actor_handle, gpu_ids in zip(cell.actor_handles, cell.engine_gpu_ids, strict=True)
-        for ref in (actor_handle._get_node_ip.remote(), actor_handle._get_gpu_uuids.remote(gpu_ids))
-    ]
-    probed = iter(_ray_get(probe_refs))
+def _collect_worker_infos(cells) -> list[list]:
+    from miles.ray.specs.inference import compute_engine_pool
+    from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
-    infos = []
-    for cell in cells:
-        for addr_info, gpu_ids in zip(cell.addr_infos, cell.engine_gpu_ids, strict=True):
-            node_ip, gpu_uuids = next(probed), next(probed)
-            infos.append(
-                dict(
-                    url=addr_info.server_url,
-                    node_ip=node_ip,
-                    gpu_ids=gpu_ids,
-                    gpu_uuids=gpu_uuids,
-                    worker_type=cell.worker_type,
-                )
+    manager_handle = RayWorkerManager.get_handle()
+    return _ray_get(
+        [
+            manager_handle.get_worker_infos.remote(
+                pool=compute_engine_pool(model_idx=cell.model_idx, group_index=cell.group_index),
+                cell_index=cell.cell_index,
             )
-    return infos
+            for cell in cells
+        ]
+    )
 
 
-def _group_engines(chunks: list[list], infos: list[dict]) -> list[EngineInfo]:
+def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
+    uuid_refs = [
+        info.actor_handle._get_gpu_uuids.remote(info.gpu_ids)
+        for worker_infos in worker_infos_per_cell
+        for info in worker_infos
+    ]
+    probed_uuids = iter(_ray_get(uuid_refs))
+
     engines = []
-    index = 0
-    for engine_rank, chunk in enumerate(chunks):
-        chunk_infos = infos[index : index + len(chunk)]
-        index += len(chunk)
-        master = chunk_infos[0]
+    for engine_rank, (cell, worker_infos) in enumerate(zip(cells, worker_infos_per_cell, strict=True)):
+        worker_gpu_uuids = [next(probed_uuids) for _ in worker_infos]
         engines.append(
             EngineInfo(
-                addr=master["url"],
-                worker_type=master["worker_type"],
+                addr=cell.addr_info.server_url,
+                worker_type=cell.worker_type,
                 engine_rank=engine_rank,
-                gpus=[[info["node_ip"], gpu] for info in chunk_infos for gpu in info["gpu_ids"]],
-                gpu_uuids=[uuid for info in chunk_infos for uuid in info["gpu_uuids"]],
+                gpus=[
+                    [info.self_addrs["primary"].host.strip("[]"), gpu_id]
+                    for info in worker_infos
+                    for gpu_id in info.gpu_ids
+                ],
+                gpu_uuids=[uuid for uuids in worker_gpu_uuids for uuid in uuids],
             )
         )
     return engines
