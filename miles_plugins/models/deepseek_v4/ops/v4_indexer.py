@@ -84,6 +84,7 @@ class V4Indexer(MegatronModule):
         hidden_compact=None,
         compressed_group_ids=None,
         seq_to_rank_row=None,
+        max_seqlen=None,
     ):
         """Forward pass.
 
@@ -97,6 +98,7 @@ class V4Indexer(MegatronModule):
                 attention compressor because the indexer is only built on ratio=4 layers
             compressed_group_ids: group id of each pre-grouped row, paired with hidden_compact
             seq_to_rank_row: sequence-major to all-gather row map, set under CP
+            max_seqlen: rotary table length, required alongside hidden_compact
 
         Returns:
             topk_indices: [batch, seqlen, index_topk] int64
@@ -146,7 +148,7 @@ class V4Indexer(MegatronModule):
                 hidden_compact,
                 cu_seqlens,
                 compressed_group_ids=compressed_group_ids,
-                max_seqlen=packed_seq_params.max_seqlen_q if packed_seq_params else None,
+                max_seqlen=max_seqlen,
             )
         if cu_seqlens is None:
             k = compressor_out
