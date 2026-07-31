@@ -259,9 +259,7 @@ class DeepSeekV4Attention(MegatronModule):
         else:
             # Packed positions restart at every segment boundary and index the whole table, so
             # the rank's rows are selected here rather than by slicing it first.
-            freqs_cis = freqs_cis.index_select(
-                0, get_q_positions_thd(cu_seqlens, seqlen_local, global_start)
-            )
+            freqs_cis = freqs_cis.index_select(0, get_q_positions_thd(cu_seqlens, seqlen_local, global_start))
         win = self.window_size
         ratio = self.compress_ratio
         rd = self.rope_head_dim
@@ -377,9 +375,7 @@ class DeepSeekV4Attention(MegatronModule):
                     valid = (compress_topk_idxs >= cu_ks.unsqueeze(1)) & (compress_topk_idxs < cu_ke.unsqueeze(1))
                 if seq_to_rank_row is not None:
                     # The indexer scored sequence-major rows; the KV block is rank-major.
-                    compress_topk_idxs, valid = to_rank_major_rows(
-                        compress_topk_idxs, seq_to_rank_row, valid
-                    )
+                    compress_topk_idxs, valid = to_rank_major_rows(compress_topk_idxs, seq_to_rank_row, valid)
                 compress_topk_idxs = torch.where(valid, compress_topk_idxs + kv_compress_offset, -1)
             elif cu_seqlens is None:
                 compress_topk_idxs = get_compress_topk_idxs_cp(q_positions, ratio=ratio, cp_size=self.cp_size, bsz=bsz)

@@ -130,9 +130,7 @@ class V4Indexer(MegatronModule):
             # the rank's rows are selected here rather than by slicing it first.
             freqs_cis = freqs_cis.index_select(
                 0,
-                get_q_positions_thd(
-                    cu_seqlens, seqlen, cp_group.rank() * seqlen if cp_size > 1 and cp_group else 0
-                ),
+                get_q_positions_thd(cu_seqlens, seqlen, cp_group.rank() * seqlen if cp_size > 1 and cp_group else 0),
             )
         q = q.clone()
         q = einops.rearrange(q, "s b ... -> b s ...")
