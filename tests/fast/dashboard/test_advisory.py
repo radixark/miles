@@ -1,5 +1,8 @@
+import polars as pl
+
 from miles.dashboard.advisory import compute_advisories
-from miles.dashboard.store import EngineSample, Meta, MetricStore
+from miles.dashboard.dump_reader import RolloutIds
+from miles.dashboard.store import EngineSample, Meta, MetricStore, PhaseEvent
 
 
 def _store(tmp_path, *, args: dict, engine_samples: list[EngineSample]) -> MetricStore:
@@ -98,3 +101,145 @@ def test_window_narrows_to_requested_range(tmp_path):
     )
     assert compute_advisories(store, t0=0.0, t1=10.0) != []
     assert compute_advisories(store, t0=50.0, t1=150.0) == []
+
+
+# ------------------------- v2: health alarms + gating -------------------------
+
+
+def _phase(name, t0, t1, rank=0):
+    return PhaseEvent(name=name, t0=t0, t1=t1, node="n1", gpus=[0], rank=rank, role="train")
+
+
+def _closed_steps(n=3, duration=10.0, start=0.0):
+    return [_phase("train_wait", start + i * 100.0, start + i * 100.0 + duration) for i in range(n)]
+
+
+def test_stalled_open_phase_is_critical_and_suppresses_tuning(tmp_path):
+    # the open train_wait is 3900s old vs a 10s median: a stall — and the
+    # low-concurrency observation must NOT surface as tuning advice with it
+    store = _store(
+        tmp_path,
+        args={"sglang_max_running_requests": 100},
+        engine_samples=[
+            _engine("sglang_num_running_reqs", 5.0, ts=1.0),
+            _engine("sglang_num_running_reqs", 5.0, ts=4200.0),
+        ],
+    )
+    writer = MetricStore(tmp_path)
+    for event in [*_closed_steps(), _phase("train_wait", 300.0, PhaseEvent.OPEN_T1)]:
+        writer.append(event)
+    writer.flush()
+    store = MetricStore.load(tmp_path)
+
+    [advisory] = compute_advisories(store)
+    assert advisory.level == "critical"
+    assert "train_wait" in advisory.message
+    assert "stalled" in advisory.message
+
+
+def test_open_phase_with_closing_twin_is_not_a_stall(tmp_path):
+    writer = MetricStore(tmp_path)
+    open_marker = _phase("train_wait", 300.0, PhaseEvent.OPEN_T1)
+    for event in [*_closed_steps(), open_marker, _phase("train_wait", 300.0, 310.0)]:
+        writer.append(event)
+    writer.append(_engine("sglang_num_running_reqs", 80.0, ts=4200.0))
+    writer.write_meta(Meta(run_name="advisory-test", start_ts=0.0, args={}))
+    writer.flush()
+    assert compute_advisories(MetricStore.load(tmp_path)) == []
+
+
+def test_forever_open_phase_without_baseline_is_not_a_stall(tmp_path):
+    # fully-async rollout keeps one manager phase open for the whole run by
+    # design; with no closed instances there is no baseline and no claim
+    writer = MetricStore(tmp_path)
+    writer.append(_phase("rollout", 0.0, PhaseEvent.OPEN_T1))
+    writer.append(_engine("sglang_num_running_reqs", 80.0, ts=90000.0))
+    writer.write_meta(Meta(run_name="advisory-test", start_ts=0.0, args={}))
+    writer.flush()
+    assert compute_advisories(MetricStore.load(tmp_path)) == []
+
+
+def test_abort_storm_is_warning_and_suppresses_tuning(tmp_path):
+    store = _store(
+        tmp_path,
+        args={"sglang_max_running_requests": 100, "n_samples_per_prompt": 8},
+        engine_samples=[
+            _engine("sglang_num_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_requests_total", 100.0, ts=2.0),
+            _engine("sglang_num_aborted_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_aborted_requests_total", 40.0, ts=2.0),
+            _engine("sglang_num_running_reqs", 5.0, ts=1.0),
+        ],
+    )
+    [advisory] = compute_advisories(store)
+    assert advisory.level == "warning"
+    assert "40%" in advisory.message
+    assert "8-sample group" in advisory.message
+
+
+def test_kv_bound_concurrency_names_the_real_bottleneck(tmp_path):
+    # token usage pegged while concurrency sits far under the cap: the pool is
+    # the limit — the advice must be "raise mem-fraction", never "lower the cap"
+    store = _store(
+        tmp_path,
+        args={"sglang_max_running_requests": 256, "sglang_mem_fraction_static": 0.75},
+        engine_samples=[
+            _engine("sglang_token_usage", 0.96, ts=1.0),
+            _engine("sglang_num_running_reqs", 14.0, ts=1.0),
+        ],
+    )
+    [advisory] = compute_advisories(store)
+    assert advisory.level == "warning"
+    assert "KV-pool-bound" in advisory.message
+    assert "do NOT lower" in advisory.message
+
+
+class _StubReader:
+    def __init__(self, groups_df, summary_df):
+        self._groups = groups_df
+        self._summary = summary_df
+
+    def rollout_ids(self):
+        return RolloutIds(train=[3], eval=[])
+
+    def groups(self, rollout_id, *, evaluation=False):
+        return self._groups
+
+    def summary(self, rollout_id, *, evaluation=False):
+        return self._summary
+
+
+def _summary_df(truncated):
+    return pl.DataFrame({"truncated": truncated})
+
+
+def test_zero_std_groups_are_warning(tmp_path):
+    store = _store(tmp_path, args={}, engine_samples=[])
+    groups = pl.DataFrame({"reward_mean": [0.0, 0.0, 0.5], "zero_std": [True, True, False]})
+    [advisory] = compute_advisories(store, _StubReader(groups, _summary_df([False] * 8)))
+    assert advisory.level == "warning"
+    assert "zero reward std" in advisory.message
+
+
+def test_all_zero_rewards_note_systematic_failure(tmp_path):
+    store = _store(tmp_path, args={}, engine_samples=[])
+    groups = pl.DataFrame({"reward_mean": [0.0, 0.0], "zero_std": [True, True]})
+    [advisory] = compute_advisories(store, _StubReader(groups, _summary_df([False] * 8)))
+    assert "systematic failure" in advisory.message
+
+
+def test_null_rewards_are_missing_data_not_zero_std(tmp_path):
+    store = _store(tmp_path, args={}, engine_samples=[])
+    groups = pl.DataFrame(
+        {"reward_mean": [None, None], "zero_std": [False, False]},
+        schema={"reward_mean": pl.Float64, "zero_std": pl.Boolean},
+    )
+    assert compute_advisories(store, _StubReader(groups, _summary_df([False] * 8))) == []
+
+
+def test_truncation_warning_cites_per_turn_cap(tmp_path):
+    store = _store(tmp_path, args={"rollout_max_response_len": 8192}, engine_samples=[])
+    groups = pl.DataFrame({"reward_mean": [0.5], "zero_std": [False]})
+    [advisory] = compute_advisories(store, _StubReader(groups, _summary_df([True] * 3 + [False] * 5)))
+    assert advisory.level == "warning"
+    assert "--rollout-max-response-len" in advisory.message

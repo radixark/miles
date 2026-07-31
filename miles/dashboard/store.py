@@ -719,6 +719,11 @@ class MetricStore:
         lanes.sort(key=lambda lane: lane["first_ts"])
         return lanes
 
+    def phase_events(self, t0: float | None = None, t1: float | None = None) -> list[PhaseEvent]:
+        """Raw phase events, open markers included — advisory heuristics need
+        the unexpanded events rather than the lane-resolved view."""
+        return self._phase_events(t0, t1)
+
     def _phase_events(self, t0: float | None, t1: float | None) -> list[PhaseEvent]:
         # closed phases partition by END hour (lower bound exact, slack one
         # max phase duration FORWARD — design §17); OPEN markers partition by

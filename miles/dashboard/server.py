@@ -174,7 +174,7 @@ def make_app(
         tuning advisory ask) — computed lazily on request, not persisted."""
         with _translate_errors():
             _check_window(t0, t1)
-            return dict(advisories=[asdict(a) for a in compute_advisories(store, t0=t0, t1=t1)])
+            return dict(advisories=[asdict(a) for a in compute_advisories(store, reader, t0=t0, t1=t1)])
 
     @app.get("/api/timeline/heatmap")
     def timeline_heatmap(

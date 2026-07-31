@@ -690,8 +690,17 @@ export async function renderTimeline(view, meta, route) {
     }
     advisoryPanel.replaceChildren(
       el("div", { class: "panel" }, [
-        el("h3", {}, ["Config advisory"]),
-        ...advisories.map((a) => el("p", { class: a.level === "warning" ? "error" : "muted" }, [a.message])),
+        el("h3", {}, ["Run advisory"]),
+        ...advisories.map((a) =>
+          el(
+            "p",
+            {
+              class: a.level === "info" ? "muted" : "error",
+              ...(a.level === "critical" ? { style: "font-weight: 600" } : {}),
+            },
+            [a.message],
+          ),
+        ),
       ]),
     );
   };
