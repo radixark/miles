@@ -13,6 +13,7 @@ absolute, so the KV layout is unchanged.
 import math
 
 import torch
+import torch.distributed as dist
 from torch import Tensor
 
 
@@ -29,6 +30,16 @@ def batch_of_row(cu_seqlens: Tensor, total_rows: int, global_start: int = 0) -> 
     n_seg = cu_seqlens.size(0) - 1
     row_idx = torch.arange(total_rows, device=cu_seqlens.device, dtype=torch.int64) + global_start
     return torch.bucketize(row_idx, cu_seqlens[1:], right=True).clamp(max=max(n_seg - 1, 0))
+
+
+def compressed_cu_seqlens(cu_seqlens: Tensor, ratio: int) -> Tensor:
+    """Cumulative compressed lengths, flooring each segment's tail.
+
+    A pure function of ``cu_seqlens``, so the CP path can build it without the compressor,
+    which returns None once its input is pre-grouped.
+    """
+    lens = torch.div(cu_seqlens[1:] - cu_seqlens[:-1], ratio, rounding_mode="floor")
+    return torch.cat([torch.zeros_like(cu_seqlens[:1]), lens.cumsum(0).to(cu_seqlens.dtype)])
 
 
 def get_q_positions_thd(cu_seqlens: Tensor, total_tokens: int, global_start: int = 0) -> Tensor:
@@ -255,6 +266,89 @@ class CompressorInputCompact(torch.autograd.Function):
         grad_source.index_add_(0, gather_idx.clamp(min=0), grad_compact * keep)
         grad_boundary, grad_local = grad_source.split(ctx.row_split, dim=0)
         return grad_local, grad_boundary, None, None, None, None
+
+
+# --------------------------------------------------------------------------------------
+# Context-parallel row map and boundary exchange
+#
+# Adapted from https://github.com/NVIDIA/Megatron-LM/blob/95e4bafebaa799d166975ef82066a3c46648e004/megatron/core/transformer/experimental_attention_variant/csa_cp_utils.py
+# --------------------------------------------------------------------------------------
+
+
+class _LeftBoundaryExchange(torch.autograd.Function):
+    """Receive the left CP neighbour's last ``d_comp`` rows."""
+
+    @staticmethod
+    def forward(ctx, tensor: Tensor, d_comp: int, cp_group) -> Tensor:
+        cp_size, cp_rank = cp_group.size(), cp_group.rank()
+        if tensor.size(0) < d_comp:
+            raise RuntimeError(
+                f"DSv4 CP boundary exchange needs at least {d_comp} local rows, "
+                f"got {tensor.size(0)}"
+            )
+        ctx.input_shape, ctx.d_comp, ctx.cp_group = tensor.shape, d_comp, cp_group
+        boundary = tensor.new_zeros((d_comp,) + tuple(tensor.shape[1:]))
+        ops = []
+        if cp_rank > 0:
+            ops.append(
+                dist.P2POp(
+                    dist.irecv, boundary, dist.get_global_rank(cp_group, cp_rank - 1), cp_group
+                )
+            )
+        if cp_rank + 1 < cp_size:
+            ops.append(
+                dist.P2POp(
+                    dist.isend,
+                    tensor[-d_comp:].contiguous(),
+                    dist.get_global_rank(cp_group, cp_rank + 1),
+                    cp_group,
+                )
+            )
+        for req in dist.batch_isend_irecv(ops):
+            req.wait()
+        return boundary
+
+    @staticmethod
+    def backward(ctx, grad_boundary: Tensor):
+        cp_group = ctx.cp_group
+        cp_size, cp_rank = cp_group.size(), cp_group.rank()
+        grad_input = grad_boundary.new_zeros(ctx.input_shape)
+        # The rows were read from the left neighbour, so their gradient goes back the same way.
+        received = grad_boundary.new_zeros((ctx.d_comp,) + tuple(ctx.input_shape[1:]))
+        ops = []
+        if cp_rank + 1 < cp_size:
+            ops.append(
+                dist.P2POp(
+                    dist.irecv, received, dist.get_global_rank(cp_group, cp_rank + 1), cp_group
+                )
+            )
+        if cp_rank > 0:
+            ops.append(
+                dist.P2POp(
+                    dist.isend,
+                    grad_boundary.contiguous(),
+                    dist.get_global_rank(cp_group, cp_rank - 1),
+                    cp_group,
+                )
+            )
+        for req in dist.batch_isend_irecv(ops):
+            req.wait()
+        if cp_rank + 1 < cp_size:
+            grad_input[-ctx.d_comp :] = received
+        return grad_input, None, None
+
+
+def exchange_cp_boundary_hidden(hidden: Tensor, *, ratio: int, cp_group) -> Tensor:
+    """Boundary hidden rows the compressor needs from the left CP neighbour.
+
+    Only the compressor needs them: the attention window reads rows the KV all-gather has
+    already delivered, so the width is ``d_comp`` rather than mcore's
+    ``max(csa_window_size, d_comp)``.
+    """
+    d_comp = compressor_boundary_width(ratio)
+    flat = hidden.reshape(hidden.size(0), -1)
+    boundary = _LeftBoundaryExchange.apply(flat, d_comp, cp_group)
+    return boundary.reshape((d_comp,) + tuple(hidden.shape[1:]))
 
 
 def compressed_rank_layout(
