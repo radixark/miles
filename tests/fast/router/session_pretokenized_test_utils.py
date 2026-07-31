@@ -50,6 +50,7 @@ def make_router_env(
         chat_template_path=chat_template_path,
         tito_model=tito_model,
         use_rollout_routing_replay=False,
+        sglang_speculative_algorithm=None,
     )
     session_server = SessionServer(args, backend_url=backend.url)
 
