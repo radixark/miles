@@ -98,3 +98,40 @@ def test_window_narrows_to_requested_range(tmp_path):
     )
     assert compute_advisories(store, t0=0.0, t1=10.0) != []
     assert compute_advisories(store, t0=50.0, t1=150.0) == []
+
+
+def _dp_engine(rank: str, value: float, ts: float = 1.0) -> EngineSample:
+    return EngineSample(
+        ts=ts, addr="http://n:1", metric="sglang_num_running_reqs", labels={"dp_rank": rank}, value=value
+    )
+
+
+def test_dp_imbalance_flagged(tmp_path):
+    store = _store(
+        tmp_path,
+        args={},
+        engine_samples=[_dp_engine("0", 11.0), _dp_engine("1", 0.5), _dp_engine("2", 0.0), _dp_engine("3", 1.0)],
+    )
+    [advisory] = compute_advisories(store)
+    assert advisory.level == "warning"
+    assert "dp ranks imbalanced" in advisory.message
+    assert "dp-aware" in advisory.message
+
+
+def test_dp_balanced_not_flagged(tmp_path):
+    store = _store(
+        tmp_path,
+        args={},
+        engine_samples=[_dp_engine("0", 5.0), _dp_engine("1", 4.0), _dp_engine("2", 6.0), _dp_engine("3", 5.0)],
+    )
+    assert compute_advisories(store) == []
+
+
+def test_dp_idle_engine_not_flagged(tmp_path):
+    # everything near zero (drained engine): no load, no imbalance signal
+    store = _store(
+        tmp_path,
+        args={},
+        engine_samples=[_dp_engine("0", 0.5), _dp_engine("1", 0.0)],
+    )
+    assert compute_advisories(store) == []

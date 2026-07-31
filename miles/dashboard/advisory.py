@@ -17,6 +17,10 @@ from miles.dashboard.store import MetricStore, Stream
 LOW_CONCURRENCY_RATIO = 0.3
 LOW_CACHE_HIT_RATE = 0.10
 HIGH_TOKEN_USAGE = 0.95
+# dp-attention imbalance: flag when the busiest dp rank carries real load but
+# the idlest sits under this fraction of it (requests piling on few ranks)
+DP_IMBALANCE_MIN_RUNNING = 1.0
+DP_IMBALANCE_RATIO = 0.25
 
 
 @dataclass
@@ -32,6 +36,18 @@ def _aggregate(series: list[dict], *, agg: str) -> float | None:
     if not values:
         return None
     return max(values) if agg == "max" else sum(values) / len(values)
+
+
+def _dp_rank_means(series: list[dict]) -> dict[str, dict[str, float]]:
+    """Per-engine ``{dp_rank: mean(value)}`` from a ``per_dp_rank`` result;
+    series without a dp_rank label (non-dp engines) are skipped."""
+    out: dict[str, dict[str, float]] = {}
+    for s in series:
+        rank = s["labels"].get("dp_rank")
+        if rank is None or not s["value"]:
+            continue
+        out.setdefault(s["addr"], {})[rank] = sum(s["value"]) / len(s["value"])
+    return out
 
 
 def compute_advisories(store: MetricStore, *, t0: float | None = None, t1: float | None = None) -> list[Advisory]:
@@ -84,4 +100,23 @@ def compute_advisories(store: MetricStore, *, t0: float | None = None, t1: float
                 ),
             )
         )
+
+    per_rank = store.engine_series("sglang_num_running_reqs", t0=t0, t1=t1, per_dp_rank=True)
+    for addr, means in sorted(_dp_rank_means(per_rank).items()):
+        if len(means) < 2:
+            continue
+        busiest, idlest = max(means.values()), min(means.values())
+        if busiest >= DP_IMBALANCE_MIN_RUNNING and idlest < DP_IMBALANCE_RATIO * busiest:
+            detail = ", ".join(
+                f"dp{rank}={mean:.1f}" for rank, mean in sorted(means.items(), key=lambda kv: int(kv[0]))
+            )
+            out.append(
+                Advisory(
+                    level="warning",
+                    message=(
+                        f"{addr}: dp ranks imbalanced (mean running reqs {detail}) — requests pile onto "
+                        "few ranks while others idle; check the router's dp-aware routing (--router-dp-aware)"
+                    ),
+                )
+            )
     return out

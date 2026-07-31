@@ -990,6 +990,12 @@ class MetricStore:
     }
     _CUMULATIVE_SUFFIXES: ClassVar[tuple[str, ...]] = ("_total", "_sum", "_count")
 
+    # engine-level aggregation across dp ranks: intensive metrics average,
+    # everything else (queue depths, throughputs, cumulative counters) sums
+    ENGINE_MEAN_AGGREGATED_METRICS: ClassVar[frozenset[str]] = frozenset(
+        {"sglang_token_usage", "sglang_cache_hit_rate", "sglang_kv_transfer_latency_ms"}
+    )
+
     def engine_metric_names(self) -> list[str]:
         """Distinct scraped engine metrics — the L0 sglang category catalog."""
         raw = set(self._readers[Stream.ENGINE_SERIES].window(None, None).get_column("metric").unique())
@@ -1003,35 +1009,72 @@ class MetricStore:
         return sorted(names)
 
     def engine_series(
-        self, metric: str, *, t0: float | None = None, t1: float | None = None, max_points: int = 2000
+        self,
+        metric: str,
+        *,
+        t0: float | None = None,
+        t1: float | None = None,
+        max_points: int = 2000,
+        per_dp_rank: bool = False,
     ) -> list[dict]:
         """One series per (engine addr, label set) for the given metric.
+
+        By default per-dp-rank samples (dp-attention engines export one per
+        rank) are folded into one engine-level series — summed, or averaged
+        for ``ENGINE_MEAN_AGGREGATED_METRICS``; ``per_dp_rank=True`` keeps
+        them apart, with ``dp_rank`` in each series' labels.
 
         Derived names (``ENGINE_RATE_METRICS`` / ``ENGINE_MEAN_METRICS``) are
         computed from adjacent raw cumulative samples; a counter reset or an
         interval without completions leaves a gap, never a fabricated value."""
         if metric in self.ENGINE_RATE_METRICS:
-            parts = self._engine_parts(self.ENGINE_RATE_METRICS[metric], t0, t1)
+            parts = self._engine_parts(self.ENGINE_RATE_METRICS[metric], t0, t1, per_dp_rank=per_dp_rank)
             return self._derived_series(parts, None, max_points)
         if metric in self.ENGINE_MEAN_METRICS:
             base = self.ENGINE_MEAN_METRICS[metric]
             return self._derived_series(
-                self._engine_parts(base + "_sum", t0, t1), self._engine_parts(base + "_count", t0, t1), max_points
+                self._engine_parts(base + "_sum", t0, t1, per_dp_rank=per_dp_rank),
+                self._engine_parts(base + "_count", t0, t1, per_dp_rank=per_dp_rank),
+                max_points,
             )
         out = []
-        for (addr, labels_json), part in self._engine_parts(metric, t0, t1).items():
+        for (addr, labels_json), part in self._engine_parts(metric, t0, t1, per_dp_rank=per_dp_rank).items():
             ts, values = stride_downsample(part["ts"].to_numpy(), part["value"].to_numpy(), max_points)
             out.append(dict(addr=addr, labels=_engine_labels(labels_json), ts=ts.tolist(), value=values.tolist()))
         return out
 
-    def _engine_parts(self, metric: str, t0: float | None, t1: float | None) -> dict[tuple[str, str], pl.DataFrame]:
+    def _engine_parts(
+        self, metric: str, t0: float | None, t1: float | None, *, per_dp_rank: bool = False
+    ) -> dict[tuple[str, str], pl.DataFrame]:
         frame = self._window(self._readers[Stream.ENGINE_SERIES].window(t0, t1), t0, t1).filter(
             pl.col("metric") == metric
         )
+        if not per_dp_rank:
+            frame = self._fold_dp_ranks(frame, metric)
         return {
             key: part.sort("ts")
             for key, part in sorted(frame.partition_by(["addr", "labels_json"], as_dict=True).items())
         }
+
+    def _fold_dp_ranks(self, frame: pl.DataFrame, metric: str) -> pl.DataFrame:
+        """Engine-level view: collapse per-dp-rank samples — including
+        same-tick duplicates from dumps written before ``dp_rank`` was kept —
+        into one value per (addr, ts). Ranks share a scrape ts (one fetch per
+        engine yields every rank's sample), so grouping on ts is exact."""
+        if frame.is_empty():
+            return frame
+        # also drop nulls: chunk-level struct unification pads absent labels
+        # with null, which would otherwise split one logical series
+        stripped = {
+            labels_json: json.dumps(
+                {k: v for k, v in json.loads(labels_json).items() if k != "dp_rank" and v is not None},
+                sort_keys=True,
+            )
+            for labels_json in frame["labels_json"].unique()
+        }
+        frame = frame.with_columns(pl.col("labels_json").replace_strict(stripped))
+        agg = pl.col("value").mean() if metric in self.ENGINE_MEAN_AGGREGATED_METRICS else pl.col("value").sum()
+        return frame.group_by(["ts", "addr", "metric", "labels_json"]).agg(agg.alias("value"))
 
     def _derived_series(self, num_parts, den_parts, max_points: int) -> list[dict]:
         """Per-interval derivative: rate when ``den_parts`` is None (dt as the
