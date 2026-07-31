@@ -129,7 +129,7 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 
 ### Steps (`build-and-push`)
 
-1. checkout → Buildx → install Python + typer → Docker Hub login.
+1. checkout → Buildx → Docker Hub login. No host package installs: `build.py` is stdlib-only, so build nodes need just docker and stock `python3`.
 2. **Build + push** via `build.py` — automatic runs build **both** `cu13` and `cu12-x86`; a manual dispatch builds only the one variant you picked.
 3. **schedule only** — point `latest`→`dev` and `latest-cu12`→`dev-cu12`.
 4. **schedule only** — prune each timestamp series to the newest 20.

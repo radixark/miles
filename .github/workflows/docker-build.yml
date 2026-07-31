@@ -196,11 +196,6 @@ jobs:
             image=moby/buildkit:latest
             network=host
 
-      - name: Install Python + dependencies
-        run: |
-          apt-get update && apt-get install -y python3 python3-pip
-          pip3 install --break-system-packages typer
-
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -233,51 +228,61 @@ jobs:
 
       - name: Prune old dev tags
         if: github.event_name == 'schedule'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        # stdlib-only python, like build.py: build nodes carry docker + stock python3,
+        # no jq and no pip-installed packages.
         run: |
-          KEEP=20
-          IMAGE=radixark/miles
+          python3 - <<'EOF'
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.request
 
-          # Authenticate with Docker Hub API
-          TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \
-            -H "Content-Type: application/json" \
-            -d '{"username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}' \
-            | jq -r .token)
+          KEEP = 20
+          IMAGE = "radixark/miles"
+          HUB = "https://hub.docker.com/v2"
 
-          # Keep the newest $KEEP timestamped tags matching $1, delete the rest.
+          def call(url, data=None, method=None, token=None):
+              req = urllib.request.Request(url, method=method)
+              if token:
+                  req.add_header("Authorization", f"JWT {token}")
+              if data is not None:
+                  req.add_header("Content-Type", "application/json")
+                  req.data = json.dumps(data).encode()
+              with urllib.request.urlopen(req) as resp:
+                  body = resp.read()
+                  return json.loads(body) if body else None
+
+          token = call(
+              f"{HUB}/users/login/",
+              data={"username": os.environ["DOCKERHUB_USERNAME"], "password": os.environ["DOCKERHUB_TOKEN"]},
+          )["token"]
+
+          # Keep the newest KEEP timestamped tags matching pattern, delete the rest.
           # cu13 (dev-<ts>) and cu12-x86 (dev-cu12-<ts>) are pruned as independent series.
-          prune_series() {
-            PATTERN="$1"
-            TAGS=""
-            URL="https://hub.docker.com/v2/repositories/${IMAGE}/tags/?page_size=100"
-            while [ "$URL" != "null" ] && [ -n "$URL" ]; do
-              RESP=$(curl -s -H "Authorization: JWT ${TOKEN}" "$URL")
-              PAGE_TAGS=$(echo "$RESP" | jq -r '.results[].name' | grep -E "$PATTERN" || true)
-              TAGS="${TAGS}${PAGE_TAGS}"$'\n'
-              URL=$(echo "$RESP" | jq -r '.next')
-            done
+          def prune_series(pattern):
+              tags = []
+              url = f"{HUB}/repositories/{IMAGE}/tags/?page_size=100"
+              while url:
+                  page = call(url, token=token)
+                  tags += [t["name"] for t in page["results"] if re.fullmatch(pattern, t["name"])]
+                  url = page.get("next")
+              tags.sort()
+              print(f"Found {len(tags)} tags matching {pattern}")
+              if len(tags) <= KEEP:
+                  print(f"Nothing to prune for {pattern} (keep={KEEP})")
+                  return
+              print(f"Pruning {len(tags) - KEEP} old tags matching {pattern}...")
+              for tag in tags[: len(tags) - KEEP]:
+                  try:
+                      call(f"{HUB}/repositories/{IMAGE}/tags/{tag}/", method="DELETE", token=token)
+                      print(f"  Deleted {tag}")
+                  except urllib.error.HTTPError as e:
+                      print(f"  Failed to delete {tag} (HTTP {e.code})")
 
-            SORTED=$(echo "$TAGS" | grep -v '^$' | sort)
-            COUNT=$(echo "$SORTED" | wc -l | tr -d ' ')
-            echo "Found ${COUNT} tags matching ${PATTERN}"
-            if [ "$COUNT" -le "$KEEP" ]; then
-              echo "Nothing to prune for ${PATTERN} (keep=${KEEP})"
-              return
-            fi
-
-            DELETE_COUNT=$((COUNT - KEEP))
-            echo "Pruning ${DELETE_COUNT} old tags matching ${PATTERN}..."
-            echo "$SORTED" | head -n "$DELETE_COUNT" | while read -r TAG; do
-              [ -z "$TAG" ] && continue
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-                -H "Authorization: JWT ${TOKEN}" \
-                "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}/")
-              if [ "$HTTP_CODE" = "204" ]; then
-                echo "  Deleted ${TAG}"
-              else
-                echo "  Failed to delete ${TAG} (HTTP ${HTTP_CODE})"
-              fi
-            done
-          }
-
-          prune_series '^dev-[0-9]{12}$'
-          prune_series '^dev-cu12-[0-9]{12}$'
+          prune_series(r"dev-[0-9]{12}")
+          prune_series(r"dev-cu12-[0-9]{12}")
+          EOF
