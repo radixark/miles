@@ -156,14 +156,6 @@ class ServerCell:
         )
         del global_rank
 
-        if env_report := self.args.env_report:
-            await asyncio.gather(
-                *[
-                    actor._collect_env_report.remote(role="rollout", rank=rank, partial_env_report=env_report)
-                    for rank, actor in zip(global_ranks, actor_handles, strict=True)
-                ]
-            )
-
         launch_cmds = {
             rank: spec.launch_command(
                 LaunchCommandContext(
