@@ -79,7 +79,12 @@ def to_rank_major_rows(idxs: Tensor, seq_to_rank_row: Tensor, valid: Tensor) -> 
     top-k slots at whatever the kernel wrote. A lane ``valid`` keeps already addresses a row
     the table holds, so the clamp moves no live index.
     """
-    rows = seq_to_rank_row[idxs.clamp(0, seq_to_rank_row.numel() - 1).long()]
+    n_rows = seq_to_rank_row.numel()
+    if n_rows == 0:
+        # The whole stream is shorter than the ratio, so no rank produced a compressed row.
+        # Clamping would ask for row -1 here; the empty table has no row to fall back on.
+        return torch.full_like(idxs, -1), torch.zeros_like(valid)
+    rows = seq_to_rank_row[idxs.clamp(0, n_rows - 1).long()]
     return rows, valid & (rows >= 0)
 
 
