@@ -260,9 +260,7 @@ class DeepSeekV4Compressor(nn.Module):
 
         if overlap:
             is_first = local_pos == 0
-            kv = _overlap_transform_thd(
-                kv, compress_ratio=ratio, head_dim=self.head_dim, is_first=is_first, value=0
-            )
+            kv = _overlap_transform_thd(kv, compress_ratio=ratio, head_dim=self.head_dim, is_first=is_first, value=0)
             score = _overlap_transform_thd(
                 score,
                 compress_ratio=ratio,
@@ -323,9 +321,7 @@ class DeepSeekV4Compressor(nn.Module):
                 (k, cu_seqlens_compressed) for THD packing.
         """
         if cu_seqlens is not None:
-            return self._forward_thd(
-                x, cu_seqlens, compressed_group_ids=compressed_group_ids, max_seqlen=max_seqlen
-            )
+            return self._forward_thd(x, cu_seqlens, compressed_group_ids=compressed_group_ids, max_seqlen=max_seqlen)
         x_bshd = einops.rearrange(x, "s b d -> b s d")
         k_bshd = self.forward_raw(x_bshd)
         k = einops.rearrange(k_bshd, "b sc d -> sc b d")

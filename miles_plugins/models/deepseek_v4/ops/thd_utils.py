@@ -197,9 +197,7 @@ def _first_visible_group(range_start: Tensor | int, seg_start: Tensor, ratio: in
     is looked up in cannot drift apart.
     """
     d_comp = compressor_boundary_width(ratio)
-    return torch.div(
-        (range_start - d_comp - seg_start).clamp(min=0) + ratio - 1, ratio, rounding_mode="floor"
-    )
+    return torch.div((range_start - d_comp - seg_start).clamp(min=0) + ratio - 1, ratio, rounding_mode="floor")
 
 
 def compact_gather_index(
@@ -237,9 +235,7 @@ def compact_gather_index(
     group_head = seg_start[seg_ids] + comp_ids * ratio
     # The boundary rows precede the local ones, so both sides of the split share one offset.
     gather_idx = (
-        group_head.unsqueeze(1)
-        + torch.arange(ratio, device=device, dtype=cu_seqlens.dtype)
-        - (range_start - d_comp)
+        group_head.unsqueeze(1) + torch.arange(ratio, device=device, dtype=cu_seqlens.dtype) - (range_start - d_comp)
     )
     gather_idx = torch.where(valid.unsqueeze(1), gather_idx, -1).flatten()
     return gather_idx.long(), torch.where(valid, comp_ids, -1).int()
@@ -302,18 +298,13 @@ class _LeftBoundaryExchange(torch.autograd.Function):
         cp_size, cp_rank = cp_group.size(), cp_group.rank()
         if tensor.size(0) < d_comp:
             raise RuntimeError(
-                f"DSv4 CP boundary exchange needs at least {d_comp} local rows, "
-                f"got {tensor.size(0)}"
+                f"DSv4 CP boundary exchange needs at least {d_comp} local rows, " f"got {tensor.size(0)}"
             )
         ctx.input_shape, ctx.d_comp, ctx.cp_group = tensor.shape, d_comp, cp_group
         boundary = tensor.new_zeros((d_comp,) + tuple(tensor.shape[1:]))
         ops = []
         if cp_rank > 0:
-            ops.append(
-                dist.P2POp(
-                    dist.irecv, boundary, dist.get_global_rank(cp_group, cp_rank - 1), cp_group
-                )
-            )
+            ops.append(dist.P2POp(dist.irecv, boundary, dist.get_global_rank(cp_group, cp_rank - 1), cp_group))
         if cp_rank + 1 < cp_size:
             ops.append(
                 dist.P2POp(
@@ -336,11 +327,7 @@ class _LeftBoundaryExchange(torch.autograd.Function):
         received = grad_boundary.new_zeros((ctx.d_comp,) + tuple(ctx.input_shape[1:]))
         ops = []
         if cp_rank + 1 < cp_size:
-            ops.append(
-                dist.P2POp(
-                    dist.irecv, received, dist.get_global_rank(cp_group, cp_rank + 1), cp_group
-                )
-            )
+            ops.append(dist.P2POp(dist.irecv, received, dist.get_global_rank(cp_group, cp_rank + 1), cp_group))
         if cp_rank > 0:
             ops.append(
                 dist.P2POp(
@@ -390,23 +377,15 @@ def compressed_rank_layout(
     """
     device = cu_seqlens.device
     n_seg = cu_seqlens.size(0) - 1
-    logical_rows = torch.arange(
-        (l_local * cp_size) // ratio, device=device, dtype=cu_seqlens.dtype
-    )
-    seg_ids = torch.bucketize(logical_rows, cu_seqlens_compressed[1:], right=True).clamp(
-        max=max(n_seg - 1, 0)
-    )
+    logical_rows = torch.arange((l_local * cp_size) // ratio, device=device, dtype=cu_seqlens.dtype)
+    seg_ids = torch.bucketize(logical_rows, cu_seqlens_compressed[1:], right=True).clamp(max=max(n_seg - 1, 0))
     comp_ids = logical_rows - cu_seqlens_compressed[seg_ids]
     group_last = cu_seqlens[seg_ids] + (comp_ids + 1) * ratio - 1
     owner = torch.div(group_last, l_local, rounding_mode="floor").clamp(0, cp_size - 1)
 
     rank_starts = torch.arange(cp_size, device=device, dtype=cu_seqlens.dtype) * l_local
-    first_seg = torch.bucketize(rank_starts, cu_seqlens[1:], right=True).clamp(
-        max=max(n_seg - 1, 0)
-    )
-    first_logical = cu_seqlens_compressed[first_seg] + _first_visible_group(
-        rank_starts, cu_seqlens[first_seg], ratio
-    )
+    first_seg = torch.bucketize(rank_starts, cu_seqlens[1:], right=True).clamp(max=max(n_seg - 1, 0))
+    first_logical = cu_seqlens_compressed[first_seg] + _first_visible_group(rank_starts, cu_seqlens[first_seg], ratio)
 
     rank_rows = owner * c_cap + (logical_rows - first_logical[owner])
     return torch.where(logical_rows < cu_seqlens_compressed[-1], rank_rows, -1).int()
