@@ -2358,6 +2358,10 @@ def parse_args(add_custom_arguments=None):
                 "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
                 "pipeline_model_parallel_size is 1."
             )
+    else:
+        from miles.backends.experimental.fsdp_utils.arguments import validate_hybrid_shard_args
+
+        validate_hybrid_shard_args(args)
 
     sglang_validate_args(args)
 
