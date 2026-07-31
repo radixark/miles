@@ -136,15 +136,9 @@ jobs:
           echo "${WHEELS_CU13_ARM64_FP}" >> "$CACHE_FILE"
           echo "${WHEELS_CU12_X86_FP}" >> "$CACHE_FILE"
 
-          {
-            echo "sglang_sha=${SGLANG_SHA}"
-            echo "megatron_sha=${MEGATRON_SHA}"
-            echo "miles_sha=${MILES_SHA}"
-            echo "wheels_fp_cu13_x86=${WHEELS_CU13_X86_FP}"
-            echo "wheels_fp_cu13_arm64=${WHEELS_CU13_ARM64_FP}"
-            echo "wheels_fp_cu12_x86=${WHEELS_CU12_X86_FP}"
-            echo "should_build=${SHOULD_BUILD}"
-          } >> "$GITHUB_OUTPUT"
+          # The six resolved values are already in GITHUB_OUTPUT (resolved.txt above);
+          # the gate verdict is the only output produced here.
+          echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
 
       - name: Save upstream SHAs to cache
         if: |
