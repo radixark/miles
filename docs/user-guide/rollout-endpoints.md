@@ -86,14 +86,14 @@ Helpers:
 
 - `compute_prompt_ids_from_sample` and `compute_request_payload` from
   `miles/rollout/generate_utils/generate_endpoint_utils.py` build `/generate` requests.
-- For multi-sample outputs, set `--generate-multi-samples` and return a list.
+- A generate function can set `GenerateFnOutput.samples` to a `Sample` or `list[Sample]`.
 
 ### Reference generators
 
 - **`single_turn.py`**: single-turn generation via `/generate`. Text or multimodal prompts.
 - **`multi_turn.py`**: multi-turn tool calling via `/generate`. Adds CLI flags
   `--generate-max-turns`, `--generate-tool-specs-path`, `--generate-tool-call-parser`,
-  `--generate-execute-tool-function-path`, `--generate-multi-samples`.
+  `--generate-execute-tool-function-path`.
 - **`benchmarkers.py`**: forces random output sequence length for benchmarking.
 
 ---
@@ -217,8 +217,9 @@ is a thin wrapper around the custom agent. It:
 1. Creates a session on MilesRouter and builds a session-scoped `base_url`.
 2. Calls the custom agent (from `--custom-agent-function-path`) to send one or more
    chat requests.
-3. Collects session records via `OpenAIEndpointTracer`.
-4. Converts records into `Sample` objects via `compute_samples_from_openai_records`.
+3. Collects server-assembled `Sample` objects via `OpenAIEndpointTracer.collect_samples`
+   (the session server converts records into samples, truncates and merges on the
+   owning instance; records never leave the server).
 
 For broader customization beyond the OpenAI wrapper, see the `/generate` path above.
 

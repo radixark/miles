@@ -50,6 +50,10 @@ concurrency. Per-task containers are heavy on disk — if you'd rather not coloc
 them with the GPU workload, run the env server on a separate Docker host and point
 the launcher at it via `--openenv-env-url http://<env-host>:8003`.
 
+The installed `tbench2_env` must be `>=` the #1012 merge (04d259ea6), same as
+step 2b below; the adapter drops every episode (with a warning) from a server
+that doesn't carry that contract.
+
 ### 2b. Alternative: Daytona cloud sandboxes (no Docker host)
 
 Instead of one shared env server, the adapter can give **every episode its own
@@ -74,7 +78,7 @@ from upstream main (editable: the recipe embeds the package source, which
 needs `pyproject.toml` present next to the package):
 
 ```bash
-git clone https://github.com/huggingface/OpenEnv.git   # >= the #965/#972 merge (39c91bfd); pin that sha if you need frozen reward semantics across a long run
+git clone https://github.com/huggingface/OpenEnv.git   # >= the #1012 merge (04d259ea6, the full canonical contract for both modes); pin that sha if you need frozen reward semantics across a long run
 pip install -e OpenEnv/envs/tbench2_env
 ```
 

@@ -1,18 +1,6 @@
-import logging
 import re
-from functools import partial
 
-
-try:
-    from flashinfer import mxfp8_quantize as flashinfer_mxfp8_quantize
-
-    mxfp8_quantize = partial(flashinfer_mxfp8_quantize, is_sf_swizzled_layout=False)
-except ImportError:
-    logger = logging.getLogger(__name__)
-    logger.warning("FlashInfer mxfp8_quantize not available; falling back to Triton.")
-    from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
-
-    mxfp8_quantize = mxfp8_group_quantize
+from miles.utils.mxfp8 import mxfp8_quantize
 
 
 def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantization_config):
@@ -81,7 +69,7 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
 
             return quantize_named_params
 
-    if rest in [
+    mxfp8_param_names = [
         "self_attention.linear_proj.weight",
         "self_attention.linear_qkv.weight",
         "mlp.linear_fc1.weight",
@@ -93,14 +81,24 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
         "self_attention.linear_kv_down_proj.weight",
         "self_attention.linear_kv_up_proj.weight",
         "self_attention.wq_b.weight",
-        "self_attention.wk.weight",
         # DeepSeek V4 attention
         "self_attention.wq_a.weight",
         "self_attention.wkv.weight",
         "self_attention.wo_b.weight",
         "self_attention.indexer.linear_wq_b.weight",
-        "self_attention.indexer.linear_wk.weight",
-    ]:
+    ]
+    if not getattr(args, "indexer_rope_interleave", False):
+        # Non-interleaved indexers keep wk as a standalone quantized parameter in
+        # SGLang; interleaved ones fuse wk into the bf16 wk_weights_proj, whose
+        # loader would misread the uint8 e8m0 mxfp8 scales as integers.
+        mxfp8_param_names.extend(
+            [
+                "self_attention.wk.weight",
+                "self_attention.indexer.linear_wk.weight",
+            ]
+        )
+
+    if rest in mxfp8_param_names:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
             quantize_named_params.extend(_quantize_param(converted_name, param))
@@ -113,13 +111,6 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
 
 def _quantize_param(name, weight):
     assert name.endswith(".weight"), f"Expected weight parameter, got {name}"
-    weight = weight.contiguous()
-    k = weight.shape[-1]
-    if k % 32 != 0:
-        raise ValueError(f"Last dim {k} must be divisible by 32 for MXFP8.")
-    weight_flat = weight.view(-1, k).contiguous()
-    qweight, scale = mxfp8_quantize(weight_flat)
-    qweight = qweight.view_as(weight)
-    scale = scale.view(*weight.shape[:-1], k // 32).contiguous()
+    qweight, scale = mxfp8_quantize(weight)
     scale_name = name.replace(".weight", ".weight_scale_inv")
     return [(name, qweight), (scale_name, scale)]

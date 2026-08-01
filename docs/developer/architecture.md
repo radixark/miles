@@ -86,9 +86,8 @@ sequenceDiagram
     T->>SG: weight_sync(p2p)
 ```
 
-This is the sync path. Async (`train_async.py` + `--rollout-function-path
-fully_async_rollout.generate_rollout_fully_async`) breaks the request from the trainer
-loop and uses a continuously-running worker.
+This is the sync path. Fully async (`train_async.py --fully-async`) breaks the request
+from the trainer loop and uses a continuously-running worker.
 
 ## Where common changes go
 

@@ -20,7 +20,7 @@ description: Launch recipes for GLM-4.5 (355B-A32B) — bash launcher and Python
 | GLM-4.5-355B-A32B | 32 B / 355 B | [zai-org/GLM-4.5](https://huggingface.co/zai-org/GLM-4.5) |
 | GLM-4.5-Air (106B-A12B) | 12 B / 106 B | [zai-org/GLM-4.5-Air](https://huggingface.co/zai-org/GLM-4.5-Air) |
 
-The 106B-A12B variant has no launcher under `scripts/`; the canonical recipe is [`examples/p2p_weight_transfer/GLM-4.5-Air.sh`](https://github.com/radixark/miles/blob/main/examples/p2p_weight_transfer/GLM-4.5-Air.sh) (8-node, P2P weight transfer).
+The 106B-A12B variant has no launcher under `scripts/`; the canonical recipe is [`examples/infra_features/p2p_weight_transfer/GLM-4.5-Air.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/p2p_weight_transfer/GLM-4.5-Air.sh) (8-node, P2P weight transfer).
 
 ## 3. Environment Setup
 

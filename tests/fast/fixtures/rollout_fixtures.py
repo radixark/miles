@@ -109,6 +109,8 @@ def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornT
         chat_template_path=getattr(args, "chat_template_path", None),
         tito_model=getattr(args, "tito_model", "default"),
         use_rollout_routing_replay=getattr(args, "use_rollout_routing_replay", False),
+        save_debug_trajectory_data=getattr(args, "save_debug_trajectory_data", None),
+        sglang_speculative_algorithm=getattr(args, "sglang_speculative_algorithm", None),
     )
     session_server = SessionServer(session_args, backend_url=backend_url)
     port = find_available_port(31000)

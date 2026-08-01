@@ -8,7 +8,7 @@
 #    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
 #
 # 3. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X)
-#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.14-rocm720-mi35x-20260627
+#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.16-rocm720-mi35x-20260730
 
 ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
 ARG SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
@@ -39,6 +39,7 @@ ARG RCCL_TESTS_PATH=projects/rccl-tests
 
 ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
 ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
+ARG MOONCAKE_VERSION=0.3.12.post1
 
 # ======================================== Setup ================================================
 WORKDIR /root/
@@ -100,6 +101,11 @@ RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_to
       cd /root/TransformerEngine && NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v; \
     fi
 RUN pip install /tmp/wheels/flash_attn-*.whl
+
+# make install lays down mooncake's native modules but not its pure Python files.
+RUN pip install --no-deps --target=/tmp/mc "mooncake-transfer-engine-non-cuda==${MOONCAKE_VERSION}" && \
+    cp -n /tmp/mc/mooncake/*.py "$(python3 -c 'import mooncake, os; print(os.path.dirname(mooncake.__file__))')" && \
+    rm -rf /tmp/mc
 
 RUN pip install flash-linear-attention==0.4.2
 

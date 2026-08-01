@@ -12,8 +12,12 @@ import torch.distributed as dist
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.utils.adapter_config import AdapterRun
+from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
+
+# Cached by adapter_shard_topology(); the topology is fixed for the run.
+_shard_topology: tuple[bool, tuple[tuple[int, int, int], ...]] | None = None
 
 
 def create_multi_lora_instance(args: Namespace):
@@ -32,6 +36,7 @@ def create_multi_lora_instance(args: Namespace):
 
         lora_cls = LoRA
 
+    # exclude_modules was already folded into target_modules during arg validation.
     return MultiLoRA(
         target_modules=convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls),
         n_adapters=args.multi_lora_n_adapters,
@@ -43,21 +48,53 @@ def create_multi_lora_instance(args: Namespace):
     )
 
 
-def all_megatron_checkpoints_exist(step_dir: Path, tp_size, pp_size) -> bool:
-    return all(
-        (step_dir / f"adapter_megatron_tp{tp}_pp{pp}.pt").exists() for tp in range(tp_size) for pp in range(pp_size)
-    )
+def megatron_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, ep_size: int) -> str:
+    """Adapter shard name for one (tp, pp, ep) coordinate; EP ranks hold different local
+    experts. The ep suffix is omitted at ep_size == 1 so legacy checkpoints stay loadable."""
+    name = f"adapter_megatron_tp{tp_rank}_pp{pp_rank}"
+    if ep_size > 1:
+        name += f"_ep{ep_rank}"
+    return name + ".pt"
+
+
+def adapter_shard_topology() -> tuple[bool, tuple[tuple[int, int, int], ...]]:
+    """Return ``(this_rank_writes_its_shard, realized (tp, pp, ep) coords)`` via one cached gloo all-gather."""
+    global _shard_topology
+    if _shard_topology is not None:
+        return _shard_topology
+    parallel_state = get_parallel_state()
+    coords = (parallel_state.tp.rank, parallel_state.pp.rank, parallel_state.ep.rank)
+    if not dist.is_initialized():
+        _shard_topology = (True, (coords,))
+        return _shard_topology
+
+    current_rank = dist.get_rank()
+    group = get_gloo_group()
+    gathered: list[object] = [None] * dist.get_world_size(group=group)
+    dist.all_gather_object(gathered, (coords, current_rank), group=group)
+    is_writer = current_rank == min(rank for entry_coords, rank in gathered if entry_coords == coords)
+    _shard_topology = (is_writer, tuple(sorted({entry_coords for entry_coords, _ in gathered})))
+    return _shard_topology
+
+
+def all_megatron_checkpoints_exist(step_dir: Path, shard_names) -> bool:
+    return all((step_dir / name).exists() for name in shard_names)
 
 
 def find_latest_checkpoint(ckpt_dir: Path) -> tuple[Path | None, int]:
+    _, coords = adapter_shard_topology()
     if not ckpt_dir.exists():
         return None, 0
 
     parallel_state = get_parallel_state()
-    tp_size = parallel_state.tp.size
-    pp_size = parallel_state.pp.size
-    tp_rank = parallel_state.tp.rank
-    pp_rank = parallel_state.pp.rank
+    ep_size = parallel_state.ep.size
+    my_coords = (parallel_state.tp.rank, parallel_state.pp.rank, parallel_state.ep.rank)
+
+    expected = {megatron_shard_name(*coord, ep_size) for coord in coords}
+    my_shard = megatron_shard_name(*my_coords, ep_size)
+    # Legacy pre-expert-adapter layout: no ep suffix; safe for all EP ranks to read (EP-replicated).
+    legacy = {megatron_shard_name(tp, pp, 0, 1) for tp, pp, _ in coords}
+    my_legacy = megatron_shard_name(my_coords[0], my_coords[1], 0, 1)
 
     def get_step(d):
         return int(d.name.split("_")[1])
@@ -69,8 +106,11 @@ def find_latest_checkpoint(ckpt_dir: Path) -> tuple[Path | None, int]:
     )
     for step_dir in step_dirs:
         step = get_step(step_dir)
-        if all_megatron_checkpoints_exist(step_dir, tp_size, pp_size):
-            return step_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt", step
+        if all_megatron_checkpoints_exist(step_dir, expected):
+            return step_dir / my_shard, step
+        if ep_size > 1 and all_megatron_checkpoints_exist(step_dir, legacy):
+            logger.info(f"[multilora] resuming from pre-expert-parallel shard layout in {step_dir}")
+            return step_dir / my_legacy, step
 
     return None, 0
 
@@ -116,20 +156,28 @@ def zero_optimizer_state_for_adapter(optimizer, model, idx: int) -> None:
 
 
 def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) -> torch.Tensor:
-    if "lora_A" in hf_name and adapter_rank < tensor.shape[0]:
-        remainder = tensor[adapter_rank:]
-        assert remainder.abs().max() == 0, (
-            f"lora_A padded dims are non-zero: {hf_name}, "
-            f"max={remainder.abs().max().item():.6e}, shape={tensor.shape}, rank={adapter_rank}"
-        )
-        return tensor[:adapter_rank]
-    if "lora_B" in hf_name and adapter_rank < tensor.shape[1]:
-        remainder = tensor[:, adapter_rank:]
-        assert remainder.abs().max() == 0, (
-            f"lora_B padded dims are non-zero: {hf_name}, "
-            f"max={remainder.abs().max().item():.6e}, shape={tensor.shape}, rank={adapter_rank}"
-        )
-        return tensor[:, :adapter_rank]
+    """Trim a max-rank-padded LoRA tensor to ``adapter_rank`` on the rank axis, addressed
+    from the end so packed grouped-expert exports are not sliced on the expert axis."""
+    if "lora_A" in hf_name:
+        rank_dim = tensor.ndim - 2
+        if adapter_rank < tensor.shape[rank_dim]:
+            remainder = tensor.narrow(rank_dim, adapter_rank, tensor.shape[rank_dim] - adapter_rank)
+            assert remainder.abs().max() == 0, (
+                f"lora_A padded dims are non-zero: {hf_name}, "
+                f"max={remainder.abs().max().item():.6e}, shape={tensor.shape}, rank={adapter_rank}"
+            )
+            return tensor.narrow(rank_dim, 0, adapter_rank)
+        return tensor
+    if "lora_B" in hf_name:
+        rank_dim = tensor.ndim - 1
+        if adapter_rank < tensor.shape[rank_dim]:
+            remainder = tensor.narrow(rank_dim, adapter_rank, tensor.shape[rank_dim] - adapter_rank)
+            assert remainder.abs().max() == 0, (
+                f"lora_B padded dims are non-zero: {hf_name}, "
+                f"max={remainder.abs().max().item():.6e}, shape={tensor.shape}, rank={adapter_rank}"
+            )
+            return tensor.narrow(rank_dim, 0, adapter_rank)
+        return tensor
     return tensor
 
 
@@ -144,7 +192,7 @@ def save_multi_lora_checkpoints(
     Layout (per adapter)::
 
         {adapter.save}/checkpoints/step_{iteration}/
-        ├── adapter_megatron_tp{tp}_pp{pp}.pt   ← per-rank shard, fast resume
+        ├── adapter_megatron_tp{tp}_pp{pp}[_ep{ep}].pt  ← per-rank shard, fast resume
         ├── adapter_model.safetensors           ← gathered HF, inference / external
         └── adapter_config.json                 ← HF PEFT metadata (r, alpha, ...)
     """
@@ -158,11 +206,11 @@ def save_multi_lora_checkpoints(
     parallel_state = get_parallel_state()
     tp_rank = parallel_state.tp.rank
     pp_rank = parallel_state.pp.rank
-    # One writer per (tp, pp) shard: LoRA params are replicated across DP AND
-    # CP, so gate on the combined dp×cp group. Gating on intra_dp alone left
-    # every CP rank writing the same shard file and racing the os.replace.
-    is_dp_cp_rank_0 = parallel_state.intra_dp_cp.rank == 0
-    is_global_writer = is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0
+    ep_rank = parallel_state.ep.rank
+    ep_size = parallel_state.ep.size
+    # Exactly one writer per (tp, pp, ep) shard; see adapter_shard_topology.
+    is_shard_writer, _ = adapter_shard_topology()
+    is_global_writer = is_shard_writer and tp_rank == 0 and pp_rank == 0 and ep_rank == 0
 
     target_modules_hf = (
         convert_target_modules_to_hf(list(args.target_modules))
@@ -183,21 +231,21 @@ def save_multi_lora_checkpoints(
 
         final_dir = config.save / "checkpoints" / f"step_{iteration}"
         tmp_dir = config.save / "checkpoints" / f"_tmp_step_{iteration}"
-        if is_dp_cp_rank_0:
+        if is_shard_writer:
             tmp_dir.mkdir(parents=True, exist_ok=True)
         if dist.is_initialized():
             dist.barrier()
 
         with expose_adapter_slot(model, adapter.slot):
             # Megatron checkpoints
-            if is_dp_cp_rank_0:
+            if is_shard_writer:
                 shard: dict[str, torch.Tensor] = {
                     name: param.data.cpu()
                     for batch in model
                     for name, param in batch.named_parameters()
                     if ".adapter." in name
                 }
-                native_path = tmp_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
+                native_path = tmp_dir / megatron_shard_name(tp_rank, pp_rank, ep_rank, ep_size)
                 torch.save(shard, native_path)
                 logger.info(f"{log_prefix} saved Megatron shard " f"({len(shard)} tensors) to {native_path}")
 
