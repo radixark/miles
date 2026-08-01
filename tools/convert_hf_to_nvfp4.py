@@ -221,17 +221,6 @@ def _augment_ignore_list(ignore_list: list[str]) -> list[str]:
     return sorted(ignore_set)
 
 
-def _get_expert_group_name(module_name: str) -> str | None:
-    for marker in EXPERT_NAME_MARKERS:
-        prefix, separator, remainder = module_name.partition(marker)
-        if not separator:
-            continue
-        expert_idx, separator, _ = remainder.partition(".")
-        if separator and expert_idx.isdigit():
-            return prefix + marker.rstrip(".")
-    return None
-
-
 def _split_gated_pair_name(name: str) -> tuple[str | None, str | None]:
     for suffix, role in GATED_PAIR_SUFFIXES.items():
         if name.endswith(suffix):
@@ -363,10 +352,15 @@ def process_file(
             else:
                 if key.endswith(".weight"):
                     module_name = key[: -len(".weight")]
-                    if any(prefix in key for prefix in dynamic_skip_layer_prefixes):
-                        # Keep one exact FusedMoE container entry instead of every expert child.
-                        module_name = _get_expert_group_name(module_name) or module_name
-                    modules_to_not_convert.append(module_name)
+                    is_dynamic_bf16 = any(prefix in key for prefix in dynamic_skip_layer_prefixes)
+                    if ".experts." not in key:
+                        modules_to_not_convert.append(module_name)
+                    elif is_dynamic_bf16:
+                        # ModelOpt needs the exact FusedMoE container in addition to the layer prefix.
+                        expert_prefix = module_name.split(".experts.", 1)[0] + ".experts"
+                        modules_to_not_convert.append(expert_prefix)
+                    else:
+                        modules_to_not_convert.append(module_name)
                 q_weights[key] = tensor
 
     safetensors.torch.save_file(q_weights, os.path.join(output_path, filename), metadata={"format": "pt"})
