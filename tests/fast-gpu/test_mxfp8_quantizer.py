@@ -146,6 +146,7 @@ def test_mxfp8_hf_should_quantize_respects_extra_high_precision_layers_hf():
 def test_mxfp8_hf_config_adds_dspark_stage_aliases_for_skipped_mtp_modules():
     mtp_modules = {
         "mtp.0.self_attn.wq_a",
+        "mtp.0.self_attn.wkv",
         "mtp.0.main_proj",
         "mtp.0.mlp.shared_experts.gate_proj",
     }
@@ -154,10 +155,26 @@ def test_mxfp8_hf_config_adds_dspark_stage_aliases_for_skipped_mtp_modules():
 
     assert augmented == mtp_modules | {
         "stages.0.self_attn.wq_a",
+        "stages.0.self_attn.wkv",
+        "mtp.0.self_attn.wqkv_a",
+        "stages.0.self_attn.wqkv_a",
         "stages.0.main_proj",
         "stages.0.mlp.shared_experts.gate_proj",
     }
     assert not any(".mlp.experts" in name for name in augmented)
+
+
+def test_mxfp8_hf_config_adds_fused_wqkv_a_alias_only_for_complete_pair():
+    augmented = _add_dspark_stage_aliases(
+        {
+            "model.layers.0.self_attn.wq_a",
+            "model.layers.0.self_attn.wkv",
+            "model.layers.1.self_attn.wq_a",
+        }
+    )
+
+    assert "model.layers.0.self_attn.wqkv_a" in augmented
+    assert "model.layers.1.self_attn.wqkv_a" not in augmented
 
 
 @pytest.mark.parametrize(

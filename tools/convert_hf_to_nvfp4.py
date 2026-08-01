@@ -205,6 +205,17 @@ def _write_hf_quant_config(output_path: str, ignore_list: list[str], input_path:
         json.dump(hf_quant_cfg, f, indent=2)
 
 
+def _add_fused_wqkv_a_aliases(module_names: set[str]) -> set[str]:
+    module_names = set(module_names)
+    for name in tuple(module_names):
+        if not name.endswith(".wq_a"):
+            continue
+        prefix = name[: -len(".wq_a")]
+        if f"{prefix}.wkv" in module_names:
+            module_names.add(f"{prefix}.wqkv_a")
+    return module_names
+
+
 def _augment_ignore_list(ignore_list: list[str]) -> list[str]:
     ignore_set = set(ignore_list)
     extra = set()
@@ -218,6 +229,7 @@ def _augment_ignore_list(ignore_list: list[str]) -> list[str]:
         if match:
             extra.add(match.group(1))
     ignore_set.update(extra)
+    ignore_set = _add_fused_wqkv_a_aliases(ignore_set)
     ignore_set.update(f"stages.{name.removeprefix('mtp.')}" for name in tuple(ignore_set) if name.startswith("mtp."))
     return sorted(ignore_set)
 

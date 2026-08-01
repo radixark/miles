@@ -53,8 +53,19 @@ def _strip_weight_suffix(weight_key: str) -> str:
     return weight_key[: -len(".weight")]
 
 
-def _add_dspark_stage_aliases(module_names: set[str]) -> set[str]:
+def _add_fused_wqkv_a_aliases(module_names: set[str]) -> set[str]:
     module_names = set(module_names)
+    for name in tuple(module_names):
+        if not name.endswith(".wq_a"):
+            continue
+        prefix = name[: -len(".wq_a")]
+        if f"{prefix}.wkv" in module_names:
+            module_names.add(f"{prefix}.wqkv_a")
+    return module_names
+
+
+def _add_dspark_stage_aliases(module_names: set[str]) -> set[str]:
+    module_names = _add_fused_wqkv_a_aliases(module_names)
     module_names.update(
         f"stages.{name.removeprefix('mtp.')}" for name in tuple(module_names) if name.startswith("mtp.")
     )
