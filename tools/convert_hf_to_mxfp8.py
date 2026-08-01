@@ -22,6 +22,7 @@ import torch
 from sglang.srt.layers.quantization.fp8_utils import block_quant_dequant
 from tqdm import tqdm
 
+from miles.utils.dspark_checkpoint import propagate_dspark_subcheckpoint
 from miles.utils.mxfp8 import MXFP8_GROUP_SIZE
 from miles.utils.mxfp8 import mxfp8_quantize as quantize_mxfp8
 
@@ -295,6 +296,7 @@ def convert_mxfp8(
     input_path = os.path.abspath(model_dir)
     output_path = os.path.abspath(save_dir)
     os.makedirs(output_path, exist_ok=True)
+    propagate_dspark_subcheckpoint(input_path, output_path)
     config_path = os.path.join(input_path, "config.json")
     with open(config_path) as f:
         cfg = json.load(f)

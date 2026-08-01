@@ -73,6 +73,28 @@ def _make_block_scale(rows: int, cols: int) -> torch.Tensor:
     return torch.full(shape, 128, dtype=torch.uint8).view(torch.float8_e8m0fnu)
 
 
+def _run_fp8_cast_bf16(model_dir: Path, output_dir: Path, *extra_args: str) -> subprocess.CompletedProcess:
+    repo_root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join((str(repo_root), env.get("PYTHONPATH", "")))
+    return subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "tools" / "fp8_cast_bf16.py"),
+            "--input-fp8-hf-path",
+            str(model_dir),
+            "--output-bf16-hf-path",
+            str(output_dir),
+            *extra_args,
+        ],
+        cwd=repo_root,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 @pytest.mark.parametrize("shape", [(1, 32), (3, 64), (128, 4096)])
 @pytest.mark.parametrize("scale_storage", [torch.float8_e8m0fnu, torch.uint8])
 def test_mxfp4_dequantize_matches_reference(shape, scale_storage):
@@ -165,22 +187,8 @@ def test_fp8_cast_bf16_converts_native_dsv4_mxfp4_experts(tmp_path):
     }
     (model_dir / "model.safetensors.index.json").write_text(json.dumps(index))
 
-    repo_root = Path(__file__).resolve().parents[2]
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join((str(repo_root), env.get("PYTHONPATH", "")))
-    subprocess.run(
-        [
-            sys.executable,
-            str(repo_root / "tools" / "fp8_cast_bf16.py"),
-            "--input-fp8-hf-path",
-            str(model_dir),
-            "--output-bf16-hf-path",
-            str(output_dir),
-        ],
-        cwd=repo_root,
-        env=env,
-        check=True,
-    )
+    result = _run_fp8_cast_bf16(model_dir, output_dir)
+    assert result.returncode == 0, result.stderr
 
     main_output_name = "model.layers.0.mlp.experts.0.gate_proj.weight"
     mtp_output_name = "mtp.0.mlp.experts.0.down_proj.weight"
@@ -235,3 +243,178 @@ def test_fp8_cast_bf16_converts_native_dsv4_mxfp4_experts(tmp_path):
         main_proj_output_name,
     }
     assert not any(name.endswith((".scale", "_scale_inv")) for name in output_index["weight_map"])
+
+
+def test_fp8_cast_bf16_preserves_native_dspark_shards_byte_for_byte(tmp_path):
+    model_dir = tmp_path / "model"
+    output_dir = tmp_path / "bf16"
+    model_dir.mkdir()
+
+    config = {
+        "architectures": ["DeepseekV4ForCausalLM"],
+        "model_type": "deepseek_v4",
+        "num_hidden_layers": 1,
+        "expert_dtype": "fp4",
+        "quantization_config": {
+            "quant_method": "fp8",
+            "weight_block_size": [128, 128],
+            "scale_fmt": "ue8m0",
+        },
+    }
+    (model_dir / "config.json").write_text(json.dumps(config))
+    (model_dir / "tokenizer.json").write_bytes(b"native tokenizer bytes\n")
+
+    target_shard_name = "model-00001-of-00002.safetensors"
+    draft_shard_name = "model-00002-of-00002.safetensors"
+    target_weights = {"embed.weight": torch.ones((4, 4), dtype=torch.bfloat16)}
+    draft_weights = {
+        "mtp.0.ffn.experts.0.w1.weight": _make_packed_weight(2, 64, device="cpu"),
+        "mtp.0.ffn.experts.0.w1.scale": _make_scale(2, 64, device="cpu"),
+    }
+    safetensors.torch.save_file(target_weights, model_dir / target_shard_name, metadata={"format": "pt"})
+    safetensors.torch.save_file(draft_weights, model_dir / draft_shard_name, metadata={"format": "pt"})
+    index = {
+        "metadata": {"source": "test", "total_size": 1234},
+        "weight_map": {
+            **{name: target_shard_name for name in target_weights},
+            **{name: draft_shard_name for name in draft_weights},
+        },
+    }
+    (model_dir / "model.safetensors.index.json").write_text(json.dumps(index))
+
+    result = _run_fp8_cast_bf16(model_dir, output_dir, "--preserve-native-dspark-checkpoint")
+    assert result.returncode == 0, result.stderr
+
+    output_index = json.loads((output_dir / "model.safetensors.index.json").read_text())
+    assert output_index["weight_map"] == {"model.embed_tokens.weight": target_shard_name}
+    assert not (output_dir / draft_shard_name).exists()
+
+    draft_dir = output_dir / "dspark"
+    assert (draft_dir / draft_shard_name).read_bytes() == (model_dir / draft_shard_name).read_bytes()
+    assert (draft_dir / "config.json").read_bytes() == (model_dir / "config.json").read_bytes()
+    assert (draft_dir / "tokenizer.json").read_bytes() == (model_dir / "tokenizer.json").read_bytes()
+    draft_index = json.loads((draft_dir / "model.safetensors.index.json").read_text())
+    assert draft_index == {
+        "metadata": {"source": "test"},
+        "weight_map": {name: draft_shard_name for name in draft_weights},
+    }
+    with safetensors.safe_open(draft_dir / draft_shard_name, framework="pt", device="cpu") as handle:
+        assert set(handle.keys()) == set(draft_weights)
+        assert handle.get_tensor("mtp.0.ffn.experts.0.w1.weight").dtype == torch.int8
+
+
+def test_fp8_cast_bf16_rejects_mixed_target_and_dspark_shard(tmp_path):
+    model_dir = tmp_path / "model"
+    output_dir = tmp_path / "bf16"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["DeepseekV4ForCausalLM"],
+                "model_type": "deepseek_v4",
+                "expert_dtype": "fp4",
+            }
+        )
+    )
+
+    shard_name = "model.safetensors"
+    weights = {
+        "embed.weight": torch.ones((4, 4), dtype=torch.bfloat16),
+        "mtp.0.ffn.experts.0.w1.weight": _make_packed_weight(2, 64, device="cpu"),
+    }
+    safetensors.torch.save_file(weights, model_dir / shard_name, metadata={"format": "pt"})
+    (model_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {name: shard_name for name in weights}})
+    )
+
+    result = _run_fp8_cast_bf16(model_dir, output_dir, "--preserve-native-dspark-checkpoint")
+
+    assert result.returncode != 0
+    assert "MTP and target tensors share shards" in result.stderr
+
+
+def test_fp8_cast_bf16_retrofits_existing_output_without_rewriting_target_shards(tmp_path):
+    model_dir = tmp_path / "model"
+    output_dir = tmp_path / "bf16"
+    model_dir.mkdir()
+    output_dir.mkdir()
+
+    source_config = {
+        "architectures": ["DeepseekV4ForCausalLM"],
+        "model_type": "deepseek_v4",
+        "expert_dtype": "fp4",
+    }
+    (model_dir / "config.json").write_text(json.dumps(source_config))
+    source_target_shard = "model-00001-of-00002.safetensors"
+    source_draft_shard = "model-00002-of-00002.safetensors"
+    source_target_weights = {"embed.weight": torch.ones((4, 4), dtype=torch.bfloat16)}
+    source_draft_weights = {
+        "mtp.0.ffn.experts.0.w1.weight": _make_packed_weight(2, 64, device="cpu"),
+        "mtp.0.ffn.experts.0.w1.scale": _make_scale(2, 64, device="cpu"),
+    }
+    safetensors.torch.save_file(
+        source_target_weights,
+        model_dir / source_target_shard,
+        metadata={"format": "pt"},
+    )
+    safetensors.torch.save_file(
+        source_draft_weights,
+        model_dir / source_draft_shard,
+        metadata={"format": "pt"},
+    )
+    (model_dir / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "metadata": {},
+                "weight_map": {
+                    **{name: source_target_shard for name in source_target_weights},
+                    **{name: source_draft_shard for name in source_draft_weights},
+                },
+            }
+        )
+    )
+
+    output_config_bytes = b'{"num_hidden_layers":1,"torch_dtype":"bfloat16"}\n'
+    (output_dir / "config.json").write_bytes(output_config_bytes)
+    output_target_weights = {"model.embed_tokens.weight": torch.full((4, 4), 2, dtype=torch.bfloat16)}
+    output_draft_weights = {"mtp.0.mlp.experts.0.gate_proj.weight": torch.full((2, 64), 3, dtype=torch.bfloat16)}
+    safetensors.torch.save_file(
+        output_target_weights,
+        output_dir / source_target_shard,
+        metadata={"format": "pt"},
+    )
+    safetensors.torch.save_file(
+        output_draft_weights,
+        output_dir / source_draft_shard,
+        metadata={"format": "pt"},
+    )
+    output_index = {
+        "metadata": {"total_size": 999},
+        "weight_map": {
+            **{name: source_target_shard for name in output_target_weights},
+            **{name: source_draft_shard for name in output_draft_weights},
+        },
+    }
+    output_index_bytes = json.dumps(output_index).encode()
+    (output_dir / "model.safetensors.index.json").write_bytes(output_index_bytes)
+    target_shard_bytes = (output_dir / source_target_shard).read_bytes()
+    converted_draft_bytes = (output_dir / source_draft_shard).read_bytes()
+    converted_draft_inode = (output_dir / source_draft_shard).stat().st_ino
+
+    result = _run_fp8_cast_bf16(model_dir, output_dir, "--retrofit-native-dspark-checkpoint")
+    assert result.returncode == 0, result.stderr
+
+    assert (output_dir / "config.json").read_bytes() == output_config_bytes
+    assert (output_dir / source_target_shard).read_bytes() == target_shard_bytes
+    assert not (output_dir / source_draft_shard).exists()
+    assert json.loads((output_dir / "model.safetensors.index.json").read_text()) == {
+        "metadata": {},
+        "weight_map": {"model.embed_tokens.weight": source_target_shard},
+    }
+
+    backup_dir = output_dir / "dspark-converted-backup"
+    assert (backup_dir / source_draft_shard).read_bytes() == converted_draft_bytes
+    assert (backup_dir / source_draft_shard).stat().st_ino == converted_draft_inode
+    assert (backup_dir / "model.safetensors.index.json").read_bytes() == output_index_bytes
+    assert (output_dir / "dspark" / source_draft_shard).read_bytes() == (model_dir / source_draft_shard).read_bytes()
+    assert (output_dir / "dspark" / "config.json").read_bytes() == (model_dir / "config.json").read_bytes()

@@ -268,6 +268,38 @@ def test_nvfp4_hf_converter_uses_compact_bf16_moe_prefixes(tmp_path):
         assert f.get_tensor("model.layers.0.mlp.experts.127.down_proj.weight").dtype == torch.bfloat16
 
 
+def test_nvfp4_hf_converter_propagates_nested_dspark_byte_for_byte(tmp_path):
+    model_dir = tmp_path / "model"
+    save_dir = tmp_path / "converted"
+    draft_dir = model_dir / "dspark"
+    draft_dir.mkdir(parents=True)
+
+    (model_dir / "config.json").write_text('{"num_hidden_layers": 1}')
+    root_shard = "model.safetensors"
+    root_weights = {"model.layers.0.input_layernorm.weight": torch.ones(16, dtype=torch.bfloat16)}
+    safetensors.torch.save_file(root_weights, model_dir / root_shard, metadata={"format": "pt"})
+    (model_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {name: root_shard for name in root_weights}})
+    )
+
+    draft_shard = "model-00002-of-00002.safetensors"
+    draft_weights = {"mtp.0.ffn.experts.0.w1.weight": torch.arange(32, dtype=torch.int8).reshape(2, 16)}
+    safetensors.torch.save_file(draft_weights, draft_dir / draft_shard, metadata={"format": "pt"})
+    (draft_dir / "config.json").write_bytes(b'{"native_dspark":true}\n')
+    (draft_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {name: draft_shard for name in draft_weights}})
+    )
+    draft_bytes = {path.name: path.read_bytes() for path in draft_dir.iterdir()}
+
+    convert_nvfp4(str(model_dir), str(save_dir), device="cpu")
+
+    assert {path.name: path.read_bytes() for path in (save_dir / "dspark").iterdir()} == draft_bytes
+    output_index = json.loads((save_dir / "model.safetensors.index.json").read_text())
+    assert not any(name.startswith("mtp.") for name in output_index["weight_map"])
+    output_config = json.loads((save_dir / "config.json").read_text())
+    assert not any(name.startswith(("mtp.", "stages.")) for name in output_config["quantization_config"]["ignore"])
+
+
 def test_nvfp4_hf_converter_quantizes_cross_shard_gated_pair_together(tmp_path, monkeypatch):
     monkeypatch.delenv("NVTE_NVFP4_4OVER6", raising=False)
     model_dir = tmp_path / "model"

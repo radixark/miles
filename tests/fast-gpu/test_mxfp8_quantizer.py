@@ -8,9 +8,12 @@ register_cuda_ci(
 )
 
 
+import json
+
 import pytest
+import safetensors.torch
 import torch
-from tools.convert_hf_to_mxfp8 import _add_dspark_stage_aliases
+from tools.convert_hf_to_mxfp8 import _add_dspark_stage_aliases, convert_mxfp8
 from tools.convert_hf_to_mxfp8 import quantize_mxfp8 as tool_quantize_mxfp8
 from tools.convert_hf_to_mxfp8 import should_quantize as tool_should_quantize_mxfp8
 from transformer_engine.pytorch import MXFP8Quantizer
@@ -175,6 +178,41 @@ def test_mxfp8_hf_config_adds_fused_wqkv_a_alias_only_for_complete_pair():
 
     assert "model.layers.0.self_attn.wqkv_a" in augmented
     assert "model.layers.1.self_attn.wqkv_a" not in augmented
+
+
+def test_mxfp8_hf_converter_propagates_nested_dspark_byte_for_byte(tmp_path):
+    model_dir = tmp_path / "model"
+    save_dir = tmp_path / "converted"
+    draft_dir = model_dir / "dspark"
+    draft_dir.mkdir(parents=True)
+
+    (model_dir / "config.json").write_text('{"num_hidden_layers": 1}')
+    root_shard = "model.safetensors"
+    root_weights = {"model.layers.0.input_layernorm.weight": torch.ones(32, dtype=torch.bfloat16)}
+    safetensors.torch.save_file(root_weights, model_dir / root_shard, metadata={"format": "pt"})
+    (model_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {name: root_shard for name in root_weights}})
+    )
+
+    draft_shard = "model-00002-of-00002.safetensors"
+    draft_weights = {"mtp.0.ffn.experts.0.w1.weight": torch.arange(32, dtype=torch.int8).reshape(2, 16)}
+    safetensors.torch.save_file(draft_weights, draft_dir / draft_shard, metadata={"format": "pt"})
+    (draft_dir / "config.json").write_bytes(b'{"native_dspark":true}\n')
+    (draft_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {name: draft_shard for name in draft_weights}})
+    )
+    draft_bytes = {path.name: path.read_bytes() for path in draft_dir.iterdir()}
+
+    convert_mxfp8(str(model_dir), str(save_dir), device="cpu")
+
+    assert {path.name: path.read_bytes() for path in (save_dir / "dspark").iterdir()} == draft_bytes
+    output_index = json.loads((save_dir / "model.safetensors.index.json").read_text())
+    assert not any(name.startswith("mtp.") for name in output_index["weight_map"])
+    output_config = json.loads((save_dir / "config.json").read_text())
+    assert not any(
+        name.startswith(("mtp.", "stages."))
+        for name in output_config["quantization_config"].get("modules_to_not_convert", [])
+    )
 
 
 @pytest.mark.parametrize(

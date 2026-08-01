@@ -26,6 +26,7 @@ import safetensors.torch
 import torch
 from tqdm import tqdm
 
+from miles.utils.dspark_checkpoint import propagate_dspark_subcheckpoint
 from miles.utils.nvfp4 import NVFP4_GROUP_SIZE, nvfp4_quantize_1d, nvfp4_quantize_1d_pair
 
 DEFAULT_KV_CACHE_SCHEME = {"dynamic": False, "num_bits": 8, "type": "float"}
@@ -391,6 +392,7 @@ def convert_nvfp4(
     input_path = os.path.abspath(model_dir)
     output_path = os.path.abspath(save_dir)
     os.makedirs(output_path, exist_ok=True)
+    propagate_dspark_subcheckpoint(input_path, output_path)
 
     for filename in os.listdir(input_path):
         if not filename.endswith(".safetensors") and not os.path.isdir(os.path.join(input_path, filename)):

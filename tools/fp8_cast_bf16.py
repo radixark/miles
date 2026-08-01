@@ -11,6 +11,7 @@ from param_name_remap import get_param_name_remap
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 
+from miles.utils.dspark_checkpoint import extract_native_dspark_subcheckpoint, retrofit_native_dspark_subcheckpoint
 from miles.utils.mxfp4 import mxfp4_dequantize
 
 
@@ -55,7 +56,13 @@ def _is_native_mxfp4_expert(weight_name: str, weight: torch.Tensor, expert_dtype
     )
 
 
-def main(fp8_path, bf16_path):
+def main(fp8_path, bf16_path, preserve_native_dspark_checkpoint=False):
+    existing_index = os.path.join(bf16_path, "model.safetensors.index.json")
+    if preserve_native_dspark_checkpoint and os.path.exists(existing_index):
+        raise ValueError(
+            f"Cannot fresh-split DSpark into existing checkpoint {bf16_path}; "
+            "use --retrofit-native-dspark-checkpoint instead."
+        )
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(bf16_path, exist_ok=True)
     os.system("cp -rf " + fp8_path + "/config.json " + bf16_path)
@@ -66,6 +73,12 @@ def main(fp8_path, bf16_path):
     with open(model_index_file) as f:
         model_index = json.load(f)
     weight_map_raw = model_index["weight_map"]
+    if preserve_native_dspark_checkpoint:
+        weight_map_raw = extract_native_dspark_subcheckpoint(
+            source_path=fp8_path,
+            output_path=bf16_path,
+            model_index=model_index,
+        )
 
     with open(os.path.join(fp8_path, "config.json")) as f:
         source_config = json.load(f)
@@ -112,7 +125,10 @@ def main(fp8_path, bf16_path):
 
         return loaded_files[file_name][raw_tensor_name]
 
-    safetensor_files = list(glob(os.path.join(fp8_path, "*.safetensors")))
+    if preserve_native_dspark_checkpoint:
+        safetensor_files = [os.path.join(fp8_path, filename) for filename in set(weight_map_raw.values())]
+    else:
+        safetensor_files = list(glob(os.path.join(fp8_path, "*.safetensors")))
     safetensor_files.sort()
     for safetensor_file in tqdm(safetensor_files):
         print(f"Handling file: {safetensor_file}")
@@ -175,5 +191,23 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--input-fp8-hf-path", type=str, required=True)
     parser.add_argument("--output-bf16-hf-path", type=str, required=True)
+    dspark_mode = parser.add_mutually_exclusive_group()
+    dspark_mode.add_argument(
+        "--preserve-native-dspark-checkpoint",
+        action="store_true",
+        help="Keep native MTP-only shards byte-for-byte under output/dspark instead of converting them.",
+    )
+    dspark_mode.add_argument(
+        "--retrofit-native-dspark-checkpoint",
+        action="store_true",
+        help="Install a raw nested draft into an existing BF16 output without reconverting target shards.",
+    )
     args = parser.parse_args()
-    main(args.input_fp8_hf_path, args.output_bf16_hf_path)
+    if args.retrofit_native_dspark_checkpoint:
+        retrofit_native_dspark_subcheckpoint(args.input_fp8_hf_path, args.output_bf16_hf_path)
+    else:
+        main(
+            args.input_fp8_hf_path,
+            args.output_bf16_hf_path,
+            preserve_native_dspark_checkpoint=args.preserve_native_dspark_checkpoint,
+        )
