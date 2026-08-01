@@ -47,6 +47,10 @@ def _iter_samples(group: Group) -> Iterator[Sample]:
             yield item
 
 
+def _first_sample(group: Group) -> Sample:
+    return group[0][0] if isinstance(group[0], list) else group[0]
+
+
 def group_oldest_weight_version(group: Group) -> int | None:
     """Return the minimum weight version across all trajectories and turns in a group."""
     versions = [v for s in _iter_samples(group) if (v := s.oldest_weight_version) is not None]
@@ -217,7 +221,7 @@ class FullyAsyncRolloutFn:
                 continue
 
             if do_print:
-                sample = group[0][0] if isinstance(group[0], list) else group[0]
+                sample = _first_sample(group)
                 logger.info(
                     f"First rollout sample: {[str(sample.prompt) + sample.response]}, "
                     f"label: {sample.label}, reward: {sample.reward}"
@@ -226,13 +230,13 @@ class FullyAsyncRolloutFn:
 
             data.append(group)
 
-        sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
+        sample = _first_sample(data[-1])
         logger.info(
             f"Finish rollout: {[str(sample.prompt) + sample.response]}, "
             f"label: {sample.label}, reward: {sample.reward}"
         )
 
-        data.sort(key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
+        data.sort(key=lambda group: _first_sample(group).index)
 
         if self._sample_filter is not None:
             self._sample_filter(args, data)
