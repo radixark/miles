@@ -209,9 +209,15 @@ class NVMeOptimizerStateStore:
     _next_uid = 0
 
     def __init__(
-        self, distrib_optimizer: "DistributedOptimizer", dir_root: str, chunk_mb: int, moment_dtype: str = "fp32"
+        self,
+        distrib_optimizer: "DistributedOptimizer",
+        dir_root: str,
+        chunk_mb: int,
+        moment_dtype: str = "fp32",
+        allow_fresh_state: bool = False,
     ):
         self.dist_opt = distrib_optimizer
+        self._allow_fresh_state = allow_fresh_state
         self.uid = NVMeOptimizerStateStore._next_uid
         NVMeOptimizerStateStore._next_uid += 1
         config = distrib_optimizer.config
@@ -394,11 +400,16 @@ class NVMeOptimizerStateStore:
     def load_from(self, base_dir: str) -> bool:
         """Restore this store from a checkpoint base, or report that there is nothing there.
 
-        Returns False for a checkpoint written without streaming, which keeps pre-streaming
-        checkpoints loadable; every other mismatch fails on the asserts below.
+        Returns False only under --no-load-optim, which is what makes a pre-streaming
+        checkpoint loadable; every other mismatch fails on the asserts below.
         """
         dirpath = os.path.join(base_dir, self.relative_dir)
         if not os.path.isdir(dirpath):
+            assert self._allow_fresh_state, (
+                f"no NVMe optimizer state at {dirpath}; this checkpoint was written without "
+                "--stream-optimizer-state-to-disk and its optimizer state cannot be streamed, "
+                "so resuming would restart Adam from zero. Pass --no-load-optim to accept that."
+            )
             logger.warning(f"no NVMe optimizer state at {dirpath}; starting from a fresh optimizer state")
             return False
 
@@ -448,7 +459,11 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
         if dist_opt.is_stub_optimizer:
             continue
         store = NVMeOptimizerStateStore(
-            dist_opt, dir_root, args.offload_train_disk_chunk_mb, args.stream_optimizer_state_moment_dtype
+            dist_opt,
+            dir_root,
+            args.offload_train_disk_chunk_mb,
+            args.stream_optimizer_state_moment_dtype,
+            allow_fresh_state=args.no_load_optim,
         )
         _bind(dist_opt, store)
 

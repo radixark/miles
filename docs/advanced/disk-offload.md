@@ -77,9 +77,12 @@ dtypes it was written with and a resume verifies them, so bytes written as bf16 
 be read back as fp32. The fp8 options work but are not recommended: `exp_avg_sq` needs
 per-block scaling to survive 8-bit storage, which this does not implement.
 
-Two limits to know about. Resume is same-topology only — the on-disk layout follows this
+Three limits to know about. Resume is same-topology only — the on-disk layout follows this
 rank's DP shard, so changing TP/PP/DP/EP fails the layout assert rather than resharding.
-And the optimizer state is copied to the checkpoint directory synchronously, outside
+A checkpoint written before streaming was enabled cannot be resumed with it: the streamed
+state is the only optimizer state read, so miles refuses rather than silently restarting
+Adam from zero — pass `--no-load-optim` to accept a fresh optimizer state. And the
+optimizer state is copied to the checkpoint directory synchronously, outside
 `--async-save`, so expect checkpoint saves to take noticeably longer.
 
 The two also help each other. With the optimizer state already on disk there is that much
