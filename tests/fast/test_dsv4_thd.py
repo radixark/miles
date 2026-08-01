@@ -10,7 +10,10 @@ CP collectives are slicing and concatenation here. That the real ones behave tha
 checked on GPUs by tests/e2e/precision/test_dsv4_thd_cp_correctness.py.
 """
 
+import importlib
 import random
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -251,10 +254,26 @@ def test_an_empty_compressed_stream_yields_no_rows():
 # ======================================================================================
 
 
+def _stub_qat_if_unavailable():
+    """The compressor imports the fp8 QAT helper, which reaches for GPU-only kernels at import
+    time. Nothing here is fp8, so stand a stub in for it where those kernels are missing; the
+    stub raises if anything ever calls it, so it cannot mask a real fp8 path.
+    """
+    name = "miles_plugins.models.deepseek_v4.ops.qat"
+    try:
+        importlib.import_module(name)
+    except ImportError:
+        stub = types.ModuleType(name)
+        stub.fp8_simulate_qat = _fp8_unavailable
+        sys.modules[name] = stub
+
+
+def _fp8_unavailable(*_args, **_kwargs):
+    raise RuntimeError("the fp8 QAT kernels are not installed in this environment")
+
+
 def _compressor(compress_ratio):
-    # The compressor pulls in the fp8 kernels at import time, so it is unavailable on a plain
-    # CPU runner even though nothing here is fp8. The index tests above do not need it.
-    pytest.importorskip("tile_kernels")
+    _stub_qat_if_unavailable()
     from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 
     torch.manual_seed(0)
