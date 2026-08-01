@@ -1,4 +1,6 @@
 import torch
+from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
+
 from mbridge.core import register_model
 from mbridge.models import Qwen2MoEBridge
 
@@ -75,9 +77,24 @@ class Qwen3NextBridge(Qwen2MoEBridge):
 
         return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
 
+    def _get_transformer_layer_spec(self, vp_stage=None):
+        transformer_layer_spec = super()._get_transformer_layer_spec(vp_stage)
+        self._last_transformer_layer_spec = transformer_layer_spec
+        return transformer_layer_spec
+
+    def _get_gptmodel_args(self) -> dict:
+        ret = super()._get_gptmodel_args()
+        if getattr(self.hf_config, "num_nextn_predict_layers", None) is not None:
+            transformer_layer_spec = getattr(self, "_last_transformer_layer_spec", None)
+            if transformer_layer_spec is None:
+                transformer_layer_spec = self._get_transformer_layer_spec()
+            mtp_block_spec = get_gpt_mtp_block_spec(self.config, transformer_layer_spec, use_transformer_engine=True)
+            ret["mtp_block_spec"] = mtp_block_spec
+        return ret
+
     def _build_config(self):
         mtp_args = {}
-        if hasattr(self.hf_config, "num_nextn_predict_layers"):
+        if getattr(self.hf_config, "num_nextn_predict_layers", None) is not None:
             mtp_args["mtp_num_layers"] = self.hf_config.num_nextn_predict_layers
 
         return self._build_base_config(
