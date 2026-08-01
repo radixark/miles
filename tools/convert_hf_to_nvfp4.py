@@ -218,6 +218,7 @@ def _augment_ignore_list(ignore_list: list[str]) -> list[str]:
         if match:
             extra.add(match.group(1))
     ignore_set.update(extra)
+    ignore_set.update(f"stages.{name.removeprefix('mtp.')}" for name in tuple(ignore_set) if name.startswith("mtp."))
     return sorted(ignore_set)
 
 

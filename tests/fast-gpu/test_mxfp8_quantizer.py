@@ -10,6 +10,7 @@ register_cuda_ci(
 
 import pytest
 import torch
+from tools.convert_hf_to_mxfp8 import _add_dspark_stage_aliases
 from tools.convert_hf_to_mxfp8 import quantize_mxfp8 as tool_quantize_mxfp8
 from tools.convert_hf_to_mxfp8 import should_quantize as tool_should_quantize_mxfp8
 from transformer_engine.pytorch import MXFP8Quantizer
@@ -140,6 +141,23 @@ def test_mxfp8_hf_should_quantize_respects_extra_high_precision_layers_hf():
         weight,
         skip_weight_substrings=("mlp.experts.1",),
     )
+
+
+def test_mxfp8_hf_config_adds_dspark_stage_aliases_for_skipped_mtp_modules():
+    mtp_modules = {
+        "mtp.0.self_attn.wq_a",
+        "mtp.0.main_proj",
+        "mtp.0.mlp.shared_experts.gate_proj",
+    }
+
+    augmented = _add_dspark_stage_aliases(mtp_modules)
+
+    assert augmented == mtp_modules | {
+        "stages.0.self_attn.wq_a",
+        "stages.0.main_proj",
+        "stages.0.mlp.shared_experts.gate_proj",
+    }
+    assert not any(".mlp.experts" in name for name in augmented)
 
 
 @pytest.mark.parametrize(

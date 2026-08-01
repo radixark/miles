@@ -15,7 +15,7 @@ import pytest
 import safetensors
 import safetensors.torch
 import torch
-from tools.convert_hf_to_nvfp4 import convert_nvfp4
+from tools.convert_hf_to_nvfp4 import _augment_ignore_list, convert_nvfp4
 from tools.convert_hf_to_nvfp4 import quantize_nvfp4 as tool_quantize_nvfp4
 from tools.convert_hf_to_nvfp4 import should_quantize as tool_should_quantize_nvfp4
 from transformer_engine.pytorch.custom_recipes.quantization_ref_nvfp4 import NVFP4QuantizerRef
@@ -190,6 +190,26 @@ def test_nvfp4_hf_should_quantize_respects_extra_high_precision_layers_hf():
         weight,
         skip_weight_substrings=("mlp.experts.1",),
     )
+
+
+def test_nvfp4_hf_config_adds_dspark_stage_aliases_for_skipped_mtp_modules():
+    mtp_modules = [
+        "mtp.0.self_attn.wq_a",
+        "mtp.0.main_proj",
+        "mtp.0.mlp.shared_experts.gate_proj",
+    ]
+
+    augmented = _augment_ignore_list(mtp_modules)
+
+    assert augmented == sorted(
+        mtp_modules
+        + [
+            "stages.0.self_attn.wq_a",
+            "stages.0.main_proj",
+            "stages.0.mlp.shared_experts.gate_proj",
+        ]
+    )
+    assert not any(".mlp.experts" in name for name in augmented)
 
 
 def test_nvfp4_hf_converter_uses_compact_bf16_moe_prefixes(tmp_path):
