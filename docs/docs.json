@@ -76,7 +76,8 @@
         "group": "Thinking Machines",
         "root": "models/thinkingmachines/index",
         "pages": [
-         "models/thinkingmachines/inkling"
+         "models/thinkingmachines/inkling",
+         "models/thinkingmachines/inkling-small"
         ],
         "expanded": false
        },

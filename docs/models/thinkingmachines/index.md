@@ -9,6 +9,7 @@ Miles ships a native Megatron recipe for **Inkling**, Thinking Machines Lab's 97
 | Model | Active / Total | Layers | HF ID | Recipe |
 |---|---|---|---|---|
 | Inkling | 41 B / 975 B | 66 | [thinkingmachines/Inkling](https://huggingface.co/thinkingmachines/Inkling) | [Inkling](/models/thinkingmachines/inkling) |
+| Inkling-Small | 12 B / 276 B | 42 | [thinkingmachines/Inkling-Small](https://huggingface.co/thinkingmachines/Inkling-Small) | [Inkling-Small](/models/thinkingmachines/inkling-small) |
 
 ## Fastest path to train
 
