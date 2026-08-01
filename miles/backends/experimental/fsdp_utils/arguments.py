@@ -45,7 +45,7 @@ class FSDPArgs:
     fsdp_cpu_backend: str | None = (
         "gloo"  # CPU backend for FSDP CPU offload (e.g., "gloo"). Set to None to disable hybrid backend.
     )
-    # FSDP2 hybrid sharding: the remaining data-parallel ranks form each parameter-shard group.
+    # FSDP2 hybrid-shard replica count.
     dp_replicate_size: int = 1
 
     deterministic_mode: bool = False  # This name must be the same as Megatron's
