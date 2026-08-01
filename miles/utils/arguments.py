@@ -16,6 +16,7 @@ from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_config
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.misc import load_function
 from miles.utils.object_store import ObjectStoreBackend
@@ -2900,7 +2901,11 @@ def miles_validate_args(args):
         assert (
             args.optimizer == "adam"
         ), f"--stream-optimizer-state-to-disk requires --optimizer adam, got {args.optimizer}"
-        assert not args.multi_lora, "--stream-optimizer-state-to-disk does not support multi-LoRA"
+        assert not (args.multi_lora or is_lora_enabled(args)), (
+            "--stream-optimizer-state-to-disk does not support LoRA: the LoRA checkpoint path "
+            "persists optimizer.state_dict(), which the store leaves empty, and restores the "
+            "adapter into the model params without refreshing the streamed main params"
+        )
         assert not args.optimizer_cpu_offload, "--stream-optimizer-state-to-disk excludes --optimizer-cpu-offload"
         assert (
             not args.offload_optimizer_states
