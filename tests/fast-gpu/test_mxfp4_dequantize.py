@@ -9,9 +9,9 @@ register_cuda_ci(
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 import safetensors
@@ -19,7 +19,6 @@ import safetensors.torch
 import torch
 
 from miles.utils.mxfp4 import MXFP4_GROUP_SIZE, mxfp4_dequantize
-
 
 FP4_E2M1_VALUES = (
     0.0,
