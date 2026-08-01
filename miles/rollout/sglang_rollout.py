@@ -20,7 +20,7 @@ from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
-from miles.utils.http_utils import get, post
+from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
@@ -383,6 +383,7 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     else:
         response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
         urls = [worker["url"] for worker in response["workers"]]
+    urls = router_worker_base_urls(urls)
 
     logger.info(f"Abort request for {urls}")
     abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]

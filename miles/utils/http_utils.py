@@ -139,6 +139,18 @@ def _wrap_ipv6(host):
         return host
 
 
+def router_worker_base_urls(urls: list[str]) -> list[str]:
+    """Strip the `@<rank>` suffix dp-aware routing adds; ranks of one engine dedupe to one address."""
+    bases = []
+    for url in urls:
+        base, sep, rank = url.rpartition("@")
+        if sep and rank.isdigit():
+            url = base
+        if url not in bases:
+            bases.append(url)
+    return bases
+
+
 def run_router(args):
     # Spawned as a fresh interpreter, so it inherits no logging config.
     configure_logger_raw("router")
