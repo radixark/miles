@@ -18,7 +18,6 @@ import torch
 
 from tests.ci.ci_register import register_cpu_ci
 
-from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     CompressorInputCompact,
     compact_gather_index,
@@ -253,6 +252,11 @@ def test_an_empty_compressed_stream_yields_no_rows():
 
 
 def _compressor(compress_ratio):
+    # The compressor pulls in the fp8 kernels at import time, so it is unavailable on a plain
+    # CPU runner even though nothing here is fp8. The index tests above do not need it.
+    pytest.importorskip("tile_kernels")
+    from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
+
     torch.manual_seed(0)
     c = DeepSeekV4Compressor(
         config=SimpleNamespace(
