@@ -2897,6 +2897,11 @@ def miles_validate_args(args):
             "same pressure and are only ever deployed as a pair, so that is the only combination "
             "validated; streaming alone runs but is untested."
         )
+        assert not args.indep_dp, (
+            "--stream-optimizer-state-to-disk does not support --indep-dp: each cell has its own "
+            "process group, so torch.distributed.get_rank() restarts at 0 per cell and two cells "
+            "on one node would share a store directory"
+        )
         assert args.use_distributed_optimizer, "--stream-optimizer-state-to-disk requires the distributed optimizer"
         assert (
             args.optimizer == "adam"
