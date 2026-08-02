@@ -375,7 +375,7 @@ def _alive_engine_cells(servers) -> list:
     cells = []
     for server in servers.values():
         for cell in server.server_cells.values():
-            if cell.is_alive:
+            if cell.is_pending_weights_or_serving:
                 cells.append(cell)
     return cells
 
@@ -404,7 +404,7 @@ def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
         worker_gpu_uuids = [next(probed_uuids) for _ in worker_infos]
         engines.append(
             EngineInfo(
-                addr=cell.addr_info.server_url,
+                addr=cell.server_url,
                 worker_type=cell.meta.worker_type,
                 engine_rank=engine_rank,
                 gpus=[
