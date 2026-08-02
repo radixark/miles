@@ -33,6 +33,9 @@ class SchedulingSpec(FrozenStrictBaseModel):
     num_cells: int
     num_workers_per_cell: int
     num_gpus_per_worker: float
+    num_gpu_slots_per_worker: int = 0
+    pg_name: str | None = None
+    pg_slot_offset: int = 0
     pin_to_head: bool = False
 
     @classmethod
