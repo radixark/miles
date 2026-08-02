@@ -1,15 +1,29 @@
-"""Architecture contracts shared by native-LoRA specs, modules, and codecs."""
+"""Architecture contracts shared by native-LoRA specs, modules, and exporters."""
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass, replace
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 import torch.nn as nn
 
 from miles_plugins.lora.config import LoRAConfig
 
-COLUMN, ROW, REPLICATED = "column", "row", "replicated"
+
+class ShardLayout(str, enum.Enum):
+    """How one logical projection is sharded across the tensor-parallel group."""
+
+    COLUMN = "column"
+    ROW = "row"
+    REPLICATED = "replicated"
+
+
+class AttentionFamily(str, enum.Enum):
+    """Structural attention family a registry entry belongs to."""
+
+    GQA = "gqa"
+    MLA = "mla"
 
 
 @dataclass(frozen=True)
@@ -17,13 +31,13 @@ class ProjectionSpec:
     """External name and shard layout for one logical HF LoRA projection.
 
     ``attr`` names the parameter pair stored on the adapter
-    (``<attr>_A``/``<attr>_B``). The codec derives each rank's shard width from
+    (``<attr>_A``/``<attr>_B``). The exporters derive each rank's shard width from
     those parameter shapes, so this descriptor stays static and pickle-safe.
     """
 
     hf: str
     attr: str
-    layout: Literal["column", "row", "replicated"]
+    layout: ShardLayout
 
 
 @dataclass(frozen=True)
@@ -112,11 +126,15 @@ class MLPLoRASpec(Protocol):
 
 
 class MoELoRASpec(Protocol):
-    """Routed-expert validation/attachment boundary."""
+    """Routed-expert validation/attachment boundary.
+
+    ``validate_layer`` returns the MLP targets the layer cannot attach (for the
+    orchestrator to report once per run) and raises when the miss is an error.
+    """
 
     supported_targets: frozenset[str]
 
-    def validate_layer(self, mlp: nn.Module, context: AttachContext) -> None: ...
+    def validate_layer(self, mlp: nn.Module, context: AttachContext) -> frozenset[str]: ...
 
 
 @dataclass(frozen=True)

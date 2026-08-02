@@ -8,18 +8,21 @@ Constraint:
 - Import ``miles``/``megatron`` inside functions, never at module level.
 """
 
-from miles_plugins.lora.codec.sglang import export_lora_sglang_named
 from miles_plugins.lora.lora import (
     apply_native_lora,
     export_lora_hf_named,
     load_lora_adapter_hf,
     wrap_model_provider_with_lora,
 )
+from miles_plugins.lora.registry import default_target_modules, preflight_native_lora
+from miles_plugins.lora.serving import export_lora_sglang_named
 
 __all__ = [
     "apply_native_lora",
+    "default_target_modules",
     "export_lora_hf_named",
     "export_lora_sglang_named",
     "load_lora_adapter_hf",
+    "preflight_native_lora",
     "wrap_model_provider_with_lora",
 ]

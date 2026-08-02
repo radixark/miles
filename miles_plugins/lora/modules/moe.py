@@ -3,7 +3,7 @@
 TODO:
 
 - Routed-expert parameter layout.
-- EP codec contract; lands with the layout.
+- EP export contract; lands with the layout.
 """
 
 __all__: list[str] = []

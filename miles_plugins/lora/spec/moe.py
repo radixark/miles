@@ -1,38 +1,31 @@
 """MoE architecture specifications for Miles-native LoRA.
 
-``SharedOuterExpertMoESpec`` supports always-on shared-expert MLPs.
-``GeneralExpertMoESpec`` validates routed-only layers and rejects unsupported
-explicit MLP targets while allowing ``all-linear`` to skip them.
+The MoE spec's job is per-layer policy: decide what happens when MLP targets
+meet an expert layer. The MLP target names are injected at construction from
+the arch spec's MLP spec, so there is a single source of truth for them.
 
 Unsupported:
 
 - EP-shared and shared-outer routed/grouped-expert LoRA.
 - Sequential per-expert and router LoRA.
-- Expert-TP/EP coordination and expert-axis HF/SGLang codecs.
+- Expert-TP/EP coordination and expert-axis HF/SGLang export.
 
 TODO:
 
 - Add MoE attachment support and expert-TP/EP context.
-- Implement expert adapters, synchronization, HF codec support, and SGLang
+- Implement expert adapters, synchronization, HF export support, and SGLang
   packing.
 """
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass
-
 import torch.nn as nn
 
 from miles_plugins.lora.spec.base import AttachContext
-from miles_plugins.lora.spec.mlp import MLP_TARGETS
 
-logger = logging.getLogger(__name__)
-
-_warned_dropped_parser_mlp_targets = False
+_NO_TARGETS: frozenset[str] = frozenset()
 
 
-@dataclass(frozen=True)
 class GeneralExpertMoESpec:
     """MoE layers without a shared expert: routed/grouped experts only.
 
@@ -42,22 +35,20 @@ class GeneralExpertMoESpec:
 
     supported_targets: frozenset[str] = frozenset()
 
-    def validate_layer(self, mlp: nn.Module, context: AttachContext) -> None:
-        if not hasattr(mlp, "experts") or not context.targets.intersection(MLP_TARGETS):
-            return
+    def __init__(self, mlp_targets: frozenset[str]):
+        self._mlp_targets = mlp_targets
+
+    def validate_layer(self, mlp: nn.Module, context: AttachContext) -> frozenset[str]:
+        """Return the MLP targets this layer cannot attach; raise when that is an error.
+
+        Parser-added all-linear names mirror the MLA generic-qkv normalization:
+        the layer skips what the architecture cannot attach and reports the
+        skipped set for the orchestrator to log once per run.
+        """
+        if not hasattr(mlp, "experts") or not context.targets.intersection(self._mlp_targets):
+            return _NO_TARGETS
         if context.lora.expanded_from_all_linear:
-            # Parser-added all-linear names mirror the MLA generic-qkv normalization:
-            # skip what this architecture cannot attach instead of failing the run.
-            global _warned_dropped_parser_mlp_targets
-            if not _warned_dropped_parser_mlp_targets:
-                _warned_dropped_parser_mlp_targets = True
-                logger.info(
-                    "[lora-native] all-linear MLP targets %s skipped on MoE layers without an attachable "
-                    "shared expert; routed/grouped expert LoRA needs --megatron-to-hf-mode bridge or a "
-                    "model-specific --lora-provider-path.",
-                    sorted(context.targets.intersection(MLP_TARGETS)),
-                )
-            return
+            return context.targets.intersection(self._mlp_targets)
         raise AssertionError(
             "Miles-native LoRA does not yet support routed/grouped expert projections, and this MoE "
             "layer has no attachable shared expert. Attention-only LoRA is supported for this model; "
@@ -66,24 +57,17 @@ class GeneralExpertMoESpec:
         )
 
 
-@dataclass(frozen=True)
-class SharedOuterExpertMoESpec:
+class SharedOuterExpertMoESpec(GeneralExpertMoESpec):
     """MoE layers with a shared (outer) expert: LoRA adapts the shared expert's MLP.
 
-    Layers without a shared expert delegate to ``GeneralExpertMoESpec``, so one
+    Layers without a shared expert fall back to the routed-only policy, so one
     registry entry covers models that mix both layer kinds.
     """
 
-    supported_targets: frozenset[str] = frozenset()
-
-    def validate_layer(self, mlp: nn.Module, context: AttachContext) -> None:
-        if not hasattr(mlp, "experts") or not context.targets.intersection(MLP_TARGETS):
-            return
+    def validate_layer(self, mlp: nn.Module, context: AttachContext) -> frozenset[str]:
+        if not hasattr(mlp, "experts") or not context.targets.intersection(self._mlp_targets):
+            return _NO_TARGETS
         shared = getattr(mlp, "shared_experts", None)
         if shared is not None and hasattr(shared, "linear_fc1"):
-            return
-        GENERAL_EXPERT_MOE_SPEC.validate_layer(mlp, context)
-
-
-GENERAL_EXPERT_MOE_SPEC = GeneralExpertMoESpec()
-SHARED_OUTER_EXPERT_MOE_SPEC = SharedOuterExpertMoESpec()
+            return _NO_TARGETS
+        return super().validate_layer(mlp, context)

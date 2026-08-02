@@ -11,16 +11,16 @@ import logging
 
 import torch.nn as nn
 
-from miles_plugins.lora.codec.hf import (
+from miles_plugins.lora.config import LoRAConfig
+from miles_plugins.lora.hf_adapter import (
     export_lora_hf_named,
     load_lora_adapter_hf,
     mbridge_cross_check,
     resolve_hf_naming,
 )
-from miles_plugins.lora.codec.sglang import export_lora_sglang_named
-from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.registry import GQA, resolve_model_spec
-from miles_plugins.lora.spec.base import AttachContext
+from miles_plugins.lora.registry import resolve_model_spec
+from miles_plugins.lora.serving import export_lora_sglang_named
+from miles_plugins.lora.spec.base import AttachContext, AttentionFamily
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def _assert_supported_run(args, context: AttachContext) -> None:
 def _validate_plain_gqa_chunk(layers, arch_spec, context: AttachContext) -> None:
     """Reject a registry/structure mismatch before attaching or freezing anything."""
     attention_targets = context.targets.intersection(arch_spec.attention.supported_targets)
-    if arch_spec.name != GQA or not attention_targets:
+    if arch_spec.name != AttentionFamily.GQA or not attention_targets:
         return
     missing = [
         layer.layer_number - 1 for layer in layers if not hasattr(getattr(layer, "self_attention", None), "linear_qkv")
@@ -126,6 +126,7 @@ def apply_native_lora(model, args):
 
     wrapped = 0
     mixer_only_layers = []
+    moe_skipped_targets: set[str] = set()
     for layer in layers:
         layer_index = layer.layer_number - 1
         hf_layer = f"{context.layer_prefix}{layer_index}."
@@ -133,11 +134,15 @@ def apply_native_lora(model, args):
         if attention is not None:
             attached = arch_spec.attention.attach(attention, hf_layer + "self_attn.", context)
             wrapped += attached
-            if attached == 0 and not hasattr(attention, "linear_qkv") and arch_spec.model_family == GQA:
+            if (
+                attached == 0
+                and not hasattr(attention, "linear_qkv")
+                and arch_spec.model_family == AttentionFamily.GQA
+            ):
                 mixer_only_layers.append(layer_index)
 
         mlp = layer.mlp
-        arch_spec.moe.validate_layer(mlp, context)
+        moe_skipped_targets.update(arch_spec.moe.validate_layer(mlp, context))
         if hasattr(mlp, "linear_fc1"):
             assert getattr(mlp.config, "gated_linear_unit", True), "native LoRA assumes a gated (SwiGLU) MLP"
             wrapped += arch_spec.mlp.attach(mlp, hf_layer + "mlp.", context)
@@ -163,6 +168,13 @@ def apply_native_lora(model, args):
         100.0 * trainable / max(total, 1),
         hooked_embedding is not None,
     )
+    if moe_skipped_targets:
+        logger.info(
+            "[lora-native] all-linear MLP targets %s skipped on MoE layers without an attachable "
+            "shared expert; routed/grouped expert LoRA needs --megatron-to-hf-mode bridge or a "
+            "model-specific --lora-provider-path.",
+            sorted(moe_skipped_targets),
+        )
     if mixer_only_layers:
         shown = f"{mixer_only_layers[:4]}{'...' if len(mixer_only_layers) > 4 else ''}"
         logger.info(

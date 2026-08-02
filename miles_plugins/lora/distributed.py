@@ -124,15 +124,16 @@ class TensorParallelGather:
             offset += size
 
 
-_marked_lora_grad_params_cache: dict[int, list] = {}
-
-
 def reduce_marked_lora_grads(model: Sequence[nn.Module]) -> None:
     """Sum partial gradients for replicated native-LoRA parameters."""
     from megatron.core import parallel_state as ps
 
-    key = id(model[0]) if model else 0
-    marked = _marked_lora_grad_params_cache.get(key)
+    if not model:
+        return
+    # Cache the marked-parameter scan on the leading chunk so the entry's
+    # lifetime is the model's lifetime (an id()-keyed module-global here would
+    # outlive rebuilt models and can collide with recycled ids).
+    marked = getattr(model[0], "_miles_lora_marked_grad_params", None)
     if marked is None:
         marked = []
         for chunk in model:
@@ -140,7 +141,7 @@ def reduce_marked_lora_grads(model: Sequence[nn.Module]) -> None:
                 group_name = getattr(param, "_lora_grad_sum_group", None)
                 if group_name is not None and param.requires_grad:
                     marked.append((param, group_name))
-        _marked_lora_grad_params_cache[key] = marked
+        model[0]._miles_lora_marked_grad_params = marked
     if not marked:
         return
 

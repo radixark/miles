@@ -191,6 +191,7 @@ def _dequantize(args: ScriptArgs):
 
 
 def _convert(args: ScriptArgs):
+    _preflight(args)
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -211,7 +212,18 @@ def _prepare(args: ScriptArgs):
     _convert(args)
 
 
+def _preflight(args: ScriptArgs) -> None:
+    """Audit registry/mbridge/model-args coverage before any GPU work."""
+    try:
+        from miles_plugins.lora import preflight_native_lora
+    except ImportError:  # older plugin without the helper
+        return
+    report = preflight_native_lora(args.hf_checkpoint, args.megatron_model_type, strict=True)
+    print(report.render(), flush=True)
+
+
 def _train(args: ScriptArgs):
+    _preflight(args)
     print(
         f"[run] native LoRA: {args.model_name} (megatron_model_type={args.megatron_model_type}), "
         f"TP{args.tensor_model_parallel_size} EP{args.expert_model_parallel_size}, "

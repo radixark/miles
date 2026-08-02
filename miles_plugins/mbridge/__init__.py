@@ -4,6 +4,7 @@ from .glm4 import GLM4Bridge
 from .glm4moe import GLM4MoEBridge
 from .glm4moe_lite import GLM4MoELiteBridge
 from .joyai_llm_flash import JoyAILLMFlashBridge
+from .kimi_k25 import KimiK25Bridge
 from .mimo import MimoBridge
 from .qwen3_5 import Qwen3_5Bridge
 from .qwen3_next import Qwen3NextBridge
@@ -18,4 +19,5 @@ __all__ = [
     "DeepseekV32Bridge",
     "DeepseekV4Bridge",
     "JoyAILLMFlashBridge",
+    "KimiK25Bridge",
 ]

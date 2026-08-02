@@ -18,7 +18,6 @@ import torch.nn as nn
 
 from miles_plugins.lora.modules.linear import iter_adapters
 
-
 _MODEL_CHUNK_PREFIX = "_miles_model_chunks."
 
 
@@ -190,7 +189,7 @@ def has_native_adapters(model_chunks: Sequence[nn.Module]) -> bool:
 
     Concrete ``NativeLoRAAdapter`` classes are deliberately not enough: a
     custom provider may compose one with additional adapter types that the
-    native checkpoint codec cannot serialize. ``apply_native_lora`` marks every
+    native checkpoint helpers cannot serialize. ``apply_native_lora`` marks every
     successful chunk, including legitimate PP/VPP chunks with zero local
     targets, so save and load share one explicit provider contract.
     """
