@@ -37,8 +37,8 @@ from miles.utils.types import Sample
 from .generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
     generation_return_logprob,
-    get_response_tokens_and_logprobs,
     get_indexer_topk_from_response,
+    get_response_tokens_and_logprobs,
     policy_uses_routing_key,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
