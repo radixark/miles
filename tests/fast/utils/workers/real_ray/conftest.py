@@ -110,6 +110,8 @@ def make_command_spec(
     port_infos: list[PortInfo] | None = None,
     env_var: dict[str, str] | None = None,
     num_gpus_per_worker: float = 0,
+    num_gpu_slots_per_worker: int = 0,
+    pg_name: str | None = None,
 ) -> CommandWorkerSpec:
     return CommandWorkerSpec(
         name=name,
@@ -121,6 +123,8 @@ def make_command_spec(
             num_cells=num_cells,
             num_workers_per_cell=num_workers_per_cell,
             num_gpus_per_worker=num_gpus_per_worker,
+            num_gpu_slots_per_worker=num_gpu_slots_per_worker,
+            pg_name=pg_name,
         ),
         launch_command=launch_command,
     )
