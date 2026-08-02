@@ -293,3 +293,22 @@ class TestPlacementOnRealRay:
         assert records["1-0"]["context"]["gpu_ids"] == [12, 13]
         assert all(record["env"]["CUDA_VISIBLE_DEVICES"] for record in records.values())
         assert len(ray.get(handle.get_addrs.remote())["engine"]) == 2
+
+
+class TestStopCellOnRealRay:
+    def test_stopping_a_cell_ends_its_worker_processes_and_leaves_the_others_alone(
+        self, cell_stoppable_manager_factory, worker_probe_factory
+    ):
+        """Tearing down one cell kills exactly that cell's worker processes."""
+        probe = worker_probe_factory()
+        manager_handle = cell_stoppable_manager_factory(
+            [make_command_spec("engine", num_cells=2, num_workers_per_cell=2, launch_command=probe.launch_command)]
+        )
+        records = probe.wait_for_records(4)
+        stopped_pids = [records["1-0"]["pid"], records["1-1"]["pid"]]
+        surviving_pids = [records["0-0"]["pid"], records["0-1"]["pid"]]
+
+        ray.get(manager_handle.stop_cell.remote("engine", 1))
+
+        probe.wait_until_gone(stopped_pids)
+        assert all(is_process_running(pid) for pid in surviving_pids)

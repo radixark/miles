@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pytest
-from tests.fast.utils.workers.fake_ray import EVENT_CREATE, FakeRayCluster
+from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayCluster
 
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers.command_actor import CommandActor
@@ -718,3 +718,76 @@ class TestCellLifecycle:
         assert len(fake_ray_cluster.calls_of("_get_node_ip")) == 3
         assert len(fake_ray_cluster.calls_of("run")) == 3
         assert len(manager._pools["engine"].cells[0].actors) == 3
+
+
+class TestCellStop:
+    async def test_stopping_a_cell_shuts_down_and_kills_every_worker(self, fake_ray_cluster: FakeRayCluster):
+        """A stopped cell releases all of its workers, not just the first one."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        cell = manager._pools["engine"].cells[0]
+
+        await cell.stop()
+
+        assert [call.method for call in fake_ray_cluster.calls if call.method == "shutdown"] == ["shutdown"] * 2
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 2
+        assert all(handle.killed for handle in fake_ray_cluster.handles)
+        assert cell.actors is None
+
+    async def test_stopping_one_cell_leaves_the_others_running(self, fake_ray_cluster: FakeRayCluster):
+        """Stopping a cell must not touch the workers of its siblings."""
+        manager = await _launch([_make_spec("engine", num_cells=2)])
+
+        await manager._pools["engine"].cells[0].stop()
+
+        assert [handle.killed for handle in fake_ray_cluster.handles] == [True, False]
+        assert manager._pools["engine"].cells[1].actors is not None
+
+    async def test_a_worker_that_cannot_shut_down_gracefully_is_still_killed(self, fake_ray_cluster: FakeRayCluster):
+        """A hung or broken worker is exactly the one that must be force-killed."""
+        manager = await _launch([_make_spec("engine")])
+        cell = manager._pools["engine"].cells[0]
+        fake_ray_cluster.handles[0].failing_methods["shutdown"] = RuntimeError("shutdown timed out")
+
+        await cell.stop()
+
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+        assert cell.actors is None
+
+    async def test_a_failing_kill_does_not_abort_the_teardown_of_other_workers(self, fake_ray_cluster: FakeRayCluster):
+        """One worker ray cannot kill must not stop the cell from tearing the rest down."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        cell = manager._pools["engine"].cells[0]
+        fake_ray_cluster.kill_error = RuntimeError("kill failed")
+
+        await cell.stop()
+
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 2
+        assert cell.actors is None
+
+
+class TestStopDetails:
+    async def test_each_worker_is_asked_to_shut_down_before_it_is_killed(self, fake_ray_cluster: FakeRayCluster):
+        """Graceful shutdown first gives the subprocess a chance to exit cleanly."""
+        manager = await _launch([_make_spec("engine")])
+
+        await manager._pools["engine"].cells[0].stop()
+
+        assert fake_ray_cluster.events[-2:] == ["shutdown", EVENT_KILL]
+
+    async def test_graceful_shutdown_is_bounded_by_a_timeout(self, fake_ray_cluster: FakeRayCluster):
+        """A hung worker must not block teardown forever."""
+        manager = await _launch([_make_spec("engine")])
+
+        await manager._pools["engine"].cells[0].stop()
+
+        assert fake_ray_cluster.get_timeouts[-1] == 30
+
+    async def test_all_workers_are_killed_even_when_one_shutdown_hangs(self, fake_ray_cluster: FakeRayCluster):
+        """One broken worker must not save its peers from teardown."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=3)])
+        fake_ray_cluster.handles[1].failing_methods["shutdown"] = TimeoutError("hung")
+
+        await manager._pools["engine"].cells[0].stop()
+
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 3
+        assert all(handle.killed for handle in fake_ray_cluster.handles)
