@@ -133,10 +133,14 @@ class MockSGLangServer:
             "completion_tokens": completion_tokens,
             **process_result.meta_info.to_dict(),
         }
-        if payload.get("return_logprob", True):
+        return_logprob = payload.get("return_logprob", True)
+        if return_logprob:
             meta_info["output_token_logprobs"] = output_token_logprobs
 
-        return {"text": process_result.text, "output_ids": output_ids, "meta_info": meta_info}
+        response = {"text": process_result.text, "meta_info": meta_info}
+        if not return_logprob:
+            response["output_ids"] = output_ids
+        return response
 
     def _compute_chat_completions_response(self, payload: dict) -> dict:
         messages = payload.get("messages", [])
