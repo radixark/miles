@@ -79,6 +79,7 @@ async def test_train_only_ft_does_not_recover_rollout_engines():
     from miles.ray.actor_group import RayTrainGroup
 
     calls = []
+    info = SimpleNamespace(snapshot_cell_id_to_hashes={})
     group = object.__new__(RayTrainGroup)
     group.args = SimpleNamespace(
         debug_train_only=False,
@@ -88,13 +89,12 @@ async def test_train_only_ft_does_not_recover_rollout_engines():
     )
     group._inference_controller = SimpleNamespace(
         recover_updatable_engines=_AsyncCall("recover", calls),
-        get_updatable_engines=_AsyncCall("get_engines", calls, result="info"),
-        health_monitoring_pause=_AsyncCall("pause", calls),
-        clear_updatable_has_new_engines=_AsyncCall("clear", calls),
+        start_update_weights=_AsyncCall("start", calls, result=info),
+        end_update_weights=_AsyncCall("end", calls),
     )
     group._broadcast = AsyncMock()
 
     await group.update_weights(rollout_id=1)
 
-    assert [name for name, _, _ in calls] == ["pause", "get_engines", "clear"]
-    group._broadcast.assert_awaited_once_with("update_weights", info="info")
+    assert [name for name, _, _ in calls] == ["start", "end"]
+    group._broadcast.assert_awaited_once_with("update_weights", info=info)

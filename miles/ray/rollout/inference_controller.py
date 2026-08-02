@@ -45,13 +45,13 @@ class InferenceController:
 
     async def prepare_rollout(self, rollout_id):
         self.rollout_id = rollout_id
-        await self.health_monitoring_resume()
+        await self._health_monitoring_resume()
         if self.args.ci_test and self._rollout_ft_enabled and rollout_id >= 2:
             await self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
 
     async def prepare_eval(self):
-        await self.health_monitoring_resume()
+        await self._health_monitoring_resume()
 
     async def dispose(self):
         for disposer in self._watcher_disposers:
@@ -62,7 +62,7 @@ class InferenceController:
 
     # TODO may parallelly execute offload/onload across services
     async def offload(self, tags: list[str] | None = None):
-        await self.health_monitoring_pause()
+        await self._health_monitoring_pause()
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
@@ -91,8 +91,10 @@ class InferenceController:
 
     # -------------------------- engine management -----------------------------
 
-    async def get_updatable_engines(self):
+    async def start_update_weights(self) -> "UpdatableEngines":
         """Return engines eligible for weight updates."""
+        await self._health_monitoring_pause()
+
         srv = self._get_updatable_server()
         if not srv:
             return UpdatableEngines(
@@ -110,7 +112,7 @@ class InferenceController:
             engine_gpu_offsets=srv.engine_gpu_offsets,
         )
 
-    async def clear_updatable_has_new_engines(self):
+    async def end_update_weights(self):
         # when fault tolerance is not enabled, we need to manually clear has_new_engines after update_weights
         srv = self._get_updatable_server()
         if srv:
@@ -173,10 +175,10 @@ class InferenceController:
 
     # -------------------------- utils -----------------------------
 
-    async def health_monitoring_pause(self) -> None:
+    async def _health_monitoring_pause(self) -> None:
         self._assert_rollout_fault_tolerance_is_unsupported()
 
-    async def health_monitoring_resume(self) -> None:
+    async def _health_monitoring_resume(self) -> None:
         self._assert_rollout_fault_tolerance_is_unsupported()
 
     @property
