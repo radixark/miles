@@ -311,11 +311,11 @@ class TestAddCellRollback:
         assert srv.has_new_engines is True
 
 
-async def _raise_async(self, router_api_client):
+async def _raise_async(self):
     raise RuntimeError("injected add failure")
 
 
-async def _noop_async(self, router_api_client):
+async def _noop_async(self):
     return None
 
 
