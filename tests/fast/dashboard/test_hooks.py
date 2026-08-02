@@ -6,6 +6,7 @@ import pytest
 from miles.dashboard import backend, hooks
 from miles.dashboard.hooks import BATCH_MAX_EVENTS, BATCH_MAX_SECONDS, _Identity
 from miles.dashboard.store import Role
+from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.utils.timer import Timer
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_info import WorkerInfo
@@ -161,11 +162,20 @@ class FakeCell:
     """Duck-typed ServerCell: the hooks read only the driver-side routing facts."""
 
     def __init__(self, url, cell_index=0, alive=True):
-        self.model_idx = 0
-        self.group_index = 0
-        self.cell_index = cell_index
+        self.meta = ServerCellMetadata(
+            worker_type="regular",
+            cell_id=f"cell-{cell_index}",
+            num_gpus_per_engine=1,
+            gpu_offset=0,
+            sglang_overrides={},
+            model_idx=0,
+            group_index=0,
+            cell_index=cell_index,
+            needs_offload=False,
+            model_path=None,
+            update_weights=False,
+        )
         self.addr_info = type("FakeAddrInfo", (), {"server_url": url})()
-        self.worker_type = "regular"
         self.is_alive = alive
 
 

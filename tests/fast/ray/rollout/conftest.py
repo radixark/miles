@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import textwrap
 from argparse import ArgumentParser, Namespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,6 +11,9 @@ from sglang_router.launch_router import RouterArgs
 
 from miles.utils import object_store
 from miles.utils.types import Sample
+
+if TYPE_CHECKING:
+    from miles.ray.rollout.server_cell import ServerCell
 
 
 def fake_actor_handle() -> MagicMock:
@@ -299,19 +302,27 @@ def make_dataclass_cells(
     num_cells: int = 2,
     num_gpus_per_engine: int = 1,
     gpu_offset: int = 0,
-):
+) -> list[ServerCell]:
     """Build configured ``ServerCell``s. Each cell starts unallocated."""
-    from miles.ray.rollout.server_cell import ServerCell
+    from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 
     args = make_args(num_gpus_per_node=8)
     return [
         ServerCell(
             args=args,
-            worker_type="regular",
-            cell_id=f"cell-{cell_index}",
-            num_gpus_per_engine=num_gpus_per_engine,
-            gpu_offset=gpu_offset + cell_index * min(num_gpus_per_engine, 8),
-            cell_index=cell_index,
+            meta=ServerCellMetadata(
+                worker_type="regular",
+                cell_id=f"cell-{cell_index}",
+                num_gpus_per_engine=num_gpus_per_engine,
+                gpu_offset=gpu_offset + cell_index * min(num_gpus_per_engine, 8),
+                sglang_overrides={},
+                model_idx=0,
+                group_index=0,
+                cell_index=cell_index,
+                needs_offload=False,
+                model_path=None,
+                update_weights=False,
+            ),
         )
         for cell_index in range(num_cells)
     ]
