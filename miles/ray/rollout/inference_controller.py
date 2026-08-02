@@ -6,8 +6,12 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleet
-from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
+from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import wait_session_server_ready
+from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.ray.specs.inference import compute_engine_pool_ids
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 logger = logging.getLogger(__name__)
 
@@ -17,13 +21,23 @@ class InferenceController:
         self.args = args
         self.servers: dict[str, RolloutServer] = {}
         self.rollout_id = -1
-        self.eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
+        self.eval_fleet: EvalFleet | None = None
+        self._watcher_disposers: list[StopWatchFn] = []
 
     async def init(self) -> None:
         if self.args.debug_train_only:
             return
 
-        self.servers = await start_rollout_servers(self.args)
+        self.servers = await create_rollout_servers(self.args)
+        if self.args.eval_num_gpus > 0:
+            self.eval_fleet = EvalFleet(self.args, srv=self.servers["eval"])
+
+        # TODO: may change to InferenceController.init(engine_provider, ...) later
+        provider: BaseWorkerProvider = RayWorkerProvider.create(
+            pool_ids=compute_engine_pool_ids(self.args)
+        )  # TODO inject instance
+        self._watcher_disposers.append(await provider.watch_cells(self._reconcile))
+
         dashboard_hooks.register_router(self.args)
         await wait_session_server_ready(self.args)
 
@@ -40,7 +54,9 @@ class InferenceController:
         await self.health_monitoring_resume()
 
     async def dispose(self):
-        pass
+        for disposer in self._watcher_disposers:
+            await disposer()
+        self._watcher_disposers = []
 
     # -------------------------- offload/onload -----------------------------
 
@@ -116,22 +132,6 @@ class InferenceController:
                     f"Only one updatable server is supported."
                 )
 
-    # -------------------------- external start/stop -----------------------------
-
-    async def start_cell(self, cell_id: str):
-        raise NotImplementedError("new ft to be implemented")
-
-    async def stop_cell(self, cell_id: str):
-        await self._server_of(cell_id).remove_cell(cell_id)
-
-    def list_cell_ids(self) -> list[str]:
-        return list_cell_ids(self.servers)
-
-    def _server_of(self, cell_id: str) -> RolloutServer:
-        owners = [srv for srv in self.servers.values() if cell_id in srv.server_cells]
-        assert len(owners) == 1, f"{cell_id=} must name exactly one cell, but {len(owners)} servers hold it"
-        return owners[0]
-
     # -------------------------- misc APIs -----------------------------
 
     async def check_weights(
@@ -144,6 +144,32 @@ class InferenceController:
         return await srv.check_weights(
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
         )
+
+    # -------------------------- reconcile -----------------------------
+
+    async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
+        observed_cell_meta: ServerCellMetadata | None = (
+            _compute_server_cell_meta_from_info(observed) if observed is not None else None
+        )
+
+        actual_srv: RolloutServer | None = None
+        actual_cell: ServerCell | None = None
+        for srv in self.servers.values():
+            if (c := srv.server_cells.get(cell_id)) is not None:
+                actual_srv, actual_cell = srv, c
+                break
+
+        if observed is not None and actual_srv is None:
+            await self.servers[observed_cell_meta.model_id].add_cell(observed_cell_meta)
+        elif observed is None and actual_srv is not None:
+            await actual_srv.remove_cell(cell_id)
+        elif (
+            observed is not None
+            and actual_srv is not None
+            and observed_cell_meta.workers_hash != actual_cell.meta.workers_hash
+        ):
+            await actual_srv.remove_cell(cell_id)
+            await actual_srv.add_cell(observed_cell_meta)
 
     # -------------------------- utils -----------------------------
 
@@ -181,3 +207,19 @@ class UpdatableEngines:
     has_new_engines: bool
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
+
+
+# TODO may move and generalize later
+def _compute_server_cell_meta_from_info(info: CellInfo) -> ServerCellMetadata:
+    return ServerCellMetadata(
+        model_id=info.meta["model_id"],
+        worker_type=info.meta["worker_type"],
+        cell_id=info.cell_id,
+        num_gpus_per_engine=info.meta["num_gpus_per_engine"],
+        gpu_offset=info.meta["gpu_offset"],
+        sglang_api_key=info.meta["sglang_api_key"],
+        worker_name=info.worker_names[0],
+        needs_offload=info.meta["needs_offload"],
+        update_weights=info.meta["update_weights"],
+        workers_hash=info.workers_hash,
+    )
