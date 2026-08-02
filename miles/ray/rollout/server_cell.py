@@ -109,6 +109,7 @@ class ServerCell:
             self.args,
             model_idx=self.model_idx,
             server_group_config=self.server_group_config,
+            pg_slot_offset=self.gpu_offset,
         )
 
         actor_handles = [
