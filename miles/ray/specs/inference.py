@@ -4,10 +4,10 @@ import shlex
 import sys
 
 from miles.backends.sglang_utils.router_args_utils import compute_sglang_router_args, router_args_to_argv
-from miles.backends.sglang_utils.sglang_config import ModelConfig, resolve_sglang_config
+from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
+from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
-from miles.rollout.session.ports import compute_num_session_server_ports
 from miles.router.config import compute_miles_router_config
 from miles.utils import dumper_utils
 from miles.utils.workers.argv_utils import config_to_argv
@@ -102,8 +102,56 @@ def compute_session_server_instance_id(args, instance_index: int) -> str:
 
 
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
-    _config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
-    return None  # TODO return real objects
+    config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
+    return [
+        _compute_spec_inference_engine(args, model_idx=model_idx, server_group_config=server_group_config)
+        for model_idx, model_cfg in enumerate(config.models)
+        for server_group_config in model_cfg.server_groups
+    ]
+
+
+def _compute_spec_inference_engine(
+    args,
+    model_idx: int,
+    server_group_config: ServerGroupConfig,
+) -> CommandWorkerSpec:
+    def _compute_launch_command(ctx: LaunchCommandContext) -> str:
+        dist_init = ctx.self_addrs["dist_init"]
+        return compute_engine_launch_cmd(
+            args=args,
+            # TODO: make the indexing it k8s native compatible
+            node_rank=ctx.worker_in_cell_index,
+            worker_type=server_group_config.worker_type,
+            base_gpu_id=ctx.gpu_ids[0],
+            sglang_overrides=server_group_config.overrides,
+            num_gpus_per_engine=server_group_config.num_gpus_per_engine,
+            dist_init_addr=f"{dist_init.host}:{dist_init.port}",
+            nccl_port=ctx.self_addrs["nccl"].port,
+            host=ctx.self_addrs["primary"].host,
+            port=ctx.self_addrs["primary"].port,
+            disaggregation_bootstrap_port=d.port if (d := ctx.self_addrs.get("disaggregation_bootstrap")) else None,
+            engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,
+        )
+
+    envs = compute_inference_engine_env_vars(args)
+    return CommandWorkerSpec(
+        name=f"inference-engine-{model_idx}",
+        port_infos=[
+            PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+            PortInfo(name="dist_init", static_port=9000, mode="master", allow_dynamic=True),
+            PortInfo(name="nccl", static_port=10000, allow_dynamic=True),
+            PortInfo(name="disaggregation_bootstrap", static_port=11000, allow_dynamic=True),
+            PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
+        ],
+        env_var=lambda: envs,
+        scheduling=SchedulingSpec(
+            num_cells=server_group_config.num_gpus // server_group_config.num_gpus_per_engine,
+            num_workers_per_cell=max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node),
+            # TODO: may need real num for k8s native mode
+            num_gpus_per_worker=0.2,
+        ),
+        launch_command=_compute_launch_command,
+    )
 
 
 def compute_inference_engine_env_vars(args) -> dict[str, str]:
