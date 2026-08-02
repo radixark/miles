@@ -172,6 +172,23 @@ class TestSpecsInferenceEngine:
         assert [spec.scheduling.num_gpu_slots_per_worker for spec in specs] == [2, 4]
         assert all(spec.scheduling.pg_name == "rollout" for spec in specs)
 
+    def test_debug_train_only_produces_no_engine_spec(self, tmp_path):
+        """In --debug-train-only the rollout placement group is the trainer's own gpus, so no engine may be specced."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 1}]
+            )
+        )
+        args = make_args(
+            sglang_config=str(config_path),
+            rollout_num_gpus=8,
+            colocate=True,
+            debug_train_only=True,
+        )
+
+        assert specs_inference_engine(args) == []
+
 
 class TestInferenceSpecPinToHead:
     @pytest.mark.parametrize("pinned", [False, True])
@@ -203,3 +220,51 @@ class TestInferenceSpecPinToHead:
 
         assert router.scheduling.pin_to_head is pinned
         assert session.scheduling.pin_to_head is pinned
+
+
+class TestInferenceEnginePortSchema:
+    def test_the_master_port_reserves_a_block_for_every_dp_rank(self, tmp_path):
+        """sglang needs a contiguous block behind dist_init, so the reservation must grow with dp size."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4, sglang_dp_size=3)
+
+        ports = {info.name: info for info in specs_inference_engine(args)[0].port_infos}
+
+        assert ports["dist_init"].mode == "master"
+        assert ports["dist_init"].allow_dynamic is True
+        assert ports["dist_init"].num_consecutive == 33
+        assert [info.mode for name, info in ports.items() if name != "dist_init"] == ["per_worker"] * (len(ports) - 1)
+
+    def test_only_prefill_engines_get_a_disaggregation_bootstrap_port(self, tmp_path):
+        """The bootstrap port belongs to the prefill side alone."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[
+                    {"worker_type": "prefill", "num_gpus": 2, "num_gpus_per_engine": 2},
+                    {"worker_type": "decode", "num_gpus": 2, "num_gpus_per_engine": 2},
+                ]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)
+
+        prefill, decode = specs_inference_engine(args)
+
+        assert [info.name for info in prefill.port_infos] == [
+            "primary",
+            "dist_init",
+            "nccl",
+            "disaggregation_bootstrap",
+            "engine_info_bootstrap",
+        ]
+        assert [info.name for info in decode.port_infos] == [
+            "primary",
+            "dist_init",
+            "nccl",
+            "engine_info_bootstrap",
+        ]

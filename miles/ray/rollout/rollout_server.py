@@ -8,12 +8,11 @@ from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
-from miles.utils.workers.addr_allocator import PortAllocator
 
 logger = logging.getLogger(__name__)
 
 
-async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
+async def start_rollout_servers(args) -> dict[str, "RolloutServer"]:
     """Start rollout servers: one per model, each with its own router.
 
     Returns a dict mapping model name -> ``RolloutServer``.
@@ -26,8 +25,6 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     config = resolve_sglang_config(args)
 
     servers: dict[str, RolloutServer] = {}
-    engine_offset = 0
-    port_allocator = PortAllocator()
 
     for model_idx, model_cfg in enumerate(config.models):
         router_addr = await wait_router_ready(model_idx=model_idx)
@@ -55,34 +52,22 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                     f"group '{group_cfg.worker_type}' has {num_engines=} which is not a whole number of "
                     f"{nodes_per_engine=} engines; the trailing engine would have no node to run its remaining ranks"
                 )
-                assert engine_offset % nodes_per_engine == 0, (
-                    f"group '{group_cfg.worker_type}' starts at {engine_offset=}, which is not aligned to "
-                    f"{nodes_per_engine=}: sglang derives each engine's node_rank from its global rank, so a "
-                    f"misaligned start would make the cell's primary a worker node"
-                )
-
                 for cell_start in range(0, num_engines, nodes_per_engine):
                     cell_id = format_cell_id(server_id=model_cfg.name, index=len(server_cells))
                     server_cells[cell_id] = ServerCell(
-                        num_nodes=nodes_per_engine,
                         args=args,
                         worker_type=group_cfg.worker_type,
                         cell_id=cell_id,
-                        pg=pg,
                         num_gpus_per_engine=gpus_per_engine,
-                        rank_offset=engine_offset + cell_start,
                         gpu_offset=group_cfg.gpu_offset + cell_start * num_gpu_per_engine_local,
                         sglang_overrides=group_cfg.overrides,
                         model_idx=model_idx,
                         group_index=group_index,
-                        server_group_config=group_cfg,
                         cell_index=cell_start // nodes_per_engine,
                         needs_offload=group_cfg.needs_offload,
                         model_path=group_cfg.model_path,
                         update_weights=model_cfg.update_weights,
                     )
-
-            engine_offset += num_engines
 
         servers[model_cfg.name] = RolloutServer(
             server_cells=server_cells,
@@ -93,7 +78,7 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             update_weights=model_cfg.update_weights,
         )
 
-    await asyncio.gather(*[srv.start_all_cells(port_allocator) for srv in servers.values()])
+    await asyncio.gather(*[srv.start_all_cells() for srv in servers.values()])
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
@@ -115,7 +100,6 @@ class RolloutServer:
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
-    _port_allocator: PortAllocator = dataclasses.field(default_factory=PortAllocator)
 
     @property
     def api_clients(self) -> list[SGLangApiClient]:
@@ -142,33 +126,22 @@ class RolloutServer:
         for cell in self.server_cells:
             await cell.probe_and_mark_dead()
 
-    async def start_all_cells(self, port_allocator: PortAllocator):
+    async def start_all_cells(self):
         if self.args.debug_train_only:
             return
 
-        self._port_allocator = port_allocator
         cell_ids = [cell_id for cell_id, cell in self.server_cells.items() if not cell.is_allocated]
-        await asyncio.gather(
-            *[self.server_cells[cell_id].start(port_allocator, self._router_api_client) for cell_id in cell_ids]
-        )
+        await asyncio.gather(*[self.server_cells[cell_id].start(self._router_api_client) for cell_id in cell_ids])
         self.has_new_engines |= bool(cell_ids)
 
     async def recover(self, cell_ids: list[str] | None = None):
-        """Recover dead cells, overlapping init across cells.
-
-        Reuses the startup allocator so its per-node cursors still sit past the
-        ports the live engines hold, instead of rescanning from the base port.
-        """
-        port_allocator = self._port_allocator
+        """Recover dead cells, overlapping init across cells."""
         if cell_ids is None:
             cell_ids = list(self.server_cells)
         cell_ids = [cell_id for cell_id in cell_ids if not self.server_cells[cell_id].is_allocated]
 
         await asyncio.gather(
-            *[
-                self.server_cells[cell_id].start(port_allocator, self._router_api_client, recover=True)
-                for cell_id in cell_ids
-            ]
+            *[self.server_cells[cell_id].start(self._router_api_client, recover=True) for cell_id in cell_ids]
         )
         self.has_new_engines |= bool(cell_ids)
 

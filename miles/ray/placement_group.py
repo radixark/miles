@@ -209,8 +209,8 @@ class RolloutComponents(NamedTuple):
     num_rollout_per_epoch: int | None
 
 
-async def create_rollout_components(args, pg) -> RolloutComponents:
-    inference_controller = InferenceController(args, pg)
+async def create_rollout_components(args) -> RolloutComponents:
+    inference_controller = InferenceController(args)
     await inference_controller.init()
 
     rollout_executor = RolloutExecutor.options(
