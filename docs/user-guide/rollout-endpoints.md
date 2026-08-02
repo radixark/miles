@@ -256,6 +256,6 @@ inherited across turns. Each request is tokenized independently.
 ## Next
 
 - [Customization](/user-guide/customization): the full catalog of `--*-path` hooks.
-- [Agentic Chat Templates](/user-guide/agentic-chat-template): verifying that a template is
+- [Agentic Rollout (TITO)](/user-guide/agentic-chat-template): verifying that a template is
   append-only across turns.
 - [Multi-agent example](/examples/multi-agent): full agentic walkthrough.
