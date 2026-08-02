@@ -15,6 +15,16 @@ def _make_args(**overrides) -> Namespace:
         rollout_num_gpus_per_engine=1,
         eval_num_gpus=0,
         hf_checkpoint="/ckpt/actor",
+        offload_rollout=False,
+        debug_train_only=False,
+        debug_rollout_only=False,
+        colocate=False,
+        actor_num_nodes=1,
+        actor_num_gpus_per_node=8,
+        critic_num_nodes=0,
+        critic_num_gpus_per_node=0,
+        use_critic=False,
+        critic_train_only=False,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -160,3 +170,121 @@ class TestPrefillNumServersPath:
         args = _make_args(rollout_num_gpus=4, prefill_num_servers=4, rollout_num_gpus_per_engine=1)
         with pytest.raises(AssertionError, match="No decode GPUs"):
             resolve_sglang_config(args)
+
+
+class TestGpuOffset:
+    def test_gpu_offsets_accumulate_across_groups_and_models_including_placeholders(self, tmp_path):
+        """Each group's gpu_offset equals the num_gpus sum of all preceding groups, counting placeholders."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 4\n"
+            "      - worker_type: placeholder\n"
+            "        num_gpus: 4\n"
+            "  - name: ref\n"
+            "    update_weights: false\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=16,
+        )
+        assert [group.gpu_offset for group in cfg.models[0].server_groups] == [0, 4]
+        assert cfg.models[1].server_groups[0].gpu_offset == 8
+
+
+class TestNeedsOffload:
+    def test_no_offload_flag_means_no_group_needs_offload(self, tmp_path):
+        """With offload_rollout off, no group offloads and no memory-saver override is injected."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n  - name: actor\n    server_groups:\n      - worker_type: regular\n        num_gpus: 8\n",
+            rollout_num_gpus=8,
+        )
+        group = cfg.models[0].server_groups[0]
+        assert group.needs_offload is False
+        assert "enable_memory_saver" not in group.overrides
+
+    def test_groups_overlapping_megatron_offload_and_the_rest_disable_memory_saver(self, tmp_path):
+        """Only groups starting inside the megatron gpu range offload; later ones get enable_memory_saver=False."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=16,
+            offload_rollout=True,
+            colocate=True,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=8,
+        )
+        first, second = cfg.models[0].server_groups
+        assert first.needs_offload is True
+        assert "enable_memory_saver" not in first.overrides
+        assert second.needs_offload is False
+        assert second.overrides["enable_memory_saver"] is False
+
+    def test_the_gpu_cursor_accumulates_across_models(self, tmp_path):
+        """A later model's group starts where the previous model's gpus ended."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "  - name: ref\n"
+            "    update_weights: false\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=16,
+            offload_rollout=True,
+            colocate=True,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=8,
+        )
+        assert cfg.models[0].server_groups[0].needs_offload is True
+        assert cfg.models[1].server_groups[0].needs_offload is False
+
+    def test_a_disaggregated_rollout_group_past_the_megatron_gpus_does_not_offload(self, tmp_path):
+        """Without colocate the rollout pg offset pushes the group past the megatron gpus, so it disables memory saver."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n  - name: actor\n    server_groups:\n      - worker_type: regular\n        num_gpus: 8\n",
+            rollout_num_gpus=8,
+            offload_rollout=True,
+            colocate=False,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=8,
+        )
+        group = cfg.models[0].server_groups[0]
+        assert group.needs_offload is False
+        assert group.overrides["enable_memory_saver"] is False
+
+    def test_an_explicit_memory_saver_override_wins(self, tmp_path):
+        """A user-provided enable_memory_saver survives the conditional injection."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        overrides:\n"
+            "          enable_memory_saver: true\n",
+            rollout_num_gpus=8,
+            offload_rollout=True,
+            colocate=True,
+            actor_num_nodes=0,
+            actor_num_gpus_per_node=0,
+        )
+        group = cfg.models[0].server_groups[0]
+        assert group.needs_offload is False
+        assert group.overrides["enable_memory_saver"] is True
