@@ -163,9 +163,9 @@ class FakeCell:
         self.model_idx = 0
         self.group_index = 0
         self.cell_index = cell_index
-        self.addr_info = type("FakeAddrInfo", (), {"server_url": url})()
+        self.server_url = url
         self.worker_type = "regular"
-        self.is_alive = alive
+        self.is_pending_weights_or_serving = alive
 
 
 def _worker_info(name, node, gpus, generation=1):
