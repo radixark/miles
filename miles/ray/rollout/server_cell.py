@@ -102,8 +102,7 @@ class ServerCell:
 
         if recover and self.meta.needs_offload:
             await self.api_client.release_memory_occupation()
-            if self.meta.update_weights or self.meta.model_path:
-                await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+            await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
         self._mark_alive()
 
