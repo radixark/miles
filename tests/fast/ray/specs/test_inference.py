@@ -4,11 +4,16 @@ import shlex
 import sys
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
-from miles.ray.specs.inference import _compute_spec_router, compute_router_pool_id, spec_session_server
+from miles.ray.specs.inference import (
+    _compute_spec_router,
+    compute_router_pool_id,
+    spec_session_server,
+    specs_inference_engine,
+)
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
 from miles.utils.workers.argv_utils import parse_config_argv
@@ -150,6 +155,28 @@ class TestComputeSpecSessionServer:
         """Disabling the session server removes its cells instead of launching idle servers."""
         args = make_args(use_session_server=False)
         assert spec_session_server(args).scheduling.num_cells == 0
+
+
+class TestSpecsInferenceEngine:
+    def test_pg_slot_offsets_accumulate_and_placeholder_groups_keep_their_slots(self, tmp_path):
+        """Group offsets follow the config order and a skipped placeholder group still occupies its gpu span."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[
+                    {"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2},
+                    {"worker_type": "placeholder", "num_gpus": 4, "num_gpus_per_engine": 4},
+                    {"worker_type": "decode", "num_gpus": 8, "num_gpus_per_engine": 4},
+                ]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=16)
+
+        specs = specs_inference_engine(args)
+
+        assert [spec.scheduling.pg_slot_offset for spec in specs] == [0, 8]
+        assert [spec.scheduling.num_gpu_slots_per_worker for spec in specs] == [2, 4]
+        assert all(spec.scheduling.pg_name == "rollout" for spec in specs)
 
 
 class TestInferenceSpecPinToHead:

@@ -125,10 +125,16 @@ def compute_session_server_instance_id(args, instance_index: int) -> str:
 
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
+
     return [
-        _compute_spec_inference_engine(args, model_idx=model_idx, server_group_config=server_group_config)
+        _compute_spec_inference_engine(
+            args,
+            model_idx=model_idx,
+            server_group_config=server_group_config,
+        )
         for model_idx, model_cfg in enumerate(config.models)
         for server_group_config in model_cfg.server_groups
+        if server_group_config.worker_type != "placeholder"
     ]
 
 
@@ -171,6 +177,9 @@ def _compute_spec_inference_engine(
             num_workers_per_cell=max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node),
             # TODO: may need real num for k8s native mode
             num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=min(server_group_config.num_gpus_per_engine, args.num_gpus_per_node),
+            pg_name="rollout",
+            pg_slot_offset=server_group_config.gpu_offset,
         ),
         launch_command=_compute_launch_command,
     )
