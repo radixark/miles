@@ -134,19 +134,6 @@ class RolloutServer:
         await asyncio.gather(*[self.server_cells[cell_id].start(self._router_api_client) for cell_id in cell_ids])
         self.has_new_engines |= bool(cell_ids)
 
-    async def recover(self, cell_ids: list[str] | None = None):
-        """Recover dead cells, overlapping init across cells."""
-        if cell_ids is None:
-            cell_ids = list(self.server_cells)
-        cell_ids = [cell_id for cell_id in cell_ids if not self.server_cells[cell_id].is_allocated]
-
-        await asyncio.gather(
-            *[self.server_cells[cell_id].start(self._router_api_client, recover=True) for cell_id in cell_ids]
-        )
-        self.has_new_engines |= bool(cell_ids)
-
-        logger.info(f"Recovered {len(cell_ids)} dead rollout cells")
-
     async def stop_cells(self, cell_ids: list[str]):
         logger.info(f"Killing server {cell_ids=}...")
         for cell_id in sorted(set(cell_ids)):
