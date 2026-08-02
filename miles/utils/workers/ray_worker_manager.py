@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
@@ -20,6 +21,9 @@ from miles.utils.workers.worker_spec import (
     LaunchCommandContext,
     NamedHostAndPorts,
 )
+
+logger = logging.getLogger(__name__)
+
 
 if TYPE_CHECKING:
     from miles.ray.placement_group import PlacementGroupInfo
@@ -99,9 +103,11 @@ class _CellManager(Generic[SpecT]):
     cell_index: int
     spec: SpecT
     actors: list[_BaseActorManager] | None
+    generation: int = 0
 
     async def launch_actors(self):
         assert self.actors is None
+        self.generation += 1
         scheduling = self.spec.scheduling
         self.actors = [
             # TODO support Serve mode
@@ -111,7 +117,6 @@ class _CellManager(Generic[SpecT]):
                 worker_in_cell_index=worker_in_cell_index,
                 spec=self.spec,
                 actor_handle=None,
-                generation=1,
                 gpu_slot_index=(
                     scheduling.pg_slot_offset
                     + (self.cell_index * scheduling.num_workers_per_cell + worker_in_cell_index)
@@ -130,8 +135,15 @@ class _CellManager(Generic[SpecT]):
     async def post_setup(self) -> None:
         await self._for_all_actors(lambda a: a.post_setup())
 
+    async def stop(self) -> None:
+        await self._for_all_actors(lambda a: a.stop())
+        self.actors = None
+
     async def _for_all_actors(self, fn: Callable[[_BaseActorManager], Any]):
         await asyncio.gather(*[fn(a) for a in self.actors])
+
+
+_SHUTDOWN_TIMEOUT = 30
 
 
 @dataclass(kw_only=True)
@@ -142,7 +154,6 @@ class _BaseActorManager(Generic[SpecT]):
     spec: SpecT
     actor_handle: ray.actor.ActorHandle | None
     self_addrs: NamedHostAndPorts | None = None
-    generation: int
     gpu_slot_index: int | None
 
     async def launch_actor(self) -> None:
@@ -154,6 +165,18 @@ class _BaseActorManager(Generic[SpecT]):
     async def post_setup(self) -> None:
         raise NotImplementedError
 
+    async def stop(self) -> None:
+        try:
+            ray.get(self.actor_handle.shutdown.remote(), timeout=_SHUTDOWN_TIMEOUT)
+        except Exception as e:
+            logger.warning(f"Graceful shutdown of {self=} failed ({e})")
+
+        try:
+            ray.kill(self.actor_handle)
+            logger.info(f"Killed actor at {self=}")
+        except Exception as e:
+            logger.warning(f"Failed to kill actor at {self=} ({e})")
+
     @property
     def name(self) -> str:
         return compute_worker_name(
@@ -161,6 +184,10 @@ class _BaseActorManager(Generic[SpecT]):
             cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
         )
+
+    @property
+    def generation(self) -> int:
+        return self.parent.generation
 
     @property
     def primary_addr(self) -> HostAndPort:
