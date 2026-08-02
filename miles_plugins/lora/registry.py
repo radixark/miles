@@ -91,9 +91,8 @@ def _build_model_specs() -> dict[str, ModelEntry]:
         "glm4": ModelEntry(gqa),
         "glm4_moe": ModelEntry(gqa),
         "qwen3_5": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
-        # 2026-08-02: Qwen3.5-35B-A3B ran 20 GRPO rollouts through the native raw path with
-        # grad_norm ~1e-2 throughout and train/rollout logprob_abs_diff 0.0105 — the recorded
-        # GDN backward divergence did not reproduce on the current branch.
+        # 2026-08-02: Qwen3.5-35B-A3B, 20 native rollouts, logprob_abs_diff 0.0105 — the recorded
+        # GDN backward divergence did not reproduce on this branch.
         "qwen3_5_moe": ModelEntry(hybrid, SupportStatus.VALIDATED),
         "qwen3_6": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
         "qwen3_6_moe": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
@@ -103,13 +102,12 @@ def _build_model_specs() -> dict[str, ModelEntry]:
         # deepseek_v4 (DeepSeek-V4-Flash) stays unregistered: its wq_a/wq_b/wkv attention is not
         # mcore MLA, and docs/advanced/lora.md declares that layout out of scope for this provider.
         "glm4_moe_lite": ModelEntry(mla, SupportStatus.VALIDATED),
-        # 2026-08-02: GLM-5.2_5layer ran 20 native rollouts, logprob_abs_diff 0.0096.
+        # 2026-08-02: GLM-5.2_5layer, 20 native rollouts, logprob_abs_diff 0.0096.
         "glm_moe_dsa": ModelEntry(mla, SupportStatus.VALIDATED),
         "kimi_k2": ModelEntry(mla),
-        # 2026-08-02: Kimi-K2.5-2layer ran 20 native rollouts, logprob_abs_diff 0.0124. Requires the
-        # dequantized BF16 base to carry NO quantization_config (tools/convert_kimi_int4_to_bf16.py now
-        # strips it): a surviving one sends SGLang through its CompressedTensors path, which serves the
-        # checkpoint with a context-free forward and logprob_abs_diff ~2.2.
+        # 2026-08-02: Kimi-K2.5-2layer, 20 native rollouts, logprob_abs_diff 0.0124. The dequantized
+        # BF16 base must carry no quantization_config (convert_kimi_int4_to_bf16.py strips it), or
+        # SGLang serves it through the CompressedTensors path with a context-free forward.
         "kimi_k25": ModelEntry(mla, SupportStatus.VALIDATED),
         "joyai_llm_flash": ModelEntry(mla),
     }
@@ -138,18 +136,13 @@ def _structural_spec(config) -> LoRAArchSpec:
     return _arch_spec(GQAAttentionSpec())
 
 
-def resolve_registered_model_spec(hf_checkpoint: str | None) -> tuple[str, LoRAArchSpec]:
-    """Resolve a registered spec from checkpoint metadata without a built model.
-
-    Unlike :func:`resolve_model_spec`, this helper has no structural fallback:
-    serving/configuration callers run before model construction and must fail
-    closed when checkpoint metadata is absent or unsupported.
-    """
-    model_type, entry = _resolve_registered_entry(hf_checkpoint)
-    return model_type, entry.spec
-
-
 def _resolve_registered_entry(hf_checkpoint: str | None) -> tuple[str, ModelEntry]:
+    """Resolve a registered entry from checkpoint metadata without a built model.
+
+    No structural fallback: serving/configuration callers run before model
+    construction and must fail closed when checkpoint metadata is absent or
+    unsupported.
+    """
     candidates = _model_type_candidates(hf_checkpoint)
     if not candidates:
         if hf_checkpoint:
@@ -187,9 +180,9 @@ def resolve_native_lora_config(args) -> LoRAConfig:
     allocates buffers for the same effective projection set the native model
     will attach (notably MLA ``all-linear`` normalization).
     """
-    _model_type, spec = resolve_registered_model_spec(getattr(args, "hf_checkpoint", None))
-    config = spec.normalize_config(LoRAConfig.from_args(args))
-    spec.validate_targets(config.target_modules)
+    _model_type, entry = _resolve_registered_entry(getattr(args, "hf_checkpoint", None))
+    config = entry.spec.normalize_config(LoRAConfig.from_args(args))
+    entry.spec.validate_targets(config.target_modules)
     return config
 
 

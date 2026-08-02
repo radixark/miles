@@ -106,9 +106,8 @@ class MLAAttentionSpec(AttentionSpecBase):
     name = "mla"
     family = AttentionFamily.MLA
 
-    # The names Miles' architecture-neutral all-linear expansion adds are the
-    # GQA family's split-QKV names; MLA checkpoints with q_lora_rank carry a/b
-    # projections instead. Derived, not restated.
+    # Miles' all-linear expansion adds the GQA split-QKV names; MLA checkpoints
+    # with q_lora_rank carry a/b projections instead.
     _GENERIC_QKV_TARGETS = GQAAttentionSpec.layout.fused_targets
 
     # SGLang packs the two replicated MLA down projections into one

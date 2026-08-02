@@ -8,7 +8,7 @@ forward" ritual every architecture spec previously hand-wrote.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch.nn as nn
@@ -146,15 +146,6 @@ def attach_layout(block: nn.Module, layout: ModuleLayout, hf_prefix: str, contex
         attach_adapter_forward(host, adapter, context.scale)
         count += 1
     return count
-
-
-def attach_layouts(
-    block: nn.Module,
-    layouts: Sequence[ModuleLayout],
-    hf_prefix: str,
-    context: AttachContext,
-) -> int:
-    return sum(attach_layout(block, layout, hf_prefix, context) for layout in layouts)
 
 
 class LayoutSpec:

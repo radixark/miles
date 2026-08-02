@@ -3,11 +3,9 @@
 Each adapter is a sibling module of the physical MCore/TE linear;
 ``attach_adapter_forward`` patches that linear's forward to add the delta. Base
 parameter names are unchanged, so checkpoint, weight-sync, and quantizer naming
-contracts hold.
-
-Adapters are self-describing: :meth:`NativeLoRAAdapter.exports` yields one
-:class:`ProjectionExport` per logical projection so codecs consume a public
-descriptor instead of module internals.
+contracts hold. Adapters are self-describing: :meth:`NativeLoRAAdapter.exports`
+yields one :class:`ProjectionExport` per logical projection so codecs consume a
+public descriptor instead of module internals.
 """
 
 from __future__ import annotations
@@ -90,7 +88,7 @@ class NativeLoRAAdapter(nn.Module):
             projection_specs
         ), "native LoRA projection parameter attributes must be unique"
         assert all(
-            projection.layout in (ShardLayout.COLUMN, ShardLayout.ROW, ShardLayout.REPLICATED) for projection in projection_specs
+            projection.layout in tuple(ShardLayout) for projection in projection_specs
         ), "native LoRA projection has an unknown parallel layout"
         self.hf_prefix = hf_prefix
         self.tp_rank = tp_rank
@@ -109,6 +107,19 @@ class NativeLoRAAdapter(nn.Module):
     def exports(self) -> Iterator[ProjectionExport]:
         """Yield one public descriptor per logical projection this adapter carries."""
         raise NotImplementedError
+
+    def _export_projections(self, fused_group: SGLangFusedGroup | None) -> Iterator[ProjectionExport]:
+        tp = self.context.tp_size
+        for projection in self.projection_specs:
+            b = getattr(self, f"{projection.attr}_B")
+            yield ProjectionExport(
+                hf_name=f"{self.hf_prefix}{projection.hf}",
+                layout=projection.layout,
+                a=getattr(self, f"{projection.attr}_A"),
+                b=b,
+                b_rows_full=b.shape[0] * (tp if projection.layout == ShardLayout.COLUMN else 1),
+                fused_group=fused_group,
+            )
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
         """Keep adapter params out of MCore distributed checkpoints for now."""
@@ -133,12 +144,14 @@ class LoRALinear(NativeLoRAAdapter):
         self.context = context
         self.attr = projection.attr
         self.layout = projection.layout
-        self.hf_leaf = projection.hf
-        self.out_features = out_features
         self.sglang_group = sglang_group
 
         a_grad_group = "tp" if self.layout == ShardLayout.COLUMN else None
-        b_grad_group = "tp" if self.layout in (ShardLayout.ROW, ShardLayout.REPLICATED) and context.sequence_parallel else None
+        b_grad_group = (
+            "tp"
+            if self.layout in (ShardLayout.ROW, ShardLayout.REPLICATED) and context.sequence_parallel
+            else None
+        )
         if self.layout == ShardLayout.REPLICATED and context.sequence_parallel:
             a_grad_group = "tp"
         self.register_parameter(
@@ -178,19 +191,98 @@ class LoRALinear(NativeLoRAAdapter):
         return F.linear(F.linear(x, a), b)
 
     def exports(self) -> Iterator[ProjectionExport]:
-        b = getattr(self, f"{self.attr}_B")
-        yield ProjectionExport(
-            hf_name=f"{self.hf_prefix}{self.hf_leaf}",
-            layout=self.layout,
-            a=getattr(self, f"{self.attr}_A"),
-            b=b,
-            b_rows_full=b.shape[0] * (self.context.tp_size if self.layout == ShardLayout.COLUMN else 1),
-            fused_group=self.sglang_group,
+        yield from self._export_projections(self.sglang_group)
+
+
+class LoRASplitAdapter(NativeLoRAAdapter):
+    """Independent per-projection adapters whose deltas pack into one fused output.
+
+    Shared machinery for every fused physical linear: parameter layout, the
+    down/up drain, absent-slot zero-fill, and the export descriptor. Subclasses
+    supply the physical slot widths (``rows``, keyed by projection attr in slot
+    order), the serving group name, and an optional output packing.
+    """
+
+    _group_name = ""
+
+    def __init__(
+        self,
+        *,
+        hf_prefix: str,
+        reference: torch.Tensor,
+        context: AttachContext,
+        projections: Sequence[ProjectionSpec],
+        rows: dict[str, int],
+        member_projections: Sequence[ProjectionSpec] | None = None,
+    ):
+        projections = tuple(projections)
+        self._member_projections = tuple(member_projections) if member_projections is not None else projections
+        attrs = [projection.attr for projection in projections]
+        cls = type(self).__name__
+        assert len(set(attrs)) == len(attrs), f"{cls} projection attributes must be unique"
+        assert set(attrs) <= set(rows), f"{cls} requires projections among {sorted(rows)}"
+        assert all(
+            projection.layout == ShardLayout.COLUMN for projection in projections
+        ), f"{cls} projections must be column parallel"
+        by_attr = {projection.attr: projection for projection in projections}
+        ordered = tuple(by_attr[name] for name in rows if name in by_attr)
+        super().__init__(hf_prefix, ordered, context.tp_rank)
+        self.context = context
+        self._rows = rows
+        self._active = tuple(projection.attr for projection in ordered)
+        for name in self._active:
+            self.register_parameter(
+                f"{name}_A",
+                new_lora_parameter(
+                    reference,
+                    (context.rank, context.hidden),
+                    init=context.a_init,
+                    grad_sum_group="tp",
+                ),
+            )
+            self.register_parameter(
+                f"{name}_B",
+                new_lora_parameter(
+                    reference,
+                    (rows[name], context.rank),
+                    init="zero",
+                    partition_dim=0,
+                ),
+            )
+        self._validate_projection_parameters()
+
+    def _pack(self, delta: torch.Tensor) -> torch.Tensor:
+        return delta
+
+    def forward(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
+        x = branch_input(x, base_module, self.context)
+        rank = self.context.rank
+        down = F.linear(x, torch.cat([getattr(self, f"{name}_A") for name in self._active], dim=0))
+        active_delta = {
+            name: F.linear(down[..., index * rank : (index + 1) * rank], getattr(self, f"{name}_B"))
+            for index, name in enumerate(self._active)
+        }
+        full_delta = [
+            active_delta[name] if name in active_delta else x.new_zeros(*x.shape[:-1], rows)
+            for name, rows in self._rows.items()
+        ]
+        return self._pack(torch.cat(full_delta, dim=-1))
+
+    def exports(self) -> Iterator[ProjectionExport]:
+        group = SGLangFusedGroup(
+            name=self._group_name,
+            member_rows={
+                projection.hf: self._rows[projection.attr] * self.context.tp_size
+                for projection in self._member_projections
+            },
         )
+        yield from self._export_projections(group)
 
 
-class LoRASplitQKV(NativeLoRAAdapter):
+class LoRASplitQKV(LoRASplitAdapter):
     """Independent Q/K/V adapters whose delta is packed into one fused QKV output."""
+
+    _group_name = "qkv"
 
     def __init__(
         self,
@@ -205,86 +297,28 @@ class LoRASplitQKV(NativeLoRAAdapter):
         member_projections: Sequence[ProjectionSpec] | None = None,
     ):
         q_rows = num_q * head_dim * (2 if context.output_gate else 1)
-        projections = tuple(projections)
-        self._member_projections = tuple(member_projections) if member_projections is not None else projections
-        attrs = [projection.attr for projection in projections]
-        assert len(set(attrs)) == len(attrs), "LoRASplitQKV projection attributes must be unique"
-        assert set(attrs) <= {"q", "k", "v"}, "LoRASplitQKV requires q/k/v projections"
-        assert all(
-            projection.layout == ShardLayout.COLUMN for projection in projections
-        ), "LoRASplitQKV projections must be column parallel"
-        by_attr = {projection.attr: projection for projection in projections}
-        projections = tuple(by_attr[name] for name in ("q", "k", "v") if name in by_attr)
         super().__init__(
-            hf_prefix,
-            projections,
-            context.tp_rank,
+            hf_prefix=hf_prefix,
+            reference=reference,
+            context=context,
+            projections=projections,
+            rows={"q": q_rows, "k": num_kv * head_dim, "v": num_kv * head_dim},
+            member_projections=member_projections,
         )
-        self.context = context
-        self._rows = {"q": q_rows, "k": num_kv * head_dim, "v": num_kv * head_dim}
-        self._active = tuple(projection.attr for projection in projections)
-        for name in self._active:
-            self.register_parameter(
-                f"{name}_A",
-                new_lora_parameter(
-                    reference,
-                    (context.rank, context.hidden),
-                    init=context.a_init,
-                    grad_sum_group="tp",
-                ),
-            )
-            self.register_parameter(
-                f"{name}_B",
-                new_lora_parameter(
-                    reference,
-                    (self._rows[name], context.rank),
-                    init="zero",
-                    partition_dim=0,
-                ),
-            )
         self.register_buffer(
             "out_perm",
             build_qkv_permutation(num_q, num_kv, head_dim, reference.device, context.output_gate),
             persistent=False,
         )
-        self._validate_projection_parameters()
 
-    def forward(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
-        x = branch_input(x, base_module, self.context)
-        rank = self.context.rank
-        down = F.linear(x, torch.cat([getattr(self, f"{name}_A") for name in self._active], dim=0))
-        active_delta = {
-            name: F.linear(down[..., index * rank : (index + 1) * rank], getattr(self, f"{name}_B"))
-            for index, name in enumerate(self._active)
-        }
-        full_delta = [
-            active_delta[name] if name in active_delta else x.new_zeros(*x.shape[:-1], rows)
-            for name, rows in self._rows.items()
-        ]
-        return torch.cat(full_delta, dim=-1).index_select(-1, self.out_perm)
-
-    def exports(self) -> Iterator[ProjectionExport]:
-        tp = self.context.tp_size
-        group = SGLangFusedGroup(
-            name="qkv",
-            member_rows={
-                projection.hf: self._rows[projection.attr] * tp for projection in self._member_projections
-            },
-        )
-        for projection in self.projection_specs:
-            b = getattr(self, f"{projection.attr}_B")
-            yield ProjectionExport(
-                hf_name=f"{self.hf_prefix}{projection.hf}",
-                layout=projection.layout,
-                a=getattr(self, f"{projection.attr}_A"),
-                b=b,
-                b_rows_full=b.shape[0] * tp,
-                fused_group=group,
-            )
+    def _pack(self, delta: torch.Tensor) -> torch.Tensor:
+        return delta.index_select(-1, self.out_perm)
 
 
-class LoRASplitFC1(NativeLoRAAdapter):
+class LoRASplitFC1(LoRASplitAdapter):
     """Independent gate/up adapters whose delta is packed into one fused FC1 output."""
+
+    _group_name = "gate_up"
 
     def __init__(
         self,
@@ -296,77 +330,15 @@ class LoRASplitFC1(NativeLoRAAdapter):
         inter_local: int,
         member_projections: Sequence[ProjectionSpec] | None = None,
     ):
-        projections = tuple(projections)
-        self._member_projections = tuple(member_projections) if member_projections is not None else projections
-        attrs = [projection.attr for projection in projections]
-        assert len(set(attrs)) == len(attrs), "LoRASplitFC1 projection attributes must be unique"
-        assert set(attrs) <= {"gate", "up"}, "LoRASplitFC1 requires gate/up projections"
-        assert all(
-            projection.layout == ShardLayout.COLUMN for projection in projections
-        ), "LoRASplitFC1 projections must be column parallel"
-        by_attr = {projection.attr: projection for projection in projections}
-        projections = tuple(by_attr[name] for name in ("gate", "up") if name in by_attr)
         super().__init__(
-            hf_prefix,
-            projections,
-            context.tp_rank,
+            hf_prefix=hf_prefix,
+            reference=reference,
+            context=context,
+            projections=projections,
+            rows={"gate": inter_local, "up": inter_local},
+            member_projections=member_projections,
         )
-        self.context = context
         self.inter_local = inter_local
-        self._active = tuple(projection.attr for projection in projections)
-        for name in self._active:
-            self.register_parameter(
-                f"{name}_A",
-                new_lora_parameter(
-                    reference,
-                    (context.rank, context.hidden),
-                    init=context.a_init,
-                    grad_sum_group="tp",
-                ),
-            )
-            self.register_parameter(
-                f"{name}_B",
-                new_lora_parameter(
-                    reference,
-                    (inter_local, context.rank),
-                    init="zero",
-                    partition_dim=0,
-                ),
-            )
-        self._validate_projection_parameters()
-
-    def forward(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
-        x = branch_input(x, base_module, self.context)
-        rank = self.context.rank
-        down = F.linear(x, torch.cat([getattr(self, f"{name}_A") for name in self._active], dim=0))
-        active_delta = {
-            name: F.linear(down[..., index * rank : (index + 1) * rank], getattr(self, f"{name}_B"))
-            for index, name in enumerate(self._active)
-        }
-        return torch.cat(
-            [
-                active_delta[name] if name in active_delta else x.new_zeros(*x.shape[:-1], self.inter_local)
-                for name in ("gate", "up")
-            ],
-            dim=-1,
-        )
-
-    def exports(self) -> Iterator[ProjectionExport]:
-        tp = self.context.tp_size
-        group = SGLangFusedGroup(
-            name="gate_up",
-            member_rows={projection.hf: self.inter_local * tp for projection in self._member_projections},
-        )
-        for projection in self.projection_specs:
-            b = getattr(self, f"{projection.attr}_B")
-            yield ProjectionExport(
-                hf_name=f"{self.hf_prefix}{projection.hf}",
-                layout=projection.layout,
-                a=getattr(self, f"{projection.attr}_A"),
-                b=b,
-                b_rows_full=b.shape[0] * tp,
-                fused_group=group,
-            )
 
 
 def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter, scale: float) -> None:
