@@ -161,6 +161,11 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         default_model_path: str,
         gpu_offset_cursor: "_MutableBox",
     ) -> "ServerGroupConfig":
+        assert not ({"host", "port"} & set(raw.overrides)), (
+            f"sglang_overrides must not override host/port ({raw.overrides=}): the rollout process derives "
+            f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
+        )
+
         rollout_pg_offset = _compute_rollout_offset(args)
         megatron_num_gpus = _compute_megatron_num_gpus(args)
 
