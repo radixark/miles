@@ -20,7 +20,7 @@ from miles_plugins.lora.spec.attach import (
     ProjectionBinding,
     ServingGroup,
 )
-from miles_plugins.lora.spec.base import COLUMN, REPLICATED, ROW, AttachContext, AttentionFamily, ProjectionSpec
+from miles_plugins.lora.spec.base import AttachContext, AttentionFamily, ProjectionSpec, ShardLayout
 
 
 def _build_split_qkv(
@@ -62,9 +62,9 @@ class GQAAttentionSpec(AttentionSpecBase):
             FusedAttach(
                 module_attr="linear_qkv",
                 projections=(
-                    ProjectionSpec("q_proj", "q", COLUMN),
-                    ProjectionSpec("k_proj", "k", COLUMN),
-                    ProjectionSpec("v_proj", "v", COLUMN),
+                    ProjectionSpec("q_proj", "q", ShardLayout.COLUMN),
+                    ProjectionSpec("k_proj", "k", ShardLayout.COLUMN),
+                    ProjectionSpec("v_proj", "v", ShardLayout.COLUMN),
                 ),
                 adapter_attr="lora_qkv_adapter",
                 build=_build_split_qkv,
@@ -72,7 +72,7 @@ class GQAAttentionSpec(AttentionSpecBase):
         ),
         singles=(
             ProjectionBinding(
-                projection=ProjectionSpec("o_proj", "o", ROW),
+                projection=ProjectionSpec("o_proj", "o", ShardLayout.ROW),
                 module_attr="linear_proj",
                 in_dim=dims.gqa_o_in_local,
                 out_dim=dims.hidden,
@@ -106,9 +106,10 @@ class MLAAttentionSpec(AttentionSpecBase):
     name = "mla"
     family = AttentionFamily.MLA
 
-    # Generic Q/K/V names added by Miles' architecture-neutral all-linear
-    # expansion; MLA checkpoints with q_lora_rank have a/b projections instead.
-    _GENERIC_QKV_TARGETS = frozenset({"q_proj", "k_proj", "v_proj"})
+    # The names Miles' architecture-neutral all-linear expansion adds are the
+    # GQA family's split-QKV names; MLA checkpoints with q_lora_rank carry a/b
+    # projections instead. Derived, not restated.
+    _GENERIC_QKV_TARGETS = GQAAttentionSpec.layout.fused_targets
 
     # SGLang packs the two replicated MLA down projections into one
     # fused_qkv_a_proj_with_mqa buffer; each member's true output width comes
@@ -125,7 +126,7 @@ class MLAAttentionSpec(AttentionSpecBase):
         name="mla",
         singles=(
             ProjectionBinding(
-                projection=ProjectionSpec("q_a_proj", "a", REPLICATED),
+                projection=ProjectionSpec("q_a_proj", "a", ShardLayout.REPLICATED),
                 module_attr="linear_q_down_proj",
                 in_dim=dims.hidden,
                 out_dim=dims.cfg("q_lora_rank"),
@@ -134,14 +135,14 @@ class MLAAttentionSpec(AttentionSpecBase):
                 serving_group=_MLA_A_SERVING_GROUP,
             ),
             ProjectionBinding(
-                projection=ProjectionSpec("q_b_proj", "b", COLUMN),
+                projection=ProjectionSpec("q_b_proj", "b", ShardLayout.COLUMN),
                 module_attr="linear_q_up_proj",
                 in_dim=dims.cfg("q_lora_rank"),
                 out_dim=dims.mla_q_up_out_local,
                 adapter_attr="lora_mla_q_b_adapter",
             ),
             ProjectionBinding(
-                projection=ProjectionSpec("kv_a_proj_with_mqa", "a", REPLICATED),
+                projection=ProjectionSpec("kv_a_proj_with_mqa", "a", ShardLayout.REPLICATED),
                 module_attr="linear_kv_down_proj",
                 in_dim=dims.hidden,
                 out_dim=dims.mla_kv_down_out,
@@ -150,14 +151,14 @@ class MLAAttentionSpec(AttentionSpecBase):
                 serving_group=_MLA_A_SERVING_GROUP,
             ),
             ProjectionBinding(
-                projection=ProjectionSpec("kv_b_proj", "b", COLUMN),
+                projection=ProjectionSpec("kv_b_proj", "b", ShardLayout.COLUMN),
                 module_attr="linear_kv_up_proj",
                 in_dim=dims.cfg("kv_lora_rank"),
                 out_dim=dims.mla_kv_up_out_local,
                 adapter_attr="lora_mla_kv_b_adapter",
             ),
             ProjectionBinding(
-                projection=ProjectionSpec("o_proj", "o", ROW),
+                projection=ProjectionSpec("o_proj", "o", ShardLayout.ROW),
                 module_attr="linear_proj",
                 in_dim=dims.mla_o_in_local,
                 out_dim=dims.hidden,

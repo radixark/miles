@@ -77,6 +77,10 @@ class FusedAttach:
     adapter_attr: str
     build: FusedBuildFn
 
+    @property
+    def targets(self) -> frozenset[str]:
+        return frozenset(projection.hf for projection in self.projections)
+
 
 @dataclass(frozen=True)
 class ModuleLayout:
@@ -95,6 +99,11 @@ class ModuleLayout:
         names.extend(binding.projection.hf for binding in self.singles)
         assert len(names) == len(set(names)), f"layout {self.name!r} declares duplicate projection names"
         return frozenset(names)
+
+    @property
+    def fused_targets(self) -> frozenset[str]:
+        """Names living in fused physical linears (union over this layout's groups)."""
+        return frozenset(projection.hf for group in self.fused for projection in group.projections)
 
 
 def attach_layout(block: nn.Module, layout: ModuleLayout, hf_prefix: str, context: AttachContext) -> int:

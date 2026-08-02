@@ -7,7 +7,7 @@ import torch.nn as nn
 from miles_plugins.lora.modules.linear import LoRASplitFC1
 from miles_plugins.lora.spec import dims
 from miles_plugins.lora.spec.attach import FusedAttach, LayoutSpec, ModuleLayout, ProjectionBinding
-from miles_plugins.lora.spec.base import COLUMN, ROW, AttachContext, ProjectionSpec
+from miles_plugins.lora.spec.base import AttachContext, ProjectionSpec, ShardLayout
 
 
 def _fc1_inter_local(mlp: nn.Module, _context: AttachContext) -> int:
@@ -43,8 +43,8 @@ class FusedGatedMLPSpec(LayoutSpec):
             FusedAttach(
                 module_attr="linear_fc1",
                 projections=(
-                    ProjectionSpec("gate_proj", "gate", COLUMN),
-                    ProjectionSpec("up_proj", "up", COLUMN),
+                    ProjectionSpec("gate_proj", "gate", ShardLayout.COLUMN),
+                    ProjectionSpec("up_proj", "up", ShardLayout.COLUMN),
                 ),
                 adapter_attr="lora_fc1_adapter",
                 build=_build_split_fc1,
@@ -52,7 +52,7 @@ class FusedGatedMLPSpec(LayoutSpec):
         ),
         singles=(
             ProjectionBinding(
-                projection=ProjectionSpec("down_proj", "down", ROW),
+                projection=ProjectionSpec("down_proj", "down", ShardLayout.ROW),
                 module_attr="linear_fc2",
                 in_dim=_fc1_inter_local,
                 out_dim=dims.hidden,

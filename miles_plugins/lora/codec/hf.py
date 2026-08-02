@@ -28,12 +28,9 @@ import torch.distributed as dist
 
 from miles_plugins.lora.distributed import TensorParallelGather
 from miles_plugins.lora.modules.linear import NativeLoRAAdapter, iter_adapters
-from miles_plugins.lora.spec.base import COLUMN, REPLICATED, ROW
+from miles_plugins.lora.spec.base import ShardLayout
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_LAYER_PREFIX = "model.layers."
-_DEFAULT_SHARED_EXPERT = "mlp.shared_expert."
 
 
 def target_modules_from_hf_names(names: Iterable[str]) -> list[str]:
@@ -47,10 +44,15 @@ def target_modules_from_hf_names(names: Iterable[str]) -> list[str]:
 
 
 def resolve_hf_naming(hf_checkpoint: str | None) -> tuple[str, str]:
-    """Read decoder-layer and shared-expert prefixes from the served checkpoint."""
+    """Read decoder-layer and shared-expert prefixes from the served checkpoint.
+
+    Falls back to the common HF spelling (``model.layers.`` /
+    ``mlp.shared_expert.``) when the checkpoint has no weight index.
+    """
+    default_layer_prefix, default_shared_expert = "model.layers.", "mlp.shared_expert."
     index_path = os.path.join(hf_checkpoint or "", "model.safetensors.index.json")
     if not os.path.exists(index_path):
-        return _DEFAULT_LAYER_PREFIX, _DEFAULT_SHARED_EXPERT
+        return default_layer_prefix, default_shared_expert
     with open(index_path) as handle:
         names = json.load(handle).get("weight_map", {})
 
@@ -61,8 +63,8 @@ def resolve_hf_naming(hf_checkpoint: str | None) -> tuple[str, str]:
         match = re.match(r"^((?:[\w.]+\.)?layers\.)\d+\.", name)
         if match:
             prefixes[match.group(1)] += 1
-    layer_prefix = prefixes.most_common(1)[0][0] if prefixes else _DEFAULT_LAYER_PREFIX
-    shared = "mlp.shared_experts." if any(".mlp.shared_experts." in name for name in names) else _DEFAULT_SHARED_EXPERT
+    layer_prefix = prefixes.most_common(1)[0][0] if prefixes else default_layer_prefix
+    shared = "mlp.shared_experts." if any(".mlp.shared_experts." in name for name in names) else default_shared_expert
     return layer_prefix, shared
 
 
@@ -117,9 +119,9 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
         for export in adapter.exports():
             a: object = export.a
             b: object = export.b
-            if export.layout == COLUMN:
+            if export.layout == ShardLayout.COLUMN:
                 b = gather.request(export.b, 0)
-            elif export.layout == ROW:
+            elif export.layout == ShardLayout.ROW:
                 a = gather.request(export.a, 1)
             plan.append((f"{export.hf_name}.lora_A.weight", a))
             plan.append((f"{export.hf_name}.lora_B.weight", b))
@@ -192,9 +194,9 @@ def _load_adapter(adapter: NativeLoRAAdapter, take) -> list[tuple[torch.Tensor, 
 
         expected_a = tuple(a_parameter.shape)
         expected_b = tuple(b_parameter.shape)
-        if projection.layout == COLUMN:
+        if projection.layout == ShardLayout.COLUMN:
             expected_b = (b_parameter.shape[0] * tp_size, b_parameter.shape[1])
-        elif projection.layout == ROW:
+        elif projection.layout == ShardLayout.ROW:
             expected_a = (a_parameter.shape[0], a_parameter.shape[1] * tp_size)
         if tuple(a_full.shape) != expected_a:
             raise ValueError(
@@ -207,8 +209,8 @@ def _load_adapter(adapter: NativeLoRAAdapter, take) -> list[tuple[torch.Tensor, 
                 f"checkpoint {tuple(b_full.shape)} != expected {expected_b}"
             )
 
-        if projection.layout != REPLICATED:
-            if projection.layout == COLUMN:
+        if projection.layout != ShardLayout.REPLICATED:
+            if projection.layout == ShardLayout.COLUMN:
                 width = b_parameter.shape[0]
                 span = slice(adapter.tp_rank * width, (adapter.tp_rank + 1) * width)
                 b_full = b_full[span]

@@ -26,10 +26,6 @@ class AttentionFamily(str, enum.Enum):
     MLA = "mla"
 
 
-# Kept as names for call-site brevity; both are the enum members (str-comparable).
-COLUMN, ROW, REPLICATED = ShardLayout.COLUMN, ShardLayout.ROW, ShardLayout.REPLICATED
-
-
 @dataclass(frozen=True)
 class ProjectionSpec:
     """External name and shard layout for one logical HF LoRA projection.

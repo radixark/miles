@@ -20,7 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from miles_plugins.lora.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
-from miles_plugins.lora.spec.base import COLUMN, REPLICATED, ROW, AttachContext, ProjectionSpec
+from miles_plugins.lora.spec.base import AttachContext, ProjectionSpec, ShardLayout
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,7 @@ class ProjectionExport:
     """Public per-projection descriptor consumed by the codecs."""
 
     hf_name: str  # full name, e.g. "model.layers.3.self_attn.q_proj"
-    layout: str  # COLUMN / ROW / REPLICATED
+    layout: ShardLayout
     a: torch.Tensor  # local lora_A parameter
     b: torch.Tensor  # local lora_B parameter
     b_rows_full: int  # TP-gathered lora_B rows
@@ -90,7 +90,7 @@ class NativeLoRAAdapter(nn.Module):
             projection_specs
         ), "native LoRA projection parameter attributes must be unique"
         assert all(
-            projection.layout in (COLUMN, ROW, REPLICATED) for projection in projection_specs
+            projection.layout in (ShardLayout.COLUMN, ShardLayout.ROW, ShardLayout.REPLICATED) for projection in projection_specs
         ), "native LoRA projection has an unknown parallel layout"
         self.hf_prefix = hf_prefix
         self.tp_rank = tp_rank
@@ -137,9 +137,9 @@ class LoRALinear(NativeLoRAAdapter):
         self.out_features = out_features
         self.sglang_group = sglang_group
 
-        a_grad_group = "tp" if self.layout == COLUMN else None
-        b_grad_group = "tp" if self.layout in (ROW, REPLICATED) and context.sequence_parallel else None
-        if self.layout == REPLICATED and context.sequence_parallel:
+        a_grad_group = "tp" if self.layout == ShardLayout.COLUMN else None
+        b_grad_group = "tp" if self.layout in (ShardLayout.ROW, ShardLayout.REPLICATED) and context.sequence_parallel else None
+        if self.layout == ShardLayout.REPLICATED and context.sequence_parallel:
             a_grad_group = "tp"
         self.register_parameter(
             f"{self.attr}_A",
@@ -148,7 +148,7 @@ class LoRALinear(NativeLoRAAdapter):
                 (context.rank, in_features),
                 init=context.a_init,
                 grad_sum_group=a_grad_group,
-                partition_dim=1 if self.layout == ROW else None,
+                partition_dim=1 if self.layout == ShardLayout.ROW else None,
             ),
         )
         self.register_parameter(
@@ -158,7 +158,7 @@ class LoRALinear(NativeLoRAAdapter):
                 (out_features, context.rank),
                 init="zero",
                 grad_sum_group=b_grad_group,
-                partition_dim=0 if self.layout == COLUMN else None,
+                partition_dim=0 if self.layout == ShardLayout.COLUMN else None,
             ),
         )
         self._validate_projection_parameters()
@@ -166,14 +166,14 @@ class LoRALinear(NativeLoRAAdapter):
     def forward(self, x: torch.Tensor, base_module: nn.Module) -> torch.Tensor:
         a = getattr(self, f"{self.attr}_A")
         b = getattr(self, f"{self.attr}_B")
-        if self.layout == COLUMN:
+        if self.layout == ShardLayout.COLUMN:
             x = branch_input(x, base_module, self.context)
             return F.linear(F.linear(x, a), b)
-        if self.layout == ROW:
+        if self.layout == ShardLayout.ROW:
             x = apply_lora_dropout(x, self.context, base_module.training)
             partial = F.linear(x, a)
             return F.linear(reduce_row_parallel(partial, self.context), b)
-        assert self.layout == REPLICATED, f"unknown LoRA linear layout {self.layout}"
+        assert self.layout == ShardLayout.REPLICATED, f"unknown LoRA linear layout {self.layout}"
         x = apply_lora_dropout(x, self.context, base_module.training)
         return F.linear(F.linear(x, a), b)
 
@@ -184,7 +184,7 @@ class LoRALinear(NativeLoRAAdapter):
             layout=self.layout,
             a=getattr(self, f"{self.attr}_A"),
             b=b,
-            b_rows_full=b.shape[0] * (self.context.tp_size if self.layout == COLUMN else 1),
+            b_rows_full=b.shape[0] * (self.context.tp_size if self.layout == ShardLayout.COLUMN else 1),
             fused_group=self.sglang_group,
         )
 
@@ -211,7 +211,7 @@ class LoRASplitQKV(NativeLoRAAdapter):
         assert len(set(attrs)) == len(attrs), "LoRASplitQKV projection attributes must be unique"
         assert set(attrs) <= {"q", "k", "v"}, "LoRASplitQKV requires q/k/v projections"
         assert all(
-            projection.layout == COLUMN for projection in projections
+            projection.layout == ShardLayout.COLUMN for projection in projections
         ), "LoRASplitQKV projections must be column parallel"
         by_attr = {projection.attr: projection for projection in projections}
         projections = tuple(by_attr[name] for name in ("q", "k", "v") if name in by_attr)
@@ -302,7 +302,7 @@ class LoRASplitFC1(NativeLoRAAdapter):
         assert len(set(attrs)) == len(attrs), "LoRASplitFC1 projection attributes must be unique"
         assert set(attrs) <= {"gate", "up"}, "LoRASplitFC1 requires gate/up projections"
         assert all(
-            projection.layout == COLUMN for projection in projections
+            projection.layout == ShardLayout.COLUMN for projection in projections
         ), "LoRASplitFC1 projections must be column parallel"
         by_attr = {projection.attr: projection for projection in projections}
         projections = tuple(by_attr[name] for name in ("gate", "up") if name in by_attr)
