@@ -128,6 +128,9 @@ def compute_engine_pool_id(model_idx: int, group_index: int) -> str:
 
 
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
+    if args.debug_train_only:
+        return []
+
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
 
     return [
@@ -172,9 +175,19 @@ def _compute_spec_inference_engine(
         name=compute_engine_pool_id(model_idx=model_idx, group_index=group_index),
         port_infos=[
             PortInfo(name="primary", static_port=8000, allow_dynamic=True),
-            PortInfo(name="dist_init", static_port=9000, mode="master", allow_dynamic=True),
+            PortInfo(
+                name="dist_init",
+                static_port=9000,
+                mode="master",
+                allow_dynamic=True,
+                num_consecutive=30 + args.sglang_dp_size,
+            ),
             PortInfo(name="nccl", static_port=10000, allow_dynamic=True),
-            PortInfo(name="disaggregation_bootstrap", static_port=11000, allow_dynamic=True),
+            *(
+                [PortInfo(name="disaggregation_bootstrap", static_port=11000, allow_dynamic=True)]
+                if server_group_config.worker_type == "prefill"
+                else []
+            ),
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
         ],
         env_var=lambda: envs,

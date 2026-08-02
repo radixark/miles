@@ -1,4 +1,3 @@
-import ray
 from pydantic import ConfigDict
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -21,7 +20,6 @@ class StateStopped(StateBase):
 
 
 class StateAllocatedBase(StateBase):
-    actor_handles: list[ray.actor.ActorHandle]
     addr_info: AddrInfo | None = None
 
 

@@ -6,7 +6,6 @@ def compute_specs(args) -> list[BaseWorkerSpec]:
     return [
         *inference.specs_router(args),
         inference.spec_session_server(args),
-        # TODO enable it
-        # *inference.specs_inference_engine(args),
+        *inference.specs_inference_engine(args),
         # TODO add more
     ]

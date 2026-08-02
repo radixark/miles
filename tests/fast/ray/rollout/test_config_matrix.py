@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pydantic
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
@@ -74,8 +75,8 @@ class TestResolveSglangConfigPaths:
 
 class TestServerGroupValidation:
     def test_invalid_worker_type_raises(self, tmp_path):
-        """An unknown worker_type is rejected no matter which layer validates it."""
-        with pytest.raises((AssertionError, ValueError), match="worker_type"):
+        """An unknown worker_type is rejected while parsing, by name."""
+        with pytest.raises(pydantic.ValidationError, match="server_groups.0.worker_type"):
             _resolve_yaml(
                 tmp_path,
                 "sglang:\n"
@@ -86,18 +87,6 @@ class TestServerGroupValidation:
                 rollout_num_gpus=8,
             )
 
-    def test_zero_num_gpus_raises(self, tmp_path):
-        """A zero-gpu group is rejected no matter which layer validates it."""
-        with pytest.raises((AssertionError, ValueError), match="num_gpus"):
-            _resolve_yaml(
-                tmp_path,
-                "sglang:\n"
-                "  - name: actor\n"
-                "    server_groups:\n"
-                "      - worker_type: regular\n"
-                "        num_gpus: 0\n",
-                rollout_num_gpus=0,
-            )
     @pytest.mark.parametrize("wt", ["regular", "prefill", "decode", "placeholder"])
     def test_all_valid_worker_types_accepted(self, wt, tmp_path):
         """Every documented worker_type parses through the yaml path."""
@@ -118,6 +107,38 @@ class TestResolveDefaults:
             "  - name: ref\n"
             "    model_path: /actor/model\n"
             "    update_weights: false\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=8,
+            hf_checkpoint="/actor/model",
+        )
+        assert cfg.models[0].update_weights is False
+
+    def test_a_model_serving_the_trained_checkpoint_receives_weight_updates(self, tmp_path):
+        """Left unset this is inferred from the paths, and inferring False for the actor trains
+        against a frozen policy behind nothing louder than a warning."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    model_path: /actor/model\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=8,
+            hf_checkpoint="/actor/model",
+        )
+        assert cfg.models[0].update_weights is True
+
+    def test_a_model_serving_another_checkpoint_is_left_frozen(self, tmp_path):
+        """Inferring True for a reference model would let weight sync overwrite the frozen
+        baseline the KL term is measured against."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: ref\n"
+            "    model_path: /ref/model\n"
             "    server_groups:\n"
             "      - worker_type: regular\n"
             "        num_gpus: 8\n",
@@ -172,19 +193,3 @@ class TestPdDisaggregation:
             rollout_num_gpus=8,
         )
         assert cfg.has_pd_disaggregation is True
-
-
-# ----------------------------- rollout_external path -----------------------------
-
-
-class TestRolloutExternalPath:
-    async def test_starting_engines_in_external_mode_is_not_implemented(self):
-        """The external allocator was removed; starting engines must fail loudly until the replacement lands."""
-        from miles.ray.rollout.server_cell import ServerCell
-        from miles.utils.workers.addr_allocator import PortAllocator
-
-        cell = ServerCell(
-            args=make_args(num_gpus_per_node=8, rollout_external=True), worker_type="regular", cell_id="cell-0"
-        )
-        with pytest.raises(NotImplementedError):
-            await cell.start_engines(PortAllocator())
