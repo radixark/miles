@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from miles.ray.actor_group import RayTrainGroup
+from miles.ray.rollout.inference_controller import InferenceController
 
 
 class _OrderRecordingInferenceController:
@@ -20,8 +21,30 @@ class _OrderRecordingInferenceController:
 
 
 @pytest.mark.asyncio
-async def test_v1_pauses_health_checks_before_snapshotting_the_engines():
-    """The health monitor is paused before the engine set is snapshotted."""
+async def test_controller_pauses_health_checks_before_snapshotting_the_engines():
+    """``start_update_weights`` pauses the health monitor before it reads the engine set."""
+    order: list[str] = []
+    controller = InferenceController.__new__(InferenceController)
+    controller.rollout_engine_lock = MagicMock()
+
+    async def _record_pause() -> None:
+        order.append("health_monitoring_pause")
+
+    def _record_snapshot():
+        order.append("get_updatable_server")
+        return None
+
+    controller._health_monitoring_pause = _record_pause
+    controller._get_updatable_server = _record_snapshot
+
+    await controller.start_update_weights()
+
+    assert order == ["health_monitoring_pause", "get_updatable_server"]
+
+
+@pytest.mark.asyncio
+async def test_v1_brackets_the_broadcast_with_start_and_end_update_weights():
+    """The engine snapshot is taken before, and released after, the trainer broadcast."""
     order: list[str] = []
     group = RayTrainGroup.__new__(RayTrainGroup)
     group.args = Namespace(debug_train_only=False, debug_rollout_only=False, use_fault_tolerance=False)
@@ -30,13 +53,13 @@ async def test_v1_pauses_health_checks_before_snapshotting_the_engines():
 
     await group.update_weights()
 
-    assert order[:2] == ["health_monitoring_pause", "get_updatable_engines_and_lock"]
+    assert order[:2] == ["start_update_weights", "end_update_weights"]
     group._broadcast.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_v2_pauses_health_checks_before_snapshotting_the_engines():
-    """Same ordering requirement on the fault-tolerant trainer group."""
+async def test_v2_brackets_the_broadcast_with_start_and_end_update_weights():
+    """Same bracketing requirement on the fault-tolerant trainer group."""
     from miles.ray.train.group import RayTrainGroup as FaultTolerantTrainGroup
 
     order: list[str] = []
@@ -48,7 +71,7 @@ async def test_v2_pauses_health_checks_before_snapshotting_the_engines():
 
     await group.update_weights()
 
-    assert order[:2] == ["health_monitoring_pause", "get_updatable_engines_and_lock"]
+    assert order[:2] == ["start_update_weights", "end_update_weights"]
 
 
 def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
