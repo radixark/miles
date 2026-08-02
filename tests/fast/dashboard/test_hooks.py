@@ -163,20 +163,19 @@ class FakeCell:
 
     def __init__(self, url, cell_index=0, alive=True):
         self.meta = ServerCellMetadata(
+            model_id="default",
             worker_type="regular",
-            cell_id=f"cell-{cell_index}",
+            cell_id=f"inference-engine-0-0-{cell_index}",
             num_gpus_per_engine=1,
-            gpu_offset=0,
-            sglang_overrides={},
-            model_idx=0,
-            group_index=0,
-            cell_index=cell_index,
+            gpu_offset=cell_index,
+            sglang_api_key=None,
+            worker_name=f"inference-engine-0-0-{cell_index}-0",
             needs_offload=False,
-            model_path=None,
             update_weights=False,
+            workers_hash=f"hash-{cell_index}",
         )
-        self.addr_info = type("FakeAddrInfo", (), {"server_url": url})()
-        self.is_alive = alive
+        self.server_url = url
+        self.is_pending_weights_or_serving = alive
 
 
 def _worker_info(name, node, gpus, generation=1):
