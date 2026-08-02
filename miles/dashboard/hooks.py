@@ -27,6 +27,7 @@ from miles.dashboard.store import (
 )
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.timer import Timer
+from miles.utils.workers.naming import parse_worker_name
 
 logger = logging.getLogger(__name__)
 
@@ -380,19 +381,14 @@ def _alive_engine_cells(servers) -> list:
 
 
 def _collect_worker_infos(cells) -> list[list]:
-    from miles.ray.specs.inference import compute_engine_pool
     from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
     manager_handle = RayWorkerManager.get_handle()
-    return _ray_get(
-        [
-            manager_handle.get_worker_infos.remote(
-                pool=compute_engine_pool(model_idx=cell.meta.model_idx, group_index=cell.meta.group_index),
-                cell_index=cell.meta.cell_index,
-            )
-            for cell in cells
-        ]
-    )
+    futures = []
+    for cell in cells:
+        pool, cell_index, _ = parse_worker_name(cell.meta.worker_name)
+        futures.append(manager_handle.get_worker_infos.remote(pool=pool, cell_index=cell_index))
+    return _ray_get(futures)
 
 
 def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
