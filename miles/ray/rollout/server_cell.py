@@ -46,10 +46,6 @@ class ServerCell:
     _state: CellState = dataclasses.field(default_factory=StateAllocatedUninitialized)
 
     @property
-    def is_allocated(self) -> bool:
-        return isinstance(self._state, StateAllocatedBase)
-
-    @property
     def is_alive(self) -> bool:
         return isinstance(self._state, StateAllocatedAlive)
 
@@ -103,21 +99,16 @@ class ServerCell:
         )
 
     async def dispose(self) -> None:
-        if self.is_allocated:
-            try:
-                await asyncio.wait_for(
-                    self.router_api_client.remove_worker(
-                        worker_url=self.addr_info.server_url,
-                        use_legacy_api=use_legacy_router_api(self.args),
-                    ),
-                    timeout=SHUTDOWN_TIMEOUT,
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})"
-                )
-        else:
-            logger.info(f"Cell {self.meta.cell_id} is already stopped")
+        try:
+            await asyncio.wait_for(
+                self.router_api_client.remove_worker(
+                    worker_url=self.addr_info.server_url,
+                    use_legacy_api=use_legacy_router_api(self.args),
+                ),
+                timeout=SHUTDOWN_TIMEOUT,
+            )
+        except Exception as e:
+            logger.warning(f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})")
 
     def _mark_addressing(self, addr_info: AddrInfo) -> None:
         self._change_state(
