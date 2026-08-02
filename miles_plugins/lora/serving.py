@@ -15,7 +15,7 @@ from collections.abc import Iterable, Sequence
 import torch
 import torch.nn as nn
 
-from miles_plugins.lora.codec.hf import export_lora_hf_named
+from miles_plugins.lora.hf_adapter import export_lora_hf_named
 from miles_plugins.lora.modules.linear import iter_adapters
 
 

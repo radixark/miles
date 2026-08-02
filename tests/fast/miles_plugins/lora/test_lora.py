@@ -18,7 +18,7 @@ from miles.backends.megatron_utils.lora_utils import (
     resolve_lora_provider,
 )
 from miles.utils.lora import lora_rollout_enabled
-from miles_plugins.lora.codec.hf import resolve_hf_naming
+from miles_plugins.lora.hf_adapter import resolve_hf_naming
 from miles_plugins.lora.distributed import rmsnorm
 from miles_plugins.lora.lora import (
     _require_grad_on_first_activation,

@@ -168,7 +168,7 @@ def _adapter_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, *, ep_sharded:
     hold routed-expert adapter state; native state is EP-invariant
     (``native_adapter_shard_name``).
     """
-    from miles_plugins.lora.codec.checkpoint import native_adapter_shard_name
+    from miles_plugins.lora.checkpointing import native_adapter_shard_name
 
     name = native_adapter_shard_name(tp_rank, pp_rank)
     if ep_sharded and ep_rank > 0:
@@ -178,7 +178,7 @@ def _adapter_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, *, ep_sharded:
 
 def _adapter_shards_are_ep_sharded(model: Sequence[torch.nn.Module]) -> bool:
     """Derive the shard policy from the modules that were actually attached."""
-    from miles_plugins.lora.codec.checkpoint import has_native_adapters
+    from miles_plugins.lora.checkpointing import has_native_adapters
 
     return not has_native_adapters(model)
 
@@ -192,7 +192,7 @@ def _non_native_adapter_load_plan(model, state_dict):
     before any copy; the native codec remains the sole owner of strict,
     chunk-qualified checkpoint semantics.
     """
-    from miles_plugins.lora.codec.checkpoint import AdapterLoadPlan
+    from miles_plugins.lora.checkpointing import AdapterLoadPlan
 
     assignments = []
     shape_mismatches = []
@@ -366,7 +366,7 @@ def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
     """HF target_modules for SGLang LoRA init/sync (minus _SGLANG_UNSUPPORTED_HF_TARGETS, currently empty)."""
     raw = list(args.target_modules) if args.target_modules else []
     if uses_builtin_native_lora_provider(args):
-        from miles_plugins.lora.codec.sglang import expand_sglang_target_modules
+        from miles_plugins.lora.serving import expand_sglang_target_modules
         from miles_plugins.lora.config import LoRAConfig
 
         hf_checkpoint = getattr(args, "hf_checkpoint", None)
@@ -576,7 +576,7 @@ def save_lora_checkpoint(
                     if _is_adapter_param_name(name):
                         adapter_state[name] = parameter.detach().cpu()
         else:
-            from miles_plugins.lora.codec.checkpoint import native_adapter_state_dict
+            from miles_plugins.lora.checkpointing import native_adapter_state_dict
 
             adapter_state = native_adapter_state_dict(model)
 
@@ -615,7 +615,7 @@ def save_lora_checkpoint(
                 else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
             )
         else:
-            from miles_plugins.lora.codec.hf import target_modules_from_hf_names
+            from miles_plugins.lora.hf_adapter import target_modules_from_hf_names
 
             target_modules_hf = target_modules_from_hf_names(lora_state_dict)
         config = {
@@ -694,7 +694,7 @@ def load_lora_adapter(
     ep_rank = get_parallel_state().ep.rank
 
     # ---- Try Megatron-native format first (fast, no conversion needed) ----
-    from miles_plugins.lora.codec.checkpoint import native_adapter_load_plan
+    from miles_plugins.lora.checkpointing import native_adapter_load_plan
 
     # Shard key follows the provider: only bridge/custom adapters are EP-sharded.
     ep_sharded_provider = _adapter_shards_are_ep_sharded(model)

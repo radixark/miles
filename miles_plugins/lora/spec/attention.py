@@ -12,8 +12,8 @@ from __future__ import annotations
 import torch.nn as nn
 
 from miles_plugins.lora.modules.linear import LoRASplitQKV
-from miles_plugins.lora.spec import dims
-from miles_plugins.lora.spec.attach import (
+from miles_plugins.lora.spec import layout as L
+from miles_plugins.lora.spec.layout import (
     AttentionSpecBase,
     FusedAttach,
     ModuleLayout,
@@ -74,8 +74,8 @@ class GQAAttentionSpec(AttentionSpecBase):
             ProjectionBinding(
                 projection=ProjectionSpec("o_proj", "o", ShardLayout.ROW),
                 module_attr="linear_proj",
-                in_dim=dims.gqa_o_in_local,
-                out_dim=dims.hidden,
+                in_dim=L.gqa_o_in_local,
+                out_dim=L.hidden,
                 adapter_attr="lora_o_adapter",
             ),
         ),
@@ -116,8 +116,8 @@ class MLAAttentionSpec(AttentionSpecBase):
     _MLA_A_SERVING_GROUP = ServingGroup(
         name="mla_a",
         member_rows=(
-            ("q_a_proj", dims.cfg("q_lora_rank")),
-            ("kv_a_proj_with_mqa", dims.mla_kv_down_out),
+            ("q_a_proj", L.cfg("q_lora_rank")),
+            ("kv_a_proj_with_mqa", L.mla_kv_down_out),
         ),
     )
 
@@ -127,8 +127,8 @@ class MLAAttentionSpec(AttentionSpecBase):
             ProjectionBinding(
                 projection=ProjectionSpec("q_a_proj", "a", ShardLayout.REPLICATED),
                 module_attr="linear_q_down_proj",
-                in_dim=dims.hidden,
-                out_dim=dims.cfg("q_lora_rank"),
+                in_dim=L.hidden,
+                out_dim=L.cfg("q_lora_rank"),
                 adapter_attr="lora_mla_q_a_adapter",
                 guard=_replicated_guard,
                 serving_group=_MLA_A_SERVING_GROUP,
@@ -136,15 +136,15 @@ class MLAAttentionSpec(AttentionSpecBase):
             ProjectionBinding(
                 projection=ProjectionSpec("q_b_proj", "b", ShardLayout.COLUMN),
                 module_attr="linear_q_up_proj",
-                in_dim=dims.cfg("q_lora_rank"),
-                out_dim=dims.mla_q_up_out_local,
+                in_dim=L.cfg("q_lora_rank"),
+                out_dim=L.mla_q_up_out_local,
                 adapter_attr="lora_mla_q_b_adapter",
             ),
             ProjectionBinding(
                 projection=ProjectionSpec("kv_a_proj_with_mqa", "a", ShardLayout.REPLICATED),
                 module_attr="linear_kv_down_proj",
-                in_dim=dims.hidden,
-                out_dim=dims.mla_kv_down_out,
+                in_dim=L.hidden,
+                out_dim=L.mla_kv_down_out,
                 adapter_attr="lora_mla_kv_a_adapter",
                 guard=_replicated_guard,
                 serving_group=_MLA_A_SERVING_GROUP,
@@ -152,15 +152,15 @@ class MLAAttentionSpec(AttentionSpecBase):
             ProjectionBinding(
                 projection=ProjectionSpec("kv_b_proj", "b", ShardLayout.COLUMN),
                 module_attr="linear_kv_up_proj",
-                in_dim=dims.cfg("kv_lora_rank"),
-                out_dim=dims.mla_kv_up_out_local,
+                in_dim=L.cfg("kv_lora_rank"),
+                out_dim=L.mla_kv_up_out_local,
                 adapter_attr="lora_mla_kv_b_adapter",
             ),
             ProjectionBinding(
                 projection=ProjectionSpec("o_proj", "o", ShardLayout.ROW),
                 module_attr="linear_proj",
-                in_dim=dims.mla_o_in_local,
-                out_dim=dims.hidden,
+                in_dim=L.mla_o_in_local,
+                out_dim=L.hidden,
                 adapter_attr="lora_o_adapter",
             ),
         ),
@@ -201,7 +201,7 @@ class GDNAttentionSpec(AttentionSpecBase):
 
     TODO:
 
-    - Split the fused ``in_proj`` four ways in ``codec/hf.py``.
+    - Split the fused ``in_proj`` four ways in ``hf_adapter.py``.
     """
 
     name = "gdn"

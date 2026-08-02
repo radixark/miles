@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch.nn as nn
 
 from miles_plugins.lora.modules.linear import LoRASplitFC1
-from miles_plugins.lora.spec import dims
-from miles_plugins.lora.spec.attach import FusedAttach, LayoutSpec, ModuleLayout, ProjectionBinding
+from miles_plugins.lora.spec import layout as L
+from miles_plugins.lora.spec.layout import FusedAttach, LayoutSpec, ModuleLayout, ProjectionBinding
 from miles_plugins.lora.spec.base import AttachContext, ProjectionSpec, ShardLayout
 
 
@@ -55,7 +55,7 @@ class FusedGatedMLPSpec(LayoutSpec):
                 projection=ProjectionSpec("down_proj", "down", ShardLayout.ROW),
                 module_attr="linear_fc2",
                 in_dim=_fc1_inter_local,
-                out_dim=dims.hidden,
+                out_dim=L.hidden,
                 adapter_attr="lora_fc2_adapter",
             ),
         ),

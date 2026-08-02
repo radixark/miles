@@ -1,9 +1,10 @@
-"""Generic attachment mechanism for declarative native-LoRA layouts.
+"""Declarative native-LoRA layouts: dimension resolvers, bindings, and the attach walk.
 
-A layout is a table of bindings; this module owns the walk that turns the
-table into attached adapter modules. It is the single implementation of the
+A layout is a table of bindings; this module owns everything that turns the
+table into attached adapter modules — the dimension resolvers the tables
+reference, the binding/group dataclasses, the single implementation of the
 "existence check -> target filter -> guard -> build -> setattr -> patch
-forward" ritual every architecture spec previously hand-wrote.
+forward" ritual, and the spec base classes everything derives from.
 """
 
 from __future__ import annotations
@@ -15,7 +16,61 @@ import torch.nn as nn
 
 from miles_plugins.lora.modules.linear import LoRALinear, NativeLoRAAdapter, SGLangFusedGroup, attach_adapter_forward
 from miles_plugins.lora.spec.base import AttachContext, AttentionFamily, ProjectionSpec
-from miles_plugins.lora.spec.dims import DimFn
+
+# ---------------------------------------------------------------------------
+# Dimension resolvers: (module, context) -> int, where ``module`` is the
+# attention/MLP block owning the physical linears. This section is the only
+# spec-side code allowed to read MCore attribute names.
+# ---------------------------------------------------------------------------
+
+DimFn = Callable[[nn.Module, AttachContext], int]
+
+
+def hidden(_module: nn.Module, context: AttachContext) -> int:
+    return context.hidden
+
+
+def cfg(field: str) -> DimFn:
+    """A transformer-config field used verbatim (e.g. ``q_lora_rank``)."""
+
+    def resolve(_module: nn.Module, context: AttachContext) -> int:
+        value = getattr(context.transformer_config, field)
+        assert value, f"transformer config field {field!r} must be a positive dimension, got {value!r}"
+        return int(value)
+
+    return resolve
+
+
+def gqa_o_in_local(module: nn.Module, _context: AttachContext) -> int:
+    """Row-parallel o_proj input: this rank's query heads times head dim."""
+    return module.num_attention_heads_per_partition * module.hidden_size_per_attention_head
+
+
+def mla_q_up_out_local(module: nn.Module, _context: AttachContext) -> int:
+    """Column-parallel q_b output: local heads times the full MLA query head dim."""
+    return module.num_attention_heads_per_partition * module.q_head_dim
+
+
+def mla_kv_down_out(_module: nn.Module, context: AttachContext) -> int:
+    """Replicated kv_a output: compressed KV rank plus the shared RoPE key slice."""
+    config = context.transformer_config
+    return int(config.kv_lora_rank + config.qk_pos_emb_head_dim)
+
+
+def mla_kv_up_out_local(module: nn.Module, context: AttachContext) -> int:
+    """Column-parallel kv_b output: local heads times (nope-K plus V) head dims."""
+    config = context.transformer_config
+    return module.num_attention_heads_per_partition * (config.qk_head_dim + config.v_head_dim)
+
+
+def mla_o_in_local(module: nn.Module, context: AttachContext) -> int:
+    """Row-parallel MLA o_proj input: local heads times the value head dim."""
+    return module.num_attention_heads_per_partition * context.transformer_config.v_head_dim
+
+
+# ---------------------------------------------------------------------------
+# Layout declarations and the attach walk.
+# ---------------------------------------------------------------------------
 
 GuardFn = Callable[[nn.Module, AttachContext, ProjectionSpec, int], None]
 # (block, hf_prefix, context, active_projections, all_member_projections) -> adapter
@@ -30,7 +85,7 @@ class ServingGroup:
 
     ``member_rows`` resolves every member's full ``lora_B`` row count from the
     architecture config, keeping those facts in the spec table rather than in
-    the serving codec.
+    the serving exporter.
     """
 
     name: str

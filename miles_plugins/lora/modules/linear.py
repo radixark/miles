@@ -4,7 +4,7 @@ Each adapter is a sibling module of the physical MCore/TE linear;
 ``attach_adapter_forward`` patches that linear's forward to add the delta. Base
 parameter names are unchanged, so checkpoint, weight-sync, and quantizer naming
 contracts hold. Adapters are self-describing: :meth:`NativeLoRAAdapter.exports`
-yields one :class:`ProjectionExport` per logical projection so codecs consume a
+yields one :class:`ProjectionExport` per logical projection so exporters consume a
 public descriptor instead of module internals.
 """
 
@@ -26,7 +26,7 @@ class SGLangFusedGroup:
     """A serving-side fused buffer this projection belongs to.
 
     ``member_rows`` maps every member's HF leaf name to its FULL (TP-gathered)
-    ``lora_B`` row count, so the serving codec can zero-fill absent siblings
+    ``lora_B`` row count, so the serving exporter can zero-fill absent siblings
     with the architecture's true widths.
     """
 
@@ -36,7 +36,7 @@ class SGLangFusedGroup:
 
 @dataclass(frozen=True)
 class ProjectionExport:
-    """Public per-projection descriptor consumed by the codecs."""
+    """Public per-projection descriptor consumed by the exporters."""
 
     hf_name: str  # full name, e.g. "model.layers.3.self_attn.q_proj"
     layout: ShardLayout

@@ -10,7 +10,7 @@ TODO:
 
 - Add EP gathering, 3D stacking, and per-expert HF names.
 - Select the expert-TP group and slice on load by ``ep_rank``.
-- Then drop the shard name's EP-invariance in ``codec/checkpoint.py``.
+- Then drop the shard name's EP-invariance in ``checkpointing.py``.
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ def export_lora_hf_named(model_chunks) -> list[tuple[str, torch.Tensor]]:
     """Materialize full HF/PEFT adapter tensors on every TP rank.
 
     This representation preserves the user's exact target set for checkpoint
-    interoperability. The serving-only codec consumes it and may add zero
+    interoperability. The serving-only exporter consumes it and may add zero
     siblings required by SGLang's fused buffers. PP assembly remains with the
     shared Miles checkpoint orchestrator until the bridge path is split in a
     later refactor.

@@ -8,12 +8,12 @@ Unsupported:
 
 - EP-shared and shared-outer routed/grouped-expert LoRA.
 - Sequential per-expert and router LoRA.
-- Expert-TP/EP coordination and expert-axis HF/SGLang codecs.
+- Expert-TP/EP coordination and expert-axis HF/SGLang export.
 
 TODO:
 
 - Add MoE attachment support and expert-TP/EP context.
-- Implement expert adapters, synchronization, HF codec support, and SGLang
+- Implement expert adapters, synchronization, HF export support, and SGLang
   packing.
 """
 

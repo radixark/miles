@@ -8,7 +8,7 @@ Constraint:
 - Import ``miles``/``megatron`` inside functions, never at module level.
 """
 
-from miles_plugins.lora.codec.sglang import export_lora_sglang_named
+from miles_plugins.lora.serving import export_lora_sglang_named
 from miles_plugins.lora.lora import (
     apply_native_lora,
     export_lora_hf_named,

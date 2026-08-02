@@ -1,4 +1,4 @@
-"""Architecture contracts shared by native-LoRA specs, modules, and codecs."""
+"""Architecture contracts shared by native-LoRA specs, modules, and exporters."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class ProjectionSpec:
     """External name and shard layout for one logical HF LoRA projection.
 
     ``attr`` names the parameter pair stored on the adapter
-    (``<attr>_A``/``<attr>_B``). The codec derives each rank's shard width from
+    (``<attr>_A``/``<attr>_B``). The exporters derive each rank's shard width from
     those parameter shapes, so this descriptor stays static and pickle-safe.
     """
 
