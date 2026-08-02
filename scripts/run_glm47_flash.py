@@ -14,7 +14,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "GLM-4.7-Flash"
     megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
-    hardware: Literal["H200"] = "H200"
+    hardware: Literal["H200", "B200"] = "H200"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -127,6 +127,9 @@ def execute(args: ScriptArgs):
         # rollout routing replay
         "--use-rollout-routing-replay "
     )
+
+    if args.hardware == "B200":
+        sglang_args += "--sglang-flashinfer-mla-disable-ragged "
 
     misc_args = (
         "--attention-dropout 0.0 "

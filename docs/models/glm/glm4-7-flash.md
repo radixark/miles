@@ -53,11 +53,11 @@ The Python launcher does the conversion automatically.
 cd /root/miles
 bash scripts/run-glm4.7-flash.sh
 
-# Python launcher (H200 only — `hardware` literal in the dataclass)
+# Python launcher (defaults to H200; pass --hardware B200 on B200)
 python scripts/run_glm47_flash.py
 ```
 
-Defaults of the Python launcher (see `ScriptArgs`): `model_org=zai-org`, `model_name=GLM-4.7-Flash`, `num_gpus_per_node=8`, `hardware=H200`, `data_dir=/root/datasets`, `model_dir=/root/models`.
+Defaults of the Python launcher (see `ScriptArgs`): `model_org=zai-org`, `model_name=GLM-4.7-Flash`, `num_gpus_per_node=8`, `hardware=H200`, `data_dir=/root/datasets`, `model_dir=/root/models`. The `hardware` CLI also accepts `B200`.
 
 ## 5. Recipe Configuration
 
@@ -90,6 +90,8 @@ SGLANG_ARGS=(
    --use-rollout-routing-replay
 )
 ```
+
+On B200, invoke the Python launcher with `--hardware B200`; it adds `--sglang-flashinfer-mla-disable-ragged`. This avoids the unsupported FlashInfer SM100 ragged prefill path for the model's 256-dimensional QK and value heads while preserving FlashInfer's paged prefill and default decode paths. With the default `--hardware H200`, the launcher keeps automatic backend selection.
 
 ### 5.4 Optimizer
 
