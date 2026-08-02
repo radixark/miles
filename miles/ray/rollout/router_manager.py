@@ -37,7 +37,9 @@ def start_router(args, model_idx: int, model_cfg: ModelConfig) -> tuple[str, int
         prometheus=HostAndPort(host=router_ip, port=prometheus_port),
     )
     assert set(self_addrs) == {info.name for info in spec.port_infos}
-    launch_command = spec.launch_command(LaunchCommandContext(cell_index=0, self_addrs=self_addrs, spec_addrs={}))
+    launch_command = spec.launch_command(
+        LaunchCommandContext(cell_index=0, worker_in_cell_index=0, self_addrs=self_addrs, spec_addrs={}, gpu_ids=[])
+    )
 
     actor_handle = _launch_command_on_head(launch_command)
     wait_tcp_ready(
@@ -107,6 +109,8 @@ def start_session_server(args):
         launch_cmd = spec.launch_command(
             LaunchCommandContext(
                 cell_index=instance_index,
+                worker_in_cell_index=0,
+                gpu_ids=[],
                 self_addrs=dict(primary=HostAndPort(host=ip, port=port)),
                 spec_addrs={
                     compute_router_pool_id(0): [
