@@ -99,16 +99,21 @@ class ServerCell:
         self._mark_serving()
 
     async def dispose(self) -> None:
-        try:
-            await asyncio.wait_for(
-                self.router_api_client.remove_worker(
-                    worker_url=self.server_url,
-                    use_legacy_api=use_legacy_router_api(self.args),
-                ),
-                timeout=SHUTDOWN_TIMEOUT,
-            )
-        except Exception as e:
-            logger.warning(f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})")
+        if isinstance(self._state, (StatePendingWeights, StateServing)):
+            try:
+                await asyncio.wait_for(
+                    self.router_api_client.remove_worker(
+                        worker_url=self.server_url,
+                        use_legacy_api=use_legacy_router_api(self.args),
+                    ),
+                    timeout=SHUTDOWN_TIMEOUT,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})"
+                )
+
+        self._change_state("dispose", (StateUnknown, StatePendingWeights, StateServing), StateUnknown())
 
     def _mark_pending_weights(self, server_url: str, bootstrap_port: int | None) -> None:
         self._change_state(
