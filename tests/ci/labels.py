@@ -34,4 +34,5 @@ KNOWN_LABELS: dict[str, str] = {
     "replay": "Routing / indexer replay tests",
     "qwen35": "Qwen3.5-35B-A3B MTP / spec-v2 e2e tests",
     "mooncake": "Mooncake object-store rollout transfer tests",
+    "miles-plugin": "miles_plugins extension tests (optimizers, model plugins)",
 }

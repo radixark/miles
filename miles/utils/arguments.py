@@ -16,6 +16,7 @@ from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_config
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.misc import load_function
 from miles.utils.object_store import ObjectStoreBackend
@@ -176,12 +177,47 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--stream-optimizer-state-to-disk",
+                action="store_true",
+                help=(
+                    "Stream the fp32 main params and Adam moments through per-bucket files on "
+                    "node-local NVMe during optimizer.step(), bounding GPU residency to one bucket. "
+                    "For when the optimizer state does not fit the GPU *while the step runs*: "
+                    "--offload-train-target=disk cannot help there, because pause/resume happen at "
+                    "phase boundaries and everything is resident again by the time Adam launches. "
+                    "Bit-identical to keeping the state on GPU, at the cost of disk traffic every "
+                    "step. Distinct from --offload-optimizer-states and --optimizer-cpu-offload, "
+                    "and mutually exclusive with both."
+                ),
+            )
+            parser.add_argument(
+                "--stream-optimizer-state-moment-dtype",
+                type=str,
+                default="fp32",
+                choices=["fp32", "bf16", "fp16", "fp8e4m3", "fp8e5m2"],
+                help=(
+                    "On-disk dtype for the streamed Adam moments; the fp32 master copy is always "
+                    "fp32. This is a serialization format, not a compute precision: the step still "
+                    "hands fp32 tensors to FusedAdam, and the cast happens on the way to and from "
+                    "disk. That makes it distinct from --exp-avg-dtype / --exp-avg-sq-dtype, which "
+                    "change what the optimizer holds and require --use-precision-aware-optimizer, "
+                    "so they cannot be combined with streaming at all. "
+                    "The step is I/O bound and the moments tolerate less precision than the master "
+                    "copy, so bf16 cuts streaming volume by a third (12 bytes per param to 8). "
+                    "fp32 is bit-identical to keeping the moments on GPU. The fp8 options need "
+                    "per-block scaling for exp_avg_sq to be sound, which this does not implement, "
+                    "and are not recommended."
+                ),
+            )
+            parser.add_argument(
                 "--offload-train-disk-dir",
                 type=str,
                 default=None,
                 help=(
-                    "Node-local directory for train disk-offload files when "
-                    "--offload-train-target=disk. Should be fast local NVMe (e.g. /scratch). "
+                    "Node-local directory for the disk-offload files, used by both "
+                    "--offload-train-target=disk and --stream-optimizer-state-to-disk (each under "
+                    "its own subdirectory). Should be fast local NVMe (e.g. /scratch); a tmpfs "
+                    "mount, which /tmp is on many systems, keeps the data in RAM and defeats both. "
                     "Files are per-process and overwritten in place every step (bounded size); "
                     "defaults to $SCRATCH/miles_train_offload_<uid>."
                 ),
@@ -191,8 +227,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=256,
                 help=(
-                    "Chunk size (MiB) for streaming the training actor GPU<->disk in disk-offload "
-                    "mode. Bounds the pinned host staging buffer regardless of the total offloaded size."
+                    "Chunk size (MiB) for the GPU<->disk transfers, i.e. the pinned host staging "
+                    "buffer, which bounds host memory regardless of how much is moved. Used by both "
+                    "--offload-train-target=disk and --stream-optimizer-state-to-disk, and each "
+                    "allocates its own, so enabling both costs 2x this per rank."
                 ),
             )
 
@@ -2916,6 +2954,49 @@ def miles_validate_args(args):
         logger.info(
             f"Train offload target=disk, dir={args.offload_train_disk_dir}, "
             f"chunk={args.offload_train_disk_chunk_mb}MB"
+        )
+
+    if args.stream_optimizer_state_to_disk:
+        assert args.offload_train_target == "disk", (
+            "--stream-optimizer-state-to-disk requires --offload-train-target=disk. Both answer the "
+            "same pressure and are only ever deployed as a pair, so that is the only combination "
+            "validated; streaming alone runs but is untested."
+        )
+        assert not args.indep_dp, (
+            "--stream-optimizer-state-to-disk does not support --indep-dp: each cell has its own "
+            "process group, so torch.distributed.get_rank() restarts at 0 per cell and two cells "
+            "on one node would share a store directory"
+        )
+        assert args.use_distributed_optimizer, "--stream-optimizer-state-to-disk requires the distributed optimizer"
+        assert (
+            args.optimizer == "adam"
+        ), f"--stream-optimizer-state-to-disk requires --optimizer adam, got {args.optimizer}"
+        assert not (args.multi_lora or is_lora_enabled(args)), (
+            "--stream-optimizer-state-to-disk does not support LoRA: the LoRA checkpoint path "
+            "persists optimizer.state_dict(), which the store leaves empty, and restores the "
+            "adapter into the model params without refreshing the streamed main params"
+        )
+        assert not args.optimizer_cpu_offload, "--stream-optimizer-state-to-disk excludes --optimizer-cpu-offload"
+        assert (
+            not args.offload_optimizer_states
+        ), "--stream-optimizer-state-to-disk excludes --offload-optimizer-states"
+        assert (
+            not args.use_precision_aware_optimizer
+        ), "--stream-optimizer-state-to-disk requires mcore to hold the fp32 main params"
+        assert not args.reset_optimizer_states, (
+            "--reset-optimizer-states walks the master optimizer's state, which the NVMe store "
+            "leaves empty, so the reset would silently do nothing"
+        )
+        assert not args.save_local_weight_checksum, (
+            "--save-local-weight-checksum reads param.main_param, whose storage the NVMe store "
+            "resizes to 0 between steps"
+        )
+        assert (
+            not args.enable_witness
+        ), "--enable-witness reads the master optimizer's per-param state, which the NVMe store owns"
+        logger.info(
+            f"Streaming optimizer state to disk, dir={args.offload_train_disk_dir}, "
+            f"chunk={args.offload_train_disk_chunk_mb}MB, moments={args.stream_optimizer_state_moment_dtype}"
         )
 
     if args.async_max_concurrent_samples is not None:
