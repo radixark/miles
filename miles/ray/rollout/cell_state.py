@@ -27,4 +27,5 @@ class StateAllocatedAlive(StateAllocatedBase):
     pass
 
 
+# TODO: improve state definitions
 CellState = StateAllocatedUninitialized | StateAllocatedAlive
