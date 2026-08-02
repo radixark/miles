@@ -9,13 +9,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
-from miles.ray.rollout.cell_state import (
-    AddrInfo,
-    CellState,
-    StateAllocatedAlive,
-    StateAllocatedBase,
-    StateAllocatedUninitialized,
-)
+from miles.ray.rollout.cell_state import CellState, StatePendingWeights, StateServing, StateUnknown
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -43,21 +37,20 @@ class ServerCell:
     args: Any
     meta: ServerCellMetadata
     router_api_client: SGLangRouterApiClient
-    _state: CellState = dataclasses.field(default_factory=StateAllocatedUninitialized)
+    _state: CellState = dataclasses.field(default_factory=StateUnknown)
 
     @property
-    def is_alive(self) -> bool:
-        return isinstance(self._state, StateAllocatedAlive)
+    def is_pending_weights_or_serving(self) -> bool:
+        return isinstance(self._state, (StatePendingWeights, StateServing))
 
     @property
-    def addr_info(self) -> AddrInfo:
-        assert isinstance(self._state, StateAllocatedBase)
-        assert self._state.addr_info is not None, f"{self._state=}"
-        return self._state.addr_info
+    def server_url(self) -> str:
+        assert isinstance(self._state, (StatePendingWeights, StateServing))
+        return self._state.server_url
 
     @property
     def api_client(self) -> SGLangApiClient:
-        return SGLangApiClient(server_url=self.addr_info.server_url)
+        return SGLangApiClient(server_url=self.server_url)
 
     async def add(self) -> None:
         if self.args.rollout_external:
@@ -68,17 +61,11 @@ class ServerCell:
         provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
         master_addrs = await provider.get_addrs(worker_name=self.meta.worker_name)
         primary = master_addrs["primary"]
-        disaggregation_bootstrap = master_addrs.get("disaggregation_bootstrap")
-        # TODO simplify (remove) later
-        self._mark_addressing(
-            AddrInfo(
-                server_url=build_server_url(host=primary.host, port=primary.port),
-                bootstrap_port=disaggregation_bootstrap.port if disaggregation_bootstrap else None,
-            )
-        )
+        server_url = build_server_url(host=primary.host, port=primary.port)
+        bootstrap_port = x.port if (x := master_addrs.get("disaggregation_bootstrap")) else None
 
         await wait_server_healthy(
-            server_url=self.addr_info.server_url,
+            server_url=server_url,
             api_key=self.meta.sglang_api_key,
         )
 
@@ -86,23 +73,32 @@ class ServerCell:
             await self.check_weights(action="snapshot", allow_quant_error=False, selector="all", skip_list=None)
 
         if self.meta.needs_offload:
-            await self.api_client.release_memory_occupation()
-            await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+            api_client = SGLangApiClient(server_url=server_url)
+            await api_client.release_memory_occupation()
+            await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
-        self._mark_alive()
+        self._mark_pending_weights(server_url=server_url, bootstrap_port=bootstrap_port)
+
+        await self.mark_weights_ready()
+
+    async def mark_weights_ready(self):
+        assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
+        bootstrap_port = self._state.bootstrap_port
+
+        self._mark_serving()
 
         await self.router_api_client.add_worker(
-            worker_url=self.addr_info.server_url,
+            worker_url=self.server_url,
             worker_type=self.meta.worker_type,
             use_legacy_api=use_legacy_router_api(self.args),
-            bootstrap_port=self.addr_info.bootstrap_port,
+            bootstrap_port=bootstrap_port,
         )
 
     async def dispose(self) -> None:
         try:
             await asyncio.wait_for(
                 self.router_api_client.remove_worker(
-                    worker_url=self.addr_info.server_url,
+                    worker_url=self.server_url,
                     use_legacy_api=use_legacy_router_api(self.args),
                 ),
                 timeout=SHUTDOWN_TIMEOUT,
@@ -110,19 +106,15 @@ class ServerCell:
         except Exception as e:
             logger.warning(f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})")
 
-    def _mark_addressing(self, addr_info: AddrInfo) -> None:
+    def _mark_pending_weights(self, server_url: str, bootstrap_port: int | None) -> None:
         self._change_state(
-            "mark_addressing",
-            StateAllocatedUninitialized,
-            StateAllocatedUninitialized(addr_info=addr_info),
+            "mark_pending_weights",
+            StateUnknown,
+            StatePendingWeights(server_url=server_url, bootstrap_port=bootstrap_port),
         )
 
-    def _mark_alive(self) -> None:
-        self._change_state(
-            "mark_alive",
-            StateAllocatedUninitialized,
-            StateAllocatedAlive(addr_info=self.addr_info),
-        )
+    def _mark_serving(self) -> None:
+        self._change_state("mark_serving", StatePendingWeights, StateServing(server_url=self.server_url))
 
     # TODO: unify w/ trainer `change_state`
     def _change_state(

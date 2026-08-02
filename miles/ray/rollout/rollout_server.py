@@ -128,7 +128,7 @@ class RolloutServer:
         # picture of init/recovery upper bounds across model sizes
         sleep_time = 2
         for _ in range(int(timeout // sleep_time)):
-            if all(cell.is_alive for cell in self.server_cells.values()):
+            if all(cell.is_pending_weights_or_serving for cell in self.server_cells.values()):
                 return
             await asyncio.sleep(sleep_time)
             logger.info("wait_all_engines_alive looping...")
