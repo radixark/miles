@@ -48,11 +48,17 @@ class SchedulingSpec(FrozenStrictBaseModel):
         )
 
 
+# TODO: improve meta computation logic later
+class WorkerMetaContext(FrozenStrictBaseModel):
+    cell_index: int
+
+
 class BaseWorkerSpec(FrozenStrictBaseModel):
     name: str
     port_infos: list[PortInfo]
     env_var: Callable[[], dict[str, str]]
     scheduling: SchedulingSpec
+    meta: Callable[[WorkerMetaContext], dict[str, Any]] | None = None
 
 
 class HostAndPort(FrozenStrictBaseModel):
