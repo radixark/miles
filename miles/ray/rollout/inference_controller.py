@@ -101,17 +101,7 @@ class InferenceController:
             srv.clear_has_new_engines()
 
     async def recover_updatable_engines(self) -> None:
-        """Restart any dead rollout engines and update has_new_engines for update_weights detection.
-
-        Recovers the updatable model (the one that receives weight
-        updates from training).
-        """
-        await self.health_monitoring_pause()
-        srv = self._get_updatable_server()
-        if self.rollout_id == -1 or srv is None:
-            return
-
-        await srv.recover()
+        raise NotImplementedError("new ft to be implemented")
 
     def _get_updatable_server(self) -> RolloutServer | None:
         updatable = [srv for srv in self.servers.values() if srv.update_weights]
@@ -129,7 +119,7 @@ class InferenceController:
     # -------------------------- external start/stop -----------------------------
 
     async def start_cell(self, cell_id: str):
-        await self._server_of(cell_id).recover(cell_ids=[cell_id])
+        raise NotImplementedError("new ft to be implemented")
 
     async def stop_cell(self, cell_id: str):
         await self._server_of(cell_id).stop_cells([cell_id])
