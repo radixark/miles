@@ -8,6 +8,8 @@ from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata, compute_nodes_per_engine
+from miles.ray.specs.inference import compute_engine_pool
+from miles.utils.workers.naming import compute_worker_name
 
 logger = logging.getLogger(__name__)
 
@@ -63,17 +65,18 @@ async def start_rollout_servers(args) -> dict[str, "RolloutServer"]:
                 )
                 for cell_start in range(0, num_engines, nodes_per_engine):
                     cell_id = format_cell_id(server_id=model_cfg.name, index=cell_count)
+                    cell_index = cell_start // nodes_per_engine
+                    pool = compute_engine_pool(model_idx=model_idx, group_index=group_index)
+                    worker_name = compute_worker_name(pool=pool, cell_index=cell_index)
                     cell_meta = ServerCellMetadata(
+                        model_id=model_cfg.name,
                         worker_type=group_cfg.worker_type,
                         cell_id=cell_id,
                         num_gpus_per_engine=gpus_per_engine,
                         gpu_offset=group_cfg.gpu_offset + cell_start * num_gpu_per_engine_local,
-                        sglang_overrides=group_cfg.overrides,
-                        model_idx=model_idx,
-                        group_index=group_index,
-                        cell_index=cell_start // nodes_per_engine,
+                        sglang_api_key=group_cfg.overrides.get("api_key", args.sglang_api_key),
+                        worker_name=worker_name,
                         needs_offload=group_cfg.needs_offload,
-                        model_path=group_cfg.model_path,
                         update_weights=model_cfg.update_weights,
                     )
                     cell_count += 1

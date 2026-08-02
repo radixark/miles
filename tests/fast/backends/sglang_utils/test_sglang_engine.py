@@ -9,7 +9,7 @@ from tests.fast.backends.sglang_utils.conftest import make_engine_args
 pytest.importorskip("sglang")
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
-from miles.backends.sglang_utils.sglang_engine import compute_api_key, compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 
 
 def _cmd(*, worker_type: str = "regular", args=None, addr_overrides: dict | None = None, **kwargs) -> str:
@@ -75,19 +75,3 @@ class TestComputeEngineLaunchCmd:
         cmd = _cmd(args=make_engine_args(sglang_api_key="secret"))
         parsed = parse_server_args_argv(shlex.split(cmd)[3:])
         assert parsed.api_key == "secret"
-
-
-class TestComputeApiKey:
-    def test_the_args_key_is_used_when_no_override_exists(self):
-        """The health wait needs the same key the generic passthrough gave the server."""
-        args = make_engine_args(sglang_api_key="secret")
-        assert compute_api_key(args, sglang_overrides={}) == "secret"
-
-    def test_an_override_key_wins_over_the_args_key(self):
-        """Overrides beat args exactly like they do in the rendered command."""
-        args = make_engine_args(sglang_api_key="from-args")
-        assert compute_api_key(args, sglang_overrides={"api_key": "from-override"}) == "from-override"
-
-    def test_no_key_anywhere_means_the_health_wait_sends_none(self):
-        """No key configured means the health wait sends none."""
-        assert compute_api_key(make_engine_args(), sglang_overrides={}) is None

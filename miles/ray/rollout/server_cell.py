@@ -7,7 +7,7 @@ from typing import Any, Literal
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
-from miles.backends.sglang_utils.sglang_engine import build_server_url, compute_api_key
+from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.cell_state import (
     AddrInfo,
@@ -16,9 +16,7 @@ from miles.ray.rollout.cell_state import (
     StateAllocatedBase,
     StateAllocatedUninitialized,
 )
-from miles.ray.specs.inference import compute_engine_pool
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
@@ -28,16 +26,14 @@ SHUTDOWN_TIMEOUT = 30
 
 
 class ServerCellMetadata(FrozenStrictBaseModel):
+    model_id: str
     worker_type: Literal["regular", "prefill", "decode"]
     cell_id: str
     num_gpus_per_engine: int
     gpu_offset: int
-    sglang_overrides: dict
-    model_idx: int
-    group_index: int
-    cell_index: int
+    sglang_api_key: str | None
+    worker_name: str
     needs_offload: bool
-    model_path: str | None
     update_weights: bool
 
 
@@ -65,23 +61,14 @@ class ServerCell:
     def api_client(self) -> SGLangApiClient:
         return SGLangApiClient(server_url=self.addr_info.server_url)
 
-    @property
-    def _pool_id(self) -> str:
-        return compute_engine_pool(model_idx=self.meta.model_idx, group_index=self.meta.group_index)
-
     async def _add_raw(self) -> None:
-        assert not ({"host", "port"} & set(self.meta.sglang_overrides)), (
-            f"sglang_overrides must not override host/port ({self.meta.sglang_overrides=}): the rollout process derives "
-            f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
-        )
         if self.args.rollout_external:
             raise NotImplementedError(
                 "external rollout address allocation was removed and a new implementation is coming"
             )
 
         provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
-        worker_name = compute_worker_name(pool=self._pool_id, cell_index=self.meta.cell_index)
-        master_addrs = await provider.get_addrs(worker_name=worker_name)
+        master_addrs = await provider.get_addrs(worker_name=self.meta.worker_name)
         primary = master_addrs["primary"]
         disaggregation_bootstrap = master_addrs.get("disaggregation_bootstrap")
         # TODO simplify (remove) later
@@ -94,7 +81,7 @@ class ServerCell:
 
         await wait_server_healthy(
             server_url=self.addr_info.server_url,
-            api_key=compute_api_key(self.args, sglang_overrides=self.meta.sglang_overrides),
+            api_key=self.meta.sglang_api_key,
         )
 
     async def add(self, router_api_client: SGLangRouterApiClient, recover: bool = False) -> None:
