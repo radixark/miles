@@ -264,3 +264,32 @@ class TestMasterPortsOnRealRay:
         for master in [masters["0-0"], masters["1-0"]]:
             reserved = range(master["port"], master["port"] + 4)
             assert not set(reserved) & set(primary_ports)
+
+
+class TestPlacementOnRealRay:
+    def test_workers_run_inside_their_placement_group_bundles_with_their_gpu_slice(
+        self, manager_factory, worker_probe_factory, placement_group_factory
+    ):
+        """A pg-bound spec starts every worker on its own bundle and hands it the gpu ids of its slots."""
+        probe = worker_probe_factory(env_names=("CUDA_VISIBLE_DEVICES",))
+        pgs = {"rollout": placement_group_factory(num_bundles=4, first_gpu_id=10)}
+        handle = manager_factory(
+            [
+                make_command_spec(
+                    "engine",
+                    num_cells=2,
+                    launch_command=probe.launch_command,
+                    num_gpus_per_worker=0.5,
+                    num_gpu_slots_per_worker=2,
+                    pg_name="rollout",
+                )
+            ],
+            pgs,
+        )
+
+        records = probe.wait_for_records(2)
+
+        assert records["0-0"]["context"]["gpu_ids"] == [10, 11]
+        assert records["1-0"]["context"]["gpu_ids"] == [12, 13]
+        assert all(record["env"]["CUDA_VISIBLE_DEVICES"] for record in records.values())
+        assert len(ray.get(handle.get_addrs.remote())["engine"]) == 2
