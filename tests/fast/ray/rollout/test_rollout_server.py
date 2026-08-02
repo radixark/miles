@@ -283,12 +283,12 @@ class TestStartRolloutServersCellChunking:
     def test_a_single_node_engine_becomes_its_own_cell(self, stub_engine_startup, tmp_path):
         """With one gpu per engine on 8-gpu nodes, every engine is a one-engine cell."""
         cells = self._cells_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
-        assert [cell.cell_index for cell in cells] == list(range(8))
+        assert [cell.meta.cell_index for cell in cells] == list(range(8))
 
     def test_a_multi_node_engine_chunks_its_node_ranks_into_one_cell(self, stub_engine_startup, tmp_path):
         """With 16 gpus per engine on 8-gpu nodes, the 32 gpus collapse into two cells."""
         cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
-        assert [cell.cell_index for cell in cells] == [0, 1]
+        assert [cell.meta.cell_index for cell in cells] == [0, 1]
 
     def test_a_trailing_partial_multi_node_engine_is_rejected(self, stub_engine_startup, tmp_path):
         """24 gpus do not divide into whole 2-node engines, so startup must fail fast."""
@@ -298,4 +298,4 @@ class TestStartRolloutServersCellChunking:
     def test_cells_carry_contiguous_gpu_offsets(self, stub_engine_startup, tmp_path):
         """Each multi-node cell's gpu span starts where the previous one ended."""
         cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
-        assert [cell.gpu_offset for cell in cells] == [0, 16]
+        assert [cell.meta.gpu_offset for cell in cells] == [0, 16]
