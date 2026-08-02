@@ -6,7 +6,7 @@ from typing import Any
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
-from miles.ray.rollout.router_manager import start_router
+from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
 from miles.utils.workers.addr_allocator import PortAllocator
 
@@ -30,11 +30,11 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     port_allocator = PortAllocator()
 
     for model_idx, model_cfg in enumerate(config.models):
-        router_ip, router_port = start_router(args, model_idx, model_cfg)
+        router_addr = await wait_router_ready(model_idx=model_idx)
 
         if model_idx == 0:
-            args.sglang_router_ip = router_ip
-            args.sglang_router_port = router_port
+            args.sglang_router_ip = router_addr.host
+            args.sglang_router_port = router_addr.port
 
         server_cells: dict[str, ServerCell] = {}
 
@@ -86,8 +86,8 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
         servers[model_cfg.name] = RolloutServer(
             server_cells=server_cells,
             args=args,
-            router_ip=router_ip,
-            router_port=router_port,
+            router_ip=router_addr.host,
+            router_port=router_addr.port,
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
         )

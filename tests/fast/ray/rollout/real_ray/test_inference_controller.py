@@ -10,12 +10,13 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.utils.workers.worker_spec import HostAndPort
 
 
 class _NoopRouterApiClient:
     """The rollout process registers its engines for real; ``sglang_router_ip``
-    here is a placeholder that keeps ``start_router`` short-circuited, and no
-    router listens on it."""
+    here is a placeholder that keeps ``wait_router_ready`` short-circuited, and
+    no router listens on it."""
 
     def __init__(self, router_url: str):
         self.router_url = router_url
@@ -40,13 +41,13 @@ def patch_low_level(monkeypatch):
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
     monkeypatch.setattr(scell, "CommandActor", MockSGLangEngine.__ray_actor_class__)
-    # each model would otherwise spawn a real router subprocess; return a
+
+    # each model would otherwise wait on a manager-launched router; return a
     # placeholder address nothing listens on instead.
-    monkeypatch.setattr(
-        rsrv,
-        "start_router",
-        lambda args, **kw: ("127.0.0.1", 30000),
-    )
+    async def _fake_router_ready(*args, **kwargs):
+        return HostAndPort(host="127.0.0.1", port=30000)
+
+    monkeypatch.setattr(rsrv, "wait_router_ready", _fake_router_ready)
 
     monkeypatch.setattr(rsrv, "SGLangRouterApiClient", _NoopRouterApiClient)
     monkeypatch.setattr(ictl, "start_session_server", lambda args: None)
