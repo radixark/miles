@@ -10,6 +10,7 @@ from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
 from miles.ray.specs.inference import (
     _compute_spec_router,
+    compute_engine_pool_ids,
     compute_router_pool_id,
     spec_session_server,
     specs_inference_engine,
@@ -17,7 +18,7 @@ from miles.ray.specs.inference import (
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
 from miles.utils.workers.argv_utils import parse_config_argv
-from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext
+from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerMetaContext
 
 
 def _make_model_cfg(*worker_types: str) -> ModelConfig:
@@ -190,6 +191,24 @@ class TestSpecsInferenceEngine:
         assert specs_inference_engine(args) == []
 
 
+class TestComputeEngineSpecNames:
+    def test_only_engine_specs_are_named(self, tmp_path):
+        """These names are what the controller watches, so a router in the list would be reconciled as an engine."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[
+                    {"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2},
+                    {"worker_type": "placeholder", "num_gpus": 4, "num_gpus_per_engine": 4},
+                    {"worker_type": "decode", "num_gpus": 8, "num_gpus_per_engine": 4},
+                ]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=16)
+
+        assert compute_engine_pool_ids(args) == ["inference-engine-0-0", "inference-engine-0-2"]
+
+
 class TestInferenceSpecPinToHead:
     @pytest.mark.parametrize("pinned", [False, True])
     def test_router_and_session_specs_follow_the_rollout_manager_flag(self, pinned: bool):
@@ -268,3 +287,108 @@ class TestInferenceEnginePortSchema:
             "nccl",
             "engine_info_bootstrap",
         ]
+
+
+class TestEngineMetaApiKey:
+    def _meta_for(self, tmp_path, *, overrides_yaml: str = "", **args_overrides):
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            "sglang:\n"
+            "  - name: default\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 1\n" + overrides_yaml
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=8, **args_overrides)
+        (spec,) = specs_inference_engine(args)
+        return spec.meta(WorkerMetaContext(cell_index=0))
+
+    def test_a_group_api_key_override_wins_over_the_args_key(self, tmp_path):
+        """The ServerArgs-named api_key override reaches the cell meta ahead of the global args key."""
+        meta = self._meta_for(
+            tmp_path,
+            overrides_yaml="        overrides:\n          api_key: from-override\n",
+            sglang_api_key="from-args",
+        )
+        assert meta["sglang_api_key"] == "from-override"
+
+    def test_the_args_key_is_used_without_an_override(self, tmp_path):
+        """Without a group override the engine api key falls back to args.sglang_api_key."""
+        meta = self._meta_for(tmp_path, sglang_api_key="from-args")
+        assert meta["sglang_api_key"] == "from-args"
+
+    def test_an_explicit_empty_override_is_kept_verbatim(self, tmp_path):
+        """An override disabling the key must win over the args key instead of silently falling back."""
+        meta = self._meta_for(
+            tmp_path,
+            overrides_yaml='        overrides:\n          api_key: ""\n',
+            sglang_api_key="from-args",
+        )
+        assert meta["sglang_api_key"] == ""
+
+
+class TestTrailingPartialEngineRejection:
+    def _specs_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[
+                    {"worker_type": "regular", "num_gpus": num_gpus, "num_gpus_per_engine": num_gpus_per_engine}
+                ]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
+        return specs_inference_engine(args)
+
+    def test_a_trailing_partial_multi_node_engine_is_rejected(self, tmp_path):
+        """24 GPUs cannot host 16-GPU engines on 8-GPU nodes and must fail fast instead of silently flooring."""
+        with pytest.raises(AssertionError, match="whole number of"):
+            self._specs_for(tmp_path, num_gpus=24, num_gpus_per_engine=16)
+
+    def test_a_whole_number_of_multi_node_engines_passes(self, tmp_path):
+        """32 GPUs host exactly two 16-GPU engines and resolve into two cells."""
+        (spec,) = self._specs_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        assert spec.scheduling.num_cells == 2
+
+
+class TestEngineCellChunking:
+    def _spec_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int, gpu_offset: int = 0):
+        config_path = tmp_path / "sglang.yaml"
+        groups = []
+        if gpu_offset:
+            groups.append(
+                {"worker_type": "placeholder", "num_gpus": gpu_offset, "num_gpus_per_engine": num_gpus_per_engine}
+            )
+        groups.append({"worker_type": "regular", "num_gpus": num_gpus, "num_gpus_per_engine": num_gpus_per_engine})
+        config_path.write_text(make_sglang_config_yaml(server_groups=groups))
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=num_gpus + gpu_offset, num_gpus_per_node=8)
+        return specs_inference_engine(args)[-1]
+
+    def test_a_single_gpu_engine_becomes_its_own_cell(self, tmp_path):
+        """With one gpu per engine on 8-gpu nodes, the group resolves into eight one-worker cells."""
+        spec = self._spec_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
+        assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (8, 1)
+
+    def test_a_multi_node_engine_chunks_its_node_ranks_into_one_cell(self, tmp_path):
+        """A 16-gpu engine on 8-gpu nodes spans two workers, so 32 gpus collapse into two cells."""
+        spec = self._spec_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (2, 2)
+
+    def test_single_gpu_cells_carry_contiguous_gpu_offsets(self, tmp_path):
+        """Every cell must claim its own gpu span, otherwise two engines share the same devices."""
+        spec = self._spec_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
+        offsets = [spec.meta(WorkerMetaContext(cell_index=index))["gpu_offset"] for index in range(8)]
+        assert offsets == list(range(8))
+
+    def test_multi_node_cells_advance_by_a_whole_engine(self, tmp_path):
+        """The per-cell stride is workers x slots, so a 16-gpu engine advances the offset by 16, not by 1."""
+        spec = self._spec_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        offsets = [spec.meta(WorkerMetaContext(cell_index=index))["gpu_offset"] for index in range(2)]
+        assert offsets == [0, 16]
+
+    def test_the_group_gpu_offset_shifts_every_cell(self, tmp_path):
+        """A group placed after another starts counting from that group's end, per cell as well as overall."""
+        spec = self._spec_for(tmp_path, num_gpus=16, num_gpus_per_engine=1, gpu_offset=8)
+        offsets = [spec.meta(WorkerMetaContext(cell_index=index))["gpu_offset"] for index in range(16)]
+        assert offsets == list(range(8, 24))
