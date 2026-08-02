@@ -111,7 +111,6 @@ class MockSGLangServer:
         return JSONResponse(content=response)
 
     def _compute_generate_response(self, payload: dict) -> dict:
-        assert payload.get("return_logprob", True) is True, "MockSGLangServer requires return_logprob=True"
         input_ids = payload.get("input_ids", [])
 
         prompt_str = self.tokenizer.decode(input_ids, skip_special_tokens=False)
@@ -132,11 +131,12 @@ class MockSGLangServer:
             "prompt_tokens": prompt_tokens,
             "cached_tokens": process_result.cached_tokens,
             "completion_tokens": completion_tokens,
-            "output_token_logprobs": output_token_logprobs,
             **process_result.meta_info.to_dict(),
         }
+        if payload.get("return_logprob", True):
+            meta_info["output_token_logprobs"] = output_token_logprobs
 
-        return {"text": process_result.text, "meta_info": meta_info}
+        return {"text": process_result.text, "output_ids": output_ids, "meta_info": meta_info}
 
     def _compute_chat_completions_response(self, payload: dict) -> dict:
         messages = payload.get("messages", [])

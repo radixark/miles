@@ -245,6 +245,28 @@ class TestBasicMultiTurn:
         ]
         verify_samples(result.sample, expected)
 
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"sglang_speculative_algorithm": "DSPARK"}}],
+        indirect=True,
+    )
+    def test_two_turns_without_rollout_logprobs(self, variant, generation_env):
+        if is_agentic_variant(variant):
+            pytest.skip("OpenAI session generation does not use the /generate endpoint helper")
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        S = TwoTurnStub
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        assert len(result.requests) == 2
+        assert all(request["return_logprob"] is False for request in result.requests)
+        sample = result.sample
+        assert sample.response == S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE + S.SECOND_RESPONSE
+        assert sample.rollout_log_probs is None
+        assert 0 in sample.loss_mask
+        assert 1 in sample.loss_mask
+        sample.validate()
+
 
 class TestExitConditions:
     @pytest.mark.parametrize(

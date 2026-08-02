@@ -2,6 +2,8 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=220, suite="stage-b-cpu", labels=[])
 
+from types import SimpleNamespace
+
 import numpy as np
 import pybase64
 import pytest
@@ -10,6 +12,7 @@ from PIL import Image
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 from transformers import AutoProcessor
 
+from miles.rollout.generate_utils.generate_endpoint_utils import generation_return_logprob, get_response_tokens_and_logprobs
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample
@@ -128,6 +131,63 @@ def _run_generate(variant: str, env: GenerateEnv, sample: Sample | None = None, 
 
 
 # ------------------------------------ tests ----------------------------------------
+
+
+class TestSpeculativeGenerationWithoutLogprobs:
+    @pytest.mark.parametrize(
+        "generation_env",
+        [
+            pytest.param({"args_kwargs": {"sglang_speculative_algorithm": "DFLASH"}}, id="dflash"),
+            pytest.param({"args_kwargs": {"sglang_speculative_algorithm": "dspark"}}, id="lowercase-dspark"),
+        ],
+        indirect=True,
+    )
+    def test_generation_uses_output_ids_without_logprobs(self, variant, generation_env):
+        result = _run_generate(variant, generation_env)
+
+        assert len(result.requests) == 1
+        assert result.requests[0]["return_logprob"] is False
+        sample = listify(result.sample)[0]
+        assert sample.tokens == PROMPT_TOKENS + RESPONSE_TOKENS
+        assert sample.response_length == len(RESPONSE_TOKENS)
+        assert sample.rollout_log_probs is None
+        sample.validate()
+
+    @pytest.mark.parametrize(
+        "feature",
+        [
+            "use_rollout_logprobs",
+            "use_tis",
+            "get_mismatch_metrics",
+            "recompute_logprobs_via_prefill",
+        ],
+    )
+    def test_logprob_dependent_features_are_rejected(self, feature):
+        args = SimpleNamespace(sglang_speculative_algorithm="DSPARK", **{feature: True})
+
+        with pytest.raises(ValueError, match=feature):
+            generation_return_logprob(args)
+
+    def test_topk_opd_is_rejected(self):
+        args = SimpleNamespace(sglang_speculative_algorithm="DFLASH", use_opd=True, opd_log_prob_top_k=8)
+
+        with pytest.raises(ValueError, match="use_opd with opd_log_prob_top_k"):
+            generation_return_logprob(args)
+
+    def test_sampled_token_opd_does_not_require_rollout_logprobs(self):
+        args = SimpleNamespace(sglang_speculative_algorithm="DFLASH", use_opd=True, opd_log_prob_top_k=0)
+
+        assert generation_return_logprob(args) is False
+
+    def test_empty_logprob_list_is_preserved(self):
+        output = {"meta_info": {"output_token_logprobs": []}}
+
+        assert get_response_tokens_and_logprobs(output) == ([], [])
+
+    def test_empty_output_without_logprobs_stays_optional(self):
+        output = {"output_ids": [], "meta_info": {}}
+
+        assert get_response_tokens_and_logprobs(output) == ([], None)
 
 
 class TestBasicGeneration:

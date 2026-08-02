@@ -61,7 +61,8 @@ def update_sample_with_tool_responses(sample: Sample, tool_messages: list[dict[s
     sample.response_length += len(next_obs_tokens_ids)
     sample.tokens += next_obs_tokens_ids
     sample.loss_mask += [0] * len(next_obs_tokens_ids)
-    sample.rollout_log_probs += [0.0] * len(next_obs_tokens_ids)
+    if sample.rollout_log_probs is not None:
+        sample.rollout_log_probs += [0.0] * len(next_obs_tokens_ids)
 
 
 # TODO: very naive implementation, need the to-be-implemented e2e test to validate.

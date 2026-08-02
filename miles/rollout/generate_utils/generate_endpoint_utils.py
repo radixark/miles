@@ -13,6 +13,44 @@ from miles.utils.processing_utils import encode_image_for_rollout_engine, extrac
 from miles.utils.types import Sample
 
 
+_SPECULATIVE_ALGORITHMS_WITHOUT_LOGPROBS = {"DFLASH", "DSPARK"}
+
+
+def generation_return_logprob(args) -> bool:
+    algorithm = getattr(args, "sglang_speculative_algorithm", None)
+    if isinstance(algorithm, str):
+        algorithm = algorithm.upper()
+    if algorithm not in _SPECULATIVE_ALGORITHMS_WITHOUT_LOGPROBS:
+        return True
+
+    incompatible_features = [
+        name
+        for name in (
+            "use_rollout_logprobs",
+            "use_tis",
+            "get_mismatch_metrics",
+            "recompute_logprobs_via_prefill",
+        )
+        if getattr(args, name, False)
+    ]
+    # Sampled-token OPD computes student logprobs during training. Top-k OPD also
+    # scores student tokens through the rollout server, which DFLASH/DSPARK reject.
+    if getattr(args, "use_opd", False) and (getattr(args, "opd_log_prob_top_k", 0) or 0) > 0:
+        incompatible_features.append("use_opd with opd_log_prob_top_k")
+    if incompatible_features:
+        raise ValueError(
+            f"{algorithm} speculative decoding does not support rollout logprobs required by: "
+            + ", ".join(incompatible_features)
+        )
+    return False
+
+
+def get_response_tokens_and_logprobs(output: dict[str, Any]) -> tuple[list[int], list[float] | None]:
+    if (token_logprobs := output["meta_info"].get("output_token_logprobs")) is not None:
+        return [item[1] for item in token_logprobs], [item[0] for item in token_logprobs]
+    return list(output.get("output_ids", [])), None
+
+
 # Make this an isolated function because users may want to compute their own
 def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
@@ -65,7 +103,7 @@ def compute_request_payload(
     payload = {
         "input_ids": input_ids,
         "sampling_params": {**sampling_params, "max_new_tokens": max_new_tokens},
-        "return_logprob": True,
+        "return_logprob": generation_return_logprob(args),
         "return_routed_experts": args.use_rollout_routing_replay,
         "return_indexer_topk": args.use_rollout_indexer_replay,
     }
@@ -84,20 +122,19 @@ async def update_sample_from_response(
     if (len(sample.response) == 0) and not sample.tokens:
         sample.tokens = payload["input_ids"]
 
-    if x := output["meta_info"].get("output_token_logprobs"):
-        new_response_tokens = [item[1] for item in x]
-        new_response_log_probs = [item[0] for item in x]
-    else:
-        new_response_tokens, new_response_log_probs = [], []
+    new_response_tokens, new_response_log_probs = get_response_tokens_and_logprobs(output)
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens
     sample.response_length += len(new_response_tokens)
     sample.response += output["text"]
 
-    if sample.rollout_log_probs is None:
-        sample.rollout_log_probs = []
-    sample.rollout_log_probs += new_response_log_probs
+    if new_response_log_probs is None:
+        sample.rollout_log_probs = None
+    else:
+        if sample.rollout_log_probs is None:
+            sample.rollout_log_probs = []
+        sample.rollout_log_probs += new_response_log_probs
 
     if update_loss_mask:
         if sample.loss_mask is None:
