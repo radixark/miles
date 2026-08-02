@@ -1,19 +1,15 @@
 import logging
-import random
 
 import ray
 
-from miles.backends.sglang_utils.sglang_config import ModelConfig
-from miles.ray.specs.inference import (
-    _compute_spec_router,
-    compute_router_pool_id,
-    compute_session_server_instance_id,
-    spec_session_server,
-)
+from miles.ray.specs.inference import compute_router_pool_id, compute_session_server_instance_id, spec_session_server
 from miles.rollout.session.ports import compute_num_session_server_ports, resolve_session_server_ports
-from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, is_port_available, wait_tcp_ready
+from miles.utils.http_utils import is_port_available, wait_tcp_ready
 from miles.utils.workers.cell_launch import create_head_worker_actor
 from miles.utils.workers.command_actor import CommandActor
+from miles.utils.workers.naming import compute_worker_name
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext
 
 logger = logging.getLogger(__name__)
@@ -24,26 +20,16 @@ logger = logging.getLogger(__name__)
 _SERVER_READY_TIMEOUT_SECS = 120
 
 
-def start_router(args, model_idx: int, model_cfg: ModelConfig) -> tuple[str, int]:
-    """Start sgl router or miles router and return (router_ip, router_port)."""
-    router_ip = _wrap_ipv6(get_host_info()[1])
-    router_port = find_available_port(random.randint(3000, 4000))
-    prometheus_port = find_available_port(random.randint(4000, 5000))
-
-    spec = _compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
-    self_addrs = dict(
-        primary=HostAndPort(host=router_ip, port=router_port),
-        prometheus=HostAndPort(host=router_ip, port=prometheus_port),
+async def wait_router_ready(model_idx: int) -> HostAndPort:
+    """Wait until the model's router, launched by the RayWorkerManager, is reachable and return its address."""
+    provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
+    worker_name = compute_worker_name(
+        pool_id=compute_router_pool_id(model_idx), cell_index=0, worker_in_cell_index=0
     )
-    assert set(self_addrs) == {info.name for info in spec.port_infos}
-    launch_command = spec.launch_command(
-        LaunchCommandContext(cell_index=0, worker_in_cell_index=0, self_addrs=self_addrs, spec_addrs={}, gpu_ids=[])
-    )
-
-    _actor_handle = _launch_command_on_head(launch_command)
-    wait_tcp_ready(router_ip, router_port, timeout=_SERVER_READY_TIMEOUT_SECS)
-    logger.info(f"Router launched at {router_ip}:{router_port}")
-    return router_ip, router_port
+    router_addr = await provider.get_addr(worker_name=worker_name)
+    wait_tcp_ready(router_addr.host, router_addr.port, timeout=_SERVER_READY_TIMEOUT_SECS)
+    logger.info(f"Router ready at {router_addr}")
+    return router_addr
 
 
 def _launch_command_on_head(launch_cmd: str) -> ray.actor.ActorHandle:
