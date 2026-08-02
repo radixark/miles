@@ -11,6 +11,69 @@ from miles.true_on_policy import (
 )
 
 
+@dataclass(frozen=True)
+class Qwen3DenseSetup:
+    tensor_model_parallel_size: int
+    context_parallel_size: int
+    max_tokens_per_gpu: int
+    rollout_num_gpus_per_engine: int
+    optimizer_cpu_offload: bool = False
+    sglang_cuda_graph_bs: str | None = None
+
+
+_QWEN3_32B_CUDA_GRAPH_BS = " ".join(str(size) for size in (1, 2, 4, 8, *range(16, 257, 8)))
+_QWEN3_DENSE_SETUPS = {
+    "Qwen3-0.6B": Qwen3DenseSetup(
+        tensor_model_parallel_size=1,
+        context_parallel_size=1,
+        max_tokens_per_gpu=9216,
+        rollout_num_gpus_per_engine=1,
+    ),
+    "Qwen3-4B": Qwen3DenseSetup(
+        tensor_model_parallel_size=2,
+        context_parallel_size=4,
+        max_tokens_per_gpu=9216,
+        rollout_num_gpus_per_engine=1,
+    ),
+    "Qwen3-4B-Base": Qwen3DenseSetup(
+        tensor_model_parallel_size=2,
+        context_parallel_size=4,
+        max_tokens_per_gpu=9216,
+        rollout_num_gpus_per_engine=1,
+    ),
+    "Qwen3-4B-Instruct-2507": Qwen3DenseSetup(
+        tensor_model_parallel_size=2,
+        context_parallel_size=4,
+        max_tokens_per_gpu=9216,
+        rollout_num_gpus_per_engine=1,
+    ),
+    "Qwen3-8B": Qwen3DenseSetup(
+        tensor_model_parallel_size=2,
+        context_parallel_size=4,
+        max_tokens_per_gpu=18432,
+        rollout_num_gpus_per_engine=2,
+    ),
+    "Qwen3-32B": Qwen3DenseSetup(
+        tensor_model_parallel_size=8,
+        context_parallel_size=1,
+        max_tokens_per_gpu=20480,
+        rollout_num_gpus_per_engine=8,
+        optimizer_cpu_offload=True,
+        sglang_cuda_graph_bs=_QWEN3_32B_CUDA_GRAPH_BS,
+    ),
+}
+
+
+def get_qwen3_dense_setup(model_name: str) -> Qwen3DenseSetup:
+    try:
+        return _QWEN3_DENSE_SETUPS[model_name]
+    except KeyError as exc:
+        supported = ", ".join(sorted(_QWEN3_DENSE_SETUPS))
+        raise ValueError(
+            f"Unsupported Qwen3 dense launcher model {model_name!r}. Supported models: {supported}"
+        ) from exc
+
+
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal", "debug_one_sample"] = "normal"
@@ -38,20 +101,23 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
+        setup = get_qwen3_dense_setup(self.model_name)
         if self.train_backend == "megatron":
             self.megatron_model_type = get_megatron_model_type(self.model_name)
 
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
 
         # Derived parallelism defaults for Qwen3 dense models
-        self.tensor_model_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 2
+        self.tensor_model_parallel_size = setup.tensor_model_parallel_size
         self.pipeline_model_parallel_size = 1
-        self.context_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 4
+        self.context_parallel_size = setup.context_parallel_size
         self.cp_comm_type = "a2a" if self.context_parallel_size > 1 else None
         self.use_sequence_parallel = self.tensor_model_parallel_size > 1
-        self.max_tokens_per_gpu = 32768 if self.train_backend == "fsdp" else 9216
-        self.rollout_num_gpus_per_engine = 1
+        self.max_tokens_per_gpu = 32768 if self.train_backend == "fsdp" else setup.max_tokens_per_gpu
+        self.rollout_num_gpus_per_engine = setup.rollout_num_gpus_per_engine
         self.train_memory_margin_bytes = 3221225472
+        self.optimizer_cpu_offload = setup.optimizer_cpu_offload
+        self.sglang_cuda_graph_bs = setup.sglang_cuda_graph_bs
 
         apply_true_on_policy_script_defaults(self)
         if self.train_backend == "megatron" and self.enable_megatron_bridge and self.use_kl_loss:
@@ -186,12 +252,16 @@ eval:
         "--adam-beta1 0.9 "
         "--adam-beta2 0.98 "
     )
+    if args.optimizer_cpu_offload:
+        optimizer_args += "--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
         "--sglang-chunked-prefill-size 4096 "
         f"{'--sglang-disable-cuda-graph ' if is_debug_one_sample else ''}"
     )
+    if args.sglang_cuda_graph_bs:
+        sglang_args += f"--sglang-cuda-graph-bs {args.sglang_cuda_graph_bs} "
     ci_args = "--ci-test --ci-disable-kl-checker " if is_debug_one_sample else ""
 
     match args.train_backend:
