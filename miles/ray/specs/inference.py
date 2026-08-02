@@ -138,6 +138,7 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
             args,
             model_idx=model_idx,
             group_index=group_index,
+            model_cfg=model_cfg,
             server_group_config=server_group_config,
         )
         for model_idx, model_cfg in enumerate(config.models)
@@ -146,10 +147,15 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
     ]
 
 
+def compute_engine_pool_ids(args) -> list[str]:
+    return [spec.name for spec in specs_inference_engine(args)]
+
+
 def _compute_spec_inference_engine(
     args,
     model_idx: int,
     group_index: int,
+    model_cfg: ModelConfig,
     server_group_config: ServerGroupConfig,
 ) -> CommandWorkerSpec:
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
@@ -170,7 +176,30 @@ def _compute_spec_inference_engine(
             engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,
         )
 
+    num_gpus_per_engine = server_group_config.num_gpus_per_engine
+    assert num_gpus_per_engine <= args.num_gpus_per_node or num_gpus_per_engine % args.num_gpus_per_node == 0, (
+        f"group '{server_group_config.worker_type}' wants {num_gpus_per_engine=} which neither fits in one node of "
+        f"{args.num_gpus_per_node} gpus nor tiles whole nodes, so its ranks would never all be launched"
+    )
+
     envs = compute_inference_engine_env_vars(args)
+    scheduling = SchedulingSpec(
+        num_cells=server_group_config.num_gpus // server_group_config.num_gpus_per_engine,
+        num_workers_per_cell=max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node),
+        # TODO: may need real num for k8s native mode
+        num_gpus_per_worker=0.2,
+        num_gpu_slots_per_worker=min(server_group_config.num_gpus_per_engine, args.num_gpus_per_node),
+        pg_name="rollout",
+        pg_slot_offset=server_group_config.gpu_offset,
+    )
+
+    num_workers_total = server_group_config.num_gpus // scheduling.num_gpu_slots_per_worker
+    assert num_workers_total % scheduling.num_workers_per_cell == 0, (
+        f"group '{server_group_config.worker_type}' has {num_workers_total=} which is not a whole number of "
+        f"{scheduling.num_workers_per_cell}-worker engines; the trailing engine would have no node to run its "
+        f"remaining ranks"
+    )
+
     return CommandWorkerSpec(
         name=compute_engine_pool_id(model_idx=model_idx, group_index=group_index),
         port_infos=[
@@ -191,16 +220,19 @@ def _compute_spec_inference_engine(
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
         ],
         env_var=lambda: envs,
-        scheduling=SchedulingSpec(
-            num_cells=server_group_config.num_gpus // server_group_config.num_gpus_per_engine,
-            num_workers_per_cell=max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node),
-            # TODO: may need real num for k8s native mode
-            num_gpus_per_worker=0.2,
-            num_gpu_slots_per_worker=min(server_group_config.num_gpus_per_engine, args.num_gpus_per_node),
-            pg_name="rollout",
-            pg_slot_offset=server_group_config.gpu_offset,
-        ),
+        scheduling=scheduling,
         launch_command=_compute_launch_command,
+        # TODO: reduce complexity around passing around configs later during arguments refactor
+        meta=lambda ctx: dict(
+            model_id=model_cfg.name,
+            worker_type=server_group_config.worker_type,
+            num_gpus_per_engine=server_group_config.num_gpus_per_engine,
+            gpu_offset=server_group_config.gpu_offset
+            + ctx.cell_index * scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker,
+            sglang_api_key=server_group_config.overrides.get("api_key", args.sglang_api_key),
+            needs_offload=server_group_config.needs_offload,
+            update_weights=model_cfg.update_weights,
+        ),
     )
 
 
