@@ -19,7 +19,7 @@ async def wait_router_ready(model_idx: int) -> HostAndPort:
     """Wait until the model's router, launched by the RayWorkerManager, is reachable and return its address."""
     provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
     worker_name = compute_worker_name(pool_id=compute_router_pool_id(model_idx))
-    router_addr = await provider.get_addr(worker_name=worker_name)
+    router_addr = (await provider.get_addrs(worker_name=worker_name))["primary"]
     await wait_tcp_ready_async(router_addr.host, router_addr.port, timeout=_SERVER_READY_TIMEOUT_SECS)
     logger.info(f"Router ready at {router_addr}")
     return router_addr
@@ -45,7 +45,7 @@ async def wait_session_server_ready(args):
 
     provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
     addrs = [
-        await provider.get_addr(worker_name=compute_worker_name(pool_id="session-server", cell_index=i))
+        (await provider.get_addrs(worker_name=compute_worker_name(pool_id="session-server", cell_index=i)))["primary"]
         for i in range(args.session_server_workers)
     ]
     # The canonical driver-side value; rollout code picks from this list. Instances may sit on

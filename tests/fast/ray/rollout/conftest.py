@@ -85,6 +85,9 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_dp_size=1,
         sglang_pp_size=1,
         sglang_ep_size=1,
+        sglang_api_key=None,
+        multi_lora_n_adapters=0,
+        target_modules=None,
         sglang_speculative_algorithm=None,
         sglang_config=None,
         sglang_model_routers=None,
@@ -115,7 +118,6 @@ def make_args(**overrides: Any) -> Namespace:
         # checkpoint / data source
         hf_checkpoint="/fake/model",
         lora_rank=0,
-        lora_adapter_path=None,
         rollout_function_path="miles.rollout.sglang_rollout.generate_rollout",
         eval_function_path="miles.rollout.sglang_rollout.eval_generate_rollout",
         data_source_path="miles.data.dummy.DummyDataSource",
@@ -298,22 +300,18 @@ def make_dataclass_cells(
     num_gpus_per_engine: int = 1,
     gpu_offset: int = 0,
 ):
-    """Build configured ``ServerCell``s with ``pg=None`` (no actor scheduling).
-    Each cell starts unallocated."""
-    from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+    """Build configured ``ServerCell``s. Each cell starts unallocated."""
+    from miles.ray.rollout.server_cell import ServerCell
 
     args = make_args(num_gpus_per_node=8)
-    nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
     return [
         ServerCell(
             args=args,
             worker_type="regular",
             cell_id=f"cell-{cell_index}",
-            num_nodes=nodes_per_engine,
-            pg=None,
             num_gpus_per_engine=num_gpus_per_engine,
-            rank_offset=cell_index * nodes_per_engine,
             gpu_offset=gpu_offset + cell_index * min(num_gpus_per_engine, 8),
+            cell_index=cell_index,
         )
         for cell_index in range(num_cells)
     ]
