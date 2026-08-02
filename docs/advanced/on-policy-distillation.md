@@ -40,7 +40,10 @@ This avoids full-vocabulary runtime gathers. Set
 
 The stock text-only prompt builder requires `--label-key`. A custom builder
 receives `prompt`, `label`, and `metadata` keyword arguments and returns text or
-a chat conversation. Teacher scoring uses `--rollout-temperature`.
+a chat conversation. The teacher and student must use the same tokenizer and
+token-ID mapping because Miles sends student response IDs to the teacher and
+stores the teacher's compact top-k support as token IDs. Teacher scoring is a
+zero-generation prefill request and does not use `--rollout-temperature`.
 
 SGLang teachers work with both Megatron and FSDP students. Evaluation continues
 to use the configured task reward.
