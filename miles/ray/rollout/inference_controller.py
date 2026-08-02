@@ -122,7 +122,7 @@ class InferenceController:
         raise NotImplementedError("new ft to be implemented")
 
     async def stop_cell(self, cell_id: str):
-        await self._server_of(cell_id).stop_cells([cell_id])
+        await self._server_of(cell_id).remove_cell(cell_id)
 
     def list_cell_ids(self) -> list[str]:
         return list_cell_ids(self.servers)
