@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells, make_sglang_config_yaml
@@ -12,7 +13,8 @@ from miles.backends.sglang_utils.sglang_config import (
 )
 from miles.ray.rollout import rollout_server
 from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
+from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
+from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -143,7 +145,7 @@ class TestStartRolloutServersCellChunking:
             )
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
-        return list(asyncio.run(start_rollout_servers(args))["default"].server_cells.values())
+        return list(asyncio.run(create_rollout_servers(args))["default"].server_cells.values())
 
     def test_a_single_node_engine_becomes_its_own_cell(self, stub_engine_startup, tmp_path):
         """With one gpu per engine on 8-gpu nodes, every engine is a one-engine cell."""
@@ -164,3 +166,66 @@ class TestStartRolloutServersCellChunking:
         """Each multi-node cell's gpu span starts where the previous one ended."""
         cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
         assert [cell.gpu_offset for cell in cells] == [0, 16]
+
+
+class TestEngineListOrdering:
+    def _server_with_cells(self, num_cells: int) -> RolloutServer:
+        cells = {}
+        for index in sorted(range(num_cells), key=lambda i: f"inference-engine-0-0-{i}"):
+            meta = SimpleNamespace(num_gpus_per_engine=index + 1, gpu_offset=index)
+            cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(meta=meta, api_client=f"client-{index}")
+        return RolloutServer(server_cells=cells, args=SimpleNamespace())
+
+    def test_engine_lists_are_ordered_by_gpu_offset_not_insertion(self):
+        """With 12 cells inserted in string-sorted id order all three derived lists come out offset-ordered."""
+        srv = self._server_with_cells(12)
+        assert srv.engine_gpu_offsets == list(range(12))
+        assert srv.api_clients == [f"client-{i}" for i in range(12)]
+        assert srv.engine_gpu_counts == [i + 1 for i in range(12)]
+
+
+class TestAddCellRollback:
+    def _make_meta(self) -> ServerCellMetadata:
+        return ServerCellMetadata(
+            model_id="default",
+            worker_type="regular",
+            cell_id="inference-engine-0-0-0",
+            num_gpus_per_engine=1,
+            gpu_offset=0,
+            sglang_api_key=None,
+            worker_name="inference-engine-0-0-0-0",
+            needs_offload=False,
+            update_weights=True,
+            workers_hash="pseudo-hash-0",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_add_leaves_no_bookkeeping_so_the_next_reconcile_retries(self, monkeypatch):
+        """A cell whose startup fails must not be committed, otherwise the hash no-op blocks any retry."""
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace())
+        monkeypatch.setattr(ServerCell, "add", _raise_async)
+
+        with pytest.raises(RuntimeError, match="injected add failure"):
+            await srv.add_cell(self._make_meta())
+
+        assert srv.server_cells == {}
+        assert srv.has_new_engines is False
+
+    @pytest.mark.asyncio
+    async def test_a_successful_add_commits_the_cell_and_marks_new_engines(self, monkeypatch):
+        """After the failure is gone the same cell id can be added normally."""
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace())
+        monkeypatch.setattr(ServerCell, "add", _noop_async)
+
+        await srv.add_cell(self._make_meta())
+
+        assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+        assert srv.has_new_engines is True
+
+
+async def _raise_async(self, router_api_client):
+    raise RuntimeError("injected add failure")
+
+
+async def _noop_async(self, router_api_client):
+    return None

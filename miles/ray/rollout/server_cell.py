@@ -35,6 +35,7 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     worker_name: str
     needs_offload: bool
     update_weights: bool
+    workers_hash: str
 
 
 @dataclass
