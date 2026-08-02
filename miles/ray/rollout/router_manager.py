@@ -32,7 +32,7 @@ def start_router(args, model_idx: int, model_cfg: ModelConfig) -> tuple[str, int
     )
     assert set(self_addrs) == {info.name for info in spec.port_infos}
     launch_command = spec.launch_command(
-        LaunchCommandContext(cell_index=0, self_addrs=self_addrs, spec_addrs={})
+        LaunchCommandContext(cell_index=0, worker_in_cell_index=0, self_addrs=self_addrs, spec_addrs={}, gpu_ids=[])
     )
 
     actor_handle = _launch_command_on_head(launch_command)
@@ -118,6 +118,8 @@ def start_session_server(args):
         launch_cmd = spec.launch_command(
             LaunchCommandContext(
                 cell_index=instance_index,
+                worker_in_cell_index=0,
+                gpu_ids=[],
                 self_addrs=dict(primary=HostAndPort(host=ip, port=port)),
                 spec_addrs={
                     compute_router_spec_name(0): [
