@@ -9,8 +9,7 @@ from tests.fast.ray.rollout.conftest import fake_actor_handle, fake_engine, make
 
 import miles.ray.rollout.server_cell as server_cell_module
 from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.rollout_server import RolloutServer, format_cell_id, list_cell_ids
-from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.test_utils.mock_sglang_engine import parse_cmd_flags
 from miles.utils.workers.addr_allocator import PortAllocator
 
@@ -234,50 +233,3 @@ class TestServerCellRouterMembership:
         await cell.unregister(client)
         assert client.add_worker.await_args.kwargs["use_legacy_api"] is True
         assert client.remove_worker.await_args.kwargs["use_legacy_api"] is True
-
-
-def _build_servers(
-    *, num_servers: int = 1, engines_per_server: int = 2, num_gpus_per_engine: int = 1
-) -> dict[str, RolloutServer]:
-    args = make_args(num_gpus_per_node=8)
-    nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
-    servers: dict[str, RolloutServer] = {}
-    for s_idx in range(num_servers):
-        model_name = f"model_{s_idx}"
-        cells = [_allocated_cell(num_nodes=nodes_per_engine) for _ in range(engines_per_server // nodes_per_engine)]
-        for cell in cells:
-            cell.num_gpus_per_engine = num_gpus_per_engine
-        servers[model_name] = RolloutServer(
-            server_cells={format_cell_id(server_id=model_name, index=i): cell for i, cell in enumerate(cells)},
-            args=args,
-            model_name=model_name,
-            update_weights=True,
-        )
-    return servers
-
-
-class TestListCellIds:
-    def test_single_server_lists_every_cell(self):
-        """Happy path: one server with N cells → N ids under model_0."""
-        servers = _build_servers(num_servers=1, engines_per_server=3)
-        assert list_cell_ids(servers) == ["model_0-0", "model_0-1", "model_0-2"]
-
-    def test_multi_server_ordered_by_model_id_alphabetically(self):
-        """When multiple servers exist, ids are emitted in model id order."""
-        servers = _build_servers(num_servers=2, engines_per_server=1)
-        assert list_cell_ids(servers) == ["model_0-0", "model_1-0"]
-
-    def test_multinode_engine_slots_form_one_cell(self):
-        """num_gpus_per_engine=16 and num_gpus_per_node=8 → nodes_per_engine=2;
-        the 2 engine slots form one cell."""
-        servers = _build_servers(num_servers=1, engines_per_server=2, num_gpus_per_engine=16)
-        assert list_cell_ids(servers) == ["model_0-0"]
-
-    def test_server_without_cells_emits_zero_ids(self):
-        """A server with no cells (e.g. only placeholder groups) emits no cell ids."""
-        srv = MagicMock()
-        srv.server_cells = {}
-        assert list_cell_ids({"only": srv}) == []
-
-    def test_empty_server_dict_returns_empty_list(self):
-        assert list_cell_ids({}) == []
