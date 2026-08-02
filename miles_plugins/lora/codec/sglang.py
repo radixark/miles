@@ -18,24 +18,23 @@ import torch.nn as nn
 from miles_plugins.lora.codec.hf import export_lora_hf_named
 from miles_plugins.lora.modules.linear import iter_adapters
 
-_QKV_NAMES = ("q_proj", "k_proj", "v_proj")
-_FC1_NAMES = ("gate_proj", "up_proj")
-_MLA_A_NAMES = ("q_a_proj", "kv_a_proj_with_mqa")
-
 
 def expand_sglang_target_modules(target_modules: Iterable[str]) -> list[str]:
     """Expand logical split targets to the fused-buffer projection families.
 
     SGLang normalizes every Q/K/V target to ``qkv_proj`` and every gate/up
     target to ``gate_up_proj``.  Advertising all logical siblings keeps its
-    adapter config consistent with the zero-padded serving export.
+    adapter config consistent with the zero-padded serving export.  The
+    families come from the registered layout declarations, so a new
+    architecture's fused groups extend this expansion automatically.
     """
+    from miles_plugins.lora.registry import serving_fused_families
 
     targets = list(dict.fromkeys(target_modules))
     target_set = set(targets)
-    for family in (_QKV_NAMES, _FC1_NAMES, _MLA_A_NAMES):
+    for family in serving_fused_families():
         if target_set.intersection(family):
-            targets.extend(name for name in family if name not in target_set)
+            targets.extend(name for name in sorted(family) if name not in target_set)
             target_set.update(family)
     return targets
 

@@ -2,14 +2,32 @@
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass, replace
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 import torch.nn as nn
 
 from miles_plugins.lora.config import LoRAConfig
 
-COLUMN, ROW, REPLICATED = "column", "row", "replicated"
+
+class ShardLayout(str, enum.Enum):
+    """How one logical projection is sharded across the tensor-parallel group."""
+
+    COLUMN = "column"
+    ROW = "row"
+    REPLICATED = "replicated"
+
+
+class AttentionFamily(str, enum.Enum):
+    """Structural attention family a registry entry belongs to."""
+
+    GQA = "gqa"
+    MLA = "mla"
+
+
+# Kept as names for call-site brevity; both are the enum members (str-comparable).
+COLUMN, ROW, REPLICATED = ShardLayout.COLUMN, ShardLayout.ROW, ShardLayout.REPLICATED
 
 
 @dataclass(frozen=True)
@@ -23,7 +41,7 @@ class ProjectionSpec:
 
     hf: str
     attr: str
-    layout: Literal["column", "row", "replicated"]
+    layout: ShardLayout
 
 
 @dataclass(frozen=True)

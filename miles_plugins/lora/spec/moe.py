@@ -1,8 +1,8 @@
 """MoE architecture specifications for Miles-native LoRA.
 
-``SharedOuterExpertMoESpec`` supports always-on shared-expert MLPs.
-``GeneralExpertMoESpec`` validates routed-only layers and rejects unsupported
-explicit MLP targets while allowing ``all-linear`` to skip them.
+The MoE spec's job is per-layer policy: decide what happens when MLP targets
+meet an expert layer. The MLP target names are injected at construction from
+the arch spec's MLP spec, so there is a single source of truth for them.
 
 Unsupported:
 
@@ -19,17 +19,13 @@ TODO:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch.nn as nn
 
 from miles_plugins.lora.spec.base import AttachContext
-from miles_plugins.lora.spec.mlp import MLP_TARGETS
 
 _NO_TARGETS: frozenset[str] = frozenset()
 
 
-@dataclass(frozen=True)
 class GeneralExpertMoESpec:
     """MoE layers without a shared expert: routed/grouped experts only.
 
@@ -39,6 +35,9 @@ class GeneralExpertMoESpec:
 
     supported_targets: frozenset[str] = frozenset()
 
+    def __init__(self, mlp_targets: frozenset[str]):
+        self._mlp_targets = mlp_targets
+
     def validate_layer(self, mlp: nn.Module, context: AttachContext) -> frozenset[str]:
         """Return the MLP targets this layer cannot attach; raise when that is an error.
 
@@ -46,10 +45,10 @@ class GeneralExpertMoESpec:
         the layer skips what the architecture cannot attach and reports the
         skipped set for the orchestrator to log once per run.
         """
-        if not hasattr(mlp, "experts") or not context.targets.intersection(MLP_TARGETS):
+        if not hasattr(mlp, "experts") or not context.targets.intersection(self._mlp_targets):
             return _NO_TARGETS
         if context.lora.expanded_from_all_linear:
-            return context.targets.intersection(MLP_TARGETS)
+            return context.targets.intersection(self._mlp_targets)
         raise AssertionError(
             "Miles-native LoRA does not yet support routed/grouped expert projections, and this MoE "
             "layer has no attachable shared expert. Attention-only LoRA is supported for this model; "
@@ -58,24 +57,17 @@ class GeneralExpertMoESpec:
         )
 
 
-@dataclass(frozen=True)
-class SharedOuterExpertMoESpec:
+class SharedOuterExpertMoESpec(GeneralExpertMoESpec):
     """MoE layers with a shared (outer) expert: LoRA adapts the shared expert's MLP.
 
-    Layers without a shared expert delegate to ``GeneralExpertMoESpec``, so one
+    Layers without a shared expert fall back to the routed-only policy, so one
     registry entry covers models that mix both layer kinds.
     """
 
-    supported_targets: frozenset[str] = frozenset()
-
     def validate_layer(self, mlp: nn.Module, context: AttachContext) -> frozenset[str]:
-        if not hasattr(mlp, "experts") or not context.targets.intersection(MLP_TARGETS):
+        if not hasattr(mlp, "experts") or not context.targets.intersection(self._mlp_targets):
             return _NO_TARGETS
         shared = getattr(mlp, "shared_experts", None)
         if shared is not None and hasattr(shared, "linear_fc1"):
             return _NO_TARGETS
-        return GENERAL_EXPERT_MOE_SPEC.validate_layer(mlp, context)
-
-
-GENERAL_EXPERT_MOE_SPEC = GeneralExpertMoESpec()
-SHARED_OUTER_EXPERT_MOE_SPEC = SharedOuterExpertMoESpec()
+        return super().validate_layer(mlp, context)

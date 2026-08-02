@@ -202,9 +202,11 @@ class LoRASplitQKV(NativeLoRAAdapter):
         num_q: int,
         num_kv: int,
         head_dim: int,
+        member_projections: Sequence[ProjectionSpec] | None = None,
     ):
         q_rows = num_q * head_dim * (2 if context.output_gate else 1)
         projections = tuple(projections)
+        self._member_projections = tuple(member_projections) if member_projections is not None else projections
         attrs = [projection.attr for projection in projections]
         assert len(set(attrs)) == len(attrs), "LoRASplitQKV projection attributes must be unique"
         assert set(attrs) <= {"q", "k", "v"}, "LoRASplitQKV requires q/k/v projections"
@@ -265,7 +267,9 @@ class LoRASplitQKV(NativeLoRAAdapter):
         tp = self.context.tp_size
         group = SGLangFusedGroup(
             name="qkv",
-            member_rows={_QKV_HF_NAMES[attr]: rows * tp for attr, rows in self._rows.items()},
+            member_rows={
+                projection.hf: self._rows[projection.attr] * tp for projection in self._member_projections
+            },
         )
         for projection in self.projection_specs:
             b = getattr(self, f"{projection.attr}_B")
@@ -290,8 +294,10 @@ class LoRASplitFC1(NativeLoRAAdapter):
         context: AttachContext,
         projections: Sequence[ProjectionSpec],
         inter_local: int,
+        member_projections: Sequence[ProjectionSpec] | None = None,
     ):
         projections = tuple(projections)
+        self._member_projections = tuple(member_projections) if member_projections is not None else projections
         attrs = [projection.attr for projection in projections]
         assert len(set(attrs)) == len(attrs), "LoRASplitFC1 projection attributes must be unique"
         assert set(attrs) <= {"gate", "up"}, "LoRASplitFC1 requires gate/up projections"
@@ -349,7 +355,7 @@ class LoRASplitFC1(NativeLoRAAdapter):
         tp = self.context.tp_size
         group = SGLangFusedGroup(
             name="gate_up",
-            member_rows={_FC1_HF_NAMES[attr]: self.inter_local * tp for attr in ("gate", "up")},
+            member_rows={projection.hf: self.inter_local * tp for projection in self._member_projections},
         )
         for projection in self.projection_specs:
             b = getattr(self, f"{projection.attr}_B")
@@ -361,10 +367,6 @@ class LoRASplitFC1(NativeLoRAAdapter):
                 b_rows_full=b.shape[0] * tp,
                 fused_group=group,
             )
-
-
-_QKV_HF_NAMES = {"q": "q_proj", "k": "k_proj", "v": "v_proj"}
-_FC1_HF_NAMES = {"gate": "gate_proj", "up": "up_proj"}
 
 
 def attach_adapter_forward(module: nn.Module, adapter: NativeLoRAAdapter, scale: float) -> None:

@@ -27,15 +27,17 @@ from miles_plugins.lora.lora import (
     wrap_model_provider_with_lora,
 )
 from miles_plugins.lora.modules.linear import build_qkv_permutation
-from miles_plugins.lora.spec.attention import GQA_ATTENTION_SPEC, GQA_TARGETS, MLA_ATTENTION_SPEC, MLA_TARGETS
-from miles_plugins.lora.spec.mlp import MLP_TARGETS
+from miles_plugins.lora.spec.attention import GQAAttentionSpec, MLAAttentionSpec
+from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec
 
-IMPLEMENTED_TARGETS = GQA_TARGETS | MLA_TARGETS | MLP_TARGETS
+IMPLEMENTED_TARGETS = (
+    GQAAttentionSpec().supported_targets | MLAAttentionSpec().supported_targets | FusedGatedMLPSpec().supported_targets
+)
 
 
 def _assert_supported_architecture(config, tp_size: int = 1) -> None:
     """Dispatch to the family's attention-spec validate the way the registry resolves it."""
-    spec = MLA_ATTENTION_SPEC if bool(getattr(config, "multi_latent_attention", False)) else GQA_ATTENTION_SPEC
+    spec = MLAAttentionSpec() if bool(getattr(config, "multi_latent_attention", False)) else GQAAttentionSpec()
     spec.validate(config, tp_size=tp_size)
 
 

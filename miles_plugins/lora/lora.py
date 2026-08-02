@@ -19,8 +19,8 @@ from miles_plugins.lora.codec.hf import (
 )
 from miles_plugins.lora.codec.sglang import export_lora_sglang_named
 from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.registry import GQA, resolve_model_spec
-from miles_plugins.lora.spec.base import AttachContext
+from miles_plugins.lora.registry import resolve_model_spec
+from miles_plugins.lora.spec.base import AttachContext, AttentionFamily
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def _assert_supported_run(args, context: AttachContext) -> None:
 def _validate_plain_gqa_chunk(layers, arch_spec, context: AttachContext) -> None:
     """Reject a registry/structure mismatch before attaching or freezing anything."""
     attention_targets = context.targets.intersection(arch_spec.attention.supported_targets)
-    if arch_spec.name != GQA or not attention_targets:
+    if arch_spec.name != AttentionFamily.GQA or not attention_targets:
         return
     missing = [
         layer.layer_number - 1 for layer in layers if not hasattr(getattr(layer, "self_attention", None), "linear_qkv")
@@ -134,7 +134,7 @@ def apply_native_lora(model, args):
         if attention is not None:
             attached = arch_spec.attention.attach(attention, hf_layer + "self_attn.", context)
             wrapped += attached
-            if attached == 0 and not hasattr(attention, "linear_qkv") and arch_spec.model_family == GQA:
+            if attached == 0 and not hasattr(attention, "linear_qkv") and arch_spec.model_family == AttentionFamily.GQA:
                 mixer_only_layers.append(layer_index)
 
         mlp = layer.mlp

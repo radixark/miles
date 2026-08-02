@@ -9,40 +9,26 @@ import os
 from dataclasses import dataclass, field
 
 from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.spec.attention import GQA_ATTENTION_SPEC, HYBRID_GQA_GDN_ATTENTION_SPEC, MLA_ATTENTION_SPEC
-from miles_plugins.lora.spec.base import LoRAArchSpec
-from miles_plugins.lora.spec.mlp import FUSED_GATED_MLP_SPEC
-from miles_plugins.lora.spec.moe import SHARED_OUTER_EXPERT_MOE_SPEC
+from miles_plugins.lora.spec.attach import AttentionSpecBase
+from miles_plugins.lora.spec.attention import GQAAttentionSpec, HybridGQAGDNAttentionSpec, MLAAttentionSpec
+from miles_plugins.lora.spec.base import AttentionFamily, LoRAArchSpec
+from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec
+from miles_plugins.lora.spec.moe import SharedOuterExpertMoESpec
 
 logger = logging.getLogger(__name__)
 
-GQA = "gqa"
-MLA = "mla"
 
-_GQA_SPEC = LoRAArchSpec(
-    name=GQA,
-    model_family=GQA,
-    attention=GQA_ATTENTION_SPEC,
-    mlp=FUSED_GATED_MLP_SPEC,
-    moe=SHARED_OUTER_EXPERT_MOE_SPEC,
-)
-_MLA_SPEC = LoRAArchSpec(
-    name=MLA,
-    model_family=MLA,
-    attention=MLA_ATTENTION_SPEC,
-    mlp=FUSED_GATED_MLP_SPEC,
-    moe=SHARED_OUTER_EXPERT_MOE_SPEC,
-)
-_HYBRID_GQA_SPEC = LoRAArchSpec(
-    name="gqa_gdn",
-    model_family=GQA,
-    attention=HYBRID_GQA_GDN_ATTENTION_SPEC,
-    mlp=FUSED_GATED_MLP_SPEC,
-    moe=SHARED_OUTER_EXPERT_MOE_SPEC,
-    # A PP/VPP chunk may contain only GDN mixer layers. Native GDN adapters are
-    # intentionally absent, while GQA layers in another chunk still carry LoRA.
-    allows_mixer_only_adapter_chunks=True,
-)
+def _arch_spec(attention: AttentionSpecBase, *, allows_mixer_only_adapter_chunks: bool = False) -> LoRAArchSpec:
+    """Assemble one architecture spec; MoE policy learns the MLP target names by injection."""
+    mlp = FusedGatedMLPSpec()
+    return LoRAArchSpec(
+        name=attention.name,
+        model_family=attention.family,
+        attention=attention,
+        mlp=mlp,
+        moe=SharedOuterExpertMoESpec(mlp.supported_targets),
+        allows_mixer_only_adapter_chunks=allows_mixer_only_adapter_chunks,
+    )
 
 
 class SupportStatus(enum.Enum):
@@ -86,41 +72,50 @@ class ModelEntry:
         )
 
 
-# Every entry maps to a structurally covered spec; ``status`` records how much
-# end-to-end evidence exists so warnings and coverage tests key off one field
-# instead of comments.
-MODEL_SPECS: dict[str, ModelEntry] = {
-    "llama": ModelEntry(_GQA_SPEC),
-    "qwen2": ModelEntry(_GQA_SPEC, SupportStatus.VALIDATED),
-    "qwen2_moe": ModelEntry(_GQA_SPEC),
-    "qwen3": ModelEntry(_GQA_SPEC, SupportStatus.VALIDATED),
-    "qwen3_moe": ModelEntry(_GQA_SPEC, SupportStatus.VALIDATED),
-    "mimo": ModelEntry(_GQA_SPEC),
-    "glm4": ModelEntry(_GQA_SPEC),
-    "glm4_moe": ModelEntry(_GQA_SPEC),
-    "qwen3_5": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
-    # 2026-08-02: Qwen3.5-35B-A3B ran 20 GRPO rollouts through the native raw path with
-    # grad_norm ~1e-2 throughout and train/rollout logprob_abs_diff 0.0105 — the recorded
-    # GDN backward divergence did not reproduce on the current branch.
-    "qwen3_5_moe": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.VALIDATED),
-    "qwen3_6": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
-    "qwen3_6_moe": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
-    "qwen3_next": ModelEntry(_HYBRID_GQA_SPEC, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
-    "deepseek_v3": ModelEntry(_MLA_SPEC),
-    "deepseek_v32": ModelEntry(_MLA_SPEC),
-    # deepseek_v4 (DeepSeek-V4-Flash) stays unregistered: its wq_a/wq_b/wkv attention is not
-    # mcore MLA, and docs/advanced/lora.md declares that layout out of scope for this provider.
-    "glm4_moe_lite": ModelEntry(_MLA_SPEC, SupportStatus.VALIDATED),
-    # 2026-08-02: GLM-5.2_5layer ran 20 native rollouts, logprob_abs_diff 0.0096.
-    "glm_moe_dsa": ModelEntry(_MLA_SPEC, SupportStatus.VALIDATED),
-    "kimi_k2": ModelEntry(_MLA_SPEC),
-    # 2026-08-02: Kimi-K2.5-2layer ran 20 native rollouts, logprob_abs_diff 0.0124. Requires the
-    # dequantized BF16 base to carry NO quantization_config (tools/convert_kimi_int4_to_bf16.py now
-    # strips it): a surviving one sends SGLang through its CompressedTensors path, which serves the
-    # checkpoint with a context-free forward and logprob_abs_diff ~2.2.
-    "kimi_k25": ModelEntry(_MLA_SPEC, SupportStatus.VALIDATED),
-    "joyai_llm_flash": ModelEntry(_MLA_SPEC),
-}
+def _build_model_specs() -> dict[str, ModelEntry]:
+    """Every entry maps to a structurally covered spec; ``status`` records how much
+    end-to-end evidence exists so warnings and coverage tests key off one field
+    instead of comments."""
+    gqa = _arch_spec(GQAAttentionSpec())
+    mla = _arch_spec(MLAAttentionSpec())
+    # A PP/VPP chunk may contain only GDN mixer layers. Native GDN adapters are
+    # intentionally absent, while GQA layers in another chunk still carry LoRA.
+    hybrid = _arch_spec(HybridGQAGDNAttentionSpec(), allows_mixer_only_adapter_chunks=True)
+    return {
+        "llama": ModelEntry(gqa),
+        "qwen2": ModelEntry(gqa, SupportStatus.VALIDATED),
+        "qwen2_moe": ModelEntry(gqa),
+        "qwen3": ModelEntry(gqa, SupportStatus.VALIDATED),
+        "qwen3_moe": ModelEntry(gqa, SupportStatus.VALIDATED),
+        "mimo": ModelEntry(gqa),
+        "glm4": ModelEntry(gqa),
+        "glm4_moe": ModelEntry(gqa),
+        "qwen3_5": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
+        # 2026-08-02: Qwen3.5-35B-A3B ran 20 GRPO rollouts through the native raw path with
+        # grad_norm ~1e-2 throughout and train/rollout logprob_abs_diff 0.0105 — the recorded
+        # GDN backward divergence did not reproduce on the current branch.
+        "qwen3_5_moe": ModelEntry(hybrid, SupportStatus.VALIDATED),
+        "qwen3_6": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
+        "qwen3_6_moe": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
+        "qwen3_next": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
+        "deepseek_v3": ModelEntry(mla),
+        "deepseek_v32": ModelEntry(mla),
+        # deepseek_v4 (DeepSeek-V4-Flash) stays unregistered: its wq_a/wq_b/wkv attention is not
+        # mcore MLA, and docs/advanced/lora.md declares that layout out of scope for this provider.
+        "glm4_moe_lite": ModelEntry(mla, SupportStatus.VALIDATED),
+        # 2026-08-02: GLM-5.2_5layer ran 20 native rollouts, logprob_abs_diff 0.0096.
+        "glm_moe_dsa": ModelEntry(mla, SupportStatus.VALIDATED),
+        "kimi_k2": ModelEntry(mla),
+        # 2026-08-02: Kimi-K2.5-2layer ran 20 native rollouts, logprob_abs_diff 0.0124. Requires the
+        # dequantized BF16 base to carry NO quantization_config (tools/convert_kimi_int4_to_bf16.py now
+        # strips it): a surviving one sends SGLang through its CompressedTensors path, which serves the
+        # checkpoint with a context-free forward and logprob_abs_diff ~2.2.
+        "kimi_k25": ModelEntry(mla, SupportStatus.VALIDATED),
+        "joyai_llm_flash": ModelEntry(mla),
+    }
+
+
+MODEL_SPECS: dict[str, ModelEntry] = _build_model_specs()
 
 
 def _model_type_candidates(hf_checkpoint: str | None) -> list[str]:
@@ -138,7 +133,9 @@ def _model_type_candidates(hf_checkpoint: str | None) -> list[str]:
 
 def _structural_spec(config) -> LoRAArchSpec:
     """Spec used only by bare numerical/unit harnesses without an HF checkpoint."""
-    return _MLA_SPEC if bool(getattr(config, "multi_latent_attention", False)) else _GQA_SPEC
+    if bool(getattr(config, "multi_latent_attention", False)):
+        return _arch_spec(MLAAttentionSpec())
+    return _arch_spec(GQAAttentionSpec())
 
 
 def resolve_registered_model_spec(hf_checkpoint: str | None) -> tuple[str, LoRAArchSpec]:
@@ -226,7 +223,7 @@ def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
             f" ({entry.reason})" if entry.reason else "",
         )
 
-    built = MLA if bool(getattr(config, "multi_latent_attention", False)) else GQA
+    built = AttentionFamily.MLA if bool(getattr(config, "multi_latent_attention", False)) else AttentionFamily.GQA
     assert entry.spec.model_family == built, (
         f"registry entry for model_type {model_type!r} says {entry.spec.model_family} attention but the "
         f"built model uses {built}; the registry and the checkpoint disagree."
@@ -239,22 +236,36 @@ def resolve_model_spec(args, config) -> tuple[str | None, LoRAArchSpec]:
 # re-declaring per-family facts (target sets, support gaps).
 # --------------------------------------------------------------------------
 
-_CANONICAL_ATTENTION_TARGETS: dict[str, str] = {
-    # Ordered CSV strings as launch scripts pass them to --target-modules.
-    GQA: "q_proj,k_proj,v_proj,o_proj",
-    MLA: "q_a_proj,q_b_proj,kv_a_proj_with_mqa,kv_b_proj,o_proj",
-}
-
 
 def default_target_modules(hf_checkpoint: str) -> str:
     """Canonical attention-only ``--target-modules`` CSV for this checkpoint's family.
 
-    This is the projection set the native provider fully supports for every
-    registered family today (routed/grouped-expert adapters are out of scope;
-    shared-expert/dense MLP targets remain an explicit opt-in).
+    Derived from the attention spec's own layout declaration, in declaration
+    order (routed/grouped-expert adapters are out of scope; shared-expert/dense
+    MLP targets remain an explicit opt-in).
     """
     _model_type, entry = _resolve_registered_entry(hf_checkpoint)
-    return _CANONICAL_ATTENTION_TARGETS[entry.spec.model_family]
+    return entry.spec.attention.canonical_targets_csv
+
+
+def serving_fused_families() -> list[frozenset[str]]:
+    """Projection families some fused SGLang buffer stores, across shipped layouts.
+
+    Derived from the registered specs, so a new architecture's fused groups
+    automatically reach the serving-side target expansion.
+    """
+    families: list[frozenset[str]] = []
+    seen: set[frozenset[str]] = set()
+    for entry in MODEL_SPECS.values():
+        for spec in (entry.spec.attention, entry.spec.mlp):
+            collect = getattr(spec, "serving_fused_families", None)
+            if collect is None:
+                continue
+            for family in collect():
+                if family not in seen:
+                    seen.add(family)
+                    families.append(family)
+    return families
 
 
 @dataclass(frozen=True)
