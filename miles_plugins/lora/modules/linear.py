@@ -148,9 +148,7 @@ class LoRALinear(NativeLoRAAdapter):
 
         a_grad_group = "tp" if self.layout == ShardLayout.COLUMN else None
         b_grad_group = (
-            "tp"
-            if self.layout in (ShardLayout.ROW, ShardLayout.REPLICATED) and context.sequence_parallel
-            else None
+            "tp" if self.layout in (ShardLayout.ROW, ShardLayout.REPLICATED) and context.sequence_parallel else None
         )
         if self.layout == ShardLayout.REPLICATED and context.sequence_parallel:
             a_grad_group = "tp"

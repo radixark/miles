@@ -67,9 +67,9 @@ class ModelEntry:
     reason: str = field(default="", compare=False)
 
     def __post_init__(self):
-        assert self.status is not SupportStatus.UNSTABLE or self.reason, (
-            "an UNSTABLE registry entry must record why (the reason is shown to users verbatim)"
-        )
+        assert (
+            self.status is not SupportStatus.UNSTABLE or self.reason
+        ), "an UNSTABLE registry entry must record why (the reason is shown to users verbatim)"
 
 
 def _build_model_specs() -> dict[str, ModelEntry]:
@@ -280,7 +280,8 @@ class PreflightReport:
         lines = [
             f"model_type={self.model_type} spec={self.spec_name} status={self.status.value}"
             + (f" ({self.reason})" if self.reason else ""),
-            "mbridge bridge: " + ("registered" if self.mbridge_registered else "MISSING (convert_hf_to_torch_dist will fail)"),
+            "mbridge bridge: "
+            + ("registered" if self.mbridge_registered else "MISSING (convert_hf_to_torch_dist will fail)"),
         ]
         if self.model_args_script is not None:
             lines.append(f"model-args script: {self.model_args_script}")

@@ -134,7 +134,11 @@ def apply_native_lora(model, args):
         if attention is not None:
             attached = arch_spec.attention.attach(attention, hf_layer + "self_attn.", context)
             wrapped += attached
-            if attached == 0 and not hasattr(attention, "linear_qkv") and arch_spec.model_family == AttentionFamily.GQA:
+            if (
+                attached == 0
+                and not hasattr(attention, "linear_qkv")
+                and arch_spec.model_family == AttentionFamily.GQA
+            ):
                 mixer_only_layers.append(layer_index)
 
         mlp = layer.mlp
