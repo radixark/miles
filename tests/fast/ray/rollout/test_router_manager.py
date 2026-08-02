@@ -2,32 +2,27 @@ from __future__ import annotations
 
 import shlex
 import sys
+from collections.abc import Callable, Coroutine
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
-from miles.ray.rollout.router_manager import _launch_command_on_head, start_router, start_session_server
+from miles.ray.rollout.router_manager import _launch_command_on_head, start_session_server, wait_router_ready
 from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.ports import resolve_session_server_ports
-from miles.router.config import MilesRouterConfig
 from miles.utils.workers.argv_utils import parse_config_argv
 from miles.utils.workers.command_actor import CommandActor
+from miles.utils.workers.worker_spec import HostAndPort
 
 
-def _make_model_cfg(*worker_types: str) -> ModelConfig:
-    groups = [
-        ServerGroupConfig(
-            worker_type=worker_type,
-            num_gpus=4,
-            num_gpus_per_engine=4,
-            gpu_offset=0,
-            needs_offload=False,
-        )
-        for worker_type in worker_types
-    ]
-    return ModelConfig(name="default", model_path=None, server_groups=groups, update_weights=True)
+def _recording_probe(waited: list[tuple[str, int]]) -> Callable[..., Coroutine[Any, Any, None]]:
+    async def _probe(host: str, port: int, timeout: float) -> None:
+        waited.append((host, port))
+
+    return _probe
 
 
 class TestLaunchCommandOnHead:
@@ -48,64 +43,31 @@ class TestLaunchCommandOnHead:
         actor_handle.run.remote.assert_called_once_with(cmd="python -m x --flag 'a b'", envs={})
 
 
-class TestStartRouter:
-    def test_pd_disagg_with_miles_router_asserts(self):
-        args = make_args(use_miles_router=True, sglang_router_ip=None, sglang_router_port=None)
-        with patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")), patch(
-            "miles.ray.rollout.router_manager.find_available_port", return_value=20000
-        ):
-            with pytest.raises(AssertionError, match="miles router does not support PD"):
-                start_router(args, model_idx=0, model_cfg=_make_model_cfg("prefill", "decode"))
+class TestWaitRouterReady:
+    async def test_returns_the_provider_addr_after_the_tcp_wait(self, monkeypatch):
+        """The router address is looked up from the worker manager by the spec worker name."""
+        requested: list[str] = []
 
+        class _FakeProvider:
+            async def get_addr(self, worker_name: str) -> HostAndPort:
+                requested.append(worker_name)
+                return HostAndPort(host="10.0.0.9", port=12345)
 
-class TestStartRouterLaunchCommand:
-    @pytest.fixture
-    def captured_launches(self, monkeypatch):
-        launches: list[list[str]] = []
-
-        def fake_launch(launch_cmd):
-            launches.append(shlex.split(launch_cmd))
-            return MagicMock()
-
-        monkeypatch.setattr("miles.ray.rollout.router_manager.get_host_info", lambda: ("h", "127.0.0.1"))
-        monkeypatch.setattr("miles.ray.rollout.router_manager._launch_command_on_head", fake_launch)
-        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready", lambda *fn_args, **fn_kwargs: None)
-        return launches
-
-    def test_sgl_router_launches_the_native_cli(self, captured_launches, monkeypatch):
-        """The sgl router runs as the upstream CLI with the allocated ports."""
+        waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.find_available_port", lambda start: 20000 if start < 4000 else 4001
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
         )
-        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
-        ip, port = start_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
-
-        (argv,) = captured_launches
-        assert argv[0] == sys.executable
-        assert argv[1:3] == ["-m", "sglang_router.launch_router"]
-        assert argv[argv.index("--port") + 1] == str(port) == "20000"
-        assert argv[argv.index("--prometheus-port") + 1] == "4001"
-
-    def test_miles_router_launches_with_a_parseable_config(self, captured_launches, monkeypatch):
-        """The miles router command's config payload parses back losslessly."""
-        monkeypatch.setattr("miles.ray.rollout.router_manager.find_available_port", lambda start: 20000)
-        args = make_args(
-            use_miles_router=True,
-            sglang_router_ip=None,
-            sglang_router_port=None,
-            miles_router_max_connections=100,
-            miles_router_timeout=None,
-            miles_router_health_check_failure_threshold=3,
-            rollout_health_check_interval=10.0,
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_tcp_ready_async",
+            _recording_probe(waited),
         )
-        ip, port = start_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
 
-        (argv,) = captured_launches
-        assert argv[:3] == [sys.executable, "-m", "miles.router.router"]
-        config = parse_config_argv(MilesRouterConfig, argv[3:])
-        assert config.host == ip
-        assert config.port == port == 20000
-        assert config.max_connections == 100
+        addr = await wait_router_ready(model_idx=1)
+
+        assert requested == ["inference-router-1-0-0"]
+        assert waited == [("10.0.0.9", 12345)]
+        assert addr == HostAndPort(host="10.0.0.9", port=12345)
 
 
 class TestStartSessionServerLaunchCommand:
@@ -211,7 +173,7 @@ class TestStartSessionServer:
 
 class TestResolveSessionServerPorts:
     def test_none_auto_allocates_one_port(self):
-        with patch("miles.rollout.session.ports.find_available_port", return_value=20002):
+        with patch("miles.ray.rollout.router_manager.find_available_port", return_value=20002):
             assert resolve_session_server_ports(None) == [20002]
 
     def test_single_value_is_a_single_server(self):

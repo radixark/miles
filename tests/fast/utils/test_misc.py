@@ -4,7 +4,8 @@ from contextlib import ExitStack
 
 import pytest
 
-from miles.utils.misc import NodeProbeMixin, filter_keys, get_free_port
+from miles.utils.http_utils import MILES_HOST_IP_ENV, get_host_info
+from miles.utils.misc import NodeProbeMixin, filter_keys, get_current_node_ip, get_free_port
 
 
 class TestFilterKeys:

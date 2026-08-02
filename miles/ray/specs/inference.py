@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 
 def specs_router(args) -> list[CommandWorkerSpec]:
+    if args.debug_train_only:
+        return []
+
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
     return [
         _compute_spec_router(args, model_idx=model_idx, model_cfg=model_cfg)
@@ -76,7 +79,7 @@ def _compute_router_primary_port_info(args, model_idx: int) -> PortInfo:
 def spec_session_server(args) -> CommandWorkerSpec:
     from miles.ray.rollout.router_manager import compute_num_session_server_ports
 
-    _config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
+    config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
     interpreter_prefix = python_argv_prefix()
 
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
@@ -86,7 +89,7 @@ def spec_session_server(args) -> CommandWorkerSpec:
             port=ctx.self_addrs["primary"].port,
             # TODO: make the indexing it k8s native compatible
             instance_id=compute_session_server_instance_id(args, ctx.cell_index),
-            backend_url=ctx.spec_addrs[compute_router_pool_id(0)][0]["primary"].addr,
+            backend_url=ctx.pool_addrs[compute_router_pool_id(0)][0]["primary"].addr,
         )
         launch_argv = [*interpreter_prefix, "-m", "miles.rollout.session.server", *config_to_argv(config)]
         return shlex.join(launch_argv)
@@ -98,7 +101,7 @@ def spec_session_server(args) -> CommandWorkerSpec:
         ],
         env_var=lambda: {},
         scheduling=SchedulingSpec(
-            num_cells=compute_num_session_server_ports(args),
+            num_cells=(compute_num_session_server_ports(args) if config.models else 0),
             num_workers_per_cell=1,
             num_gpus_per_worker=0,
         ),

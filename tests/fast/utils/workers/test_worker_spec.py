@@ -27,7 +27,7 @@ def _make_launch_command_context(**overrides) -> LaunchCommandContext:
         worker_in_cell_index=0,
         gpu_ids=[],
         self_addrs={"http": HostAndPort(host="127.0.0.1", port=8000)},
-        spec_addrs={},
+        pool_addrs={},
     )
     kwargs.update(overrides)
     return LaunchCommandContext(**kwargs)

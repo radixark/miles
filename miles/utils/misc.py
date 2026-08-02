@@ -6,7 +6,7 @@ from typing import Any
 import ray
 
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import is_port_available
+from miles.utils.http_utils import MILES_HOST_IP_ENV, is_port_available
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
 class NodeProbeMixin:
     @staticmethod
     def _get_node_ip() -> str:
-        return get_current_node_ip()
+        return os.getenv(MILES_HOST_IP_ENV) or get_current_node_ip()
 
     @staticmethod
     def _get_free_port_block(*, start_port: int, count: int) -> int:

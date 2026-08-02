@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from miles.utils.http_utils import MILES_HOST_IP_ENV
+from miles.utils.misc import get_current_node_ip
 from miles.utils.workers.command_actor import CommandActor
 
 

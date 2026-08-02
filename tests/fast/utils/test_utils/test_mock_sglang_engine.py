@@ -5,7 +5,8 @@ import inspect
 import pytest
 import ray
 
-from miles.utils.misc import get_current_node_ip, get_free_port
+from miles.utils.http_utils import MILES_HOST_IP_ENV
+from miles.utils.misc import NodeProbeMixin, get_free_port
 from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 from miles.utils.workers.command_actor import CommandActor
 
@@ -143,7 +144,7 @@ class TestNodeAddress:
         """A mock engine placed on another node must publish an address its peers can reach."""
         engine = MockSGLangEngine.__ray_actor_class__()
 
-        assert engine._get_node_ip() == get_current_node_ip()
+        assert engine._get_node_ip() == NodeProbeMixin._get_node_ip()
         assert engine._get_node_ip() != "127.0.0.1"
 
 
@@ -154,6 +155,18 @@ class TestNodeIpReporting:
 
         node_ip = engine._get_node_ip()
 
-        assert node_ip == get_current_node_ip()
+        assert node_ip == NodeProbeMixin._get_node_ip()
         assert node_ip != "127.0.0.1"
         assert engine.get_calls() == [("_get_node_ip", (), {})]
+
+    def test_the_mock_honours_the_node_ip_override(self, monkeypatch) -> None:
+        """A real worker publishes MILES_HOST_IP when it is set, so a mock that ignores it tests the wrong address."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.9.9.9")
+
+        assert MockSGLangEngine.__ray_actor_class__()._get_node_ip() == "10.9.9.9"
+
+    def test_the_mock_and_the_real_actor_report_the_same_node_ip(self, monkeypatch) -> None:
+        """Tests drive the mock in place of the real actor, so the two must derive an address the same way."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.9.9.9")
+
+        assert MockSGLangEngine.__ray_actor_class__()._get_node_ip() == CommandActor()._get_node_ip()

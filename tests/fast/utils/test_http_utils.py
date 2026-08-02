@@ -40,7 +40,12 @@ import ray
 from tests.fast.utils.fake_ray_ids import fake_ray_node_id
 
 from miles.utils import http_utils
-from miles.utils.http_utils import GeneralHttpClientProvider, wait_for_server_ready, wait_tcp_ready
+from miles.utils.http_utils import (
+    GeneralHttpClientProvider,
+    wait_for_server_ready,
+    wait_tcp_ready,
+    wait_tcp_ready_async,
+)
 
 
 def _find_free_port() -> int:
@@ -291,6 +296,57 @@ class TestWaitTcpReady:
                 wait_tcp_ready("127.0.0.1", 23456, timeout=1)
 
         assert fake_time[0] >= 1
+
+
+class TestWaitTcpReadyAsync:
+    async def test_it_returns_once_the_port_accepts(self):
+        """The async probe must still answer the question the blocking one answered."""
+        server = await asyncio.start_server(lambda reader, writer: None, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+
+        try:
+            await asyncio.wait_for(wait_tcp_ready_async("127.0.0.1", port, timeout=5), timeout=5)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_a_closed_port_leaves_the_event_loop_free(self):
+        """The blocking probe froze the whole startup loop for up to two minutes per router."""
+        ticks = 0
+
+        async def _tick() -> None:
+            nonlocal ticks
+            for _ in range(5):
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        ticker = asyncio.create_task(_tick())
+        with pytest.raises(RuntimeError, match="not ready after"):
+            await wait_tcp_ready_async("127.0.0.1", _find_free_port(), timeout=1.2)
+        await asyncio.wait_for(ticker, timeout=1)
+
+        assert ticks == 5
+
+    async def test_it_gives_up_when_the_deadline_passes(self):
+        """A port that never opens must fail the caller rather than be awaited forever."""
+        port = _find_free_port()
+
+        with pytest.raises(RuntimeError, match=f"Server at 127.0.0.1:{port} not ready after 0.2s"):
+            await wait_tcp_ready_async("127.0.0.1", port, timeout=0.2)
+
+    async def test_a_bracketed_ipv6_host_is_unwrapped_before_connecting(self):
+        """Addresses come in wrapped for urls, and the socket layer rejects the brackets."""
+        connected: list[str] = []
+
+        async def _fake_open_connection(host: str, port: int):
+            connected.append(host)
+            raise ConnectionRefusedError
+
+        with patch("miles.utils.http_utils.asyncio.open_connection", side_effect=_fake_open_connection):
+            with pytest.raises(RuntimeError):
+                await wait_tcp_ready_async("[::1]", 23456, timeout=0.01)
+
+        assert connected == ["::1"]
 
 
 class TestGeneralHttpClientProvider:

@@ -6,7 +6,8 @@ import json
 import pytest
 from tests.fast.utils.test_utils.conftest import connect_via_url
 
-from miles.utils.misc import get_current_node_ip
+from miles.utils.http_utils import MILES_HOST_IP_ENV
+from miles.utils.misc import NodeProbeMixin, get_current_node_ip
 from miles.utils.test_utils.mock_sglang_http_server import MockSGLangHttpServer, RecordedRequest
 
 
@@ -137,9 +138,9 @@ class TestNodeAddress:
         server = make_server()
 
         assert server._server.server_address[0] == "0.0.0.0"
-        assert server.host == get_current_node_ip()
+        assert server.host == NodeProbeMixin._get_node_ip()
         assert server.host != "127.0.0.1"
-        assert server.url == f"http://{get_current_node_ip()}:{server.port}"
+        assert server.url == f"http://{NodeProbeMixin._get_node_ip()}:{server.port}"
 
 
 class TestNodeReachability:
@@ -157,3 +158,30 @@ class TestNodeReachability:
             connection.close()
 
         assert server.paths == ["/health", "/health"]
+
+    def test_the_published_host_honours_the_node_ip_override(self, monkeypatch, make_server):
+        """A deployment publishes a reachable address through MILES_HOST_IP; the mock must advertise the same one."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.9.9.9")
+        server = make_server()
+
+        assert server.url == f"http://10.9.9.9:{server.port}"
+
+    def test_the_override_changes_the_published_host_but_not_the_bind_address(self, monkeypatch, make_server):
+        """The mock listens on every interface and only advertises the override, so an unbound address still serves."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.9.9.9")
+        server = make_server()
+
+        assert server._server.server_address[0] == "0.0.0.0"
+        assert server.host == "10.9.9.9"
+
+        connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+        connection.request("GET", "/health")
+        assert connection.getresponse().status == 200
+        connection.close()
+
+    def test_the_published_host_ignores_an_empty_override(self, monkeypatch, make_server):
+        """An override exported empty carries no address, so falling back keeps the mock reachable from other nodes."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "")
+        server = make_server()
+
+        assert server.host == get_current_node_ip()
