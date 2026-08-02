@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import os
 from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -208,7 +209,17 @@ def register_cpu_memory(params_dict: dict, transfer_engine) -> dict:
 def create_transfer_engine():
     transfer_engine = TransferEngine()
     local_ip = ray._private.services.get_node_ip_address()
-    transfer_engine.initialize(local_ip, "P2PHANDSHAKE", "rdma", "")
+    # MOONCAKE_PROTOCOL selects the transport (rdma | efa | tcp | ...).
+    # Default is "rdma"; set MOONCAKE_PROTOCOL=efa on AWS EFA hardware.
+    # MOONCAKE_DEVICE optionally pins the NIC/device ("" = auto-discover).
+    # This mirrors the sglang rollout side, which reads the same envs when
+    # initializing its remote-instance TransferEngine, so a single pair of
+    # env vars configures both ends of the P2P transfer.
+    # `or "rdma"` also covers MOONCAKE_PROTOCOL set to an empty string;
+    # .lower() normalizes case (e.g. "EFA" -> "efa") for the provider match.
+    protocol = (os.getenv("MOONCAKE_PROTOCOL") or "rdma").lower()
+    device = os.getenv("MOONCAKE_DEVICE", "")
+    transfer_engine.initialize(local_ip, "P2PHANDSHAKE", protocol, device)
     return transfer_engine
 
 
