@@ -15,6 +15,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
     hardware: Literal["H200", "B200"] = "H200"
+    sglang_attention_backend: str | None = None
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -115,9 +116,9 @@ def execute(args: ScriptArgs):
         "--use-precision-aware-optimizer "
     )
 
-    # tp=4 because GLM-4.7-Flash has 20 attention heads (tp must divide num_heads)
+    # GLM-4.7-Flash has 20 attention heads, so rollout TP must divide 20.
     sglang_args = (
-        "--rollout-num-gpus-per-engine 4 "
+        f"--rollout-num-gpus-per-engine {2 if args.hardware == 'B200' else 1} "
         "--sglang-mem-fraction-static 0.7 "
         # EAGLE speculative decoding (MTP)
         "--sglang-speculative-algorithm EAGLE "
@@ -128,7 +129,10 @@ def execute(args: ScriptArgs):
         "--use-rollout-routing-replay "
     )
 
-    if args.hardware == "B200":
+    if args.sglang_attention_backend not in (None, "default"):
+        sglang_args += f"--sglang-attention-backend {args.sglang_attention_backend} "
+
+    if args.hardware == "B200" and args.sglang_attention_backend in (None, "default", "flashinfer"):
         sglang_args += "--sglang-flashinfer-mla-disable-ragged "
 
     misc_args = (
