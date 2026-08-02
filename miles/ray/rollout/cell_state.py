@@ -15,10 +15,6 @@ class StateBase(FrozenStrictBaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
 
-class StateStopped(StateBase):
-    pass
-
-
 class StateAllocatedBase(StateBase):
     addr_info: AddrInfo | None = None
 
@@ -31,4 +27,4 @@ class StateAllocatedAlive(StateAllocatedBase):
     pass
 
 
-CellState = StateStopped | StateAllocatedUninitialized | StateAllocatedAlive
+CellState = StateAllocatedUninitialized | StateAllocatedAlive
