@@ -136,10 +136,10 @@ class RolloutServer:
         await self.server_cells[cell_id].start(self._router_api_client)
         self.has_new_engines = True
 
-    async def stop_cells(self, cell_ids: list[str]):
-        logger.info(f"Killing server {cell_ids=}...")
-        for cell_id in sorted(set(cell_ids)):
-            await self.server_cells[cell_id].stop(self._router_api_client)
+    async def remove_cell(self, cell_id: str):
+        logger.info(f"Killing server {cell_id=}...")
+        await self.server_cells[cell_id].stop(self._router_api_client)
+        del self.server_cells[cell_id]
 
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(
