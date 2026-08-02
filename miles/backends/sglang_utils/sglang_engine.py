@@ -86,10 +86,6 @@ def compute_engine_launch_cmd(
     return shlex.join([sys.executable, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
 
 
-def compute_api_key(args, *, sglang_overrides: dict) -> str | None:
-    return sglang_overrides.get("api_key", args.sglang_api_key)
-
-
 def _compute_server_args(
     args,
     *,

@@ -258,3 +258,35 @@ class TestNeedsOffload:
         group = cfg.models[0].server_groups[0]
         assert group.needs_offload is False
         assert group.overrides["enable_memory_saver"] is True
+
+
+class TestHostPortOverrideRejection:
+    def test_a_port_override_is_rejected_at_resolve_time(self, tmp_path):
+        """Overriding the allocator-owned port must fail fast instead of desyncing engine and controller."""
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                "          port: 12345\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_a_host_override_is_rejected_at_resolve_time(self, tmp_path):
+        """Overriding the allocator-owned host must fail fast as well."""
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                "          host: 10.0.0.1\n",
+                rollout_num_gpus=8,
+            )
