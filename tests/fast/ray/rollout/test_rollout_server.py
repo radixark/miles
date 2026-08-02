@@ -266,7 +266,7 @@ class TestStartRolloutServersCellChunking:
             return HostAndPort(host="127.0.0.1", port=30000)
 
         monkeypatch.setattr(rollout_server, "wait_router_ready", _fake_router_ready)
-        monkeypatch.setattr(RolloutServer, "start_all_cells", _no_cells)
+        monkeypatch.setattr(RolloutServer, "add_cell", _no_cells)
 
     def _cells_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
         cfg_path = tmp_path / "cfg.yaml"
