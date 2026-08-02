@@ -9,9 +9,9 @@ import os
 from dataclasses import dataclass, field
 
 from miles_plugins.lora.config import LoRAConfig
-from miles_plugins.lora.spec.layout import AttentionSpecBase
 from miles_plugins.lora.spec.attention import GQAAttentionSpec, HybridGQAGDNAttentionSpec, MLAAttentionSpec
 from miles_plugins.lora.spec.base import AttentionFamily, LoRAArchSpec
+from miles_plugins.lora.spec.layout import AttentionSpecBase
 from miles_plugins.lora.spec.mlp import FusedGatedMLPSpec
 from miles_plugins.lora.spec.moe import SharedOuterExpertMoESpec
 

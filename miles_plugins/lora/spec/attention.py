@@ -13,6 +13,7 @@ import torch.nn as nn
 
 from miles_plugins.lora.modules.linear import LoRASplitQKV
 from miles_plugins.lora.spec import layout as L
+from miles_plugins.lora.spec.base import AttachContext, AttentionFamily, ProjectionSpec, ShardLayout
 from miles_plugins.lora.spec.layout import (
     AttentionSpecBase,
     FusedAttach,
@@ -20,7 +21,6 @@ from miles_plugins.lora.spec.layout import (
     ProjectionBinding,
     ServingGroup,
 )
-from miles_plugins.lora.spec.base import AttachContext, AttentionFamily, ProjectionSpec, ShardLayout
 
 
 def _build_split_qkv(
