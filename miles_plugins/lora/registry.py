@@ -91,8 +91,6 @@ def _build_model_specs() -> dict[str, ModelEntry]:
         "glm4": ModelEntry(gqa),
         "glm4_moe": ModelEntry(gqa),
         "qwen3_5": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
-        # 2026-08-02: Qwen3.5-35B-A3B, 20 native rollouts, logprob_abs_diff 0.0105 — the recorded
-        # GDN backward divergence did not reproduce on this branch.
         "qwen3_5_moe": ModelEntry(hybrid, SupportStatus.VALIDATED),
         "qwen3_6": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
         "qwen3_6_moe": ModelEntry(hybrid, SupportStatus.UNSTABLE, _GDN_RAW_BACKWARD_NOTE),
@@ -102,12 +100,11 @@ def _build_model_specs() -> dict[str, ModelEntry]:
         # deepseek_v4 (DeepSeek-V4-Flash) stays unregistered: its wq_a/wq_b/wkv attention is not
         # mcore MLA, and docs/advanced/lora.md declares that layout out of scope for this provider.
         "glm4_moe_lite": ModelEntry(mla, SupportStatus.VALIDATED),
-        # 2026-08-02: GLM-5.2_5layer, 20 native rollouts, logprob_abs_diff 0.0096.
         "glm_moe_dsa": ModelEntry(mla, SupportStatus.VALIDATED),
         "kimi_k2": ModelEntry(mla),
-        # 2026-08-02: Kimi-K2.5-2layer, 20 native rollouts, logprob_abs_diff 0.0124. The dequantized
-        # BF16 base must carry no quantization_config (convert_kimi_int4_to_bf16.py strips it), or
-        # SGLang serves it through the CompressedTensors path with a context-free forward.
+        # kimi_k25 needs the dequantized BF16 base to carry no quantization_config
+        # (convert_kimi_int4_to_bf16.py strips it), or SGLang serves it through the
+        # CompressedTensors path with a context-free forward.
         "kimi_k25": ModelEntry(mla, SupportStatus.VALIDATED),
         "joyai_llm_flash": ModelEntry(mla),
     }
