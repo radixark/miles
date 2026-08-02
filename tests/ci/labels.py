@@ -26,6 +26,7 @@ KNOWN_LABELS: dict[str, str] = {
     "long": "Long-running training tests",
     "ckpt": "Checkpoint save / load tests",
     "lora": "LoRA training tests",
+    "lora-native": "Native (raw-mode) LoRA plugin e2e tests",
     "precision": "Numerical precision parity tests",
     "ft-short": "Fault-tolerance trainer comparison tests (no_failure / deterministic / with_failure)",
     "ft-long": "Fault-tolerance trainer soak tests (random-crash survival, realistic-gsm8k convergence)",
