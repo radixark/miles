@@ -67,7 +67,7 @@ class LaunchCommandContext(FrozenStrictBaseModel):
     cell_index: int
     worker_in_cell_index: int
     self_addrs: NamedHostAndPorts
-    spec_addrs: dict[str, list[NamedHostAndPorts]]
+    pool_addrs: dict[str, list[NamedHostAndPorts]]
     gpu_ids: list[int]
 
 

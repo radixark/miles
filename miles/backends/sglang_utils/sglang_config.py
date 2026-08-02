@@ -269,6 +269,9 @@ def resolve_sglang_config(args) -> SglangConfig:
 
 
 def _compute_raw_sglang_config(args) -> _RawSglangConfig:
+    if args.debug_train_only:
+        return _RawSglangConfig(models=[])
+
     eval_num_gpus = args.eval_num_gpus
 
     if getattr(args, "sglang_config", None) is not None:
