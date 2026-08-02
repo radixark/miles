@@ -536,12 +536,14 @@ def opsd_loss_function(
     token_losses = torch.cat(losses, dim=0)
     token_forward_kls = torch.cat(forward_kls, dim=0)
     token_clip_fractions = torch.cat(clip_fractions, dim=0)
-    loss = sum_of_sample_mean(token_losses)
-    forward_kl = sum_of_sample_mean(token_forward_kls)
-    clip_fraction = sum_of_sample_mean(token_clip_fractions)
-
     if token_losses.numel() == 0:
-        loss = loss + 0 * logits.sum()
+        loss = 0 * logits.sum()
+        forward_kl = loss.detach()
+        clip_fraction = loss.detach()
+    else:
+        loss = sum_of_sample_mean(token_losses)
+        forward_kl = sum_of_sample_mean(token_forward_kls)
+        clip_fraction = sum_of_sample_mean(token_clip_fractions)
 
     return (
         loss,

@@ -198,3 +198,28 @@ def test_opsd_loss_dispatches_and_reduces_response_aligned_top_k(vocab_size):
     torch.testing.assert_close(metrics["loss"], expected.mean())
     torch.testing.assert_close(metrics["opsd_forward_kl_topk"], expected.mean())
     torch.testing.assert_close(metrics["opsd_clip_fraction"], torch.tensor(0.0))
+
+
+def test_opsd_loss_is_finite_for_empty_responses_and_preserves_gradient_path():
+    make_parallel_state()
+    args = make_args(
+        loss_type="opsd_loss",
+        opsd_pointwise_kl_clip=0.0,
+        vocab_size=4,
+    )
+    logits = torch.randn(1, 2, 4, requires_grad=True)
+    batch = {
+        "unconcat_tokens": [torch.tensor([1, 2])],
+        "response_lengths": [0],
+        "total_lengths": [2],
+        "loss_masks": [torch.empty(0)],
+        "opsd_teacher_token_ids": [torch.empty((0, 2), dtype=torch.int64)],
+        "opsd_teacher_scores": [torch.empty((0, 2))],
+    }
+
+    loss, metrics = opsd_loss_function(args, batch, logits, torch.mean)
+
+    torch.testing.assert_close(loss, torch.tensor(0.0))
+    assert all(torch.isfinite(value) for value in metrics.values())
+    loss.backward()
+    torch.testing.assert_close(logits.grad, torch.zeros_like(logits))

@@ -50,11 +50,11 @@ def build_teacher_prompt(prompt: Prompt, label: str, metadata: dict[str, Any]) -
     return [*prompt[:-1], final_message]
 
 
-def _score_payload(input_ids: list[int], *, top_k: int, temperature: float) -> dict[str, Any]:
+def _score_payload(input_ids: list[int], *, top_k: int) -> dict[str, Any]:
     return {
         "input_ids": input_ids,
         "sampling_params": {
-            "temperature": temperature,
+            "temperature": 0,
             "max_new_tokens": 0,
             "skip_special_tokens": False,
         },
@@ -119,11 +119,7 @@ async def reward_func(args: Namespace, sample: Sample, **kwargs: Any) -> dict[st
 
     response_tokens = sample.tokens[-sample.response_length :] if sample.response_length > 0 else []
     teacher_input_ids = [*sample.privileged_prompt_tokens, *response_tokens]
-    payload = _score_payload(
-        teacher_input_ids,
-        top_k=args.opsd_teacher_top_k,
-        temperature=args.rollout_temperature,
-    )
+    payload = _score_payload(teacher_input_ids, top_k=args.opsd_teacher_top_k)
     try:
         response = await _post_json(
             args.opsd_teacher_url,

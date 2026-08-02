@@ -71,13 +71,13 @@ def test_default_teacher_prompt_rejects_tool_messages():
         build_teacher_prompt(prompt, "answer", {})
 
 
-def test_score_payload_requests_temperature_corrected_top_k_input_scores():
-    payload = _score_payload([1, 2, 3], top_k=8, temperature=1.1)
+def test_score_payload_requests_top_k_input_scores_without_sampling():
+    payload = _score_payload([1, 2, 3], top_k=8)
 
     assert payload == {
         "input_ids": [1, 2, 3],
         "sampling_params": {
-            "temperature": 1.1,
+            "temperature": 0,
             "max_new_tokens": 0,
             "skip_special_tokens": False,
         },
@@ -126,7 +126,6 @@ async def test_reward_func_scores_privileged_prompt_with_exact_student_response(
     monkeypatch.setattr("miles.rollout.on_policy_self_distillation._post_json", post_json)
     args = Namespace(
         opsd_teacher_top_k=2,
-        rollout_temperature=0.8,
         opsd_teacher_url="http://teacher/generate",
         sglang_router_request_timeout_secs=30,
     )
@@ -141,7 +140,7 @@ async def test_reward_func_scores_privileged_prompt_with_exact_student_response(
     assert seen["url"] == "http://teacher/generate"
     assert seen["timeout_secs"] == 30
     assert seen["payload"]["input_ids"] == [7, 8, 9, 30, 40]
-    assert seen["payload"]["sampling_params"]["temperature"] == 0.8
+    assert seen["payload"]["sampling_params"]["temperature"] == 0
     assert reward["token_ids"] == [[30, 31], [40, 41]]
 
 
