@@ -85,10 +85,10 @@ class ServerCell:
             api_key=self.meta.sglang_api_key,
         )
 
-    async def add(self, router_api_client: SGLangRouterApiClient, recover: bool = False) -> None:
+    async def add(self, router_api_client: SGLangRouterApiClient) -> None:
         await self._add_raw()
 
-        if recover and self.meta.needs_offload:
+        if self.meta.needs_offload:
             await self.api_client.release_memory_occupation()
             await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 

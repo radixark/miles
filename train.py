@@ -45,9 +45,6 @@ async def train(args):
 
     maybe_start_mini_ft_controller(args)
 
-    if args.offload_rollout:
-        await inference_controller.onload_weights()
-
     # always update weight first so that sglang has the loaded weights from training.
     await actor_model.update_weights()
 
