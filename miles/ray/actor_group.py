@@ -126,11 +126,10 @@ class RayTrainGroup:
         if self.args.use_fault_tolerance and "rollout" in self.args.ft_components:
             await self._inference_controller.recover_updatable_engines()
 
-        await self._inference_controller.health_monitoring_pause()
-        info = await self._inference_controller.get_updatable_engines()
+        info = await self._inference_controller.start_update_weights()
 
         await self._broadcast("update_weights", info=info)
-        await self._inference_controller.clear_updatable_has_new_engines()
+        await self._inference_controller.end_update_weights()
 
     async def reconcile_adapters(self) -> None:
         """Multi-LoRA: reconcile loaded adapters with the controller's active set

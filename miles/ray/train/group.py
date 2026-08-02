@@ -269,14 +269,13 @@ class RayTrainGroup:
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set.
-        await self._inference_controller.health_monitoring_pause()
-        info = await self._inference_controller.get_updatable_engines()
+        info = await self._inference_controller.start_update_weights()
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
             lambda _: self._execute_first_alive("update_weights", info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
-        await self._inference_controller.clear_updatable_has_new_engines()
+        await self._inference_controller.end_update_weights()
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
 
