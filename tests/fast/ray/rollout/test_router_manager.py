@@ -6,7 +6,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.router_manager import wait_router_ready, wait_session_server_ready
-from miles.utils.workers.worker_spec import HostAndPort
+from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
 class TestWaitRouterReady:
@@ -15,9 +15,9 @@ class TestWaitRouterReady:
         requested: list[str] = []
 
         class _FakeProvider:
-            async def get_addr(self, worker_name: str) -> HostAndPort:
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
                 requested.append(worker_name)
-                return HostAndPort(host="10.0.0.9", port=12345)
+                return {"primary": HostAndPort(host="10.0.0.9", port=12345)}
 
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
@@ -53,9 +53,9 @@ class TestWaitSessionServerReady:
         requested: list[str] = []
 
         class _FakeProvider:
-            async def get_addr(self, worker_name: str) -> HostAndPort:
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
                 requested.append(worker_name)
-                return HostAndPort(host="10.0.0.9", port=5004 + len(requested))
+                return {"primary": HostAndPort(host="10.0.0.9", port=5004 + len(requested))}
 
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
@@ -91,9 +91,9 @@ class TestWaitSessionServerReady:
             def __init__(self):
                 self._counter = 0
 
-            async def get_addr(self, worker_name: str) -> HostAndPort:
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
                 self._counter += 1
-                return HostAndPort(host=f"10.0.0.{self._counter}", port=5005)
+                return {"primary": HostAndPort(host=f"10.0.0.{self._counter}", port=5005)}
 
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(

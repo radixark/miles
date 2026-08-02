@@ -34,7 +34,7 @@ class TestLaunchOnRealRay:
             cell_index, worker_in_cell_index = (int(part) for part in name.split("-"))
             assert record["context"]["cell_index"] == cell_index
             assert record["context"]["worker_in_cell_index"] == worker_in_cell_index
-            advertised = ray.get(handle.get_worker_addr.remote(f"engine-{name}"))
+            advertised = ray.get(handle.get_worker_addrs.remote(f"engine-{name}"))["primary"]
             assert record["context"]["self_addrs"]["primary"] == {
                 "host": advertised.host,
                 "port": advertised.port,
@@ -48,7 +48,7 @@ class TestLaunchOnRealRay:
         )
 
         probe.wait_for_records(3)
-        addrs = [ray.get(handle.get_worker_addr.remote(f"engine-0-{index}")) for index in range(3)]
+        addrs = [ray.get(handle.get_worker_addrs.remote(f"engine-0-{index}"))["primary"] for index in range(3)]
 
         assert len({(addr.host, addr.port) for addr in addrs}) == 3
         for addr in addrs:
@@ -87,7 +87,7 @@ class TestLaunchOnRealRay:
         records = probe.wait_for_records(1)
 
         assert records["0-0"]["context"]["self_addrs"]["primary"]["port"] == 21987
-        assert ray.get(handle.get_worker_addr.remote("router-0-0")).port == 21987
+        assert ray.get(handle.get_worker_addrs.remote("router-0-0"))["primary"].port == 21987
 
     def test_a_spec_without_cells_launches_no_worker(self, manager_factory, worker_probe_factory):
         """A disabled spec is accepted and simply contributes no workers."""
@@ -103,7 +103,7 @@ class TestLaunchOnRealRay:
         enabled_probe.wait_for_records(1)
 
         assert disabled_probe.read_records() == {}
-        assert ray.get(handle.get_worker_addr.remote("router-0-0")).port > 0
+        assert ray.get(handle.get_worker_addrs.remote("router-0-0"))["primary"].port > 0
 
 
 class TestNamedManagerActor:
@@ -115,7 +115,7 @@ class TestNamedManagerActor:
         manager_factory([make_command_spec("router", launch_command=probe.launch_command)])
         records = probe.wait_for_records(1)
 
-        addr = await RayWorkerProvider.create().get_addr(worker_name="router-0-0")
+        addr = (await RayWorkerProvider.create().get_addrs(worker_name="router-0-0"))["primary"]
 
         assert isinstance(addr, HostAndPort)
         assert records["0-0"]["context"]["self_addrs"]["primary"] == {"host": addr.host, "port": addr.port}
@@ -130,7 +130,7 @@ class TestNamedManagerActor:
         probe.wait_for_records(1)
 
         with pytest.raises(ray.exceptions.RayTaskError):
-            ray.get(RayWorkerManager.get_handle().get_worker_addr.remote("router-9-9"))
+            ray.get(RayWorkerManager.get_handle().get_worker_addrs.remote("router-9-9"))
 
 
 class TestScaleOnRealRay:
