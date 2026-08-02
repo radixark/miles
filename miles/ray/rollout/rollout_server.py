@@ -103,12 +103,12 @@ class RolloutServer:
 
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(
-            *[cell.offload(tags=tags) for cell in self._allocated_cells_of() if cell.meta.needs_offload]
+            *[cell.offload(tags=tags) for cell in self.server_cells.values() if cell.meta.needs_offload]
         )
 
     async def onload(self, tags: list[str] | None = None):
         return await asyncio.gather(
-            *[cell.onload(tags=tags) for cell in self._allocated_cells_of() if cell.meta.needs_offload]
+            *[cell.onload(tags=tags) for cell in self.server_cells.values() if cell.meta.needs_offload]
         )
 
     async def check_weights(
@@ -119,7 +119,7 @@ class RolloutServer:
                 cell.check_weights(
                     action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
                 )
-                for cell in self._allocated_cells_of()
+                for cell in self.server_cells.values()
             ]
         )
 
@@ -133,11 +133,6 @@ class RolloutServer:
             await asyncio.sleep(sleep_time)
             logger.info("wait_all_engines_alive looping...")
         raise TimeoutError(f"Timed out after {timeout}s waiting for engines to become ready")
-
-    def _allocated_cells_of(self, cell_ids: list[str] | None = None) -> list[ServerCell]:
-        if cell_ids is None:
-            cell_ids = list(self.server_cells)
-        return [self.server_cells[cell_id] for cell_id in cell_ids if self.server_cells[cell_id].is_allocated]
 
     @property
     def _router_api_client(self) -> SGLangRouterApiClient:
