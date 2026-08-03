@@ -1,7 +1,25 @@
 """Native-specific adapter checkpoint helpers.
 
+Two on-disk formats:
+
+- **MCore distributed checkpoint** (``torch_dist/``, the write format): one
+  collective ``dist_checkpointing.save`` holding adapter weights plus
+  optimizer/scheduler state, keyed by the standard MCore sharded-state-dict
+  names (global layer indices, TP axes from each parameter's
+  ``partition_dim``). Loads under a different TP/PP/DP layout via MCore
+  resharding; optimizer state uses the ``fully_reshardable`` format.
+- **Legacy per-rank shards** (``adapter_megatron_tp{tp}_pp{pp}.pt``):
+  read-only compatibility with checkpoints written before the dist-ckpt
+  migration; loading requires the exact saved parallel layout.
+
 Shared save/load orchestration and PP assembly live in
 ``miles.backends.megatron_utils.lora_utils``, still serving Megatron-Bridge too.
+
+Unsupported:
+
+- Writing the legacy shard format (loading stays supported).
+- Loading a dist checkpoint saved with a different ``--target-modules`` set
+  (missing adapter tensors fail the load; extra ones are ignored).
 
 TODO:
 
@@ -10,20 +28,210 @@ TODO:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 
-from miles_plugins.lora.modules.linear import iter_adapters
+from miles_plugins.lora.modules.linear import NATIVE_LORA_SHARDED_STATE_FLAG, iter_adapters
 
-_MODEL_CHUNK_PREFIX = "_miles_model_chunks."
+logger = logging.getLogger(__name__)
+
+NATIVE_DIST_CKPT_DIRNAME = "torch_dist"
+
+# Distributed-optimizer state in the TP/PP/EP-reshardable checkpoint format;
+# the default formats reshard over DP only. Non-distributed Megatron optimizers
+# ignore this key.
+_OPTIMIZER_SHARDING_METADATA = {"distrib_optim_sharding_type": "fully_reshardable"}
 
 
-def model_chunk_state_key(chunk_index: int, parameter_name: str) -> str:
-    """Return an unambiguous checkpoint key for a parameter in one model chunk."""
-    return f"{_MODEL_CHUNK_PREFIX}{chunk_index}.{parameter_name}"
+# ---------------------------------------------------------------------------
+# MCore distributed checkpoint (the write format)
+# ---------------------------------------------------------------------------
+
+
+def _unwrap_model_chunk(chunk: nn.Module) -> nn.Module:
+    """Strip DDP/Float16 wrappers; MCore's save flow calls sharded_state_dict unwrapped."""
+    module = chunk
+    while hasattr(module, "module"):
+        module = module.module
+    return module
+
+
+def _sharded_entry_dict_key(entry: Any) -> str:
+    """A layout-invariant, per-shard-unique dict key for one ShardedTensor.
+
+    Plain state-dict keys cannot be used to merge model chunks: MCore keys the
+    walk's dict by chunk-LOCAL layer indices (only the ShardedTensor ``.key``
+    is globalized), so virtual-pipeline chunks collide on identical dict keys.
+    ``.key`` alone is not unique either — with homogeneous-layer checkpoints
+    every layer shares one ``.key`` and is distinguished by its prepended
+    global offset. The pair is unique.
+    """
+    return f"{entry.key}|{tuple(entry.global_offset)}"
+
+
+def native_adapter_sharded_state_dict(model_chunks: Sequence[nn.Module]) -> dict[str, Any]:
+    """Adapter-only sharded state dict with layout-invariant (global) keys.
+
+    Walks each chunk's standard MCore ``sharded_state_dict`` with the opt-in
+    metadata flag so ``NativeLoRAAdapter`` emits real ShardedTensors — global
+    layer keys, PP offsets, and TP axes all come from the standard walk — then
+    filters to adapter parameters by object identity and re-keys the merged
+    dict by ``(ShardedTensor.key, global_offset)`` (see
+    ``_sharded_entry_dict_key``). Fails loudly if any attached adapter
+    parameter never surfaced: a provider whose module tree does not recurse
+    into adapter children would otherwise silently drop weights from every
+    checkpoint.
+    """
+    adapter_parameter_names = {
+        id(parameter): f"{type(adapter).__name__}({adapter.hf_prefix}).{name}"
+        for adapter in iter_adapters(model_chunks)
+        for name, parameter in adapter.named_parameters(recurse=False)
+    }
+    sharded_state: dict[str, Any] = {}
+    for chunk in model_chunks:
+        chunk_sharded = _unwrap_model_chunk(chunk).sharded_state_dict(metadata={NATIVE_LORA_SHARDED_STATE_FLAG: True})
+        for entry in chunk_sharded.values():
+            if id(getattr(entry, "data", None)) not in adapter_parameter_names:
+                continue
+            merged_key = _sharded_entry_dict_key(entry)
+            assert merged_key not in sharded_state, f"duplicate adapter checkpoint shard: {merged_key}"
+            sharded_state[merged_key] = entry
+    collected = {id(entry.data) for entry in sharded_state.values()}
+    missing = sorted(name for pid, name in adapter_parameter_names.items() if pid not in collected)
+    assert not missing, (
+        f"{len(missing)} adapter parameter(s) never surfaced in the model's sharded_state_dict walk "
+        f"(the provider's module tree must recurse into adapter submodules): {missing[:8]}"
+    )
+    return sharded_state
+
+
+def save_native_adapter_dist_checkpoint(
+    model_chunks: Sequence[nn.Module],
+    checkpoint_dir: str | Path,
+    *,
+    optimizer: Any | None = None,
+    opt_param_scheduler: Any | None = None,
+    iteration: int | None = None,
+) -> None:
+    """Write adapters (+ optimizer/scheduler state) as one MCore dist checkpoint.
+
+    Collective across the default process group — every rank must call it.
+    Scheduler state and the iteration are rank-identical and land in the
+    checkpoint's ``common.pt``.
+    """
+    from megatron.core import dist_checkpointing
+
+    assert dist.is_initialized(), "native adapter dist checkpointing requires torch.distributed"
+    sharded_model_state = native_adapter_sharded_state_dict(model_chunks)
+    state_dict: dict[str, Any] = {
+        "model": sharded_model_state,
+        "iteration": iteration,
+        "has_optimizer_state": optimizer is not None,
+    }
+    if optimizer is not None:
+        state_dict["optimizer"] = optimizer.sharded_state_dict(
+            sharded_model_state, is_loading=False, metadata=dict(_OPTIMIZER_SHARDING_METADATA)
+        )
+        state_dict["opt_param_scheduler"] = (
+            opt_param_scheduler.state_dict() if opt_param_scheduler is not None else None
+        )
+    checkpoint_path = Path(checkpoint_dir)
+    checkpoint_path.mkdir(parents=True, exist_ok=True)
+    dist.barrier()
+    dist_checkpointing.save(state_dict, str(checkpoint_path))
+    logger.info(
+        "Saved %d adapter tensors (+ optimizer state: %s) to dist checkpoint %s",
+        len(sharded_model_state),
+        optimizer is not None,
+        checkpoint_path,
+    )
+
+
+def load_native_adapter_dist_checkpoint(
+    model_chunks: Sequence[nn.Module],
+    checkpoint_dir: str | Path,
+    *,
+    optimizer: Any | None = None,
+    opt_param_scheduler: Any | None = None,
+) -> int | None:
+    """Load an MCore dist adapter checkpoint, resharding to the current layout.
+
+    Collective — every rank must call it. Adapter tensors missing from the
+    checkpoint (e.g. a different ``--target-modules`` set) raise inside
+    ``dist_checkpointing.load`` rather than silently reinitializing; the
+    checkpoint is one collectively-validated unit, so there is no
+    per-rank-file consensus step as in the legacy format.
+
+    Returns the saved iteration when optimizer state was restored, else None
+    (matching the legacy resume contract: no optimizer state means training
+    restarts its schedule, keeping fp32 main params aligned via
+    ``reload_model_params``).
+    """
+    from megatron.core import dist_checkpointing
+
+    assert dist.is_initialized(), "native adapter dist checkpointing requires torch.distributed"
+    common_state = dist_checkpointing.load_common_state_dict(str(checkpoint_dir))
+    restore_optimizer = optimizer is not None and bool(common_state.get("has_optimizer_state"))
+
+    sharded_model_state = native_adapter_sharded_state_dict(model_chunks)
+    parameters_by_key = {key: entry.data for key, entry in sharded_model_state.items()}
+    state_dict: dict[str, Any] = {"model": sharded_model_state}
+    if restore_optimizer:
+        state_dict["optimizer"] = optimizer.sharded_state_dict(
+            sharded_model_state, is_loading=True, metadata=dict(_OPTIMIZER_SHARDING_METADATA)
+        )
+    loaded = dist_checkpointing.load(state_dict, str(checkpoint_dir))
+
+    with torch.no_grad():
+        for key, tensor in loaded["model"].items():
+            parameter = parameters_by_key[key]
+            if tensor is not parameter:
+                parameter.copy_(tensor.to(device=parameter.device, dtype=parameter.dtype))
+    logger.info("Loaded %d adapter tensors from dist checkpoint %s", len(parameters_by_key), checkpoint_dir)
+
+    if restore_optimizer:
+        optimizer.load_state_dict(loaded["optimizer"])
+        logger.info("Restored optimizer state from dist checkpoint")
+        scheduler_state = common_state.get("opt_param_scheduler")
+        if opt_param_scheduler is not None and scheduler_state is not None:
+            opt_param_scheduler.load_state_dict(scheduler_state)
+            logger.info("Restored LR scheduler state from dist checkpoint")
+        return common_state.get("iteration")
+
+    if optimizer is not None:
+        logger.warning(
+            "Dist adapter checkpoint at %s has no optimizer state; resuming with fresh training state.",
+            checkpoint_dir,
+        )
+        # Megatron's BF16/FP16 optimizer owns FP32 main parameters created from
+        # the freshly initialized adapters. Keep those masters aligned with the
+        # adapter values just loaded.
+        reload_model_params = getattr(optimizer, "reload_model_params", None)
+        if callable(reload_model_params):
+            reload_model_params()
+    return None
+
+
+def is_native_adapter_dist_checkpoint(checkpoint_dir: str | Path) -> bool:
+    """Whether ``checkpoint_dir`` holds an MCore distributed checkpoint."""
+    path = Path(checkpoint_dir)
+    if not path.is_dir():
+        return False
+    from megatron.core.dist_checkpointing import check_is_distributed_checkpoint
+
+    return check_is_distributed_checkpoint(str(path))
+
+
+# ---------------------------------------------------------------------------
+# Legacy per-rank shard format (read-only compatibility)
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -51,22 +259,9 @@ class AdapterLoadPlan:
         return len(self.assignments)
 
 
-def adapter_state_dict(
-    model_chunks: Sequence[nn.Module],
-    include_parameter: Callable[[str, nn.Parameter], bool],
-) -> dict[str, torch.Tensor]:
-    """Collect selected parameters using model-chunk-qualified keys.
-
-    Model chunks commonly expose identical parameter-tree names under virtual
-    pipeline parallelism. Qualifying every key prevents later chunks from
-    silently overwriting earlier ones in the Python dictionary.
-    """
-    state: dict[str, torch.Tensor] = {}
-    for chunk_index, chunk in enumerate(model_chunks):
-        for name, parameter in chunk.named_parameters():
-            if include_parameter(name, parameter):
-                state[model_chunk_state_key(chunk_index, name)] = parameter.detach().cpu()
-    return state
+# Key prefix of adapter shards written by earlier revisions of this branch
+# (superseded by the dist checkpoint; kept readable).
+_LEGACY_MODEL_CHUNK_PREFIX = "_miles_model_chunks."
 
 
 def adapter_load_plan(
@@ -74,44 +269,44 @@ def adapter_load_plan(
     state_dict: dict[str, torch.Tensor],
     include_parameter: Callable[[str, nn.Parameter], bool],
 ) -> AdapterLoadPlan:
-    """Preflight an adapter state dict without mutating model parameters.
+    """Preflight a legacy adapter state dict without mutating parameters.
 
-    New checkpoints always qualify keys by model-chunk index. For backwards
-    compatibility, unqualified legacy keys are accepted whenever they identify
-    exactly one parameter across all current chunks. A key shared by multiple
-    chunks is rejected as ambiguous: old VPP writers overwrote those values and
-    there is no safe way to reconstruct which chunk the surviving tensor came
-    from.
+    Two legacy key schemes are readable. Shards from earlier revisions of this
+    branch qualified every key as ``_miles_model_chunks.{chunk}.{name}`` and
+    map back exactly. Older flat shards keyed parameters by their unqualified
+    chunk-local names; a flat key is accepted whenever it identifies exactly
+    one parameter across all current chunks, and a key shared by multiple
+    virtual-pipeline chunks is rejected as ambiguous — flat writers overwrote
+    those values and there is no safe way to reconstruct which chunk the
+    surviving tensor came from.
     """
-    namespaced = any(isinstance(key, str) and key.startswith(_MODEL_CHUNK_PREFIX) for key in state_dict)
-
     expected: dict[str, nn.Parameter] = {}
-    ambiguous_legacy: set[str] = set()
+    ambiguous: set[str] = set()
+    namespaced = any(isinstance(key, str) and key.startswith(_LEGACY_MODEL_CHUNK_PREFIX) for key in state_dict)
     if namespaced:
         for chunk_index, chunk in enumerate(model_chunks):
             for name, parameter in chunk.named_parameters():
                 if include_parameter(name, parameter):
-                    expected[model_chunk_state_key(chunk_index, name)] = parameter
+                    expected[f"{_LEGACY_MODEL_CHUNK_PREFIX}{chunk_index}.{name}"] = parameter
     else:
-        legacy_candidates: dict[str, list[nn.Parameter]] = {}
+        candidates: dict[str, list[nn.Parameter]] = {}
         for chunk in model_chunks:
             for name, parameter in chunk.named_parameters():
                 if include_parameter(name, parameter):
-                    legacy_candidates.setdefault(name, []).append(parameter)
-        for name, candidates in legacy_candidates.items():
-            if len(candidates) == 1:
-                expected[name] = candidates[0]
+                    candidates.setdefault(name, []).append(parameter)
+        for name, parameters in candidates.items():
+            if len(parameters) == 1:
+                expected[name] = parameters[0]
             else:
-                ambiguous_legacy.add(name)
+                ambiguous.add(name)
 
     state_names = set(state_dict)
     expected_names = set(expected)
-    unexpected = sorted(str(name) for name in state_names - expected_names - ambiguous_legacy)
+    unexpected = sorted(str(name) for name in state_names - expected_names - ambiguous)
     missing = sorted(expected_names - state_names)
     assignments: list[tuple[str, nn.Parameter, torch.Tensor]] = []
     shape_mismatches = [
-        f"{name}: unqualified legacy key is ambiguous across multiple model chunks"
-        for name in sorted(ambiguous_legacy)
+        f"{name}: unqualified legacy key is ambiguous across multiple model chunks" for name in sorted(ambiguous)
     ]
     for name in sorted(state_names & expected_names):
         tensor = state_dict[name]
@@ -128,7 +323,7 @@ def adapter_load_plan(
 
 
 def native_adapter_shard_name(tp_rank: int, pp_rank: int) -> str:
-    """Return the per-rank native adapter filename.
+    """Return the legacy per-rank native adapter filename.
 
     Native adapter state is EP-invariant, so the expert-parallel rank is
     deliberately absent from the key: routed/grouped experts carry no native
@@ -141,19 +336,11 @@ def native_adapter_shard_name(tp_rank: int, pp_rank: int) -> str:
     return f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
 
 
-def native_adapter_state_dict(model_chunks: Sequence[nn.Module]) -> dict[str, torch.Tensor]:
-    """Collect local native-LoRA parameters without model-chunk key collisions."""
-    native_parameter_ids = {
-        id(parameter) for adapter in iter_adapters(model_chunks) for parameter in adapter.parameters(recurse=False)
-    }
-    return adapter_state_dict(model_chunks, lambda _name, parameter: id(parameter) in native_parameter_ids)
-
-
 def native_adapter_load_plan(
     model_chunks: Sequence[nn.Module],
     state_dict: dict[str, torch.Tensor],
 ) -> AdapterLoadPlan:
-    """Preflight a native shard for exact target names and tensor shapes."""
+    """Preflight a legacy native shard for exact target names and tensor shapes."""
     native_parameter_ids = {
         id(parameter) for adapter in iter_adapters(model_chunks) for parameter in adapter.parameters(recurse=False)
     }
@@ -162,26 +349,6 @@ def native_adapter_load_plan(
         state_dict,
         lambda _name, parameter: id(parameter) in native_parameter_ids,
     )
-
-
-def load_native_adapter_state_dict(
-    model_chunks: Sequence[nn.Module],
-    state_dict: dict[str, torch.Tensor],
-) -> tuple[int, list[str], list[str]]:
-    """Load a local native shard and report both target-set mismatch directions.
-
-    Returns ``(loaded, unexpected, missing)``: *unexpected* are checkpoint
-    tensors absent from the current exact target set, *missing* are current
-    adapter parameters the checkpoint has no tensor for (they keep their fresh
-    initialization). Either direction means the shard was saved for a different
-    ``--target-modules`` set.
-    """
-    plan = native_adapter_load_plan(model_chunks, state_dict)
-    if plan.shape_mismatches:
-        details = "; ".join(plan.shape_mismatches[:8])
-        raise ValueError(f"native adapter tensor shape mismatch: {details}")
-    loaded = plan.apply()
-    return loaded, plan.unexpected, plan.missing
 
 
 def has_native_adapters(model_chunks: Sequence[nn.Module]) -> bool:

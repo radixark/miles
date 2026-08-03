@@ -20,6 +20,12 @@ import torch.nn.functional as F
 from miles_plugins.lora.distributed import apply_lora_dropout, branch_input, reduce_row_parallel
 from miles_plugins.lora.spec.base import AttachContext, ProjectionSpec, ShardLayout
 
+# Opt-in flag for MCore ``sharded_state_dict`` walks. Adapters are invisible by
+# default so base-model distributed checkpoints keep loading with strict key
+# checks; the adapter checkpoint walk in ``miles_plugins.lora.checkpointing``
+# passes ``metadata={NATIVE_LORA_SHARDED_STATE_FLAG: True}`` to collect them.
+NATIVE_LORA_SHARDED_STATE_FLAG = "include_miles_native_lora_adapters"
+
 
 @dataclass(frozen=True)
 class SGLangFusedGroup:
@@ -122,8 +128,29 @@ class NativeLoRAAdapter(nn.Module):
             )
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
-        """Keep adapter params out of MCore distributed checkpoints for now."""
-        return {}
+        """Adapter params as ShardedTensors, only when the walk opts in via metadata.
+
+        Base-model distributed checkpoints do not contain adapter tensors, so the
+        default (no flag) stays invisible and base loading keeps its strict key
+        checks. With the flag, every parameter becomes a ShardedTensor whose TP
+        axis comes from its ``partition_dim`` (``new_lora_parameter`` records the
+        true layout); global keys and PP offsets come from the enclosing walk.
+        """
+        if not (metadata or {}).get(NATIVE_LORA_SHARDED_STATE_FLAG, False):
+            return {}
+        from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
+
+        tensor_parallel_axis_map = {
+            name: parameter.partition_dim
+            for name, parameter in self.named_parameters(recurse=False)
+            if getattr(parameter, "tensor_model_parallel", False)
+        }
+        return make_sharded_tensors_for_checkpoint(
+            self.state_dict(prefix="", keep_vars=True),
+            prefix,
+            tensor_parallel_axis_map,
+            sharded_offsets,
+        )
 
 
 class LoRALinear(NativeLoRAAdapter):

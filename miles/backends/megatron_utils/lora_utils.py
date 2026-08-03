@@ -527,18 +527,21 @@ def save_lora_checkpoint(
        writing because that splitting aliases them -- a fused ``linear_fc1`` has one
        ``lora_A`` that exports under both ``gate_proj`` and ``up_proj``, and its ``B``
        becomes two row views -- and ``safetensors`` refuses to write shared storage.
-    2. **Megatron-native format** (``adapter_megatron_tp{tp}_pp{pp}_ep{ep}.pt``) for
-       fast checkpoint resume without name/weight conversion. Each TP/PP/EP rank saves
-       its own shard. Native-plugin keys include the model-chunk index so
-       virtual-pipeline chunks cannot overwrite one another. Bridge/custom
-       providers retain their existing unqualified-key format and EP rank.
+    2. **Megatron-native format** for checkpoint resume without name/weight
+       conversion. The native provider writes one MCore distributed checkpoint
+       (``torch_dist/``) with standard sharded-state-dict keys, holding adapter
+       weights and optimizer/scheduler state together; it reshards on load
+       across TP/PP/DP layout changes. Bridge/custom providers retain their
+       per-rank ``adapter_megatron_tp{tp}_pp{pp}_ep{ep}.pt`` shard format plus
+       per-rank training-state files, which require the exact saved layout.
 
-    When ``optimizer`` is provided, training state (optimizer + LR scheduler) is
-    also saved per-rank for checkpoint resume. Base model weights are frozen and
-    never change, so they are not saved.
+    Base model weights are frozen and never change, so they are not saved.
 
-    This function is collective: **all ranks must call it** because the bridge
-    export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
+    This function is collective: **all ranks must call it** — the HF export
+    performs TP all-gathers, and the native dist-checkpoint save is a
+    collective in which every main replica writes its shard. The HF PEFT files
+    are written by one rank; legacy bridge/custom shards by one rank per
+    ``(tp, pp, ep)`` coordinate.
     """
     import json
 
@@ -564,25 +567,33 @@ def save_lora_checkpoint(
     # built-in native modules; classifying it from --lora-provider-path on save
     # but from the model on load produced different EP filenames.
     ep_sharded_provider = _adapter_shards_are_ep_sharded(model)
-    shard_name = _adapter_shard_name(tp_rank, pp_rank, ep_rank, ep_sharded=ep_sharded_provider)
-    if _is_canonical_shard_writer(shard_name):
-        if ep_sharded_provider:
-            # Keep Bridge/custom checkpoint behavior unchanged in this
-            # native-only refactor. Its VPP/EP format will be redesigned with
-            # the Bridge implementation later.
+    if ep_sharded_provider:
+        # Keep Bridge/custom checkpoint behavior unchanged in this
+        # native-only refactor. Its VPP/EP format will be redesigned with
+        # the Bridge implementation later.
+        shard_name = _adapter_shard_name(tp_rank, pp_rank, ep_rank, ep_sharded=True)
+        if _is_canonical_shard_writer(shard_name):
             adapter_state = {}
             for model_chunk in model:
                 for name, parameter in model_chunk.named_parameters():
                     if _is_adapter_param_name(name):
                         adapter_state[name] = parameter.detach().cpu()
-        else:
-            from miles_plugins.lora.checkpointing import native_adapter_state_dict
+            native_path = save_path / shard_name
+            torch.save(adapter_state, native_path)
+            logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
+    else:
+        from miles_plugins.lora.checkpointing import NATIVE_DIST_CKPT_DIRNAME, save_native_adapter_dist_checkpoint
 
-            adapter_state = native_adapter_state_dict(model)
-
-        native_path = save_path / shard_name
-        torch.save(adapter_state, native_path)
-        logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
+        # Native adapters (and their optimizer/scheduler state) go into one
+        # MCore dist checkpoint, reshardable across TP/PP/DP layout changes.
+        # Collective: every rank participates in the save.
+        save_native_adapter_dist_checkpoint(
+            model,
+            save_path / NATIVE_DIST_CKPT_DIRNAME,
+            optimizer=optimizer,
+            opt_param_scheduler=opt_param_scheduler,
+            iteration=iteration,
+        )
 
     lora_state_dict: dict[str, torch.Tensor] = {}
     if bridge_mode:
@@ -633,8 +644,9 @@ def save_lora_checkpoint(
         os.sync()
         logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
 
-    # ---- Training state (optimizer + scheduler) for resume ----
-    if optimizer is not None:
+    # ---- Training state (optimizer + scheduler) for legacy-format resume ----
+    # Native providers already saved it inside the dist checkpoint above.
+    if optimizer is not None and ep_sharded_provider:
         rank = dist.get_rank() if dist.is_initialized() else 0
         torch.save(
             {
@@ -661,18 +673,22 @@ def load_lora_adapter(
 ) -> tuple[bool, int | None]:
     """Load LoRA adapter weights from a saved checkpoint into the model.
 
-    Attempts to load from Megatron-native format first (per-rank ``.pt`` files),
-    which preserves the exact TP/PP sharding and requires no name conversion.
-    Falls back to the HF PEFT adapter if native files are not found (not yet
-    implemented for HF PEFT format here; ``--lora-adapter-path`` loads that format
-    through the native provider's ``load_lora_adapter_hf`` instead).
+    For the native provider, an MCore distributed checkpoint (``torch_dist/``)
+    is preferred: one collective load restores adapter weights plus
+    optimizer/scheduler state and reshards automatically if the TP/PP/DP layout
+    changed since the save. Incompatible contents (e.g. a different
+    ``--target-modules`` set) raise on every rank alike. Otherwise the legacy
+    per-rank ``.pt`` shard format is tried, which requires the exact saved
+    layout. HF PEFT adapters are not loaded here (``--lora-adapter-path``
+    handles that format through the provider).
 
-    Every rank preflights its complete adapter shard (existence, exact target
-    names/chunk namespace, and shapes), then collectively agrees before any
-    model parameter is mutated. When ``optimizer`` is provided, training state
-    (optimizer + LR scheduler) has a second consensus point so iterations and
-    LR schedules stay in lockstep. This makes the function collective — when
-    ``torch.distributed`` is initialized, all ranks must call it.
+    In the legacy path every rank preflights its complete adapter shard
+    (existence, exact target names, and shapes), then collectively agrees
+    before any model parameter is mutated. When ``optimizer`` is provided,
+    training state (optimizer + LR scheduler) has a second consensus point so
+    iterations and LR schedules stay in lockstep. Either way the function is
+    collective — when ``torch.distributed`` is initialized, all ranks must
+    call it.
 
     Args:
         model: List of DDP-wrapped model chunks with LoRA layers already applied.
@@ -693,12 +709,30 @@ def load_lora_adapter(
     pp_rank = get_parallel_state().pp.rank
     ep_rank = get_parallel_state().ep.rank
 
-    # ---- Try Megatron-native format first (fast, no conversion needed) ----
-    from miles_plugins.lora.checkpointing import native_adapter_load_plan
-
     # Shard key follows the provider: only bridge/custom adapters are EP-sharded.
     ep_sharded_provider = _adapter_shards_are_ep_sharded(model)
     native_adapters = not ep_sharded_provider
+
+    # ---- Native providers: MCore dist checkpoint first (reshards on load) ----
+    if native_adapters:
+        from miles_plugins.lora.checkpointing import (
+            NATIVE_DIST_CKPT_DIRNAME,
+            is_native_adapter_dist_checkpoint,
+            load_native_adapter_dist_checkpoint,
+        )
+
+        dist_ckpt_dir = adapter_dir / NATIVE_DIST_CKPT_DIRNAME
+        if _all_ranks_see_dist_checkpoint(is_native_adapter_dist_checkpoint(dist_ckpt_dir), dist_ckpt_dir):
+            iteration = load_native_adapter_dist_checkpoint(
+                model, dist_ckpt_dir, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
+            )
+            for chunk in model:
+                chunk._miles_lora_native_checkpoint_loaded = True
+            return True, iteration
+
+    # ---- Legacy per-rank shard format (exact-layout resume) ----
+    from miles_plugins.lora.checkpointing import native_adapter_load_plan
+
     native_path = adapter_dir / _adapter_shard_name(tp_rank, pp_rank, ep_rank, ep_sharded=ep_sharded_provider)
     shard_found = native_path.exists()
     plan = None
@@ -802,6 +836,27 @@ def load_lora_adapter(
         if callable(reload_model_params):
             reload_model_params()
     return True, iteration
+
+
+def _all_ranks_see_dist_checkpoint(local_probe: bool, dist_ckpt_dir: Path) -> bool:
+    """Agree across ranks which load path to take before entering a collective.
+
+    The dist-vs-legacy choice comes from a rank-local filesystem probe; if
+    shared-FS visibility skews (e.g. attribute-cache lag right after a save),
+    ranks would enter mismatched collectives and hang. A partial view is an
+    environment fault, so it raises instead.
+    """
+    if not dist.is_initialized() or dist.get_world_size() == 1:
+        return local_probe
+    probes: list[bool | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(probes, local_probe)
+    if any(probes) and not all(probes):
+        raise RuntimeError(
+            f"ranks disagree on whether {dist_ckpt_dir} is a dist checkpoint "
+            f"(visible on {sum(bool(p) for p in probes)}/{len(probes)} ranks); "
+            f"check shared-filesystem consistency before resuming."
+        )
+    return all(probes)
 
 
 def _all_ranks_can_restore_training_state(local_ok: bool) -> bool:
