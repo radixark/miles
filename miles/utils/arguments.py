@@ -2935,6 +2935,14 @@ def miles_validate_args(args):
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
 
+    # patch_param_grad_buffer_for_colocate_mode_lora() forces disable_param_buffers_cpu_backup
+    # on regardless of the line above, so without the backuper there is no host copy at all and
+    # named_params_and_buffers() hands update_weights the live, paused GPU tensors. That reads
+    # unmapped memory instead of failing, so the symptom is a 30-minute gloo barrier timeout.
+    assert not (
+        not args.enable_weights_backuper and args.offload_train and args.colocate and is_lora_enabled(args)
+    ), "--disable-weights-backuper is not supported with LoRA + --colocate + --offload-train"
+
     if args.offload_train_target == "disk":
         assert args.offload_train, "--offload-train-target=disk requires --offload-train"
         assert (
