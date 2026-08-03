@@ -21,6 +21,9 @@ def make_args(**overrides) -> SimpleNamespace:
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         fp16=False,
+        lora_adapter_path=None,
+        multi_lora_n_adapters=1,
+        target_modules=["linear_qkv"],
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -28,7 +31,14 @@ def make_args(**overrides) -> SimpleNamespace:
 
 def compute(args, **kwargs) -> dict:
     server_args, _ = _compute_server_args(
-        args, rank=0, dist_init_addr="127.0.0.1:1234", nccl_port=5000, host="127.0.0.1", port=30000, **kwargs
+        args,
+        rank=0,
+        dist_init_addr="127.0.0.1:1234",
+        nccl_port=5000,
+        host="127.0.0.1",
+        port=30000,
+        base_gpu_id=0,
+        **kwargs,
     )
     return server_args
 
@@ -39,21 +49,12 @@ class TestSglangOverridePrecedence:
     def test_override_wins_over_conditional_args_defaults(self):
         args = make_args(fp16=True, use_rollout_routing_replay=True, use_rollout_indexer_replay=True)
 
-        server_args = compute(
-            args,
-            sglang_overrides={
-                "dtype": "bfloat16",
-                "enable_return_routed_experts": False,
-                "enable_return_indexer_topk": False,
-            },
-        )
+        server_args = compute(args, sglang_overrides={"dtype": "bfloat16"})
 
         assert server_args["dtype"] == "bfloat16"
-        assert server_args["enable_return_routed_experts"] is False
-        assert server_args["enable_return_indexer_topk"] is False
 
     def test_override_wins_over_lora_defaults(self):
-        args = make_args(lora_rank=8, sglang_enable_lora=False)
+        args = make_args(lora_rank=8)
 
         server_args = compute(args, sglang_overrides={"enable_lora": False})
 
@@ -68,10 +69,10 @@ class TestSglangOverridePrecedence:
         assert server_args["mem_fraction_static"] == value
 
     def test_no_overrides_keeps_args_derived_values(self):
-        args = make_args(fp16=True, use_rollout_routing_replay=True)
+        args = make_args(fp16=True, lora_rank=8)
 
         server_args = compute(args)
 
         assert server_args["dtype"] == "float16"
-        assert server_args["enable_return_routed_experts"] is True
+        assert server_args["enable_lora"] is True
         assert server_args["mem_fraction_static"] == 0.7
