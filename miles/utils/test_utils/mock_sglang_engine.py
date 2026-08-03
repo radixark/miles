@@ -39,6 +39,7 @@ _RECORDING_METHODS: dict[str, Any] = {
     "get_weight_version": "mock-v0",
     "get_parallelism_info": {"_mock": True},
     "get_remote_instance_transfer_engine_info": {"_mock": True},
+    "register_with_router": None,
 }
 
 
@@ -97,6 +98,8 @@ class MockSGLangEngine:
         self._record("init", (), kwargs)
         self._maybe_fault("init")
         self.initialized = True
+        if kwargs["register_with_router"]:
+            self.register_with_router()
         return None
 
     def shutdown(self):

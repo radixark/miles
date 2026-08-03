@@ -164,6 +164,7 @@ class ServerGroup:
                 **addr_and_ports[index],
                 router_ip=self.router_ip,
                 router_port=self.router_port,
+                register_with_router=True,
             )
             for index, engine in new_engines
         ]
