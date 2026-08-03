@@ -2,14 +2,13 @@ import os
 from dataclasses import dataclass
 
 import torch
-
+from tests.ci.rocm_utils import IS_ROCM
 import miles.utils.external_utils.command_utils as U
 
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
 
 TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
-IS_ROCM = torch.version.hip is not None
 
 
 @dataclass
