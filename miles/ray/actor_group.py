@@ -129,7 +129,7 @@ class RayTrainGroup:
         info = await self._inference_controller.start_update_weights()
 
         await self._broadcast("update_weights", info=info)
-        await self._inference_controller.end_update_weights()
+        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
     async def reconcile_adapters(self) -> None:
         """Multi-LoRA: reconcile loaded adapters with the controller's active set
