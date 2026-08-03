@@ -64,30 +64,18 @@ def _unwrap_model_chunk(chunk: nn.Module) -> nn.Module:
 
 
 def _sharded_entry_dict_key(entry: Any) -> str:
-    """A layout-invariant, per-shard-unique dict key for one ShardedTensor.
-
-    Plain state-dict keys cannot be used to merge model chunks: MCore keys the
-    walk's dict by chunk-LOCAL layer indices (only the ShardedTensor ``.key``
-    is globalized), so virtual-pipeline chunks collide on identical dict keys.
-    ``.key`` alone is not unique either — with homogeneous-layer checkpoints
-    every layer shares one ``.key`` and is distinguished by its prepended
-    global offset. The pair is unique.
-    """
+    """Unique merge key: MCore dict keys are chunk-local (VPP chunks collide) and
+    ``.key`` alone repeats across homogeneous layers; the (key, offset) pair is unique."""
     return f"{entry.key}|{tuple(entry.global_offset)}"
 
 
 def native_adapter_sharded_state_dict(model_chunks: Sequence[nn.Module]) -> dict[str, Any]:
     """Adapter-only sharded state dict with layout-invariant (global) keys.
 
-    Walks each chunk's standard MCore ``sharded_state_dict`` with the opt-in
-    metadata flag so ``NativeLoRAAdapter`` emits real ShardedTensors — global
-    layer keys, PP offsets, and TP axes all come from the standard walk — then
-    filters to adapter parameters by object identity and re-keys the merged
-    dict by ``(ShardedTensor.key, global_offset)`` (see
-    ``_sharded_entry_dict_key``). Fails loudly if any attached adapter
-    parameter never surfaced: a provider whose module tree does not recurse
-    into adapter children would otherwise silently drop weights from every
-    checkpoint.
+    Standard MCore walk with the opt-in flag, filtered to adapter parameters by
+    identity and merged via ``_sharded_entry_dict_key``. Asserts that every
+    attached adapter surfaced — a walk that skips adapter children must fail
+    loudly, not silently drop weights.
     """
     adapter_parameter_names = {
         id(parameter): f"{type(adapter).__name__}({adapter.hf_prefix}).{name}"
@@ -122,9 +110,7 @@ def save_native_adapter_dist_checkpoint(
 ) -> None:
     """Write adapters (+ optimizer/scheduler state) as one MCore dist checkpoint.
 
-    Collective across the default process group — every rank must call it.
-    Scheduler state and the iteration are rank-identical and land in the
-    checkpoint's ``common.pt``.
+    Collective — every rank must call it.
     """
     from megatron.core import dist_checkpointing
 
@@ -163,15 +149,10 @@ def load_native_adapter_dist_checkpoint(
 ) -> int | None:
     """Load an MCore dist adapter checkpoint, resharding to the current layout.
 
-    Collective — every rank must call it. Adapter tensors missing from the
-    checkpoint (e.g. a different ``--target-modules`` set) raise inside
-    ``dist_checkpointing.load`` rather than silently reinitializing; the
-    checkpoint is one collectively-validated unit, so there is no
-    per-rank-file consensus step as in the legacy format.
-
-    Returns the saved iteration when optimizer state was restored, else None
-    (matching the legacy resume contract: no optimizer state means training
-    restarts its schedule, keeping fp32 main params aligned via
+    Collective — every rank must call it. Incompatible contents (e.g. a
+    different ``--target-modules`` set) raise instead of silently
+    reinitializing. Returns the saved iteration when optimizer state was
+    restored, else None (fresh schedule; fp32 mains realigned via
     ``reload_model_params``).
     """
     from megatron.core import dist_checkpointing
@@ -271,14 +252,10 @@ def adapter_load_plan(
 ) -> AdapterLoadPlan:
     """Preflight a legacy adapter state dict without mutating parameters.
 
-    Two legacy key schemes are readable. Shards from earlier revisions of this
-    branch qualified every key as ``_miles_model_chunks.{chunk}.{name}`` and
-    map back exactly. Older flat shards keyed parameters by their unqualified
-    chunk-local names; a flat key is accepted whenever it identifies exactly
-    one parameter across all current chunks, and a key shared by multiple
-    virtual-pipeline chunks is rejected as ambiguous — flat writers overwrote
-    those values and there is no safe way to reconstruct which chunk the
-    surviving tensor came from.
+    Reads both legacy schemes: ``_miles_model_chunks.{chunk}.{name}`` keys map
+    back exactly; flat keys are accepted when they identify exactly one
+    parameter, and VPP-shared names are rejected as ambiguous (flat writers
+    overwrote them).
     """
     expected: dict[str, nn.Parameter] = {}
     ambiguous: set[str] = set()

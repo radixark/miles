@@ -13,11 +13,15 @@ import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from tests.ci.ci_register import register_cuda_ci
+from tests.fast.miles_plugins.lora.test_native_dist_checkpoint import _build_chunk, _fill_chunk
 
 from miles_plugins.lora import checkpointing
-from tests.fast.miles_plugins.lora.test_native_dist_checkpoint import (
-    _build_chunk,
-    _fill_chunk,
+
+register_cuda_ci(
+    est_time=120,
+    suite="stage-b-2-gpu-h200",
+    labels=["lora-native"],
 )
 
 _LR = 0.05

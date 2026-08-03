@@ -59,8 +59,6 @@ def _convert_to_hf_core(args, model_name, name, param):
     elif "kimivl" in model_name:
         converted_named_tensors = convert_kimivl_to_hf(args, name, param)
     elif "kimi_k25" in model_name or "kimik25" in model_name:
-        # KimiK25Config lowercases to "kimik25config"; the underscore spelling
-        # covers callers that pass the HF model_type instead.
         converted_named_tensors = convert_kimi_k25_to_hf(args, name, param)
     else:
         raise ValueError(f"Unsupported model: {model_name}")
