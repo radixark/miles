@@ -1085,3 +1085,31 @@ class TestStartAndStopCells:
         await manager.stop_cells(["engine-0"])
 
         assert manager.get_worker_addrs("engine-1-0")["primary"] is not None
+
+
+class TestSuspendedCellInfos:
+    async def test_a_suspended_cell_is_still_described(self, fake_ray_cluster: FakeRayCluster):
+        """The api server must still list a suspended cell, or it could never be resumed."""
+        manager = await _launch([_make_spec("engine", num_cells=2)])
+        await manager.stop_cells(["engine-0"])
+
+        infos = manager.get_cell_infos(pool_ids=["engine"])
+
+        assert sorted(infos) == ["engine-0", "engine-1"]
+        assert not infos["engine-0"].alive
+        assert infos["engine-1"].alive
+
+    async def test_the_meta_of_a_suspended_cell_is_still_known(self, fake_ray_cluster: FakeRayCluster):
+        """Meta comes from the spec, so suspending a cell must not make it unidentifiable."""
+        spec = _make_spec("engine").model_copy(update={"meta": lambda ctx: {"model_id": "default"}})
+        manager = await _launch([spec])
+        await manager.stop_cells(["engine-0"])
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].meta == {"model_id": "default"}
+
+    async def test_a_suspended_cell_reports_no_workers(self, fake_ray_cluster: FakeRayCluster):
+        """Its actors are gone, so anything reading worker names off it must get an empty list."""
+        manager = await _launch([_make_spec("engine")])
+        await manager.stop_cells(["engine-0"])
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].worker_names == []
