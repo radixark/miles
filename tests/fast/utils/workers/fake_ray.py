@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import itertools
+import time
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -16,11 +18,14 @@ class FakeRayObjectRef:
     method: str
     value: Any = None
     error: BaseException | None = None
+    hang_seconds: float | None = None
 
     def __await__(self):
         return self._resolve_async().__await__()
 
     async def _resolve_async(self) -> Any:
+        if self.hang_seconds is not None:
+            await asyncio.sleep(self.hang_seconds)
         return self.resolve()
 
     def resolve(self) -> Any:
@@ -54,6 +59,7 @@ class FakeRayActorHandle:
     options: dict[str, Any]
     node_ip: str
     failing_methods: dict[str, BaseException] = field(default_factory=dict)
+    hanging_methods: dict[str, float] = field(default_factory=dict)
     killed: bool = False
 
     def __getattr__(self, name: str) -> FakeRayActorMethod:
@@ -91,6 +97,8 @@ class FakeRayModule:
     def get(self, ref: FakeRayObjectRef, timeout: float | None = None) -> Any:
         self.cluster.resolved_refs.append(ref.method)
         self.cluster.get_timeouts.append(timeout)
+        if ref.hang_seconds is not None:
+            time.sleep(ref.hang_seconds)
         return ref.resolve()
 
     def kill(self, handle: FakeRayActorHandle, no_restart: bool = False) -> None:
@@ -157,6 +165,7 @@ class FakeRayCluster:
             method=method,
             value=self._compute_value(handle=handle, method=method, kwargs=kwargs),
             error=handle.failing_methods.get(method, self.method_errors.get(method)),
+            hang_seconds=handle.hanging_methods.get(method),
         )
 
     def calls_of(self, method: str) -> list[FakeRayActorCall]:
