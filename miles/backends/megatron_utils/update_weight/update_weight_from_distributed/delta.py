@@ -19,6 +19,7 @@ import zstandard
 from tqdm import tqdm
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils import async_utils
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
@@ -59,7 +60,6 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self.rollout_engines: Sequence[SGLangApiClient] | None = None
-        self._connection_stale: bool = False
         self.delta_dir = args.update_weight_disk_dir
         os.makedirs(self.delta_dir, exist_ok=True)
         self.delta_encoding = args.update_weight_delta_encoding
@@ -81,12 +81,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             quantization_config=quantization_config,
             is_lora=is_lora,
         )
-
-    def is_rollout_engines_fresh(self) -> bool:
-        return self.rollout_engines is not None and not self._connection_stale
-
-    def mark_engine_connection_stale(self) -> None:
-        self._connection_stale = True
+        self.conn_status = ConnStatusManager()
 
     def connect_rollout_engines(
         self,
@@ -98,7 +93,6 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         # uses isn't needed either — the engine-side apply is serialized by a per-host flock
         # behind /pull_weights.
         self.rollout_engines = rollout_engines
-        self._connection_stale = False
         self._group_name = "miles-disk-delta"
 
     @property
