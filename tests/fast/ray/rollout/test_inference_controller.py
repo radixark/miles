@@ -1,3 +1,4 @@
+import asyncio
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,8 +8,10 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import inference_controller as inference_controller_module
 from miles.ray.rollout.inference_controller import InferenceController, _compute_server_cell_meta_from_info
+from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
+from miles.utils.context_lock import ContextLock
 from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import WorkerMetaContext
 
@@ -67,10 +70,15 @@ class _RecordingServer:
         self.calls.append(("remove", cell_id))
         del self.server_cells[cell_id]
 
+    async def wait_expected_num_cells(self) -> None:
+        return None
+
 
 def _make_controller(servers: dict) -> InferenceController:
     controller = InferenceController.__new__(InferenceController)
+    controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False)
     controller.servers = servers
+    controller.context_lock = ContextLock("InferenceController")
     return controller
 
 
@@ -186,7 +194,9 @@ class _FakeWorkerProvider:
 def _patch_init(
     monkeypatch: pytest.MonkeyPatch, *, provider: _FakeWorkerProvider, servers: dict[str, _RecordingServer]
 ) -> None:
-    async def _fake_create_rollout_servers(args: Namespace) -> dict[str, _RecordingServer]:
+    async def _fake_create_rollout_servers(
+        args: Namespace, *, context_lock: ContextLock
+    ) -> dict[str, _RecordingServer]:
         return servers
 
     monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
@@ -270,3 +280,60 @@ class TestEngineMetaContract:
             update_weights=True,
             workers_hash="pseudo-hash-0",
         )
+
+
+class TestUpdateWeightsLockWindow:
+    @pytest.mark.asyncio
+    async def test_the_lock_is_held_from_start_until_end_update_weights(self):
+        """start_update_weights opens a lock window that only end_update_weights closes."""
+        controller = _make_controller({})
+
+        info = await controller.start_update_weights()
+        assert controller.context_lock.locked
+
+        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        assert not controller.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_reconcile_waits_while_the_update_weights_window_is_open(self):
+        """A concurrent reconcile must not mutate the engine set mid weight update."""
+        controller = _make_controller({})
+        info = await controller.start_update_weights()
+
+        reconcile_task = asyncio.create_task(controller._reconcile("miles-router-0-0", None))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not reconcile_task.done()
+
+        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        await reconcile_task
+
+    @pytest.mark.asyncio
+    async def test_a_plain_locked_call_does_not_leave_the_lock_held(self):
+        """Ordinary controller methods release the lock when they return."""
+        controller = _make_controller({})
+        await controller.prepare_eval()
+        assert not controller.context_lock.locked
+
+
+class TestServersShareTheControllerLock:
+    @pytest.mark.asyncio
+    async def test_reconcile_can_drive_the_server_it_owns(self):
+        """The controller lock is the very lock its servers require, so reconcile works end to end."""
+        controller = _make_controller({})
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace(), context_lock=controller.context_lock)
+        controller.servers = {"default": srv}
+        info = _make_cell_info()
+
+        await controller._reconcile(info.cell_id, None)
+        assert srv.server_cells == {}
+
+    @pytest.mark.asyncio
+    async def test_a_server_holding_a_foreign_lock_is_rejected(self):
+        """A server wired up with its own lock instead of the controller's is a wiring bug."""
+        controller = _make_controller({})
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace(), context_lock=ContextLock("InferenceController"))
+        controller.servers = {"default": srv}
+
+        with pytest.raises(AssertionError, match="must be called with"):
+            await controller.offload()
