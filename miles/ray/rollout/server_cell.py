@@ -95,6 +95,7 @@ class ServerCell:
                     conditions=[
                         CellCondition.allocated(TriState.TRUE),
                         CellCondition.from_health_checker_status(self._health_checker.status),
+                        CellCondition.serving(TriState.TRUE if self.is_serving else TriState.FALSE),
                     ],
                 )
 
@@ -122,6 +123,10 @@ class ServerCell:
     @property
     def is_pending_weights(self) -> bool:
         return isinstance(self._state, StatePendingWeights)
+
+    @property
+    def is_serving(self) -> bool:
+        return isinstance(self._state, StateServing)
 
     @property
     def addr_info(self) -> CellAddrInfo:

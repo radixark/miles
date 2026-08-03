@@ -196,6 +196,20 @@ class TestPatchCell:
         assert cell.resume_calls == 0
 
     @pytest.mark.asyncio
+    async def test_patch_with_empty_spec_does_not_suspend_or_resume(
+        self, actor_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A spec that omits suspend carries no instruction, so the cell must be left exactly as it was."""
+        cell = actor_handler.add("actor-0", phase="Running")
+
+        resp = await async_client.patch("/api/v1/cells/actor-0", json={"spec": {}})
+
+        assert resp.status_code == 200
+        assert (cell.suspend_calls, cell.resume_calls) == (0, 0)
+        assert resp.json()["spec"]["suspend"] is False
+        assert resp.json()["status"]["phase"] == "Running"
+
+    @pytest.mark.asyncio
     async def test_patch_not_found_returns_k8s_status(self, async_client: httpx.AsyncClient) -> None:
         resp = await async_client.patch("/api/v1/cells/nonexistent", json={"spec": {"suspend": True}})
         assert resp.status_code == 404
@@ -273,6 +287,7 @@ class TestStartApiServerRegistration:
 
         assert [handler.cell_type for handler in registry._handlers] == ["actor", "rollout"]
 
+
 class TestDynamicCells:
     @pytest.mark.asyncio
     async def test_a_cell_that_appears_after_startup_is_served(
@@ -324,3 +339,53 @@ class TestInjectFault:
         resp = await async_client.post("/api/v1/cells/actor-0/inject-fault", json={"mode": "sigkill"})
 
         assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_inject_fault_uses_zero_sub_index_by_default(
+        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """The documented default targets worker zero, and a client omitting sub_index relies on it."""
+        rollout_handler.supports_inject_fault = True
+        rollout_handler.add("rollout-engine-0")
+
+        resp = await async_client.post("/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "exit"})
+
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        assert rollout_handler.injected == [("rollout-engine-0", FailureMode.EXIT, 0)]
+
+    @pytest.mark.asyncio
+    async def test_inject_fault_rejects_missing_or_unknown_mode(
+        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """An unrecognised failure mode must be refused by the schema rather than forwarded to the cell."""
+        rollout_handler.supports_inject_fault = True
+        rollout_handler.add("rollout-engine-0")
+
+        missing = await async_client.post("/api/v1/cells/rollout-engine-0/inject-fault", json={})
+        unknown = await async_client.post("/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "nuke"})
+
+        assert (missing.status_code, unknown.status_code) == (422, 422)
+        assert rollout_handler.injected == []
+
+
+class TestRequestValidation:
+    @pytest.mark.asyncio
+    async def test_invalid_write_bodies_return_422_without_side_effects(
+        self, actor_handler: MockHandler, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """Unknown fields must be refused outright, so a typo cannot silently half-apply a write."""
+        cell = actor_handler.add("actor-0", phase="Running")
+        rollout_handler.supports_inject_fault = True
+        rollout_handler.add("rollout-engine-0")
+
+        patch_resp = await async_client.patch(
+            "/api/v1/cells/actor-0", json={"spec": {"suspend": True, "gracePeriod": 5}}
+        )
+        inject_resp = await async_client.post(
+            "/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "sigkill", "subIndex": 1}
+        )
+
+        assert (patch_resp.status_code, inject_resp.status_code) == (422, 422)
+        assert (cell.suspend_calls, cell.resume_calls) == (0, 0)
+        assert rollout_handler.injected == []
