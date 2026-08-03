@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 import ray
@@ -224,3 +224,25 @@ def filter_keys(d: dict[str, Any], interest_keys: Sequence[str]) -> dict[str, An
     except Exception:
         logger.error(f"filter_keys d.keys={list(d)} {interest_keys=}", exc_info=True)
         raise
+
+
+class SimpleTicker:
+    def __init__(self, fn: Callable[[], Awaitable[None]], *, interval_seconds: float):
+        self._fn = fn
+        self._interval_seconds = interval_seconds
+        self._task = asyncio.create_task(self._loop())
+
+    async def dispose(self) -> None:
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+
+    async def _loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._interval_seconds)
+            try:
+                await self._fn()
+            except Exception:
+                logger.exception(f"Ticking {self._fn} failed; retrying")

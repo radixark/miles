@@ -1,8 +1,9 @@
+import asyncio
 import logging
 
 import pytest
 
-from miles.utils.misc import NodeProbeMixin, filter_keys
+from miles.utils.misc import NodeProbeMixin, SimpleTicker, filter_keys
 
 
 class TestFilterKeys:
@@ -55,3 +56,52 @@ class TestNodeProbeMixin:
         uuids = NodeProbeMixin._get_gpu_uuids([0, 1, 2])
         assert len(uuids) == 3
         assert all(uuid is None or isinstance(uuid, str) for uuid in uuids)
+
+
+async def _append(calls: list[int]) -> None:
+    calls.append(1)
+
+
+class TestSimpleTicker:
+    async def test_it_keeps_calling_its_function(self):
+        """The ticked work only makes progress while the loop keeps coming back."""
+        calls: list[int] = []
+
+        ticker = SimpleTicker(lambda: _append(calls), interval_seconds=0.0)
+        await asyncio.sleep(0.02)
+        await ticker.dispose()
+
+        assert len(calls) > 1
+
+    async def test_it_survives_a_failing_call(self):
+        """A raising sweep must not silently kill the loop for every later round."""
+        calls: list[int] = []
+
+        async def _boom() -> None:
+            calls.append(1)
+            raise RuntimeError("tick exploded")
+
+        ticker = SimpleTicker(_boom, interval_seconds=0.0)
+        await asyncio.sleep(0.02)
+        await ticker.dispose()
+
+        assert len(calls) > 1
+
+    async def test_dispose_stops_the_loop(self):
+        """A surviving loop would keep working after its owner is gone."""
+        calls: list[int] = []
+
+        ticker = SimpleTicker(lambda: _append(calls), interval_seconds=0.0)
+        await asyncio.sleep(0.02)
+        await ticker.dispose()
+        calls_after_dispose = len(calls)
+        await asyncio.sleep(0.02)
+
+        assert len(calls) == calls_after_dispose
+
+    async def test_disposing_twice_is_harmless(self):
+        """Teardown paths overlap, so a second dispose must not raise."""
+        ticker = SimpleTicker(lambda: _append([]), interval_seconds=0.0)
+
+        await ticker.dispose()
+        await ticker.dispose()
