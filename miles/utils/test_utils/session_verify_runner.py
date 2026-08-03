@@ -65,7 +65,7 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
     "rm_type": "random",
     "custom_generate_function_path": "miles.utils.test_utils.session_verify_agent.generate",
     "custom_agent_function_path": "miles.utils.test_utils.session_verify_agent.run_agent",
-    "use_session_server": True,
+    "use_session_server": "v2",
     "debug_rollout_only": True,
     "ci_test": True,
     "colocate": True,

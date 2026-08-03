@@ -2,11 +2,11 @@
 Fixtures to test custom-generate-function
 """
 
+import copy
 import uuid
 from argparse import Namespace
 from contextlib import contextmanager
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -63,7 +63,7 @@ def extra_argv_for_variant(
         argv += ["--generate-tool-call-parser", generate_tool_call_parser]
     elif variant == "agentic_tool_call":
         argv += ["--custom-agent-function-path", custom_agent_function_path]
-        argv += ["--use-session-server", "--tito-model", "qwen3"]
+        argv += ["--use-session-server", "v2", "--tito-model", "qwen3"]
 
     return argv
 
@@ -237,21 +237,9 @@ def with_session_server(
     # caller's per-port map, where OpenAIEndpointTracer.create reads it from.
     instance_id = uuid.uuid4().hex
     args.session_server_instance_ids = {port: instance_id}
-    server_args = SimpleNamespace(
-        miles_router_timeout=30,
-        hf_checkpoint=args.hf_checkpoint,
-        chat_template_path=args.chat_template_path,
-        tito_model=args.tito_model,
-        use_rollout_routing_replay=args.use_rollout_routing_replay,
-        sglang_speculative_algorithm=args.sglang_speculative_algorithm,
-        # Sample assembly runs inside the server, so the R3 decode shape args
-        # must reach the server namespace (set them via args_kwargs BEFORE the
-        # server starts; assigning to the driver args afterwards has no effect).
-        num_layers=getattr(args, "num_layers", None),
-        moe_router_topk=getattr(args, "moe_router_topk", None),
-        save_debug_trajectory_data=getattr(args, "save_debug_trajectory_data", None),
-        session_server_instance_id=instance_id,
-    )
+    server_args = copy.deepcopy(args)
+    server_args.miles_router_timeout = 30
+    server_args.session_server_instance_id = instance_id
     session_server = SessionServer(server_args, backend_url=backend_url)
 
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
