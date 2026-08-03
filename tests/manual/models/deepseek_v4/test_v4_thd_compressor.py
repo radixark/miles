@@ -14,8 +14,8 @@ import pytest
 import torch
 
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
-    ThdLayout,
     CompressorInputCompact,
+    ThdLayout,
     compact_gather_index,
     compact_group_capacity,
     compressed_cu_seqlens,
