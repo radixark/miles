@@ -16,9 +16,9 @@ Supports:
                           accumulate a visible delta-W, which reads as "not learning".
 
 Train modes:
-  - full   Full-parameter GRPO. Optimizer state streams through node-local NVMe
-           (--optimizer-state-nvme-dir, GPU-stepped, one bucket resident) and the
-           paused training actor spills to disk via torch_memory_saver.
+  - full   Full-parameter GRPO. The paused training actor (params, grads,
+           optimizer state) spills to node-local NVMe via torch_memory_saver
+           (--offload-train-target disk).
   - lora   LoRA r=32 all-linear. Adapter-only weight sync; plain fp32 Adam;
            engine serves the adapter natively (triton backend, virtual experts).
 
@@ -84,7 +84,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     lr: float | None = None
     rollout_max_response_len: int = 4096
     sglang_context_length: int = 8192
-    optimizer_nvme_dir: str = "/tmp/opt_offload"
     train_offload_disk_dir: str = "/tmp/train_offload"
     colocate: bool = field(init=False)
     actor_num_nodes: int = field(init=False)

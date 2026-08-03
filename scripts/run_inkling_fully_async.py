@@ -2,8 +2,9 @@
 
 Disaggregated split on 12 x 4 GPU (GB300): 8 training nodes + 4 dedicated
 rollout nodes (one 16-GPU sglang engine). Generation runs continuously in a
-background worker (examples/fully_async) and training consumes finished
-groups; weights are broadcast to the paused engine between versions.
+background worker (miles/rollout/fully_async_rollout.py, selected by
+--fully-async) and training consumes finished groups; weights are broadcast
+to the paused engine between versions.
 
 Example:
 
@@ -107,7 +108,7 @@ def _train(args: ScriptArgs):
         ckpt_args += f"--save {args.save_dir}/{args.run_id}/checkpoints --save-interval 10 "
 
     rollout_args = (
-        "--rollout-function-path fully_async_rollout.generate_rollout_fully_async "
+        "--fully-async "
         "--pause-generation-mode in_place "
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
         "--apply-chat-template "
@@ -145,8 +146,9 @@ def _train(args: ScriptArgs):
         "--use-distributed-optimizer "
         "--grad-reduce-in-bf16 "
         "--no-check-for-nan-in-loss-and-grad "
-        f"--optimizer-state-nvme-dir {args.optimizer_nvme_dir} "
-        "--optimizer-state-nvme-chunk-mb 256 "
+        "--stream-optimizer-state-to-disk "
+        f"--offload-train-disk-dir {args.optimizer_nvme_dir} "
+        "--offload-train-disk-chunk-mb 256 "
     )
 
     perf_args = _get_parallel_config(args)
@@ -196,9 +198,9 @@ def _train(args: ScriptArgs):
         "NCCL_MNNVL_ENABLE": "1",
         "NCCL_NVLS_ENABLE": "0",
         "NCCL_RAS_ENABLE": "0",
-        "PYTHONPATH": f"{U.repo_base_dir}/examples/fully_async",
+        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
+        "PYTHONPATH": args.megatron_path,
     }
-    extra_env_vars["PYTHONPATH"] = f"{args.megatron_path}:{extra_env_vars['PYTHONPATH']}"
 
     train_args = (
         f"{ckpt_args} "
