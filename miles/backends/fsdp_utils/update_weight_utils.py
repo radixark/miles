@@ -10,6 +10,8 @@ import torch
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 
+from miles.backends.training_utils.conn_status import ConnStatusManager
+
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions  # type: ignore[import]
 except ImportError:
@@ -62,6 +64,7 @@ class UpdateWeight(abc.ABC):
         self.args = args
         self.model = model
         self.weight_version = 0
+        self.conn_status = ConnStatusManager()
 
     @abc.abstractmethod
     def connect_rollout_engines(
