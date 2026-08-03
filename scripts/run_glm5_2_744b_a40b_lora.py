@@ -33,6 +33,19 @@ Usage:
   python scripts/run_glm5_2_744b_a40b_lora.py train   --model-name GLM-5.2_5layer --task dapo-math \\
       --rollout-max-response-len 4096 --num-gpus-per-node 4
 
+The full 744B model does not fit on one node: the bf16 base is ~1403 GiB against 1123 GiB
+of HBM on 8x H200. Shard it with --actor-num-nodes (EP spans the whole world, TP stays
+intra-node) and serve the rollout from the fp8 checkpoint. Ray must already be running
+across every node, so set MILES_SCRIPT_EXTERNAL_RAY=1 -- execute_train only ever starts a
+single-node head of its own:
+  MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_glm5_2_744b_a40b_lora.py train \\
+      --model-name GLM-5.2 --actor-num-nodes 4 --num-gpus-per-node 8 --fp8-rollout \\
+      --dsa-attention-backend megatron
+--dsa-attention-backend megatron is deliberate above: on a 4-node (DP 4) LoRA run the
+tilelang backward returned non-finite gradients on every trainable adapter while its
+forward stayed healthy, and switching to the megatron backend on an otherwise identical
+config produced finite gradients. The tilelang default is only exercised at DP 1 today.
+
 fp8 rollout (train stays bf16; sglang serves <hf_checkpoint>_fp8 via --sglang-config; LoRA
 adapters still sync per step, only the base-weight sync is skipped). The rollout checkpoint
 (<hf_checkpoint>_fp8, e.g. the official GLM-5.2 fp8 release) must already exist:
@@ -93,6 +106,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # performance
     num_gpus_per_node: int = 4
+    # The full 744B bf16 base is ~1403 GiB, so it only fits sharded across >1 node
+    # (8x H200 = 1123 GiB). Expert parallelism spans the whole world; TP stays
+    # intra-node so the TP all-reduce keeps to NVLink.
+    actor_num_nodes: int = 1
 
     # LoRA
     lora_rank: int = 16
@@ -120,6 +137,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # rollout engine
     rollout_num_gpus_per_engine: int = 2  # rollout tp=2
+    # GPUs per fp8 engine on the full model. Under colocate + LoRA sglang mirrors each GPU's
+    # weight shard into host RAM (enable_weights_cpu_backup), costing
+    # (fp8 ckpt / this) * gpus_per_node per node: 8 costs 704 GiB/node against the 744B fp8
+    # ckpt, 16 halves that. Raise it when the Megatron bridge load pushes a node past its
+    # cgroup limit; capped at the world size, so 8 is a no-op on a single node.
+    fp8_rollout_gpus_per_engine: int = 8
     sglang_mem_fraction_static: float = 0.5
     # sglang's own default (csgmv) crashes the DSA MoE-LoRA rollout under dp-attention
     sglang_lora_backend: str = "triton"
@@ -147,7 +170,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
-    """Single-node MoE layout: TP = EP = num_gpus_per_node, DP1 (mirrors run_glm5_744b_a40b).
+    """MoE layout: TP = num_gpus_per_node (intra-node), EP = the whole world, ETP 1.
+
+    Megatron requires EP * ETP == TP * DP; with PP = CP = 1 that holds for any node
+    count, and at actor_num_nodes 1 this reproduces the previous TP = EP = ngpu, DP1
+    layout exactly.
 
     The DSA kernel backend dictates the query layout; both forbid --use-dynamic-batch-size,
     hence --micro-batch-size 1: megatron needs bshd (the unfused megatron-core
@@ -155,10 +182,11 @@ def _get_parallel_config(args: ScriptArgs) -> str:
     cu_seqlens).
     """
     ngpu = args.num_gpus_per_node
+    world_size = args.actor_num_nodes * ngpu
     qkv_format = "thd" if args.dsa_attention_backend == "tilelang" else "bshd"
     return (
         f"--tensor-model-parallel-size {ngpu} --sequence-parallel --pipeline-model-parallel-size 1 "
-        f"--context-parallel-size 1 --expert-model-parallel-size {ngpu} --expert-tensor-parallel-size 1 "
+        f"--context-parallel-size 1 --expert-model-parallel-size {world_size} --expert-tensor-parallel-size 1 "
         f"--qkv-format {qkv_format} --micro-batch-size 1 "
     )
 
@@ -252,11 +280,17 @@ def _train(args: ScriptArgs):
 
     if _is_full:
         # mirrors run_glm5_744b_a40b.py; bf16 ~1488GB needs >=~22 GPUs/engine while fp8
-        # fits engine=min(8, ngpu) on one node
+        # fits engine=min(fp8_rollout_gpus_per_engine, world)
         _fp8_full = args.fp8_rollout and args.model_name == "GLM-5.2"
-        _eng = min(8, args.num_gpus_per_node) if _fp8_full else args.rollout_num_gpus_per_engine
+        _eng = (
+            min(args.fp8_rollout_gpus_per_engine, args.actor_num_nodes * args.num_gpus_per_node)
+            if _fp8_full
+            else args.rollout_num_gpus_per_engine
+        )
         _decode = "flashmla_kv" if _fp8_full else "flashmla_sparse"
-        _cg = 256 if _fp8_full else 64
+        # 64 rather than 256: capturing the extra shapes costs HBM the colocated full-model
+        # step needs, and the graph only has to cover rollout_batch_size * n_samples_per_prompt.
+        _cg = 64
         _kv = "--sglang-kv-cache-dtype fp8_e4m3 " if _fp8_full else ""
         sglang_args = (
             f"--rollout-num-gpus-per-engine {_eng} --sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
@@ -264,8 +298,11 @@ def _train(args: ScriptArgs):
             "--sglang-moe-dense-tp-size 1 --sglang-enable-dp-lm-head "
             f"--sglang-attention-backend nsa --sglang-nsa-decode-backend {_decode} "
             f"--sglang-nsa-prefill-backend flashmla_sparse --sglang-page-size 64 {_kv}"
-            f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests 512 "
-            f"--sglang-chunked-prefill-size {2048 * _eng} --sglang-watchdog-timeout 3600 "
+            # keep the running batch inside a captured graph, and ceiling the prefill chunk:
+            # under colocate the engine shares HBM with the trainer, and 2048 * _eng is a
+            # 32k-token chunk once the engine spans two nodes.
+            f"--sglang-cuda-graph-max-bs {_cg} --sglang-max-running-requests {_cg} "
+            f"--sglang-chunked-prefill-size {min(8192, 2048 * _eng)} --sglang-watchdog-timeout 3600 "
             "--sglang-moe-runner-backend triton --sglang-disable-shared-experts-fusion "
             # required: without it sglang miscounts the gate_up slices -> engine-init crash
             f"--sglang-max-lora-rank {args.lora_rank} "
@@ -287,13 +324,15 @@ def _train(args: ScriptArgs):
                 "    update_weights: true\n"
                 "    server_groups:\n"
                 "      - worker_type: regular\n"
-                f"        num_gpus: {args.num_gpus_per_node}\n"
+                # total GPUs for the group, not per engine: under --colocate the rollout
+                # spans the same world as the actor, split into world/_eng engines
+                f"        num_gpus: {args.actor_num_nodes * args.num_gpus_per_node}\n"
             )
         sglang_args += f"--sglang-config {sglang_config_path} "
 
     save_args = f"--save-interval 1 --save {load_save_path} "
 
-    misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --use-miles-router --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
+    misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --use-miles-router --actor-num-nodes {args.actor_num_nodes} --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
 
     wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
@@ -313,7 +352,11 @@ def _train(args: ScriptArgs):
             # GLM-5 DSA indexer uses interleaved RoPE; a mismatch garbles long sequences
             "INDEXER_ROPE_NEOX_STYLE": "0",
             "SGLANG_NSA_FORCE_MLA": "1",
-            # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True breaks torch_memory_saver
+            # The full-model step OOMs by a few hundred MiB while ~6 GiB sits reserved but
+            # unallocated, so make the allocator reclaim cached blocks before it grows the pool.
+            # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, the usual answer to that message,
+            # breaks torch_memory_saver.
+            "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8",
         },
         megatron_path=args.megatron_path,
     )
