@@ -25,7 +25,6 @@ _MODEL_ORG = "CharyZeng"
 def _args() -> ScriptArgs:
     return ScriptArgs(
         model_name="Inkling-Small-4layer",
-        train_mode="full",
         task="dapo_math",
         num_nodes=1,
         num_gpus_per_node=4,
