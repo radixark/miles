@@ -10,6 +10,7 @@ from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
 from miles.utils import dumper_utils
 from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
+from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,7 @@ def _compute_spec_inference_engine(
                 else []
             ),
             PortInfo(name="engine_info_bootstrap", static_port=12000, allow_dynamic=True),
+            PortInfo(name=GATE_PORT_NAME, static_port=13000, mode="master", allow_dynamic=True),
         ],
         env_var=lambda: envs,
         scheduling=scheduling,
