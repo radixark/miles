@@ -143,13 +143,23 @@ def _gather_with_stride(
     return torch.cat(interleaved, dim=partition_dim)
 
 
+def is_routed_expert_param(name: str) -> bool:
+    """Whether a Megatron param name belongs to the routed (expert-parallel) experts.
+
+    Routed experts live under ".experts.", but shared experts may nest an inner
+    ModuleList (e.g. Inkling's "mlp.shared_experts.experts.N.") whose params are
+    regular-TP sharded and EP-replicated, so they must not match.
+    """
+    return ".experts." in name and ".shared_experts." not in name
+
+
 def _is_unmarked_grouped_expert_weight(name: str, param: torch.nn.Parameter) -> bool:
     """TEGroupedLinear never marks its per-expert weight0..weightN, so Megatron fills in
     the defaults (tensor_model_parallel=False, partition_dim=-1) and the tensor claims to
     be unsharded. It is expert-TP sharded whenever etp > 1, so the gather must still run.
     """
     return (
-        ".experts." in name
+        is_routed_expert_param(name)
         and ("linear_fc1.weight" in name or "linear_fc2.weight" in name)
         and not param.tensor_model_parallel
         and get_parallel_state().etp.size > 1
@@ -191,7 +201,7 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
     if not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(name, param):
         return param.data
 
-    if ".experts." in name and ".shared_experts." not in name:
+    if is_routed_expert_param(name):
         tp_size = get_parallel_state().etp.size
         tp_group = get_parallel_state().etp.group
     else:
@@ -236,7 +246,7 @@ def all_gather_params_async(
             handles.append(None)
         else:
             # Start async all_gather
-            if ".experts." in info.name and ".shared_experts." not in info.name:
+            if is_routed_expert_param(info.name):
                 tp_size = get_parallel_state().etp.size
                 tp_group = get_parallel_state().etp.group
             else:
@@ -416,7 +426,7 @@ def collect_named_tensors_for_weight_transfer(
         convert_to_global_name,
         translate_gpu_to_cpu,
     ):
-        if is_expert is None or is_expert == (".experts." in name):
+        if is_expert is None or is_expert == is_routed_expert_param(name):
             yield name, tensor
 
 

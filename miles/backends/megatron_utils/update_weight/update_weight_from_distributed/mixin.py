@@ -21,6 +21,7 @@ from ..common import (
     end_weight_update,
     get_atomic_update_groups,
     get_named_value_update_units,
+    is_routed_expert_param,
     weight_update_selector,
 )
 from ..hf_weight_iterator_base import HfWeightIteratorBase
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 def _is_expert_update_unit(update_unit: list[tuple[str, torch.Tensor]]) -> bool:
     assert update_unit, "Update unit must contain at least one param"
     name, _tensor = update_unit[0]
-    return ".experts." in name
+    return is_routed_expert_param(name)
 
 
 class DistBucketedWeightUpdateMixin:
@@ -177,7 +178,7 @@ class DistBucketedWeightUpdateMixin:
         atomic_update_groups = get_atomic_update_groups(self.args, self.model_name)
         update_units = get_named_value_update_units(named_tensors, atomic_update_groups)
         for unit in update_units:
-            assert len({".experts." in name for name, _tensor in unit}) == 1, [name for name, _tensor in unit]
+            assert len({is_routed_expert_param(name) for name, _tensor in unit}) == 1, [name for name, _tensor in unit]
         return [unit for unit in update_units if _is_expert_update_unit(unit) == is_expert]
 
     def _update_expert_bucket_weights(

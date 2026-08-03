@@ -17,6 +17,7 @@ from .common import (
     all_gather_params_async,
     get_atomic_update_groups,
     get_named_update_units,
+    is_routed_expert_param,
     named_params_and_buffers,
 )
 from .hf_weight_iterator_base import HfWeightIteratorBase
@@ -97,7 +98,7 @@ def _get_megatron_full_params(
     if ep_size > 1:
         handles = []
         for info, param in zip(megatron_local_param_infos, params, strict=False):
-            if ".experts." in info.name and ".shared_experts." not in info.name:
+            if is_routed_expert_param(info.name):
                 src_rank = (
                     info.src_rank
                     if info.src_rank in dist.get_process_group_ranks(get_parallel_state().ep.group)
@@ -139,7 +140,7 @@ def _get_megatron_local_param_info_buckets(
 
 
 def _get_param_full_size(info: ParamInfo) -> int:
-    if ".experts." in info.name:
+    if is_routed_expert_param(info.name):
         tp_size = get_parallel_state().etp.size
     else:
         tp_size = get_parallel_state().tp.size
