@@ -19,11 +19,11 @@ from torch import Tensor
 
 @dataclass
 class ThdLayout:
-    """How this rank's packed stream is laid out; ``None`` means the unpacked layout.
+    """How this rank's packed stream is laid out; ``None`` stands for the unpacked one.
 
-    Mirrors how Megatron hands ``PackedSeqParams`` down, but carries what only DSv4 knows:
-    the compaction products, filled in under CP where a compressed group can straddle the
-    split, and ``cu_seqlens_compressed`` once the compressor has run.
+    The first three fields come from the packed sequence parameters. The rest are filled in as
+    the forward runs: the compaction ones only under CP, where a compressed group can straddle
+    the split, and ``cu_seqlens_compressed`` once the compressor has grouped the stream.
     """
 
     cu_seqlens: Tensor
