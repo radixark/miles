@@ -9,8 +9,9 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient, wait_server_healthy
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
-from miles.ray.rollout.cell_state import CellState, StatePendingWeights, StateServing, StateUnknown
+from miles.ray.rollout.cell_state import CellAddrInfo, CellState, StatePendingWeights, StateServing, StateUnknown
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
@@ -48,9 +49,13 @@ class ServerCell:
         return isinstance(self._state, StatePendingWeights)
 
     @property
-    def server_url(self) -> str:
+    def addr_info(self) -> CellAddrInfo:
         assert isinstance(self._state, (StatePendingWeights, StateServing))
-        return self._state.server_url
+        return self._state.addr_info
+
+    @property
+    def server_url(self) -> str:
+        return self.addr_info.server_url
 
     @property
     def api_client(self) -> SGLangApiClient:
@@ -62,14 +67,10 @@ class ServerCell:
                 "external rollout address allocation was removed and a new implementation is coming"
             )
 
-        provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
-        master_addrs = await provider.get_addrs(worker_name=self.meta.worker_name)
-        primary = master_addrs["primary"]
-        server_url = build_server_url(host=primary.host, port=primary.port)
-        bootstrap_port = x.port if (x := master_addrs.get("disaggregation_bootstrap")) else None
+        addr_info = await self._compute_addr_info()
 
         await wait_server_healthy(
-            server_url=server_url,
+            server_url=addr_info.server_url,
             api_key=self.meta.sglang_api_key,
         )
 
@@ -77,11 +78,11 @@ class ServerCell:
             await self.check_weights(action="snapshot", allow_quant_error=False, selector="all", skip_list=None)
 
         if self.meta.needs_offload:
-            api_client = SGLangApiClient(server_url=server_url)
+            api_client = SGLangApiClient(server_url=addr_info.server_url)
             await api_client.release_memory_occupation()
             await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
-        self._mark_pending_weights(server_url=server_url, bootstrap_port=bootstrap_port)
+        self._mark_pending_weights(addr_info)
 
         if not self.meta.update_weights or self.args.debug_rollout_only:
             await self.mark_weights_ready()
@@ -93,7 +94,7 @@ class ServerCell:
             worker_url=self.server_url,
             worker_type=self.meta.worker_type,
             use_legacy_api=use_legacy_router_api(self.args),
-            bootstrap_port=self._state.bootstrap_port,
+            bootstrap_port=self._state.addr_info.bootstrap_port,
         )
 
         self._mark_serving()
@@ -115,15 +116,22 @@ class ServerCell:
 
         self._change_state("dispose", (StateUnknown, StatePendingWeights, StateServing), StateUnknown())
 
-    def _mark_pending_weights(self, server_url: str, bootstrap_port: int | None) -> None:
-        self._change_state(
-            "mark_pending_weights",
-            StateUnknown,
-            StatePendingWeights(server_url=server_url, bootstrap_port=bootstrap_port),
+    async def _compute_addr_info(self) -> CellAddrInfo:
+        provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
+        master_addrs = await provider.get_addrs(worker_name=self.meta.worker_name)
+        primary = master_addrs["primary"]
+        gate = master_addrs[GATE_PORT_NAME]
+        return CellAddrInfo(
+            server_url=build_server_url(host=primary.host, port=primary.port),
+            bootstrap_port=x.port if (x := master_addrs.get("disaggregation_bootstrap")) else None,
+            gate_url=build_server_url(host=gate.host, port=gate.port),
         )
 
+    def _mark_pending_weights(self, addr_info: CellAddrInfo) -> None:
+        self._change_state("mark_pending_weights", StateUnknown, StatePendingWeights(addr_info=addr_info))
+
     def _mark_serving(self) -> None:
-        self._change_state("mark_serving", StatePendingWeights, StateServing(server_url=self.server_url))
+        self._change_state("mark_serving", StatePendingWeights, StateServing(addr_info=self.addr_info))
 
     # TODO: unify w/ trainer `change_state`
     def _change_state(

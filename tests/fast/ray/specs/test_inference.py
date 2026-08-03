@@ -257,7 +257,27 @@ class TestInferenceEnginePortSchema:
         assert ports["dist_init"].mode == "master"
         assert ports["dist_init"].allow_dynamic is True
         assert ports["dist_init"].num_consecutive == 33
-        assert [info.mode for name, info in ports.items() if name != "dist_init"] == ["per_worker"] * (len(ports) - 1)
+        assert {name for name, info in ports.items() if info.mode == "per_worker"} == {
+            "primary",
+            "nccl",
+            "engine_info_bootstrap",
+        }
+
+    def test_the_gate_port_is_allocated_once_per_cell(self, tmp_path):
+        """The out-of-band launch gate lives on the cell's rank-0 engine, like dist_init."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)
+
+        ports = {info.name: info for info in specs_inference_engine(args)[0].port_infos}
+
+        assert ports["gate"].mode == "master"
+        assert ports["gate"].allow_dynamic is True
+        assert ports["gate"].num_consecutive == 1
 
     def test_only_prefill_engines_get_a_disaggregation_bootstrap_port(self, tmp_path):
         """The bootstrap port belongs to the prefill side alone."""
@@ -280,12 +300,14 @@ class TestInferenceEnginePortSchema:
             "nccl",
             "disaggregation_bootstrap",
             "engine_info_bootstrap",
+            "gate",
         ]
         assert [info.name for info in decode.port_infos] == [
             "primary",
             "dist_init",
             "nccl",
             "engine_info_bootstrap",
+            "gate",
         ]
 
 
