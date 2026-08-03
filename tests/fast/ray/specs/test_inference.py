@@ -8,7 +8,9 @@ from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
+from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
+    _compute_router_primary_port_info,
     _compute_spec_router,
     compute_engine_pool_ids,
     compute_router_pool_id,
@@ -46,6 +48,30 @@ def _make_router_ctx(*, port: int = 20000, prometheus_port: int = 4001) -> Launc
         spec_addrs={},
         gpu_ids=[],
     )
+
+
+class TestRouterPortPinning:
+    def test_an_unpinned_router_may_move_off_its_preferred_port(self):
+        """Nothing outside the job needs to name it, so a busy 8000 must not fail the launch."""
+        port_info = _compute_router_primary_port_info(make_args(sglang_router_port=None), model_idx=0)
+
+        assert (port_info.static_port, port_info.allow_dynamic) == (8000, True)
+
+    def test_a_pinned_router_stays_on_the_port_it_was_given(self):
+        """Launchers pin it so a firewall rule or a dial-back host can name the port in advance;
+        drifting off it would leave those pointing at nothing."""
+        port_info = _compute_router_primary_port_info(make_args(sglang_router_port=31000), model_idx=0)
+
+        assert (port_info.static_port, port_info.allow_dynamic) == (31000, False)
+
+    def test_each_models_router_is_pinned_a_port_apart(self):
+        """Two models pinned to one port would race for the same socket."""
+        ports = [
+            _compute_router_primary_port_info(make_args(sglang_router_port=31000), model_idx=i).static_port
+            for i in range(2)
+        ]
+
+        assert ports == [31000, 31001]
 
 
 class TestComputeSpecRouterLaunchCommand:
@@ -309,6 +335,70 @@ class TestInferenceEnginePortSchema:
             "engine_info_bootstrap",
             "gate",
         ]
+
+
+class TestInferenceEngineGatedLaunch:
+    def test_the_launch_command_is_told_the_cells_own_gate_port(self, tmp_path, monkeypatch):
+        """An engine launched without its gate port would start ungated and ignore the release."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)
+        recorded: dict = {}
+
+        def _record(**kwargs) -> str:
+            recorded.update(kwargs)
+            return "launch-cmd"
+
+        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
+        (spec,) = specs_inference_engine(args)
+        spec.launch_command(_make_engine_ctx())
+
+        assert recorded["gated_launch_port"] == 13007
+
+    def test_each_node_of_a_multi_node_engine_is_numbered_within_its_own_cell(self, tmp_path, monkeypatch):
+        """node_rank is what tells sglang which member of its own two-node group a process is.
+        Numbering it globally would launch the second engine as ranks 2 and 3 of a two-node
+        group, and both engines would hang in dist_init with no error."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 16, "num_gpus_per_engine": 8}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=16, num_gpus_per_node=4)
+        recorded: list[int] = []
+
+        def _record(**kwargs) -> str:
+            recorded.append(kwargs["node_rank"])
+            return "launch-cmd"
+
+        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
+        (spec,) = specs_inference_engine(args)
+        for cell_index in range(2):
+            for worker_in_cell_index in range(2):
+                spec.launch_command(_make_engine_ctx(cell_index=cell_index, worker_in_cell_index=worker_in_cell_index))
+
+        assert recorded == [0, 1, 0, 1]
+
+
+def _make_engine_ctx(*, cell_index: int = 0, worker_in_cell_index: int = 0) -> LaunchCommandContext:
+    return LaunchCommandContext(
+        cell_index=cell_index,
+        worker_in_cell_index=worker_in_cell_index,
+        self_addrs=dict(
+            primary=HostAndPort(host="10.0.0.1", port=30000),
+            dist_init=HostAndPort(host="10.0.0.1", port=9000),
+            nccl=HostAndPort(host="10.0.0.1", port=10000),
+            engine_info_bootstrap=HostAndPort(host="10.0.0.1", port=12000),
+            gate=HostAndPort(host="10.0.0.1", port=13007),
+        ),
+        spec_addrs={},
+        gpu_ids=[0, 1],
+    )
 
 
 class TestEngineMetaApiKey:
