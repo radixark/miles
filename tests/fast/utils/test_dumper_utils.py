@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import torch
@@ -301,3 +301,75 @@ class TestCleanupDumpDir:
 
         mock_rmtree.assert_not_called()
         assert not dump_dir.exists()
+
+
+class TestConfigureSglang:
+    resolved_config = SimpleNamespace(models=[SimpleNamespace(num_server_cells=2)])
+
+    @staticmethod
+    def _make_args(tmp_path: Path) -> SimpleNamespace:
+        return SimpleNamespace(
+            dumper_enable=True,
+            dumper_inference=[],
+            dumper_dir=str(tmp_path),
+        )
+
+    @pytest.mark.asyncio
+    async def test_every_registered_engine_is_configured(self, tmp_path: Path) -> None:
+        """An engine that never receives the configure call silently produces no dumps."""
+        posted: list[str] = []
+
+        async def _post(url, body):
+            posted.append(url)
+
+        with (
+            patch(
+                "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
+                new=AsyncMock(return_value=["http://a:1", "http://b:2"]),
+            ),
+            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
+            patch("miles.utils.http_utils.post", new=_post),
+            patch("miles.utils.dumper_utils._cleanup_dump_dir"),
+        ):
+            await dumper_utils.configure_sglang(self._make_args(tmp_path))
+
+        assert posted == ["http://a:1/dumper/configure", "http://b:2/dumper/configure"]
+
+    @pytest.mark.asyncio
+    async def test_an_incomplete_router_roster_is_waited_out(self, tmp_path: Path) -> None:
+        """Configuration waits until every expected engine has registered."""
+        posted: list[str] = []
+
+        async def _post(url, body):
+            posted.append(url)
+
+        get_worker_urls = AsyncMock(side_effect=[[], ["http://a:1"], ["http://a:1", "http://b:2"]])
+
+        with (
+            patch(
+                "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
+                new=get_worker_urls,
+            ),
+            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
+            patch("miles.utils.http_utils.post", new=_post),
+            patch("miles.utils.dumper_utils._cleanup_dump_dir"),
+        ):
+            await dumper_utils.configure_sglang(self._make_args(tmp_path))
+
+        assert get_worker_urls.await_count == 3
+        assert posted == ["http://a:1/dumper/configure", "http://b:2/dumper/configure"]
+
+    @pytest.mark.asyncio
+    async def test_a_roster_that_never_fills_fails_loudly(self, tmp_path: Path) -> None:
+        """A partial router roster eventually reports the missing inference engine."""
+        with (
+            patch(
+                "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
+                new=AsyncMock(return_value=["http://a:1"]),
+            ),
+            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
+            patch("miles.utils.dumper_utils._cleanup_dump_dir"),
+            patch("miles.utils.dumper_utils._WORKER_REGISTRATION_TIMEOUT_SECONDS", 0.05),
+            pytest.raises(AssertionError, match="1/2 inference engines"),
+        ):
+            await dumper_utils.configure_sglang(self._make_args(tmp_path))

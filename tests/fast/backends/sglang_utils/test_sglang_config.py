@@ -54,6 +54,29 @@ class TestNumGpusPerEnginePrecedence:
         assert cfg.models[0].server_groups[0].num_gpus_per_engine == 2
 
 
+class TestNumServerCells:
+    def test_non_placeholder_engine_cells_are_counted(self, tmp_path):
+        """The server cell count includes every engine except placeholder reservations."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 4\n"
+            "      - worker_type: prefill\n"
+            "        num_gpus: 4\n"
+            "        num_gpus_per_engine: 2\n"
+            "      - worker_type: placeholder\n"
+            "        num_gpus: 4\n"
+            "        num_gpus_per_engine: 1\n",
+            rollout_num_gpus=16,
+        )
+
+        assert cfg.models[0].num_server_cells == 4
+
+
 class TestOverridesResolution:
     def test_an_explicit_model_path_override_is_not_replaced(self, tmp_path):
         """A group's own model_path override is parsed verbatim."""

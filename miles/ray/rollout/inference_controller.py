@@ -51,6 +51,8 @@ class InferenceController:
         dashboard_hooks.register_router(self.args)
         await wait_session_server_ready(self.args)
 
+        await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
+
     # -------------------------- rollout lifecycle hooks -----------------------------
 
     async def prepare_rollout(self, rollout_id):
