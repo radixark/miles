@@ -98,29 +98,31 @@ def assert_healing(ft_mode: FTTestMode, *, injector: FaultInjectorHandle, dump_d
         )
 
     if "rollout" in ft_mode.ft_components:
-        assert_rollout_healed_through_pending(injector)
+        assert_every_rollout_injection_recovered(injector)
 
 
-def assert_rollout_healed_through_pending(injector: FaultInjectorHandle) -> None:
-    history = injector.phase_history
-    outcomes = history.injection_outcomes(cell_type="rollout")
-    recovered = [outcome for outcome in outcomes if outcome.recovered]
-    unexplained = [outcome for outcome in outcomes if not outcome.recovered and not outcome.still_down]
+def assert_every_rollout_injection_recovered(injector: FaultInjectorHandle) -> None:
+    witness = injector.recovery_witness
+    num_injections: int = witness.num_injections(cell_type="rollout")
+    num_recoveries: int = witness.num_completed_recoveries(cell_type="rollout")
+    unfinished: dict[str, int] = witness.cells_with_unfinished_recovery(cell_type="rollout")
+    observed: dict[str, list[str]] = {
+        name: [state.value for state in states] for name, states in witness.states_of_cell_name.items()
+    }
 
-    assert not unexplained, (
-        f"Rollout healing witness failed: {len(unexplained)} injection(s) were followed by no "
-        f"Running -> Pending -> Running of the injected cell, yet the cell ended up Running "
-        f"({unexplained}; observed phases: {history.phases_of_cell_name})"
+    assert not unfinished, (
+        f"Rollout recovery witness failed: {unfinished} still had an accepted injection with no completed "
+        f"relaunch-and-serve cycle when training ended ({num_recoveries}/{num_injections} injection(s) "
+        f"recovered; observed states: {observed})"
     )
-    assert len(recovered) >= MIN_SOAK_HEALINGS, (
-        f"Rollout healing witness failed: only {len(recovered)} of {len(outcomes)} rollout injection(s) "
-        f"were paired with a Running -> Pending -> Running of the injected cell, need >= {MIN_SOAK_HEALINGS} "
-        f"(observed phases: {history.phases_of_cell_name})"
+    assert num_recoveries >= num_injections, (
+        f"Rollout recovery witness failed: only {num_recoveries} completed recovery(ies) for "
+        f"{num_injections} accepted injection(s) (observed states: {observed})"
     )
 
     print(
-        f"Rollout healing witness assertion passed: {len(recovered)} of {len(outcomes)} injection(s) "
-        f"were each paired with a Running -> Pending -> Running of the injected cell"
+        f"Rollout recovery witness assertion passed: {num_recoveries} completed relaunch-and-serve cycle(s) "
+        f"for {num_injections} accepted injection(s)"
     )
 
 
