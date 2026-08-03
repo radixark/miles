@@ -1209,6 +1209,79 @@ class TestStartAndStopCells:
         assert manager.get_worker_addrs("engine-1-0")["primary"] is not None
 
 
+class TestStartCellsRollback:
+    async def test_a_resume_that_fails_midway_leaves_the_cell_suspended(self, fake_ray_cluster: FakeRayCluster):
+        """A half-started cell that still looked alive would never be retried by the heal loop."""
+        manager = await _launch([_make_spec("engine")])
+        await manager.stop_cells(["engine-0"])
+
+        async def failing_alloc(self) -> None:
+            raise RuntimeError("no ports")
+
+        with pytest.raises(RuntimeError, match="no ports"):
+            with pytest.MonkeyPatch.context() as patched:
+                patched.setattr(
+                    "miles.utils.workers.ray_worker_manager._CommandActorManager.alloc_ports", failing_alloc
+                )
+                await manager.start_cells(["engine-0"])
+
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
+
+    async def test_a_resume_that_fails_midway_kills_the_actors_it_created(self, fake_ray_cluster: FakeRayCluster):
+        """Leaked actors keep holding their GPUs, so the next resume would find no capacity."""
+        manager = await _launch([_make_spec("engine")])
+        await manager.stop_cells(["engine-0"])
+
+        async def failing_post_setup(self) -> None:
+            raise RuntimeError("cannot render")
+
+        with pytest.raises(RuntimeError, match="cannot render"):
+            with pytest.MonkeyPatch.context() as patched:
+                patched.setattr(
+                    "miles.utils.workers.ray_worker_manager._CommandActorManager.post_setup", failing_post_setup
+                )
+                await manager.start_cells(["engine-0"])
+
+        assert [handle.killed for handle in fake_ray_cluster.handles] == [True, True]
+
+    async def test_the_resume_after_a_failed_one_starts_the_cell_for_real(self, fake_ray_cluster: FakeRayCluster):
+        """The whole point of rolling back is that the very next resume attempt is not skipped."""
+        manager = await _launch([_make_spec("engine")])
+        await manager.stop_cells(["engine-0"])
+
+        async def failing_alloc(self) -> None:
+            raise RuntimeError("no ports")
+
+        with pytest.raises(RuntimeError, match="no ports"):
+            with pytest.MonkeyPatch.context() as patched:
+                patched.setattr(
+                    "miles.utils.workers.ray_worker_manager._CommandActorManager.alloc_ports", failing_alloc
+                )
+                await manager.start_cells(["engine-0"])
+
+        await manager.start_cells(["engine-0"])
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
+        assert len(fake_ray_cluster.calls_of("run")) == 2
+
+    async def test_a_failed_start_rolls_back_the_siblings_of_the_failing_cell(self, fake_ray_cluster: FakeRayCluster):
+        """One request is one transaction, so no cell of it may survive half configured."""
+        spec = _make_spec("engine", num_cells=2)
+
+        async def failing_post_setup(self) -> None:
+            raise RuntimeError("cannot render")
+
+        manager = RayWorkerManager()
+        with pytest.raises(RuntimeError, match="cannot render"):
+            with pytest.MonkeyPatch.context() as patched:
+                patched.setattr(
+                    "miles.utils.workers.ray_worker_manager._CommandActorManager.post_setup", failing_post_setup
+                )
+                await manager.init([spec], {})
+
+        assert not any(info.alive for info in manager.get_cell_infos(pool_ids=["engine"]).values())
+
+
 class TestSuspendedCellInfos:
     async def test_a_suspended_cell_is_still_described(self, fake_ray_cluster: FakeRayCluster):
         """The api server must still list a suspended cell, or it could never be resumed."""
