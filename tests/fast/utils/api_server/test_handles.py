@@ -47,6 +47,7 @@ class TestActorCellHandle:
                     },
                     {"type": "Healthy", "status": "True", "reason": None, "message": None, "lastTransitionTime": None},
                 ],
+                "observedWorkersHash": None,
             },
         }
 
