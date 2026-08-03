@@ -84,16 +84,32 @@ def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
     exec_command(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 
 
-def fp8_cast_bf16(path_src, path_dst):
+def fp8_cast_bf16(path_src, path_dst, preserve_native_dspark_checkpoint=False):
     sentinel = Path(path_dst) / "model.safetensors.index.json"
     if sentinel.exists():
+        if preserve_native_dspark_checkpoint and not (Path(path_dst) / "dspark" / sentinel.name).exists():
+            raise ValueError(
+                f"Cannot fresh-split DSpark into existing checkpoint {path_dst}; "
+                "use retrofit_native_dspark_checkpoint instead."
+            )
         print(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
         return
 
+    preserve_dspark_arg = "--preserve-native-dspark-checkpoint " if preserve_native_dspark_checkpoint else ""
     exec_command(
         f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
         f"--input-fp8-hf-path {path_src} "
         f"--output-bf16-hf-path {path_dst} "
+        f"{preserve_dspark_arg}"
+    )
+
+
+def retrofit_native_dspark_checkpoint(path_src, path_dst):
+    exec_command(
+        f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
+        f"--input-fp8-hf-path {path_src} "
+        f"--output-bf16-hf-path {path_dst} "
+        "--retrofit-native-dspark-checkpoint"
     )
 
 

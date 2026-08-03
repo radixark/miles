@@ -22,6 +22,7 @@ import torch
 from sglang.srt.layers.quantization.fp8_utils import block_quant_dequant
 from tqdm import tqdm
 
+from miles.utils.dspark_checkpoint import propagate_dspark_subcheckpoint
 from miles.utils.mxfp8 import MXFP8_GROUP_SIZE
 from miles.utils.mxfp8 import mxfp8_quantize as quantize_mxfp8
 
@@ -51,6 +52,25 @@ def _strip_weight_suffix(weight_key: str) -> str:
     if not weight_key.endswith(".weight"):
         raise ValueError(f"Expected key ending with '.weight', got: {weight_key}")
     return weight_key[: -len(".weight")]
+
+
+def _add_fused_wqkv_a_aliases(module_names: set[str]) -> set[str]:
+    module_names = set(module_names)
+    for name in tuple(module_names):
+        if not name.endswith(".wq_a"):
+            continue
+        prefix = name[: -len(".wq_a")]
+        if f"{prefix}.wkv" in module_names:
+            module_names.add(f"{prefix}.wqkv_a")
+    return module_names
+
+
+def _add_dspark_stage_aliases(module_names: set[str]) -> set[str]:
+    module_names = _add_fused_wqkv_a_aliases(module_names)
+    module_names.update(
+        f"stages.{name.removeprefix('mtp.')}" for name in tuple(module_names) if name.startswith("mtp.")
+    )
+    return module_names
 
 
 def _is_source_block_fp8_ue8m0_checkpoint(cfg: dict) -> bool:
@@ -276,6 +296,7 @@ def convert_mxfp8(
     input_path = os.path.abspath(model_dir)
     output_path = os.path.abspath(save_dir)
     os.makedirs(output_path, exist_ok=True)
+    propagate_dspark_subcheckpoint(input_path, output_path)
     config_path = os.path.join(input_path, "config.json")
     with open(config_path) as f:
         cfg = json.load(f)
@@ -336,9 +357,8 @@ def convert_mxfp8(
         def natural_key(s):
             return [int(t) if t.isdigit() else t for t in re.findall(r"\d+|\D+", s)]
 
-        quantization_config["modules_to_not_convert"] = sorted(
-            list(set(result_collector.modules_to_not_convert)), key=natural_key
-        )
+        modules_to_not_convert = _add_dspark_stage_aliases(set(result_collector.modules_to_not_convert))
+        quantization_config["modules_to_not_convert"] = sorted(modules_to_not_convert, key=natural_key)
 
     config_path = os.path.join(input_path, "config.json")
     if os.path.exists(config_path):

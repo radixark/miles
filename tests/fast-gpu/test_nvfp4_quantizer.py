@@ -8,13 +8,14 @@ register_cuda_ci(
 )
 
 
+import json
 import os
 
 import pytest
 import safetensors
 import safetensors.torch
 import torch
-from tools.convert_hf_to_nvfp4 import convert_nvfp4
+from tools.convert_hf_to_nvfp4 import _augment_ignore_list, convert_nvfp4
 from tools.convert_hf_to_nvfp4 import quantize_nvfp4 as tool_quantize_nvfp4
 from tools.convert_hf_to_nvfp4 import should_quantize as tool_should_quantize_nvfp4
 from transformer_engine.pytorch.custom_recipes.quantization_ref_nvfp4 import NVFP4QuantizerRef
@@ -189,6 +190,114 @@ def test_nvfp4_hf_should_quantize_respects_extra_high_precision_layers_hf():
         weight,
         skip_weight_substrings=("mlp.experts.1",),
     )
+
+
+def test_nvfp4_hf_config_adds_dspark_stage_aliases_for_skipped_mtp_modules():
+    mtp_modules = [
+        "mtp.0.self_attn.wq_a",
+        "mtp.0.self_attn.wkv",
+        "mtp.0.main_proj",
+        "mtp.0.mlp.shared_experts.gate_proj",
+    ]
+
+    augmented = _augment_ignore_list(mtp_modules)
+
+    assert augmented == sorted(
+        mtp_modules
+        + [
+            "stages.0.self_attn.wq_a",
+            "stages.0.self_attn.wkv",
+            "mtp.0.self_attn.wqkv_a",
+            "stages.0.self_attn.wqkv_a",
+            "stages.0.main_proj",
+            "stages.0.mlp.shared_experts.gate_proj",
+        ]
+    )
+    assert not any(".mlp.experts" in name for name in augmented)
+
+
+def test_nvfp4_hf_config_adds_fused_wqkv_a_alias_only_for_complete_pair():
+    augmented = _augment_ignore_list(
+        [
+            "model.layers.0.self_attn.wq_a",
+            "model.layers.0.self_attn.wkv",
+            "model.layers.1.self_attn.wq_a",
+        ]
+    )
+
+    assert "model.layers.0.self_attn.wqkv_a" in augmented
+    assert "model.layers.1.self_attn.wqkv_a" not in augmented
+
+
+def test_nvfp4_hf_converter_uses_compact_bf16_moe_prefixes(tmp_path):
+    model_dir = tmp_path / "model"
+    save_dir = tmp_path / "converted"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"num_hidden_layers": 1}')
+
+    weights = {
+        f"model.layers.0.mlp.experts.{expert_idx}.{projection}.weight": torch.ones(
+            (1, NVFP4_GROUP_SIZE), dtype=torch.bfloat16
+        )
+        for expert_idx in range(128)
+        for projection in ("gate_proj", "up_proj", "down_proj")
+    }
+    weights["model.layers.0.input_layernorm.weight"] = torch.ones(NVFP4_GROUP_SIZE, dtype=torch.bfloat16)
+    safetensors.torch.save_file(weights, model_dir / "model.safetensors", metadata={"format": "pt"})
+
+    convert_nvfp4(
+        str(model_dir),
+        str(save_dir),
+        device="cpu",
+        num_layers_at_end_in_bf16=1,
+    )
+
+    expected_ignore = [
+        "model.layers.0.",
+        "model.layers.0.input_layernorm",
+        "model.layers.0.mlp.experts",
+    ]
+    config = json.loads((save_dir / "config.json").read_text())
+    assert config["quantization_config"]["ignore"] == expected_ignore
+
+    hf_quant_config = json.loads((save_dir / "hf_quant_config.json").read_text())
+    assert hf_quant_config["quantization"]["exclude_modules"] == expected_ignore
+
+    with safetensors.safe_open(save_dir / "model.safetensors", framework="pt", device="cpu") as f:
+        assert all("weight_scale" not in key for key in f.keys())
+        assert f.get_tensor("model.layers.0.mlp.experts.127.down_proj.weight").dtype == torch.bfloat16
+
+
+def test_nvfp4_hf_converter_propagates_nested_dspark_byte_for_byte(tmp_path):
+    model_dir = tmp_path / "model"
+    save_dir = tmp_path / "converted"
+    draft_dir = model_dir / "dspark"
+    draft_dir.mkdir(parents=True)
+
+    (model_dir / "config.json").write_text('{"num_hidden_layers": 1}')
+    root_shard = "model.safetensors"
+    root_weights = {"model.layers.0.input_layernorm.weight": torch.ones(16, dtype=torch.bfloat16)}
+    safetensors.torch.save_file(root_weights, model_dir / root_shard, metadata={"format": "pt"})
+    (model_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {name: root_shard for name in root_weights}})
+    )
+
+    draft_shard = "model-00002-of-00002.safetensors"
+    draft_weights = {"mtp.0.ffn.experts.0.w1.weight": torch.arange(32, dtype=torch.int8).reshape(2, 16)}
+    safetensors.torch.save_file(draft_weights, draft_dir / draft_shard, metadata={"format": "pt"})
+    (draft_dir / "config.json").write_bytes(b'{"native_dspark":true}\n')
+    (draft_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {name: draft_shard for name in draft_weights}})
+    )
+    draft_bytes = {path.name: path.read_bytes() for path in draft_dir.iterdir()}
+
+    convert_nvfp4(str(model_dir), str(save_dir), device="cpu")
+
+    assert {path.name: path.read_bytes() for path in (save_dir / "dspark").iterdir()} == draft_bytes
+    output_index = json.loads((save_dir / "model.safetensors.index.json").read_text())
+    assert not any(name.startswith("mtp.") for name in output_index["weight_map"])
+    output_config = json.loads((save_dir / "config.json").read_text())
+    assert not any(name.startswith(("mtp.", "stages.")) for name in output_config["quantization_config"]["ignore"])
 
 
 def test_nvfp4_hf_converter_quantizes_cross_shard_gated_pair_together(tmp_path, monkeypatch):

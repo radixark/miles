@@ -11,6 +11,12 @@ from param_name_remap import get_param_name_remap
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 
+from miles.utils.dspark_checkpoint import extract_native_dspark_subcheckpoint, retrofit_native_dspark_subcheckpoint
+from miles.utils.mxfp4 import mxfp4_dequantize
+
+
+SOURCE_FP8_DTYPES = (torch.float8_e4m3fn,) + ((torch.float8_e4m3fnuz,) if hasattr(torch, "float8_e4m3fnuz") else ())
+
 
 @triton.jit
 def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
@@ -30,6 +36,7 @@ def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
 def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> torch.Tensor:
     assert x.is_contiguous() and s.is_contiguous()
     assert x.dim() == 2 and s.dim() == 2
+    s = s.float().contiguous()
     M, N = x.size()
     y = torch.empty_like(x, dtype=torch.get_default_dtype())
 
@@ -40,7 +47,22 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> t
     return y
 
 
-def main(fp8_path, bf16_path):
+def _is_native_mxfp4_expert(weight_name: str, weight: torch.Tensor, expert_dtype: str | None) -> bool:
+    return (
+        expert_dtype == "fp4"
+        and ".experts." in weight_name
+        and ".shared_experts." not in weight_name
+        and weight.dtype in (torch.int8, torch.uint8)
+    )
+
+
+def main(fp8_path, bf16_path, preserve_native_dspark_checkpoint=False):
+    existing_index = os.path.join(bf16_path, "model.safetensors.index.json")
+    if preserve_native_dspark_checkpoint and os.path.exists(existing_index):
+        raise ValueError(
+            f"Cannot fresh-split DSpark into existing checkpoint {bf16_path}; "
+            "use --retrofit-native-dspark-checkpoint instead."
+        )
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(bf16_path, exist_ok=True)
     os.system("cp -rf " + fp8_path + "/config.json " + bf16_path)
@@ -51,12 +73,37 @@ def main(fp8_path, bf16_path):
     with open(model_index_file) as f:
         model_index = json.load(f)
     weight_map_raw = model_index["weight_map"]
+    if preserve_native_dspark_checkpoint:
+        weight_map_raw = extract_native_dspark_subcheckpoint(
+            source_path=fp8_path,
+            output_path=bf16_path,
+            model_index=model_index,
+        )
+
+    with open(os.path.join(fp8_path, "config.json")) as f:
+        source_config = json.load(f)
+    expert_dtype = source_config.get("expert_dtype")
+    if expert_dtype == "fp4":
+        bf16_config = dict(source_config)
+        bf16_config.pop("expert_dtype", None)
+        bf16_config.pop("quantization_config", None)
+        with open(os.path.join(bf16_path, "config.json"), "w") as f:
+            json.dump(bf16_config, f, indent=2)
 
     remap = get_param_name_remap(os.path.join(fp8_path, "config.json"), weight_map_raw)
+
+    def remap_name(raw_name):
+        renamed_name = remap(raw_name)
+        # The native V4 remapper handles attention/FFN scales, but the DSpark
+        # main projection scale is also a terminal `.scale` tensor.
+        if expert_dtype == "fp4" and raw_name.endswith(".scale") and renamed_name.endswith(".scale"):
+            renamed_name = f"{renamed_name.removesuffix('.scale')}.weight_scale_inv"
+        return renamed_name
+
     weight_map_renamed = {}
     raw_name_by_renamed = {}
     for raw_name, file_name in weight_map_raw.items():
-        renamed_name = remap(raw_name)
+        renamed_name = remap_name(raw_name)
         assert renamed_name not in raw_name_by_renamed, (
             f"Remapped tensor name collision: {renamed_name} from "
             f"{raw_name} and {raw_name_by_renamed[renamed_name]}"
@@ -66,7 +113,7 @@ def main(fp8_path, bf16_path):
 
     # Cache for loaded safetensor files
     loaded_files = {}
-    fp8_weight_names = []
+    dequantized_weight_names = []
 
     # Helper function to get tensor from the correct file
     def get_tensor(tensor_name):
@@ -78,7 +125,10 @@ def main(fp8_path, bf16_path):
 
         return loaded_files[file_name][raw_tensor_name]
 
-    safetensor_files = list(glob(os.path.join(fp8_path, "*.safetensors")))
+    if preserve_native_dspark_checkpoint:
+        safetensor_files = [os.path.join(fp8_path, filename) for filename in set(weight_map_raw.values())]
+    else:
+        safetensor_files = list(glob(os.path.join(fp8_path, "*.safetensors")))
     safetensor_files.sort()
     for safetensor_file in tqdm(safetensor_files):
         print(f"Handling file: {safetensor_file}")
@@ -88,18 +138,31 @@ def main(fp8_path, bf16_path):
 
         new_state_dict = {}
         for weight_name_raw, weight in current_state_dict.items():
-            weight_name = remap(weight_name_raw)
+            weight_name = remap_name(weight_name_raw)
 
             if weight_name.endswith("_scale_inv"):
                 continue
-            elif weight.element_size() == 1:  # FP8 weight
+            elif _is_native_mxfp4_expert(weight_name, weight, expert_dtype):
                 scale_inv_name = f"{weight_name}_scale_inv"
                 try:
-                    # Get scale_inv from the correct file
                     scale_inv = get_tensor(scale_inv_name)
-                    fp8_weight_names.append(weight_name)
+                except KeyError as exc:
+                    raise KeyError(f"Missing MXFP4 scale tensor {scale_inv_name} for {weight_name}.") from exc
+                dequantized_weight_names.append(weight_name)
+                new_state_dict[weight_name] = mxfp4_dequantize(
+                    weight,
+                    scale_inv,
+                    dtype=torch.bfloat16,
+                )
+            elif weight.dtype in SOURCE_FP8_DTYPES:
+                scale_inv_name = f"{weight_name}_scale_inv"
+                try:
+                    scale_inv = get_tensor(scale_inv_name)
+                    dequantized_weight_names.append(weight_name)
                     new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
-                except KeyError:
+                except KeyError as exc:
+                    if expert_dtype == "fp4":
+                        raise KeyError(f"Missing FP8 scale tensor {scale_inv_name} for {weight_name}.") from exc
                     print(f"Warning: Missing scale_inv tensor for {weight_name}, skipping conversion")
                     new_state_dict[weight_name] = weight
             else:
@@ -116,7 +179,7 @@ def main(fp8_path, bf16_path):
 
     # Update model index
     new_model_index_file = os.path.join(bf16_path, "model.safetensors.index.json")
-    for weight_name in fp8_weight_names:
+    for weight_name in dequantized_weight_names:
         scale_inv_name = f"{weight_name}_scale_inv"
         if scale_inv_name in weight_map_renamed:
             weight_map_renamed.pop(scale_inv_name)
@@ -128,5 +191,23 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--input-fp8-hf-path", type=str, required=True)
     parser.add_argument("--output-bf16-hf-path", type=str, required=True)
+    dspark_mode = parser.add_mutually_exclusive_group()
+    dspark_mode.add_argument(
+        "--preserve-native-dspark-checkpoint",
+        action="store_true",
+        help="Keep native MTP-only shards byte-for-byte under output/dspark instead of converting them.",
+    )
+    dspark_mode.add_argument(
+        "--retrofit-native-dspark-checkpoint",
+        action="store_true",
+        help="Install a raw nested draft into an existing BF16 output without reconverting target shards.",
+    )
     args = parser.parse_args()
-    main(args.input_fp8_hf_path, args.output_bf16_hf_path)
+    if args.retrofit_native_dspark_checkpoint:
+        retrofit_native_dspark_subcheckpoint(args.input_fp8_hf_path, args.output_bf16_hf_path)
+    else:
+        main(
+            args.input_fp8_hf_path,
+            args.output_bf16_hf_path,
+            preserve_native_dspark_checkpoint=args.preserve_native_dspark_checkpoint,
+        )
