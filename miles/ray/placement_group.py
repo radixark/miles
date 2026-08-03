@@ -226,9 +226,6 @@ async def create_rollout_components(args) -> RolloutComponents:
 
     await rollout_executor.set_eval_fleet.remote(inference_controller.eval_fleet)
 
-    if args.check_weight_update_equal:
-        await inference_controller.check_weights(action="reset_tensors", skip_list=args.check_weight_update_skip_list)
-
     return RolloutComponents(
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,

@@ -50,6 +50,8 @@ def make_args(**overrides: Any) -> Namespace:
         over_sampling_batch_size=None,
         rollout_global_dataset=False,
         num_rollout=1,
+        check_weight_update_equal=False,
+        check_weight_update_skip_list=None,
         # batch / training
         global_batch_size=8,
         use_dynamic_global_batch_size=False,
