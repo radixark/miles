@@ -110,7 +110,7 @@ def get_common_train_args(
             "--deterministic-mode "
             f"--save-debug-rollout-data {dump_dir}/rollout_data/{{rollout_id}}.pt "
             f"--rollout-num-gpus {mode.total_rollout_gpus} "
-            f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} "
+            f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} " + ("--colocate " if mode.colocate else "")
         )
 
     event_logger_args = f"--save-debug-event-data {dump_dir}/events "
@@ -155,7 +155,7 @@ def get_common_train_args(
 
 
 def get_ft_args(mode: FTTestMode) -> str:
-    return "--use-fault-tolerance " "--ft-components train " "--api-server-port 0 "
+    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} --api-server-port 0 "
 
 
 # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
