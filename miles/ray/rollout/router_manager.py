@@ -1,6 +1,7 @@
 import copy
 import logging
 import multiprocessing
+import os
 import random
 import uuid
 
@@ -13,6 +14,40 @@ from miles.utils.http_utils import run_router as run_sglang_router
 from miles.utils.http_utils import wait_for_server_ready
 
 logger = logging.getLogger(__name__)
+
+
+def _maybe_enable_router_dp_aware(args, router_args) -> None:
+    """Auto-enable sgl-router DP-aware routing when DP attention shards the KV cache.
+
+    With ``sglang_dp_size > 1`` each DP rank owns an independent KV pool and radix
+    prefix tree. Unless the router routes at DP-rank granularity, requests scatter
+    across ranks by load and the prefix cache fragments, sharply lowering the
+    KV-cache hit rate. Enabling ``dp_aware`` keeps prefix-sharing requests on the
+    same rank.
+
+    Honors an explicit ``--router-dp-aware`` (already True -> left untouched) and the
+    ``MILES_DISABLE_AUTO_DP_AWARE=1`` opt-out, warning loudly in the opt-out case
+    since it reintroduces the prefix-cache fragmentation.
+    """
+    dp_size = getattr(args, "sglang_dp_size", 1) or 1
+    if dp_size <= 1 or getattr(router_args, "dp_aware", False):
+        return
+    if os.environ.get("MILES_DISABLE_AUTO_DP_AWARE") == "1":
+        logger.warning(
+            "DP attention is enabled (sglang_dp_size=%d) but router dp_aware routing is "
+            "explicitly disabled via MILES_DISABLE_AUTO_DP_AWARE=1. The router will dispatch "
+            "per-engine and SGLang will scatter requests across DP ranks by load, fragmenting "
+            "the radix prefix cache and likely reducing the KV-cache hit rate. Unset the env "
+            "var to restore prefix-affinity routing.",
+            dp_size,
+        )
+        return
+    router_args.dp_aware = True
+    logger.info(
+        "DP attention enabled (sglang_dp_size=%d); auto-enabling router dp_aware routing to "
+        "preserve prefix-cache locality.",
+        dp_size,
+    )
 
 
 def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool = False) -> tuple[str, int]:
@@ -51,6 +86,8 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
 
         if args.sglang_router_policy:
             router_args.policy = args.sglang_router_policy
+
+        _maybe_enable_router_dp_aware(args, router_args)
 
         if has_pd_disaggregation:
             router_args.pd_disaggregation = True
