@@ -58,6 +58,7 @@ Usage patterns:
            --num-gpus-per-node 4 --num-rollout 100
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -67,11 +68,13 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
+# model name -> scripts/models/<type>.sh; the 4-layer slices reuse the base
+# definition with MODEL_ARGS_NUM_LAYERS=4 (set in ScriptArgs.__post_init__)
 _MODEL_REGISTRY = {
     "Inkling": "inkling",
-    "Inkling-4layer": "inkling-4layer",
+    "Inkling-4layer": "inkling",
     "Inkling-Small": "inkling-small",
-    "Inkling-Small-4layer": "inkling-small-4layer",
+    "Inkling-Small-4layer": "inkling-small",
 }
 
 
@@ -116,6 +119,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
 
     def __post_init__(self):
+        if self.model_name.endswith("-4layer"):
+            os.environ["MODEL_ARGS_NUM_LAYERS"] = "4"
         if self.hf_checkpoint is None:
             self.hf_checkpoint = f"{self.model_dir}/{self.model_name}"
         if self.torch_dist is None:
