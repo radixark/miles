@@ -355,10 +355,14 @@ def _execute_train(args: ScriptArgs):
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        # 0.75 leaves ~59GB per GPU unused and the KV pool at 26k tokens, which
-        # caps trajectories and starves concurrency; 0.85 gives 553k tokens and
-        # still ends steady state with 33GB spare.
-        "--sglang-mem-fraction-static 0.85 "
+        # 0.85: measured on the full 744B, 64x GB300 (276GB). 0.75 there leaves
+        # ~59GB per GPU unused and the KV pool at 26k tokens, which caps
+        # trajectories and starves concurrency; 0.85 gives 553k tokens and still
+        # ends steady state with 33GB spare.
+        # 0.70: the value the 5-layer smoke test passes with on 4x H200 (140GB).
+        # Pruned weights make 0.85 nearly all KV cache there, leaving the
+        # weight-checker snapshot nowhere to allocate.
+        f"--sglang-mem-fraction-static {0.70 if args.num_nodes == 1 else 0.85} "
         f"--sglang-ep-size {sglang_world_size} "
         "--sglang-router-policy consistent_hashing "
     )
