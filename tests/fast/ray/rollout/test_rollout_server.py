@@ -206,9 +206,9 @@ class TestAddCellRollback:
     async def test_a_failed_add_leaves_no_bookkeeping_so_the_next_reconcile_retries(self, monkeypatch):
         """A cell whose startup fails must not be committed, otherwise the hash no-op blocks any retry."""
         srv = RolloutServer(server_cells={}, args=SimpleNamespace())
-        monkeypatch.setattr(ServerCell, "add", _raise_async)
+        monkeypatch.setattr(ServerCell, "init", _raise_async)
 
-        with pytest.raises(RuntimeError, match="injected add failure"):
+        with pytest.raises(RuntimeError, match="injected init failure"):
             await srv.add_cell(self._make_meta())
 
         assert srv.server_cells == {}
@@ -217,7 +217,7 @@ class TestAddCellRollback:
     async def test_a_successful_add_commits_the_cell(self, monkeypatch):
         """After the failure is gone the same cell id can be added normally."""
         srv = RolloutServer(server_cells={}, args=SimpleNamespace())
-        monkeypatch.setattr(ServerCell, "add", _noop_async)
+        monkeypatch.setattr(ServerCell, "init", _noop_async)
 
         await srv.add_cell(self._make_meta())
 
@@ -225,7 +225,7 @@ class TestAddCellRollback:
 
 
 async def _raise_async(self):
-    raise RuntimeError("injected add failure")
+    raise RuntimeError("injected init failure")
 
 
 async def _noop_async(self):

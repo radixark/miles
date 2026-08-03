@@ -9,11 +9,27 @@ from miles.utils.http_utils import GeneralHttpClientProvider
 logger = logging.getLogger(__name__)
 
 
-async def wait_server_healthy(server_url, api_key):
-    headers = {
+def _compute_headers(api_key: str | None) -> dict[str, str]:
+    return {
         "Content-Type": "application/json; charset=utf-8",
         "Authorization": f"Bearer {api_key}",
     }
+
+
+async def probe_server_healthy(server_url: str, api_key: str | None, timeout: float = 5.0) -> bool:
+    try:
+        response = await GeneralHttpClientProvider.client().get(
+            f"{server_url}/health_generate",
+            headers=_compute_headers(api_key),
+            timeout=timeout,
+        )
+        return response.status_code == 200
+    except (httpx.HTTPError, OSError):
+        return False
+
+
+async def wait_server_healthy(server_url, api_key):
+    headers = _compute_headers(api_key)
 
     http_client = GeneralHttpClientProvider.client()
     while True:

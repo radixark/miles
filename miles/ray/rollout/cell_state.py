@@ -7,8 +7,12 @@ class CellAddrInfo(FrozenStrictBaseModel):
     gate_url: str
 
 
-class StateUnknown(FrozenStrictBaseModel):
+class StateUninitialized(FrozenStrictBaseModel):
     pass
+
+
+class StateInitializing(FrozenStrictBaseModel):
+    addr_info: CellAddrInfo
 
 
 class StatePendingWeights(FrozenStrictBaseModel):
@@ -19,5 +23,8 @@ class StateServing(FrozenStrictBaseModel):
     addr_info: CellAddrInfo
 
 
-# TODO: improve state definitions
-CellState = StateUnknown | StatePendingWeights | StateServing
+class StateDisposed(FrozenStrictBaseModel):
+    pass
+
+
+CellState = StateUninitialized | StateInitializing | StatePendingWeights | StateServing | StateDisposed
