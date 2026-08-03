@@ -1,6 +1,9 @@
 import asyncio
 import dataclasses
+import functools
+import itertools
 import logging
+from types import SimpleNamespace
 
 import pytest
 
@@ -257,7 +260,9 @@ class TestWithLock:
     async def test_a_nested_call_to_another_locked_method_asserts(self):
         """Lock reentrancy through decorated methods is surfaced as an assertion, not a deadlock."""
 
+        @enforce_lock_discipline
         class _Nested:
+            @lock_exempt
             def __init__(self) -> None:
                 self.context_lock = ContextLock("nested")
 
@@ -276,6 +281,7 @@ class TestWithLock:
     async def test_a_missing_lock_attribute_is_reported(self):
         """A class that never got handed its lock fails loudly at call time."""
 
+        @enforce_lock_discipline
         class _NoLock:
             @with_lock
             async def method(self) -> None:
@@ -288,7 +294,9 @@ class TestWithLock:
     async def test_a_lock_attribute_of_the_wrong_type_is_reported(self):
         """Handing over a bare asyncio.Lock loses the held-by tracking, so it is refused."""
 
+        @enforce_lock_discipline
         class _WrongLock:
+            @lock_exempt
             def __init__(self) -> None:
                 self.context_lock = asyncio.Lock()
 
@@ -363,6 +371,26 @@ class TestWaitReminder:
         assert all(message.endswith("s") for message in messages)
 
     @pytest.mark.asyncio
+    async def test_the_reminder_counts_up_while_the_wait_drags_on(self, fast_reminder, caplog, monkeypatch):
+        """A reminder that always says the same thing cannot tell a short stall from a stuck one."""
+        ticks = itertools.count(start=0, step=6)
+        monkeypatch.setattr(context_lock, "time", SimpleNamespace(monotonic=lambda: float(next(ticks))))
+        lock = ContextLock("stuck-lock")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(lock.acquire())
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            await asyncio.sleep(0.05)
+        await _cancel(waiter)
+        await holder.finish()
+
+        assert _reminder_messages(caplog)[:2] == [
+            "Still waiting for lock 'stuck-lock' after 6s",
+            "Still waiting for lock 'stuck-lock' after 12s",
+        ]
+
+    @pytest.mark.asyncio
     async def test_an_uncontended_acquire_reminds_nothing(self, fast_reminder, caplog):
         """The reminder must only fire while actually blocked."""
         lock = ContextLock("test")
@@ -416,6 +444,22 @@ class TestWaitReminder:
         await holder.finish()
 
         assert not lock.locked
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_waiter_stops_reminding(self, fast_reminder, caplog):
+        """A leaked reminder would keep claiming a caller is waiting long after it gave up."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(lock.acquire())
+        await asyncio.sleep(0.03)
+        await _cancel(waiter)
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            await asyncio.sleep(0.05)
+        await holder.finish()
+
+        assert _reminder_messages(caplog) == []
 
 
 class TestDetachAndReattach:
@@ -685,6 +729,7 @@ class TestRequiresLock:
     async def test_reports_a_missing_lock_attribute(self):
         """A collaborator that never got handed the lock fails loudly."""
 
+        @enforce_lock_discipline
         class _NoLock:
             @requires_lock
             def method(self) -> None:
@@ -861,6 +906,214 @@ class TestEnforceLockDiscipline:
     def test_the_guarded_test_double_passes_the_check(self):
         """The _Guarded helper used across this file is itself fully disciplined."""
         assert enforce_lock_discipline(_Guarded) is _Guarded
+
+    @pytest.mark.asyncio
+    async def test_a_with_lock_method_on_an_undecorated_class_is_rejected(self):
+        """Decorating methods but forgetting the class decorator is exactly the missed check to catch."""
+
+        class _Forgotten:
+            def __init__(self) -> None:
+                self.context_lock = ContextLock("forgotten")
+
+            @with_lock
+            async def method(self) -> None:
+                pass
+
+        with pytest.raises(AssertionError, match="not decorated with @enforce_lock_discipline"):
+            await _Forgotten().method()
+
+    @pytest.mark.asyncio
+    async def test_a_requires_lock_method_on_an_undecorated_class_is_rejected_inside_the_lock(self):
+        """The missing class decorator is reported even where the lock check itself would pass."""
+
+        class _Forgotten:
+            def __init__(self) -> None:
+                self.context_lock = ContextLock("forgotten")
+
+            @requires_lock
+            def method(self) -> None:
+                pass
+
+        forgotten = _Forgotten()
+        async with forgotten.context_lock:
+            with pytest.raises(AssertionError, match="not decorated with @enforce_lock_discipline"):
+                forgotten.method()
+
+    @pytest.mark.asyncio
+    async def test_window_decorators_on_an_undecorated_class_are_rejected(self):
+        """Cross-call window decorators demand the class-level check as well."""
+
+        class _Forgotten:
+            def __init__(self) -> None:
+                self.context_lock = ContextLock("forgotten")
+
+            @acquires_lock
+            async def start(self) -> None:
+                pass
+
+            @releases_lock
+            async def end(self) -> None:
+                pass
+
+        forgotten = _Forgotten()
+        with pytest.raises(AssertionError, match="not decorated with @enforce_lock_discipline"):
+            await forgotten.start()
+        with pytest.raises(AssertionError, match="not decorated with @enforce_lock_discipline"):
+            await forgotten.end()
+
+    @pytest.mark.asyncio
+    async def test_an_undecorated_subclass_may_still_call_inherited_methods(self):
+        """The check applies to the class that declared the method, so inheriting is fine."""
+
+        class _Derived(_Guarded):
+            pass
+
+        assert await _Derived().locked_method() is True
+
+    @pytest.mark.asyncio
+    async def test_a_subclass_adding_its_own_decorated_method_needs_its_own_check(self):
+        """An inherited flag must not excuse methods newly decorated on the subclass."""
+
+        class _Derived(_Guarded):
+            @with_lock
+            async def extra_method(self) -> None:
+                pass
+
+        derived = _Derived()
+        assert await derived.locked_method() is True
+        with pytest.raises(AssertionError, match="_Derived.extra_method uses a context-lock decorator"):
+            await derived.extra_method()
+
+    @pytest.mark.asyncio
+    async def test_a_guarded_classmethod_on_an_undecorated_class_is_rejected(self):
+        """Looking the owner up from the first argument silently let this shape through before."""
+
+        class _Forgotten:
+            context_lock = ContextLock("forgotten")
+
+            @classmethod
+            @with_lock
+            async def method(cls) -> None:
+                pass
+
+        with pytest.raises(AssertionError, match="not decorated with @enforce_lock_discipline"):
+            await _Forgotten.method()
+
+    @pytest.mark.asyncio
+    async def test_a_guarded_method_wrapped_by_another_decorator_is_still_checked(self):
+        """functools.wraps copies the discipline marker, so the outer wrapper must not become invisible."""
+
+        def _passthrough(fn):
+            @functools.wraps(fn)
+            async def outer(self, *args, **kwargs):
+                return await fn(self, *args, **kwargs)
+
+            return outer
+
+        class _Forgotten:
+            def __init__(self) -> None:
+                self.context_lock = ContextLock("forgotten")
+
+            @_passthrough
+            @with_lock
+            async def method(self) -> None:
+                pass
+
+        with pytest.raises(AssertionError, match="not decorated with @enforce_lock_discipline"):
+            await _Forgotten().method()
+
+    @pytest.mark.asyncio
+    async def test_a_guarded_method_wrapped_by_another_decorator_runs_on_an_enforced_class(self):
+        """An outer functools.wraps decorator must not hide the owner marker from the inner lock wrapper."""
+
+        def _passthrough(fn):
+            @functools.wraps(fn)
+            async def outer(self, *args, **kwargs):
+                return await fn(self, *args, **kwargs)
+
+            return outer
+
+        @enforce_lock_discipline
+        class _Stacked:
+            @lock_exempt
+            def __init__(self) -> None:
+                self.context_lock = ContextLock("stacked")
+
+            @_passthrough
+            @with_lock
+            async def method(self) -> bool:
+                return self.context_lock.held_in_current_context
+
+        assert await _Stacked().method() is True
+
+    @pytest.mark.asyncio
+    async def test_a_guarded_method_shared_with_an_unenforced_class_is_still_rejected(self):
+        """Stamping the inner wrapper must authorize the enforcing class only, not everyone reusing it."""
+
+        @with_lock
+        async def _shared(self) -> bool:
+            return self.context_lock.held_in_current_context
+
+        @enforce_lock_discipline
+        class _Enforced:
+            @lock_exempt
+            def __init__(self) -> None:
+                self.context_lock = ContextLock("enforced")
+
+            method = _shared
+
+        class _Forgotten:
+            def __init__(self) -> None:
+                self.context_lock = ContextLock("forgotten")
+
+            method = _shared
+
+        assert await _Enforced().method() is True
+        with pytest.raises(AssertionError, match="was called on a _Forgotten"):
+            await _Forgotten().method()
+
+    @pytest.mark.asyncio
+    async def test_a_guarded_classmethod_runs_on_an_enforced_class(self):
+        """A classmethod is called with the class itself, which still belongs to the enforcing class."""
+
+        @enforce_lock_discipline
+        class _WithClassmethod:
+            context_lock = ContextLock("classmethod")
+
+            @lock_exempt
+            def __init__(self) -> None: ...
+
+            @classmethod
+            @with_lock
+            async def method(cls) -> bool:
+                return cls.context_lock.held_in_current_context
+
+        assert await _WithClassmethod.method() is True
+
+    @pytest.mark.asyncio
+    async def test_a_guarded_method_wrapping_a_bound_method_is_accepted(self):
+        """Walking __wrapped__ onto a bound method must not fail the class definition."""
+
+        class _Source:
+            @lock_exempt
+            async def implementation(self) -> str:
+                return "ok"
+
+        bound = _Source().implementation
+
+        @functools.wraps(bound)
+        async def _outer(self) -> str:
+            return await bound()
+
+        @enforce_lock_discipline
+        class _Delegating:
+            @lock_exempt
+            def __init__(self) -> None:
+                self.context_lock = ContextLock("delegating")
+
+            method = _outer
+
+        assert await _Delegating().method() == "ok"
 
     def test_lock_exempt_leaves_the_function_behaviour_untouched(self):
         """The exemption is a marker only; it must not wrap or alter the call."""
