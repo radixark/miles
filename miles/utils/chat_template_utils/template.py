@@ -281,13 +281,17 @@ def apply_chat_template(
         )
 
     if inkling.is_inkling(tokenizer):
-        rendered = inkling.render_messages(
-            normalize_tool_arguments(messages, "json"),
-            tools=tools,
+        # the fixed template needs parsed tool-call arguments and handles the
+        # thinking-effort line, tool_calls, and the end-sampling token itself
+        return tokenizer.apply_chat_template(
+            normalize_tool_arguments(messages, "dict"),
+            chat_template=inkling.fixed_chat_template(),
+            tokenize=tokenize,
+            tools=extract_tool_dicts(tools),
+            return_dict=False,
             add_generation_prompt=add_generation_prompt,
             **kwargs,
         )
-        return tokenizer.encode(rendered, add_special_tokens=False) if tokenize else rendered
 
     messages = normalize_tool_arguments(messages, "dict")
     tool_defs = extract_tool_dicts(tools)
