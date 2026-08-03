@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
+    ThdLayout,
     CompressorInputCompact,
     compact_gather_index,
     compact_group_capacity,
@@ -41,6 +42,16 @@ def requires_rocm_build():
 
 HEAD_DIM = 128
 HIDDEN = 256
+
+
+def _thd(cu, *, max_seqlen=0, compressed_group_ids=None):
+    """ThdLayout for a single-rank packed stream."""
+    return ThdLayout(
+        cu_seqlens=cu,
+        global_start=0,
+        max_seqlen=max_seqlen,
+        compressed_group_ids=compressed_group_ids,
+    )
 
 
 def _cu(lens):
@@ -120,7 +131,7 @@ def _cp_compress(compressor, x, cu, cp_size, max_seqlen):
         elif start > 0:
             boundary[-start:] = x[:start]
         compact, comp_ids = CompressorInputCompact.apply(x[start : start + l_local], boundary, cu, start, ratio, c_cap)
-        kv, cu_comp = compressor._forward_thd(compact, cu, compressed_group_ids=comp_ids, max_seqlen=max_seqlen)
+        kv, cu_comp = compressor._forward_thd(compact, _thd(cu, max_seqlen=max_seqlen, compressed_group_ids=comp_ids))
         assert cu_comp is None  # the pre-grouped path cannot derive it
         per_rank.append(kv)
 
@@ -149,7 +160,7 @@ def test_packed_matches_per_segment(ratio, lens):
     """
     compressor = _compressor(ratio)
     x = _packed_input(lens)
-    packed, cu_comp = compressor._forward_thd(x, _cu(lens))
+    packed, cu_comp = compressor._forward_thd(x, _thd(_cu(lens)))
     reference = _per_segment_reference(compressor, x, lens)
     assert cu_comp.tolist() == [0] + torch.tensor([n // ratio for n in lens]).cumsum(0).tolist()
     torch.testing.assert_close(packed.float(), reference.float(), rtol=2e-2, atol=2e-2)
@@ -184,7 +195,7 @@ def test_cp_chain_matches_whole_stream(ratio, lens, cp_size):
     cu = _cu(lens)
     compressor = _compressor(ratio)
     x = _packed_input(lens)
-    reference, _ = compressor._forward_thd(x, cu)
+    reference, _ = compressor._forward_thd(x, _thd(cu))
     if reference is None:
         pytest.skip("no segment reaches the ratio, nothing to compare")
     got, _ = _cp_compress(compressor, x, cu, cp_size, max(lens))
@@ -208,7 +219,7 @@ def test_cp_chain_backward_matches_whole_stream(cp_size):
     base = _packed_input(lens).float()
 
     ref_x = base.clone().requires_grad_(True)
-    compressor._forward_thd(ref_x, cu)[0].sum().backward()
+    compressor._forward_thd(ref_x, _thd(cu))[0].sum().backward()
 
     cp_x = base.clone().requires_grad_(True)
     _cp_compress(compressor, cp_x, cu, cp_size, max(lens))[0].sum().backward()
@@ -232,7 +243,7 @@ def test_short_segments_produce_no_group(cp_size):
     _, mapping = _cp_compress(_compressor(ratio), _packed_input(lens), cu, cp_size, max(lens))
     assert int((mapping >= 0).sum()) == int(cu_comp[-1])
 
-    packed, cu_comp_tiny = _compressor(ratio)._forward_thd(_packed_input([5, 7]), _cu([5, 7]))
+    packed, cu_comp_tiny = _compressor(ratio)._forward_thd(_packed_input([5, 7]), _thd(_cu([5, 7])))
     assert packed is None
     assert cu_comp_tiny.tolist() == [0, 0, 0]
 
@@ -249,4 +260,4 @@ def test_pre_grouped_requires_max_seqlen():
     _, comp_ids = compact_gather_index(cu, global_start=0, l_local=sum(lens), ratio=ratio, c_cap=c_cap)
     compact = torch.zeros(c_cap * ratio, 1, HIDDEN, dtype=torch.bfloat16)
     with pytest.raises(ValueError, match="max_seqlen"):
-        _compressor(ratio)._forward_thd(compact, cu, compressed_group_ids=comp_ids)
+        _compressor(ratio)._forward_thd(compact, _thd(cu, max_seqlen=None, compressed_group_ids=comp_ids))

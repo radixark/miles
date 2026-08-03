@@ -37,6 +37,7 @@ from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     CompressorInputCompact,
+    ThdLayout,
     compact_group_capacity,
     compressed_cu_seqlens,
     compressed_rank_layout,
@@ -243,23 +244,21 @@ class DeepSeekV4Attention(MegatronModule):
 
         bsz, seqlen_local, _ = x.size()
         # Any other packed layout keeps the BSHD path; only thd carries segment boundaries.
-        cu_seqlens = (
-            packed_seq_params.cu_seqlens_q
-            if packed_seq_params is not None and packed_seq_params.qkv_format == "thd"
-            else None
+        thd_layout = ThdLayout.from_packed_seq_params(
+            packed_seq_params, cp_rank=self.cp_rank, seqlen_local=seqlen_local
         )
         rope_base = self.config.dsv4_compress_rope_theta if self.compress_ratio else self.config.rotary_base
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config, self.rope_head_dim, rope_base, not self.compress_ratio, seqlen_local * self.cp_size, x.device
         )
-        # CP splits the packed stream contiguously, so this rank's rows start here globally.
-        global_start = self.cp_rank * seqlen_local if cu_seqlens is not None else 0
-        if cu_seqlens is None:
+        if thd_layout is None:
             freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen_local, self.cp_size, self.cp_group)
         else:
             # Packed positions restart at every segment boundary and index the whole table, so
             # the rank's rows are selected here rather than by slicing it first.
-            freqs_cis = freqs_cis.index_select(0, get_q_positions_thd(cu_seqlens, seqlen_local, global_start))
+            freqs_cis = freqs_cis.index_select(
+                0, get_q_positions_thd(thd_layout.cu_seqlens, seqlen_local, thd_layout.global_start)
+            )
         win = self.window_size
         ratio = self.compress_ratio
         rd = self.rope_head_dim
@@ -285,57 +284,51 @@ class DeepSeekV4Attention(MegatronModule):
         # Only the BSHD helpers take stream positions; the _thd ones derive them from cu_seqlens.
         q_positions = (
             get_q_positions_for_cp(seqlen_local, cp_size=self.cp_size, cp_group=self.cp_group, device=x.device)
-            if cu_seqlens is None
+            if thd_layout is None
             else None
         )
 
         kv_compress = None
-        cu_seqlens_compressed = None
-        seq_to_rank_row = None
-        hidden_compact = None
-        comp_ids = None
         if self.compress_ratio:
             # Compress before building indices: THD compressed-group counts come from the compressor.
             x_sbd = einops.rearrange(x, "b s d -> s b d")
-            if cu_seqlens is None or self.cp_size == 1:
-                compressor_out = self.compressor(x_sbd, cu_seqlens)
-            else:
+            if thd_layout is not None and self.cp_size > 1:
                 # A group can straddle the CP split, so pull the rows the previous rank owns
                 # and compact the groups this rank produces into fixed-capacity slots.
                 boundary = exchange_cp_boundary_hidden(x_sbd, ratio=ratio, cp_group=self.cp_group)
                 c_cap = compact_group_capacity(seqlen_local, ratio)
-                hidden_compact, comp_ids = CompressorInputCompact.apply(
-                    x_sbd, boundary, cu_seqlens, global_start, ratio, c_cap
+                thd_layout.hidden_compact, thd_layout.compressed_group_ids = CompressorInputCompact.apply(
+                    x_sbd, boundary, thd_layout.cu_seqlens, thd_layout.global_start, ratio, c_cap
                 )
-                compressor_out = self.compressor(
-                    hidden_compact,
-                    cu_seqlens,
-                    compressed_group_ids=comp_ids,
-                    max_seqlen=packed_seq_params.max_seqlen_q,
-                )
-                seq_to_rank_row = compressed_rank_layout(
-                    cu_seqlens,
-                    compressed_cu_seqlens(cu_seqlens, ratio),
+                compressor_out = self.compressor(thd_layout.hidden_compact, thd_layout)
+                thd_layout.seq_to_rank_row = compressed_rank_layout(
+                    thd_layout.cu_seqlens,
+                    compressed_cu_seqlens(thd_layout.cu_seqlens, ratio),
                     l_local=seqlen_local,
                     cp_size=self.cp_size,
                     ratio=ratio,
                     c_cap=c_cap,
                 )
-            if cu_seqlens is None:
+            else:
+                compressor_out = self.compressor(x_sbd, thd_layout)
+            if thd_layout is None:
                 kv_compress_sbd = compressor_out
             else:
-                kv_compress_sbd, cu_seqlens_compressed = compressor_out
-                if cu_seqlens_compressed is None:
+                kv_compress_sbd, thd_layout.cu_seqlens_compressed = compressor_out
+                if thd_layout.cu_seqlens_compressed is None:
                     # The pre-grouped path cannot derive it; it is a pure function of cu_seqlens.
-                    cu_seqlens_compressed = compressed_cu_seqlens(cu_seqlens, ratio)
+                    thd_layout.cu_seqlens_compressed = compressed_cu_seqlens(thd_layout.cu_seqlens, ratio)
             if kv_compress_sbd is not None:
                 kv_compress = einops.rearrange(kv_compress_sbd, "s b d -> b s d")
 
-        if cu_seqlens is None:
+        if thd_layout is None:
             topk_idxs = get_window_topk_idxs_cp(q_positions, window_size=win, cp_size=self.cp_size, bsz=bsz)
         else:
             topk_idxs = get_window_topk_idxs_thd(
-                cu_seqlens, window_size=win, total_tokens=seqlen_local, global_start=global_start
+                thd_layout.cu_seqlens,
+                window_size=win,
+                total_tokens=seqlen_local,
+                global_start=thd_layout.global_start,
             )
 
         if self.compress_ratio:
@@ -347,49 +340,46 @@ class DeepSeekV4Attention(MegatronModule):
                     x_sbd = scatter_to_sequence_parallel_region(x_sbd, group=self.tp_group)
                     qr_sbd = scatter_to_sequence_parallel_region(qr_sbd, group=self.tp_group)
                 if isinstance(self.indexer, V4Indexer):
-                    compress_topk_idxs = self.indexer(
-                        x_sbd,
-                        qr_sbd,
-                        cu_seqlens=cu_seqlens,
-                        hidden_compact=hidden_compact,
-                        compressed_group_ids=comp_ids,
-                        seq_to_rank_row=seq_to_rank_row,
-                        max_seqlen=packed_seq_params.max_seqlen_q if cu_seqlens is not None else None,
-                    )
+                    compress_topk_idxs = self.indexer(x_sbd, qr_sbd, thd_layout=thd_layout)
                 else:
-                    assert cu_seqlens is None, "DSAIndexer is BSHD-only; THD needs V4_INDEXER_IMPL=tilelang."
+                    assert thd_layout is None, "DSAIndexer is BSHD-only; THD needs V4_INDEXER_IMPL=tilelang."
                     indexer_mask = self._compute_indexer_mask(q_positions=q_positions, seqlen_global=seqlen_global)
                     compress_topk_idxs = self.indexer(x_sbd, qr_sbd, mask=indexer_mask, packed_seq_params=None)
-                if cu_seqlens is None:
+                if thd_layout is None:
                     q_first_invalid_group = (q_positions + 1).unsqueeze(1) // ratio
                     valid = (compress_topk_idxs >= 0) & (compress_topk_idxs < q_first_invalid_group)
                 else:
                     # The range the indexer kernel scored within, so a pick from another segment dies here.
                     cu_ks, cu_ke = get_indexer_cu_seqlens_thd(
-                        cu_seqlens,
-                        cu_seqlens_compressed,
+                        thd_layout.cu_seqlens,
+                        thd_layout.cu_seqlens_compressed,
                         ratio=ratio,
                         total_tokens=seqlen_local,
-                        global_start=global_start,
+                        global_start=thd_layout.global_start,
                     )
                     valid = (compress_topk_idxs >= cu_ks.unsqueeze(1)) & (compress_topk_idxs < cu_ke.unsqueeze(1))
-                if seq_to_rank_row is not None:
-                    # The indexer scored sequence-major rows; the KV block is rank-major.
-                    compress_topk_idxs, valid = to_rank_major_rows(compress_topk_idxs, seq_to_rank_row, valid)
+                    if thd_layout.seq_to_rank_row is not None:
+                        # The indexer scored sequence-major rows; the KV block is rank-major.
+                        compress_topk_idxs, valid = to_rank_major_rows(
+                            compress_topk_idxs, thd_layout.seq_to_rank_row, valid
+                        )
                 compress_topk_idxs = torch.where(valid, compress_topk_idxs + kv_compress_offset, -1)
-            elif cu_seqlens is None:
-                compress_topk_idxs = get_compress_topk_idxs_cp(q_positions, ratio=ratio, cp_size=self.cp_size, bsz=bsz)
             else:
-                compress_topk_idxs = get_compress_topk_idxs_thd(
-                    cu_seqlens,
-                    cu_seqlens_compressed,
-                    ratio=ratio,
-                    total_tokens=seqlen_local,
-                    max_n_compressed=packed_seq_params.max_seqlen_q // ratio,
-                    kv_offset=kv_compress_offset,
-                    global_start=global_start,
-                    seq_to_rank_row=seq_to_rank_row,
-                )
+                if thd_layout is None:
+                    compress_topk_idxs = get_compress_topk_idxs_cp(
+                        q_positions, ratio=ratio, cp_size=self.cp_size, bsz=bsz
+                    )
+                else:
+                    compress_topk_idxs = get_compress_topk_idxs_thd(
+                        thd_layout.cu_seqlens,
+                        thd_layout.cu_seqlens_compressed,
+                        ratio=ratio,
+                        total_tokens=seqlen_local,
+                        max_n_compressed=thd_layout.max_seqlen // ratio,
+                        kv_offset=kv_compress_offset,
+                        global_start=thd_layout.global_start,
+                        seq_to_rank_row=thd_layout.seq_to_rank_row,
+                    )
             topk_idxs = torch.cat([topk_idxs, compress_topk_idxs], dim=-1)
         topk_idxs = topk_idxs.int()
 

@@ -10,9 +10,41 @@ globally-numbered ``cu_seqlens``, while ``deepseek_v4`` all-gathers the KV. Pass
 absolute, so the KV layout is unchanged.
 """
 
+from dataclasses import dataclass
+
 import torch
 import torch.distributed as dist
 from torch import Tensor
+
+
+@dataclass
+class ThdLayout:
+    """How this rank's packed stream is laid out; ``None`` means the unpacked layout.
+
+    Mirrors how Megatron hands ``PackedSeqParams`` down, but carries what only DSv4 knows:
+    the compaction products, filled in under CP where a compressed group can straddle the
+    split, and ``cu_seqlens_compressed`` once the compressor has run.
+    """
+
+    cu_seqlens: Tensor
+    global_start: int
+    max_seqlen: int
+    hidden_compact: Tensor | None = None
+    compressed_group_ids: Tensor | None = None
+    seq_to_rank_row: Tensor | None = None
+    cu_seqlens_compressed: Tensor | None = None
+
+    @classmethod
+    def from_packed_seq_params(cls, packed_seq_params, *, cp_rank: int, seqlen_local: int):
+        """This rank's layout, or None for any format other than thd."""
+        if packed_seq_params is None or packed_seq_params.qkv_format != "thd":
+            return None
+        return cls(
+            cu_seqlens=packed_seq_params.cu_seqlens_q,
+            # CP splits the packed stream contiguously, so this rank's rows start here globally.
+            global_start=cp_rank * seqlen_local,
+            max_seqlen=packed_seq_params.max_seqlen_q,
+        )
 
 
 def batch_of_row(cu_seqlens: Tensor, total_rows: int, global_start: int = 0) -> Tensor:
