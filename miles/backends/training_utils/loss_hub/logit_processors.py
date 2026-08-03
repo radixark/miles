@@ -19,15 +19,13 @@ def get_responses(
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     """Yield response-aligned `(logits_chunk, tokens_chunk)` pairs per sample.
 
-    After squeezing batch dimension and applying temperature scaling, this
-    function extracts the logits and tokens corresponding to response segments
-    for each sample. When context parallelism is disabled, it slices directly
-    from the concatenated sequence. With context parallelism enabled, it
-    handles split sequences across ranks.
+    After squeezing the batch dimension, this function extracts the logits and
+    tokens corresponding to response segments for each sample. Temperature
+    scaling is deferred when chunked upcasting is enabled.
 
     Args:
         logits: Model outputs with shape `[1, T, V]` (policy) or `[1, T, 1]`
-            (value). Must be float32.
+            (value). Must be a floating-point tensor.
         args: Configuration containing `rollout_temperature` for scaling.
         unconcat_tokens: List of token tensors (prompt+response) per sample.
         total_lengths: Total sequence lengths (prompt+response) per sample.
@@ -41,8 +39,9 @@ def get_responses(
     qkv_format = args.qkv_format
 
     if not args.true_on_policy_mode:
-        # FSDP hands native bf16 here (no full-vocab fp32 buffer); chunks are upcast to fp32 downstream
-        assert logits.dtype in (torch.float32, torch.bfloat16), f"{logits.dtype}"
+        # Mixed-precision backends can hand native logits here. Chunks are
+        # upcast to FP32 downstream.
+        assert logits.dtype in (torch.float32, torch.bfloat16, torch.float16), f"{logits.dtype}"
     assert len(logits.shape) == 3, f"{logits.shape}"
 
     if qkv_format == "thd":
@@ -52,7 +51,12 @@ def get_responses(
         assert max_seq_lens is not None
         logits = logits.view(-1, logits.size(-1))
 
-    if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
+    if (
+        not getattr(args, "upcast_logits_after_chunking", False)
+        and logits.size(-1) > 1
+        and args.rollout_temperature > 0
+        and args.rollout_temperature != 1.0
+    ):
         logits = logits.div(args.rollout_temperature)
     if args.true_on_policy_mode:
         if getattr(args, "bf16", False):
@@ -149,7 +153,7 @@ def get_log_probs_and_entropy(
 
     Args:
         logits: Policy logits with shape `[1, T, V]`.
-        args: Configuration (temperature applied in `get_responses`).
+        args: Configuration controlling temperature scaling and chunking.
         unconcat_tokens: List of token tensors per sample.
         total_lengths: Total sequence lengths per sample.
         response_lengths: Response segment lengths per sample.
@@ -165,6 +169,7 @@ def get_log_probs_and_entropy(
     """
     assert non_loss_data
     parallel_state = get_parallel_state()
+    deferred_temperature = args.rollout_temperature if getattr(args, "upcast_logits_after_chunking", False) else 1.0
     log_probs_list = []
     entropy_list = []
     for logits_chunk, tokens_chunk in get_responses(
@@ -184,6 +189,7 @@ def get_log_probs_and_entropy(
             chunk_size=args.log_probs_chunk_size,
             true_on_policy=args.true_on_policy_mode,
             vocab_size=getattr(args, "vocab_size", None),
+            temperature=deferred_temperature,
         )
 
         log_probs_list.append(log_prob.squeeze(-1))

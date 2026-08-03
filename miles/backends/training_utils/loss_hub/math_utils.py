@@ -941,6 +941,7 @@ def calculate_log_probs_and_entropy(
     chunk_size: int = -1,
     true_on_policy: bool = False,
     vocab_size: int | None = None,
+    temperature: float = 1.0,
 ):
     if true_on_policy:
         return _calculate_log_probs_and_entropy_true_on_policy(
@@ -950,6 +951,7 @@ def calculate_log_probs_and_entropy(
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
             vocab_size=vocab_size,
+            temperature=temperature,
         )
 
     logits = logits.contiguous()
@@ -957,11 +959,17 @@ def calculate_log_probs_and_entropy(
     # Force a copy for fp32 inputs, where the dtype conversion would otherwise alias logits.
     entropy = None
 
+    def prepare_logits(logits_chunk: torch.Tensor) -> torch.Tensor:
+        logits_chunk = logits_chunk.to(torch.float32, copy=True)
+        if temperature > 0 and temperature != 1.0:
+            logits_chunk.div_(temperature)
+        return logits_chunk
+
     def compute_entropy(logits_chunk: torch.Tensor) -> torch.Tensor:
         if entropy_requires_grad:
-            return compute_entropy_from_logits(logits_chunk.to(torch.float32, copy=True), tp_group)
+            return compute_entropy_from_logits(prepare_logits(logits_chunk), tp_group)
         with torch.no_grad():
-            return compute_entropy_from_logits(logits_chunk.detach().to(torch.float32, copy=True), tp_group)
+            return compute_entropy_from_logits(prepare_logits(logits_chunk.detach()), tp_group)
 
     if logits.size(0) != 0:
         if chunk_size > 0:
@@ -970,7 +978,7 @@ def calculate_log_probs_and_entropy(
             logits_chunks = logits.chunk(num_chunks, dim=0)
             log_probs = []
             for tokens_chunk, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                log_prob = compute_log_probs(logits_chunk.to(torch.float32, copy=True), tokens_chunk, tp_group)
+                log_prob = compute_log_probs(prepare_logits(logits_chunk), tokens_chunk, tp_group)
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
             if with_entropy:
@@ -980,7 +988,7 @@ def calculate_log_probs_and_entropy(
                     entropys.append(entropy)
                 entropy = torch.cat(entropys, dim=0)
         else:
-            log_prob = compute_log_probs(logits.to(torch.float32, copy=True), tokens, tp_group)
+            log_prob = compute_log_probs(prepare_logits(logits), tokens, tp_group)
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
@@ -998,12 +1006,12 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     with_entropy: bool = False,
     entropy_requires_grad: bool = True,
     vocab_size: int | None = None,
+    temperature: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """True-on-policy log-prob and entropy computation matching SGLang's scoring contract.
 
     Args:
-        logits: Aligned local logits of shape ``[R, V_local]`` (already
-            response-sliced and temperature-scaled by ``get_responses``).
+        logits: Response-sliced local logits of shape ``[R, V_local]``.
         tokens: Target tokens of shape ``[R]``.
         tp_group: Tensor-parallel process group for vocab gather.
         with_entropy: If True, also compute entropy.
@@ -1011,6 +1019,7 @@ def _calculate_log_probs_and_entropy_true_on_policy(
             without attaching it to the autograd graph.
         vocab_size: Real tokenizer vocab size. If provided, padded logits are
             truncated after the full-vocab gather and before ``log_softmax``.
+        temperature: Temperature applied before the true-on-policy softmax.
 
     Returns:
         Tuple of ``(log_probs, entropy)`` where *log_probs* has shape ``[R]``
@@ -1020,6 +1029,9 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         log_prob = logits.new_zeros((0,))
         entropy = logits.new_zeros((0,)) if with_entropy else None
         return log_prob, entropy
+
+    if temperature > 0 and temperature != 1.0:
+        logits = logits.float().div_(temperature).to(logits.dtype)
 
     full_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
     _maybe_dump_top_logprob_backward("full_logits", full_logits)
