@@ -12,7 +12,6 @@ _DISCIPLINE_MARKER_ATTRIBUTE_NAME: str = "_context_lock_discipline"
 
 # the annotation machinery (PEP 649) plants these in the class dict; they are not methods of the class
 _ANNOTATION_MEMBER_NAMES: frozenset[str] = frozenset({"__annotate__", "__annotate_func__"})
-
 _held_lock: contextvars.ContextVar["ContextLock | None"] = contextvars.ContextVar("held_context_lock", default=None)
 
 
@@ -79,6 +78,27 @@ def with_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
     return _mark(wrapper, "with_lock")
 
 
+def requires_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
+    def assert_precondition(self: Any) -> None:
+        _assert_own_lock_held(fn, self)
+
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+            assert_precondition(self)
+            return await fn(self, *args, **kwargs)
+
+    else:
+
+        @functools.wraps(fn)
+        def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+            assert_precondition(self)
+            return fn(self, *args, **kwargs)
+
+    return _mark(wrapper, "requires_lock")
+
+
 def lock_exempt(fn: Callable[..., Any]) -> Callable[..., Any]:
     return _mark(fn, "lock_exempt")
 
@@ -102,3 +122,10 @@ def _get_lock(obj: Any) -> ContextLock:
 def _mark(fn: Callable[..., Any], discipline: str) -> Callable[..., Any]:
     setattr(fn, _DISCIPLINE_MARKER_ATTRIBUTE_NAME, discipline)
     return fn
+
+
+def _assert_own_lock_held(fn: Callable[..., Any], obj: Any) -> None:
+    lock = _get_lock(obj)
+    assert (
+        lock.held_in_current_context
+    ), f"{fn.__qualname__} must be called with the {lock.name!r} context lock held by the current context"
