@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
+from miles.utils.ft_utils.api_server import server
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 
-from .conftest import MockHandle
+from .conftest import (
+    MockHandle,
+    MockInferenceController,
+    MockRayTrainCell,
+    MockWorkerManager,
+    make_cell_summaries,
+    make_mock_group,
+)
 
 
 class TestGetHealth:
@@ -215,3 +225,55 @@ class TestPatchCell:
         assert resp.status_code == 500
         assert resp.json()["kind"] == "Status"
         assert resp.json()["reason"] == "InternalError"
+
+
+class TestStartApiServerRegistration:
+    def _start(
+        self, monkeypatch: pytest.MonkeyPatch, *, ft_components: list[str], cell_ids: list[str]
+    ) -> _CellRegistry:
+        manager = MockWorkerManager(make_cell_summaries(*cell_ids))
+        registries: list[_CellRegistry] = []
+
+        monkeypatch.setattr(server, "RayWorkerManager", SimpleNamespace(get_handle=lambda: manager))
+        monkeypatch.setattr(server, "compute_engine_pool_ids", lambda args: ["inference-engine-0-0"])
+        monkeypatch.setattr(server, "ray", SimpleNamespace(get=lambda ref: ref.result()))
+        monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
+
+        server.start_api_server(
+            args=SimpleNamespace(),
+            actor_model=make_mock_group([MockRayTrainCell(), MockRayTrainCell()]),
+            inference_controller=MockInferenceController(),
+            port=0,
+            ft_components=ft_components,
+        )
+
+        (registry,) = registries
+        return registry
+
+    @pytest.mark.asyncio
+    async def test_every_engine_cell_gets_a_handle(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cell the registry never learns about is invisible to the heal loop forever."""
+        registry = self._start(
+            monkeypatch,
+            ft_components=["rollout"],
+            cell_ids=["inference-engine-0-0-1", "inference-engine-0-0-0"],
+        )
+
+        assert [handle.cell_id for handle in registry.get_all()] == [
+            "rollout-inference-engine-0-0-0",
+            "rollout-inference-engine-0-0-1",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_rollout_cells_are_absent_when_rollout_ft_is_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Exposing suspend on engines nobody heals would let a request strand the pool."""
+        registry = self._start(monkeypatch, ft_components=["train"], cell_ids=["inference-engine-0-0-0"])
+
+        assert all(handle.cell_type == "actor" for handle in registry.get_all())
+
+    @pytest.mark.asyncio
+    async def test_both_kinds_coexist_under_mixed_ft(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mixed ft heals trainer and rollout cells through the one endpoint."""
+        registry = self._start(monkeypatch, ft_components=["train", "rollout"], cell_ids=["inference-engine-0-0-0"])
+
+        assert {handle.cell_type for handle in registry.get_all()} == {"actor", "rollout"}

@@ -39,6 +39,7 @@ async def train(args):
 
     if args.api_server_port:
         start_api_server(
+            args=args,
             actor_model=actor_model,
             inference_controller=inference_controller,
             port=args.api_server_port,
