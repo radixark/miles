@@ -3,8 +3,6 @@ import argparse
 from sglang.srt.server_args import ServerArgs
 from miles.utils.http_utils import _wrap_ipv6
 
-EVAL_SGLANG_DEST_PREFIX = "eval_sglang_"
-
 
 # TODO: use all sglang router arguments with `--sglang-router` prefix
 def add_sglang_router_arguments(parser):
@@ -141,9 +139,7 @@ def _add_prefixed_server_args(parser, *, flag_prefix: str, dest_prefix: str, ski
 def collect_eval_sglang_overrides(args) -> dict:
     """``ServerArgs`` fields set via ``--eval-sglang-*``; absent means inherit ``--sglang-*``."""
     return {
-        key.removeprefix(EVAL_SGLANG_DEST_PREFIX): value
-        for key, value in vars(args).items()
-        if key.startswith(EVAL_SGLANG_DEST_PREFIX)
+        key.removeprefix("eval_sglang_"): value for key, value in vars(args).items() if key.startswith("eval_sglang_")
     }
 
 
@@ -160,7 +156,7 @@ def add_sglang_arguments(parser):
     _add_prefixed_server_args(
         parser,
         flag_prefix="eval-sglang",
-        dest_prefix=EVAL_SGLANG_DEST_PREFIX,
+        dest_prefix="eval_sglang_",
         skipped_args=_EVAL_SKIPPED_SERVER_ARGS,
         inherit=True,
     )
