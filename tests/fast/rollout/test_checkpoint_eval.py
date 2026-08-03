@@ -207,14 +207,16 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
 class FakeManagerActor:
     def __init__(self):
         self.eval_calls = []
+        self.marker_flags = []
         self.skip_calls = []
         self._futures = []
 
         outer = self
 
         class _Eval:
-            def remote(self, rollout_id, hf_dir=None, export_time_seconds=None):
+            def remote(self, rollout_id, hf_dir=None, export_time_seconds=None, require_marker=True):
                 outer.eval_calls.append((rollout_id, hf_dir, export_time_seconds))
+                outer.marker_flags.append(require_marker)
                 fut = asyncio.get_event_loop().create_future()
                 outer._futures.append(fut)
                 return fut
@@ -358,6 +360,19 @@ async def test_dispatcher_reuse_mode_uses_save_hf(dispatcher_env):
 
     assert actor_model.exports == []  # no extra export in reuse mode
     assert manager.eval_calls[0][:2] == (10, "/ckpt/hf/10")
+    assert manager.marker_flags == [True]  # reused checkpoints still need their marker
+
+
+async def test_dispatcher_caller_supplied_dir_skips_marker(dispatcher_env):
+    """A caller-supplied hf_dir is an existing checkpoint (the pre-training baseline),
+    not one of the dispatcher's exports: it never wrote a marker to check."""
+    manager = FakeManagerActor()
+    dispatcher, _ = make_dispatcher(dispatcher_env, manager, FakeActorModel())
+
+    await dispatcher.dispatch(0, hf_dir="/base/hf_checkpoint")
+
+    assert manager.eval_calls[0][:2] == (0, "/base/hf_checkpoint")
+    assert manager.marker_flags == [False]
 
 
 class TestSnapshotOwnership:
