@@ -117,6 +117,10 @@ From `scripts/models/qwen3.6-27B.sh`:
 - `--apply-layernorm-1p`, `--qk-layernorm`, `--group-query-attention`.
 - `--attention-output-gate`.
 
+If the trainer OOMs on image-heavy batches, add `--defer-multimodal-cuda-transfer`:
+image tensors stay on pinned CPU memory and only the active micro-batch is moved to
+the GPU during collation. See [CLI Reference: Memory and throughput](/user-guide/cli-reference#memory-and-throughput).
+
 See [Backends Beyond Megatron](/advanced/architecture-support) for how miles
 preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeline.
 
