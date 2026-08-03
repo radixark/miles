@@ -239,10 +239,6 @@ class InferenceController:
 
     @with_lock
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
-        observed_cell_meta: ServerCellMetadata | None = (
-            _compute_server_cell_meta_from_info(observed) if observed is not None else None
-        )
-
         actual_srv: RolloutServer | None = None
         actual_cell: ServerCell | None = None
         for srv in self.servers.values():
