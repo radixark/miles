@@ -1016,6 +1016,10 @@ def initialize_model_and_optimizer(
             from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
 
             load_inkling_lora_adapter(model, args.lora_adapter_path)
+            if optimizer is not None:
+                # refresh the fp32 masters, or the first step() restores the
+                # pre-load init values over the adapter we just wrote
+                optimizer.reload_model_params()
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()
