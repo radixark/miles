@@ -70,7 +70,8 @@ class RayTrainCell:
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
         self._mark_as_alive(indep_dp_info=indep_dp_info)
-        await self.health_checker.start()
+        self.health_checker.start()
+        await asyncio.sleep(0)
         return results
 
     async def set_rollout_executor(self):

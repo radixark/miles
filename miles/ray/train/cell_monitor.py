@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from miles.ray.train.cell_state import (
@@ -19,6 +20,7 @@ def create_trainer_cell_health_checker(
     *,
     cell: "RayTrainCell",
     config: SimpleHealthCheckerConfig,
+    get_activeness: Callable[[], bool],
 ) -> SimpleHealthChecker:
     async def _check() -> None:
         # Cell health is liveness, not training progress: the heartbeat RPC runs on
@@ -33,6 +35,7 @@ def create_trainer_cell_health_checker(
     return SimpleHealthChecker(
         name=f"trainer-cell-{cell.cell_index}",
         check_fn=_check,
+        get_activeness=get_activeness,
         config=config,
     )
 
