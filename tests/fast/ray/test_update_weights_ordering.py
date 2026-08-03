@@ -186,6 +186,44 @@ async def test_v2_hands_end_update_weights_the_snapshot_start_returned():
     _assert_the_snapshot_is_handed_back_unchanged(group._inference_controller)
 
 
+@pytest.mark.asyncio
+async def test_v1_aborts_the_window_when_the_broadcast_raises():
+    """A failed weight transfer must close the lock window instead of leaving it open forever."""
+    order: list[str] = []
+    group = RayTrainGroup.__new__(RayTrainGroup)
+    group.args = Namespace(debug_train_only=False, debug_rollout_only=False, use_fault_tolerance=False)
+    group._inference_controller = _OrderRecordingInferenceController(order)
+    group._broadcast = AsyncMock(side_effect=RuntimeError("weight transfer died"))
+
+    with pytest.raises(RuntimeError, match="weight transfer died"):
+        await group.update_weights()
+
+    assert order == ["start_update_weights", "abort_update_weights"]
+
+
+@pytest.mark.asyncio
+async def test_v2_aborts_the_window_when_the_broadcast_raises(monkeypatch):
+    """Same abort requirement on the fault-tolerant trainer group, after its retries are exhausted."""
+    from miles.ray.train import group as train_group_module
+
+    async def _retry_once(fn, **kwargs):
+        await fn(0)
+
+    monkeypatch.setattr(train_group_module, "retry", _retry_once)
+
+    order: list[str] = []
+    group = train_group_module.RayTrainGroup.__new__(train_group_module.RayTrainGroup)
+    group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
+    group._inference_controller = _OrderRecordingInferenceController(order)
+    group._execute_first_alive = AsyncMock(side_effect=RuntimeError("weight transfer died"))
+    group._maybe_log_inference_engine_weight_checksums = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="weight transfer died"):
+        await group.update_weights()
+
+    assert order == ["start_update_weights", "abort_update_weights"]
+
+
 def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
     """Every engine is paused before any engine is flushed."""
     from unittest.mock import patch
