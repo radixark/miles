@@ -8,6 +8,11 @@ from typing import Any
 
 LOCK_ATTRIBUTE_NAME: str = "context_lock"
 
+_DISCIPLINE_MARKER_ATTRIBUTE_NAME: str = "_context_lock_discipline"
+
+# the annotation machinery (PEP 649) plants these in the class dict; they are not methods of the class
+_ANNOTATION_MEMBER_NAMES: frozenset[str] = frozenset({"__annotate__", "__annotate_func__"})
+
 _held_lock: contextvars.ContextVar["ContextLock | None"] = contextvars.ContextVar("held_context_lock", default=None)
 
 
@@ -51,6 +56,18 @@ class ContextLock:
         self._lock.release()
 
 
+def enforce_lock_discipline(cls: type) -> type:
+    for member_name, member in vars(cls).items():
+        if member_name in _ANNOTATION_MEMBER_NAMES:
+            continue
+        for fn in _extract_checkable_functions(member):
+            assert getattr(fn, _DISCIPLINE_MARKER_ATTRIBUTE_NAME, None) is not None, (
+                f"{cls.__name__}.{member_name} must be decorated with one of the context-lock decorators "
+                f"(e.g. with_lock or lock_exempt)"
+            )
+    return cls
+
+
 def with_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
     assert inspect.iscoroutinefunction(fn), f"{fn.__qualname__} must be async to use with_lock"
 
@@ -59,10 +76,29 @@ def with_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
         async with _get_lock(self):
             return await fn(self, *args, **kwargs)
 
-    return wrapper
+    return _mark(wrapper, "with_lock")
+
+
+def lock_exempt(fn: Callable[..., Any]) -> Callable[..., Any]:
+    return _mark(fn, "lock_exempt")
+
+
+def _extract_checkable_functions(member: Any) -> list[Callable[..., Any]]:
+    if isinstance(member, (staticmethod, classmethod)):
+        return [member.__func__]
+    if isinstance(member, property):
+        return [accessor for accessor in (member.fget, member.fset, member.fdel) if accessor is not None]
+    if inspect.isfunction(member):
+        return [member]
+    return []
 
 
 def _get_lock(obj: Any) -> ContextLock:
     lock = getattr(obj, LOCK_ATTRIBUTE_NAME)
     assert isinstance(lock, ContextLock), f"{type(obj).__name__}.{LOCK_ATTRIBUTE_NAME} must be a ContextLock"
     return lock
+
+
+def _mark(fn: Callable[..., Any], discipline: str) -> Callable[..., Any]:
+    setattr(fn, _DISCIPLINE_MARKER_ATTRIBUTE_NAME, discipline)
+    return fn
