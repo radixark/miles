@@ -7,78 +7,126 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
+from miles.utils.ft_utils.api_server.handles import _CellHandler
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellSpec, CellStatus
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.ft_utils.api_server.server import _create_api_app
+from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
-class MockHandle:
+class MockCellState:
     def __init__(
         self,
-        cell_id: str,
-        cell_type: str,
-        cell_key: str = "0",
+        *,
         phase: str = "Running",
         conditions: list[dict[str, str | None]] | None = None,
         is_suspended: bool = False,
         suspend_error: Exception | None = None,
         resume_error: Exception | None = None,
     ) -> None:
-        self.cell_id = cell_id
-        self.cell_type = cell_type
-        self.cell_key = cell_key
-        self._phase = phase
-        self._conditions = conditions or [
+        self.phase = phase
+        self.conditions = conditions or [
             {"type": "Allocated", "status": "True"},
             {"type": "Healthy", "status": "True"},
         ]
-        self._is_suspended = is_suspended
-        self._suspend_error = suspend_error
-        self._resume_error = resume_error
+        self.is_suspended = is_suspended
+        self.suspend_error = suspend_error
+        self.resume_error = resume_error
         self.suspend_calls: int = 0
         self.resume_calls: int = 0
 
-    async def get_cell(self) -> Cell:
+
+class MockHandler(_CellHandler):
+    def __init__(self, cell_type: str) -> None:
+        self._cell_type = cell_type
+        self.cells: dict[str, MockCellState] = {}
+        self.injected: list[tuple[str, FailureMode, int]] = []
+        self.supports_inject_fault = False
+
+    @property
+    def cell_type(self) -> str:
+        return self._cell_type
+
+    def add(self, cell_id: str = "0", **overrides) -> MockCellState:
+        state = MockCellState(**overrides)
+        self.cells[cell_id] = state
+        return state
+
+    async def list_cell_ids(self) -> list[str]:
+        return list(self.cells)
+
+    async def get_cell(self, cell_id: str) -> Cell:
+        state = self.cells[cell_id]
         return Cell(
-            metadata=CellMetadata(
-                name=self.cell_id,
-                labels={"miles.io/cell-type": self.cell_type, "miles.io/cell-index": self.cell_key},
-            ),
-            spec=CellSpec(suspend=self._is_suspended),
+            metadata=self._compute_metadata(cell_id),
+            spec=CellSpec(suspend=state.is_suspended),
             status=CellStatus(
-                phase=self._phase,
-                conditions=[CellCondition(**c) for c in self._conditions],
+                phase=state.phase,
+                conditions=[CellCondition(**c) for c in state.conditions],
             ),
         )
 
-    async def suspend(self) -> None:
-        if self._suspend_error:
-            raise self._suspend_error
-        self.suspend_calls += 1
-        self._is_suspended = True
-        self._phase = "Suspended"
-        self._conditions = [
+    async def suspend(self, cell_id: str) -> None:
+        state = self.cells[cell_id]
+        if state.suspend_error:
+            raise state.suspend_error
+        state.suspend_calls += 1
+        state.is_suspended = True
+        state.phase = "Suspended"
+        state.conditions = [
             {"type": "Allocated", "status": "False"},
             {"type": "Healthy", "status": "False"},
         ]
 
-    async def resume(self) -> None:
-        if self._resume_error:
-            raise self._resume_error
-        self.resume_calls += 1
-        self._is_suspended = False
-        self._phase = "Running"
-        self._conditions = [
+    async def resume(self, cell_id: str) -> None:
+        state = self.cells[cell_id]
+        if state.resume_error:
+            raise state.resume_error
+        state.resume_calls += 1
+        state.is_suspended = False
+        state.phase = "Running"
+        state.conditions = [
             {"type": "Allocated", "status": "True"},
             {"type": "Healthy", "status": "True"},
         ]
 
+    async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        if not self.supports_inject_fault:
+            await super().inject_fault(cell_id, mode=mode, sub_index=sub_index)
+        self.injected.append((cell_id, mode, sub_index))
+
+
+class MockGatedHandler(MockHandler):
+    def __init__(self, cell_type: str, *, gate: asyncio.Event) -> None:
+        super().__init__(cell_type)
+        self._gate = gate
+
+    async def list_cells(self) -> list[Cell]:
+        await self._gate.wait()
+        return await super().list_cells()
+
+
+class MockGateOpeningHandler(MockHandler):
+    def __init__(self, cell_type: str, *, gate: asyncio.Event) -> None:
+        super().__init__(cell_type)
+        self._gate = gate
+
+    async def list_cells(self) -> list[Cell]:
+        self._gate.set()
+        return await super().list_cells()
+
 
 class MockRemoteCall:
-    def __init__(self, return_value: object, effect: Callable[..., None] | None = None) -> None:
+    def __init__(
+        self,
+        return_value: object,
+        effect: Callable[..., None] | None = None,
+        factory: Callable[..., object] | None = None,
+    ) -> None:
         self._return_value = return_value
         self._effect = effect
+        self._factory = factory
         self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def remote(self, *args: object, **kwargs: object) -> asyncio.Future[object]:
@@ -86,7 +134,7 @@ class MockRemoteCall:
         if self._effect is not None:
             self._effect(*args, **kwargs)
         future: asyncio.Future[object] = asyncio.get_event_loop().create_future()
-        future.set_result(self._return_value)
+        future.set_result(self._factory(*args, **kwargs) if self._factory is not None else self._return_value)
         return future
 
 
@@ -190,8 +238,18 @@ def make_mock_group(cells: list[MockRayTrainCell]) -> object:
 
 
 @pytest.fixture
-def registry() -> _CellRegistry:
-    return _CellRegistry()
+def actor_handler() -> MockHandler:
+    return MockHandler("actor")
+
+
+@pytest.fixture
+def rollout_handler() -> MockHandler:
+    return MockHandler("rollout")
+
+
+@pytest.fixture
+def registry(actor_handler: MockHandler, rollout_handler: MockHandler) -> _CellRegistry:
+    return _CellRegistry([actor_handler, rollout_handler])
 
 
 @pytest.fixture
