@@ -58,9 +58,7 @@ class ModelConfig:
                         pushed by training) is only valid for updatable models.
                         Frozen colocated models must pick ``cpu`` (host RAM
                         backup), ``disk`` (process-local backup), or ``reload``
-                        (re-read ``model_path``).  Required — there is no safe
-                        default, since each option trades host RAM against
-                        per-rollout restore latency.
+                        (re-read ``model_path``).
     """
 
     name: str
@@ -182,6 +180,7 @@ class SglangConfig:
                     num_gpus_per_engine=m.get("num_gpus_per_engine"),
                     server_groups=groups,
                     update_weights=m.get("update_weights"),
+                    weights_backup_mode=m.get("weights_backup_mode"),
                 )
             )
         return SglangConfig(models=models)

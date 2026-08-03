@@ -72,7 +72,7 @@ class TestSglangConfigUpdateWeights:
         assert config.models[1].update_weights is False
         assert config.models[1].model_path == "/path/to/ref"
 
-    def test_weights_backup_mode_parsed_from_yaml(self, tmp_path):
+    def test_weights_backup_mode(self, tmp_path):
         path = _write_yaml(
             {
                 "sglang": [
@@ -112,9 +112,6 @@ class TestSglangConfigUpdateWeights:
         )
         config = SglangConfig.from_yaml(path)
         assert config.total_num_gpus == 12
-
-    
-
 
 class TestGetModelUrl:
     def test_get_model_url_basic(self):
