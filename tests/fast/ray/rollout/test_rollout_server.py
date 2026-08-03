@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_dataclass_group
 
+from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.rollout_server import (
     RolloutServer,
     _compute_megatron_num_gpus,
@@ -107,6 +110,29 @@ class TestRolloutServerCrossGroupProperties:
         b = make_dataclass_group(num_engines=2, num_gpus_per_engine=2, gpu_offset=4)
         srv = RolloutServer(server_groups=[a, b])
         assert srv.engine_gpu_offsets == [0, 1, 4, 6]
+
+
+@pytest.mark.asyncio
+async def test_recovery_reuses_persistent_port_cursor() -> None:
+    observed_base_ports: list[int] = []
+
+    async def recover(*, port_cursors, register_with_router):
+        assert register_with_router is False
+        observed_base_ports.append(port_cursors.next_base_port())
+        port_cursors.assign(PortCursors(_values={0: port_cursors.next_base_port() + 100}))
+
+    group = make_dataclass_group(num_engines=1)
+    group.recover = AsyncMock(side_effect=recover)
+    server = RolloutServer(
+        server_groups=[group],
+        _port_cursors=PortCursors(_values={0: 20000}),
+    )
+
+    await server.recover(register_with_router=False)
+    await server.recover(register_with_router=False)
+
+    assert observed_base_ports == [20000, 20100]
+    assert server._port_cursors == PortCursors(_values={0: 20200})
 
 
 class TestRolloutServerNodesPerEngineHeterogeneity:

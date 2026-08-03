@@ -597,6 +597,23 @@ _AGENTIC_VARIANTS = ["agentic_tool_call"]
 _AGENT_METADATA = {"reward": 1.0, "exit_status": "Submitted", "eval_report": {"passed": True}}
 
 
+class TestAgenticWeightVersion:
+    @pytest.fixture(params=_AGENTIC_VARIANTS)
+    def variant(self, request):
+        return request.param
+
+    @pytest.mark.parametrize("generation_env", [{"process_fn_kwargs": {"weight_version": "default"}}], indirect=True)
+    def test_default_weight_version_rejected_after_publication(self, variant, generation_env):
+        generation_env.args._sglang_default_model_name = "actor"
+        generation_env.args._sglang_published_model_names = {"actor"}
+
+        with pytest.raises(
+            RuntimeError,
+            match="Received weight_version='default' from updatable model 'actor' after actor weights were published",
+        ):
+            _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
+
+
 class TestAgentMetadata:
     """Tests specific to agentic_tool_call: agent function returning dict | None → metadata merge."""
 

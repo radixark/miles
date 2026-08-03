@@ -11,6 +11,7 @@ from argparse import Namespace
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     get_indexer_topk_from_response,
     get_routed_experts_from_response,
+    validate_weight_version,
 )
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
@@ -94,6 +95,10 @@ def _compute_sample_from_openai_record(
     args: Namespace, record: SessionRecord, tokenizer, trim_count: int = 0
 ) -> Sample:
     choice = record.response["choices"][0]
+    model_name = record.request.get("model")
+    if model_name is not None and not isinstance(model_name, str):
+        raise TypeError("Session request model must be a string")
+    validate_weight_version(args, choice["meta_info"], model_name=model_name)
 
     prompt_token_ids = record.request.get("input_ids")
     if prompt_token_ids is None:

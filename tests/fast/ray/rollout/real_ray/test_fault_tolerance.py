@@ -37,7 +37,7 @@ def _build_group(
 
 
 def _start(group: ServerGroup) -> None:
-    handles, indices = group.start_engines(PortCursors.empty())
+    handles, indices = group.start_engines(PortCursors.empty(), register_with_router=True)
     ray.get(handles)
     group.mark_alive(indices)
 
@@ -74,7 +74,11 @@ class TestKillAndRecover:
         group.all_engines[0].mark_stopped()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
+            await group.recover(
+                port_cursors=PortCursors.empty(),
+                register_with_router=False,
+                filter_indices=[0],
+            )
             # New actor for slot 0
             assert group.all_engines[0].is_allocated
             assert group.all_engines[0].actor_handle is not original_handles[0]
@@ -104,7 +108,7 @@ class TestKillAndRecover:
             group.all_engines[i].mark_stopped()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty())
+            await group.recover(port_cursors=PortCursors.empty(), register_with_router=False)
             for i in (0, 2):
                 assert group.all_engines[i].is_allocated
                 assert group.all_engines[i].actor_handle is not old[i]
@@ -129,7 +133,11 @@ class TestKillAndRecover:
         group.all_engines[0].mark_stopped()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
+            await group.recover(
+                port_cursors=PortCursors.empty(),
+                register_with_router=False,
+                filter_indices=[0],
+            )
             calls = ray.get(group.all_engines[0].actor_handle.get_calls.remote())
             method_names = [c[0] for c in calls]
             # init → release → resume(tags=[WEIGHTS])
@@ -189,8 +197,16 @@ class TestConcurrentRecover:
         try:
             # Real concurrent recover via asyncio.gather
             await asyncio.gather(
-                a.recover(port_cursors=PortCursors.empty(), filter_indices=[0]),
-                b.recover(port_cursors=PortCursors.empty(), filter_indices=[0]),
+                a.recover(
+                    port_cursors=PortCursors.empty(),
+                    register_with_router=False,
+                    filter_indices=[0],
+                ),
+                b.recover(
+                    port_cursors=PortCursors.empty(),
+                    register_with_router=False,
+                    filter_indices=[0],
+                ),
             )
             assert a.all_engines[0].is_allocated
             assert b.all_engines[0].is_allocated

@@ -237,6 +237,28 @@ class TestSharedPortCursorsAcrossGroups:
         ports_b = {addrs_b[r]["port"] for r in addrs_b} | {addrs_b[r]["nccl_port"] for r in addrs_b}
         assert ports_a.isdisjoint(ports_b), f"port overlap A={ports_a} B={ports_b}"
 
+    def test_recovery_cursor_does_not_reuse_previous_engine_url(self, patch_ray_get):
+        args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
+        cursors = PortCursors.empty()
+        engines = [(0, fake_engine(port_seed=0))]
+
+        first_addrs, next_cursors = allocate_rollout_engine_addr_and_ports_normal(
+            args=args,
+            rollout_engines=engines,
+            num_gpus_per_engine=1,
+            base_port=cursors.next_base_port(),
+        )
+        cursors.assign(next_cursors)
+        second_addrs, _ = allocate_rollout_engine_addr_and_ports_normal(
+            args=args,
+            rollout_engines=engines,
+            num_gpus_per_engine=1,
+            base_port=cursors.next_base_port(),
+        )
+
+        assert first_addrs[0]["host"] == second_addrs[0]["host"]
+        assert first_addrs[0]["port"] != second_addrs[0]["port"]
+
 
 class TestRankPortConsistency:
     """rank ↔ addr_and_ports index consistency in ``ServerGroup.start_engines``.

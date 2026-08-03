@@ -19,10 +19,13 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     Returns a dict mapping model name -> ``RolloutServer``.
     """
     config = _resolve_sglang_config(args)
+    args._sglang_default_model_name = config.models[0].name
+    args._sglang_published_model_names = set()
 
     servers: dict[str, RolloutServer] = {}
     gpu_offset = 0
     engine_offset = 0
+    port_cursors = PortCursors.empty()
 
     rollout_pg_offset = _compute_rollout_offset(args)
     megatron_num_gpus = _compute_megatron_num_gpus(args)
@@ -40,7 +43,6 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
         server_groups: list[ServerGroup] = []
         all_init_handles: list = []
         new_engine_indices_per_group: list[list[int]] = []
-        port_cursors = PortCursors.empty()
 
         for group_cfg in model_cfg.server_groups:
             gpus_per_engine = group_cfg.num_gpus_per_engine
@@ -75,7 +77,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 router_port=router_port,
                 update_weights=model_cfg.update_weights,
             )
-            handles, new_engine_indices = group.start_engines(port_cursors)
+            handles, new_engine_indices = group.start_engines(port_cursors, register_with_router=True)
             all_init_handles.extend(handles)
             server_groups.append(group)
             new_engine_indices_per_group.append(new_engine_indices)
@@ -95,6 +97,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             router_port=router_port,
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
+            _port_cursors=port_cursors,
         )
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
@@ -156,6 +159,7 @@ class RolloutServer:
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
+    _port_cursors: PortCursors = dataclasses.field(default_factory=PortCursors.empty)
 
     @property
     def engines(self) -> list[ServerEngine]:
@@ -190,10 +194,64 @@ class RolloutServer:
             raise ValueError(f"Heterogeneous nodes_per_engine across groups: {values}")
         return values.pop()
 
-    async def recover(self):
-        """Recover dead engines across all active groups, overlapping init."""
-        port_cursors = PortCursors.empty()
-        await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
+    async def recover(self, *, register_with_router: bool) -> None:
+        """Recover dead engines across all active groups.
+
+        Args:
+            register_with_router: Whether each replacement can be routed as
+                soon as initialization completes.
+        """
+        await asyncio.gather(
+            *[
+                g.recover(
+                    port_cursors=self._port_cursors,
+                    register_with_router=register_with_router,
+                )
+                for g in self.server_groups
+            ]
+        )
+
+    async def recover_group(
+        self,
+        *,
+        group_index: int,
+        register_with_router: bool,
+        filter_indices: list[int] | None,
+    ) -> None:
+        """Recover selected slots in one server group.
+
+        Args:
+            group_index: Index of the server group to recover.
+            register_with_router: Whether replacements can be routed as soon
+                as initialization completes.
+            filter_indices: Actor ranks to inspect, or None to inspect all
+                ranks in the group.
+        """
+        await self.server_groups[group_index].recover(
+            port_cursors=self._port_cursors,
+            register_with_router=register_with_router,
+            filter_indices=filter_indices,
+        )
+
+    async def register_pending_engines_with_router(
+        self,
+        *,
+        rollout_engine_generation_ids: list[str],
+    ) -> None:
+        """Register recovered engines that received the completed weight update.
+
+        Args:
+            rollout_engine_generation_ids: IDs of the node-0 engine generations
+                included in the weight publication.
+        """
+        await asyncio.gather(
+            *[
+                group.register_pending_engines_with_router(
+                    rollout_engine_generation_ids=rollout_engine_generation_ids,
+                )
+                for group in self.server_groups
+            ]
+        )
 
     async def offload(self, tags: list[str] | None = None):
         handles = []
