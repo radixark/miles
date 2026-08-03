@@ -123,9 +123,8 @@ jobs:
             echo "No upstream changes"
           fi
 
-          # Staleness fallback: rebuild at least once per MAX_BUILD_AGE even with no
-          # upstream changes, so the dev image never drifts more than a day behind
-          # the miles repo itself (miles commits alone do not trigger rebuilds).
+          # miles commits alone never trigger rebuilds, so bound how stale the baked
+          # miles checkout can get.
           MAX_BUILD_AGE_SECONDS=$(( 24 * 3600 ))
           NOW_EPOCH=$(date +%s)
           if [ "$SHOULD_BUILD" = "false" ]; then
@@ -138,8 +137,8 @@ jobs:
             fi
           fi
 
-          # Save current values for next run. The cache is only saved when a build
-          # triggers, so line 6 records when the last scheduled build was kicked off.
+          # Save current values for next run (cached only when a build triggers,
+          # so line 6 = when the last build was kicked off).
           echo "${SGLANG_SHA}" > "$CACHE_FILE"
           echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
           echo "${WHEELS_CU13_X86_FP}" >> "$CACHE_FILE"
