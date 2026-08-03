@@ -16,6 +16,7 @@ class _OrderRecordingInferenceController:
 
         async def _method(*args, **kwargs):
             recorder._order.append(name)
+            return MagicMock()
 
         return _method
 
