@@ -51,7 +51,7 @@ def run_ci(
     train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
     train_args += f"--save-debug-event-data {dump_dir}/events "
 
-    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
+    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval, cell_type="actor")
 
     try:
         U.execute_train(

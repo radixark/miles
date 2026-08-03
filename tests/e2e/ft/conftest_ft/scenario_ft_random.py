@@ -14,14 +14,19 @@ from tests.e2e.ft.conftest_ft.execution import (
     prepare,
     run_training,
 )
-from tests.e2e.ft.conftest_ft.fault_injection import API_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
+from tests.e2e.ft.conftest_ft.fault_injection import (
+    API_SERVER_PORT,
+    MEAN_INTERVAL_SECONDS,
+    FaultInjectorHandle,
+    spawn_fault_injector,
+)
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
-from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigure_events
+from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections, assert_soak_reconfigure_events
 
 app: typer.Typer = typer.Typer()
 
-TEST_NAME: str = "trainer_ft_random"
+TEST_NAME: str = "ft_random"
 
 
 @app.command(name="run")
@@ -31,7 +36,7 @@ def run_ci(
     num_steps: Annotated[int, typer.Option(help="Number of train() calls")] = 30,
     crash_probability: Annotated[float, typer.Option(help="Per-step crash probability per cell")] = 0.5,
 ) -> None:
-    """Random failure soak test.
+    """Random failure soak test, for whichever components the mode enables ft on.
 
     Starts a background thread that injects faults at random intervals via the
     api server HTTP API. The mini FT controller auto-recovers; the test passes
@@ -45,6 +50,7 @@ def run_ci(
     print(f"Dump directory: {dump_dir}")
     mean_interval: float = MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01)
     print(f"Seed: {seed}, Steps: {num_steps}, Mean injection interval: {mean_interval:.1f}s")
+    print(f"FT components: {ft_mode.ft_components}")
 
     prepare(ft_mode)
 
@@ -58,19 +64,55 @@ def run_ci(
         + "--mini-ft-controller-enable "
     )
 
-    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
+    injector = spawn_fault_injector(
+        seed=seed, mean_interval_seconds=mean_interval, cell_type=compute_injected_cell_type(ft_mode)
+    )
 
     try:
         run_training(train_args=train_args, mode=ft_mode, dump_dir=dump_dir)
     finally:
         injector.stop_and_join(timeout_seconds=5)
 
-    assert_soak_reconfigure_events(
-        Path(dump_dir) / "events",
-        num_successful_injections=injector.num_successful_injections,
+    assert_healing(ft_mode, injector=injector, dump_dir=dump_dir)
+
+    print(f"Random failure soak test PASSED (mode={mode}, seed={seed}, steps={num_steps})")
+
+
+def compute_injected_cell_type(ft_mode: FTTestMode) -> str | None:
+    match tuple(sorted(ft_mode.ft_components)):
+        case ("train",):
+            return "actor"
+        case ("rollout",):
+            return "rollout"
+        case _:
+            return None
+
+
+def assert_healing(ft_mode: FTTestMode, *, injector: FaultInjectorHandle, dump_dir: str) -> None:
+    assert_min_soak_injections(injector.num_successful_injections, context=f"{TEST_NAME} {ft_mode.ft_components}")
+
+    if "train" in ft_mode.ft_components:
+        assert_soak_reconfigure_events(
+            Path(dump_dir) / "events",
+            num_successful_injections=injector.num_successful_injections,
+        )
+
+    if "rollout" in ft_mode.ft_components:
+        assert_rollout_healed_through_pending(injector)
+
+
+def assert_rollout_healed_through_pending(injector: FaultInjectorHandle) -> None:
+    history = injector.phase_history
+    healed = history.cells_that_healed_through_pending()
+
+    assert healed, (
+        f"No rollout cell was observed healing through the gated path "
+        f"Running -> Suspended -> Pending -> Running after "
+        f"{injector.num_successful_injections} successful injection(s) "
+        f"(observed phases: {history.phases_of_cell_name})"
     )
 
-    print(f"Random failure soak test PASSED (seed={seed}, steps={num_steps})")
+    print(f"Gated healing witness assertion passed: {healed} healed through Pending")
 
 
 if __name__ == "__main__":

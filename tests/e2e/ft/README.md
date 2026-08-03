@@ -17,7 +17,7 @@
 ## Mode Variants
 
 - Each scenario runs with a `--mode`.
-- All modes are **disaggregated** (training and rollout on separate nodes). Modes without rollout use debug rollout data.
+- A mode declares its `ft_components` (default `("train",)`) and whether it is `colocate`d (default disaggregated: training and rollout on separate nodes). Modes without rollout use debug rollout data.
 
 | Mode | Nodes | DP cells | Parallelism | Rollout | Model | Coverage |
 |------|-------|----------|-------------|---------|-------|----------|
@@ -26,6 +26,7 @@
 | `dp4_cp2` | 1 | 4 | CP2 | debug data | 5-layer MoE | Multi-replica (>=4 cells) |
 | `dp2_cp2_real_rollout` | 1 | 2 | CP2 | 4 engines × 1 GPU | 5-layer MoE | Real rollout engines + weight update path (no_failure, deterministic) |
 | `dp2_cp2_real_rollout_dense` | 1 | 2 | CP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | Real rollout under a fault + injection match guard (with_failure) |
+| `colocate_dp2_cp2_rollout_ft` | 1 | 2 | CP2 | 4 engines × 1 GPU, colocated | dense Qwen3-0.6B | Rollout ft under colocation (gated relaunch) |
 | `6node_dp4_cp2_tp2_pp2_ep2_etp2` | 4+2 | 4 | CP2 TP2 PP2 EP2 ETP2 | 2 engines × 8 GPU | full MoE | Large-scale, all parallelism |
 
 - All scenarios use `--rollout-batch-size 32 --n-samples-per-prompt 8 --global-batch-size 256` (256 samples/rollout), which divides evenly across both 2 and 4 cells. Uneven sample distribution across replicas is **not** exercised.
@@ -238,11 +239,17 @@ fault-free runs.
 Type: non-comparison (no baseline, no compare)
 Steps: 30 (default), configurable via --num-steps
 
+Targeting and assertions are derived from the mode's ft_components:
+  - ("train",)            -> inject into "actor" cells only, assert healing CellReconfigureEvents
+  - ("rollout",)          -> inject into "rollout" cells only, assert gated healing (below)
+  - ("train","rollout")   -> inject into every kind, assert both
+  Injecting into a component whose ft is off would crash something nothing is watching.
+
 Architecture (external fault injection, not inside training loop):
   1. Start training with indep_dp + api server (port 18080) + mini FT controller
   2. Start a background daemon thread that:
      a. Sleeps a random interval (exponential, mean = 60s / crash_probability ≈ 120s at the default)
-     b. GET /api/v1/cells — read each cell's Healthy condition
+     b. GET /api/v1/cells — read each cell's Healthy condition, keeping only the targeted cell type
      c. Count the genuinely-alive cells — reported Healthy, minus cells we injected that have
         not finished a down->up recovery (RecoveryGate) — and skip if injecting would leave
         <=1 of them. The api server reports a just-killed cell Healthy for ~95s >> the
@@ -260,6 +267,10 @@ Architecture (external fault injection, not inside training loop):
      --crash-probability is set high enough that the soak reliably clears this floor. Faults are
      random, so neither an exact sequence nor the end-state membership is asserted — the
      witness only proves repeated faults were injected and healing actually ran.
+  8. Rollout healing witness: a cell must be seen going Running -> Pending -> Running. A relaunched
+     engine comes back gated, so it sits in Pending until the next weight update window; going
+     straight back to Running means it was never gated. Suspended is not required in between —
+     it lasts only --mini-ft-controller-resume-delay (10s), which a 2s poll can miss.
 
 CLI options: --seed (default 42), --num-steps (default 30), --crash-probability (default 0.5)
 ```
