@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import abc
 
+import ray
+
+from miles.ray.rollout.server_cell import PENDING_ROLLOUT_CELL_STATUS
 from miles.ray.train.group import RayTrainGroup
-from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.test_utils.fault_injector import FailureMode
 
 
@@ -79,11 +82,19 @@ class _ActorCellHandle(_CellHandle):
         actors[sub_index].inject_fault.remote(mode.value)
 
 
-# TODO the code will NOT work before implementing rollout ft
 class _RolloutCellHandle(_CellHandle):
-    def __init__(self, *, inference_controller: object, rollout_cell_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        worker_manager: ray.actor.ActorHandle,
+        inference_controller: object,
+        rollout_cell_id: str,
+        engine_spec_names: list[str],
+    ) -> None:
+        self._worker_manager = worker_manager
         self._inference_controller = inference_controller
         self._rollout_cell_id = rollout_cell_id
+        self._engine_spec_names = engine_spec_names
 
     @property
     def cell_type(self) -> str:
@@ -94,9 +105,9 @@ class _RolloutCellHandle(_CellHandle):
         return self._rollout_cell_id
 
     async def get_cell(self) -> Cell:
-        phase = self._inference_controller.get_cell_phase(self._rollout_cell_id)
-        conditions_raw = self._inference_controller.get_cell_conditions(self._rollout_cell_id)
-        is_suspended = self._inference_controller.get_cell_is_suspended(self._rollout_cell_id)
+        summaries = await self._worker_manager.get_cell_infos.remote(spec_names=self._engine_spec_names)
+        statuses = self._inference_controller.get_cell_statuses()
+        suspended = not summaries[self._rollout_cell_id].alive
         return Cell(
             metadata=CellMetadata(
                 name=self.cell_id,
@@ -105,15 +116,16 @@ class _RolloutCellHandle(_CellHandle):
                     "miles.io/cell-index": self.cell_key,
                 },
             ),
-            spec=CellSpec(suspend=is_suspended),
-            status=CellStatus(
-                phase=phase,
-                conditions=[CellCondition(**c) for c in conditions_raw],
+            spec=CellSpec(suspend=suspended),
+            status=(
+                CellStatus(phase="Suspended", conditions=[CellCondition.allocated(TriState.FALSE)])
+                if suspended
+                else statuses.get(self._rollout_cell_id, PENDING_ROLLOUT_CELL_STATUS)
             ),
         )
 
     async def suspend(self) -> None:
-        await self._inference_controller.stop_cell(self._rollout_cell_id)
+        await self._worker_manager.stop_cells.remote([self._rollout_cell_id])
 
     async def resume(self) -> None:
-        await self._inference_controller.start_cell(self._rollout_cell_id)
+        await self._worker_manager.start_cells.remote([self._rollout_cell_id])
