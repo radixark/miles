@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -58,26 +58,14 @@ class RayWorkerManager:
 
     async def start_cells(self, cell_ids: list[str]) -> None:
         cells = [cell for cell_id in cell_ids if (cell := self._find_cell(cell_id)).actors is None]
-        phases: list[Callable[[_CellManager], Awaitable[None]]] = [
-            lambda c: c.launch_actors(),
-            lambda c: c.alloc_ports(),
-            lambda c: c.post_setup(),
-        ]
-
-        errors: list[BaseException] = []
-        for phase in phases:
-            outcomes = await asyncio.gather(*[phase(c) for c in cells], return_exceptions=True)
-            failed = [c for c, outcome in zip(cells, outcomes, strict=True) if isinstance(outcome, BaseException)]
-            errors += [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
-            if failed:
-                logger.warning(f"Rolling back cells that failed to start ({[c.cell_id for c in failed]}) ({errors=})")
-                await asyncio.gather(*[c.stop() for c in failed], return_exceptions=True)
-                cells = [
-                    c for c, outcome in zip(cells, outcomes, strict=True) if not isinstance(outcome, BaseException)
-                ]
-
-        if errors:
-            raise errors[0]
+        try:
+            await _gather_or_raise([c.launch_actors() for c in cells])
+            await _gather_or_raise([c.alloc_ports() for c in cells])
+            await _gather_or_raise([c.post_setup() for c in cells])
+        except Exception:
+            logger.error(f"Starting cells {[c.cell_id for c in cells]} failed, rolling back", exc_info=True)
+            await asyncio.gather(*[c.stop() for c in cells], return_exceptions=True)
+            raise
 
     async def stop_cells(self, cell_ids: list[str]) -> None:
         await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
@@ -335,3 +323,10 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
         )
         launch_cmd = self.spec.launch_command(ctx)
         self.actor_handle.run.remote(cmd=launch_cmd, envs={})
+
+
+async def _gather_or_raise(coros: list[Coroutine[Any, Any, None]]) -> None:
+    results = await asyncio.gather(*coros, return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result

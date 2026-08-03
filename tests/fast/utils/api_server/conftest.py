@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+from collections.abc import Callable
 
 import httpx
 import pytest
@@ -8,6 +10,7 @@ import pytest
 from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.ft_utils.api_server.server import _create_api_app
+from miles.utils.workers.worker_provider.base import CellInfo
 
 
 class MockHandle:
@@ -73,49 +76,71 @@ class MockHandle:
 
 
 class MockRemoteCall:
-    def __init__(self, return_value: object) -> None:
+    def __init__(self, return_value: object, effect: Callable[..., None] | None = None) -> None:
         self._return_value = return_value
+        self._effect = effect
         self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def remote(self, *args: object, **kwargs: object) -> asyncio.Future[object]:
         self.calls.append((args, kwargs))
+        if self._effect is not None:
+            self._effect(*args, **kwargs)
         future: asyncio.Future[object] = asyncio.get_event_loop().create_future()
         future.set_result(self._return_value)
         return future
 
 
 class MockInferenceController:
-    """Plain object, not a Ray actor: the controller lives in the driver process."""
+    def __init__(self, statuses: dict[str, CellStatus] | None = None) -> None:
+        self._statuses = dict(statuses or {})
+        self.status_calls: int = 0
 
-    def __init__(
-        self,
-        phase: str = "Running",
-        conditions: list[dict[str, str | None]] | None = None,
-        is_suspended: bool = False,
-    ) -> None:
-        self._phase = phase
-        self._conditions = conditions or [
-            {"type": "Allocated", "status": "True"},
-            {"type": "Healthy", "status": "True"},
-        ]
-        self._is_suspended = is_suspended
-        self.stopped_cells: list[str] = []
-        self.started_cells: list[str] = []
+    def get_cell_statuses(self) -> dict[str, CellStatus]:
+        self.status_calls += 1
+        return dict(self._statuses)
 
-    def get_cell_phase(self, cell_id: str) -> str:
-        return self._phase
+    def observe_cell(self, cell_id: str, status: CellStatus) -> None:
+        self._statuses[cell_id] = status
 
-    def get_cell_conditions(self, cell_id: str) -> list[dict[str, str | None]]:
-        return self._conditions
 
-    def get_cell_is_suspended(self, cell_id: str) -> bool:
-        return self._is_suspended
+class MockWorkerManager:
+    def __init__(self, summaries: dict[str, CellInfo] | None = None) -> None:
+        self._summaries = dict(summaries or {})
+        self.stopped_cells: list[list[str]] = []
+        self.started_cells: list[list[str]] = []
+        self.cell_info_calls: list[dict[str, object]] = []
 
-    async def stop_cell(self, cell_id: str) -> None:
-        self.stopped_cells.append(cell_id)
+    @property
+    def get_cell_infos(self) -> MockRemoteCall:
+        return MockRemoteCall(dict(self._summaries), effect=lambda **kwargs: self.cell_info_calls.append(kwargs))
 
-    async def start_cell(self, cell_id: str) -> None:
-        self.started_cells.append(cell_id)
+    @property
+    def stop_cells(self) -> MockRemoteCall:
+        return MockRemoteCall(None, effect=lambda ids: self._record(self.stopped_cells, ids, suspended=True))
+
+    @property
+    def start_cells(self) -> MockRemoteCall:
+        return MockRemoteCall(None, effect=lambda ids: self._record(self.started_cells, ids, suspended=False))
+
+    def _record(self, log: list[list[str]], cell_ids: list[str], *, suspended: bool) -> None:
+        log.append(list(cell_ids))
+        for cell_id in cell_ids:
+            previous = self._summaries[cell_id]
+            self._summaries[cell_id] = dataclasses.replace(previous, alive=not suspended)
+
+
+def make_cell_summaries(*cell_ids: str, suspended: bool = False) -> dict[str, CellInfo]:
+    return {
+        cell_id: CellInfo(
+            cell_id=cell_id,
+            pool_id=cell_id.rsplit("-", 1)[0],
+            alive=not suspended,
+            worker_names=[] if suspended else [f"{cell_id}-0"],
+            workers_hash="pseudo-hash-0",
+            meta={"model_id": "default"},
+        )
+        for cell_id in cell_ids
+    }
 
 
 class MockRayTrainCell:
