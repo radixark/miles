@@ -8,8 +8,12 @@ from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils.retry_utils import retry_until_deadline
 
 logger = logging.getLogger(__name__)
+
+WAIT_CELLS_INITIAL_DELAY_SECONDS = 1.0
+WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 
 
 async def create_rollout_servers(args) -> dict[str, "RolloutServer"]:
@@ -37,6 +41,7 @@ async def create_rollout_servers(args) -> dict[str, "RolloutServer"]:
             router_port=router_addr.port,
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
+            expected_num_cells=model_cfg.num_server_cells,
         )
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
@@ -57,6 +62,7 @@ class RolloutServer:
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
+    expected_num_cells: int = 0
 
     @property
     def api_clients(self) -> list[SGLangApiClient]:
@@ -120,6 +126,26 @@ class RolloutServer:
 
     def _addressable_cells(self) -> list[ServerCell]:
         return [cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving]
+
+    async def wait_expected_num_cells(self, timeout: float = 3600):
+        async def _check(remaining_seconds: float) -> None:
+            count = self._count_startable_cells()
+            if count < self.expected_num_cells:
+                raise Exception(f"Only {count}/{self.expected_num_cells} cells of {self.model_name} are ready")
+
+        await retry_until_deadline(
+            _check,
+            total_seconds=timeout,
+            retry_on=Exception,
+            initial_delay=WAIT_CELLS_INITIAL_DELAY_SECONDS,
+            max_delay=WAIT_CELLS_MAX_DELAY_SECONDS,
+            log_fields=dict(op="wait_expected_num_cells", model_name=self.model_name),
+        )
+
+    def _count_startable_cells(self) -> int:
+        if self.args.colocate:
+            return len(self.server_cells)
+        return sum(1 for cell in self.server_cells.values() if cell.is_pending_weights_or_serving)
 
     @property
     def _router_api_client(self) -> SGLangRouterApiClient:

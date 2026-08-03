@@ -6,8 +6,6 @@ from miles.utils.workers.argv_utils import render_cli_argv
 
 _ALWAYS_RENDER_FIELDS = ("trust_remote_code", "model_path", "host", "port", "device")
 
-_UNCOMPARED_FIELDS = frozenset({"random_seed"})
-
 
 def server_args_to_argv(server_args_dict: dict) -> list[str]:
     return render_cli_argv(
@@ -16,7 +14,6 @@ def server_args_to_argv(server_args_dict: dict) -> list[str]:
         make_parser=_make_cli_parser,
         from_parsed=ServerArgs.from_cli_args,
         always_render_fields=_ALWAYS_RENDER_FIELDS,
-        uncompared_fields=_UNCOMPARED_FIELDS,
     )
 
 
