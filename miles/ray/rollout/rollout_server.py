@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -9,6 +10,7 @@ from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApi
 from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
+from miles.utils.ft_utils.health_checker import ActiveAndEpoch
 from miles.utils.retry_utils import retry_until_deadline
 
 logger = logging.getLogger(__name__)
@@ -17,7 +19,9 @@ WAIT_CELLS_INITIAL_DELAY_SECONDS = 1.0
 WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 
 
-async def create_rollout_servers(args, context_lock: ContextLock) -> dict[str, "RolloutServer"]:
+async def create_rollout_servers(
+    args, context_lock: ContextLock, global_health_checker_activeness: Callable[[], ActiveAndEpoch]
+) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
     assert args.sglang_router_ip is None, (
         "external router mode was removed: miles always starts its own routers "
@@ -43,6 +47,7 @@ async def create_rollout_servers(args, context_lock: ContextLock) -> dict[str, "
             router_port=router_addr.port,
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
+            global_health_checker_activeness=global_health_checker_activeness,
             expected_num_cells=model_cfg.num_server_cells,
         )
 
@@ -66,6 +71,9 @@ class RolloutServer:
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
+    global_health_checker_activeness: Callable[[], ActiveAndEpoch] = lock_exempt(
+        lambda: ActiveAndEpoch(active=True, epoch=0)
+    )
     expected_num_cells: int = 0
 
     @property
@@ -102,16 +110,26 @@ class RolloutServer:
     async def add_cell(self, cell_meta: ServerCellMetadata):
         cell_id = cell_meta.cell_id
         assert cell_id not in self.server_cells
-        cell = ServerCell(args=self.args, router_api_client=self._router_api_client, meta=cell_meta)
+        cell = ServerCell(
+            args=self.args,
+            router_api_client=self._router_api_client,
+            meta=cell_meta,
+            global_health_checker_activeness=self.global_health_checker_activeness,
+        )
+        self.server_cells[cell_id] = cell
         if not self.args.colocate:
             await cell.init()
-        self.server_cells[cell_id] = cell
 
     @requires_lock
     async def remove_cell(self, cell_id: str):
         logger.info(f"Killing server {cell_id=}...")
         await self.server_cells[cell_id].dispose()
         del self.server_cells[cell_id]
+
+    @requires_lock
+    async def dispose(self) -> None:
+        for cell_id in list(self.server_cells.keys()):
+            await self.remove_cell(cell_id)
 
     @requires_lock
     async def offload(self, tags: list[str] | None = None):

@@ -21,6 +21,7 @@ from miles.utils.context_lock import (
     requires_lock,
     with_lock,
 )
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.misc import SimpleTicker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -43,6 +44,7 @@ class InferenceController:
         self.rollout_id = -1
         self.eval_fleet: EvalFleet | None = None
         self._watcher_disposers: list[StopWatchFn] = []
+        self._health_checker_activeness = ActivenessTracker(active=True)
         self._ticker: SimpleTicker | None = None
 
     @lock_exempt
@@ -50,7 +52,11 @@ class InferenceController:
         if self.args.debug_train_only:
             return
 
-        self.servers = await create_rollout_servers(self.args, context_lock=self.context_lock)
+        self.servers = await create_rollout_servers(
+            self.args,
+            context_lock=self.context_lock,
+            global_health_checker_activeness=self._health_checker_activeness.get,
+        )
         if self.args.eval_num_gpus > 0:
             self.eval_fleet = EvalFleet(self.args, srv=self.servers["eval"])
 
@@ -89,6 +95,9 @@ class InferenceController:
         for disposer in self._watcher_disposers:
             await disposer()
         self._watcher_disposers = []
+
+        for srv in self.servers.values():
+            await srv.dispose()
 
     # -------------------------- offload/onload -----------------------------
 
@@ -248,24 +257,23 @@ class InferenceController:
 
     @requires_lock
     async def _health_monitoring_pause(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
+        self._health_checker_activeness.bump_active(False)
+        await asyncio.gather(
+            *[
+                cell.cancel_inflight_health_probe()
+                for srv in self.servers.values()
+                for cell in srv.server_cells.values()
+            ]
+        )
 
     @requires_lock
     async def _health_monitoring_resume(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
+        self._health_checker_activeness.bump_active(True)
 
     @property
     @requires_lock
     def _rollout_ft_enabled(self) -> bool:
         return self.args.use_fault_tolerance and "rollout" in self.args.ft_components
-
-    @requires_lock
-    def _assert_rollout_fault_tolerance_is_unsupported(self) -> None:
-        if not self.args.debug_train_only and self._rollout_ft_enabled:
-            raise NotImplementedError(
-                "rollout fault tolerance is being rebuilt; health monitoring must pause before "
-                "get_updatable_engines snapshots the engines"
-            )
 
     @property
     @requires_lock

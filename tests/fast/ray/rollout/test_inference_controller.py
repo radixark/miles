@@ -2,6 +2,7 @@ import asyncio
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
@@ -12,6 +13,7 @@ from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import WorkerMetaContext
 
@@ -58,9 +60,21 @@ def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
 
 
 class _RecordingServer:
-    def __init__(self, server_cells: dict | None = None):
+    def __init__(self, server_cells: dict | None = None, *, model_name: str = "model", update_weights: bool = False):
         self.server_cells = server_cells or {}
+        self.update_weights = update_weights
+        self.model_name = model_name
         self.calls: list[tuple] = []
+        self.api_clients: list = []
+        self.engine_gpu_counts: list[int] = []
+        self.engine_gpu_offsets: list[int] = []
+
+    async def offload(self, tags=None):
+        self.calls.append(("offload",))
+
+    async def check_weights(self, action, allow_quant_error=False, selector="all", skip_list=None):
+        self.calls.append(("check_weights", action))
+        return [self.model_name]
 
     async def add_cell(self, cell_meta: ServerCellMetadata):
         self.calls.append(("add", cell_meta.cell_id))
@@ -76,10 +90,54 @@ class _RecordingServer:
 
 def _make_controller(servers: dict) -> InferenceController:
     controller = InferenceController.__new__(InferenceController)
-    controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False)
+    controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False, ci_test=False, colocate=False)
     controller.servers = servers
     controller.context_lock = ContextLock("InferenceController")
+    controller._health_checker_activeness = ActivenessTracker(active=True)
     return controller
+
+
+class TestHealthCheckerActiveness:
+    @pytest.mark.asyncio
+    async def test_offload_pauses_probing_before_putting_engines_to_sleep(self):
+        """A slept engine cannot answer /health_generate, so probing must stop first."""
+        srv = _RecordingServer()
+        controller = _make_controller({"default": srv})
+
+        await controller.offload()
+
+        assert not controller._health_checker_activeness.get().active
+        assert srv.calls == [("offload",)]
+
+    @pytest.mark.asyncio
+    async def test_starting_a_weight_update_pauses_probing(self):
+        """Engines are unusable while their weights are being replaced."""
+        controller = _make_controller({"default": _RecordingServer()})
+
+        info = await controller.start_update_weights()
+        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+        assert not controller._health_checker_activeness.get().active
+
+    @pytest.mark.asyncio
+    async def test_preparing_a_rollout_resumes_probing(self):
+        """Probing comes back exactly when the engines start serving traffic again."""
+        controller = _make_controller({"default": _RecordingServer()})
+        controller._health_checker_activeness.bump_active(False)
+
+        await controller.prepare_rollout(rollout_id=0)
+
+        assert controller._health_checker_activeness.get().active
+
+    @pytest.mark.asyncio
+    async def test_preparing_an_eval_resumes_probing(self):
+        """Eval drives the same engines as a rollout does."""
+        controller = _make_controller({"default": _RecordingServer()})
+        controller._health_checker_activeness.bump_active(False)
+
+        await controller.prepare_eval()
+
+        assert controller._health_checker_activeness.get().active
 
 
 class TestReconcile:
@@ -194,9 +252,7 @@ class _FakeWorkerProvider:
 def _patch_init(
     monkeypatch: pytest.MonkeyPatch, *, provider: _FakeWorkerProvider, servers: dict[str, _RecordingServer]
 ) -> None:
-    async def _fake_create_rollout_servers(
-        args: Namespace, *, context_lock: ContextLock
-    ) -> dict[str, _RecordingServer]:
+    async def _fake_create_rollout_servers(args: Namespace, **kwargs: Any) -> dict[str, _RecordingServer]:
         return servers
 
     monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
@@ -206,6 +262,33 @@ def _patch_init(
         SimpleNamespace(create=lambda *, pool_ids: provider.created_with(pool_ids)),
         raising=True,
     )
+
+
+class TestGlobalHealthCheckerActiveness:
+    @pytest.mark.asyncio
+    async def test_init_hands_the_cells_the_controller_wide_activeness(self, monkeypatch: pytest.MonkeyPatch):
+        """Without it every cell keeps probing through the weight-update window the controller
+        just paused, and reports a mid-update engine unhealthy."""
+        received: dict[str, Any] = {}
+
+        async def _fake_create_rollout_servers(args: Namespace, **kwargs: Any) -> dict[str, _RecordingServer]:
+            received.update(kwargs)
+            return {"default": _RecordingServer()}
+
+        monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
+        monkeypatch.setattr(
+            inference_controller_module,
+            "RayWorkerProvider",
+            SimpleNamespace(create=lambda *, pool_ids: _FakeWorkerProvider([]).created_with(pool_ids)),
+        )
+        controller = InferenceController(make_args())
+
+        await controller.init()
+
+        get_activeness = received["global_health_checker_activeness"]
+        assert get_activeness().active is True
+        controller._health_checker_activeness.bump_active(False)
+        assert get_activeness().active is False
 
 
 class TestInitSubscription:
@@ -337,3 +420,59 @@ class TestServersShareTheControllerLock:
 
         with pytest.raises(AssertionError, match="must be called with"):
             await controller.offload()
+
+
+class TestUpdatableModelSelection:
+    @staticmethod
+    def _controller(*servers: _RecordingServer) -> InferenceController:
+        return _make_controller({srv.model_name: srv for srv in servers})
+
+    @pytest.mark.asyncio
+    async def test_only_the_updatable_models_engines_receive_weights(self):
+        """A frozen reference model handed the trainer's weights stops being the baseline the
+        KL term is measured against."""
+        actor = _RecordingServer(model_name="actor", update_weights=True)
+        actor.api_clients = ["actor-client"]
+        ref = _RecordingServer(model_name="ref", update_weights=False)
+        ref.api_clients = ["ref-client"]
+
+        updatable = await self._controller(actor, ref).start_update_weights()
+
+        assert updatable.rollout_engines == ["actor-client"]
+
+    @pytest.mark.asyncio
+    async def test_an_inference_only_deployment_updates_nothing(self):
+        """No model is being trained, so there is no engine to push weights into; returning a
+        frozen model's engines here would overwrite it."""
+        updatable = await self._controller(_RecordingServer(model_name="ref")).start_update_weights()
+
+        assert updatable.rollout_engines == []
+        assert updatable.snapshot_cell_id_to_hashes == {}
+
+    @pytest.mark.asyncio
+    async def test_two_updatable_models_are_refused_by_name(self):
+        """Picking one arbitrarily would silently train one model and leave the other stale."""
+        controller = self._controller(
+            _RecordingServer(model_name="a", update_weights=True),
+            _RecordingServer(model_name="b", update_weights=True),
+        )
+
+        with pytest.raises(ValueError, match="Multiple servers have update_weights=True"):
+            await controller.start_update_weights()
+
+    @pytest.mark.asyncio
+    async def test_the_weight_checker_skips_the_frozen_models(self):
+        """reset_tensors on a model nobody will rewrite scrambles it for the rest of the run."""
+        actor = _RecordingServer(model_name="actor", update_weights=True)
+        ref = _RecordingServer(model_name="ref", update_weights=False)
+
+        assert await self._controller(actor, ref).check_weights(action="snapshot") == ["actor"]
+        assert ref.calls == []
+
+    @pytest.mark.asyncio
+    async def test_the_weight_checker_is_a_noop_without_an_updatable_model(self):
+        """Nothing was updated, so there is nothing to compare against."""
+        ref = _RecordingServer(model_name="ref")
+
+        assert await self._controller(ref).check_weights(action="compare") == []
+        assert ref.calls == []
