@@ -87,7 +87,8 @@ class RolloutServer:
         cell_id = cell_meta.cell_id
         assert cell_id not in self.server_cells
         cell = ServerCell(args=self.args, router_api_client=self._router_api_client, meta=cell_meta)
-        await cell.init()
+        if not (self.args.colocate and cell_meta.needs_offload):
+            await cell.init()
         self.server_cells[cell_id] = cell
 
     async def remove_cell(self, cell_id: str):
@@ -97,12 +98,12 @@ class RolloutServer:
 
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(
-            *[cell.offload(tags=tags) for cell in self.server_cells.values() if cell.meta.needs_offload]
+            *[cell.offload(tags=tags) for cell in self._addressable_cells() if cell.meta.needs_offload]
         )
 
     async def onload(self, tags: list[str] | None = None):
         return await asyncio.gather(
-            *[cell.onload(tags=tags) for cell in self.server_cells.values() if cell.meta.needs_offload]
+            *[cell.onload(tags=tags) for cell in self._addressable_cells() if cell.meta.needs_offload]
         )
 
     async def check_weights(
@@ -113,20 +114,12 @@ class RolloutServer:
                 cell.check_weights(
                     action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
                 )
-                for cell in self.server_cells.values()
+                for cell in self._addressable_cells()
             ]
         )
 
-    async def wait_all_engines_alive(self, timeout: float = 600):
-        # TODO: 600s default is hardcoded; make it configurable (e.g. via args) once we have a clearer
-        # picture of init/recovery upper bounds across model sizes
-        sleep_time = 2
-        for _ in range(int(timeout // sleep_time)):
-            if all(cell.is_pending_weights_or_serving for cell in self.server_cells.values()):
-                return
-            await asyncio.sleep(sleep_time)
-            logger.info("wait_all_engines_alive looping...")
-        raise TimeoutError(f"Timed out after {timeout}s waiting for engines to become ready")
+    def _addressable_cells(self) -> list[ServerCell]:
+        return [cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving]
 
     @property
     def _router_api_client(self) -> SGLangRouterApiClient:

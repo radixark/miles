@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
@@ -19,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 TICK_INTERVAL_SECONDS = 5.0
 CELL_TICK_TIMEOUT_SECONDS = 120.0
+CELLS_READY_POLL_INTERVAL_SECONDS = 2.0
+CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
 class InferenceController:
@@ -105,6 +108,7 @@ class InferenceController:
     async def start_update_weights(self) -> "UpdatableEngines":
         """Return engines eligible for weight updates."""
         await self._health_monitoring_pause()
+        await self._ensure_cells_ready()
 
         srv = self._get_updatable_server()
         if not srv:
@@ -115,7 +119,6 @@ class InferenceController:
                 snapshot_cell_id_to_hashes={},
             )
 
-        await srv.wait_all_engines_alive()
         return UpdatableEngines(
             rollout_engines=srv.api_clients,
             engine_gpu_counts=srv.engine_gpu_counts,
@@ -134,6 +137,23 @@ class InferenceController:
                 and cell.is_pending_weights
             ]
         )
+
+    async def _ensure_cells_ready(self) -> None:
+        deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
+        while True:
+            cells = [cell for srv in self.servers.values() for cell in srv.server_cells.values()]
+            if self.args.colocate:
+                await asyncio.gather(*[cell.init() for cell in cells if cell.is_uninitialized])
+            pending = [cell for cell in cells if not cell.is_pending_weights_or_serving]
+            if not pending:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out after {CELLS_READY_TIMEOUT_SECONDS}s waiting for "
+                    f"{len(pending)}/{len(cells)} cells to become ready"
+                )
+            logger.info(f"Waiting for {len(pending)}/{len(cells)} cells to become ready...")
+            await asyncio.sleep(CELLS_READY_POLL_INTERVAL_SECONDS)
 
     async def recover_updatable_engines(self) -> None:
         raise NotImplementedError("new ft to be implemented")

@@ -276,16 +276,18 @@ class TestEngineListOrdering:
 
 
 class TestAddCellRollback:
-    def _make_meta(self) -> ServerCellMetadata:
+    def _make_meta(
+        self, *, needs_offload: bool = False, cell_id: str = "inference-engine-0-0-0"
+    ) -> ServerCellMetadata:
         return ServerCellMetadata(
             model_id="default",
             worker_type="regular",
-            cell_id="inference-engine-0-0-0",
+            cell_id=cell_id,
             num_gpus_per_engine=1,
             gpu_offset=0,
             sglang_api_key=None,
-            worker_name="inference-engine-0-0-0-0",
-            needs_offload=False,
+            worker_name=f"{cell_id}-0",
+            needs_offload=needs_offload,
             update_weights=True,
             workers_hash="pseudo-hash-0",
         )
@@ -293,7 +295,7 @@ class TestAddCellRollback:
     @pytest.mark.asyncio
     async def test_a_failed_add_leaves_no_bookkeeping_so_the_next_reconcile_retries(self, monkeypatch):
         """A cell whose startup fails must not be committed, otherwise the hash no-op blocks any retry."""
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace())
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=False))
         monkeypatch.setattr(ServerCell, "init", _raise_async)
 
         with pytest.raises(RuntimeError, match="injected init failure"):
@@ -304,11 +306,44 @@ class TestAddCellRollback:
     @pytest.mark.asyncio
     async def test_a_successful_add_commits_the_cell(self, monkeypatch):
         """After the failure is gone the same cell id can be added normally."""
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace())
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=False))
         monkeypatch.setattr(ServerCell, "init", _noop_async)
 
         await srv.add_cell(self._make_meta())
 
+        assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+
+
+class TestAddCellInitTiming:
+    @pytest.mark.asyncio
+    async def test_a_disaggregated_cell_is_initialized_as_soon_as_it_appears(self, monkeypatch):
+        """Nothing competes for its gpus, so waiting would only delay it becoming servable."""
+        initialized: list[str] = []
+
+        async def _record(self) -> None:
+            initialized.append(self.meta.cell_id)
+
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=False))
+        monkeypatch.setattr(ServerCell, "init", _record)
+
+        await srv.add_cell(TestAddCellRollback()._make_meta())
+
+        assert initialized == ["inference-engine-0-0-0"]
+
+    @pytest.mark.asyncio
+    async def test_a_colocated_cell_is_only_tracked_until_the_weight_update_window(self, monkeypatch):
+        """Its engine may not claim gpu memory while the trainer still holds it."""
+        initialized: list[str] = []
+
+        async def _record(self) -> None:
+            initialized.append(self.meta.cell_id)
+
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=True))
+        monkeypatch.setattr(ServerCell, "init", _record)
+
+        await srv.add_cell(TestAddCellRollback()._make_meta(needs_offload=True))
+
+        assert initialized == []
         assert list(srv.server_cells) == ["inference-engine-0-0-0"]
 
 
