@@ -351,7 +351,7 @@ def _execute_train(args: ScriptArgs):
             sglang_world_size = 64
     else:
         sglang_decode_max_bs = 32
-        sglang_world_size = 4 if balanced else 8
+        sglang_world_size = 4 if balanced else min(8, args.num_gpus_per_node)
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
