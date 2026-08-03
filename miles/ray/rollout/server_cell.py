@@ -87,6 +87,9 @@ class ServerCell:
         if not self.meta.update_weights or self.args.debug_rollout_only:
             await self.mark_weights_ready()
 
+    async def tick(self) -> None:
+        pass
+
     async def mark_weights_ready(self):
         assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
 

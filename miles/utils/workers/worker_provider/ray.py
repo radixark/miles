@@ -4,6 +4,7 @@ from functools import partial
 
 import ray.actor
 
+from miles.utils.misc import cancel_and_await_task
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import NamedHostAndPorts
@@ -38,7 +39,7 @@ class RayWorkerProvider(BaseWorkerProvider):
         # the initial sync must complete (and raise on failure) before the watch is considered established
         await self._poll_once(reconcile, seen_infos=seen_infos, pool_ids=pool_ids)
         task = asyncio.create_task(self._watch_loop(reconcile, seen_infos, pool_ids=pool_ids))
-        return partial(_cancel_and_await_task, task)
+        return partial(cancel_and_await_task, task)
 
     def _watched_pool_ids(self) -> list[str]:
         assert self._pool_ids is not None, "this provider was built without the pool_ids it is meant to observe"
@@ -69,10 +70,3 @@ class RayWorkerProvider(BaseWorkerProvider):
             else:
                 seen_infos[cell_id] = observed_info
 
-
-async def _cancel_and_await_task(task) -> None:
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
