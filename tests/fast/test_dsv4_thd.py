@@ -27,7 +27,7 @@ from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     to_rank_major_rows,
 )
 
-register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
+register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 WINDOW = 128
 
