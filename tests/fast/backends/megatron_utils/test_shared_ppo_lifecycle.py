@@ -177,6 +177,9 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
 
 @pytest.mark.parametrize("asleep", [False, True])
 def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_module, monkeypatch, asleep):
+    """Weight update reloads and destroys temporary process groups only when the model is offloaded."""
+    from miles.ray.rollout.inference_controller import UpdatableEngines
+
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(
         debug_rollout_only=False,
@@ -190,11 +193,11 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     worker.weight_updater = Mock()
     worker.weight_updater.conn_status = Mock(spec=ConnStatusManager)
     worker.weight_updater.conn_status.needs_reconnect.return_value = False
-    info = Namespace(
+    info = UpdatableEngines(
+        rollout_engines=[],
         engine_gpu_counts=[],
         engine_gpu_offsets=[],
-        has_new_engines=False,
-        rollout_engines=[],
+        snapshot_cell_id_to_hashes={},
     )
     reload_groups = Mock()
     destroy_groups = Mock()

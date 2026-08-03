@@ -53,8 +53,6 @@ class RolloutServer:
 
     server_cells: dict[str, ServerCell]
     args: Any
-    # NOTE: this may have risk when recovering engines parallelly; may use source of truth (cells) later
-    has_new_engines: bool = False
     router_ip: str | None = None
     router_port: int | None = None
     model_name: str = "default"
@@ -64,9 +62,6 @@ class RolloutServer:
     def api_clients(self) -> list[SGLangApiClient]:
         """One client per cell, talking to its primary (node-0) engine."""
         return [cell.api_client for cell in self._cells_by_gpu_offset()]
-
-    def clear_has_new_engines(self):
-        self.has_new_engines = False
 
     @property
     def engine_gpu_counts(self) -> list[int]:
@@ -94,7 +89,6 @@ class RolloutServer:
         cell = ServerCell(args=self.args, router_api_client=self._router_api_client, meta=cell_meta)
         await cell.add()
         self.server_cells[cell_id] = cell
-        self.has_new_engines = True
 
     async def remove_cell(self, cell_id: str):
         logger.info(f"Killing server {cell_id=}...")

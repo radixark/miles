@@ -780,7 +780,7 @@ class MegatronTrainRayActor(TrainRayActor):
             return
 
         rollout_engines = info.rollout_engines
-        has_new_engines = info.has_new_engines
+        snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
         del info
@@ -789,13 +789,14 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             reload_process_groups()
 
-        if has_new_engines or self.weight_updater.conn_status.needs_reconnect():
+        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
+        if needs_reconnect:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
             )
-            self.weight_updater.conn_status.mark_reconnected()
+            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
             dist.barrier(group=get_gloo_group())
 
         if self.args.debug_skip_weight_update:
@@ -812,7 +813,10 @@ class MegatronTrainRayActor(TrainRayActor):
             from miles.backends.megatron_utils.multi_lora_utils import select_adapters_to_push
 
             self.weight_updater.multi_lora_adapters, version_update_names = select_adapters_to_push(
-                self.loaded_adapters, self._multi_lora_pending_push, has_new_engines
+                # TODO: may improve condition (currently needs_reconnect) after yusheng's refactor
+                self.loaded_adapters,
+                self._multi_lora_pending_push,
+                needs_reconnect,
             )
 
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
