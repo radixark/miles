@@ -3,7 +3,15 @@ import dataclasses
 
 import pytest
 
-from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock, with_lock
+from miles.utils.context_lock import (
+    ContextLock,
+    acquires_lock,
+    enforce_lock_discipline,
+    lock_exempt,
+    releases_lock,
+    requires_lock,
+    with_lock,
+)
 
 
 @enforce_lock_discipline
@@ -50,6 +58,18 @@ class _Guarded:
     @requires_lock
     def guarded_value(self) -> int:
         return 42
+
+    @acquires_lock
+    async def start_window(self) -> int:
+        return self.guarded_value
+
+    @acquires_lock
+    async def start_window_that_raises(self) -> None:
+        raise RuntimeError("boom")
+
+    @releases_lock
+    async def end_window(self) -> int:
+        return self.guarded_value
 
 
 class _HolderTask:
@@ -280,6 +300,185 @@ class TestWithLock:
 
 async def _read_held(lock: ContextLock) -> bool:
     return lock.held_in_current_context
+
+
+async def _reattach_and_release(lock: ContextLock) -> None:
+    lock.reattach()
+    lock.release()
+
+
+class TestDetachAndReattach:
+    @pytest.mark.asyncio
+    async def test_detach_keeps_the_lock_locked_but_not_held(self):
+        """A detached lock stays locked so other contexts keep blocking."""
+        lock = ContextLock("test")
+        await lock.acquire()
+        lock.detach()
+        assert lock.locked and not lock.held_in_current_context
+
+    @pytest.mark.asyncio
+    async def test_detach_asserts_when_not_held_by_the_current_context(self):
+        """Only the holding context may hand the lock over."""
+        lock = ContextLock("test")
+        with pytest.raises(AssertionError, match="must be held"):
+            lock.detach()
+
+    @pytest.mark.asyncio
+    async def test_a_detached_lock_still_blocks_other_acquirers(self):
+        """Detaching hands the lock across calls; it does not open it up."""
+        lock = ContextLock("test")
+        await lock.acquire()
+        lock.detach()
+        waiter = asyncio.create_task(lock.acquire())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not waiter.done()
+
+        lock.reattach()
+        lock.release()
+        await waiter
+
+    @pytest.mark.asyncio
+    async def test_a_detached_lock_can_be_reattached_and_released_by_another_task(self):
+        """The start/end pair of a cross-call window may run in different tasks."""
+        lock = ContextLock("test")
+        await lock.acquire()
+        lock.detach()
+        await asyncio.create_task(_reattach_and_release(lock))
+        assert not lock.locked
+
+    @pytest.mark.asyncio
+    async def test_reattach_asserts_when_the_lock_was_not_detached(self):
+        """reattach must not steal a lock that is held normally by someone else."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+        with pytest.raises(AssertionError, match="was not detached"):
+            lock.reattach()
+        await holder.finish()
+
+    @pytest.mark.asyncio
+    async def test_reattach_asserts_when_a_lock_is_already_held_in_context(self):
+        """A context cannot adopt a detached lock while holding another lock."""
+        lock = ContextLock("test")
+        await lock.acquire()
+        lock.detach()
+        other_lock = ContextLock("other")
+        await other_lock.acquire()
+        with pytest.raises(AssertionError, match="already held"):
+            lock.reattach()
+
+    @pytest.mark.asyncio
+    async def test_reattach_restores_the_held_state(self):
+        """After reattach the context may again call lock-requiring helpers."""
+        lock = ContextLock("test")
+        await lock.acquire()
+        lock.detach()
+        lock.reattach()
+        assert lock.held_in_current_context
+        lock.release()
+        assert not lock.locked
+
+
+class TestAcquiresAndReleasesLock:
+    @pytest.mark.asyncio
+    async def test_the_lock_stays_locked_between_the_start_and_end_calls(self):
+        """acquires_lock opens a cross-call window that releases_lock closes."""
+        guarded = _Guarded()
+        await guarded.start_window()
+        assert guarded.context_lock.locked
+
+        await guarded.end_window()
+        assert not guarded.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_the_lock_is_held_inside_both_the_start_and_end_bodies(self):
+        """Both window methods may call lock-requiring helpers in their bodies."""
+        guarded = _Guarded()
+        assert await guarded.start_window() == 42
+        assert await guarded.end_window() == 42
+
+    @pytest.mark.asyncio
+    async def test_the_lock_is_not_held_by_the_caller_between_the_two_calls(self):
+        """The window belongs to the lock, not to whoever happens to call end."""
+        guarded = _Guarded()
+        await guarded.start_window()
+        assert not guarded.context_lock.held_in_current_context
+
+        await guarded.end_window()
+
+    @pytest.mark.asyncio
+    async def test_lock_requiring_helpers_are_rejected_between_the_two_calls(self):
+        """An open window is not an invitation to touch guarded state from outside."""
+        guarded = _Guarded()
+        await guarded.start_window()
+        with pytest.raises(AssertionError, match="must be called with"):
+            guarded._private_method()
+
+        await guarded.end_window()
+
+    @pytest.mark.asyncio
+    async def test_the_lock_is_released_when_the_start_call_raises(self):
+        """A failed start must not leave the lock stuck forever."""
+        guarded = _Guarded()
+        with pytest.raises(RuntimeError, match="boom"):
+            await guarded.start_window_that_raises()
+        assert not guarded.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_a_failed_start_leaves_the_lock_acquirable_again(self):
+        """After the failure another caller may open a window normally."""
+        guarded = _Guarded()
+        with pytest.raises(RuntimeError, match="boom"):
+            await guarded.start_window_that_raises()
+
+        await guarded.start_window()
+        await guarded.end_window()
+        assert not guarded.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_the_end_call_asserts_without_a_matching_start(self):
+        """releases_lock without an open window is a bug."""
+        guarded = _Guarded()
+        with pytest.raises(AssertionError, match="was not detached"):
+            await guarded.end_window()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_locked_calls_block_during_the_window(self):
+        """with_lock methods wait out an open window instead of interleaving with it."""
+        guarded = _Guarded()
+        await guarded.start_window()
+        blocked_call = asyncio.create_task(guarded.locked_method())
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not blocked_call.done()
+
+        await guarded.end_window()
+        assert await blocked_call is True
+
+    @pytest.mark.asyncio
+    async def test_the_window_can_be_opened_and_closed_from_different_tasks(self):
+        """start and end are separate scheduler invocations in the real caller."""
+        guarded = _Guarded()
+        await asyncio.create_task(guarded.start_window())
+        assert guarded.context_lock.locked
+
+        await asyncio.create_task(guarded.end_window())
+        assert not guarded.context_lock.locked
+
+    def test_rejects_sync_functions_at_decoration_time(self):
+        """Both window decorators need to await the lock, so sync functions are refused."""
+        with pytest.raises(AssertionError, match="must be async"):
+
+            @acquires_lock
+            def sync_start(self) -> None:
+                pass
+
+        with pytest.raises(AssertionError, match="must be async"):
+
+            @releases_lock
+            def sync_end(self) -> None:
+                pass
 
 
 class TestRequiresLock:
