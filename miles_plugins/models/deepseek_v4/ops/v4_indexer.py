@@ -90,7 +90,7 @@ class V4Indexer(MegatronModule):
             qr: low-rank query [seqlen, batch, q_lora_rank]
             mask: unused (the kernel's per-query KV bounds are generated internally)
             packed_seq_params: unused
-            thd_layout: this rank's packed layout, or None for the unpacked layout
+            thd_layout: packed-stream layout, or None when unpacked
 
         Returns:
             topk_indices: [batch, seqlen, index_topk] int64

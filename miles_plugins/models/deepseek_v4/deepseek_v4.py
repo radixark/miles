@@ -243,7 +243,6 @@ class DeepSeekV4Attention(MegatronModule):
         x = einops.rearrange(hidden_states, "s b d -> b s d")
 
         bsz, seqlen_local, _ = x.size()
-        # Any other packed layout keeps the BSHD path; only thd carries segment boundaries.
         thd_layout = ThdLayout.from_packed_seq_params(
             packed_seq_params, cp_rank=self.cp_rank, seqlen_local=seqlen_local
         )

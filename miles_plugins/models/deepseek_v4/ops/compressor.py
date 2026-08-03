@@ -207,7 +207,7 @@ class DeepSeekV4Compressor(nn.Module):
         Args:
             x: [total, batch, dim] packed SBHD layout, or [c_cap * ratio, batch, dim] already
                 grouped when the layout carries compressed_group_ids.
-            thd_layout: this rank's packed layout.
+            thd_layout: packed-stream layout.
         Returns:
             (k, cu_seqlens_compressed) with k [total_comp, batch, head_dim], or
             (None, cu_seqlens_compressed) when no segment reaches compress_ratio.
@@ -301,7 +301,7 @@ class DeepSeekV4Compressor(nn.Module):
         Args:
             x: [seqlen, batch, dim] SBHD layout (Megatron standard); [total, batch, dim]
                 when thd_layout is given.
-            thd_layout: this rank's packed layout, or None for the unpacked layout.
+            thd_layout: packed-stream layout, or None when unpacked.
         Returns:
             k: [seqlen // compress_ratio, batch, head_dim] SBHD layout, or
                 (k, cu_seqlens_compressed) for THD packing.
