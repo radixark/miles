@@ -6,6 +6,8 @@ import pytest
 
 from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.misc import get_current_node_ip
+from miles.utils.test_utils import fault_injector
+from miles.utils.workers import process_utils
 from miles.utils.workers.command_actor import CommandActor
 
 
@@ -53,6 +55,35 @@ class TestRun:
         with pytest.raises(AssertionError):
             actor.run(cmd="true", envs={})
         fake_exit.wait()
+
+    def test_a_launch_error_propagates_without_consuming_the_actor(self, monkeypatch: pytest.MonkeyPatch):
+        """A failed launch surfaces to the caller and leaves the actor free to launch again."""
+        fake_exit = _FakeExit(monkeypatch)
+        actor = CommandActor()
+        thread_creations: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def _fail_to_launch(argv: list[str], *, envs: dict[str, str]) -> None:
+            raise OSError("cannot launch")
+
+        class _FakeThread:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                thread_creations.append((args, kwargs))
+
+            def start(self) -> None:
+                pass
+
+        with pytest.MonkeyPatch.context() as failing_launch:
+            failing_launch.setattr(process_utils, "launch_bound_subprocess", _fail_to_launch)
+            failing_launch.setattr(threading, "Thread", _FakeThread)
+            with pytest.raises(OSError):
+                actor.run(cmd="true", envs={})
+
+        assert thread_creations == []
+
+        actor.run(cmd="exit 7", envs={})
+        fake_exit.wait()
+
+        assert fake_exit.codes == [7]
 
 
 class TestLifecycleBinding:
@@ -112,6 +143,17 @@ class TestShutdown:
         """Tearing down an actor that never launched anything is safe."""
         CommandActor().shutdown()
 
+    def test_shutdown_before_run_does_not_disable_a_later_run(self, monkeypatch: pytest.MonkeyPatch):
+        """A shutdown of a never-launched actor must not suppress the crash exit of a later run."""
+        fake_exit = _FakeExit(monkeypatch)
+        actor = CommandActor()
+
+        actor.shutdown()
+        actor.run(cmd="exit 7", envs={})
+        fake_exit.wait()
+
+        assert fake_exit.codes == [7]
+
     def test_shutdown_twice_is_safe(self, monkeypatch: pytest.MonkeyPatch):
         """A second shutdown of an already-stopped subprocess is a harmless no-op."""
         fake_exit = _FakeExit(monkeypatch)
@@ -150,3 +192,32 @@ class TestKillSubprocess:
         """A crash injection into an actor with no subprocess is a caller bug."""
         with pytest.raises(AssertionError):
             CommandActor().kill_subprocess()
+
+
+class TestInjectFault:
+    def test_inject_fault_forwards_the_requested_mode(self, monkeypatch: pytest.MonkeyPatch):
+        """The actor hands the caller's failure mode to the fault injector unchanged."""
+        injected_modes: list[str] = []
+
+        def _record_injected_mode(mode: str) -> None:
+            injected_modes.append(mode)
+
+        monkeypatch.setattr(fault_injector, "inject_fault", _record_injected_mode)
+
+        CommandActor().inject_fault(mode="segfault")
+
+        assert injected_modes == ["segfault"]
+
+
+class TestNodeAddress:
+    def test_the_node_ip_the_actor_reports_honours_the_host_ip_override(self, monkeypatch: pytest.MonkeyPatch):
+        """The address a worker publishes to its peers is the one its deployment pinned through MILES_HOST_IP."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.20.30.40")
+
+        assert CommandActor()._get_node_ip() == "10.20.30.40"
+
+    def test_the_node_ip_the_actor_reports_falls_back_to_the_ray_node_ip(self, monkeypatch: pytest.MonkeyPatch):
+        """Without an override the worker publishes the address ray placed it on."""
+        monkeypatch.delenv(MILES_HOST_IP_ENV, raising=False)
+
+        assert CommandActor()._get_node_ip() == get_current_node_ip()
