@@ -73,7 +73,6 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         for distributed. Map ranks to colocated IPC engines.
         """
         self.rollout_engines = rollout_engines
-        self._connection_stale = False
         self._selector = selector
 
         if engine_gpu_counts is None:
