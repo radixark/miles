@@ -275,7 +275,7 @@ class RayTrainGroup:
             lambda _: self._execute_first_alive("update_weights", info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
-        await self._inference_controller.end_update_weights()
+        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
 
