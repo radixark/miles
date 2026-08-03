@@ -15,11 +15,7 @@ pytest.importorskip("sglang")
 
 from sglang.srt.server_args import ServerArgs
 
-from miles.backends.sglang_utils.server_args_utils import (
-    _UNCOMPARED_FIELDS,
-    parse_server_args_argv,
-    server_args_to_argv,
-)
+from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv, server_args_to_argv
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 from miles.utils.workers.argv_utils import _actions_by_dest, _render_action_argv, _resolve_action
 
@@ -46,6 +42,7 @@ def _server_args(
     sglang_overrides: dict | None = None,
     disaggregation_bootstrap_port: int | None = None,
     num_gpus_per_engine: int = 1,
+    random_seed: int = 0,
 ) -> dict:
     # ServerArgs probes the local accelerator when no device is given, which a CPU-only
     # CI runner cannot answer. Production resolves it to the engine's own device the same way.
@@ -64,6 +61,7 @@ def _server_args(
         engine_info_bootstrap_port=20033,
         sglang_overrides=overrides,
         num_gpus_per_engine=num_gpus_per_engine,
+        random_seed=random_seed,
     )
     return server_args_dict
 
@@ -75,7 +73,7 @@ def _assert_roundtrips(server_args_dict: dict) -> None:
     differing = [
         field.name
         for field in dataclasses.fields(wanted)
-        if field.name not in _UNCOMPARED_FIELDS and getattr(parsed, field.name) != getattr(wanted, field.name)
+        if getattr(parsed, field.name) != getattr(wanted, field.name)
     ]
     assert differing == []
 

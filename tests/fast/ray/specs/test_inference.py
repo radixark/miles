@@ -7,11 +7,12 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
-from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
+from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
 from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
     _compute_router_primary_port_info,
     _compute_spec_router,
+    compute_engine_pool_id,
     compute_engine_pool_ids,
     compute_router_pool_id,
     spec_session_server,
@@ -30,6 +31,7 @@ def _make_model_cfg(*worker_types: str) -> ModelConfig:
             num_gpus=4,
             num_gpus_per_engine=4,
             gpu_offset=group_index * 4,
+            engine_offset=group_index,
             needs_offload=False,
         )
         for group_index, worker_type in enumerate(worker_types)
@@ -403,6 +405,109 @@ class TestInferenceEngineGatedLaunch:
                 spec.launch_command(_make_engine_ctx(cell_index=cell_index, worker_in_cell_index=worker_in_cell_index))
 
         assert recorded == [0, 1, 0, 1]
+
+
+class TestInferenceEngineRandomSeed:
+    _CONFIG_YAML = (
+        "sglang:\n"
+        "  - name: default\n"
+        "    server_groups:\n"
+        "      - worker_type: regular\n"
+        "        num_gpus: 8\n"
+        "        num_gpus_per_engine: 2\n"
+        "      - worker_type: placeholder\n"
+        "        num_gpus: 4\n"
+        "        num_gpus_per_engine: 4\n"
+        "  - name: reference\n"
+        "    update_weights: false\n"
+        "    server_groups:\n"
+        "      - worker_type: regular\n"
+        "        num_gpus: 16\n"
+        "        num_gpus_per_engine: 8\n"
+    )
+
+    def _seeds_by_pool(self, args, monkeypatch) -> dict[str, list[int]]:
+        recorded: dict[str, list[int]] = {}
+        for spec in specs_inference_engine(args):
+            seeds = recorded.setdefault(spec.name, [])
+
+            def _record(*, into: list[int] = seeds, **kwargs) -> str:
+                into.append(kwargs["random_seed"])
+                return "launch-cmd"
+
+            monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
+            for cell_index in range(spec.scheduling.num_cells):
+                for worker_in_cell_index in range(spec.scheduling.num_workers_per_cell):
+                    spec.launch_command(
+                        _make_engine_ctx(cell_index=cell_index, worker_in_cell_index=worker_in_cell_index)
+                    )
+        return recorded
+
+    def _oracle_seeds_by_pool(self, args) -> dict[str, list[int]]:
+        seeds: dict[str, list[int]] = {}
+        global_rank = 0
+        for model_idx, model_cfg in enumerate(resolve_sglang_config(args).models):
+            for group_index, group_cfg in enumerate(model_cfg.server_groups):
+                num_actors = group_cfg.num_gpus // min(group_cfg.num_gpus_per_engine, args.num_gpus_per_node)
+                if group_cfg.worker_type != "placeholder":
+                    pool_id = compute_engine_pool_id(model_idx=model_idx, group_index=group_index)
+                    seeds[pool_id] = [args.seed + global_rank + i for i in range(num_actors)]
+                global_rank += num_actors
+        return seeds
+
+    @pytest.fixture
+    def args(self, tmp_path):
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(self._CONFIG_YAML)
+        return make_args(sglang_config=str(config_path), rollout_num_gpus=28, num_gpus_per_node=4, seed=1000)
+
+    def test_every_actor_keeps_the_seed_the_pre_refactor_rank_gave_it(self, args, monkeypatch):
+        """Reproducing a speculative-decoding run needs each engine actor's seed to stay put."""
+        assert self._seeds_by_pool(args, monkeypatch) == self._oracle_seeds_by_pool(args)
+
+    def test_a_skipped_placeholder_group_still_advances_the_numbering(self, args, monkeypatch):
+        """A placeholder group consumed ranks before the refactor, so ignoring it would shift every later seed."""
+        seeds = self._seeds_by_pool(args, monkeypatch)
+
+        assert seeds[compute_engine_pool_id(model_idx=1, group_index=0)] == [1005, 1006, 1007, 1008]
+
+    def test_no_two_engine_actors_in_the_cluster_share_a_seed(self, args, monkeypatch):
+        """Numbering every pool from the same base would hand two live engines the same RNG stream."""
+        seeds = [seed for pool_seeds in self._seeds_by_pool(args, monkeypatch).values() for seed in pool_seeds]
+
+        assert sorted(set(seeds)) == sorted(seeds)
+
+    def test_an_actor_relaunched_onto_other_gpus_keeps_its_seed(self, args, monkeypatch):
+        """A restarted engine that draws a fresh seed replays a different RNG stream than the run it resumes."""
+        recorded: list[int] = []
+
+        def _record(**kwargs) -> str:
+            recorded.append(kwargs["random_seed"])
+            return "launch-cmd"
+
+        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
+        spec = specs_inference_engine(args)[-1]
+        spec.launch_command(_make_engine_ctx(cell_index=1, worker_in_cell_index=1))
+        spec.launch_command(
+            _make_engine_ctx(cell_index=1, worker_in_cell_index=1, gpu_ids=[26, 27], local_gpu_ids=[2, 3])
+        )
+
+        assert recorded == [1008, 1008]
+
+    def test_shifting_the_run_seed_shifts_every_engine_seed_by_the_same_amount(self, args, monkeypatch):
+        """The per-engine numbers are an offset on top of --seed, so a rerun with another seed must move as a block."""
+        base = self._seeds_by_pool(args, monkeypatch)
+        shifted = self._seeds_by_pool(
+            make_args(
+                sglang_config=args.sglang_config,
+                rollout_num_gpus=28,
+                num_gpus_per_node=4,
+                seed=args.seed + 7,
+            ),
+            monkeypatch,
+        )
+
+        assert shifted == {pool_id: [seed + 7 for seed in seeds] for pool_id, seeds in base.items()}
 
 
 def _make_engine_ctx(*, cell_index: int = 0, worker_in_cell_index: int = 0) -> LaunchCommandContext:

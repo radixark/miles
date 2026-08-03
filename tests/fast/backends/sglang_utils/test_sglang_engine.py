@@ -18,6 +18,7 @@ def _cmd(
     args=None,
     addr_overrides: dict | None = None,
     base_gpu_id: int = 0,
+    random_seed: int = 0,
     **kwargs,
 ) -> str:
     addr_and_ports = dict(
@@ -46,6 +47,7 @@ def _cmd(
         disaggregation_bootstrap_port=addr_and_ports["disaggregation_bootstrap_port"],
         engine_info_bootstrap_port=addr_and_ports["engine_info_bootstrap_port"],
         gated_launch_port=addr_and_ports["gated_launch_port"],
+        random_seed=random_seed,
         **kwargs,
     )
 
@@ -74,6 +76,11 @@ class TestComputeEngineLaunchCmd:
         parsed = parse_server_args_argv(shlex.split(cmd)[3:])
         assert parsed.disaggregation_mode == "prefill"
         assert parsed.disaggregation_bootstrap_port == 20090
+
+    def test_the_command_names_the_seed_its_actor_was_given(self):
+        """sglang draws its own seed unless the argv names one, so the seed must survive the rendering."""
+        parsed = parse_server_args_argv(shlex.split(_cmd(random_seed=4242))[3:])
+        assert parsed.random_seed == 4242
 
     def test_the_command_carries_the_api_key_from_args(self):
         """--sglang-api-key reaches the server through the generic passthrough."""

@@ -43,19 +43,24 @@ def compute(args: SimpleNamespace, **overrides: object) -> dict:
         sglang_overrides=None,
         num_gpus_per_engine=None,
         gated_launch_port=30001,
+        random_seed=0,
     )
     kwargs.update(overrides)
     return _compute_server_args(args, **kwargs)
 
 
 class TestRandomSeed:
-    def test_engine_args_do_not_force_a_random_seed(self):
-        """Every engine must be free to pick its own seed, so the launch args must not carry one."""
-        args = make_args(seed=1234)
+    def test_the_caller_chosen_seed_reaches_the_engine(self):
+        """A seed sglang picks for itself makes a restarted engine replay a different RNG stream."""
+        server_args = compute(make_args(seed=1234), random_seed=7)
 
-        server_args = compute(args)
+        assert server_args["random_seed"] == 7
 
-        assert "random_seed" not in server_args
+    def test_a_group_override_still_wins_over_the_seed_the_caller_computed(self):
+        """A group pinning random_seed in its sglang_overrides must keep beating the derived number."""
+        server_args = compute(make_args(seed=1234), random_seed=7, sglang_overrides={"random_seed": 99})
+
+        assert server_args["random_seed"] == 99
 
 
 class TestSglangOverridePrecedence:

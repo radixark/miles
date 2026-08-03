@@ -63,6 +63,7 @@ def compute_engine_launch_cmd(
     disaggregation_bootstrap_port: int | None,
     engine_info_bootstrap_port: int,
     gated_launch_port: int,
+    random_seed: int,
 ) -> str:
     server_args_dict = _compute_server_args(
         args,
@@ -78,6 +79,7 @@ def compute_engine_launch_cmd(
         sglang_overrides=sglang_overrides,
         num_gpus_per_engine=num_gpus_per_engine,
         gated_launch_port=gated_launch_port,
+        random_seed=random_seed,
     )
 
     launch_args = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
@@ -99,6 +101,7 @@ def _compute_server_args(
     sglang_overrides: dict | None,
     num_gpus_per_engine: int | None,
     gated_launch_port: int,
+    random_seed: int,
 ):
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
@@ -106,8 +109,7 @@ def _compute_server_args(
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
-        # NOTE: do not pass random seed and let SGLang pick random ones
-        # "random_seed": args.seed + rank,
+        "random_seed": random_seed,
         # memory
         "enable_memory_saver": args.offload_rollout,
         # distributed

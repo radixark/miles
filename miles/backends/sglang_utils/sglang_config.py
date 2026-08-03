@@ -145,6 +145,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
     num_gpus: int = pydantic.Field(gt=0)
     num_gpus_per_engine: int = pydantic.Field(gt=0)
     gpu_offset: int = pydantic.Field(ge=0)
+    engine_offset: int = pydantic.Field(ge=0)
     overrides: dict = pydantic.Field(default_factory=dict)
     needs_offload: bool
 
@@ -159,7 +160,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         args,
         default_gpus_per_engine: int,
         default_model_path: str,
-        gpu_offset_cursor: "_MutableBox",
+        offset_cursor: "_OffsetCursor",
     ) -> "ServerGroupConfig":
         assert not ({"host", "port", "gated_launch_port"} & set(raw.overrides)), (
             f"sglang_overrides must not override host/port ({raw.overrides=}): the rollout process derives "
@@ -169,7 +170,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         rollout_pg_offset = _compute_rollout_offset(args)
         megatron_num_gpus = _compute_megatron_num_gpus(args)
 
-        gpu_offset = gpu_offset_cursor.value
+        gpu_offset = offset_cursor.gpu
         group_abs_start = rollout_pg_offset + gpu_offset
         needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
 
@@ -178,6 +179,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
             num_gpus=raw.num_gpus,
             num_gpus_per_engine=x if (x := raw.num_gpus_per_engine) is not None else default_gpus_per_engine,
             gpu_offset=gpu_offset,
+            engine_offset=offset_cursor.engine,
             overrides={
                 "model_path": default_model_path,
                 **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
@@ -186,7 +188,8 @@ class ServerGroupConfig(FrozenStrictBaseModel):
             needs_offload=needs_offload,
         )
 
-        gpu_offset_cursor.value += raw.num_gpus
+        offset_cursor.gpu += raw.num_gpus
+        offset_cursor.engine += raw.num_gpus // min(ans.num_gpus_per_engine, args.num_gpus_per_node)
         return ans
 
 
@@ -197,7 +200,7 @@ class ModelConfig(FrozenStrictBaseModel):
     update_weights: bool
 
     @classmethod
-    def resolve(cls, raw: _RawModelConfig, args, gpu_offset_cursor: "_MutableBox") -> "ModelConfig":
+    def resolve(cls, raw: _RawModelConfig, args, offset_cursor: "_OffsetCursor") -> "ModelConfig":
         """Resolve per-group defaults from model-level then args-level values."""
         default_model_path = p if (p := raw.model_path) is not None else args.hf_checkpoint
         default_gpus_per_engine = n if (n := raw.num_gpus_per_engine) is not None else args.rollout_num_gpus_per_engine
@@ -207,7 +210,7 @@ class ModelConfig(FrozenStrictBaseModel):
                 args,
                 default_gpus_per_engine=default_gpus_per_engine,
                 default_model_path=default_model_path,
-                gpu_offset_cursor=gpu_offset_cursor,
+                offset_cursor=offset_cursor,
             )
             for g in raw.server_groups
         ]
@@ -245,16 +248,24 @@ class ModelConfig(FrozenStrictBaseModel):
     def has_pd_disaggregation(self) -> bool:
         return any(g.worker_type in ("prefill", "decode") for g in self.server_groups)
 
+    @property
+    def num_server_cells(self) -> int:
+        return sum(
+            group.num_gpus // group.num_gpus_per_engine
+            for group in self.server_groups
+            if group.worker_type != "placeholder"
+        )
+
 
 class SglangConfig(FrozenStrictBaseModel):
     models: list[ModelConfig]
 
     @classmethod
     def resolve(cls, raw: _RawSglangConfig, args) -> "SglangConfig":
-        gpu_offset_cursor = _MutableBox(value=0)
-        model_configs = [ModelConfig.resolve(m, args, gpu_offset_cursor) for m in raw.models]
+        offset_cursor = _OffsetCursor(gpu=0, engine=0)
+        model_configs = [ModelConfig.resolve(m, args, offset_cursor) for m in raw.models]
 
-        assert gpu_offset_cursor.value == raw.total_num_gpus
+        assert offset_cursor.gpu == raw.total_num_gpus
         return cls(models=model_configs)
 
     @property
@@ -263,8 +274,9 @@ class SglangConfig(FrozenStrictBaseModel):
 
 
 @dataclass
-class _MutableBox:
-    value: int
+class _OffsetCursor:
+    gpu: int
+    engine: int
 
 
 def resolve_sglang_config(args) -> SglangConfig:

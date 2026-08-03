@@ -24,6 +24,7 @@ def _resolve(path: str, *, rollout_num_gpus: int, hf_checkpoint: str = "/path/to
         prefill_num_servers=None,
         rollout_num_gpus=rollout_num_gpus,
         rollout_num_gpus_per_engine=1,
+        num_gpus_per_node=8,
         eval_num_gpus=0,
         hf_checkpoint=hf_checkpoint,
         offload_rollout=False,

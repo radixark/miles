@@ -159,8 +159,17 @@ def _compute_spec_inference_engine(
     model_cfg: ModelConfig,
     server_group_config: ServerGroupConfig,
 ) -> CommandWorkerSpec:
+    num_workers_per_cell = max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node)
+
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         dist_init = ctx.self_addrs["dist_init"]
+        # TODO: only node 0's seed is used by sglang; node != 0 should get node 0's number
+        random_seed = (
+            args.seed
+            + server_group_config.engine_offset
+            + ctx.cell_index * num_workers_per_cell
+            + ctx.worker_in_cell_index
+        )
         return compute_engine_launch_cmd(
             args=args,
             # TODO: make the indexing it k8s native compatible
@@ -176,6 +185,7 @@ def _compute_spec_inference_engine(
             disaggregation_bootstrap_port=d.port if (d := ctx.self_addrs.get("disaggregation_bootstrap")) else None,
             engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,
             gated_launch_port=ctx.self_addrs[GATE_PORT_NAME].port,
+            random_seed=random_seed,
         )
 
     num_gpus_per_engine = server_group_config.num_gpus_per_engine
@@ -187,7 +197,7 @@ def _compute_spec_inference_engine(
     envs = compute_inference_engine_env_vars(args)
     scheduling = SchedulingSpec(
         num_cells=server_group_config.num_gpus // server_group_config.num_gpus_per_engine,
-        num_workers_per_cell=max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node),
+        num_workers_per_cell=num_workers_per_cell,
         # TODO: may need real num for k8s native mode
         num_gpus_per_worker=0.2,
         num_gpu_slots_per_worker=min(server_group_config.num_gpus_per_engine, args.num_gpus_per_node),
