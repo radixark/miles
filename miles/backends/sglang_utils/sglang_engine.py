@@ -621,21 +621,11 @@ class SGLangEngine(RayActor):
 
     def begin_weight_update(self, selector: str = "all"):
         """Open a weight-update session on the engine (restores packed weights for loading)."""
-        return self._weight_update_session_request("begin_weight_update", {"selector": selector})
+        return self._make_request("begin_weight_update", {"selector": selector})
 
     def end_weight_update(self):
         """Close the weight-update session (post-load + quant post-process on the full model)."""
-        return self._weight_update_session_request("end_weight_update")
-
-    def _weight_update_session_request(self, endpoint: str, payload: dict | None = None):
-        """Call a packed-weight session endpoint; 404 (dev-lineage sglang) is treated as success."""
-        try:
-            return self._make_request(endpoint, payload or {})
-        except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 404:
-                logger.warning(f"{endpoint} endpoint absent (dev-lineage sglang); skipping")
-                return {"success": True, "message": f"{endpoint} absent; skipped"}
-            raise
+        return self._make_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
         return self._make_request(
