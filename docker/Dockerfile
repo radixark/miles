@@ -10,7 +10,7 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
 
-ARG SGLANG_IMAGE_TAG=v0.5.15
+ARG SGLANG_IMAGE_TAG=v0.5.16
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -131,11 +131,17 @@ RUN --mount=type=bind,source=docker/verify_transformer_engine.py,target=/tmp/ver
 # te_dequantized_backward_override.patch is a hot fix from
 # https://github.com/NVIDIA/TransformerEngine/pull/3141; drop it after TE v2.18.
 COPY docker/patch/ /tmp/patches/
+# A `for` loop exits with the status of its LAST iteration, so a patch that fails
+# to apply here used to be swallowed whenever a later one succeeded -- the image
+# shipped with TE silently unpatched. Fail the build instead.
 RUN if [ "${ENABLE_CUDA_13}" = "1" ] && [ -d /tmp/patches/cu13 ]; then \
       TE_DIR=$(python -c 'import importlib.util; print(importlib.util.find_spec("transformer_engine").submodule_search_locations[0])') && \
       for p in /tmp/patches/cu13/*.patch; do \
-        echo "Applying $(basename $p) to $TE_DIR" && \
-        patch -d "$TE_DIR" -p1 < "$p"; \
+        echo "Applying $(basename $p) to $TE_DIR"; \
+        patch -d "$TE_DIR" -p1 < "$p" || { \
+          echo "TE patch $(basename $p) did not apply cleanly against the installed transformer_engine" >&2; \
+          exit 1; \
+        }; \
       done; \
     fi && rm -rf /tmp/patches
 
@@ -155,12 +161,23 @@ RUN pip install "git+https://github.com/NVIDIA-NeMo/Emerging-Optimizers.git@v0.1
 RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.')[0])") \
     pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@74d68c5e4bedf2b6774f2c92ed0f81b7c8d91ed0 --no-cache-dir --force-reinstall
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
-RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
+# radixark/Megatron-Bridge#24 (TE 2.17 grouped-linear contract), merged to @bridge.
+# Pinned by SHA, not branch: buildkit caches this layer on the instruction text, so a
+# branch that moves leaves the old revision baked into the image with nothing to show it.
+RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@7f0fb3456f8ffe47599b5fd167b454605d85f932 --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
 COPY requirements.txt /tmp/requirements.txt
 RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJWT* && pip install -r /tmp/requirements.txt
+
+# The apt copy shadows the pip one in ldconfig and the loader interleaves the two,
+# so transformer_engine gets a mixed set of libcudnn sub-libraries. The packages are
+# held, hence --allow-change-held-packages.
+RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then CU=13; else CU=12; fi; \
+  apt-get remove -y --purge --allow-change-held-packages \
+    libcudnn9-cuda-${CU} libcudnn9-dev-cuda-${CU} libcudnn9-headers-cuda-${CU} \
+  && rm -rf /var/lib/apt/lists/*
 
 RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
     pip install nvidia-cudnn-cu13==9.22.0.52; \
@@ -174,12 +191,22 @@ RUN rm -rf /root/.cache/pip /root/flash-attention
 # ====================================== Install sglang-miles ============================================
 
 # Install sglang from sglang-miles branch
+# The CUDA 12 sglang images sed their dependency markers from cu13 to cu12 in
+# python/pyproject.toml and never commit it, so a plain checkout aborts on the dirty
+# file. Force it, then re-apply the same rewrite: the tree we just checked out carries
+# the cu13 markers, and sglang's editable install makes them visible to every later pip
+# resolve, which would drag cu13 packages onto a cu12 image.
 RUN cd /sgl-workspace/sglang && \
     git fetch origin ${SGLANG_BRANCH} && \
     if [ -n "${SGLANG_COMMIT}" ]; then \
-      git checkout ${SGLANG_COMMIT}; \
+      git checkout -f ${SGLANG_COMMIT}; \
     else \
-      git checkout FETCH_HEAD; \
+      git checkout -f FETCH_HEAD; \
+    fi && \
+    if [ "${ENABLE_CUDA_13}" != "1" ]; then \
+      sed -i 's/cuda-python>=13\.0/cuda-python>=12,<13/' python/pyproject.toml && \
+      sed -i 's/flashinfer_python\[cu13\]/flashinfer_python[cu12]/' python/pyproject.toml && \
+      sed -i 's/nvidia-cutlass-dsl\[cu13\]/nvidia-cutlass-dsl/' python/pyproject.toml; \
     fi && \
     pip install -e "python[all]" --no-deps
 
@@ -240,6 +267,22 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       pip install --force-reinstall /build/gateway_wheels/sglang_router-*.whl && \
       rm -rf /root/.cargo /root/.rustup /build/sgl-model-gateway /build/gateway_wheels; \
     fi
+
+# ==================== Reconcile apache-tvm-ffi with sglang's pin ====================
+# sglang v0.5.16 bumped nvidia-cutlass-dsl 4.5.2 -> 4.6.0 while leaving its
+# apache-tvm-ffi pin at 0.1.11. cutlass-dsl 4.6.0's tvm_ffi provider calls
+#   tvm_ffi.utils.kwargs_wrapper.make_kwargs_wrapper(..., map_dataclass_to_tuple=...)
+# and that parameter only exists in apache-tvm-ffi >= 0.1.10. An earlier install in
+# this file drags in an older apache-tvm-ffi, so flashinfer's CuTe rmsnorm path dies
+# during CUDA-graph capture with
+#   TypeError: make_kwargs_wrapper() got an unexpected keyword argument 'map_dataclass_to_tuple'
+# Restore sglang's own pin after every other install, and fail the build loudly if it
+# does not take effect rather than shipping an image that only breaks under CI.
+RUN pip install --force-reinstall --no-deps "apache-tvm-ffi==0.1.11" && \
+    python3 -c "import inspect; from tvm_ffi.utils import kwargs_wrapper as k; \
+p = inspect.signature(k.make_kwargs_wrapper).parameters; \
+assert 'map_dataclass_to_tuple' in p, \
+  'apache-tvm-ffi resolves to a build too old for nvidia-cutlass-dsl 4.6.0: %s' % list(p)"
 
 RUN rm -rf /tmp/wheels
 

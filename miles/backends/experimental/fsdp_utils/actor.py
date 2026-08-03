@@ -148,7 +148,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         model = apply_fsdp2(
             model,
-            mesh=get_parallel_state().dp_mesh,
+            mesh=get_parallel_state().get_mesh("fsdp"),
             cpu_offload=self.fsdp_cpu_offload,
             args=self.args,
             param_dtype=self.precision_policy.param_dtype,
@@ -156,7 +156,10 @@ class FSDPTrainRayActor(TrainRayActor):
         )
 
         model = self._fsdp2_load_full_state_dict(
-            model, full_state, get_parallel_state().dp_mesh, cpu_offload=True if self.fsdp_cpu_offload else None
+            model,
+            full_state,
+            get_parallel_state().get_mesh("fsdp"),
+            cpu_offload=True if self.fsdp_cpu_offload else None,
         )
 
         self.model = model
@@ -623,14 +626,17 @@ class FSDPTrainRayActor(TrainRayActor):
             # Always use CPUOffloadPolicy for reference, let FSDP2 handle the offload. It is faster than model.cpu().
             ref_model = apply_fsdp2(
                 ref_model,
-                mesh=get_parallel_state().dp_mesh,
+                mesh=get_parallel_state().get_mesh("fsdp"),
                 cpu_offload=True,
                 args=self.args,
                 param_dtype=self.precision_policy.param_dtype,
                 reduce_dtype=self.precision_policy.reduce_dtype,
             )
             ref_model = self._fsdp2_load_full_state_dict(
-                ref_model, full_state, get_parallel_state().dp_mesh, cpu_offload=True
+                ref_model,
+                full_state,
+                get_parallel_state().get_mesh("fsdp"),
+                cpu_offload=True,
             )
 
             logger.info(f"[Rank {dist.get_rank()}] Reference model created with FSDP2 CPUOffloadPolicy")

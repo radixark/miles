@@ -76,7 +76,7 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    --hf-checkpoint /root/Qwen2.5-0.5B-Instruct \
    --save           /root/Qwen2.5-0.5B-Instruct_torch_dist/
 
-bash examples/reproducibility/run-qwen2.5-0.5B-gsm8k.sh
+bash examples/experimental/reproducibility/run-qwen2.5-0.5B-gsm8k.sh
 ```
 
 ### 5. Verify

@@ -36,13 +36,6 @@ Each example follows the same template:
 
   </Card>
 
-  <Card title="ReTool (Code Execution)" icon="screwdriver-wrench" href="/examples/retool">
-
-    SFT + RL pipeline for tool-augmented reasoning. Sandboxed Python code execution
-    interleaved with thinking.
-
-  </Card>
-
   <Card title="Multi-Agent Co-Evolution" icon="users" href="/examples/multi-agent">
 
     Two specialized agents (e.g. doctor + patient) train together and improve
@@ -68,6 +61,6 @@ Each example follows the same template:
 ## Where to start
 
 * **Never used Miles for anything beyond GRPO?** → [Fully Async Rollout](/examples/fully-async).
-* **Want tool use / RAG?** → [Search-R1](/examples/search-r1), then [ReTool](/examples/retool).
+* **Want tool use / RAG?** → [Search-R1](/examples/search-r1).
 * **VLM / multi-agent?** → [Multi-Agent Co-Evolution](/examples/multi-agent).
 * **Replay an old result?** → [Reproducibility Recipe](/examples/reproducibility).

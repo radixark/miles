@@ -4,8 +4,7 @@ import os
 
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils import object_store
-from miles.utils.arguments import parse_args
-from miles.utils.async_utils import eager_create_task
+from miles.utils.arguments import parse_args, validate_async_off_policy_correction
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
@@ -18,9 +17,10 @@ from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 logger = logging.getLogger(__name__)
 
 
-# The framework supports other asynchronous approaches such as fully async (which is shown in examples/full_async).
+# The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
 async def train(args):
     assert not args.colocate, "Colocation is not supported for async training."
+    validate_async_off_policy_correction(args)
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
     # allocate the GPUs
@@ -59,6 +59,13 @@ async def train(args):
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
         await rollout_manager.eval.remote(0)
 
+    async def save_training_model(model, rollout_id, force_sync):
+        if args.use_critic and args.offload_train:
+            await model.onload()
+        await model.save_model(rollout_id, force_sync=force_sync)
+        if args.use_critic and args.offload_train:
+            await model.offload()
+
     # async train loop.
     rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
@@ -71,10 +78,13 @@ async def train(args):
             rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
 
         if args.use_critic:
-            critic_task = await eager_create_task(critic_model.train(rollout_id, rollout_data_curr_ref))
+            values = await critic_model.train(rollout_id, rollout_data_curr_ref)
+            if args.offload_train:
+                await critic_model.offload()
             if rollout_id >= args.num_critic_only_steps:
-                await actor_model.train(rollout_id, rollout_data_curr_ref)
-            await critic_task
+                await actor_model.train(rollout_id, rollout_data_curr_ref, external_data=values)
+                if args.offload_train:
+                    await actor_model.offload()
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
         remove_rollout_data_refs(args, rollout_data_curr_ref)
@@ -84,9 +94,9 @@ async def train(args):
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
         ):
             force_sync = external_save or rollout_id == args.num_rollout - 1
-            await actor_model.save_model(rollout_id, force_sync=force_sync)
+            await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
-                await critic_model.save_model(rollout_id, force_sync=force_sync)
+                await save_training_model(critic_model, rollout_id, force_sync)
             await rollout_manager.save.remote(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)

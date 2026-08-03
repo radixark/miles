@@ -7,8 +7,9 @@ import logging
 import random
 from argparse import Namespace
 
-from miles.rollout.session.types import GetSessionResponse, SessionRecord
-from miles.utils.http_utils import post
+from miles.rollout.session.samples.codec import SamplesReply, decode_samples_and_merge_input_sample
+from miles.utils.http_utils import post, post_bytes_no_retry
+from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
@@ -50,39 +51,22 @@ class OpenAIEndpointTracer:
             session_server_instance_id=session_server_instance_id,
         )
 
-    async def collect_records(self) -> tuple[list[SessionRecord], dict]:
+    async def collect_samples(self, input_sample: Sample, *, max_seq_len: int | None) -> SamplesReply:
+        """Fetch server-assembled training samples for this session."""
         try:
-            response = await asyncio.wait_for(
-                post(self.base_url, {}, action="get"),
+            # `asyncio.TimeoutError` propagates after cleanup is attempted for `agentic_tool_call.generate` to handle.
+            payload = await post_bytes_no_retry(
+                f"{self.base_url}/samples",
+                {"max_seq_len": max_seq_len},
                 timeout=_SESSION_REQUEST_TIMEOUT,
             )
-        except asyncio.TimeoutError:
-            logger.error(
-                f"Timed out waiting for session {self.session_id} records after {_SESSION_REQUEST_TIMEOUT}s "
-                f"(likely stale HTTP keepalive connection). Returning empty records."
-            )
-            # Still attempt to clean up the session.
+        finally:
             try:
                 await asyncio.wait_for(
                     post(self.base_url, {}, action="delete"),
                     timeout=_SESSION_REQUEST_TIMEOUT,
                 )
-            except Exception:
-                logger.warning(f"Failed to delete session {self.session_id} after timeout")
-            return [], {}
-        except Exception as e:
-            logger.warning(f"Failed to get session {self.session_id} records: {e}")
-            raise
-        response = GetSessionResponse.model_validate(response)
-        records = response.records
-        metadata = response.metadata
+            except Exception as e:
+                logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
 
-        try:
-            await asyncio.wait_for(
-                post(self.base_url, {}, action="delete"),
-                timeout=_SESSION_REQUEST_TIMEOUT,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to delete session {self.session_id} after collecting records: {e}")
-
-        return (records or []), metadata
+        return decode_samples_and_merge_input_sample(payload, input_sample)

@@ -862,10 +862,22 @@ class MetricStore:
             if event.role == Role.ROLLOUT_MANAGER:
                 for window in windows:
                     clip0 = max(event.t0, window["t0"])
-                    clip1 = event.t1 if window["t1"] is None else min(event.t1, window["t1"])
-                    if clip0 >= clip1:
+                    if event.t1 < 0:
+                        # still-open interval: extends to the window edge (the
+                        # renderer draws open t1=-1 through to "now")
+                        clip1 = -1.0 if window["t1"] is None else window["t1"]
+                    else:
+                        clip1 = event.t1 if window["t1"] is None else min(event.t1, window["t1"])
+                    if clip1 >= 0 and clip0 >= clip1:
                         continue
                     covered = {(node, gpu) for engine in window["engines"] for node, gpu in engine["gpus"]}
+                    if not covered:
+                        # External engines register without GPU identity; fall
+                        # back to every known lane on the engines' nodes.
+                        engine_nodes = {engine["addr"].split("//")[-1].split(":")[0] for engine in window["engines"]}
+                        covered = {
+                            (lane["node"], lane["gpu"]) for lane in self.lanes() if lane["node"] in engine_nodes
+                        }
                     if lanes is not None:
                         covered &= lanes
                     for node, gpu in sorted(covered):

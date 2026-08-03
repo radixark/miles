@@ -43,7 +43,7 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 - A scheduled run maps its exact `github.event.schedule` cron: the current `0 15 * * *` entry maps to nightly, an unknown cron fails, and a future weekly entry must add its own mapping.
 - A manual dispatch keeps regular cadence and has no PR labels, so it runs the ordinary always-on selection; its operation inputs do not broaden CI scope.
 
-A **nightly** policy selects every enabled tag except `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. Regular cadence admits only regular registrations. Both cadences use the same stage inventory.
+A **nightly** policy selects every enabled tag except `long` and `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. Regular cadence admits only regular registrations. Both cadences use the same stage inventory.
 
 `run-ci-all` selects the full domain-tag set without changing cadence. `run-ci-image` selects every enabled tag except `long`, `ft-short`, and `ft-long`. If scope signals overlap, the precedence is `run-ci-all` > nightly > `run-ci-image`. The resolved cadence and raw/synthetic labels are passed to `run_suite.py`, which computes one run policy (see docs/ci/01-label.md for the subtraction semantics).
 

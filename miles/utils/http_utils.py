@@ -139,6 +139,18 @@ def _wrap_ipv6(host):
         return host
 
 
+def router_worker_base_urls(urls: list[str]) -> list[str]:
+    """Strip the `@<rank>` suffix dp-aware routing adds; ranks of one engine dedupe to one address."""
+    bases = []
+    for url in urls:
+        base, sep, rank = url.rpartition("@")
+        if sep and rank.isdigit():
+            url = base
+        if url not in bases:
+            bases.append(url)
+    return bases
+
+
 def run_router(args):
     # Spawned as a fresh interpreter, so it inherits no logging config.
     configure_logger_raw("router")
@@ -222,6 +234,19 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
         break
 
     return output
+
+
+async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> bytes:
+    """Perform one raw-bytes POST with a total timeout."""
+    assert _http_client is not None, "init_http_client() must run before post_bytes_no_retry()"
+
+    async def _do() -> bytes:
+        response = await _http_client.post(url, json=payload)
+        if not (200 <= response.status_code < 300):
+            raise RuntimeError(f"POST {url} failed with {response.status_code}: {response.text}")
+        return response.content
+
+    return await asyncio.wait_for(_do(), timeout=timeout)
 
 
 def init_http_client(args):

@@ -204,6 +204,33 @@ class TestSessionProxy:
         assert resp.status_code == 400
         assert resp.json()["error"].startswith("invalid JSON body:")
 
+    def test_chat_template_kwargs_override_reaches_render_and_backend(self, router_env):
+        """A request response-mode kwarg wins over the launch default in both
+        the locally rendered input_ids and the outbound backend request."""
+        default_session = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        resp = requests.post(
+            f"{router_env.url}/sessions/{default_session}/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
+        default_payload = router_env.backend.request_log[-1]
+        assert default_payload["chat_template_kwargs"] == {"enable_thinking": False}
+
+        override_session = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        resp = requests.post(
+            f"{router_env.url}/sessions/{override_session}/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "chat_template_kwargs": {"enable_thinking": True},
+            },
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
+        override_payload = router_env.backend.request_log[-1]
+        assert override_payload["chat_template_kwargs"] == {"enable_thinking": True}
+        assert override_payload["input_ids"] != default_payload["input_ids"]
+
     def test_chat_upstream_null_message_returns_502(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
 

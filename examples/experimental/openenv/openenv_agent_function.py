@@ -12,19 +12,29 @@ on every turn of the multi-turn episode.
 Env vars:
   OPENENV_ENV_URL    base_url of the env server (default: http://localhost:8003).
   OPENENV_MAX_TURNS  multi-turn cap (default: 30)
-  OPENENV_MESSAGE_TIMEOUT_S  per-message WS recv timeout (default: 600; docker-mode
-                     reset/exec/pytest routinely exceed the client default of 60)
+  OPENENV_MESSAGE_TIMEOUT_S  per-message WS recv timeout (default: 1200). Must
+                     exceed the longest single env op the server may
+                     legitimately run: in practice the largest
+                     [verifier].timeout_sec in your task set (server default
+                     900; the official suite declares up to 3600) plus margin
+                     -- evaluate times out client-side AFTER the full
+                     trajectory was generated, the most expensive point to
+                     fail. Also covers cold-image reset (first pull).
   OPENENV_MAX_ROLLOUT_TIME_SECONDS  hard wall-clock cap for one episode (default:
                      3600). An episode that does not return within the limit is
                      terminated and scored reward 0 (bounds long-trajectory
                      stragglers that would otherwise stall the whole rollout batch).
   AGENT_MODEL_NAME   model name sent to the policy (default: "model")
   MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for off-cluster agents
-  OPENENV_TASK_WORKDIR  container dir every agent command + eval runs in (default:
-                     /app, the TB2 task image WORKDIR). Empty string disables the
-                     prefix. Needed because upstream OpenEnv defaults to /task.
-  OPENENV_TB2_TESTS_SRC  where the upstream env stages the task's tests inside the
-                     container (default: /task/tests); copied to /tests for test.sh.
+
+Server contract: the env server must run tbench2_env at or after the
+huggingface/OpenEnv#1012 merge (04d259ea6; install per the README) —
+canonical tests/test.sh scoring inside the standard ``evaluate`` action, task
+WORKDIR resolved server-side, verifier assets withheld. The adapter verifies
+the contract on every episode rather than trusting the deployment: an
+``evaluate`` reply without the canonical-harness marker is treated as no
+verdict and the episode is dropped with a warning (see the guard in
+_multi_turn).
 
 Daytona-sandbox variant: ``openenv_daytona_agent_function`` (sibling module)
 is a drop-in ``--custom-agent-function-path`` alternative that runs every
@@ -82,89 +92,13 @@ TB2_AGENT_SYSTEM_PROMPT = (
     "TASK_COMPLETE (with no code block)."
 )
 
-# --- Adapter-driven Terminal-Bench-2 fidelity --------------------------------
-# Upstream OpenEnv's Tbench2DockerEnvironment runs the task container with workdir
-# /task (a copy of the task *source*) and scores via bare `pytest tests/` there.
-# Real TB2 tasks live at /app (the task image's WORKDIR) and are scored by the
-# task's canonical tests/test.sh, which pins the pytest toolchain, copies test.py
-# into /app, runs test_outputs.py, and writes the binary result to
-# /logs/verifier/reward.txt. We reproduce that faithfully from the adapter --
-# without patching OpenEnv or vendoring it -- by (a) running every agent command
-# in _TASK_WORKDIR and (b) driving the canonical harness through a plain `exec`
-# step instead of the env's built-in (non-canonical) `evaluate` action.
-#
-# This assumes the env server is UNMODIFIED upstream, which copies the task dir
-# (tests included) into the container at _TB2_TESTS_SRC.
-_TASK_WORKDIR = os.getenv("OPENENV_TASK_WORKDIR", "/app")
-_TB2_TESTS_SRC = os.getenv("OPENENV_TB2_TESTS_SRC", "/task/tests")
-
-# The eval exec echoes reward.txt on this marker so we can parse it out of stdout.
-_REWARD_MARKER = "__TB2_REWARD__:"
-# test.sh's exit code, echoed on its own marker purely for diagnostics: when a
-# sample is dropped for having no recoverable reward, a nonzero rc points at a
-# test.sh crash (infra/harness failure) vs. a clean run that wrote no verdict.
-# It does NOT drive the drop decision -- a nonzero rc from merely-failing tests
-# is a legitimate reward 0, not an infra error.
-_TESTSH_RC_MARKER = "__TB2_TESTSH_RC__:"
-# Honor an empty _TASK_WORKDIR (workdir prefix disabled) the same way
-# _apply_workdir does, instead of silently forcing /app.
-_EVAL_CD_CMD = f"cd {_TASK_WORKDIR} && " if _TASK_WORKDIR else ""
-_CANONICAL_EVAL_CMD = (
-    # rm the reward file first so a stale one can never be read back if test.sh
-    # fails to run (e.g. in a reused sandbox where /logs survives across episodes).
-    "mkdir -p /tests /logs/verifier && rm -f /logs/verifier/reward.txt && "
-    f"cp -a {_TB2_TESTS_SRC}/. /tests/ 2>/dev/null || true; "
-    f"{_EVAL_CD_CMD}bash /tests/test.sh > /tmp/tb2_testsh.log 2>&1; "
-    # $? here is test.sh's exit code (captured before any other command runs).
-    f"echo {_TESTSH_RC_MARKER}$?; "
-    f"echo {_REWARD_MARKER}$(cat /logs/verifier/reward.txt 2>/dev/null)"
-)
-
-
-def _apply_workdir(command: str) -> str:
-    """Prefix an agent command so it runs in the real task workdir (/app)."""
-    if not _TASK_WORKDIR:
-        return command
-    return f"cd {_TASK_WORKDIR} && {command}"
-
-
-def _parse_reward_marker(output: str) -> float | None:
-    """Parse the reward.txt value the canonical-eval exec echoed on its marker line.
-
-    Returns None when no reward can be recovered -- no marker line, an empty
-    value (reward.txt absent, i.e. test.sh never wrote a verdict), or a
-    non-numeric value. These are infra/harness failures, not a task the agent
-    legitimately failed, so the caller drops the sample rather than scoring a
-    false 0.0 that would pollute the training signal. A genuine failure writes
-    reward.txt = 0 and is returned as 0.0.
-    """
-    for line in output.splitlines()[::-1]:
-        if _REWARD_MARKER in line:
-            raw = line.split(_REWARD_MARKER, 1)[1].strip()
-            if not raw:
-                return None
-            try:
-                return float(raw)
-            except ValueError:
-                return None
-    return None
-
-
-def _parse_testsh_rc(output: str) -> int | None:
-    """Parse test.sh's exit code off its marker line (diagnostic only, may be absent)."""
-    for line in output.splitlines()[::-1]:
-        if _TESTSH_RC_MARKER in line:
-            raw = line.split(_TESTSH_RC_MARKER, 1)[1].strip()
-            try:
-                return int(raw)
-            except ValueError:
-                return None
-    return None
-
-
-# Per-message WS recv timeout. Docker-mode tbench2 reset (container create),
-# exec, and evaluate (pytest) each routinely exceed the EnvClient default of 60s.
-_MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "600"))
+# Per-message WS recv timeout. One knob covers three op profiles (reset:
+# container create / first image pull; exec: agent commands; evaluate: the
+# task's own verifier budget -- task.toml [verifier].timeout_sec, server
+# default 900). The default clears the server's default budget with margin;
+# raise it (and OPENENV_MAX_ROLLOUT_TIME_SECONDS) for tasks declaring larger
+# verifier budgets.
+_MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "1200"))
 
 # Hard wall-clock cap for one episode. The per-message timeout above bounds a
 # single env op, and OPENENV_MAX_TURNS bounds the turn count, but neither bounds
@@ -220,6 +154,12 @@ def _obs_field(result: Any, name: str) -> str:
     return str(getattr(obs, name, "") or "")
 
 
+def _obs_info(result: Any) -> dict:
+    """Read the Observation's info dict off a StepResult (empty when absent)."""
+    obs = getattr(result, "observation", result)
+    return getattr(obs, "info", None) or {}
+
+
 # Lazy import so the file loads without the env client present at import time.
 def _load_tbench2() -> dict[str, Any]:
     from tbench2_env import Tbench2Action, Tbench2Env
@@ -232,23 +172,13 @@ _DEFAULT_ENV_URL = "http://localhost:8003"
 
 # --- Episode wiring -------------------------------------------------------------
 # The agent loop (_multi_turn) is shared; everything that differs between the
-# episode legs enters it as three keyword parameters, filled in only by each
+# episode legs enters it as two keyword parameters, filled in only by each
 # module's run_episode():
 #
 #   run_body(env_cls, metadata, body)   how an env comes into being — connect to
 #                       the shared server (_shared_run_body below, capacity-
 #                       retried) vs create a Daytona sandbox
 #                       (openenv_daytona_agent_function).
-#   native_evaluate                     server contract: True when the server
-#                       scores natively (canonical tests/test.sh inside
-#                       `evaluate`, WORKDIR server-side, verifier assets
-#                       withheld — upstream since huggingface/OpenEnv#965+#972);
-#                       False keeps the adapter compensation (_apply_workdir +
-#                       _CANONICAL_EVAL_CMD + marker parse) for the OLDER
-#                       tbench2_env today's shared deployments run. A shared
-#                       server upgraded to current upstream could flip this;
-#                       that is a follow-up gated on validating docker-mode
-#                       native scoring.
 #   post_episode(env, action_cls)       optional hygiene hook (a long-lived
 #                       shared server accumulates trial dirs; a Daytona
 #                       sandbox lives only for its episode and needs nothing).
@@ -319,29 +249,22 @@ async def _multi_turn(
     metadata: dict[str, Any],
     *,
     run_body: Callable[..., Any],
-    native_evaluate: bool,
     post_episode: Callable[..., Any] | None = None,
 ) -> tuple[float | None, dict[str, Any]]:
     """Agentic loop: reset(task) -> {policy -> exec -> feed output back} -> evaluate (tbench2).
 
     The policy emits one shell command per turn (a ```bash block or the bare
-    reply), executed in the real task workdir; the loop ends when the policy
-    stops emitting a command, says TASK_COMPLETE, or hits OPENENV_MAX_TURNS.
-
-    Scoring depends on ``native_evaluate``, matching what the episode's env
-    server provides. A server carrying the upstream fixes from
-    huggingface/OpenEnv#965 + #972 runs the task's canonical tests/test.sh
-    natively inside the standard ``evaluate`` action and resolves the task
-    WORKDIR itself; against an OLDER server the adapter compensates — it
-    prefixes exec commands with the workdir (_apply_workdir), runs canonical
-    test.sh via an ``exec`` step (_CANONICAL_EVAL_CMD), and parses
-    /logs/verifier/reward.txt back out of the output.
+    reply), executed by the server in the task image's real WORKDIR; the loop
+    ends when the policy stops emitting a command, says TASK_COMPLETE, or hits
+    OPENENV_MAX_TURNS. Scoring is the standard ``evaluate`` action: the server
+    runs the task's tests/test.sh and reports the verdict (see the module
+    docstring for the required server contract).
     """
     action_cls = classes["action"]
     task_id = metadata.get("task_id") or metadata.get("task_name")
     max_turns = int(os.getenv("OPENENV_MAX_TURNS", "30"))
 
-    async def body(env: Any) -> tuple[float | None, int, list[float], list[float], float, float, int | None]:
+    async def body(env: Any) -> tuple[float | None, int, list[float], list[float], float, float]:
         # Per-turn wall-clock timings. gen_times[i] is turn i's policy generation
         # latency; tool_times[i] is turn i's env.step(exec) latency. reset_time and
         # eval_time bracket the one-off reset() and the final evaluate() env steps.
@@ -381,10 +304,7 @@ async def _multi_turn(
                 break
 
             t0 = time.monotonic()
-            # A native server runs the toolkit in the task's real WORKDIR
-            # already; only an older server needs the adapter-side prefix.
-            exec_command = command if native_evaluate else _apply_workdir(command)
-            step_result = await env.step(action_cls(action_type="exec", command=exec_command))
+            step_result = await env.step(action_cls(action_type="exec", command=command))
             tool_times.append(time.monotonic() - t0)
             output = _obs_field(step_result, "output")
             # Feed the command output back as a user turn, not a tool turn. GLM
@@ -400,40 +320,38 @@ async def _multi_turn(
             convo.append({"role": "user", "content": content})
 
         t0 = time.monotonic()
-        if native_evaluate:
-            # The server runs the canonical test.sh natively inside the
-            # standard evaluate action; there is no adapter-side test.sh
-            # exit-code marker to parse.
-            eval_result = await env.step(action_cls(action_type="evaluate"))
-            eval_time = time.monotonic() - t0
-            # reward=None (with `error` set) means the scoring step itself
-            # errored server-side (toolkit timeout, staging I/O) -- no verdict
-            # was produced, which is not the same as tests failing. Propagate
-            # None so the sample is dropped, mirroring the older leg's
-            # missing-marker case, instead of coercing to a false-negative 0.
-            raw_reward = getattr(eval_result, "reward", None)
-            eval_error = _obs_field(eval_result, "error")
-            if raw_reward is None or eval_error:
-                logger.warning(f"OpenEnv tbench2 evaluate produced no verdict (error={eval_error!r})")
-                reward = None
-            else:
-                reward = float(raw_reward)
-            testsh_rc = None
+        eval_result = await env.step(action_cls(action_type="evaluate"))
+        eval_time = time.monotonic() - t0
+        # No canonical verdict -> reward None (the training wrapper drops the
+        # sample instead of ingesting a false-negative 0):
+        #   - reward=None / `error` set: the scoring step itself errored
+        #     server-side (toolkit timeout, staging I/O) -- not tests failing.
+        #   - harness marker absent: the server scored, but not through the
+        #     canonical tests/test.sh (a tbench2_env install predating the
+        #     contract in the module docstring, or a task dir without test.sh
+        #     scored by the server's pytest fallback). The reward LOOKS
+        #     valid, which is exactly why it must not be trusted: source
+        #     preflight is impossible against a remote server, so this marker
+        #     is the contract check.
+        raw_reward = getattr(eval_result, "reward", None)
+        eval_error = _obs_field(eval_result, "error")
+        harness = str(_obs_info(eval_result).get("harness", ""))
+        if raw_reward is None or eval_error or harness != "tests/test.sh":
+            logger.warning(
+                "OpenEnv tbench2 evaluate produced no canonical verdict "
+                f"(error={eval_error!r}, harness={harness!r}); dropping episode"
+            )
+            reward = None
         else:
-            # Older server: adapter-driven canonical exec + marker parse.
-            eval_result = await env.step(action_cls(action_type="exec", command=_CANONICAL_EVAL_CMD))
-            eval_time = time.monotonic() - t0
-            eval_output = _obs_field(eval_result, "output")
-            reward = _parse_reward_marker(eval_output)
-            testsh_rc = _parse_testsh_rc(eval_output)
+            reward = float(raw_reward)
 
         if post_episode is not None:
             await post_episode(env, action_cls)
 
-        return reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc
+        return reward, turns, gen_times, tool_times, reset_time, eval_time
 
     result = await run_body(classes["env"], metadata, body)
-    reward, turns, gen_times, tool_times, reset_time, eval_time, testsh_rc = result
+    reward, turns, gen_times, tool_times, reset_time, eval_time = result
     total_gen_time = sum(gen_times)
     # non_generation_time = everything the rollout spent outside policy generation:
     # per-turn exec latency plus the one-off reset() and evaluate() env steps. Feeds
@@ -448,7 +366,6 @@ async def _multi_turn(
         "eval_time": eval_time,
         "total_gen_time": total_gen_time,
         "total_tool_time": total_tool_time,
-        "testsh_rc": testsh_rc,
     }
 
 
@@ -473,7 +390,6 @@ async def run_episode(
         request_kwargs,
         metadata,
         run_body=_shared_run_body,
-        native_evaluate=False,
         post_episode=_purge_trial_dirs,
     )
 
@@ -510,8 +426,8 @@ async def _run_for_training(
         )
     except asyncio.TimeoutError:
         logger.warning(f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; " "terminating with reward 0")
-        # eval_report empty: the episode was cancelled before the canonical
-        # eval ever ran, so there is no pytest report to surface.
+        # eval_report empty: the episode was cancelled before evaluate ever
+        # ran, so there is no pytest report to surface.
         return {
             "reward": 0.0,
             "exit_status": "timeout",
@@ -524,22 +440,19 @@ async def _run_for_training(
     finally:
         await policy.close()
 
-    # No recoverable reward means the canonical harness never produced a verdict
-    # (infra/harness failure, not a legitimate task failure). Drop the sample --
-    # returning it as reward 0.0 would inject a false negative into training.
+    # No canonical verdict (infra/harness failure or a non-canonical server,
+    # not a legitimate task failure -- see the guard in _multi_turn). Drop the
+    # sample: returning it as reward 0.0 would inject a false negative into
+    # training.
     if reward is None:
-        logger.warning(
-            "OpenEnv tbench2 episode produced no canonical reward "
-            f"(test.sh exit code={agent_metrics.get('testsh_rc')}); "
-            "infra/harness failure, dropping sample"
-        )
+        logger.warning("OpenEnv tbench2 episode produced no canonical reward; dropping sample")
         return None
 
-    # eval_report is intentionally empty: the canonical-eval marker protocol
-    # (see _REWARD_MARKER) echoes back only the scalar reward. The detailed
-    # pytest CTRF report is written inside the sandbox at
-    # /logs/verifier/ctrf.json and is deliberately not captured back to the
-    # trainer, which consumes only `reward`.
+    # eval_report is intentionally empty: the server's evaluate reports only
+    # the scalar reward (plus the harness marker). The detailed pytest CTRF
+    # report is written inside the sandbox at /logs/verifier/ctrf.json and is
+    # deliberately not captured back to the trainer, which consumes only
+    # `reward`.
     return {
         "reward": reward,
         "exit_status": "completed",

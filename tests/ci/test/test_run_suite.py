@@ -179,9 +179,9 @@ class TestResolvePolicy:
             (REGULAR_CADENCE, {"run-ci-image"}, _ALL - {"long", "ft-short", "ft-long"}, False),
             (REGULAR_CADENCE, {"run-ci-all"}, _ALL, False),
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-all"}, _ALL, False),
-            (NIGHTLY_CADENCE, set(), _ALL - {"ft-long"}, True),
-            (NIGHTLY_CADENCE, {"nightly"}, _ALL - {"ft-long"}, True),
-            (NIGHTLY_CADENCE, {"run-ci-image", "nightly"}, _ALL - {"ft-long"}, True),
+            (NIGHTLY_CADENCE, set(), _ALL - {"long", "ft-long"}, True),
+            (NIGHTLY_CADENCE, {"nightly"}, _ALL - {"long", "ft-long"}, True),
+            (NIGHTLY_CADENCE, {"run-ci-image", "nightly"}, _ALL - {"long", "ft-long"}, True),
             (NIGHTLY_CADENCE, {"nightly", "run-ci-all"}, _ALL, True),
         ],
     )
@@ -208,14 +208,13 @@ class TestResolvePolicy:
         [
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-long"}, _ALL - {"ft-short", "ft-long"}),
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}, _ALL - {"long", "ft-long"}),
-            (NIGHTLY_CADENCE, {"nightly", "run-ci-ft-long"}, _ALL),
+            (NIGHTLY_CADENCE, {"nightly", "run-ci-long"}, _ALL - {"ft-long"}),
+            (NIGHTLY_CADENCE, {"nightly", "run-ci-ft-long"}, _ALL - {"long"}),
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, _ALL - {"long"}),
-            (NIGHTLY_CADENCE, {"run-ci-ft-long"}, _ALL),
+            (NIGHTLY_CADENCE, {"run-ci-ft-long"}, _ALL - {"long"}),
         ],
     )
     def test_explicit_domain_label_wins_over_scope_subtraction(self, cadence, labels, expected):
-        # Asking for long or FT coverage on an image bump must not be silently
-        # dropped: explicit requests are unioned in after the subtraction.
         assert resolve_policy(cadence, labels).include_labels == expected
 
     @pytest.mark.parametrize(
@@ -334,6 +333,7 @@ class TestRunSuiteCLI:
         assert alias_policy == explicit_policy
         assert "cadence='nightly' bypass_fastfail=True" in alias_policy
         assert "'ft-short'" in alias_policy
+        assert "'long'" not in alias_policy
         assert "'ft-long'" not in alias_policy
         assert "Continue on error: True" in alias.stdout
 
@@ -595,7 +595,7 @@ class TestFilterTestsBroadScopes:
             "tests/e2e/megatron.py",
         }
 
-    def test_nightly_scope_selects_ft_short_but_not_ft_only_soak(self, broad_scope_tests):
+    def test_nightly_scope_excludes_long_and_ft_long_but_selects_ft_short(self, broad_scope_tests):
         enabled, _ = filter_tests(
             broad_scope_tests,
             HWBackend.CUDA,
@@ -603,14 +603,10 @@ class TestFilterTestsBroadScopes:
             nightly=True,
             labels=set(resolve_policy(NIGHTLY_CADENCE, set()).include_labels),
         )
-        # ft/long.py again enters via `long`; a soak test that must never
-        # run at nightly must carry only FT labels.
         assert _names(enabled) == {
             "tests/e2e/always.py",
             "tests/e2e/megatron.py",
-            "tests/e2e/long.py",
             "tests/e2e/ft/short.py",
-            "tests/e2e/ft/long.py",
         }
 
     def test_subtracted_only_test_drops_out_entirely(self):

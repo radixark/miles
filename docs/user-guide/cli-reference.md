@@ -221,6 +221,7 @@ Sections mirror the launch-script argument groups.
 | `--gradient-checkpointing` | flag | off | FSDP equivalent of recompute flags. |
 | `--fsdp-cpu-offload` | flag | off | FSDP: offload params, grads, optimizer state to CPU. |
 | `--fsdp-cpu-backend` | str | `gloo` | FSDP: CPU backend for hybrid offload. |
+| `--dp-replicate-size` | int | `1` | FSDP2 hybrid-shard replica count. |
 | `--attn-implementation` | enum | `flash_attention_2` | FSDP only: `flash_attention_2`, `sdpa`, `eager`. |
 
 ### RL algorithm
