@@ -7,7 +7,6 @@ import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
@@ -237,6 +236,7 @@ class RolloutManager:
         if not srv:
             return EnginesAndLock(
                 rollout_engines=[],
+                rollout_engine_generation_ids=[],
                 rollout_engine_lock=self.rollout_engine_lock,
                 has_new_engines=False,
                 engine_gpu_counts=[],
@@ -246,6 +246,7 @@ class RolloutManager:
         await srv.wait_all_engines_alive()
         return EnginesAndLock(
             rollout_engines=[e.actor_handle for e in srv.engines],
+            rollout_engine_generation_ids=[e.generation_id for e in srv.engines],
             rollout_engine_lock=self.rollout_engine_lock,
             has_new_engines=srv.has_new_engines,
             engine_gpu_counts=srv.engine_gpu_counts,
@@ -269,7 +270,22 @@ class RolloutManager:
         if self.rollout_id == -1 or srv is None:
             return
 
-        await srv.recover()
+        await srv.recover(register_with_router=False)
+
+    async def register_recovered_updatable_engines(
+        self,
+        rollout_engine_generation_ids: list[str],
+    ) -> None:
+        """Expose recovered engines included in a successful weight transfer.
+
+        Args:
+            rollout_engine_generation_ids: IDs of the node-0 engine generations
+                that received the completed weight update.
+        """
+        srv = self._get_updatable_server()
+        if srv is not None:
+            await srv.register_pending_engines_with_router(rollout_engine_generation_ids=rollout_engine_generation_ids)
+            self.args._sglang_published_model_names.add(srv.model_name)
 
     def _get_updatable_server(self) -> RolloutServer | None:
         updatable = [srv for srv in self.servers.values() if srv.update_weights]
@@ -287,10 +303,13 @@ class RolloutManager:
     # -------------------------- external start/stop -----------------------------
 
     async def start_cell(self, cell_id: int):
-        port_cursors = PortCursors.empty()
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
-        group = self.servers[idx.srv_key].server_groups[idx.group_index]
-        await group.recover(port_cursors=port_cursors, filter_indices=idx.engine_indices)
+        server = self.servers[idx.srv_key]
+        await server.recover_group(
+            group_index=idx.group_index,
+            register_with_router=not server.update_weights,
+            filter_indices=idx.engine_indices,
+        )
 
     async def stop_cell(self, cell_id: int):
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
@@ -364,6 +383,7 @@ class RolloutManager:
 @dataclass(frozen=True)
 class EnginesAndLock:
     rollout_engines: list[ray.actor.ActorHandle]
+    rollout_engine_generation_ids: list[str]
     rollout_engine_lock: ray.actor.ActorHandle
     has_new_engines: bool
     engine_gpu_counts: list[int]

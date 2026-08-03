@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 
 import ray
 from pydantic import BaseModel, ConfigDict
@@ -23,11 +24,17 @@ class ServerEngine:
         self._state = _StateStopped()
 
     def mark_allocated_uninitialized(self, actor_handle: ray.actor.ActorHandle):
-        self._change_state("mark_allocated", _StateStopped, _StateAllocatedUninitialized(actor_handle=actor_handle))
+        self._change_state(
+            "mark_allocated",
+            _StateStopped,
+            _StateAllocatedUninitialized(actor_handle=actor_handle, generation_id=uuid4().hex),
+        )
 
     def mark_alive(self):
         self._change_state(
-            "mark_alive", _StateAllocatedUninitialized, _StateAllocatedAlive(actor_handle=self.actor_handle)
+            "mark_alive",
+            _StateAllocatedUninitialized,
+            _StateAllocatedAlive(actor_handle=self.actor_handle, generation_id=self.generation_id),
         )
 
     def mark_stopped(self):
@@ -37,6 +44,11 @@ class ServerEngine:
     def actor_handle(self) -> ray.actor.ActorHandle:
         assert isinstance(self._state, _StateAllocatedBase)
         return self._state.actor_handle
+
+    @property
+    def generation_id(self) -> str:
+        assert isinstance(self._state, _StateAllocatedBase)
+        return self._state.generation_id
 
     @property
     def is_allocated(self) -> bool:
@@ -72,6 +84,7 @@ class _StateStopped(_StateBase):
 
 class _StateAllocatedBase(_StateBase):
     actor_handle: ray.actor.ActorHandle
+    generation_id: str
 
 
 class _StateAllocatedUninitialized(_StateAllocatedBase):

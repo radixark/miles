@@ -107,7 +107,7 @@ class TestRealRayActorLifecycle:
             num_gpus_per_engine=1,
         )
         try:
-            ray.get(actor.init.remote(host="127.0.0.1", port=20000))
+            ray.get(actor.init.remote(host="127.0.0.1", port=20000, register_with_router=True))
             ray.get(actor.health_generate.remote(timeout=1.0))
             ray.get(actor.release_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
             ray.get(actor.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
@@ -118,6 +118,7 @@ class TestRealRayActorLifecycle:
             method_names = [name for name, _, _ in calls]
             assert method_names == [
                 "init",
+                "register_with_router",
                 "health_generate",
                 "release_memory_occupation",
                 "resume_memory_occupation",
