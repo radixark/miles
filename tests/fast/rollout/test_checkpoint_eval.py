@@ -22,6 +22,7 @@ def make_args(**overrides) -> Namespace:
         rollout_num_gpus_per_engine=2,
         eval_num_gpus=1,
         eval_num_gpus_per_engine=1,
+        eval_uses_snapshots=True,
         eval_function_path=None,
         debug_train_only=False,
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
@@ -71,7 +72,7 @@ def make_manager(args, eval_fn=None, fleet=None):
     mgr._metric_checker = None
     mgr.eval_generate_rollout = eval_fn
     mgr._eval_fleet = fleet
-    mgr._uses_snapshots = eval_fn is not None and (fleet is not None or isinstance(eval_fn, CheckpointEvalFn))
+    args.eval_uses_snapshots = eval_fn is not None and (fleet is not None or isinstance(eval_fn, CheckpointEvalFn))
     return mgr
 
 

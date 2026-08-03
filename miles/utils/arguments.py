@@ -60,8 +60,16 @@ def _resolve_rollout_functions(args) -> None:
             args.rollout_all_samples_process_path is None
         ), "--fully-async does not support --rollout-all-samples-process-path"
 
+    user_eval_path = args.eval_function_path
     args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
-    args.eval_uses_snapshots = args.eval_num_gpus > 0 or is_checkpoint_eval_fn(args.eval_function_path)
+    # An inherited eval path is the rollout fn serving eval itself, never a checkpoint
+    # backend: skip the resolve so custom rollout modules are not imported on the driver.
+    checkpoint_backend = user_eval_path is not None and is_checkpoint_eval_fn(args.eval_function_path)
+    assert not (args.eval_num_gpus > 0 and checkpoint_backend), (
+        "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
+        "backend; the fleet would boot and then hand the work to the other one."
+    )
+    args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
 def reset_arg(parser, name, **kwargs):
@@ -3143,12 +3151,8 @@ def miles_validate_args(args):
 
     _resolve_rollout_functions(args)
 
-    assert not (args.eval_num_gpus > 0 and is_checkpoint_eval_fn(args.eval_function_path)), (
-        "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
-        "backend; the fleet would boot and then hand the work to the other one."
-    )
-
     # Both snapshot postures drive the same RolloutManager._eval_checkpoint path.
+    # (The fleet-vs-CheckpointEvalFn conflict is asserted where the posture is derived.)
     if args.eval_uses_snapshots:
         assert (
             enable_experimental_rollout_refactor()
