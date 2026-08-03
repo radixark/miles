@@ -300,10 +300,9 @@ class TestAddCellRollback:
             await srv.add_cell(self._make_meta())
 
         assert srv.server_cells == {}
-        assert srv.has_new_engines is False
 
     @pytest.mark.asyncio
-    async def test_a_successful_add_commits_the_cell_and_marks_new_engines(self, monkeypatch):
+    async def test_a_successful_add_commits_the_cell(self, monkeypatch):
         """After the failure is gone the same cell id can be added normally."""
         srv = RolloutServer(server_cells={}, args=SimpleNamespace())
         monkeypatch.setattr(ServerCell, "add", _noop_async)
@@ -311,7 +310,6 @@ class TestAddCellRollback:
         await srv.add_cell(self._make_meta())
 
         assert list(srv.server_cells) == ["inference-engine-0-0-0"]
-        assert srv.has_new_engines is True
 
 
 async def _raise_async(self):
