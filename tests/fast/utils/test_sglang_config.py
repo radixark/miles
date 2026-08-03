@@ -1,5 +1,6 @@
 """Unit tests for SglangConfig multi-model parsing with update_weights."""
 
+from miles.backends.sglang_utils.sglang_config import SglangConfig
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
@@ -71,6 +72,24 @@ class TestSglangConfigUpdateWeights:
         assert config.models[1].update_weights is False
         assert config.models[1].model_path == "/path/to/ref"
 
+    def test_weights_backup_mode_parsed_from_yaml(self, tmp_path):
+        path = _write_yaml(
+            {
+                "sglang": [
+                    {"name": "actor", "update_weights": True,
+                    "engine_groups": [{"worker_type": "regular", "num_gpus": 4}]},
+                    {"name": "ref", "update_weights": False, "model_path": "/path/to/ref",
+                    "weights_backup_mode": "reload",
+                    "engine_groups": [{"worker_type": "regular", "num_gpus": 2}]},
+                ]
+            },
+            tmp_path,
+        )
+        config = SglangConfig.from_yaml(path)
+        assert config.models[0].weights_backup_mode is None
+        assert config.models[1].weights_backup_mode == "reload"
+    
+
     def test_multi_model_total_gpus(self, tmp_path):
         """total_num_gpus should sum across all models."""
         from miles.backends.sglang_utils.sglang_config import SglangConfig
@@ -93,6 +112,8 @@ class TestSglangConfigUpdateWeights:
         )
         config = SglangConfig.from_yaml(path)
         assert config.total_num_gpus == 12
+
+    
 
 
 class TestGetModelUrl:
