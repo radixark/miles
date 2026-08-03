@@ -7,6 +7,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
+from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
     _compute_spec_router,
     compute_engine_spec_names,
@@ -272,6 +273,45 @@ class TestInferenceEnginePortSchema:
             "engine_info_bootstrap",
             "gate",
         ]
+
+
+class TestInferenceEngineGatedLaunch:
+    def test_the_launch_command_is_told_the_cells_own_gate_port(self, tmp_path, monkeypatch):
+        """An engine launched without its gate port would start ungated and ignore the release."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)
+        recorded: dict = {}
+
+        def _record(**kwargs) -> str:
+            recorded.update(kwargs)
+            return "launch-cmd"
+
+        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
+        (spec,) = specs_inference_engine(args)
+        spec.launch_command(_make_engine_ctx())
+
+        assert recorded["gated_launch_port"] == 13007
+
+
+def _make_engine_ctx() -> LaunchCommandContext:
+    return LaunchCommandContext(
+        cell_index=0,
+        worker_in_cell_index=0,
+        self_addrs=dict(
+            primary=HostAndPort(host="10.0.0.1", port=30000),
+            dist_init=HostAndPort(host="10.0.0.1", port=9000),
+            nccl=HostAndPort(host="10.0.0.1", port=10000),
+            engine_info_bootstrap=HostAndPort(host="10.0.0.1", port=12000),
+            gate=HostAndPort(host="10.0.0.1", port=13007),
+        ),
+        spec_addrs={},
+        gpu_ids=[0, 1],
+    )
 
 
 class TestEngineMetaApiKey:

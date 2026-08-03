@@ -18,6 +18,7 @@ def _cmd(*, worker_type: str = "regular", args=None, addr_overrides: dict | None
         port=30000,
         nccl_port=20031,
         engine_info_bootstrap_port=20033,
+        gated_launch_port=20034,
         dist_init_addr="10.0.0.1:20000",
         disaggregation_bootstrap_port=None,
     )
@@ -35,6 +36,7 @@ def _cmd(*, worker_type: str = "regular", args=None, addr_overrides: dict | None
         port=addr_and_ports["port"],
         disaggregation_bootstrap_port=addr_and_ports["disaggregation_bootstrap_port"],
         engine_info_bootstrap_port=addr_and_ports["engine_info_bootstrap_port"],
+        gated_launch_port=addr_and_ports["gated_launch_port"],
         **kwargs,
     )
 
