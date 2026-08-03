@@ -1,11 +1,14 @@
 import asyncio
+import dataclasses
 
 import pytest
 
-from miles.utils.context_lock import ContextLock, with_lock
+from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, with_lock
 
 
+@enforce_lock_discipline
 class _Guarded:
+    @lock_exempt
     def __init__(self) -> None:
         self.context_lock = ContextLock("guarded")
         self.max_concurrent_calls = 0
@@ -256,3 +259,181 @@ class TestWithLock:
 
 async def _read_held(lock: ContextLock) -> bool:
     return lock.held_in_current_context
+
+
+class TestEnforceLockDiscipline:
+    def test_rejects_an_undecorated_async_method(self):
+        """Every method must opt into a lock discipline explicitly."""
+        with pytest.raises(AssertionError, match="_Bad.method must be decorated"):
+
+            @enforce_lock_discipline
+            class _Bad:
+                async def method(self) -> None:
+                    pass
+
+    def test_rejects_an_undecorated_sync_method(self):
+        """Sync methods are checked, not just coroutines."""
+        with pytest.raises(AssertionError, match="_BadSync.method must be decorated"):
+
+            @enforce_lock_discipline
+            class _BadSync:
+                def method(self) -> None:
+                    pass
+
+    def test_rejects_undecorated_private_methods(self):
+        """Private methods must be disciplined too, not just the public surface."""
+        with pytest.raises(AssertionError, match="_BadPrivate._method must be decorated"):
+
+            @enforce_lock_discipline
+            class _BadPrivate:
+                def _method(self) -> None:
+                    pass
+
+    def test_rejects_an_undecorated_dunder_method(self):
+        """Dunders are methods too: a hand-written __init__ must state its discipline."""
+        with pytest.raises(AssertionError, match=r"_BadInit.__init__ must be decorated"):
+
+            @enforce_lock_discipline
+            class _BadInit:
+                def __init__(self) -> None:
+                    pass
+
+    def test_rejects_an_undecorated_dunder_other_than_init(self):
+        """Any dunder can touch guarded state, so none of them are waved through."""
+        with pytest.raises(AssertionError, match=r"_BadRepr.__repr__ must be decorated"):
+
+            @enforce_lock_discipline
+            class _BadRepr:
+                def __repr__(self) -> str:
+                    return "bad"
+
+    def test_rejects_an_undecorated_property_getter(self):
+        """Property getters are methods too and must be disciplined."""
+        with pytest.raises(AssertionError, match="_BadProperty.value must be decorated"):
+
+            @enforce_lock_discipline
+            class _BadProperty:
+                @property
+                def value(self) -> int:
+                    return 0
+
+    def test_rejects_an_undecorated_property_setter(self):
+        """A disciplined getter does not excuse an undisciplined setter."""
+        with pytest.raises(AssertionError, match="_BadSetter.value must be decorated"):
+
+            @enforce_lock_discipline
+            class _BadSetter:
+                @property
+                @lock_exempt
+                def value(self) -> int:
+                    return 0
+
+                @value.setter
+                def value(self, new_value: int) -> None:
+                    pass
+
+    def test_rejects_an_undecorated_staticmethod(self):
+        """Static methods are unwrapped and checked like the rest."""
+        with pytest.raises(AssertionError, match="_BadStatic.method must be decorated"):
+
+            @enforce_lock_discipline
+            class _BadStatic:
+                @staticmethod
+                def method() -> None:
+                    pass
+
+    def test_rejects_an_undecorated_classmethod(self):
+        """Class methods are unwrapped and checked like the rest."""
+        with pytest.raises(AssertionError, match="_BadClassmethod.method must be decorated"):
+
+            @enforce_lock_discipline
+            class _BadClassmethod:
+                @classmethod
+                def method(cls) -> None:
+                    pass
+
+    def test_accepts_a_fully_disciplined_class(self):
+        """A class whose members are all decorated or exempt passes the check."""
+
+        @enforce_lock_discipline
+        class _Good:
+            @lock_exempt
+            def __init__(self) -> None:
+                self.context_lock = ContextLock("good")
+
+            @staticmethod
+            @lock_exempt
+            def create() -> None:
+                pass
+
+            @classmethod
+            @lock_exempt
+            def build(cls) -> None:
+                pass
+
+            @with_lock
+            async def method(self) -> None:
+                pass
+
+            @property
+            @lock_exempt
+            def value(self) -> int:
+                return 0
+
+        assert _Good().value == 0
+
+    def test_accepts_a_dataclass_when_the_check_runs_before_field_generation(self):
+        """Dataclass-generated dunders cannot be decorated, so the check must run inside the dataclass."""
+
+        @dataclasses.dataclass
+        @enforce_lock_discipline
+        class _GoodDataclass:
+            count: int = 0
+            name: str = "default"
+
+            @lock_exempt
+            def method(self) -> int:
+                return self.count
+
+        assert _GoodDataclass(count=1).method() == 1
+
+    def test_rejects_a_dataclass_whose_generated_dunders_get_checked(self):
+        """Applying the check outside @dataclass sees generated methods it cannot possibly discipline."""
+        with pytest.raises(AssertionError, match="_BadOrder.* must be decorated"):
+
+            @enforce_lock_discipline
+            @dataclasses.dataclass
+            class _BadOrder:
+                count: int = 0
+
+    def test_accepts_plain_and_annotated_class_attributes(self):
+        """Only real methods are checked; data attributes and their annotations are not."""
+
+        @enforce_lock_discipline
+        class _GoodAttributes:
+            timeout_seconds: int = 30
+            retries = 3
+
+        assert _GoodAttributes.timeout_seconds == 30
+
+    def test_accepts_a_class_whose_only_members_are_inherited(self):
+        """A subclass adding nothing has nothing of its own to check."""
+
+        @enforce_lock_discipline
+        class _Derived(_Guarded):
+            pass
+
+        assert _Derived() is not None
+
+    def test_the_guarded_test_double_passes_the_check(self):
+        """The _Guarded helper used across this file is itself fully disciplined."""
+        assert enforce_lock_discipline(_Guarded) is _Guarded
+
+    def test_lock_exempt_leaves_the_function_behaviour_untouched(self):
+        """The exemption is a marker only; it must not wrap or alter the call."""
+
+        @lock_exempt
+        def add(left: int, right: int) -> int:
+            return left + right
+
+        assert add(1, 2) == 3
