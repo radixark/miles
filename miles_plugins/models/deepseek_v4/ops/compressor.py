@@ -7,7 +7,11 @@ from torch.nn import Linear
 from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_freqs_cis_for_cp
 from miles_plugins.models.deepseek_v4.ops.kernel.precision_aligned_ops import linear_bf16_fp32
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
-from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.rope import (
+    apply_rotary_emb,
+    apply_rotary_emb_thd,
+    wrapped_precompute_freqs_cis,
+)
 from miles_plugins.models.deepseek_v4.ops.thd_utils import batch_of_row, compressed_cu_seqlens
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 
@@ -285,11 +289,7 @@ class DeepSeekV4Compressor(nn.Module):
         # Capacity padding carries -1; clamp keeps the gather in range and those rows are
         # dropped by seq_to_rank_row anyway.
         rope_positions = local_pos.clamp(min=0) * ratio if pre_grouped else local_pos * ratio
-        apply_rotary_emb(
-            kv[..., -self.rope_head_dim :],
-            freqs_cis.index_select(0, rope_positions),
-            thd=True,
-        )
+        apply_rotary_emb_thd(kv[..., -self.rope_head_dim :], freqs_cis.index_select(0, rope_positions))
 
         if self.rotate:
             kv = rotate_activation(kv)
