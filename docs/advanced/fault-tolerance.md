@@ -57,7 +57,7 @@ update (`miles/backends/megatron_utils/actor.py`).
 1. Pauses health monitoring.
 2. Calls `srv.recover()` on the updatable server.
 
-`srv.recover()` (`miles/ray/rollout/rollout_server.py`, which fans out to `ServerCell.add` in `miles/ray/rollout/server_cell.py`):
+`srv.recover()` (`miles/ray/rollout/rollout_server.py`, which fans out to `ServerCell.init` in `miles/ray/rollout/server_cell.py`):
 
 1. Finds engine slots set to `None` (killed by the health monitor).
 2. Calls `start_engines` for each affected group.
