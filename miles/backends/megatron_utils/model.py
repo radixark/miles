@@ -151,7 +151,16 @@ def setup_model_and_optimizer(
     ):
         model = _setup_lora_model_via_bridge(args)
     else:
-        model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+        provider_func = get_model_provider_func(args, role)
+        if (
+            is_lora_enabled(args)
+            and role == "actor"
+            and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
+        ):
+            from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
+
+            provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
+        model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
@@ -643,6 +652,9 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
+    from .lora_utils import reduce_marked_lora_grads
+
+    reduce_marked_lora_grads(args[0])
     return finalize_model_grads(*args, **kwargs)
 
 
@@ -992,6 +1004,22 @@ def initialize_model_and_optimizer(
         if is_first_replica_megatron_main_rank():
             logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
         iteration = 0
+
+    if (
+        is_lora_enabled(args)
+        and role == "actor"
+        and args.megatron_to_hf_mode != "bridge"
+        and getattr(args, "lora_adapter_path", None)
+        and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
+    ):
+        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists():
+            from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
+
+            load_inkling_lora_adapter(model, args.lora_adapter_path)
+            if optimizer is not None:
+                # refresh the fp32 masters, or the first step() restores the
+                # pre-load init values over the adapter we just wrote
+                optimizer.reload_model_params()
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()

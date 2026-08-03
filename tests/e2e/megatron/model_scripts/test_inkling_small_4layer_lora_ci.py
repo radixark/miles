@@ -6,11 +6,15 @@ from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
+# Smoke test for scripts/run_inkling.py --train-mode lora on the 4-layer slice:
+# shared-outer grouped-expert LoRA served through SGLang's virtual-experts path, one
+# 4-GPU engine, adapter sync verified by checksum. Functionality, not accuracy.
+
 
 register_cuda_ci(
     est_time=1800,
     suite="stage-c-4-gpu-h200",
-    labels=["megatron", "model-scripts"],
+    labels=["megatron", "model-scripts", "lora"],
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -25,7 +29,7 @@ _MODEL_ORG = "CharyZeng"
 def _args() -> ScriptArgs:
     return ScriptArgs(
         model_name="Inkling-Small-4layer",
-        train_mode="full",
+        train_mode="lora",
         task="dapo_math",
         num_nodes=1,
         num_gpus_per_node=4,
@@ -36,10 +40,11 @@ def _args() -> ScriptArgs:
         extra_args=(
             "--ci-test "
             "--ci-disable-kl-checker "
-            "--check-weight-update-skip-list visual. audio. "
+            # frozen towers and the engine-derived adapter buffers never match the snapshot
+            "--check-weight-update-skip-list visual. audio. ._w1_delta ._a_cat "
             "--ci-disable-logprobs-checker "
             "--disable-weights-backuper "
-            "--offload-train-target cpu "
+            "--check-lora-weight-equal "
         ),
     )
 

@@ -13,11 +13,15 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
-from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, lora_base_cpu_backup_enabled
+from miles.backends.megatron_utils.lora_utils import (
+    convert_target_modules_to_hf,
+    lora_base_cpu_backup_enabled,
+    sglang_lora_target_all_sentinel,
+)
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
@@ -367,21 +371,31 @@ class SGLangEngine(RayActor):
         self,
         lora_name: str,
         config_dict: dict,
-        serialized_named_tensors: list,
+        serialized_tensors: str | None = None,
+        serialized_named_tensors: list | None = None,
         load_format: str | None = None,
         pinned: bool = False,
         added_tokens_config: dict | None = None,
         upsert: bool = False,
         expected_checksums: dict | None = None,
     ):
-        """Load a LoRA adapter; ``serialized_named_tensors[tp_rank]`` is bytes for that TP rank.
-        With ``upsert``, the already-loaded ``lora_name`` is overwritten in place (no unload/register)."""
+        """Load a LoRA adapter from either transport (exactly one of the two).
+
+        ``serialized_named_tensors[tp_rank]`` is bytes for that TP rank; ``serialized_tensors``
+        is the whole adapter. With ``upsert``, the already-loaded ``lora_name`` is overwritten
+        in place (no unload/register).
+        """
+        if (serialized_tensors is None) == (serialized_named_tensors is None):
+            raise ValueError("pass exactly one of serialized_tensors / serialized_named_tensors")
         payload = {
             "lora_name": lora_name,
             "config_dict": config_dict,
-            "serialized_named_tensors": serialized_named_tensors,
             "pinned": pinned,
         }
+        if serialized_tensors is not None:
+            payload["serialized_tensors"] = serialized_tensors
+        else:
+            payload["serialized_named_tensors"] = serialized_named_tensors
         if upsert:
             payload["upsert"] = True
         if load_format is not None:
@@ -758,14 +772,19 @@ def _compute_server_args(
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
         kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
-    elif is_lora_enabled(args):
+    elif lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
+        if sglang_lora_target_all_sentinel(args):
+            kwargs["lora_target_modules"] = ["all"]
+        else:
+            kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
-        if args.lora_adapter_path is not None:
+        if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
+        elif args.lora_adapter_path is not None:
+            logger.info("dummy base load: skipping startup lora_paths; adapter comes via weight-sync")
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 

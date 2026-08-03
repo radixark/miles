@@ -8,13 +8,19 @@ Supports:
   - Inkling-4layer   4-layer slice for single-node smoke testing.
   - Inkling-Small-4layer  4-layer slice of Inkling-Small (fits the 4-GPU CI lane).
   - Inkling-Small    42-layer 276B MoE. Verified profile: 4 nodes x 8 GPUs
-                          (TP4 SP PP8 EP4, ctx 4096 / response 2048) on H200:
-                          --lr 5e-5, --rollout-batch-size 64 --global-batch-size 128
-                          (reward +0.006/rollout).
+                          (TP4 SP PP8 EP4, ctx 4096 / response 2048) on H200.
+                          Full: --lr 5e-5, --rollout-batch-size 64 --global-batch-size 128
+                          (reward +0.006/rollout). LoRA: --lr 2e-4 with the same batch
+                          shape (reward +0.011/rollout); at the 5e-6 default the
+                          zero-initialised B factors need hundreds of rollouts to
+                          accumulate a visible delta-W, which reads as "not learning".
 
-Full-parameter GRPO: the paused training actor (params, grads, optimizer
-state) spills to node-local NVMe via torch_memory_saver
-(--offload-train-target disk).
+Train modes:
+  - full   Full-parameter GRPO. The paused training actor (params, grads,
+           optimizer state) spills to node-local NVMe via torch_memory_saver
+           (--offload-train-target disk).
+  - lora   LoRA r=32 all-linear. Adapter-only weight sync; plain fp32 Adam;
+           engine serves the adapter natively (triton backend, virtual experts).
 
 Topologies:
   - colocate (default)      engines share the training GPUs; the actor sleeps
@@ -24,8 +30,8 @@ Topologies:
                             generation runs continuously in a background worker).
                             Verified profile: Inkling on 12 nodes x 4 GPUs as
                             8 train + 4 rollout (TP4 PP2 EP16), bf16 grad reduce,
-                            optimizer state streamed through NVMe. Does not
-                            serve eval.
+                            optimizer state streamed through NVMe. Full mode
+                            only; does not serve eval.
 
 Tasks:
   - dapo_math  text (dapo-math-17k), chat template, aime25 eval.
@@ -36,7 +42,7 @@ Usage patterns:
 
   1. Train on pre-staged checkpoints:
        python scripts/run_inkling.py train \
-           --model-name Inkling --task dapo_math \
+           --model-name Inkling --train-mode full --task dapo_math \
            --num-nodes 16 --num-gpus-per-node 4
 
   2. Individual steps (rsync shared -> node-local NVMe, then train):
@@ -77,6 +83,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_name: Literal["Inkling", "Inkling-4layer", "Inkling-Small", "Inkling-Small-4layer"] = "Inkling"
 
+    train_mode: Literal["full", "lora"] = "full"
     task: Literal["dapo_math", "geo3k"] = "dapo_math"
     fully_async: bool = False
     rollout_num_nodes: int = 4
@@ -103,6 +110,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     actor_num_nodes: int = field(init=False)
     actor_num_gpus_per_node: int = field(init=False)
 
+    lora_rank: int = 32
+    lora_alpha: int = 32
+    lora_adapter_path: str | None = None
+
     enable_r3: bool = True
 
     extra_args: str = ""
@@ -117,8 +128,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.torch_dist_local is None:
             self.torch_dist_local = self.torch_dist
         if self.lr is None:
-            self.lr = 1e-6
+            self.lr = 5e-6 if self.train_mode == "lora" else 1e-6
         if self.fully_async:
+            assert self.train_mode == "full", "fully-async is only validated for full-parameter training"
             assert not self.enable_eval, "the fully-async rollout function does not serve eval"
             assert 0 < self.rollout_num_nodes < self.num_nodes
             self.colocate = False
@@ -202,7 +214,7 @@ def _train(args: ScriptArgs):
         if args.fully_async
         else f"{args.num_nodes} nodes (colocate)"
     )
-    print(f"running {args.model_name} full/{args.task} on {topology} x {args.num_gpus_per_node} GPUs")
+    print(f"running {args.model_name} {args.train_mode}/{args.task} on " f"{topology} x {args.num_gpus_per_node} GPUs")
 
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
@@ -282,30 +294,59 @@ def _train(args: ScriptArgs):
     perf_args = _get_parallel_config(args)
     perf_args += "--recompute-granularity full " "--recompute-method uniform " "--recompute-num-layers 1 "
 
-    if args.fully_async:
-        # disaggregated: nothing to offload, but the optimizer state does not fit
-        # the training GPUs while the step runs, so stream it through NVMe
-        optimizer_args += (
-            "--stream-optimizer-state-to-disk "
-            f"--offload-train-disk-dir {args.train_offload_disk_dir} "
-            "--offload-train-disk-chunk-mb 256 "
-        )
-        sglang_args = (
-            "--rollout-num-gpus-per-engine 16 "
-            "--sglang-mem-fraction-static 0.80 "
-            "--sglang-max-running-requests 128 "
-            "--sglang-max-total-tokens 655360 "
-            "--sglang-cuda-graph-max-bs 128 "
-        )
+    lora_args = ""
+    if args.train_mode == "full":
+        if args.fully_async:
+            # disaggregated: nothing to offload, but the optimizer state does not fit
+            # the training GPUs while the step runs, so stream it through NVMe
+            optimizer_args += (
+                "--stream-optimizer-state-to-disk "
+                f"--offload-train-disk-dir {args.train_offload_disk_dir} "
+                "--offload-train-disk-chunk-mb 256 "
+            )
+        else:
+            optimizer_args += "--offload-train-target disk " f"--offload-train-disk-dir {args.train_offload_disk_dir} "
+        perf_args += "--micro-batch-size 1 "
+        if args.fully_async:
+            sglang_args = (
+                "--rollout-num-gpus-per-engine 16 "
+                "--sglang-mem-fraction-static 0.80 "
+                "--sglang-max-running-requests 128 "
+                "--sglang-max-total-tokens 655360 "
+                "--sglang-cuda-graph-max-bs 128 "
+            )
+        else:
+            sglang_args = (
+                f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
+                "--sglang-mem-fraction-static 0.6 "
+                "--sglang-max-running-requests 64 "
+                "--sglang-max-total-tokens 327680 "
+            )
     else:
-        optimizer_args += "--offload-train-target disk " f"--offload-train-disk-dir {args.train_offload_disk_dir} "
+        lora_args = (
+            f"--lora-rank {args.lora_rank} "
+            f"--lora-alpha {args.lora_alpha} "
+            "--target-modules all-linear "
+            "--experts-shared-outer-loras "
+            "--sglang-lora-backend triton "
+            "--sglang-lora-use-virtual-experts "
+            "--sglang-max-loras-per-batch 1 "
+            f"--sglang-max-lora-rank {args.lora_rank} "
+        )
+        if args.lora_adapter_path is not None:
+            lora_args += f"--lora-adapter-path {args.lora_adapter_path} "
+        perf_args += "--use-dynamic-batch-size " "--max-tokens-per-gpu 4096 "
         sglang_args = (
             f"--rollout-num-gpus-per-engine {args.rollout_num_gpus_per_engine} "
-            "--sglang-mem-fraction-static 0.6 "
-            "--sglang-max-running-requests 64 "
-            "--sglang-max-total-tokens 327680 "
+            f"--sglang-ep-size {args.rollout_num_gpus_per_engine} "
+            "--sglang-mem-fraction-static 0.65 "
+            "--sglang-max-running-requests 32 "
+            "--sglang-max-total-tokens 320000 "
+            "--sglang-cuda-graph-max-bs 64 "
+            "--sglang-max-mamba-cache-size 256 "
         )
-    perf_args += "--micro-batch-size 1 "
+        if args.rollout_num_gpus_per_engine >= 16:
+            sglang_args += "--no-offload-rollout --no-offload-train "
 
     sglang_args += (
         "--sglang-attention-backend fa4 "
@@ -358,6 +399,7 @@ def _train(args: ScriptArgs):
 
     train_args = (
         f"{ckpt_args} "
+        f"{lora_args} "
         f"{rollout_args} "
         f"{eval_args} "
         f"{grpo_args} "

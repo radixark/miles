@@ -33,6 +33,12 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
     def get_hf_weight_chunks(self, megatron_local_weights, weight_type="base"):
         rank = dist.get_rank()
 
+        if weight_type == "lora":
+            from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
+
+            yield export_inkling_lora_hf_named(self.model)
+            return
+
         for megatron_local_param_infos in tqdm(
             self.megatron_local_param_info_buckets, disable=rank != 0, desc="Update weights"
         ):
@@ -168,9 +174,13 @@ def _get_megatron_local_param_infos(args: Namespace, model: Sequence[torch.nn.Mo
     pp_size = get_parallel_state().pp.size
     ep_size = get_parallel_state().ep.size
 
+    from ..lora_utils import _is_adapter_param_name
+
     param_infos = {}
     rank = dist.get_rank()
     for name, param in named_params_and_buffers(args, model):
+        if _is_adapter_param_name(name):
+            continue
         param_infos[name] = ParamInfo(
             name=name,
             dtype=param.dtype,

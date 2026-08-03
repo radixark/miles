@@ -1581,6 +1581,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--lora-train-only",
+                action="store_true",
+                default=False,
+                help=(
+                    "Train LoRA adapters in Megatron but keep rollout engines on the frozen "
+                    "base policy: SGLang LoRA serving and adapter weight sync are disabled "
+                    "(only the base weights are synced). For models without SGLang LoRA "
+                    "support (e.g. Inkling native LoRA)."
+                ),
+            )
+            parser.add_argument(
                 "--experts-shared-outer-loras",
                 action="store_true",
                 default=False,
@@ -2781,10 +2792,10 @@ def miles_validate_args(args):
 
         # Training and serving must agree on shared-outer grouped-expert LoRA
         # (expert_dim=1 buffers in SGLang).
-        if args.experts_shared_outer_loras:
+        if args.experts_shared_outer_loras and hasattr(args, "sglang_experts_shared_outer_loras"):
             args.sglang_experts_shared_outer_loras = True
         assert args.experts_shared_outer_loras == bool(
-            args.sglang_experts_shared_outer_loras
+            getattr(args, "sglang_experts_shared_outer_loras", args.experts_shared_outer_loras)
         ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
 
         # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
