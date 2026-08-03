@@ -1,5 +1,8 @@
+import hashlib
+import json
 import logging
 import math
+import os
 from argparse import Namespace
 from collections.abc import Sequence
 
@@ -55,6 +58,216 @@ def _get_thd_allgather_pad_multiple(cp_size: int, pad_size: int, sample_pad_mult
         # divisible by 2 * cp_size * every active compression ratio.
         global_pad_multiple = math.lcm(global_pad_multiple, 2 * cp_size * sample_pad_multiple)
     return global_pad_multiple
+
+
+def _summarize_thd_packing(
+    total_lengths: Sequence[int],
+    partitions: Sequence[Sequence[int]],
+    *,
+    sample_pad_multiple: int | None,
+    global_pad_multiple: int,
+    seq_length: int,
+) -> dict[str, int | float]:
+    """Summarize real token utilization for a THD dynamic-batch schedule."""
+
+    def _round_up(value: int, multiple: int) -> int:
+        return ((value + multiple - 1) // multiple) * multiple
+
+    def _sample_aligned(length: int) -> int:
+        if sample_pad_multiple is None:
+            return length
+        return _round_up(length, sample_pad_multiple)
+
+    pack_actual_tokens = []
+    pack_padded_tokens = []
+    pack_sample_counts = []
+    for partition in partitions:
+        lengths = [int(total_lengths[index]) for index in partition]
+        actual_tokens = sum(lengths)
+        aligned_tokens = sum(_sample_aligned(length) for length in lengths)
+        pack_actual_tokens.append(actual_tokens)
+        pack_padded_tokens.append(_round_up(aligned_tokens, global_pad_multiple))
+        pack_sample_counts.append(len(lengths))
+
+    actual_tokens = sum(pack_actual_tokens)
+    padded_tokens = sum(pack_padded_tokens)
+    partition_indices = [index for partition in partitions for index in partition]
+    no_pack_padded_tokens = sum(_round_up(_sample_aligned(int(total_lengths[index])), global_pad_multiple) for index in partition_indices)
+    pack_count = len(partitions)
+    sample_count = sum(pack_sample_counts)
+    capacity_tokens = pack_count * seq_length
+
+    return {
+        "samples": sample_count,
+        "packs": pack_count,
+        "samples_per_pack": sample_count / pack_count if pack_count else 0.0,
+        "actual_tokens": actual_tokens,
+        "padded_tokens": padded_tokens,
+        "no_pack_padded_tokens": no_pack_padded_tokens,
+        "packing_efficiency": actual_tokens / padded_tokens if padded_tokens else 0.0,
+        "seq_capacity_fill": actual_tokens / capacity_tokens if capacity_tokens else 0.0,
+        "padding_reduction_vs_mbs1": (1.0 - padded_tokens / no_pack_padded_tokens if no_pack_padded_tokens else 0.0),
+        "max_samples_per_pack": max(pack_sample_counts, default=0),
+        "max_pack_actual_tokens": max(pack_actual_tokens, default=0),
+        "max_pack_padded_tokens": max(pack_padded_tokens, default=0),
+        "oversized_packs": sum(padded > seq_length for padded in pack_padded_tokens),
+    }
+
+
+def _get_capped_thd_partitions(
+    total_lengths: Sequence[int],
+    num_partitions: int,
+    *,
+    sample_pad_multiple: int | None,
+    global_pad_multiple: int,
+    max_padded_tokens: int,
+) -> list[list[int]]:
+    """Build non-empty THD packs whose aligned stream fits the hard limit.
+
+    ``get_seqlen_balanced_partitions`` minimizes length imbalance, but it does
+    not enforce a per-partition capacity.  This first-fit fallback is used only
+    when that balancing pass creates an invalid THD pack.  Costs include the
+    per-sample DSV4 alignment and the final all-gather padding, so a pack that
+    passes this helper also passes the actual ``cu_seqlens`` construction.
+    """
+
+    if num_partitions < 1:
+        raise ValueError(f"num_partitions must be positive, got {num_partitions}")
+    if num_partitions > len(total_lengths):
+        raise ValueError(f"Cannot build non-empty capped THD partitions because num_partitions exceeds sample count: num_partitions={num_partitions}, samples={len(total_lengths)}")
+
+    def round_up(value: int, multiple: int) -> int:
+        return ((value + multiple - 1) // multiple) * multiple
+
+    sample_multiple = sample_pad_multiple or 1
+
+    def sample_cost(length: int) -> int:
+        return round_up(int(length), sample_multiple)
+
+    def pack_cost(aligned_sum: int) -> int:
+        return round_up(aligned_sum, global_pad_multiple)
+
+    partitions: list[list[int]] = []
+    aligned_sums: list[int] = []
+    for index, raw_length in enumerate(total_lengths):
+        length = int(raw_length)
+        cost = sample_cost(length)
+        if pack_cost(cost) > max_padded_tokens:
+            raise ValueError(f"Cannot pack a sample into a THD sequence: sample_local_index={index}, sample_length={length}, sample_padded_length={cost}, max_padded_tokens={max_padded_tokens}")
+
+        for partition_index, aligned_sum in enumerate(aligned_sums):
+            if pack_cost(aligned_sum + cost) <= max_padded_tokens:
+                partitions[partition_index].append(index)
+                aligned_sums[partition_index] += cost
+                break
+        else:
+            partitions.append([index])
+            aligned_sums.append(cost)
+
+    if len(partitions) > num_partitions:
+        raise ValueError(f"Cannot fit THD samples under the hard sequence limit with the planned number of packs: required_packs={len(partitions)}, planned_packs={num_partitions}, max_padded_tokens={max_padded_tokens}, pack_padded_tokens={[pack_cost(total) for total in aligned_sums]}")
+
+    # Pipeline schedules require every planned micro-batch to be non-empty.
+    while len(partitions) < num_partitions:
+        split_index = max(range(len(partitions)), key=lambda i: len(partitions[i]))
+        if len(partitions[split_index]) <= 1:
+            raise ValueError(f"Cannot create non-empty THD packs for the planned schedule: planned_packs={num_partitions}, current_packs={len(partitions)}, samples={len(total_lengths)}")
+        moved_index = partitions[split_index].pop()
+        moved_cost = sample_cost(total_lengths[moved_index])
+        aligned_sums[split_index] -= moved_cost
+        partitions.append([moved_index])
+        aligned_sums.append(moved_cost)
+
+    return [sorted(partition) for partition in partitions]
+
+
+def _validate_dynamic_batch_schedule(
+    num_microbatches: Sequence[int],
+    micro_batch_indices: Sequence[Sequence[int]],
+    num_local_samples: int,
+) -> tuple[list[int], list[list[int]]]:
+    """Normalize and validate a dynamic micro-batch schedule."""
+    normalized_num_microbatches = [int(value) for value in num_microbatches]
+    normalized_indices = [[int(index) for index in partition] for partition in micro_batch_indices]
+
+    if not normalized_num_microbatches or any(value <= 0 for value in normalized_num_microbatches):
+        raise ValueError(f"Dynamic batch schedule requires positive micro-batch counts: {normalized_num_microbatches}")
+    if len(normalized_indices) != sum(normalized_num_microbatches):
+        raise ValueError(f"Dynamic batch schedule partition count mismatch: partitions={len(normalized_indices)}, expected={sum(normalized_num_microbatches)}")
+    if any(not partition for partition in normalized_indices):
+        raise ValueError("Dynamic batch schedule contains an empty micro-batch")
+
+    flat_indices = [index for partition in normalized_indices for index in partition]
+    expected_indices = list(range(num_local_samples))
+    if sorted(flat_indices) != expected_indices:
+        raise ValueError(f"Dynamic batch schedule must contain every local sample exactly once: scheduled={len(flat_indices)}, expected={num_local_samples}, unique={len(set(flat_indices))}")
+    return normalized_num_microbatches, normalized_indices
+
+
+def _dynamic_batch_schedule_fingerprint(num_microbatches: Sequence[int], micro_batch_indices: Sequence[Sequence[int]]) -> str:
+    payload = {
+        "num_microbatches": [int(value) for value in num_microbatches],
+        "micro_batch_indices": [[int(index) for index in partition] for partition in micro_batch_indices],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _sync_thd_dynamic_batch_schedule(
+    parallel_state,
+    num_microbatches: Sequence[int],
+    micro_batch_indices: Sequence[Sequence[int]],
+    num_local_samples: int,
+) -> tuple[list[int], list[list[int]]]:
+    """Broadcast one canonical THD schedule inside each DP replica.
+
+    Every rank currently receives the rollout data and can build a schedule,
+    but independently derived partitions are unsafe for variable-shape PP/CP
+    collectives.  Propagating PP -> CP -> TP makes the rank-zero schedule for
+    each model replica authoritative without crossing the data-parallel axis.
+    """
+    local_num_microbatches, local_indices = _validate_dynamic_batch_schedule(num_microbatches, micro_batch_indices, num_local_samples)
+    payload = {
+        "num_microbatches": local_num_microbatches,
+        "micro_batch_indices": local_indices,
+        "num_local_samples": int(num_local_samples),
+    }
+    local_fingerprint = _dynamic_batch_schedule_fingerprint(local_num_microbatches, local_indices)
+
+    if dist.is_initialized():
+        for group_name in ("pp", "cp", "tp"):
+            group_info = getattr(parallel_state, group_name)
+            if group_info.size <= 1:
+                continue
+            if group_info.group is None:
+                raise RuntimeError(f"{group_name} process group is missing for schedule synchronization")
+            object_list = [payload if group_info.rank == 0 else None]
+            dist.broadcast_object_list(
+                object_list,
+                src=dist.get_global_rank(group_info.group, 0),
+                group=group_info.group,
+            )
+            payload = object_list[0]
+
+    if not isinstance(payload, dict) or int(payload.get("num_local_samples", -1)) != num_local_samples:
+        raise ValueError(f"Canonical THD schedule has incompatible sample count: payload={payload.get('num_local_samples') if isinstance(payload, dict) else type(payload).__name__}, local={num_local_samples}")
+    canonical_num_microbatches, canonical_indices = _validate_dynamic_batch_schedule(payload["num_microbatches"], payload["micro_batch_indices"], num_local_samples)
+    canonical_fingerprint = _dynamic_batch_schedule_fingerprint(canonical_num_microbatches, canonical_indices)
+    if local_fingerprint != canonical_fingerprint:
+        logger.warning(
+            "THD dynamic batch schedule differed from the canonical model-replica schedule; using canonical schedule: local=%s canonical=%s",
+            local_fingerprint,
+            canonical_fingerprint,
+        )
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        logger.info(
+            "[schedule] samples=%d microbatches=%d fingerprint=%s synchronized=%s",
+            num_local_samples,
+            sum(canonical_num_microbatches),
+            canonical_fingerprint,
+            dist.is_initialized(),
+        )
+    return canonical_num_microbatches, canonical_indices
 
 
 def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
@@ -191,6 +404,8 @@ def get_batch(
     # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
     if "adapter_slots" not in keys:
         keys = [*keys, "adapter_slots"]
+    microbatch_index = data_iterator.offset
+    scheduled_indices = list(data_iterator.micro_batch_indices[microbatch_index]) if data_iterator.micro_batch_indices is not None else None
     batch = data_iterator.get_next(keys)
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
@@ -398,6 +613,20 @@ def get_batch(
     assert loss_masks.shape == tokens.shape, f"loss_masks.shape: {loss_masks.shape}, tokens.shape: {tokens.shape}"
     batch["full_loss_masks"] = loss_masks
 
+    if qkv_format == "thd" and os.environ.get("MILES_THD_MICROBATCH_PROGRESS", "").lower() in {"1", "true", "yes"} and parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0 and parallel_state.tp.rank == 0:
+        index_fingerprint = hashlib.sha256(json.dumps(scheduled_indices or [], separators=(",", ":")).encode("utf-8")).hexdigest()[:12]
+        logger.info(
+            "[thd-progress] pp_rank=%d microbatch=%d samples=%d actual_tokens=%d global_padded_tokens=%d local_tokens=%d max_seqlen=%d indices=%s",
+            parallel_state.pp.rank,
+            microbatch_index,
+            len(batch["total_lengths"]),
+            sum(int(length) for length in batch["total_lengths"]),
+            tokens.numel() * cp_size,
+            tokens.numel(),
+            int(max_seqlen),
+            index_fingerprint,
+        )
+
     # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
     if multimodal_train_inputs is not None:
@@ -581,6 +810,64 @@ def get_data_iterator(
             start, end = i * num_local_gbs, (i + 1) * num_local_gbs
             samples = rollout_data["total_lengths"][start:end]
             partitions = get_seqlen_balanced_partitions(samples, num_mbs, equal_size=False)
+
+            if args.qkv_format == "thd":
+                sample_pad_multiple = _get_thd_sample_pad_multiple(args)
+                global_pad_multiple = _get_thd_allgather_pad_multiple(
+                    cp_size,
+                    parallel_state.tp.size * args.data_pad_size_multiplier,
+                    sample_pad_multiple,
+                )
+                packing_stats = _summarize_thd_packing(
+                    samples,
+                    partitions,
+                    sample_pad_multiple=sample_pad_multiple,
+                    global_pad_multiple=global_pad_multiple,
+                    seq_length=args.seq_length,
+                )
+                if packing_stats["oversized_packs"]:
+                    logger.warning(
+                        "Dynamic THD balancing produced an oversized pack; falling back to cap-aware packing: step=%d max_pack_padded_tokens=%d seq_length=%d max_tokens_per_gpu=%d cp_size=%d",
+                        i,
+                        packing_stats["max_pack_padded_tokens"],
+                        args.seq_length,
+                        args.max_tokens_per_gpu,
+                        cp_size,
+                    )
+                    partitions = _get_capped_thd_partitions(
+                        samples,
+                        num_mbs,
+                        sample_pad_multiple=sample_pad_multiple,
+                        global_pad_multiple=global_pad_multiple,
+                        max_padded_tokens=args.seq_length,
+                    )
+                    packing_stats = _summarize_thd_packing(
+                        samples,
+                        partitions,
+                        sample_pad_multiple=sample_pad_multiple,
+                        global_pad_multiple=global_pad_multiple,
+                        seq_length=args.seq_length,
+                    )
+                    if packing_stats["oversized_packs"]:
+                        raise AssertionError(f"cap-aware THD packing returned an oversized pack: step={i}, max_pack_padded_tokens={packing_stats['max_pack_padded_tokens']}, seq_length={args.seq_length}")
+                if not dist.is_initialized() or dist.get_rank() == 0:
+                    logger.info(
+                        "[packing] step=%d samples=%d packs=%d samples_per_pack=%.4f actual_tokens=%d padded_tokens=%d packing_efficiency=%.6f seq_capacity_fill=%.6f no_pack_padded_tokens=%d padding_reduction_vs_mbs1=%.6f max_samples_per_pack=%d max_pack_actual_tokens=%d max_pack_padded_tokens=%d",
+                        i,
+                        packing_stats["samples"],
+                        packing_stats["packs"],
+                        packing_stats["samples_per_pack"],
+                        packing_stats["actual_tokens"],
+                        packing_stats["padded_tokens"],
+                        packing_stats["packing_efficiency"],
+                        packing_stats["seq_capacity_fill"],
+                        packing_stats["no_pack_padded_tokens"],
+                        packing_stats["padding_reduction_vs_mbs1"],
+                        packing_stats["max_samples_per_pack"],
+                        packing_stats["max_pack_actual_tokens"],
+                        packing_stats["max_pack_padded_tokens"],
+                    )
+
             for j in range(num_mbs):
                 for k in range(len(partitions[j])):
                     partitions[j][k] += start
@@ -590,7 +877,19 @@ def get_data_iterator(
                     partitions[j].sort(key=lambda index: rollout_data["adapter_slots"][index])
             micro_batch_indices.extend(partitions)
 
-        assert len(set(sum(micro_batch_indices, []))) == num_local_samples
+        if args.qkv_format == "thd":
+            num_microbatches, micro_batch_indices = _sync_thd_dynamic_batch_schedule(
+                parallel_state,
+                num_microbatches,
+                micro_batch_indices,
+                num_local_samples,
+            )
+        else:
+            num_microbatches, micro_batch_indices = _validate_dynamic_batch_schedule(
+                num_microbatches,
+                micro_batch_indices,
+                num_local_samples,
+            )
 
         data_iterator = _generate_data_iterator(rollout_data, None, micro_batch_indices)
 

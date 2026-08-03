@@ -6,7 +6,12 @@ import torch.nn as nn
 
 from miles.backends.training_utils.data import (
     DataIterator,
+    _dynamic_batch_schedule_fingerprint,
     _get_thd_allgather_pad_multiple,
+    _get_capped_thd_partitions,
+    _summarize_thd_packing,
+    _sync_thd_dynamic_batch_schedule,
+    _validate_dynamic_batch_schedule,
     get_thd_padded_total_lengths,
 )
 from miles.backends.training_utils.loss_hub import logit_processors
@@ -113,6 +118,120 @@ def test_thd_padding_and_response_logits_keep_original_alignment(monkeypatch):
     assert torch.equal(chunks[0][1], torch.tensor([11, 12]))
     assert torch.equal(chunks[1][0], logits[0, 4:5])
     assert torch.equal(chunks[1][1], torch.tensor([21]))
+
+
+def test_thd_dynamic_packing_stats_measure_real_and_padded_tokens():
+    stats = _summarize_thd_packing(
+        [60000, 61000, 30000, 30000],
+        [[0, 1], [2, 3]],
+        sample_pad_multiple=128,
+        global_pad_multiple=4096,
+        seq_length=131072,
+    )
+
+    assert stats["samples"] == 4
+    assert stats["packs"] == 2
+    assert stats["samples_per_pack"] == 2
+    assert stats["actual_tokens"] == 181000
+    assert stats["padded_tokens"] == 184320
+    assert stats["no_pack_padded_tokens"] == 188416
+    assert stats["packing_efficiency"] == pytest.approx(181000 / 184320)
+    assert stats["seq_capacity_fill"] == pytest.approx(181000 / (2 * 131072))
+    assert stats["padding_reduction_vs_mbs1"] == pytest.approx(1 - 184320 / 188416)
+    assert stats["max_samples_per_pack"] == 2
+    assert stats["max_pack_actual_tokens"] == 121000
+    assert stats["max_pack_padded_tokens"] == 122880
+    assert stats["oversized_packs"] == 0
+
+
+def test_thd_dynamic_packing_stats_flag_pack_over_seq_length():
+    stats = _summarize_thd_packing(
+        [70000, 70000],
+        [[0, 1]],
+        sample_pad_multiple=128,
+        global_pad_multiple=4096,
+        seq_length=131072,
+    )
+
+    assert stats["max_pack_padded_tokens"] == 143360
+    assert stats["oversized_packs"] == 1
+
+
+def test_thd_capped_fallback_accounts_for_dsv4_alignment_and_global_padding():
+    partitions = _get_capped_thd_partitions(
+        [70000, 70000, 30000],
+        2,
+        sample_pad_multiple=128,
+        global_pad_multiple=2048,
+        max_padded_tokens=131072,
+    )
+
+    stats = _summarize_thd_packing(
+        [70000, 70000, 30000],
+        partitions,
+        sample_pad_multiple=128,
+        global_pad_multiple=2048,
+        seq_length=131072,
+    )
+    assert sorted(sum(partitions, [])) == [0, 1, 2]
+    assert stats["max_pack_padded_tokens"] <= 131072
+    assert stats["oversized_packs"] == 0
+
+
+def test_thd_capped_fallback_rejects_an_unplaceable_single_sample():
+    with pytest.raises(ValueError, match="sample into a THD sequence"):
+        _get_capped_thd_partitions(
+            [131073],
+            1,
+            sample_pad_multiple=128,
+            global_pad_multiple=2048,
+            max_padded_tokens=131072,
+        )
+
+
+def test_dynamic_batch_schedule_validation_rejects_duplicate_or_missing_samples():
+    with pytest.raises(ValueError, match="every local sample exactly once"):
+        _validate_dynamic_batch_schedule([2], [[0, 1], [1, 2]], num_local_samples=3)
+
+
+def test_thd_dynamic_batch_schedule_sync_uses_canonical_model_replica_schedule(monkeypatch):
+    local_indices = [[0, 2], [1]]
+    canonical_indices = [[0], [1, 2]]
+    canonical_payload = {
+        "num_microbatches": [2],
+        "micro_batch_indices": canonical_indices,
+        "num_local_samples": 3,
+    }
+    groups = [object(), object(), object()]
+    parallel = SimpleNamespace(
+        pp=SimpleNamespace(rank=1, size=2, group=groups[0]),
+        cp=SimpleNamespace(rank=1, size=2, group=groups[1]),
+        tp=SimpleNamespace(rank=1, size=2, group=groups[2]),
+    )
+    calls = []
+
+    monkeypatch.setattr("miles.backends.training_utils.data.dist.is_initialized", lambda: True)
+    monkeypatch.setattr("miles.backends.training_utils.data.dist.get_rank", lambda: 1)
+    monkeypatch.setattr(
+        "miles.backends.training_utils.data.dist.get_global_rank",
+        lambda group, rank: 100 + groups.index(group),
+    )
+
+    def fake_broadcast_object_list(object_list, *, src, group):
+        calls.append((src, group))
+        object_list[0] = canonical_payload
+
+    monkeypatch.setattr(
+        "miles.backends.training_utils.data.dist.broadcast_object_list",
+        fake_broadcast_object_list,
+    )
+
+    num_microbatches, indices = _sync_thd_dynamic_batch_schedule(parallel, [2], local_indices, 3)
+
+    assert num_microbatches == [2]
+    assert indices == canonical_indices
+    assert calls == [(100, groups[0]), (101, groups[1]), (102, groups[2])]
+    assert _dynamic_batch_schedule_fingerprint([2], local_indices) != _dynamic_batch_schedule_fingerprint([2], canonical_indices)
 
 
 def test_indexer_workspace_padding_keeps_logical_lengths():
