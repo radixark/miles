@@ -1241,6 +1241,10 @@ class TestRolloutHealthCheckArguments:
 
         assert (config.interval, config.timeout, config.first_wait) == (30.0, 30.0, 600.0)
 
+    def test_a_rollout_cell_is_reported_unhealthy_on_the_very_first_failed_probe(self):
+        """At a 30s interval the shared three-failure debounce would hide a dead engine for 90s."""
+        assert self._parse([]).rollout_health_check_failure_threshold == 1
+
     def test_the_trainer_heartbeat_keeps_its_own_debounce(self):
         """The rollout default must not be pushed down into the shared config: a trainer heartbeat
         shares an RPC channel with the train step, so one slow reply is a blip, not a dead cell."""

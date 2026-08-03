@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import (
@@ -13,6 +13,8 @@ from miles.ray.rollout.cell_state import (
     StateUninitialized,
 )
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+
+pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
 
 _ADDR_INFO = CellAddrInfo(
     server_url="http://10.0.0.1:30000",
@@ -96,10 +98,12 @@ def cell_env(monkeypatch):
 def _make_cell(
     *, router: _RecordingRouterApiClient | None = None, args_overrides=None, **meta_overrides
 ) -> ServerCell:
-    return ServerCell(
-        args=make_args(**(args_overrides or {})),
-        meta=_make_meta(**meta_overrides),
-        router_api_client=router or _RecordingRouterApiClient(),
+    return track_server_cell(
+        ServerCell(
+            args=make_args(**(args_overrides or {})),
+            meta=_make_meta(**meta_overrides),
+            router_api_client=router or _RecordingRouterApiClient(),
+        )
     )
 
 

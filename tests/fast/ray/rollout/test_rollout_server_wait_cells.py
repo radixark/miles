@@ -17,8 +17,9 @@ def fast_polling(monkeypatch):
 
 
 class _FakeCell:
-    def __init__(self, *, ready: bool = False):
+    def __init__(self, *, ready: bool = False, needs_offload: bool = True):
         self.ready = ready
+        self.meta = SimpleNamespace(needs_offload=needs_offload)
 
     @property
     def is_pending_weights_or_serving(self) -> bool:
@@ -73,6 +74,47 @@ class TestWaitExpectedNumCellsWhenDisaggregated:
         task = asyncio.create_task(srv.wait_expected_num_cells())
         await asyncio.sleep(0)
         cell.ready = True
+        await asyncio.wait_for(task, timeout=5)
+
+
+class TestWaitExpectedNumCellsWithADedicatedEvalFleet:
+    async def test_a_cell_outside_the_trainer_gpus_still_has_to_come_up(self):
+        """A colocated run whose eval cells count as ready on arrival snapshots api clients that have no address yet."""
+        srv = _make_server(
+            colocate=True, expected_num_cells=1, cells={"eval": _FakeCell(ready=False, needs_offload=False)}
+        )
+
+        task = asyncio.create_task(srv.wait_expected_num_cells())
+        await asyncio.sleep(0)
+
+        assert not task.done()
+        task.cancel()
+
+    async def test_it_returns_once_the_eval_cell_is_up(self):
+        """The barrier is what makes the eval fleet see engines that are actually addressable."""
+        cell = _FakeCell(ready=False, needs_offload=False)
+        srv = _make_server(colocate=True, expected_num_cells=1, cells={"eval": cell})
+
+        task = asyncio.create_task(srv.wait_expected_num_cells())
+        await asyncio.sleep(0)
+        cell.ready = True
+
+        await asyncio.wait_for(task, timeout=5)
+
+    async def test_a_mixed_pool_waits_for_the_eval_cell_but_not_for_the_deferred_ones(self):
+        """One colocated run holds both kinds of cell, so the wait cannot be decided per run."""
+        eval_cell = _FakeCell(ready=False, needs_offload=False)
+        srv = _make_server(
+            colocate=True,
+            expected_num_cells=2,
+            cells={"shared": _FakeCell(ready=False, needs_offload=True), "eval": eval_cell},
+        )
+
+        task = asyncio.create_task(srv.wait_expected_num_cells())
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        eval_cell.ready = True
         await asyncio.wait_for(task, timeout=5)
 
 

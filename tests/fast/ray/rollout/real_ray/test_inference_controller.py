@@ -491,62 +491,24 @@ class TestRecoverUpdatableEngines:
 
 @pytest.mark.asyncio
 class TestRolloutFaultToleranceIsUnsupported:
-    async def test_health_monitoring_hooks_are_noops_without_fault_tolerance(
+    async def test_fault_injection_is_skipped_when_fault_tolerance_skips_rollout(
         self,
         ray_local_mode,
         placement_group_factory,
         tmp_path,
         patch_low_level,
     ):
-        """A plain run never asked for fault tolerance, so the hooks stay out of its way."""
+        """Fault tolerance limited to training never reaches the rollout fault injector."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
         controller = InferenceController(args, pg)
         await controller.init()
-
-        await controller.health_monitoring_pause()
-        await controller.health_monitoring_resume()
-
-    async def test_health_monitoring_hooks_refuse_to_run_under_fault_tolerance(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """Asking for fault tolerance must fail loudly, not run unmonitored."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = InferenceController(args, pg)
-        await controller.init()
-        controller.args.use_fault_tolerance = True
-        controller.args.ft_components = ["rollout"]
-
-        with pytest.raises(NotImplementedError):
-            await controller.health_monitoring_pause()
-        with pytest.raises(NotImplementedError):
-            await controller.health_monitoring_resume()
-
-    async def test_health_monitoring_hooks_are_noops_when_fault_tolerance_skips_rollout(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """Fault tolerance limited to training never monitored the engines, so nothing is lost."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = InferenceController(args, pg)
-        await controller.init()
+        controller.args.ci_test = True
         controller.args.use_fault_tolerance = True
         controller.args.ft_components = ["train"]
 
-        await controller.health_monitoring_pause()
-        await controller.health_monitoring_resume()
+        await controller.prepare_rollout(2)
 
     async def test_fault_injection_refuses_to_run(
         self,

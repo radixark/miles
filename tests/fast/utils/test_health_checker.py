@@ -1,11 +1,17 @@
+import argparse
 import asyncio
 
+import pytest
+from _pytest.recwarn import WarningsRecorder
+
+from miles.utils.arguments import get_miles_extra_args_provider
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import (
-    ActivenessState,
+    ActiveAndEpoch,
     ActivenessTracker,
     NoopHealthChecker,
     SimpleHealthChecker,
+    SimpleHealthCheckerConfig,
 )
 from miles.utils.test_utils.clock import FakeClock
 
@@ -62,7 +68,7 @@ class _Activeness:
     def active(self, value: bool) -> None:
         self._tracker.bump_active(value)
 
-    def __call__(self) -> ActivenessState:
+    def __call__(self) -> ActiveAndEpoch:
         return self._tracker.get()
 
 
@@ -657,7 +663,157 @@ class TestFailureThresholdDebounce:
         checker.stop()
 
 
+class TestCancelInflightProbe:
+    def _hanging_check_fn(self, started: asyncio.Event):
+        async def check_fn() -> None:
+            started.set()
+            await asyncio.sleep(3600)
+
+        return check_fn
+
+    async def test_a_cancelled_probe_publishes_no_result(self):
+        """A probe that outlives its window would report a failure about an engine nobody was watching."""
+        results: list[bool] = []
+        started = asyncio.Event()
+        checker, _ = _make_checker(
+            check_fn=self._hanging_check_fn(started), on_result=lambda s: results.append(s), interval=5.0
+        )
+        checker.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        await checker.cancel_inflight_probe()
+
+        assert results == []
+        assert checker.status == TriState.UNKNOWN
+        checker.stop()
+
+    async def test_it_returns_only_after_the_probe_task_is_gone(self):
+        """Returning while the probe is still running is exactly the race a barrier has to close."""
+        started = asyncio.Event()
+        checker, _ = _make_checker(check_fn=self._hanging_check_fn(started), interval=5.0)
+        checker.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+        probe_task = checker._probe_task
+
+        await checker.cancel_inflight_probe()
+
+        assert probe_task.cancelled()
+        checker.stop()
+
+    async def test_the_loop_keeps_polling_after_its_probe_was_cancelled(self):
+        """Cancelling one probe must not silently kill the checker for the rest of the run."""
+        call_count = 0
+        started = asyncio.Event()
+
+        async def check_fn() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                started.set()
+                await asyncio.sleep(3600)
+
+        checker, clock = _make_checker(check_fn=check_fn, interval=5.0)
+        checker.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await checker.cancel_inflight_probe()
+        await _settle(clock)
+
+        await clock.elapse(5.0)
+
+        assert call_count == 2
+        checker.stop()
+
+    async def test_cancelling_while_nothing_is_in_flight_is_a_noop(self):
+        """The controller pauses whether or not a probe happens to be running right then."""
+        checker, _ = _make_checker(interval=5.0)
+
+        await checker.cancel_inflight_probe()
+
+        assert checker._probe_task is None
+
+    async def test_stopping_also_kills_a_probe_still_in_flight(self):
+        """A probe left running after stop() outlives the cell and keeps dialing a dead engine."""
+        started = asyncio.Event()
+        checker, _ = _make_checker(check_fn=self._hanging_check_fn(started), interval=5.0)
+        checker.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+        probe_task = checker._probe_task
+
+        checker.stop()
+
+        with pytest.raises(asyncio.CancelledError):
+            await probe_task
+        assert probe_task.cancelled()
+
+    async def test_stopping_before_a_probe_starts_does_not_abandon_its_coroutine(
+        self, recwarn: WarningsRecorder
+    ) -> None:
+        """Stopping a newly scheduled probe must not leave its coroutine unawaited."""
+        checker, _ = _make_checker(interval=5.0)
+        run_probe = asyncio.create_task(checker._run_probe())
+        await asyncio.sleep(0)
+
+        checker.stop()
+
+        with pytest.raises(asyncio.CancelledError):
+            await run_probe
+        assert not [warning for warning in recwarn if "was never awaited" in str(warning.message)]
+
+
 class TestNoopHealthChecker:
     def test_noop_status_is_always_unknown(self):
         checker = NoopHealthChecker()
         assert checker.status == TriState.UNKNOWN
+
+
+class TestFailureThresholdArgument:
+    def _parse(self, extra: list[str], **add_arguments_kwargs: int) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        SimpleHealthCheckerConfig.add_arguments(parser, prefix="demo-check", **add_arguments_kwargs)
+        return parser.parse_args(extra)
+
+    def test_a_caller_can_ask_for_a_debounce_of_its_own(self):
+        """A checker polling on a long interval needs to report the first failure, not the third."""
+        args = self._parse([], failure_threshold_default=1)
+
+        assert args.demo_check_failure_threshold == 1
+
+    def test_a_caller_that_asks_for_nothing_keeps_the_shared_debounce(self):
+        """Giving one caller a tighter default must not tighten it for every other checker."""
+        args = self._parse([])
+
+        assert args.demo_check_failure_threshold == 3
+
+    def test_an_explicit_flag_still_beats_a_caller_supplied_default(self):
+        """A caller default that is nailed into the parser would make the flag unusable."""
+        args = self._parse(["--demo-check-failure-threshold", "5"], failure_threshold_default=1)
+
+        assert args.demo_check_failure_threshold == 5
+
+
+class TestShippedRolloutConfig:
+    async def test_a_dead_engine_is_reported_unhealthy_after_a_single_probe_under_the_shipped_defaults(self):
+        """A cell whose engine is already gone must not read Healthy for two more 30s probe intervals."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        config = SimpleHealthCheckerConfig.from_args(
+            parser.parse_args(["--rollout-batch-size", "64"]), prefix="rollout_health_check"
+        )
+
+        async def check_fn() -> None:
+            raise RuntimeError("engine down")
+
+        clock = FakeClock()
+        checker = SimpleHealthChecker(
+            name="rollout-cell",
+            check_fn=check_fn,
+            get_activeness=_Activeness(),
+            config=config,
+            clock=clock,
+        )
+        checker.start()
+        await _settle(clock)
+
+        assert checker.status == TriState.FALSE
+        assert checker._consecutive_failures == 1
+        checker.stop()
