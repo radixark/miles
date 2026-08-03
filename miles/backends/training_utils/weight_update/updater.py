@@ -15,6 +15,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.protocol import get_weight_transfer_protocol
 from miles.backends.training_utils.weight_update.session import (
@@ -51,6 +52,7 @@ class WeightUpdater:
         self.args = args
         self.parallel_state = parallel_state
         self.protocol = get_weight_transfer_protocol(args)
+        self.conn_status = ConnStatusManager()
         assert (
             not is_lora or self.protocol.supports_lora
         ), f"LoRA weight sync is not supported for {args.update_weight_transfer_mode!r} weight transfer."
@@ -87,12 +89,6 @@ class WeightUpdater:
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
-
-    def is_rollout_engines_fresh(self) -> bool:
-        return self.protocol.is_fresh()
-
-    def mark_engine_connection_stale(self) -> None:
-        self.protocol.mark_stale()
 
     def pop_metrics(self) -> dict[str, float]:
         """Return and clear the protocol's metrics; the actor drains them onto the step log."""
