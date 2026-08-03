@@ -1,19 +1,23 @@
 from __future__ import annotations
 
-from miles.utils.ft_utils.api_server.handles import _CellHandle
+import asyncio
+
+from miles.utils.ft_utils.api_server.handles import _CellHandler
+from miles.utils.ft_utils.api_server.models import Cell
 
 
 class _CellRegistry:
-    def __init__(self) -> None:
-        self._handles: dict[str, _CellHandle] = {}
+    def __init__(self, handlers: list[_CellHandler]) -> None:
+        cell_types = [handler.cell_type for handler in handlers]
+        assert len(set(cell_types)) == len(cell_types), f"Duplicate cell types: {cell_types}"
+        self._handlers = handlers
 
-    def register(self, handle: _CellHandle) -> None:
-        if handle.cell_id in self._handles:
-            raise ValueError(f"Cell '{handle.cell_id}' is already registered")
-        self._handles[handle.cell_id] = handle
+    async def list_cells(self) -> list[Cell]:
+        per_handler = await asyncio.gather(*(handler.list_cells() for handler in self._handlers))
+        return [cell for cells in per_handler for cell in cells]
 
-    def get_all(self) -> list[_CellHandle]:
-        return list(self._handles.values())
-
-    def get(self, cell_id: str) -> _CellHandle:
-        return self._handles[cell_id]
+    async def resolve(self, cell_id: str) -> _CellHandler:
+        for handler in self._handlers:
+            if cell_id in await handler.list_cell_ids():
+                return handler
+        raise KeyError(cell_id)
