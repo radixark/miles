@@ -1,8 +1,12 @@
 import asyncio
 import dataclasses
+import inspect
+import logging
+from collections.abc import Callable
 
 import pytest
 
+from miles.utils import context_lock
 from miles.utils.context_lock import (
     ContextLock,
     acquires_lock,
@@ -305,6 +309,211 @@ async def _read_held(lock: ContextLock) -> bool:
 async def _reattach_and_release(lock: ContextLock) -> None:
     lock.reattach()
     lock.release()
+
+
+async def _acquire_and_report_held(lock: ContextLock) -> bool:
+    await lock.acquire()
+    return lock.held_in_current_context
+
+
+async def _cancel(task: asyncio.Task) -> None:
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+def _reminder_messages(caplog) -> list[str]:
+    return [record.message for record in caplog.records if record.message.startswith("Still waiting for lock")]
+
+
+async def _set_after_yields(event: asyncio.Event, yields: int) -> None:
+    for _ in range(yields):
+        await asyncio.sleep(0)
+    event.set()
+
+
+async def _wait_until(condition: Callable[[], bool], *, timeout_seconds: float = 5.0) -> None:
+    async def _poll() -> None:
+        while not condition():
+            await asyncio.sleep(0.001)
+
+    await asyncio.wait_for(_poll(), timeout=timeout_seconds)
+
+
+class TestWaitReminder:
+    @pytest.fixture
+    def fast_reminder(self, monkeypatch):
+        monkeypatch.setattr(context_lock, "WAIT_LOG_INTERVAL_SECONDS", 0.01)
+
+    @pytest.fixture
+    def instant_reminder(self, monkeypatch):
+        monkeypatch.setattr(context_lock, "WAIT_LOG_INTERVAL_SECONDS", 0)
+
+    @pytest.mark.asyncio
+    async def test_a_blocked_acquirer_reminds_repeatedly(self, fast_reminder, caplog):
+        """A caller stuck on the lock keeps reporting that it is still waiting."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(lock.acquire())
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            await _wait_until(lambda: len(_reminder_messages(caplog)) >= 2)
+        await _cancel(waiter)
+        await holder.finish()
+
+        assert len(_reminder_messages(caplog)) >= 2
+
+    @pytest.mark.asyncio
+    async def test_the_reminder_names_the_lock_and_the_elapsed_time(self, fast_reminder, caplog):
+        """The operator needs to know which lock is stuck and for how long."""
+        lock = ContextLock("stuck-lock")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(lock.acquire())
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            await asyncio.sleep(0.05)
+        await _cancel(waiter)
+        await holder.finish()
+
+        messages = _reminder_messages(caplog)
+        assert messages
+        assert all(message.startswith("Still waiting for lock 'stuck-lock' after ") for message in messages)
+        assert all(message.endswith("s") for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_an_uncontended_acquire_reminds_nothing(self, fast_reminder, caplog):
+        """The reminder must only fire while actually blocked."""
+        lock = ContextLock("test")
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            await lock.acquire()
+            await asyncio.sleep(0.05)
+            lock.release()
+
+        assert _reminder_messages(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_the_reminder_stops_once_the_lock_is_acquired(self, fast_reminder, caplog):
+        """No reminder may keep firing after the caller got in."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+        waiter = asyncio.create_task(lock.acquire())
+        await asyncio.sleep(0.03)
+        await holder.finish()
+        await waiter
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            await asyncio.sleep(0.05)
+
+        assert _reminder_messages(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_a_waiter_that_eventually_wins_acquires_normally(self, fast_reminder):
+        """Reminding must not interfere with the acquisition itself."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(_acquire_and_report_held(lock))
+        await asyncio.sleep(0.05)
+        await holder.finish()
+
+        assert await waiter is True
+        assert lock.locked
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_waiter_leaves_the_lock_untouched(self, fast_reminder):
+        """Giving up on the lock must neither mark it held nor steal it."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(lock.acquire())
+        await asyncio.sleep(0.03)
+        await _cancel(waiter)
+        await holder.finish()
+
+        assert not lock.locked
+
+
+    @pytest.mark.asyncio
+    async def test_the_reminders_repeat_without_spending_wall_clock_time(self, instant_reminder, caplog):
+        """Repeated reminders must follow the wait going on, not how much real time a runner grants."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(lock.acquire())
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            for _ in range(20):
+                await asyncio.sleep(0)
+        await _cancel(waiter)
+        await holder.finish()
+
+        assert len(_reminder_messages(caplog)) >= 3
+
+
+class TestWaitReminderTestDeterminism:
+    def test_the_repeated_reminder_test_waits_for_the_reminders_not_for_a_sleep_window(self):
+        """A fixed sleep window can end before the second reminder arrives on a loaded runner."""
+        source = inspect.getsource(TestWaitReminder.test_a_blocked_acquirer_reminds_repeatedly)
+
+        assert "_wait_until(" in source
+        assert "asyncio.sleep(" not in source
+
+
+class TestWaitUntil:
+    @pytest.mark.asyncio
+    async def test_an_already_satisfied_condition_returns_without_a_polling_round(self):
+        """Waiting for something that already happened must cost nothing."""
+        calls = 0
+
+        def _condition() -> bool:
+            nonlocal calls
+            calls += 1
+            return True
+
+        await _wait_until(_condition)
+
+        assert calls == 1
+
+    @pytest.mark.asyncio
+    async def test_the_condition_is_polled_until_it_turns_true_and_no_further(self):
+        """The wait ends on the condition itself, not after a preset number of rounds."""
+        remaining_polls = 3
+
+        def _condition() -> bool:
+            nonlocal remaining_polls
+            remaining_polls -= 1
+            return remaining_polls <= 0
+
+        await _wait_until(_condition)
+
+        assert remaining_polls == 0
+
+    @pytest.mark.asyncio
+    async def test_a_condition_satisfied_by_another_task_ends_the_wait(self):
+        """Progress made concurrently must be what releases the waiter."""
+        satisfied = asyncio.Event()
+        setter = asyncio.create_task(_set_after_yields(event=satisfied, yields=5))
+
+        await _wait_until(satisfied.is_set)
+
+        assert satisfied.is_set()
+        await setter
+
+    @pytest.mark.asyncio
+    async def test_a_condition_that_never_turns_true_times_out(self):
+        """A never satisfied condition must fail the test instead of hanging it."""
+        loop = asyncio.get_running_loop()
+        started_at = loop.time()
+
+        with pytest.raises(asyncio.TimeoutError):
+            await _wait_until(lambda: False, timeout_seconds=0.02)
+
+        assert loop.time() - started_at < 1.0
 
 
 class TestDetachAndReattach:
