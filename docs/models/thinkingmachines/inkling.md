@@ -77,7 +77,7 @@ Inkling ships in BF16, so conversion is a single distributed `torch_dist` shard 
 ```bash
 cd /root/miles
 source scripts/models/inkling.sh
-PYTHONPATH=/root/Megatron-LM torchrun \
+CONVERT_KEEP_PP1=1 PYTHONPATH=/root/Megatron-LM torchrun \
    --nproc-per-node 4 --nnodes 4 \
    --master-addr ${MASTER_ADDR} --master-port 12345 \
    --node-rank ${NODE_RANK} \
@@ -89,6 +89,8 @@ PYTHONPATH=/root/Megatron-LM torchrun \
    --hf-checkpoint /root/models/Inkling \
    --save /root/models/Inkling_torch_dist/
 ```
+
+`CONVERT_KEEP_PP1=1` keeps the conversion at PP1: without it the converter auto-bumps PP toward the rank count, which is incompatible with `--tensor-model-parallel-size 4` at 16 ranks.
 
 The saved `torch_dist` checkpoint is parallelism-agnostic: training can load it under any validated TP / PP / EP layout. Point the launcher at the result with `--torch-dist`.
 
