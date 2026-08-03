@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -17,7 +18,9 @@ WAIT_CELLS_INITIAL_DELAY_SECONDS = 1.0
 WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 
 
-async def create_rollout_servers(args, context_lock: ContextLock) -> dict[str, "RolloutServer"]:
+async def create_rollout_servers(
+    args, context_lock: ContextLock, global_health_checker_activeness: Callable[[], bool]
+) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
     assert args.sglang_router_ip is None and args.sglang_router_port is None, (
         "external router mode was removed: miles always starts its own routers "
@@ -43,6 +46,7 @@ async def create_rollout_servers(args, context_lock: ContextLock) -> dict[str, "
             router_port=router_addr.port,
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
+            global_health_checker_activeness=global_health_checker_activeness,
             expected_num_cells=sum(
                 group_cfg.num_gpus // group_cfg.num_gpus_per_engine
                 for group_cfg in model_cfg.server_groups
@@ -70,6 +74,7 @@ class RolloutServer:
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
+    global_health_checker_activeness: Callable[[], bool] = lock_exempt(lambda: True)
     expected_num_cells: int = 0
 
     @property
@@ -97,7 +102,12 @@ class RolloutServer:
     async def add_cell(self, cell_meta: ServerCellMetadata):
         cell_id = cell_meta.cell_id
         assert cell_id not in self.server_cells
-        cell = ServerCell(args=self.args, router_api_client=self._router_api_client, meta=cell_meta)
+        cell = ServerCell(
+            args=self.args,
+            router_api_client=self._router_api_client,
+            meta=cell_meta,
+            global_health_checker_activeness=self.global_health_checker_activeness,
+        )
         if not self.args.colocate:
             await cell.init()
         self.server_cells[cell_id] = cell

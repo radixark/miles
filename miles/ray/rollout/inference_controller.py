@@ -41,7 +41,11 @@ class InferenceController:
     async def create(args) -> "InferenceController":
         controller = InferenceController(args)
         if not args.debug_train_only:
-            controller.servers = await create_rollout_servers(args, context_lock=controller.context_lock)
+            controller.servers = await create_rollout_servers(
+                args,
+                context_lock=controller.context_lock,
+                global_health_checker_activeness=lambda: controller._health_checker_activeness,
+            )
 
             # TODO: may change to InferenceController.init(engine_provider, ...) later
             provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
@@ -65,6 +69,7 @@ class InferenceController:
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self._watcher_disposers: list[StopWatchFn] = []
+        self._health_checker_activeness: bool = True
         self._ticker: SimpleTicker | None = None
 
     # -------------------------- rollout lifecycle hooks -----------------------------
@@ -251,19 +256,11 @@ class InferenceController:
 
     @requires_lock
     async def _health_monitoring_pause(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
+        self._health_checker_activeness = False
 
     @requires_lock
     async def _health_monitoring_resume(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
-
-    @requires_lock
-    def _assert_rollout_fault_tolerance_is_unsupported(self) -> None:
-        if not self.args.debug_train_only and self.args.use_fault_tolerance:
-            raise NotImplementedError(
-                "rollout fault tolerance is being rebuilt; health monitoring must pause before "
-                "get_updatable_engines_and_lock snapshots the engines"
-            )
+        self._health_checker_activeness = True
 
     @property
     @requires_lock

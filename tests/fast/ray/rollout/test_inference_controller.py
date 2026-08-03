@@ -46,7 +46,11 @@ def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
 class _RecordingServer:
     def __init__(self, server_cells: dict | None = None):
         self.server_cells = server_cells or {}
+        self.update_weights = False
         self.calls: list[tuple] = []
+
+    async def offload(self, tags=None):
+        self.calls.append(("offload",))
 
     async def add_cell(self, cell_meta: ServerCellMetadata):
         self.calls.append(("add", cell_meta.cell_id))
@@ -59,11 +63,55 @@ class _RecordingServer:
 
 def _make_controller(servers: dict) -> InferenceController:
     controller = InferenceController.__new__(InferenceController)
-    controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False)
+    controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False, ci_test=False, colocate=False)
     controller.servers = servers
     controller.rollout_engine_lock = None
     controller.context_lock = ContextLock("InferenceController")
+    controller._health_checker_activeness = True
     return controller
+
+
+class TestHealthCheckerActiveness:
+    @pytest.mark.asyncio
+    async def test_offload_pauses_probing_before_putting_engines_to_sleep(self):
+        """A slept engine cannot answer /health_generate, so probing must stop first."""
+        srv = _RecordingServer()
+        controller = _make_controller({"default": srv})
+
+        await controller.offload()
+
+        assert not controller._health_checker_activeness
+        assert srv.calls == [("offload",)]
+
+    @pytest.mark.asyncio
+    async def test_starting_a_weight_update_pauses_probing(self):
+        """Engines are unusable while their weights are being replaced."""
+        controller = _make_controller({"default": _RecordingServer()})
+
+        info = await controller.start_update_weights()
+        await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+        assert not controller._health_checker_activeness
+
+    @pytest.mark.asyncio
+    async def test_preparing_a_rollout_resumes_probing(self):
+        """Probing comes back exactly when the engines start serving traffic again."""
+        controller = _make_controller({"default": _RecordingServer()})
+        controller._health_checker_activeness = False
+
+        await controller.prepare_rollout(rollout_id=0)
+
+        assert controller._health_checker_activeness
+
+    @pytest.mark.asyncio
+    async def test_preparing_an_eval_resumes_probing(self):
+        """Eval drives the same engines as a rollout does."""
+        controller = _make_controller({"default": _RecordingServer()})
+        controller._health_checker_activeness = False
+
+        await controller.prepare_eval()
+
+        assert controller._health_checker_activeness
 
 
 class TestReconcile:
