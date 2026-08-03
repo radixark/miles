@@ -4,6 +4,7 @@ import logging
 
 import ray
 
+from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.router_manager import start_router
@@ -102,6 +103,30 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     return servers
 
 
+def _eval_sglang_overrides(args) -> dict:
+    """Eval-fleet engine settings; anything absent is inherited from the rollout engines."""
+    return {
+        # Eval samples never feed training, so the replay side-channels are pure overhead.
+        "enable_return_routed_experts": False,
+        "enable_return_indexer_topk": False,
+        **collect_eval_sglang_overrides(args),
+    }
+
+
+def _apply_eval_model_config(model_cfg: ModelConfig, args) -> None:
+    """Fill the eval model from the ``--eval-*`` args: YAML > ``--eval-sglang-*`` > ``--sglang-*``."""
+    if model_cfg.model_path is None:
+        model_cfg.model_path = args.eval_model_path
+    if model_cfg.update_weights is None:
+        # Never joins the training broadcast group; the fleet is synced by snapshot only.
+        model_cfg.update_weights = False
+    overrides = _eval_sglang_overrides(args)
+    for group in model_cfg.server_groups:
+        if group.num_gpus_per_engine is None:
+            group.num_gpus_per_engine = args.eval_num_gpus_per_engine
+        group.overrides = overrides | group.overrides
+
+
 def _resolve_sglang_config(args) -> SglangConfig:
     """Build a SglangConfig from args, choosing the right source."""
     eval_num_gpus = args.eval_num_gpus
@@ -119,6 +144,7 @@ def _resolve_sglang_config(args) -> SglangConfig:
                 f"--eval-num-gpus {eval_num_gpus} requires the sglang_config YAML to contain "
                 f"exactly one model named 'eval' with that many GPUs."
             )
+            _apply_eval_model_config(eval_models[0], args)
         return config
 
     if args.prefill_num_servers is not None:
@@ -134,20 +160,12 @@ def _resolve_sglang_config(args) -> SglangConfig:
         )
 
     if eval_num_gpus > 0:
-        config.models.append(
-            ModelConfig(
-                name="eval",
-                model_path=args.eval_model_path,
-                update_weights=False,
-                server_groups=[
-                    ServerGroupConfig(
-                        worker_type="regular",
-                        num_gpus=eval_num_gpus,
-                        num_gpus_per_engine=args.eval_num_gpus_per_engine,
-                    )
-                ],
-            )
+        eval_model = ModelConfig(
+            name="eval",
+            server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=eval_num_gpus)],
         )
+        _apply_eval_model_config(eval_model, args)
+        config.models.append(eval_model)
     return config
 
 

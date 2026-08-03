@@ -150,6 +150,20 @@ snapshot (`weight_version = str(rollout_id)`), runs the standard eval datasets, 
 point lands at the right x-axis step even when it completes a few steps later
 (`eval/lag_steps` reports how late).
 
+The fleet's engines **inherit every `--sglang-*` setting** from the rollout engines, so by
+default they are configured exactly like the engines you already tuned. Override any single
+field with the matching `--eval-sglang-*` flag:
+
+```bash
+--eval-sglang-mem-fraction-static 0.9      # eval fleet is not sharing with training
+--no-eval-sglang-enable-dp-attention       # booleans take a --no- form to turn an inherited True off
+```
+
+Two fields are deliberately not inheritable: TP comes from `--eval-num-gpus-per-engine`
+(which also places the engines, so a separate `--eval-sglang-tp-size` could move one without
+the other), and the routing/indexer replay side-channels are forced off — eval samples never
+feed training, so returning routed experts is pure overhead.
+
 Two production-oriented variants:
 
 - **Reuse mode**: with `--save-hf` set and `--eval-hf-dir` unset, eval reuses the

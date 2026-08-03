@@ -7,7 +7,7 @@ from typing import Any
 import yaml
 from sglang_router.launch_router import RouterArgs
 
-from miles.backends.sglang_utils.arguments import add_sglang_arguments
+from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
@@ -1127,7 +1127,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Number of GPUs for a dedicated eval engine fleet. When > 0, eval runs on "
                     "its own engines behind its own router, synced by loading HF checkpoint "
                     "snapshots (never by joining training weight updates). 0 disables the "
-                    "fleet and keeps today's shared-engine eval behavior."
+                    "fleet and keeps today's shared-engine eval behavior. The fleet's engine "
+                    "settings inherit every --sglang-* value; override individually with "
+                    "--eval-sglang-* (e.g. --eval-sglang-mem-fraction-static 0.9)."
                 ),
             )
             parser.add_argument(
@@ -2784,6 +2786,12 @@ def miles_validate_args(args):
             )
         if args.eval_model_path is None:
             args.eval_model_path = args.hf_checkpoint
+    else:
+        overrides = collect_eval_sglang_overrides(args)
+        assert not overrides, (
+            f"--eval-sglang-* configures the dedicated eval fleet, which needs --eval-num-gpus > 0. "
+            f"Got {sorted(overrides)} with --eval-num-gpus 0."
+        )
 
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."

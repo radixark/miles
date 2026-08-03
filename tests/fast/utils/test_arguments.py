@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.backends.sglang_utils.arguments import add_sglang_arguments
+from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
@@ -180,6 +180,41 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
     assert args.sglang_pp_size == 3
     assert args.sglang_ep_size == 4
     assert args.sglang_attn_cp_size == 5
+
+
+class TestEvalSglangOverrides:
+    """Unset means "inherit --sglang-*", so an unset flag must leave no attribute at all."""
+
+    def _parse(self, argv):
+        return add_sglang_arguments(argparse.ArgumentParser()).parse_args(argv)
+
+    def test_unset_flags_produce_no_overrides(self):
+        args = self._parse(["--sglang-mem-fraction-static", "0.7"])
+
+        assert collect_eval_sglang_overrides(args) == {}
+        assert not hasattr(args, "eval_sglang_mem_fraction_static")
+
+    def test_set_flag_becomes_an_override_without_touching_the_base_family(self):
+        args = self._parse(["--sglang-mem-fraction-static", "0.7", "--eval-sglang-mem-fraction-static", "0.9"])
+
+        assert collect_eval_sglang_overrides(args) == {"mem_fraction_static": 0.9}
+        assert args.sglang_mem_fraction_static == 0.7
+
+    def test_boolean_can_be_turned_back_off(self):
+        args = self._parse(["--sglang-enable-dp-attention", "--no-eval-sglang-enable-dp-attention"])
+
+        assert args.sglang_enable_dp_attention is True
+        assert collect_eval_sglang_overrides(args) == {"enable_dp_attention": False}
+
+    def test_parallel_sizes_keep_server_args_destinations(self):
+        args = self._parse(["--eval-sglang-data-parallel-size", "2", "--eval-sglang-expert-parallel-size", "4"])
+
+        assert collect_eval_sglang_overrides(args) == {"dp_size": 2, "ep_size": 4}
+
+    def test_tp_size_is_not_exposed(self):
+        """A second TP knob could move tp_size off the bundles --eval-num-gpus-per-engine placed."""
+        with pytest.raises(SystemExit):
+            self._parse(["--eval-sglang-tp-size", "2"])
 
 
 def test_custom_megatron_post_save_hook_path_is_parsed():
