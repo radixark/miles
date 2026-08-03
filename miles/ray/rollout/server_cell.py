@@ -44,6 +44,10 @@ class ServerCell:
         return isinstance(self._state, (StatePendingWeights, StateServing))
 
     @property
+    def is_pending_weights(self) -> bool:
+        return isinstance(self._state, StatePendingWeights)
+
+    @property
     def server_url(self) -> str:
         assert isinstance(self._state, (StatePendingWeights, StateServing))
         return self._state.server_url
@@ -79,20 +83,20 @@ class ServerCell:
 
         self._mark_pending_weights(server_url=server_url, bootstrap_port=bootstrap_port)
 
-        await self.mark_weights_ready()
+        if not self.meta.update_weights or self.args.debug_rollout_only:
+            await self.mark_weights_ready()
 
     async def mark_weights_ready(self):
         assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
-        bootstrap_port = self._state.bootstrap_port
-
-        self._mark_serving()
 
         await self.router_api_client.add_worker(
             worker_url=self.server_url,
             worker_type=self.meta.worker_type,
             use_legacy_api=use_legacy_router_api(self.args),
-            bootstrap_port=bootstrap_port,
+            bootstrap_port=self._state.bootstrap_port,
         )
+
+        self._mark_serving()
 
     async def dispose(self) -> None:
         try:
