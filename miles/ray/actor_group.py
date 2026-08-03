@@ -7,6 +7,7 @@ import asyncio
 
 from ray.util.placement_group import PlacementGroup
 
+from miles.ray.rollout.inference_controller import update_weights_window
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
@@ -123,13 +124,8 @@ class RayTrainGroup:
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        if self.args.use_fault_tolerance and "rollout" in self.args.ft_components:
-            await self._inference_controller.recover_updatable_engines()
-
-        info = await self._inference_controller.start_update_weights()
-
-        await self._broadcast("update_weights", info=info)
-        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+        async with update_weights_window(self._inference_controller) as info:
+            await self._broadcast("update_weights", info=info)
 
     async def reconcile_adapters(self) -> None:
         """Multi-LoRA: reconcile loaded adapters with the controller's active set

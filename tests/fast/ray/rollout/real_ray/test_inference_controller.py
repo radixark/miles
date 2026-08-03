@@ -431,65 +431,6 @@ class TestCheckWeights:
 
 
 @pytest.mark.asyncio
-class TestRecoverUpdatableEngines:
-    async def test_skips_recovery_when_no_rollout_started(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """``recover_updatable_engines`` is a no-op while ``rollout_id == -1``
-        (initial state) — the trainer hasn't issued a rollout yet, so even if
-        a slot looks dead the controller must not pre-emptively recover."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = InferenceController(args, pg)
-        await controller.init()
-        await controller.get_updatable_engines()
-        actor0_before = _cells(controller)[0].primary_actor_handle
-
-        # Kill engine 0 directly + mark stopped (simulates a fault before any
-        # rollout). recover_updatable_engines must not bring it back yet.
-        ray.kill(actor0_before)
-        controller.servers["actor"].server_cells["actor-0"]._mark_stopped()
-
-        await controller.recover_updatable_engines()
-
-        # Slot 0 is still de-allocated; recovery skipped because rollout_id=-1.
-        assert not controller.servers["actor"].server_cells["actor-0"].is_allocated
-
-    async def test_recovers_dead_engine_after_rollout_started(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """Once ``rollout_id`` advances past -1 (mid-training), a dead slot on
-        the updatable server is brought back by ``recover_updatable_engines``."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = InferenceController(args, pg)
-        await controller.init()
-        await controller.get_updatable_engines()
-        actor0_before = _cells(controller)[0].primary_actor_handle
-
-        ray.kill(actor0_before)
-        controller.servers["actor"].server_cells["actor-0"]._mark_stopped()
-
-        await controller.prepare_rollout(0)
-        await controller.recover_updatable_engines()
-
-        slot0 = controller.servers["actor"].server_cells["actor-0"]
-        assert slot0.is_allocated
-        assert slot0.primary_actor_handle is not actor0_before
-        assert isinstance(ray.get(slot0.primary_actor_handle.get_calls.remote()), list)
-
-
-@pytest.mark.asyncio
 class TestRolloutFaultToleranceIsUnsupported:
     async def test_fault_injection_is_skipped_when_fault_tolerance_skips_rollout(
         self,
