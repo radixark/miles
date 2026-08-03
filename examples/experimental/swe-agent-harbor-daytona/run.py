@@ -6,7 +6,7 @@ Same Miles <-> Harbor pipeline as examples/swe-agent, with two differences:
   * the agent is terminus-2, which needs --tito-allowed-append-roles
 
 Usage:
-    python examples/swe-agent-harbor-daytona/run.py --prompt-data /path/to/tb2_train.jsonl
+    python examples/experimental/swe-agent-harbor-daytona/run.py --prompt-data /path/to/tb2_train.jsonl
 """
 
 import os
@@ -25,7 +25,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # generate.py and swe_agent_function.py are identical for Docker- and
 # Daytona-backed runs, so import them from examples/swe-agent instead of keeping
 # a second copy in sync.
-SHARED_DIR = SCRIPT_DIR.parent / "swe-agent"
+SHARED_DIR = SCRIPT_DIR.parent.parent / "swe-agent"
 
 
 def _default_router_host() -> str:

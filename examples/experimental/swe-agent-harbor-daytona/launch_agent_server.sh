@@ -3,7 +3,8 @@
 #
 # Run this from the root of a harbor-framework/harbor checkout on the
 # harbor-miles-v0.20.0 branch, which carries the Miles integration, before
-# launching examples/swe-agent-harbor-daytona/run.py. Trials are graded inside
+# launching examples/experimental/swe-agent-harbor-daytona/run.py. Trials are
+# graded inside
 # Daytona cloud sandboxes, so this host needs outbound HTTPS but no Docker
 # daemon.
 set -euo pipefail

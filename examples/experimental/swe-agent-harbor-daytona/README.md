@@ -53,7 +53,7 @@ uv sync
 export DAYTONA_API_KEY=<your-daytona-api-key>
 export HARBOR_TASKS_DIR=/path/to/harbor_tasks
 export TRIALS_DIR=/path/to/trials
-bash /path/to/miles/examples/swe-agent-harbor-daytona/launch_agent_server.sh
+bash /path/to/miles/examples/experimental/swe-agent-harbor-daytona/launch_agent_server.sh
 ```
 
 `HARBOR_TASKS_DIR` must contain one Harbor task directory for every
@@ -91,7 +91,7 @@ server colocated on the same host as the trainer:
 ```bash
 export WANDB_API_KEY=<your-wandb-key>
 
-python examples/swe-agent-harbor-daytona/run.py \
+python examples/experimental/swe-agent-harbor-daytona/run.py \
     --num-nodes 1 \
     --num-gpus-per-node 8 \
     --skip-prepare \
