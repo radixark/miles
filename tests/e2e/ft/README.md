@@ -3,7 +3,7 @@
 ## Layout
 
 - Scenario logic lives in `conftest_ft/scenario_<name>.py`.
-- CI runs it via thin per-mode entry files `test_trainer_ft_<scenario>_<mode>.py`, each registered with `register_cuda_ci(est_time=..., suite="stage-c-8-gpu-h200", labels=["ft-short"])` (comparison scenarios) or `labels=["ft-long"]` (soak scenarios).
+- CI runs it via thin per-mode entry files `test_<component>_ft_<scenario>_<mode>.py` (`<component>` is `trainer` or `rollout`, after the components the mode enables ft on), each registered with `register_cuda_ci(est_time=..., suite="stage-c-8-gpu-h200", labels=["ft-short"])` (comparison scenarios) or `labels=["ft-long"]` (soak scenarios).
 - The CUDA CI runner executes each entry as bare `python3 <file>` (exit code = pass/fail); the entry just calls the scenario's `run_ci(mode)`.
 
 | Scenario (`conftest_ft/scenario_*.py`) | Type | What it verifies |
@@ -32,6 +32,7 @@
 - All scenarios use `--rollout-batch-size 32 --n-samples-per-prompt 8 --global-batch-size 256` (256 samples/rollout), which divides evenly across both 2 and 4 cells. Uneven sample distribution across replicas is **not** exercised.
 - 1-node modes use the 5-layer MoE (`Qwen3-30B-A3B-5layer`), except `dp2_cp2_real_rollout_dense` (dense `Qwen3-0.6B` — see `scenario_with_failure` for why).
 - Authorized CI skips (no entry file): `6node_dp4_cp2_tp2_pp2_ep2_etp2` (multi-node), `with_failure × dp4_cp2`.
+- `colocate_dp2_cp2_rollout_ft` has one entry, `test_rollout_ft_random_colocate_dp2_cp2.py` (`scenario_ft_random`); it is the only mode that crashes engines rather than trainer cells.
 
 ## Running
 
