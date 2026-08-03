@@ -89,6 +89,7 @@ def sparse_mla_fwd(
             O_shared = T.alloc_shared([H_per_block, D], dtype)
             Lse_shared = T.alloc_shared([H_per_block], accum_dtype)
             mask = T.alloc_fragment([BI], "bool")
+            kv_i = T.alloc_fragment([BI], indices_dtype)
 
             acc_o = T.alloc_fragment([H_per_block, D], accum_dtype)
             acc_s = T.alloc_fragment([H_per_block, BI], accum_dtype)
@@ -118,11 +119,17 @@ def sparse_mla_fwd(
                 for bi_i in T.Parallel(BI):
                     # Changed here for thd
                     mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] != -1
+                # -1 addresses the element before the tensor, so a padded slot loads whatever
+                # bytes precede KV. Those bytes are then multiplied by an exactly zero
+                # attention weight in the acc_o gemm, and 0 * inf is NaN. Clamp in range and
+                # substitute a true zero key.
+                for bi_i in T.Parallel(BI):
+                    kv_i[bi_i] = T.max(Indices[b_i, s_i, g_i, i_i * BI + bi_i], 0)
 
                 for bi_i, d_i in T.Parallel(BI, D):
-                    KV_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, d_i]
+                    KV_shared[bi_i, d_i] = T.if_then_else(mask[bi_i], KV[b_i, kv_i[bi_i], g_i, d_i], 0)
                 for bi_i, d_i in T.Parallel(BI, D_tail):
-                    K_tail_shared[bi_i, d_i] = KV[b_i, Indices[b_i, s_i, g_i, i_i * BI + bi_i], g_i, D + d_i]
+                    K_tail_shared[bi_i, d_i] = T.if_then_else(mask[bi_i], KV[b_i, kv_i[bi_i], g_i, D + d_i], 0)
 
                 for h_i, bi_i in T.Parallel(H_per_block, BI):
                     acc_s[h_i, bi_i] = T.if_then_else(mask[bi_i], 0, -T.infinity(acc_s.dtype))
@@ -157,7 +164,13 @@ def sparse_mla_fwd(
                 T.copy(acc_s, S_shared)
                 T.gemm(S_shared, KV_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)
 
-            # Rescale
+            # Rescale. A query row whose indices are all -1 has no valid key, so sumexp is 0 and
+            # both the divide and the log2 go non-finite -- out becomes 0/0 = NaN and Lse becomes
+            # -inf, which the backward then turns into exp2(-inf - -inf) = NaN. Any row with at
+            # least one valid key has sumexp >= 1 (the running-max term is exp2(0)), so flooring
+            # here is a no-op for real rows and makes an empty row contribute an exact zero.
+            for h_i in T.Parallel(H_per_block):
+                sumexp[h_i] = T.max(sumexp[h_i], 1e-30)
             for h_i, d_i in T.Parallel(H_per_block, D):
                 acc_o[h_i, d_i] /= sumexp[h_i]
             for h_i in T.Parallel(H_per_block):
