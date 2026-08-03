@@ -19,6 +19,7 @@ from sglang.srt.server_args import ServerArgs
 from tqdm import tqdm
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group
 
@@ -66,7 +67,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self.weight_version = 0
         self._model_update_groups = None
         self.rollout_engines: Sequence[SGLangApiClient] | None = None
-        self._connection_stale: bool = False
+        self.conn_status = ConnStatusManager()
         assert not is_lora, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
         self.is_lora = False
 
@@ -179,13 +180,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
 
         converted_named_tensors.clear()
 
-    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
-    def is_rollout_engines_fresh(self) -> bool:
-        return self.rollout_engines is not None and not self._connection_stale
-
-    def mark_engine_connection_stale(self) -> None:
-        self._connection_stale = True
-
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
@@ -204,7 +198,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
           weight format conversion before transfer.
         """
         self.rollout_engines = rollout_engines
-        self._connection_stale = False
         self.rollout_engine_lock = rollout_engine_lock
 
         if self._is_source:
