@@ -93,19 +93,19 @@ jobs:
           # the recorded base.sha, which can lag main and pull in unrelated changes.
           # Dockerfile.rocm doesn't feed the cu13 multi-arch build this pipeline produces.
           if git diff --name-only HEAD^1 HEAD \
-              | grep -qE '^(docker/(Dockerfile|build\.py|verify_transformer_engine\.py)|requirements\.txt)$|^docker/patch/'; then
+              | grep -qE '^(docker/(Dockerfile|build\.py|resolve_upstream\.py|fetch_wheels\.py|smoke_test\.py|verify_transformer_engine\.py|requirements-nodeps\.txt)|requirements\.txt)$|^docker/patch/'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Docker PRs: build the multi-arch image first and run every suite inside it.
-  # Always runs: with nothing to build every step is a no-op and it stays off the
-  # GPU fleet.
+  # Always runs: with nothing to build every step is a no-op on a free hosted
+  # runner; actual builds run on docker-build nodes, never the GPU-suite pool.
   docker-build:
     needs: [docker-paths]
     if: always() && !cancelled()
-    runs-on: ${{ fromJSON((needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository) && '["h200", "2gpu"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON((needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository) && '["docker-build"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 180
     outputs:
       built: ${{ steps.build.outputs.built || 'false' }}
@@ -116,18 +116,16 @@ jobs:
       - name: Checkout repository
         if: env.BUILD == 'true'
         uses: actions/checkout@v4
-      - name: Set up Docker Buildx
-        if: env.BUILD == 'true'
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
-      - name: Install Python + dependencies
+      - name: Ensure persistent buildx builder
+        # Same persistent named builder as docker-build.yml: the node-local layer
+        # cache serves PR builds too (inputs are SHA/fingerprint-pinned, so hits are
+        # always correct).
         if: env.BUILD == 'true'
         run: |
-          apt-get update && apt-get install -y python3 python3-pip
-          pip3 install --break-system-packages typer
+          docker buildx inspect miles-builder >/dev/null 2>&1 || \
+            docker buildx create --name miles-builder --driver docker-container \
+              --driver-opt image=moby/buildkit:latest --driver-opt network=host \
+              --bootstrap
       - name: Login to Docker Hub
         if: env.BUILD == 'true'
         uses: docker/login-action@v3
@@ -139,7 +137,8 @@ jobs:
         if: env.BUILD == 'true'
         run: |
           python3 docker/build.py --variant cu13 --image-tag custom \
-            --custom-tag pr-${{ github.event.pull_request.number }} --push
+            --custom-tag pr-${{ github.event.pull_request.number }} \
+            --builder miles-builder --push
           echo "built=true" >> "$GITHUB_OUTPUT"
       - name: Nothing to build
         if: env.BUILD != 'true'
