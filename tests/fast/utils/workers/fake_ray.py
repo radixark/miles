@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import itertools
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -16,11 +17,14 @@ class FakeRayObjectRef:
     method: str
     value: Any = None
     error: BaseException | None = None
+    hang_seconds: float | None = None
 
     def __await__(self):
         return self._resolve_async().__await__()
 
     async def _resolve_async(self) -> Any:
+        if self.hang_seconds is not None:
+            await asyncio.sleep(self.hang_seconds)
         return self.resolve()
 
     def resolve(self) -> Any:
@@ -54,6 +58,7 @@ class FakeRayActorHandle:
     options: dict[str, Any]
     node_ip: str
     failing_methods: dict[str, BaseException] = field(default_factory=dict)
+    hanging_methods: dict[str, float] = field(default_factory=dict)
     killed: bool = False
 
     def __getattr__(self, name: str) -> FakeRayActorMethod:
@@ -153,6 +158,7 @@ class FakeRayCluster:
             method=method,
             value=self._compute_value(handle=handle, method=method, kwargs=kwargs),
             error=handle.failing_methods.get(method, self.method_errors.get(method)),
+            hang_seconds=handle.hanging_methods.get(method),
         )
 
     def calls_of(self, method: str) -> list[FakeRayActorCall]:

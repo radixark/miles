@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from unittest.mock import patch
 
 import pytest
 from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayCluster
 
 from miles.ray.placement_group import PlacementGroupInfo
+from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
@@ -760,10 +762,23 @@ class TestStopDetails:
     async def test_graceful_shutdown_is_bounded_by_a_timeout(self, fake_ray_cluster: FakeRayCluster):
         """A hung worker must not block teardown forever."""
         manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].hanging_methods["shutdown"] = 3600
 
-        await manager._group_infos["engine"].cells[0].stop()
+        with patch.object(ray_worker_manager, "_SHUTDOWN_TIMEOUT", 0.01):
+            await manager._group_infos["engine"].cells[0].stop()
 
-        assert fake_ray_cluster.get_timeouts[-1] == 30
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+
+    async def test_shutdown_leaves_the_managers_event_loop_free(self, fake_ray_cluster: FakeRayCluster):
+        """Stopping runs on the manager's own loop, which must stay able to serve other calls."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].hanging_methods["shutdown"] = 0.05
+
+        stop_task = asyncio.create_task(manager._group_infos["engine"].cells[0].stop())
+        await asyncio.sleep(0)
+        assert "engine-0" in manager.get_cell_infos(spec_names=["engine"])
+
+        await stop_task
 
     async def test_all_workers_are_killed_even_when_one_shutdown_hangs(self, fake_ray_cluster: FakeRayCluster):
         """One broken worker must not save its peers from teardown."""
@@ -847,3 +862,132 @@ class TestGetCellInfos:
         manager = await _launch([_make_spec("engine")])
 
         assert manager.get_cell_infos(spec_names=["engine"])["engine-0"].alive
+
+
+class TestStartAndStopCells:
+    async def test_stopping_by_id_releases_only_the_named_cell(self, fake_ray_cluster: FakeRayCluster):
+        """Suspending one engine must leave its siblings serving."""
+        manager = await _launch([_make_spec("engine", num_cells=2)])
+
+        await manager.stop_cells(["engine-0"])
+
+        infos = manager.get_cell_infos(spec_names=["engine"])
+        assert not infos["engine-0"].alive
+        assert infos["engine-1"].alive
+        assert [handle.killed for handle in fake_ray_cluster.handles] == [True, False]
+
+    async def test_a_stopped_cell_comes_back_on_start(self, fake_ray_cluster: FakeRayCluster):
+        """Resume is a fresh launch of the same cell, so the cell reappears to the reconciler."""
+        manager = await _launch([_make_spec("engine", num_cells=2)])
+        await manager.stop_cells(["engine-0"])
+
+        await manager.start_cells(["engine-0"])
+
+        assert all(info.alive for info in manager.get_cell_infos(spec_names=["engine"]).values())
+
+    async def test_a_restarted_cell_reports_a_new_workers_hash(self, fake_ray_cluster: FakeRayCluster):
+        """The hash is what tells the trainer to rebuild its connection to the new process."""
+        manager = await _launch([_make_spec("engine")])
+        before = manager.get_cell_infos(spec_names=["engine"])["engine-0"].workers_hash
+
+        await manager.stop_cells(["engine-0"])
+        await manager.start_cells(["engine-0"])
+
+        assert manager.get_cell_infos(spec_names=["engine"])["engine-0"].workers_hash != before
+
+    async def test_a_restarted_cell_runs_its_command_again(self, fake_ray_cluster: FakeRayCluster):
+        """Resume must relaunch the subprocess, not merely re-register the old actors."""
+        manager = await _launch([_make_spec("engine")])
+
+        await manager.stop_cells(["engine-0"])
+        await manager.start_cells(["engine-0"])
+
+        assert len(fake_ray_cluster.calls_of("run")) == 2
+
+    async def test_stopping_an_already_stopped_cell_is_a_noop(self, fake_ray_cluster: FakeRayCluster):
+        """Heal loops retry, so a redundant suspend must not blow up on missing actors."""
+        manager = await _launch([_make_spec("engine")])
+        await manager.stop_cells(["engine-0"])
+
+        await manager.stop_cells(["engine-0"])
+
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 1
+
+    async def test_a_cell_whose_actor_is_already_dead_still_stops(self, fake_ray_cluster: FakeRayCluster):
+        """Suspend is step one of healing a crashed cell, so a dead actor is the normal case."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].failing_methods["shutdown"] = RuntimeError("actor died")
+
+        await manager.stop_cells(["engine-0"])
+
+        assert not manager.get_cell_infos(spec_names=["engine"])["engine-0"].alive
+
+    async def test_several_cells_are_stopped_together(self, fake_ray_cluster: FakeRayCluster):
+        """A multi-cell suspend is one request, not a caller-side loop."""
+        manager = await _launch([_make_spec("engine", num_cells=3)])
+
+        await manager.stop_cells(["engine-0", "engine-2"])
+
+        assert not any(manager.get_cell_infos(spec_names=["engine"])[c].alive for c in ["engine-0", "engine-2"])
+
+    async def test_an_unknown_cell_id_fails_loudly(self, fake_ray_cluster: FakeRayCluster):
+        """A typo'd cell id must not silently suspend nothing."""
+        manager = await _launch([_make_spec("engine")])
+
+        with pytest.raises(AssertionError):
+            await manager.stop_cells(["engine-7"])
+
+    async def test_starting_a_running_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
+        """Relaunching a live cell would orphan its current actors."""
+        manager = await _launch([_make_spec("engine")])
+
+        with pytest.raises(AssertionError):
+            await manager.start_cells(["engine-0"])
+
+    async def test_a_restarted_cell_allocates_ports_and_addrs_again(self, fake_ray_cluster: FakeRayCluster):
+        """The new process needs its own addresses; a stale addr book would point at the dead one."""
+        manager = await _launch([_make_spec("engine")])
+
+        await manager.stop_cells(["engine-0"])
+        await manager.start_cells(["engine-0"])
+
+        assert manager.get_worker_addrs("engine-0-0")["primary"] is not None
+        assert len(fake_ray_cluster.calls_of("_get_node_ip")) == 2
+
+    async def test_start_runs_every_phase_before_the_next_one(self, fake_ray_cluster: FakeRayCluster):
+        """A worker must be addressable before any worker of the cell is handed its command."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        await manager.stop_cells(["engine-0"])
+        fake_ray_cluster.calls.clear()
+
+        await manager.start_cells(["engine-0"])
+
+        methods = [call.method for call in fake_ray_cluster.calls]
+        assert methods.index("run") > max(i for i, m in enumerate(methods) if m == "_get_node_ip")
+
+    async def test_a_suspended_sibling_does_not_break_the_addr_book(self, fake_ray_cluster: FakeRayCluster):
+        """Launch commands are rendered from every spec's addrs, so a suspended cell must drop out of it."""
+        manager = await _launch([_make_spec("engine", num_cells=2)])
+
+        await manager.stop_cells(["engine-0"])
+
+        assert [len(addrs) for addrs in manager.get_addrs().values()] == [1]
+
+    async def test_a_cell_restarts_while_a_sibling_stays_suspended(self, fake_ray_cluster: FakeRayCluster):
+        """Healing one cell must not depend on every other cell being up."""
+        manager = await _launch([_make_spec("engine", num_cells=3)])
+        await manager.stop_cells(["engine-0", "engine-1"])
+
+        await manager.start_cells(["engine-1"])
+
+        infos = manager.get_cell_infos(spec_names=["engine"])
+        assert not infos["engine-0"].alive
+        assert infos["engine-1"].alive and infos["engine-2"].alive
+
+    async def test_worker_addrs_ignore_suspended_cells(self, fake_ray_cluster: FakeRayCluster):
+        """Resolving a live worker must not walk into a suspended cell's missing actors."""
+        manager = await _launch([_make_spec("engine", num_cells=2)])
+
+        await manager.stop_cells(["engine-0"])
+
+        assert manager.get_worker_addrs("engine-1-0")["primary"] is not None

@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -92,3 +93,61 @@ class TestRayWorkerProviderGetAddrs:
         provider = RayWorkerProvider(worker_manager_handle=handle)
 
         assert await provider.get_addr(worker_name="engine-0-0") == HostAndPort(host="10.0.0.7", port=15000)
+
+
+@dataclass
+class _FakeCellInfosMethod:
+    infos: dict[str, CellInfo]
+    requested_spec_names: list[list[str]] = field(default_factory=list)
+
+    def remote(self, *, spec_names: list[str]) -> Any:
+        self.requested_spec_names.append(list(spec_names))
+        return _resolved_infos(self.infos)
+
+
+async def _resolved_infos(value: dict[str, CellInfo]) -> dict[str, CellInfo]:
+    return value
+
+
+def _make_info(cell_id: str, *, alive: bool) -> CellInfo:
+    return CellInfo(
+        cell_id=cell_id,
+        spec_name="engine",
+        alive=alive,
+        worker_names=[f"{cell_id}-0"] if alive else [],
+        workers_hash="h",
+        meta={},
+    )
+
+
+class TestRayWorkerProviderWatchCells:
+    async def test_a_suspended_cell_reaches_the_watcher_as_a_disappearance(self):
+        """The watcher treats absence as removal, so a cell with no process must not look present."""
+        handle = _FakeManagerHandle(get_worker_addrs=_FakeRemoteMethod(answers=[]))
+        handle.get_cell_infos = _FakeCellInfosMethod(
+            infos={"engine-0": _make_info("engine-0", alive=False), "engine-1": _make_info("engine-1", alive=True)}
+        )
+        provider = RayWorkerProvider(worker_manager_handle=handle)
+        seen: list[tuple[str, CellInfo | None]] = []
+
+        async def _reconcile(cell_id: str, info: CellInfo | None) -> None:
+            seen.append((cell_id, info))
+
+        stop = await provider.watch_cells(_reconcile, spec_names=["engine"])
+        await stop()
+
+        assert [cell_id for cell_id, _ in seen] == ["engine-1"]
+
+    async def test_the_watch_asks_only_for_the_specs_it_was_given(self):
+        """Watching every spec would make the watcher reconcile cells that are not its own."""
+        handle = _FakeManagerHandle(get_worker_addrs=_FakeRemoteMethod(answers=[]))
+        handle.get_cell_infos = _FakeCellInfosMethod(infos={})
+        provider = RayWorkerProvider(worker_manager_handle=handle)
+
+        async def _reconcile(cell_id: str, info: CellInfo | None) -> None:
+            pass
+
+        stop = await provider.watch_cells(_reconcile, spec_names=["engine"])
+        await stop()
+
+        assert handle.get_cell_infos.requested_spec_names == [["engine"]]
