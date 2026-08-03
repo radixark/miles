@@ -8,6 +8,7 @@ import pytest
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
+from miles.router.config import MilesRouterConfig, compute_miles_router_config
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
@@ -19,6 +20,7 @@ from miles.utils.arguments import (
     validate_async_off_policy_correction,
     validate_skip_actor_forward_only,
 )
+from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
@@ -81,6 +83,9 @@ class TestMaybeApplyDumperOverrides:
         use_fault_tolerance: bool = False,
         router_disable_health_check: bool = False,
         rollout_health_check_interval: float = 30.0,
+        miles_router_health_check_failure_threshold: int = 3,
+        miles_router_max_connections: int | None = 64,
+        miles_router_timeout: float | None = None,
         start_rollout_id: int | None = None,
         num_rollout: int = 10,
         eval_interval: int | None = 5,
@@ -93,6 +98,9 @@ class TestMaybeApplyDumperOverrides:
             use_fault_tolerance=use_fault_tolerance,
             router_disable_health_check=router_disable_health_check,
             rollout_health_check_interval=rollout_health_check_interval,
+            miles_router_health_check_failure_threshold=miles_router_health_check_failure_threshold,
+            miles_router_max_connections=miles_router_max_connections,
+            miles_router_timeout=miles_router_timeout,
             start_rollout_id=start_rollout_id,
             num_rollout=num_rollout,
             eval_interval=eval_interval,
@@ -105,20 +113,30 @@ class TestMaybeApplyDumperOverrides:
         args = self._make_args(
             dumper_enable=False,
             use_fault_tolerance=True,
-            rollout_health_check_interval=30.0,
         )
         _maybe_apply_dumper_overrides(args)
 
         assert args.use_fault_tolerance is True
         assert args.router_disable_health_check is False
-        assert args.rollout_health_check_interval == 30.0
         assert args.num_rollout == 10
         assert args.eval_interval == 5
         assert args.save == "/tmp/checkpoint"
         assert args.save_interval == 5
         assert args.save_retain_interval == 10
 
-    def test_disables_all_heartbeats(self) -> None:
+    def test_disables_fault_tolerance_and_sglang_router_heartbeats(self) -> None:
+        """Dumper mode turns off fault tolerance and the SGLang router health check."""
+        args = self._make_args(
+            dumper_enable=True,
+            use_fault_tolerance=True,
+        )
+        _maybe_apply_dumper_overrides(args)
+
+        assert args.use_fault_tolerance is False
+        assert args.router_disable_health_check is True
+
+    def test_leaves_miles_router_heartbeat_enabled(self) -> None:
+        """Dumper mode does not suppress MilesRouter probing: its health check interval is unchanged."""
         args = self._make_args(
             dumper_enable=True,
             use_fault_tolerance=True,
@@ -126,9 +144,11 @@ class TestMaybeApplyDumperOverrides:
         )
         _maybe_apply_dumper_overrides(args)
 
-        assert args.use_fault_tolerance is False
-        assert args.router_disable_health_check is True
-        assert args.rollout_health_check_interval == 1e18
+        config: MilesRouterConfig = compute_miles_router_config(args, host="10.0.0.1", port=1234)
+
+        assert args.rollout_health_check_interval == 30.0
+        assert config.health_check_interval == 30.0
+        assert config.health_check_failure_threshold == 3
 
     def test_forces_single_rollout(self) -> None:
         args = self._make_args(dumper_enable=True, num_rollout=100)
@@ -1134,3 +1154,35 @@ class TestRunUuidResolution:
 
         with pytest.raises(ValueError, match="invalid run uuid"):
             miles_validate_args(args)
+
+
+class TestRolloutHealthCheckArguments:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + REQUIRED_ARGS)
+
+    def test_the_rollout_defaults_survive_the_move_onto_the_shared_config(self):
+        """The shared config carries the trainer's defaults, which are not the rollout ones."""
+        args = self._parse([])
+
+        assert args.rollout_health_check_interval == 30.0
+        assert args.rollout_health_check_timeout == 30.0
+        assert args.rollout_health_check_first_wait == 0.0
+
+    def test_the_first_wait_grace_period_is_still_tunable(self):
+        """A first launch compiling deepgemm kernels needs a grace period, or it is killed while warming up."""
+        assert self._parse(["--rollout-health-check-first-wait", "600"]).rollout_health_check_first_wait == 600.0
+
+    def test_the_resolved_rollout_config_matches_the_parsed_arguments(self):
+        """The config is what the checker actually runs on, so it must not diverge from the flags."""
+        config = SimpleHealthCheckerConfig.from_args(
+            self._parse(["--rollout-health-check-first-wait", "600"]), prefix="rollout_health_check"
+        )
+
+        assert (config.interval, config.timeout, config.first_wait) == (30.0, 30.0, 600.0)
+
+    def test_the_trainer_heartbeat_keeps_its_own_debounce(self):
+        """The rollout default must not be pushed down into the shared config: a trainer heartbeat
+        shares an RPC channel with the train step, so one slow reply is a blip, not a dead cell."""
+        assert self._parse([]).trainer_heartbeat_checker_failure_threshold == 3

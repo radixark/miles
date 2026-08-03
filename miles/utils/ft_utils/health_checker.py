@@ -23,24 +23,35 @@ class SimpleHealthCheckerConfig(StrictBaseModel):
     failure_threshold: int
 
     @staticmethod
-    def add_arguments(parser: argparse.ArgumentParser, *, prefix: str) -> None:
+    def add_arguments(
+        parser: argparse.ArgumentParser,
+        *,
+        prefix: str,
+        interval_default: float = 10.0,
+        timeout_default: float = 10.0,
+        first_wait_default: float = 300.0,
+    ) -> None:
         parser.add_argument(
             f"--{prefix}-interval",
             type=float,
-            default=10.0,
+            default=interval_default,
             help=f"Interval in seconds between {prefix} health checks.",
         )
         parser.add_argument(
             f"--{prefix}-timeout",
             type=float,
-            default=10.0,
+            default=timeout_default,
             help=f"Timeout in seconds for a single {prefix} health check RPC.",
         )
         parser.add_argument(
             f"--{prefix}-first-wait",
             type=float,
-            default=300.0,
-            help=f"Initial grace period (seconds) before starting {prefix} health checks.",
+            default=first_wait_default,
+            help=(
+                f"Initial grace period (seconds) before starting {prefix} health checks, re-armed on every "
+                "resume. This allows time for model compilation and initialization; increase it "
+                "significantly when using deepgemm."
+            ),
         )
         parser.add_argument(
             f"--{prefix}-failure-threshold",

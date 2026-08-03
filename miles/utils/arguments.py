@@ -946,23 +946,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="FT components to enable (requires --use-fault-tolerance). "
                 "Choices: rollout, train. Default when omitted: rollout.",
             )
-            parser.add_argument(
-                "--rollout-health-check-interval",
-                type=float,
-                default=30.0,
-                help="Interval in seconds between rollout engine /health_generate checks during generate/eval.",
-            )
-            parser.add_argument(
-                "--rollout-health-check-timeout",
-                type=float,
-                default=30.0,
-                help="Timeout in seconds to wait for a rollout engine /health_generate response before killing it.",
-            )
-            parser.add_argument(
-                "--rollout-health-check-first-wait",
-                type=float,
-                default=0,
-                help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
+            SimpleHealthCheckerConfig.add_arguments(
+                parser,
+                prefix="rollout-health-check",
+                interval_default=30.0,
+                timeout_default=30.0,
+                first_wait_default=0.0,
             )
             parser.add_argument(
                 "--api-server-port",
@@ -3661,7 +3650,6 @@ def _maybe_apply_dumper_overrides(args) -> None:
 
     logger.info("Dumper mode: all heartbeat mechanisms disabled")
     args.router_disable_health_check = True
-    args.rollout_health_check_interval = 1e18
 
     if args.start_rollout_id is None:
         args.start_rollout_id = 0
