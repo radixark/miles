@@ -152,6 +152,22 @@ class _FailingOnceReconciler(_RecordingReconciler):
         await super().__call__(cell_id, info)
 
 
+class _StuckOnCancelReconciler(_RecordingReconciler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def __call__(self, cell_id: str, info: CellInfo | None) -> None:
+        await super().__call__(cell_id, info)
+        self.entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await self.release.wait()
+            raise
+
+
 class TestRayWorkerProviderWatchCellsInitialSync:
     async def test_every_initial_cell_is_reconciled_before_the_watch_is_established(self):
         """Callers may assume the pool is fully observed once watch_cells returns."""
@@ -284,3 +300,28 @@ class TestRayWorkerProviderWatchCellsStop:
         await asyncio.sleep(0.02)
 
         assert len(handle.get_cell_infos.calls) == settled
+
+    async def test_stopping_does_not_swallow_the_callers_cancellation(self):
+        """A stop that eats its caller's cancellation lets a timed-out shutdown run on past its teardown."""
+        handle = _make_watching_handle({}, {"cell-a": _cell_info("cell-a")})
+        provider = RayWorkerProvider(
+            worker_manager_handle=handle, pool_ids=["inference-engine-0-0"], poll_interval_seconds=0.001
+        )
+        reconciler = _StuckOnCancelReconciler()
+        returned: list[str] = []
+
+        stop = await provider.watch_cells(reconciler)
+        await asyncio.wait_for(reconciler.entered.wait(), timeout=2.0)
+
+        async def _stopper() -> None:
+            await stop()
+            returned.append("returned")
+
+        stopper = asyncio.create_task(_stopper())
+        await asyncio.sleep(0)
+        stopper.cancel()
+        await asyncio.gather(stopper, return_exceptions=True)
+        reconciler.release.set()
+        await stop()
+
+        assert stopper.cancelled() and returned == []
