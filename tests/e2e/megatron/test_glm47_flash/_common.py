@@ -185,6 +185,8 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
         extra_env_vars = {
             "SGLANG_USE_AITER": "0",
             "MILES_TEST_R3_THRESHOLD": "1.0",
+            "SGLANG_ENABLE_SPLITKV_VERIFY": "0",
+            "SGLANG_ROCM_FUSED_DECODE_MLA": "0",
         }
 
     U.execute_train(
