@@ -568,19 +568,20 @@ class FSDPTrainRayActor(TrainRayActor):
 
         rollout_engines = info.rollout_engines
         rollout_engine_lock = info.rollout_engine_lock
-        has_new_engines = info.has_new_engines
+        snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
         del info
 
-        if has_new_engines or self.weight_updater.conn_status.needs_reconnect():
+        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
+        if needs_reconnect:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 rollout_engine_lock,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
             )
-            self.weight_updater.conn_status.mark_reconnected()
+            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
             dist.barrier(group=get_gloo_group())
 
         self.weight_updater.update_weights()

@@ -89,7 +89,6 @@ class InferenceController:
             return EnginesAndLock(
                 rollout_engines=[],
                 rollout_engine_lock=self.rollout_engine_lock,
-                has_new_engines=False,
                 engine_gpu_counts=[],
                 engine_gpu_offsets=[],
                 snapshot_cell_id_to_hashes={},
@@ -99,18 +98,12 @@ class InferenceController:
         return EnginesAndLock(
             rollout_engines=srv.api_clients,
             rollout_engine_lock=self.rollout_engine_lock,
-            has_new_engines=srv.has_new_engines,
             engine_gpu_counts=srv.engine_gpu_counts,
             engine_gpu_offsets=srv.engine_gpu_offsets,
             snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
         )
 
     async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]):
-        # when fault tolerance is not enabled, we need to manually clear has_new_engines after update_weights
-        srv = self._get_updatable_server()
-        if srv:
-            srv.clear_has_new_engines()
-
         await asyncio.gather(
             *[
                 cell.mark_weights_ready()
@@ -207,7 +200,6 @@ class InferenceController:
 class EnginesAndLock:
     rollout_engines: list[SGLangApiClient]
     rollout_engine_lock: ray.actor.ActorHandle
-    has_new_engines: bool
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
     snapshot_cell_id_to_hashes: dict[str, str]
