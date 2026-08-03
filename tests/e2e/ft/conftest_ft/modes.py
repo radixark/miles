@@ -30,7 +30,15 @@ class FTTestMode:
     train_gpus_per_node: int = 8
     rollout_num_engines: int = 0
     rollout_gpus_per_engine: int = 0
+    colocate: bool = False
+    ft_components: tuple[str, ...] = ("train",)
     num_steps: int = 10
+
+    def __post_init__(self) -> None:
+        assert not self.colocate or self.total_rollout_gpus <= self.train_gpus_per_node, (
+            f"Colocated mode oversubscribes its node: {self.total_rollout_gpus} rollout gpus "
+            f"do not fit in {self.train_gpus_per_node} train gpus"
+        )
 
     @property
     def has_real_rollout(self) -> bool:
@@ -42,6 +50,8 @@ class FTTestMode:
 
     @property
     def total_node_gpus(self) -> int:
+        if self.colocate:
+            return self.train_gpus_per_node
         return self.train_gpus_per_node + self.total_rollout_gpus
 
 
@@ -97,6 +107,19 @@ MODES: dict[str, FTTestMode] = {
         train_gpus_per_node=4,
         rollout_num_engines=4,
         rollout_gpus_per_engine=1,
+        parallel_args="--context-parallel-size 2",
+    ),
+    # --- 1-node (8 GPUs) colocated: engines share the trainer's gpus ---
+    "colocate_dp2_cp2_rollout_ft": FTTestMode(
+        model_name=DENSE_MODEL_NAME,
+        model_hf_repo=DENSE_MODEL_HF_REPO,
+        megatron_model_type=DENSE_MODEL_TYPE,
+        num_cells=2,
+        train_gpus_per_node=4,
+        rollout_num_engines=4,
+        rollout_gpus_per_engine=1,
+        colocate=True,
+        ft_components=("rollout",),
         parallel_args="--context-parallel-size 2",
     ),
     # --- 6-node (48 GPUs) disaggregated: 4 train nodes + 2 rollout nodes ---
