@@ -2902,6 +2902,11 @@ def miles_validate_args(args):
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
+    assert not ("rollout" in args.ft_components and args.eval_num_gpus > 0), (
+        "rollout fault tolerance does not support a dedicated eval fleet (--eval-num-gpus > 0): "
+        "the eval fleet pins engine addresses once at startup, so a healed eval cell would make "
+        "every later eval skip silently"
+    )
     args.eval_datasets = _resolve_eval_datasets(args)
 
     if args.mini_ft_controller_enable and args.api_server_port == 0:
