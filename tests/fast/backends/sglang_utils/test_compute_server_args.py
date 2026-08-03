@@ -7,7 +7,7 @@ import pytest
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 
 
-def make_args(**overrides) -> SimpleNamespace:
+def make_args(**overrides: object) -> SimpleNamespace:
     defaults = dict(
         hf_checkpoint="/fake/model",
         seed=0,
@@ -29,18 +29,33 @@ def make_args(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
-def compute(args, **kwargs) -> dict:
-    server_args, _ = _compute_server_args(
-        args,
-        rank=0,
+def compute(args: SimpleNamespace, **overrides: object) -> dict:
+    kwargs = dict(
+        node_rank=0,
         dist_init_addr="127.0.0.1:1234",
         nccl_port=5000,
         host="127.0.0.1",
         port=30000,
+        worker_type="regular",
+        disaggregation_bootstrap_port=None,
         base_gpu_id=0,
-        **kwargs,
+        engine_info_bootstrap_port=None,
+        sglang_overrides=None,
+        num_gpus_per_engine=None,
+        gated_launch_port=30001,
     )
-    return server_args
+    kwargs.update(overrides)
+    return _compute_server_args(args, **kwargs)
+
+
+class TestRandomSeed:
+    def test_engine_args_do_not_force_a_random_seed(self):
+        """Every engine must be free to pick its own seed, so the launch args must not carry one."""
+        args = make_args(seed=1234)
+
+        server_args = compute(args)
+
+        assert "random_seed" not in server_args
 
 
 class TestSglangOverridePrecedence:

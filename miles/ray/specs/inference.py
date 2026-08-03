@@ -164,6 +164,7 @@ def _compute_spec_inference_engine(
             port=ctx.self_addrs["primary"].port,
             disaggregation_bootstrap_port=d.port if (d := ctx.self_addrs.get("disaggregation_bootstrap")) else None,
             engine_info_bootstrap_port=ctx.self_addrs["engine_info_bootstrap"].port,
+            gated_launch_port=ctx.self_addrs[GATE_PORT_NAME].port,
         )
 
     envs = compute_inference_engine_env_vars(args)
