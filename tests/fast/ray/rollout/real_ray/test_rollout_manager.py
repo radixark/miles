@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import textwrap
 import time
+import types
 
 import pytest
 import ray
@@ -122,6 +123,33 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
     )
 
 
+def _inject_init_wait_failures(monkeypatch, exc_factory, times: int) -> dict:
+    """Make the next ``times`` ``ray.get`` calls issued from inside
+    ``rollout_server`` raise ``exc_factory()``, then delegate to the real
+    ``ray.get``. Patches the module's ``ray`` name binding (not the global
+    module), so ``ray.get`` calls elsewhere (mock engines, addr allocator,
+    conftest) are untouched. Returns a state dict; ``remaining`` reaches 0
+    once every injected failure has fired."""
+    import miles.ray.rollout.rollout_server as rsrv
+
+    state = {"remaining": times}
+
+    class _FlakyRay:
+        def __getattr__(self, name):
+            return getattr(ray, name)
+
+        @staticmethod
+        def get(*a, **kw):
+            if state["remaining"] > 0:
+                state["remaining"] -= 1
+                raise exc_factory()
+            return ray.get(*a, **kw)
+
+    monkeypatch.setattr(rsrv, "ray", _FlakyRay())
+    monkeypatch.setattr("miles.utils.retry.time", types.SimpleNamespace(sleep=lambda _s: None))
+    return state
+
+
 async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_interval_s: float = 0.2) -> None:
     deadline = time.monotonic() + deadline_s
     while True:
@@ -157,6 +185,54 @@ class TestRolloutManagerInit:
         for h in eal.rollout_engines:
             assert isinstance(h, ray.actor.ActorHandle)
             assert ray.get(h.health_generate.remote(timeout=1.0)) is True
+
+    async def test_init_retries_transient_actor_unavailable_during_bringup(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+        monkeypatch,
+    ):
+        """A transient ``ActorUnavailableError`` from the engine-init wait must
+        not crash bringup: ``start_rollout_servers`` re-drives the (idempotent)
+        wait and the engines still come up. Fails at ``__init__`` if the retry
+        wiring around ``ray.get(all_init_handles)`` is removed."""
+        state = _inject_init_wait_failures(
+            monkeypatch,
+            lambda: ray.exceptions.ActorUnavailableError("transient heartbeat miss", None),
+            times=1,
+        )
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        eal = await manager.get_updatable_engines_and_lock()
+
+        assert state["remaining"] == 0, "injected failure never reached the init wait"
+        assert len(eal.rollout_engines) == 2
+        for h in eal.rollout_engines:
+            assert ray.get(h.health_generate.remote(timeout=1.0)) is True
+
+    async def test_init_does_not_retry_non_transient_bringup_error(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+        monkeypatch,
+    ):
+        """Only ``ActorUnavailableError`` is retried. A genuine init failure
+        surfacing from the same wait propagates on the first attempt — an
+        over-wide predicate would retry past it and bring the engines up,
+        making this raise nothing."""
+        state = _inject_init_wait_failures(monkeypatch, lambda: RuntimeError("engine init failed"), times=1)
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        with pytest.raises(RuntimeError, match="engine init failed"):
+            _make_manager(args, pg)
+        assert state["remaining"] == 0
 
 
 @pytest.mark.asyncio
