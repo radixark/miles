@@ -9,6 +9,8 @@ from tests.fast.ray.rollout.conftest import make_args
 from miles.ray.rollout import rollout_server as rollout_server_module
 from miles.ray.rollout.rollout_server import create_rollout_servers
 from miles.ray.specs.inference import compute_engine_pool_id, specs_inference_engine
+from miles.utils.context_lock import ContextLock
+from miles.utils.ft_utils.health_checker import ActiveAndEpoch
 from miles.utils.workers.worker_spec import HostAndPort
 
 _CONFIG_SINGLE_GROUP: list[dict] = [
@@ -107,6 +109,15 @@ def stub_router(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rollout_server_module, "wait_router_ready", _wait_router_ready)
 
 
+async def _create_servers(args) -> dict:
+    """create_rollout_servers takes the controller's lock and activeness getter in production."""
+    return await create_rollout_servers(
+        args,
+        context_lock=ContextLock("test"),
+        global_health_checker_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
+    )
+
+
 class TestExpectedNumCellsMatchesTheEngineSpecs:
     @pytest.mark.parametrize(
         "models",
@@ -126,7 +137,7 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
         args = _make_args_with_config(models=models, tmp_path=tmp_path)
         expected_per_model_idx = _expected_num_cells_from_specs(args)
 
-        servers = await create_rollout_servers(args)
+        servers = await _create_servers(args)
 
         actual_per_model_idx = {
             model_idx: servers[model["name"]].expected_num_cells for model_idx, model in enumerate(models)
@@ -137,7 +148,7 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
         """Placeholder groups only reserve GPU slots, so counting them would make the barrier unreachable."""
         args = _make_args_with_config(models=_CONFIG_WITH_PLACEHOLDER, tmp_path=tmp_path)
 
-        servers = await create_rollout_servers(args)
+        servers = await _create_servers(args)
 
         assert servers["actor"].expected_num_cells == 2
 
@@ -145,7 +156,7 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
         """Sharing one pool size across models would block the small model behind the big one."""
         args = _make_args_with_config(models=_CONFIG_MULTI_MODEL, tmp_path=tmp_path)
 
-        servers = await create_rollout_servers(args)
+        servers = await _create_servers(args)
 
         assert servers["actor"].expected_num_cells == 4
         assert servers["ref"].expected_num_cells == 1
@@ -155,3 +166,22 @@ class TestEngineSpecNamingUsedByTheCrossCheck:
     def test_pool_names_carry_the_model_index_the_cross_check_parses(self) -> None:
         """The cross-check maps specs back to models by name, so that encoding must stay stable."""
         assert compute_engine_pool_id(model_idx=3, group_index=7) == "inference-engine-3-7"
+
+
+class TestRouterFlagsAtStartup:
+    async def test_a_pinned_router_port_is_accepted(self, tmp_path: Path) -> None:
+        """Three examples pass --sglang-router-port so a firewall rule can name the port in
+        advance, and the spec layer pins it; rejecting it here fails those launches outright."""
+        args = _make_args_with_config(models=_CONFIG_SINGLE_GROUP, tmp_path=tmp_path)
+        args.sglang_router_port = 31000
+
+        assert await _create_servers(args)
+
+    async def test_an_external_router_ip_is_still_rejected(self, tmp_path: Path) -> None:
+        """Attaching to a router miles did not start is not supported yet, and silently starting
+        one anyway would put two routers in front of the same engines."""
+        args = _make_args_with_config(models=_CONFIG_SINGLE_GROUP, tmp_path=tmp_path)
+        args.sglang_router_ip = "10.0.0.9"
+
+        with pytest.raises(AssertionError, match="external router mode was removed"):
+            await _create_servers(args)
