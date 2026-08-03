@@ -5,9 +5,8 @@ import argparse
 import asyncio
 import logging
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import Any, NamedTuple
 
-from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.test_utils.clock import Clock, RealClock
@@ -74,28 +73,41 @@ class SimpleHealthCheckerConfig(StrictBaseModel):
         )
 
 
+class ActivenessState(NamedTuple):
+    active: bool
+    epoch: int
+
+
+class ActivenessTracker:
+    def __init__(self, *, active: bool) -> None:
+        self._state = ActivenessState(active=active, epoch=0)
+
+    def get(self) -> ActivenessState:
+        return self._state
+
+    def bump_active(self, active: bool) -> None:
+        if active == self._state.active:
+            return
+        self._state = ActivenessState(active=active, epoch=self._state.epoch + 1)
+
+
 class BaseHealthChecker(abc.ABC):
     @property
     @abc.abstractmethod
     def status(self) -> TriState: ...
 
     @abc.abstractmethod
-    async def start(self) -> None: ...
+    def start(self) -> None: ...
 
     @abc.abstractmethod
     def stop(self) -> None: ...
-
-    @abc.abstractmethod
-    def pause(self) -> None: ...
-
-    @abc.abstractmethod
-    def resume(self) -> None: ...
 
 
 class SimpleHealthChecker(BaseHealthChecker):
     """Periodic async health checker. Calls *check_fn*; reports result via *on_result*.
 
-    After each ``resume()``, waits ``first_wait`` seconds before the first check.
+    Probing is driven by *get_activeness*, read once per loop before deciding to probe.
+    After each transition back to active, waits ``first_wait`` seconds before the first check.
     """
 
     def __init__(
@@ -103,18 +115,20 @@ class SimpleHealthChecker(BaseHealthChecker):
         *,
         name: str,
         check_fn: Callable[[], Coroutine[Any, Any, None]],
+        get_activeness: Callable[[], ActivenessState],
         on_result: Callable[[bool], None] | None = None,
         config: SimpleHealthCheckerConfig,
         clock: Clock | None = None,
     ) -> None:
         self._name = name
         self._check_fn = check_fn
+        self._get_activeness = get_activeness
         self._on_result = on_result
         self._config = config
         self._clock = clock or RealClock()
 
         self._status = TriState.UNKNOWN
-        self._paused: bool = False
+        self._activeness = ActivenessState(active=False, epoch=0)
         self._need_first_wait: bool = True
         self._consecutive_failures: int = 0
         self._task: asyncio.Task[None] | None = None
@@ -123,12 +137,11 @@ class SimpleHealthChecker(BaseHealthChecker):
     def status(self) -> TriState:
         return self._status
 
-    async def start(self) -> None:
+    def start(self) -> None:
         if self._task is not None:
             return
         log_structured(logger.info, tag="ft", op="health", phase="start", name=self._name)
         self._task = asyncio.create_task(self._loop())
-        await asyncio.sleep(0)
 
     def stop(self) -> None:
         if self._task is not None:
@@ -137,21 +150,28 @@ class SimpleHealthChecker(BaseHealthChecker):
             self._task = None
         self._status = TriState.UNKNOWN
 
-    def pause(self) -> None:
+    def _on_paused(self) -> None:
         log_structured(logger.info, tag="ft", op="health", phase="pause", name=self._name)
-        self._paused = True
         self._status = TriState.UNKNOWN
 
-    def resume(self) -> None:
+    def _on_resumed(self) -> None:
         log_structured(logger.info, tag="ft", op="health", phase="resume", name=self._name)
-        self._paused = False
         self._need_first_wait = True
         self._status = TriState.UNKNOWN
         self._consecutive_failures = 0
 
     async def _loop(self) -> None:
         while True:
-            if self._need_first_wait:
+            activeness = self._get_activeness()
+            active = activeness.active
+            if activeness != self._activeness:
+                self._activeness = activeness
+                if active:
+                    self._on_resumed()
+                else:
+                    self._on_paused()
+
+            if active and self._need_first_wait:
                 self._need_first_wait = False
                 log_structured(
                     logger.info,
@@ -162,8 +182,9 @@ class SimpleHealthChecker(BaseHealthChecker):
                     wait_s=self._config.first_wait,
                 )
                 await self._clock.sleep(self._config.first_wait)
+                continue
 
-            if not self._paused:
+            if active:
                 success = False
                 try:
                     await asyncio.wait_for(self._check_fn(), timeout=self._config.timeout)
@@ -226,47 +247,8 @@ class NoopHealthChecker(BaseHealthChecker):
     def status(self) -> TriState:
         return TriState.UNKNOWN
 
-    async def start(self) -> None:
+    def start(self) -> None:
         pass
 
     def stop(self) -> None:
         pass
-
-    def pause(self) -> None:
-        pass
-
-    def resume(self) -> None:
-        pass
-
-
-# TODO: should move when Rollout FT is implemented
-def create_rollout_cell_health_checker(
-    *,
-    cell_id: str,
-    get_api_clients: Callable[[], list[SGLangApiClient]],
-    config: SimpleHealthCheckerConfig,
-    on_result: Callable[[bool], None] | None = None,
-) -> SimpleHealthChecker:
-
-    async def _check() -> None:
-        api_clients = get_api_clients()
-        if not api_clients:
-            raise RuntimeError("No engines")
-
-        lead_api_client = api_clients[0]
-        if lead_api_client is None:
-            raise RuntimeError("Lead engine is None")
-
-        await lead_api_client.health_generate()
-
-    # Preserve the pre-debounce rollout semantics for now: a single failed check
-    # reports unhealthy immediately. The trainer cell checker uses the default
-    # failure_threshold; tuning rollout debouncing is left to Rollout FT work.
-    config = config.model_copy(update={"failure_threshold": 1})
-
-    return SimpleHealthChecker(
-        name=f"rollout-cell-{cell_id}",
-        check_fn=_check,
-        on_result=on_result,
-        config=config,
-    )

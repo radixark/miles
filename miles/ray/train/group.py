@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,7 +23,7 @@ from miles.utils.audit_utils.event_logger.models import (
     WitnessAllocateIdEvent,
 )
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
-from miles.utils.ft_utils.health_checker import NoopHealthChecker, SimpleHealthCheckerConfig
+from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.retry_utils import retry
@@ -92,6 +92,8 @@ class RayTrainGroup:
             SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker") if num_cells > 1 else None
         )
 
+        self._health_checker_activeness = ActivenessTracker(active=True)
+
         def _create_cell(cell_index: int):
             cell_pg = _slice_pg(pg, start=cell_index * gpus_per_cell, end=(cell_index + 1) * gpus_per_cell)
 
@@ -118,6 +120,7 @@ class RayTrainGroup:
                 cell.health_checker = create_trainer_cell_health_checker(
                     cell=cell,
                     config=health_checker_config,
+                    get_activeness=self._health_checker_activeness.get,
                 )
 
             return cell
@@ -295,12 +298,18 @@ class RayTrainGroup:
     async def onload(self):
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("wake_up")
-        for cell in self._cells:
-            cell.health_checker.resume()
+        self._health_checker_activeness.bump_active(True)
+
+    @contextmanager
+    def _paused_health_checkers(self) -> Iterator[None]:
+        self._health_checker_activeness.bump_active(False)
+        try:
+            yield
+        finally:
+            self._health_checker_activeness.bump_active(True)
 
     async def offload(self):
-        for cell in self._cells:
-            cell.health_checker.pause()
+        self._health_checker_activeness.bump_active(False)
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("sleep")
 
@@ -413,7 +422,7 @@ class RayTrainGroup:
         src_alive_rank = will_alive_indices.index(src_cell_index)
         ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_pending_indices]
 
-        with _paused_health_checkers(self._cells):
+        with self._paused_health_checkers():
             coop_prepare_outputs = await asyncio.gather(
                 *[
                     (
@@ -527,14 +536,3 @@ def _create_tcp_store() -> tuple["torch.distributed.TCPStore", str]:
     host = ray.util.get_node_ip_address()
     port = store.port
     return store, f"{host}:{port}"
-
-
-@contextmanager
-def _paused_health_checkers(cells: Sequence[RayTrainCell]) -> Iterator[None]:
-    for c in cells:
-        c.health_checker.pause()
-    try:
-        yield
-    finally:
-        for c in cells:
-            c.health_checker.resume()
