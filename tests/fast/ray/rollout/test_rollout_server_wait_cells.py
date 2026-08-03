@@ -7,6 +7,7 @@ import pytest
 
 from miles.ray.rollout import rollout_server as rollout_server_module
 from miles.ray.rollout.rollout_server import RolloutServer
+from miles.utils.context_lock import ContextLock
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +29,7 @@ def _make_server(*, colocate: bool, expected_num_cells: int, cells: dict | None 
     return RolloutServer(
         server_cells=cells if cells is not None else {},
         args=SimpleNamespace(colocate=colocate),
+        context_lock=ContextLock("InferenceController"),
         expected_num_cells=expected_num_cells,
     )
 

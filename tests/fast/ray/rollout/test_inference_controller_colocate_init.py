@@ -7,6 +7,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout import inference_controller as inference_controller_module
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.utils.context_lock import ContextLock
 
 
 class _FakeCell:
@@ -45,6 +46,7 @@ def _make_controller(servers: dict, *, colocate: bool) -> InferenceController:
     controller = InferenceController.__new__(InferenceController)
     controller.args = make_args(colocate=colocate)
     controller.servers = servers
+    controller.context_lock = ContextLock("InferenceController")
     return controller
 
 
@@ -59,7 +61,7 @@ class TestEnsureCellsReady:
         cell = _FakeCell(state="pending_weights")
         controller = _make_controller({"default": _StubServer({"a": cell})}, colocate=False)
 
-        await asyncio.wait_for(controller._ensure_cells_ready(), timeout=1)
+        await asyncio.wait_for(_ensure_ready_under_lock(controller), timeout=1)
 
         assert cell.init_count == 0
 
@@ -68,7 +70,7 @@ class TestEnsureCellsReady:
         cell = _FakeCell(state="initializing")
         controller = _make_controller({"default": _StubServer({"a": cell})}, colocate=False)
 
-        task = asyncio.create_task(controller._ensure_cells_ready())
+        task = asyncio.create_task(_ensure_ready_under_lock(controller))
         await asyncio.sleep(0.02)
         assert not task.done()
         cell.become_ready()
@@ -83,7 +85,7 @@ class TestEnsureCellsReady:
             {"default": _StubServer({"a": first}), "frozen": _StubServer({"b": second})}, colocate=True
         )
 
-        task = asyncio.create_task(controller._ensure_cells_ready())
+        task = asyncio.create_task(_ensure_ready_under_lock(controller))
         await asyncio.sleep(0)
         first.become_ready()
         second.become_ready()
@@ -96,7 +98,7 @@ class TestEnsureCellsReady:
         running = _FakeCell(state="pending_weights")
         controller = _make_controller({"default": _StubServer({"a": running})}, colocate=True)
 
-        await asyncio.wait_for(controller._ensure_cells_ready(), timeout=1)
+        await asyncio.wait_for(_ensure_ready_under_lock(controller), timeout=1)
 
         assert running.init_count == 0
 
@@ -105,7 +107,7 @@ class TestEnsureCellsReady:
         cell = _FakeCell()
         controller = _make_controller({"default": _StubServer({"a": cell})}, colocate=True)
 
-        task = asyncio.create_task(controller._ensure_cells_ready())
+        task = asyncio.create_task(_ensure_ready_under_lock(controller))
         await asyncio.sleep(0.02)
         assert not task.done()
 
@@ -118,7 +120,7 @@ class TestEnsureCellsReady:
         srv = _StubServer({"a": early})
         controller = _make_controller({"default": srv}, colocate=True)
 
-        task = asyncio.create_task(controller._ensure_cells_ready())
+        task = asyncio.create_task(_ensure_ready_under_lock(controller))
         await asyncio.sleep(0)
         late = _FakeCell()
         srv.server_cells["late"] = late
@@ -129,11 +131,24 @@ class TestEnsureCellsReady:
 
         assert late.init_count == 1
 
+    async def test_the_lock_is_open_while_it_waits_so_the_tick_sweep_can_make_progress(self):
+        """Only the ticker moves a cell out of initializing, and the ticker needs this very lock."""
+        cell = _FakeCell()
+        controller = _make_controller({"default": _StubServer({"a": cell})}, colocate=True)
+
+        task = asyncio.create_task(_ensure_ready_under_lock(controller))
+        await asyncio.sleep(0.01)
+        assert not controller.context_lock.locked
+
+        async with controller.context_lock:
+            cell.become_ready()
+        await asyncio.wait_for(task, timeout=5)
+
     async def test_a_run_without_any_cells_yet_returns_immediately(self):
         """The first window can legitimately find nothing to do."""
         controller = _make_controller({"default": _StubServer({})}, colocate=True)
 
-        await asyncio.wait_for(controller._ensure_cells_ready(), timeout=1)
+        await asyncio.wait_for(_ensure_ready_under_lock(controller), timeout=1)
 
     async def test_the_cells_are_initialized_concurrently(self):
         """Activating a gate blocks until the engine reaches it, so serialising would add minutes per cell."""
@@ -141,7 +156,7 @@ class TestEnsureCellsReady:
         first, second = _FakeCell(init_gate=gate), _FakeCell(init_gate=gate)
         controller = _make_controller({"default": _StubServer({"a": first, "b": second})}, colocate=True)
 
-        task = asyncio.create_task(controller._ensure_cells_ready())
+        task = asyncio.create_task(_ensure_ready_under_lock(controller))
         await asyncio.wait_for(asyncio.gather(first.init_started.wait(), second.init_started.wait()), timeout=1.0)
         gate.set()
         for cell in (first, second):
@@ -157,4 +172,9 @@ class TestEnsureCellsReady:
         controller = _make_controller({"default": _StubServer({"a": cell})}, colocate=False)
 
         with pytest.raises(TimeoutError):
-            await controller._ensure_cells_ready()
+            await _ensure_ready_under_lock(controller)
+
+
+async def _ensure_ready_under_lock(controller: InferenceController) -> None:
+    async with controller.context_lock:
+        await controller._ensure_cells_ready()
