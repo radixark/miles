@@ -41,7 +41,7 @@ class TestStartEnginesShortCircuits:
         # PG made but unused — start_engines should bail before scheduling.
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2, debug_train_only=True)
-        handles, indices = group.start_engines(PortCursors.empty())
+        handles, indices = group.start_engines(PortCursors.empty(), register_with_router=True)
         assert handles == [] and indices == []
         assert group.has_new_engines is False
         for e in group.all_engines:
@@ -51,7 +51,7 @@ class TestStartEnginesShortCircuits:
         # PG is unused in this short-circuit path; min size 1 keeps Ray happy.
         pg = placement_group_factory(1)
         group = _build_group(pg_tuple=pg, num_engines=0, worker_type="placeholder")
-        handles, indices = group.start_engines(PortCursors.empty())
+        handles, indices = group.start_engines(PortCursors.empty(), register_with_router=True)
         assert handles == [] and indices == []
         assert group.has_new_engines is False
 
@@ -65,7 +65,7 @@ class TestStartEnginesRealActors:
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
 
-        handles, indices = group.start_engines(PortCursors.empty())
+        handles, indices = group.start_engines(PortCursors.empty(), register_with_router=True)
         assert sorted(indices) == [0, 1]
         assert group.has_new_engines is True
         # Wait for init.remote() to actually complete on each actor.
@@ -88,7 +88,11 @@ class TestStartEnginesRealActors:
         pg = placement_group_factory(4)
         group = _build_group(pg_tuple=pg, num_engines=4)
 
-        handles, indices = group.start_engines(PortCursors.empty(), start_indices=[1, 3])
+        handles, indices = group.start_engines(
+            PortCursors.empty(),
+            register_with_router=True,
+            start_indices=[1, 3],
+        )
         assert sorted(indices) == [1, 3]
         ray.get(handles)
 
@@ -107,12 +111,12 @@ class TestStartEnginesRealActors:
         group = _build_group(pg_tuple=pg, num_engines=2)
 
         # First call: allocates both slots.
-        handles, _ = group.start_engines(PortCursors.empty())
+        handles, _ = group.start_engines(PortCursors.empty(), register_with_router=True)
         ray.get(handles)
         first_handles = [e.actor_handle for e in group.all_engines]
 
         # Second call with no start_indices: should skip both.
-        handles2, indices2 = group.start_engines(PortCursors.empty())
+        handles2, indices2 = group.start_engines(PortCursors.empty(), register_with_router=True)
         assert handles2 == [] and indices2 == []
         for first, e in zip(first_handles, group.all_engines, strict=True):
             assert e.actor_handle is first  # still the same actor
@@ -132,7 +136,7 @@ class TestStopEnginesRealKill:
     def test_stop_marks_engines_stopped_and_actor_truly_dies(self, patched_sglang_engine, placement_group_factory):
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
-        handles, _ = group.start_engines(PortCursors.empty())
+        handles, _ = group.start_engines(PortCursors.empty(), register_with_router=True)
         ray.get(handles)
 
         actors = [e.actor_handle for e in group.all_engines]
@@ -154,7 +158,7 @@ class TestStopEnginesRealKill:
         We use ``set_fault`` to make shutdown raise on its next invocation."""
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
-        handles, _ = group.start_engines(PortCursors.empty())
+        handles, _ = group.start_engines(PortCursors.empty(), register_with_router=True)
         ray.get(handles)
 
         # Plant a one-shot shutdown failure on engine 1.
@@ -189,7 +193,7 @@ class TestStartEnginesRealAllocator:
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2)
 
-        handles, indices = group.start_engines(PortCursors.empty())
+        handles, indices = group.start_engines(PortCursors.empty(), register_with_router=True)
         assert sorted(indices) == [0, 1]
         ray.get(handles)
 
@@ -246,11 +250,11 @@ class TestStartEnginesRealAllocator:
         b = _build_group(pg_tuple=pg_b, num_engines=2)
 
         cursors = PortCursors.empty()
-        handles_a, _ = a.start_engines(cursors)
+        handles_a, _ = a.start_engines(cursors, register_with_router=True)
         ray.get(handles_a)
         # `cursors` now carries the next-free-port state from group A.
 
-        handles_b, _ = b.start_engines(cursors)
+        handles_b, _ = b.start_engines(cursors, register_with_router=True)
         ray.get(handles_b)
 
         kwargs_a = ray.get([e.actor_handle.get_init_kwargs.remote() for e in a.all_engines])

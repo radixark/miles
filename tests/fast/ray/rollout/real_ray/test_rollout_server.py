@@ -33,7 +33,7 @@ def _build_group(
 
 
 def _start_group(group: ServerGroup) -> None:
-    handles, _ = group.start_engines(PortCursors.empty())
+    handles, _ = group.start_engines(PortCursors.empty(), register_with_router=True)
     ray.get(handles)
 
 

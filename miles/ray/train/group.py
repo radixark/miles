@@ -255,6 +255,9 @@ class RayTrainGroup:
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights to rollout engines."""
         log_structured(logger.info, op="update_weights", phase="start", rollout=rollout_id)
+        if self.args.use_fault_tolerance:
+            await self._rollout_manager.recover_updatable_engines.remote()
+
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set; the actor releases the lock itself.
@@ -264,6 +267,9 @@ class RayTrainGroup:
         await retry(
             lambda _: self._execute_first_alive("update_weights", info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
+        )
+        await self._rollout_manager.register_recovered_updatable_engines.remote(
+            rollout_engine_generation_ids=info.rollout_engine_generation_ids
         )
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)

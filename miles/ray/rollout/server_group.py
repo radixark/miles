@@ -8,6 +8,10 @@ import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
+from miles.backends.sglang_utils.router_worker_client import (
+    RouterWorkerRegistrationFailed,
+    RouterWorkerSubmissionUnknown,
+)
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 from miles.ray.rollout.addr_allocator import (
     PortCursors,
@@ -45,6 +49,7 @@ class ServerGroup:
     router_ip: str | None = None
     router_port: int | None = None
     update_weights: bool = True
+    pending_router_registration: set[int] = dataclasses.field(default_factory=set)
 
     @property
     def nodes_per_engine(self):
@@ -56,7 +61,11 @@ class ServerGroup:
         return self.all_engines[:: self.nodes_per_engine]
 
     def start_engines(
-        self, port_cursors: PortCursors, start_indices: list[int] | None = None
+        self,
+        port_cursors: PortCursors,
+        *,
+        register_with_router: bool,
+        start_indices: list[int] | None = None,
     ) -> tuple[list, list[int]]:
         """Create Ray actors, allocate ports, and fire ``engine.init()`` without waiting.
 
@@ -164,9 +173,12 @@ class ServerGroup:
                 **addr_and_ports[index],
                 router_ip=self.router_ip,
                 router_port=self.router_port,
+                register_with_router=register_with_router,
             )
             for index, engine in new_engines
         ]
+        if not register_with_router:
+            self.pending_router_registration.update(self._logical_engine_root_indices(new_engine_indices))
         return init_handles, new_engine_indices
 
     # There are two callers, only one of them will exist in a running system
@@ -194,15 +206,47 @@ class ServerGroup:
                     logger.warning(f"Fail to kill engine at index {i} (e: {e})")
             else:
                 logger.info(f"Engine at index {i} is already None")
+            first_index = i - (i % self.nodes_per_engine)
+            self.pending_router_registration.discard(first_index)
             self.all_engines[i].mark_stopped()
 
-    async def recover(self, port_cursors: PortCursors, filter_indices: list[int] | None = None):
+    async def recover(
+        self,
+        port_cursors: PortCursors,
+        *,
+        register_with_router: bool,
+        filter_indices: list[int] | None = None,
+    ) -> None:
+        """Recover complete logical engines that contain stopped actor ranks.
+
+        Args:
+            port_cursors: Persistent per-node port allocation cursors.
+            register_with_router: Whether recovered engines can be routed as
+                soon as initialization completes.
+            filter_indices: Actor ranks to inspect, or None to inspect all
+                ranks.
+        """
         if filter_indices is None:
             filter_indices = [i for i, engine in enumerate(self.all_engines) if not engine.is_allocated]
-        start_indices = [idx for idx in filter_indices if not self.all_engines[idx].is_allocated]
+        stopped_indices = [idx for idx in filter_indices if not self.all_engines[idx].is_allocated]
+        start_indices = self._logical_engine_indices(stopped_indices)
 
-        handles, new_engine_indices = self.start_engines(port_cursors, start_indices=start_indices)
-        await asyncio.gather(*handles)
+        # One failed rank invalidates the distributed SGLang engine. Stop any
+        # surviving ranks so node 0 leaves the router before replacement.
+        allocated_peer_indices = [idx for idx in start_indices if self.all_engines[idx].is_allocated]
+        if allocated_peer_indices:
+            self.stop_engines(engine_indices=allocated_peer_indices)
+
+        handles, new_engine_indices = self.start_engines(
+            port_cursors,
+            register_with_router=register_with_router,
+            start_indices=start_indices,
+        )
+        try:
+            await asyncio.gather(*handles)
+        except BaseException:
+            self.stop_engines(engine_indices=new_engine_indices)
+            raise
 
         release_handles = []
         all_resume_engines = []
@@ -227,6 +271,64 @@ class ServerGroup:
                 )
 
         self.mark_alive(engine_indices=new_engine_indices)
+
+    async def register_pending_engines_with_router(
+        self,
+        *,
+        rollout_engine_generation_ids: list[str],
+    ) -> None:
+        """Expose replacements included in a completed weight publication.
+
+        Args:
+            rollout_engine_generation_ids: IDs of the node-0 engine generations
+                that received the completed weight update.
+        """
+        registrations = [
+            (i, self.all_engines[i].actor_handle, self.all_engines[i].generation_id)
+            for i in sorted(self.pending_router_registration)
+            if self.all_engines[i].is_alive and self.all_engines[i].generation_id in rollout_engine_generation_ids
+        ]
+        results = await asyncio.gather(
+            *[actor_handle.register_with_router.remote() for _, actor_handle, _ in registrations],
+            return_exceptions=True,
+        )
+        failures: list[BaseException] = []
+        quarantined_registrations: list[tuple[int, str]] = []
+        for (engine_index, _, generation_id), result in zip(registrations, results, strict=True):
+            if isinstance(result, BaseException):
+                failures.append(result)
+                error = result.as_instanceof_cause() if isinstance(result, ray.exceptions.RayTaskError) else result
+                if isinstance(error, (RouterWorkerRegistrationFailed, RouterWorkerSubmissionUnknown)):
+                    quarantined_registrations.append((engine_index, generation_id))
+            elif (
+                self.all_engines[engine_index].is_alive
+                and self.all_engines[engine_index].generation_id == generation_id
+            ):
+                self.pending_router_registration.discard(engine_index)
+        for engine_index, generation_id in quarantined_registrations:
+            if (
+                self.all_engines[engine_index].is_alive
+                and self.all_engines[engine_index].generation_id == generation_id
+            ):
+                self.stop_engines(engine_indices=self._logical_engine_indices([engine_index]))
+        if failures:
+            raise failures[0]
+
+    def _logical_engine_indices(self, engine_indices: list[int]) -> list[int]:
+        """Expand actor ranks to the complete logical engines they belong to."""
+        logical_engine_indices: set[int] = set()
+        for engine_index in engine_indices:
+            if not 0 <= engine_index < len(self.all_engines):
+                raise IndexError(f"Engine index {engine_index} is out of range")
+            first_index = engine_index - (engine_index % self.nodes_per_engine)
+            logical_engine_indices.update(
+                range(first_index, min(first_index + self.nodes_per_engine, len(self.all_engines)))
+            )
+        return sorted(logical_engine_indices)
+
+    def _logical_engine_root_indices(self, engine_indices: list[int]) -> list[int]:
+        """Return the node-0 actor index for each referenced logical engine."""
+        return sorted({engine_index - (engine_index % self.nodes_per_engine) for engine_index in engine_indices})
 
     def mark_alive(self, engine_indices: list[int]):
         for engine_index in engine_indices:
