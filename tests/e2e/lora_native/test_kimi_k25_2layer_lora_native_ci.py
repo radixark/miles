@@ -23,7 +23,13 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=8,
         num_rollout=2,
         enable_wandb=False,
-        extra_args="--ci-test --ci-disable-logprobs-checker ",
+        # skip the multimodal shell in the ci-test equality check: the text-only
+        # frozen-base run never re-ships it, and the engine transforms those
+        # weights at load, so raw equality against the checkpoint cannot hold
+        extra_args=(
+            "--ci-test --ci-disable-logprobs-checker "
+            "--check-weight-update-skip-list vision_tower. mm_projector. "
+        ),
     )
 
 
