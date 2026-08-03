@@ -64,20 +64,44 @@ class TestServerCellStatus:
         status = _make_cell(StatePendingWeights(addr_info=_ADDR_INFO)).cell_status()
 
         assert status.phase == "Running"
-        assert _conditions(status) == [("Allocated", TriState.TRUE), ("Healthy", TriState.TRUE)]
+        assert _conditions(status) == [
+            ("Allocated", TriState.TRUE),
+            ("Healthy", TriState.TRUE),
+            ("Serving", TriState.FALSE),
+        ]
+
+    def test_a_cell_holding_stale_weights_is_not_reported_as_serving(self):
+        """Running alone cannot witness a recovery: an engine never re-registered in the router reads Running too."""
+        status = _make_cell(StatePendingWeights(addr_info=_ADDR_INFO)).cell_status()
+
+        assert ("Serving", TriState.FALSE) in _conditions(status)
 
     def test_a_serving_cell_reports_its_probe_verdict(self):
         """This is the signal the mini ft controller heals on."""
         status = _make_cell(StateServing(addr_info=_ADDR_INFO), health=TriState.FALSE).cell_status()
 
         assert status.phase == "Running"
-        assert _conditions(status) == [("Allocated", TriState.TRUE), ("Healthy", TriState.FALSE)]
+        assert _conditions(status) == [
+            ("Allocated", TriState.TRUE),
+            ("Healthy", TriState.FALSE),
+            ("Serving", TriState.TRUE),
+        ]
+
+    def test_a_cell_registered_in_the_router_is_reported_as_serving(self):
+        """This is the only externally visible proof that a replaced engine really came back."""
+        status = _make_cell(StateServing(addr_info=_ADDR_INFO)).cell_status()
+
+        assert ("Serving", TriState.TRUE) in _conditions(status)
 
     def test_a_serving_cell_with_no_verdict_yet_is_unknown(self):
         """A checker that has not completed a probe must not be read as healthy."""
         status = _make_cell(StateServing(addr_info=_ADDR_INFO), health=TriState.UNKNOWN).cell_status()
 
-        assert _conditions(status) == [("Allocated", TriState.TRUE), ("Healthy", TriState.UNKNOWN)]
+        assert _conditions(status) == [
+            ("Allocated", TriState.TRUE),
+            ("Healthy", TriState.UNKNOWN),
+            ("Serving", TriState.TRUE),
+        ]
 
     def test_a_disposed_cell_is_suspended(self):
         """Nothing is left to probe once the cell has been torn down."""
