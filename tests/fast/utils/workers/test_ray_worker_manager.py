@@ -1186,3 +1186,51 @@ class TestSuspendedCellInfos:
         await manager.stop_cells(["engine-0"])
 
         assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].worker_names == []
+
+
+class TestInjectFault:
+    async def test_the_fault_reaches_the_selected_worker(self, fake_ray_cluster: FakeRayCluster):
+        """A multi-node engine is crashed by crashing one of its node ranks."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+
+        manager.inject_fault("engine-0", mode="sigkill", worker_in_cell_index=1)
+
+        calls = fake_ray_cluster.calls_of("inject_fault")
+        assert [call.args for call in calls] == [("sigkill",)]
+        assert calls[0].handle is fake_ray_cluster.handles[1]
+
+    async def test_injection_does_not_wait_for_the_worker_to_answer(self, fake_ray_cluster: FakeRayCluster):
+        """The worker is about to die, so waiting for its reply would hang the caller."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].failing_methods["inject_fault"] = RuntimeError("actor died")
+
+        manager.inject_fault("engine-0", mode="sigkill", worker_in_cell_index=0)
+
+    async def test_injecting_into_a_suspended_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
+        """A suspended cell has no worker to crash."""
+        manager = await _launch([_make_spec("engine")])
+        await manager.stop_cells(["engine-0"])
+
+        with pytest.raises(RuntimeError, match="not alive"):
+            manager.inject_fault("engine-0", mode="sigkill", worker_in_cell_index=0)
+
+    async def test_a_worker_index_beyond_the_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
+        """Injecting into a neighbouring cell by accident would corrupt the test's premise."""
+        manager = await _launch([_make_spec("engine", num_cells=2, num_workers_per_cell=1)])
+
+        with pytest.raises(IndexError, match="out of range"):
+            manager.inject_fault("engine-0", mode="sigkill", worker_in_cell_index=1)
+
+    async def test_a_negative_worker_index_is_rejected(self, fake_ray_cluster: FakeRayCluster):
+        """Negative indexing would silently select the last worker instead of failing."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+
+        with pytest.raises(IndexError, match="out of range"):
+            manager.inject_fault("engine-0", mode="sigkill", worker_in_cell_index=-1)
+
+    async def test_an_unknown_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
+        """A typo must not silently inject nothing."""
+        manager = await _launch([_make_spec("engine")])
+
+        with pytest.raises(AssertionError):
+            manager.inject_fault("engine-7", mode="sigkill", worker_in_cell_index=0)
