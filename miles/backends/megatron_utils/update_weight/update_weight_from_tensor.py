@@ -328,7 +328,8 @@ class UpdateWeightFromTensor:
         send requires homogeneous per-rank bucket counts (num_dtypes is taken from
         rank 0 and indexed into every rank's list), so a src-only contribution
         breaks assembly. The duplicates are ~15MB/rank and load idempotently."""
-        if not getattr(self.args, "inkling_mm_towers", False):
+        provider = getattr(self.args, "custom_model_provider_path", None) or ""
+        if "inkling_mm_model_provider" not in provider:
             return None
         if self._mm_tower_cache is None:
             if self._ipc_gather_group is not None:
