@@ -319,6 +319,12 @@ async def _reattach_and_release(lock: ContextLock) -> None:
     lock.release()
 
 
+async def _acquire_release_and_report(lock: ContextLock, taken: list) -> None:
+    await lock.acquire()
+    taken.append(lock.held_in_current_context)
+    lock.release()
+
+
 async def _acquire_and_report_held(lock: ContextLock) -> bool:
     await lock.acquire()
     return lock.held_in_current_context
@@ -630,6 +636,85 @@ class TestDetachAndReattach:
         assert lock.held_in_current_context
         lock.release()
         assert not lock.locked
+
+
+class TestWithReleased:
+    @pytest.mark.asyncio
+    async def test_the_lock_is_open_inside_the_block(self):
+        """A long wait must not keep everyone else out while it polls."""
+        lock = ContextLock("test")
+        await lock.acquire()
+
+        async with lock.with_released():
+            assert not lock.locked and not lock.held_in_current_context
+
+    @pytest.mark.asyncio
+    async def test_the_lock_is_held_again_after_the_block(self):
+        """The caller was inside a locked region, so it must get its lock back."""
+        lock = ContextLock("test")
+        await lock.acquire()
+
+        async with lock.with_released():
+            pass
+
+        assert lock.locked and lock.held_in_current_context
+
+    @pytest.mark.asyncio
+    async def test_another_task_can_take_the_lock_inside_the_block(self):
+        """This is the whole point: the waiter lets the work it waits for proceed."""
+        lock = ContextLock("test")
+        await lock.acquire()
+        taken = []
+
+        async with lock.with_released():
+            await asyncio.create_task(_acquire_release_and_report(lock, taken))
+
+        assert taken == [True]
+
+    @pytest.mark.asyncio
+    async def test_the_block_waits_for_a_concurrent_holder_before_returning(self):
+        """Re-acquiring must queue behind whoever took the lock, not steal it."""
+        lock = ContextLock("test")
+        await lock.acquire()
+        holder = _HolderTask(lock)
+
+        async with lock.with_released():
+            await holder.start()
+            assert lock.locked and not lock.held_in_current_context
+            await holder.finish()
+
+        assert lock.held_in_current_context
+
+    @pytest.mark.asyncio
+    async def test_a_raising_block_still_gets_the_lock_back(self):
+        """The caller's own lock discipline continues after the failure is handled."""
+        lock = ContextLock("test")
+        await lock.acquire()
+
+        with pytest.raises(RuntimeError, match="boom"):
+            async with lock.with_released():
+                raise RuntimeError("boom")
+
+        assert lock.held_in_current_context
+
+    @pytest.mark.asyncio
+    async def test_a_caller_that_does_not_hold_the_lock_is_rejected(self):
+        """Releasing a lock one does not hold would open someone else's critical section."""
+        lock = ContextLock("test")
+
+        with pytest.raises(AssertionError, match="must be held"):
+            async with lock.with_released():
+                pass
+
+    @pytest.mark.asyncio
+    async def test_lock_requiring_helpers_are_rejected_inside_the_block(self):
+        """Inside the block the invariants the lock guards no longer hold."""
+        guarded = _Guarded()
+        await guarded.context_lock.acquire()
+
+        async with guarded.context_lock.with_released():
+            with pytest.raises(AssertionError, match="must be called with"):
+                guarded._private_method()
 
 
 class TestAcquiresAndReleasesLock:
