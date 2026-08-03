@@ -65,7 +65,8 @@ class RolloutDataSource(DataSource):
             # TODO move (during the refactor)
             if (d := args.dump_details) is not None:
                 tokenizer.save_pretrained(Path(d) / "tokenizer")
-                if processor:
+                # Bespoke processors (e.g. Inkling's) are not ProcessorMixin and cannot serialise.
+                if hasattr(processor, "save_pretrained"):
                     processor.save_pretrained(Path(d) / "processor")
 
             self.dataset = Dataset(
