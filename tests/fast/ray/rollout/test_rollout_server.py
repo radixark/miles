@@ -1,20 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
-from typing import Any
-from unittest.mock import patch
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells
+from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_config import (
     _compute_megatron_num_gpus,
     _compute_rollout_offset,
     resolve_sglang_config,
 )
-from miles.ray.rollout.rollout_server import RolloutServer
+from miles.ray.rollout import rollout_server as rollout_server_module
+from miles.ray.rollout.cell_state import CellAddrInfo, StateServing
+from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
+from miles.utils.ft_utils.health_checker import ActiveAndEpoch
+from miles.utils.workers.worker_spec import HostAndPort
 
 
 class TestRolloutServerPureFunctions:
@@ -222,47 +225,59 @@ class TestRolloutServerPureFunctions:
         assert _compute_megatron_num_gpus(args) == 0
 
 
-@pytest.mark.skip(
-    reason="TODO: rebuild against the meta/router_api_client ServerCell; make_dataclass_cells and "
-    "_mark_allocated_uninitialized/_mark_addressing target the removed constructor and state API"
-)
-class TestRolloutServerCrossCellProperties:
-    def test_api_clients_expose_one_client_per_cell(self):
-        """Each cell is addressed through its primary (node-0) endpoint."""
-        cells = make_dataclass_cells(num_cells=2, gpu_offset=0) + make_dataclass_cells(num_cells=2, gpu_offset=2)
-        for index, cell in enumerate(cells):
-            cell._mark_allocated_uninitialized()
-            cell._mark_addressing(server_url=f"http://10.0.0.{index + 1}:30000")
-        srv = RolloutServer(
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
-            args=SimpleNamespace(),
-            context_lock=_make_lock(),
-        )
-        assert [client.server_url for client in srv.api_clients] == [
-            f"http://10.0.0.{index + 1}:30000" for index in range(4)
-        ]
+class TestCreateRolloutServersWiring:
+    _CONFIG_YAML = (
+        "sglang:\n"
+        "  - name: actor\n"
+        "    server_groups:\n"
+        "      - worker_type: regular\n"
+        "        num_gpus: 8\n"
+        "        num_gpus_per_engine: 4\n"
+        "  - name: ref\n"
+        "    model_path: /fake/ref-model\n"
+        "    update_weights: false\n"
+        "    server_groups:\n"
+        "      - worker_type: regular\n"
+        "        num_gpus: 4\n"
+        "        num_gpus_per_engine: 4\n"
+    )
 
-    def test_engine_gpu_counts_parallel_to_engines(self):
-        cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1) + make_dataclass_cells(
-            num_cells=2, num_gpus_per_engine=2
-        )
-        srv = RolloutServer(
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
-            args=SimpleNamespace(),
-            context_lock=_make_lock(),
-        )
-        assert srv.engine_gpu_counts == [1, 1, 2, 2]
+    @pytest.mark.asyncio
+    async def test_create_rollout_servers_wires_each_model_and_router_completely(self, tmp_path, monkeypatch):
+        """Every model gets its own router, the first one is published on the legacy args, and the injected lock, activeness getter and update_weights all survive."""
 
-    def test_engine_gpu_offsets_consistent_across_cells(self):
-        cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1, gpu_offset=0) + make_dataclass_cells(
-            num_cells=2, num_gpus_per_engine=2, gpu_offset=4
+        async def _wait_router_ready(model_idx: int) -> HostAndPort:
+            return HostAndPort(host=f"10.0.0.{model_idx + 1}", port=20000 + model_idx)
+
+        monkeypatch.setattr(rollout_server_module, "wait_router_ready", _wait_router_ready)
+
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(self._CONFIG_YAML)
+        args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=12, debug_rollout_only=True)
+        lock = ContextLock("InferenceControllerUnderTest")
+        active_and_epoch = ActiveAndEpoch(active=False, epoch=7)
+
+        def _get_active_and_epoch() -> ActiveAndEpoch:
+            return active_and_epoch
+
+        servers = await create_rollout_servers(
+            args,
+            context_lock=lock,
+            global_health_checker_activeness=_get_active_and_epoch,
         )
-        srv = RolloutServer(
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
-            args=SimpleNamespace(),
-            context_lock=_make_lock(),
-        )
-        assert srv.engine_gpu_offsets == [0, 1, 4, 6]
+
+        assert {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()} == {
+            "actor": ("10.0.0.1", 20000),
+            "ref": ("10.0.0.2", 20001),
+        }
+        assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.1", 20000)
+        assert args.sglang_model_routers == {"actor": ("10.0.0.1", 20000), "ref": ("10.0.0.2", 20001)}
+        assert [srv.model_name for srv in servers.values()] == ["actor", "ref"]
+        assert (servers["actor"].update_weights, servers["ref"].update_weights) == (True, False)
+        active_and_epoch = ActiveAndEpoch(active=True, epoch=8)
+        for srv in servers.values():
+            assert srv.context_lock is lock
+            assert srv.global_health_checker_activeness() == ActiveAndEpoch(active=True, epoch=8)
 
 
 class TestEngineListOrdering:
@@ -301,27 +316,100 @@ class TestAddCellRollback:
         )
 
     @pytest.mark.asyncio
-    async def test_a_failed_add_leaves_no_bookkeeping_so_the_next_reconcile_retries(self, monkeypatch):
-        """A cell whose startup fails must not be committed, otherwise the hash no-op blocks any retry."""
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=False), context_lock=_make_lock())
+    async def test_a_failed_add_still_tracks_the_cell_so_nothing_leaks(self, monkeypatch):
+        """The cell is committed before init runs, so a failing init cannot orphan its health checker task."""
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+        )
         monkeypatch.setattr(ServerCell, "init", _raise_async)
 
         async with srv.context_lock:
             with pytest.raises(RuntimeError, match="injected init failure"):
                 await srv.add_cell(self._make_meta())
 
+            assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            await srv.dispose()
+
+    @pytest.mark.asyncio
+    async def test_disposing_the_server_removes_every_cell_it_tracks(self, monkeypatch):
+        """Controller teardown must reach each cell so its health checker task stops with it."""
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=True, ft_components=[]), context_lock=_make_lock()
+        )
+        monkeypatch.setattr(ServerCell, "init", _noop_async)
+
+        async with srv.context_lock:
+            await srv.add_cell(self._make_meta())
+            await srv.dispose()
+
         assert srv.server_cells == {}
 
     @pytest.mark.asyncio
     async def test_a_successful_add_commits_the_cell(self, monkeypatch):
         """After the failure is gone the same cell id can be added normally."""
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=False), context_lock=_make_lock())
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+        )
         monkeypatch.setattr(ServerCell, "init", _noop_async)
 
         async with srv.context_lock:
             await srv.add_cell(self._make_meta())
 
-        assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            await srv.dispose()
+
+
+class TestDuplicateCellId:
+    @pytest.mark.asyncio
+    async def test_adding_a_duplicate_cell_id_preserves_the_original_cell(self, monkeypatch):
+        """Overwriting the entry would drop the first cell's health checker task and router registration on the floor."""
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=True, ft_components=[]), context_lock=_make_lock()
+        )
+        monkeypatch.setattr(ServerCell, "init", _noop_async)
+
+        async with srv.context_lock:
+            await srv.add_cell(TestAddCellRollback()._make_meta())
+            original = srv.server_cells["inference-engine-0-0-0"]
+
+            with pytest.raises(AssertionError):
+                await srv.add_cell(TestAddCellRollback()._make_meta())
+
+            assert srv.server_cells["inference-engine-0-0-0"] is original
+            await srv.dispose()
+
+
+class TestRemoveCellDisposal:
+    @pytest.mark.asyncio
+    async def test_remove_cell_disposes_it_before_forgetting_it(self, monkeypatch):
+        """A forgotten-but-undisposed cell keeps its router registration and health checker task alive forever."""
+        dispose_started = asyncio.Event()
+        allow_dispose = asyncio.Event()
+        real_dispose = ServerCell.dispose
+
+        async def _blocking_dispose(cell: ServerCell) -> None:
+            dispose_started.set()
+            await allow_dispose.wait()
+            await real_dispose(cell)
+
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=True, ft_components=[]), context_lock=_make_lock()
+        )
+        monkeypatch.setattr(ServerCell, "init", _noop_async)
+        monkeypatch.setattr(ServerCell, "dispose", _blocking_dispose)
+
+        async with srv.context_lock:
+            await srv.add_cell(TestAddCellRollback()._make_meta())
+            remove_task = asyncio.create_task(srv.remove_cell("inference-engine-0-0-0"))
+            await asyncio.wait_for(dispose_started.wait(), timeout=1)
+
+            assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            assert not remove_task.done()
+
+            allow_dispose.set()
+            await asyncio.wait_for(remove_task, timeout=1)
+
+        assert srv.server_cells == {}
 
 
 class TestAddCellInitTiming:
@@ -333,11 +421,14 @@ class TestAddCellInitTiming:
         async def _record(self) -> None:
             initialized.append(self.meta.cell_id)
 
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=False), context_lock=_make_lock())
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+        )
         monkeypatch.setattr(ServerCell, "init", _record)
 
         async with srv.context_lock:
             await srv.add_cell(TestAddCellRollback()._make_meta())
+            await srv.dispose()
 
         assert initialized == ["inference-engine-0-0-0"]
 
@@ -349,14 +440,116 @@ class TestAddCellInitTiming:
         async def _record(self) -> None:
             initialized.append(self.meta.cell_id)
 
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace(colocate=True), context_lock=_make_lock())
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=True, ft_components=[]), context_lock=_make_lock()
+        )
         monkeypatch.setattr(ServerCell, "init", _record)
 
         async with srv.context_lock:
             await srv.add_cell(TestAddCellRollback()._make_meta(needs_offload=True))
 
-        assert initialized == []
-        assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            assert initialized == []
+            assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            await srv.dispose()
+
+    @pytest.mark.asyncio
+    async def test_a_non_offloaded_cell_is_initialized_immediately_even_under_colocate(self, monkeypatch):
+        """A dedicated eval cell does not share GPUs with the trainer, so it must not wait for the first weight update."""
+        initialized: list[str] = []
+
+        async def _record(self) -> None:
+            initialized.append(self.meta.cell_id)
+
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=True, ft_components=[]), context_lock=_make_lock()
+        )
+        monkeypatch.setattr(ServerCell, "init", _record)
+        meta_builder = TestAddCellRollback()
+
+        async with srv.context_lock:
+            await srv.add_cell(meta_builder._make_meta(needs_offload=True))
+
+            assert initialized == []
+
+            await srv.add_cell(meta_builder._make_meta(needs_offload=False, cell_id="eval-engine-0-0-0"))
+
+            assert initialized == ["eval-engine-0-0-0"]
+            await srv.dispose()
+
+
+class TestDeferredInitMatchesTheStartupBarrier:
+    @pytest.mark.parametrize(
+        ("colocate", "needs_offload", "deferred"),
+        [(False, False, False), (False, True, False), (True, False, False), (True, True, True)],
+        ids=["disaggregated_plain", "disaggregated_offloaded", "colocated_eval", "colocated_shared"],
+    )
+    @pytest.mark.asyncio
+    async def test_only_a_cell_sharing_the_trainer_gpus_is_deferred_and_counted_before_it_is_up(
+        self, monkeypatch, colocate: bool, needs_offload: bool, deferred: bool
+    ):
+        """Whichever cells skip startup init are exactly the ones the barrier may pass without an address."""
+        initialized: list[str] = []
+
+        async def _record(self) -> None:
+            initialized.append(self.meta.cell_id)
+
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=colocate, ft_components=[]), context_lock=_make_lock()
+        )
+        monkeypatch.setattr(ServerCell, "init", _record)
+
+        async with srv.context_lock:
+            await srv.add_cell(TestAddCellRollback()._make_meta(needs_offload=needs_offload))
+
+            assert (initialized == []) is deferred
+            assert srv._count_startable_cells() == (1 if deferred else 0)
+            await srv.dispose()
+
+
+async def _make_serving_server(monkeypatch, *, num_cells: int) -> RolloutServer:
+    """A server whose cells are all registered and serving, without dialling anything."""
+    router = _RecordingRouterApiClient()
+    monkeypatch.setattr(RolloutServer, "_router_api_client", property(lambda self: router))
+
+    srv = RolloutServer(
+        server_cells={},
+        args=SimpleNamespace(colocate=True, ft_components=[], use_miles_router=False),
+        context_lock=_make_lock(),
+    )
+    async with srv.context_lock:
+        for cell_index in range(num_cells):
+            await srv.add_cell(
+                ServerCellMetadata(
+                    model_id="default",
+                    worker_type="regular",
+                    cell_id=f"default-{cell_index}",
+                    num_gpus_per_engine=1,
+                    gpu_offset=cell_index,
+                    sglang_api_key=None,
+                    worker_name=f"default-{cell_index}-0",
+                    needs_offload=True,
+                    update_weights=True,
+                    workers_hash=f"pseudo-hash-{cell_index}",
+                )
+            )
+            cell = srv.server_cells[f"default-{cell_index}"]
+            addr_info = CellAddrInfo(
+                server_url=f"http://10.0.0.{cell_index + 1}:3000{cell_index}", bootstrap_port=None, gate_url=None
+            )
+            await cell._register_with_router(addr_info=addr_info)
+            cell._state = StateServing(addr_info=addr_info)
+    return srv
+
+
+class _RecordingRouterApiClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    async def add_worker(self, **kwargs) -> None:
+        self.calls.append(("add_worker", kwargs))
+
+    async def remove_worker(self, **kwargs) -> None:
+        self.calls.append(("remove_worker", kwargs))
 
 
 def _make_lock() -> ContextLock:
@@ -369,75 +562,3 @@ async def _raise_async(self):
 
 async def _noop_async(self):
     return None
-
-
-@pytest.mark.skip(
-    reason="TODO: rebuild against the meta/router_api_client ServerCell; _make_started_server still drives the "
-    "removed AddrInfo/_mark_addressing/_mark_alive state API and the removed constructors"
-)
-class TestRemoveCell:
-    @pytest.mark.asyncio
-    async def test_remove_cell_detaches_the_cell_from_every_server_view(self):
-        """A removed cell is gone from server_cells and from every view derived from it."""
-        events: list[dict[str, Any]] = []
-        srv = _make_started_server(num_cells=2)
-
-        with _with_recording_router(events):
-            await srv.remove_cell("default-0")
-
-        assert "default-0" not in srv.server_cells
-        assert list(srv.server_cells) == ["default-1"]
-        assert [client.server_url for client in srv.api_clients] == ["http://10.0.0.2:30001"]
-        assert srv.engine_gpu_counts == [1]
-        assert srv.engine_gpu_offsets == [1]
-
-    @pytest.mark.asyncio
-    async def test_remove_cell_unregisters_from_the_router_before_dropping_the_cell(self):
-        """Dropping the cell without unregistering would leave the router routing to a dead worker."""
-        events: list[dict[str, Any]] = []
-        srv = _make_started_server(num_cells=2)
-
-        with _with_recording_router(events):
-            await srv.remove_cell("default-0")
-
-        assert events == [{"call": "remove_worker", "worker_url": "http://10.0.0.1:30000", "use_legacy_api": False}]
-
-
-def _make_started_server(*, num_cells: int) -> RolloutServer:
-    args = make_args(num_gpus_per_node=8)
-    srv = RolloutServer(server_cells={}, args=args)
-    for cell_index in range(num_cells):
-        meta = ServerCellMetadata(
-            model_id="default",
-            worker_type="regular",
-            cell_id=f"default-{cell_index}",
-            num_gpus_per_engine=1,
-            gpu_offset=cell_index,
-            sglang_api_key=None,
-            worker_name=f"default-{cell_index}-0",
-            needs_offload=False,
-            update_weights=True,
-            workers_hash=f"pseudo-hash-{cell_index}",
-        )
-        cell = ServerCell(args=args, meta=meta)
-        cell._mark_addressing(AddrInfo(server_url=f"http://10.0.0.{cell_index + 1}:3000{cell_index}"))  # noqa: F821
-        cell._mark_alive()
-        srv.server_cells[meta.cell_id] = cell
-    return srv
-
-
-def _with_recording_router(events: list[dict[str, Any]]) -> Any:
-    return patch.object(
-        RolloutServer, "_router_api_client", property(lambda self: _RecordingRouterApiClient(events=events))
-    )
-
-
-class _RecordingRouterApiClient:
-    def __init__(self, *, events: list[dict[str, Any]]) -> None:
-        self._events = events
-
-    async def add_worker(self, **kwargs: Any) -> None:
-        self._events.append({"call": "add_worker", **kwargs})
-
-    async def remove_worker(self, **kwargs: Any) -> None:
-        self._events.append({"call": "remove_worker", **kwargs})

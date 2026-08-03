@@ -979,6 +979,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 interval_default=30.0,
                 timeout_default=30.0,
                 first_wait_default=0.0,
+                failure_threshold_default=1,
             )
             parser.add_argument(
                 "--api-server-port",

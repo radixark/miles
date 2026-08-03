@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
 from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.workers.worker_spec import HostAndPort
+
+pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
 
 
 def _make_meta(**overrides) -> ServerCellMetadata:
@@ -49,7 +51,7 @@ def stub_provider(monkeypatch):
 
 
 def _make_cell(**meta_overrides) -> ServerCell:
-    return ServerCell(args=make_args(), meta=_make_meta(**meta_overrides), router_api_client=None)
+    return track_server_cell(ServerCell(args=make_args(), meta=_make_meta(**meta_overrides), router_api_client=None))
 
 
 class TestComputeAddrInfo:

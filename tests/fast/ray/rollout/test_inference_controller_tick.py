@@ -30,6 +30,11 @@ class _RecordingCell:
 class _StubServer:
     def __init__(self, server_cells: dict):
         self.server_cells = server_cells
+        self.dispose_count = 0
+
+    async def dispose(self) -> None:
+        self.dispose_count += 1
+        self.server_cells.clear()
 
 
 def _make_controller(servers: dict) -> InferenceController:
@@ -119,6 +124,15 @@ class TestControllerDisposal:
         await asyncio.sleep(0.02)
 
         assert cell.tick_count == ticks_after_dispose
+
+    async def test_dispose_tears_down_every_server_so_no_cell_keeps_probing(self):
+        """A cell health checker keeps calling /health_generate unless dispose reaches its cell."""
+        first, second = _StubServer({"a": _RecordingCell()}), _StubServer({"b": _RecordingCell()})
+        controller = _make_controller({"default": first, "frozen": second})
+
+        await controller.dispose()
+
+        assert (first.dispose_count, second.dispose_count) == (1, 1)
 
     async def test_dispose_without_a_running_ticker_is_harmless(self):
         """debug_train_only never starts the ticker, and teardown still has to work."""
