@@ -16,6 +16,7 @@ from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
+    ThdLayout,
     compressed_cu_seqlens,
     get_indexer_cu_seqlens_thd,
     get_q_positions_thd,
@@ -80,11 +81,7 @@ class V4Indexer(MegatronModule):
         qr: torch.Tensor,
         mask=None,
         packed_seq_params=None,
-        cu_seqlens=None,
-        hidden_compact=None,
-        compressed_group_ids=None,
-        seq_to_rank_row=None,
-        max_seqlen=None,
+        thd_layout: ThdLayout | None = None,
     ):
         """Forward pass.
 
@@ -93,12 +90,7 @@ class V4Indexer(MegatronModule):
             qr: low-rank query [seqlen, batch, q_lora_rank]
             mask: unused (the kernel's per-query KV bounds are generated internally)
             packed_seq_params: unused
-            cu_seqlens: [n_seg + 1] segment boundaries, set for THD packing
-            hidden_compact: pre-grouped compressor input from the CP compaction, shared with the
-                attention compressor because the indexer is only built on ratio=4 layers
-            compressed_group_ids: group id of each pre-grouped row, paired with hidden_compact
-            seq_to_rank_row: sequence-major to all-gather row map, set under CP
-            max_seqlen: rotary table length, required alongside hidden_compact
+            thd_layout: this rank's packed layout, or None for the unpacked layout
 
         Returns:
             topk_indices: [batch, seqlen, index_topk] int64
@@ -123,14 +115,13 @@ class V4Indexer(MegatronModule):
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config, self.rope_head_dim, rope_base, False, seqlen * cp_size, x.device
         )
-        if cu_seqlens is None:
+        if thd_layout is None:
             freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen, cp_size, cp_group, stride=1)
         else:
             # Packed positions restart at every segment boundary and index the whole table, so
             # the rank's rows are selected here rather than by slicing it first.
             freqs_cis = freqs_cis.index_select(
-                0,
-                get_q_positions_thd(cu_seqlens, seqlen, cp_group.rank() * seqlen if cp_size > 1 and cp_group else 0),
+                0, get_q_positions_thd(thd_layout.cu_seqlens, seqlen, thd_layout.global_start)
             )
         q = q.clone()
         q = einops.rearrange(q, "s b ... -> b s ...")
@@ -141,21 +132,14 @@ class V4Indexer(MegatronModule):
         if self.use_fp8_qat:
             q = fp8_simulate_qat(q, 128)
 
-        if hidden_compact is None:
-            compressor_out = self.compressor(x, cu_seqlens)
-        else:
-            compressor_out = self.compressor(
-                hidden_compact,
-                cu_seqlens,
-                compressed_group_ids=compressed_group_ids,
-                max_seqlen=max_seqlen,
-            )
-        if cu_seqlens is None:
+        pre_grouped = thd_layout is not None and thd_layout.hidden_compact is not None
+        compressor_out = self.compressor(thd_layout.hidden_compact if pre_grouped else x, thd_layout)
+        if thd_layout is None:
             k = compressor_out
         else:
             k, cu_seqlens_compressed = compressor_out
             if cu_seqlens_compressed is None:
-                cu_seqlens_compressed = compressed_cu_seqlens(cu_seqlens, self.compress_ratio)
+                cu_seqlens_compressed = compressed_cu_seqlens(thd_layout.cu_seqlens, self.compress_ratio)
             if k is None:
                 # Nothing to score when no segment reaches compress_ratio; -1 leaves each query
                 # on its sliding window.
@@ -167,13 +151,13 @@ class V4Indexer(MegatronModule):
 
         if cp_size > 1 and cp_group is not None:
             k = all_gather_cp(k, dim=0, cp_group=cp_group)
-            if seq_to_rank_row is not None:
+            if thd_layout is not None and thd_layout.seq_to_rank_row is not None:
                 # Per-row bounds are sequence-major, so reorder the rank-major gather first.
-                k = k.index_select(0, seq_to_rank_row.clamp(min=0).long())
+                k = k.index_select(0, thd_layout.seq_to_rank_row.clamp(min=0).long())
 
         seqlen_global = seqlen * cp_size
         seqlen_kv = k.shape[0]
-        if cu_seqlens is None:
+        if thd_layout is None:
             cu_ks, cu_ke = _make_causal_cu_seqlens(seqlen_global, seqlen_kv, self.compress_ratio, q.device)
             # cu_seqlens are for global positions; slice to local query positions
             if cp_size > 1 and cp_group is not None:
@@ -182,11 +166,11 @@ class V4Indexer(MegatronModule):
                 cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
         else:
             cu_ks, cu_ke = get_indexer_cu_seqlens_thd(
-                cu_seqlens,
+                thd_layout.cu_seqlens,
                 cu_seqlens_compressed,
                 ratio=self.compress_ratio,
                 total_tokens=seqlen,
-                global_start=cp_group.rank() * seqlen if cp_size > 1 and cp_group else 0,
+                global_start=thd_layout.global_start,
             )
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
 

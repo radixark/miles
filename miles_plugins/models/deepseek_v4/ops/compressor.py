@@ -12,7 +12,7 @@ from miles_plugins.models.deepseek_v4.ops.rope import (
     apply_rotary_emb_thd,
     wrapped_precompute_freqs_cis,
 )
-from miles_plugins.models.deepseek_v4.ops.thd_utils import batch_of_row, compressed_cu_seqlens
+from miles_plugins.models.deepseek_v4.ops.thd_utils import ThdLayout, batch_of_row, compressed_cu_seqlens
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 
 
@@ -196,13 +196,7 @@ class DeepSeekV4Compressor(nn.Module):
 
         return kv
 
-    def _forward_thd(
-        self,
-        x: torch.Tensor,
-        cu_seqlens: torch.Tensor,
-        compressed_group_ids: torch.Tensor | None = None,
-        max_seqlen: int | None = None,
-    ):
+    def _forward_thd(self, x: torch.Tensor, thd_layout: ThdLayout):
         """Compress a THD-packed stream, grouping tokens within each segment.
 
         The trailing ``seqlen % compress_ratio`` tokens of a segment get no compressed
@@ -212,16 +206,16 @@ class DeepSeekV4Compressor(nn.Module):
 
         Args:
             x: [total, batch, dim] packed SBHD layout, or [c_cap * ratio, batch, dim] already
-                grouped when compressed_group_ids is given.
-            cu_seqlens: [n_seg + 1] token-space segment boundaries.
-            compressed_group_ids: [c_cap] per-segment group id of each pre-grouped row, from the
-                CP compressor-input compaction. Its second return value is then None.
-            max_seqlen: rotary table length, required when pre-grouped: the group ids address
-                positions past the compacted row count.
+                grouped when the layout carries compressed_group_ids.
+            thd_layout: this rank's packed layout.
         Returns:
             (k, cu_seqlens_compressed) with k [total_comp, batch, head_dim], or
             (None, cu_seqlens_compressed) when no segment reaches compress_ratio.
         """
+        cu_seqlens = thd_layout.cu_seqlens
+        compressed_group_ids = thd_layout.compressed_group_ids
+        max_seqlen = thd_layout.max_seqlen
+
         assert self.ape.dtype == torch.float32
         assert self.wkv.weight.dtype == torch.bfloat16
         assert self.wgate.weight.dtype == torch.bfloat16
@@ -302,26 +296,18 @@ class DeepSeekV4Compressor(nn.Module):
 
         return kv, cu_seqlens_compressed
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        cu_seqlens: torch.Tensor | None = None,
-        compressed_group_ids: torch.Tensor | None = None,
-        max_seqlen: int | None = None,
-    ):
+    def forward(self, x: torch.Tensor, thd_layout: ThdLayout | None = None):
         """
         Args:
             x: [seqlen, batch, dim] SBHD layout (Megatron standard); [total, batch, dim]
-                when cu_seqlens is given.
-            cu_seqlens: [n_seg + 1] segment boundaries, set for THD packing.
-            compressed_group_ids: [c_cap] group id of each pre-grouped row, set under CP.
-            max_seqlen: rotary table length, required alongside compressed_group_ids.
+                when thd_layout is given.
+            thd_layout: this rank's packed layout, or None for the unpacked layout.
         Returns:
             k: [seqlen // compress_ratio, batch, head_dim] SBHD layout, or
                 (k, cu_seqlens_compressed) for THD packing.
         """
-        if cu_seqlens is not None:
-            return self._forward_thd(x, cu_seqlens, compressed_group_ids=compressed_group_ids, max_seqlen=max_seqlen)
+        if thd_layout is not None:
+            return self._forward_thd(x, thd_layout)
         x_bshd = einops.rearrange(x, "s b d -> b s d")
         k_bshd = self.forward_raw(x_bshd)
         k = einops.rearrange(k_bshd, "b sc d -> sc b d")
