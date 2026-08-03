@@ -151,14 +151,17 @@ def wire_mm_towers(model, hf_checkpoint: str, train: bool = False) -> None:
                 f"{mm_audio_positions.numel()} audio position(s) vs " f"{mm_audio_dmel.shape[0]} dmel frame(s)"
             )
         decoder_input = model.embedding(input_ids=input_ids, position_ids=position_ids)
+        # the grad context must cover ONLY the tower forwards: _scatter clones
+        # decoder_input, and a clone under no_grad detaches the embedding graph
         ctx = torch.enable_grad() if train else torch.no_grad()
-        with ctx:
-            if mm_vision_patches is not None:
+        if mm_vision_patches is not None:
+            with ctx:
                 v_emb = model.__dict__["_mm_towers"][0](mm_vision_patches.to(device=decoder_input.device))
-                decoder_input = _scatter(decoder_input, v_emb, mm_vision_positions.to(decoder_input.device))
-            if mm_audio_dmel is not None:
+            decoder_input = _scatter(decoder_input, v_emb, mm_vision_positions.to(decoder_input.device))
+        if mm_audio_dmel is not None:
+            with ctx:
                 a_emb = model.__dict__["_mm_towers"][1](mm_audio_dmel.to(device=decoder_input.device))
-                decoder_input = _scatter(decoder_input, a_emb, mm_audio_positions.to(decoder_input.device))
+            decoder_input = _scatter(decoder_input, a_emb, mm_audio_positions.to(decoder_input.device))
         kw["decoder_input"] = decoder_input
         return _orig_forward(*a, **kw)
 
