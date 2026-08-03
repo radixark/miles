@@ -16,8 +16,8 @@ from miles.backends.megatron_utils.lora_utils import (
     is_lora_weight_name,
     lora_base_cpu_backup_enabled,
 )
-
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group
@@ -131,14 +131,7 @@ class UpdateWeightFromTensor:
 
         self._model_update_groups = None
         self.rollout_engines: Sequence[SGLangApiClient] | None = None
-        self._connection_stale: bool = False
-
-    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
-    def is_rollout_engines_fresh(self) -> bool:
-        return self.rollout_engines is not None and not self._connection_stale
-
-    def mark_engine_connection_stale(self) -> None:
-        self._connection_stale = True
+        self.conn_status = ConnStatusManager()
 
     def connect_rollout_engines(
         self,
@@ -151,7 +144,6 @@ class UpdateWeightFromTensor:
         for distributed. Map ranks to colocated IPC engines.
         """
         self.rollout_engines = rollout_engines
-        self._connection_stale = False
 
         if engine_gpu_counts is None:
             engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
