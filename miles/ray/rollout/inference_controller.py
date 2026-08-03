@@ -22,6 +22,7 @@ from miles.utils.context_lock import (
     requires_lock,
     with_lock,
 )
+from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.misc import SimpleTicker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -199,6 +200,14 @@ class InferenceController:
                 )
 
     # -------------------------- misc APIs -----------------------------
+
+    @lock_exempt
+    def get_cell_statuses(self) -> dict[str, CellStatus]:
+        return {
+            cell_id: cell.cell_status()
+            for srv in list(self.servers.values())
+            for cell_id, cell in list(srv.server_cells.items())
+        }
 
     @with_lock
     async def check_weights(

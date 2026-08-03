@@ -19,6 +19,7 @@ from miles.ray.rollout.cell_state import (
     StateServing,
     StateUninitialized,
 )
+from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.ft_utils.health_checker import (
     BaseHealthChecker,
     NoopHealthChecker,
@@ -69,6 +70,26 @@ class ServerCell:
     @property
     def _health_checker_activeness(self) -> bool:
         return isinstance(self._state, (StatePendingWeights, StateServing)) and self.global_health_checker_activeness()
+
+    def cell_status(self) -> CellStatus:
+        match self._state:
+            case StateUninitialized() | StateInitializing():
+                return PENDING_ROLLOUT_CELL_STATUS
+
+            case StatePendingWeights() | StateServing():
+                return CellStatus(
+                    phase="Running",
+                    conditions=[
+                        CellCondition.allocated(TriState.TRUE),
+                        CellCondition.from_health_checker_status(self._health_checker.status),
+                    ],
+                )
+
+            case StateDisposed():
+                return CellStatus(phase="Suspended", conditions=[CellCondition.allocated(TriState.FALSE)])
+
+            case _:
+                raise NotImplementedError(f"Unknown state: {self._state}")
 
     @property
     def is_uninitialized(self) -> bool:
@@ -241,3 +262,6 @@ def create_rollout_cell_health_checker(
         await get_api_client().health_generate(timeout=config.timeout)
 
     return SimpleHealthChecker(name=name, check_fn=_check, get_activeness=get_activeness, config=config)
+
+
+PENDING_ROLLOUT_CELL_STATUS = CellStatus(phase="Pending", conditions=[CellCondition.allocated(TriState.TRUE)])
