@@ -83,6 +83,7 @@ def build_model(args, hf_config, mesh):
         param_dtype=policy.param_dtype,
         reduce_dtype=policy.reduce_dtype,
         precision_spec=policy.precision_spec,
+        cast_forward_inputs=policy.autocast_dtype is None,
     )
     if args.gradient_checkpointing:
         model.gradient_checkpointing_enable()

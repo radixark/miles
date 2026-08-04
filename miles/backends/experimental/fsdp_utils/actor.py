@@ -162,6 +162,8 @@ class FSDPTrainRayActor(TrainRayActor):
             param_dtype=self.precision_policy.param_dtype,
             reduce_dtype=self.precision_policy.reduce_dtype,
             precision_spec=self.precision_policy.precision_spec,
+            # An active forward autocast owns the compute dtype; see apply_fsdp2.
+            cast_forward_inputs=self.precision_policy.autocast_dtype is None,
         )
 
         model = self._fsdp2_load_full_state_dict(
@@ -643,6 +645,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 param_dtype=self.precision_policy.param_dtype,
                 reduce_dtype=self.precision_policy.reduce_dtype,
                 precision_spec=self.precision_policy.precision_spec,
+                cast_forward_inputs=self.precision_policy.autocast_dtype is None,
             )
             ref_model = self._fsdp2_load_full_state_dict(
                 ref_model,
@@ -709,6 +712,7 @@ def apply_fsdp2(
     param_dtype=None,
     reduce_dtype=None,
     precision_spec=None,
+    cast_forward_inputs=True,
 ):
     """Apply FSDP2 (fully_shard) to the model.
 
@@ -717,6 +721,12 @@ def apply_fsdp2(
     args-based default (bf16 / fp32, or fp16 param when args.fp16). ``param_dtype`` is the *default*
     gather dtype: ``precision_spec`` refines it per module by lowering onto nested wrap units, which
     keeps every override inside FSDP (DTensor params, FSDP grad reduction, DCP/offload unchanged).
+
+    ``cast_forward_inputs`` makes every wrapped module re-cast its float inputs to its own gather
+    dtype. That is the right default when nothing else owns the compute dtype, but it must be off
+    once a forward autocast does: each wrapped decoder layer would otherwise pull the activation
+    stream back up to the gather dtype at every layer boundary, so an fp32-gather run computes its
+    norms and residual adds in fp32 while its matmuls run at the autocast dtype.
 
     Ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py
     """
@@ -748,6 +758,7 @@ def apply_fsdp2(
             "mp_policy": MixedPrecisionPolicy(
                 param_dtype=unit_param_dtype,
                 reduce_dtype=reduce_dtype,
+                cast_forward_inputs=cast_forward_inputs,
             ),
             "offload_policy": offload_policy,
             "mesh": mesh,
