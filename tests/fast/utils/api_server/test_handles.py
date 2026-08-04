@@ -9,11 +9,11 @@ from miles.utils.test_utils.fault_injector import FailureMode
 
 from .conftest import (
     MockInferenceController,
-    MockRayTrainCell,
     MockRemoteCall,
+    MockTrainerCell,
     MockWorkerManager,
     make_cell_summaries,
-    make_mock_group,
+    make_mock_controller,
 )
 
 _PENDING_STATUS = CellStatus(phase="Pending", conditions=[CellCondition.allocated(TriState.TRUE)])
@@ -32,10 +32,10 @@ ACTOR_CELL_ID = "trainer-actor-0"
 
 def _make_actor_handler(
     *,
-    cells: list[MockRayTrainCell] | None = None,
+    cells: list[MockTrainerCell] | None = None,
     suspended: bool = False,
 ) -> tuple[_CellHandler, object, MockWorkerManager]:
-    group = make_mock_group(cells if cells is not None else [MockRayTrainCell()])
+    group = make_mock_controller(cells if cells is not None else [MockTrainerCell()])
     manager = MockWorkerManager(make_cell_summaries(ACTOR_CELL_ID, suspended=suspended))
     handler = _CellHandler(cell_type="actor", worker_manager=manager, controller=group, pool_ids=["trainer-actor"])
     return handler, group, manager

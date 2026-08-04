@@ -9,7 +9,7 @@ launch scripts.
 
 ### What changed
 
-`train.py`, `train_async.py`, and `RayTrainGroup` now use Python `async`/`await`
+`train.py`, `train_async.py`, and `TrainerController` now use Python `async`/`await`
 instead of `ray.get()`-style sync calls.
 
 ### Why

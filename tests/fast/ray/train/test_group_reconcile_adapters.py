@@ -9,8 +9,8 @@ from miles.ray.train.group import TrainerController
 pytestmark = pytest.mark.asyncio
 
 
-def _make_controller(cells: list) -> RayTrainGroup:
-    group = object.__new__(RayTrainGroup)
+def _make_controller(cells: list) -> TrainerController:
+    group = object.__new__(TrainerController)
     group._cells_by_id = {cell.cell_id: cell for cell in cells}
     group.args = SimpleNamespace()
     return group

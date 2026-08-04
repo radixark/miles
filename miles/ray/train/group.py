@@ -6,7 +6,7 @@ from pathlib import Path
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
-from miles.ray.train.cell import RayTrainCell
+from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
@@ -36,7 +36,7 @@ _RETRY_MAX_ATTEMPTS = 30
 _CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
-class RayTrainGroup:
+class TrainerController:
     def __init__(
         self,
         args,
@@ -66,7 +66,7 @@ class RayTrainGroup:
 
         self._health_checker_activeness = ActivenessTracker(active=True)
 
-        self._cells_by_id: dict[str, RayTrainCell] = {}
+        self._cells_by_id: dict[str, TrainerCell] = {}
 
         self._witness_allocator: WitnessIdAllocator | None = (
             WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
@@ -74,7 +74,7 @@ class RayTrainGroup:
         if self._witness_allocator is not None and args.save_debug_event_data is not None:
             self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
 
-        self._test_action_executor = FTTestActionControllerExecutor.from_args(args, group=self)
+        self._test_action_executor = FTTestActionControllerExecutor.from_args(args, controller=self)
 
     @property
     def pool_id(self) -> str:
@@ -89,7 +89,7 @@ class RayTrainGroup:
         return compute_trainer_num_cells(self.args, role=self._role)
 
     @property
-    def _cells(self) -> list[RayTrainCell]:
+    def _cells(self) -> list[TrainerCell]:
         return sorted(self._cells_by_id.values(), key=lambda cell: cell.cell_index)
 
     @property
@@ -130,8 +130,8 @@ class RayTrainGroup:
         cell = self._cells_by_id.pop(cell_id)
         cell.health_checker.stop()
 
-    def _create_cell(self, cell_id: str, *, cell_index: int, workers_hash: str) -> RayTrainCell:
-        cell = RayTrainCell(
+    def _create_cell(self, cell_id: str, *, cell_index: int, workers_hash: str) -> TrainerCell:
+        cell = TrainerCell(
             args=self.args,
             role=self._role,
             with_ref=self._with_ref,
@@ -242,7 +242,7 @@ class RayTrainGroup:
             )
 
     def _check_train_one_attempt(self, snapshot_alive_cells, results):
-        outcomes = RayTrainGroup._compute_attempt_outcomes(snapshot_alive_cells, results)
+        outcomes = TrainerController._compute_attempt_outcomes(snapshot_alive_cells, results)
         if not outcomes["normal"] and not outcomes["discarded"]:
             log_structured(
                 logger.error, tag="ft", op="check", **outcomes, decision="retry", reason="all alive cells failed"

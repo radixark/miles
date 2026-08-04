@@ -18,8 +18,8 @@ pytestmark = pytest.mark.asyncio
 _DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
 
 
-def _make_controller(cells: list) -> RayTrainGroup:
-    group = object.__new__(RayTrainGroup)
+def _make_controller(cells: list) -> TrainerController:
+    group = object.__new__(TrainerController)
     group._cells_by_id = {cell.cell_id: cell for cell in cells}
     group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
     group._witness_allocator = None
@@ -29,7 +29,7 @@ def _make_controller(cells: list) -> RayTrainGroup:
     return group
 
 
-def _make_failing_controller(fn_name: str) -> RayTrainGroup:
+def _make_failing_controller(fn_name: str) -> TrainerController:
     cell = make_alive_cell(0, alive_cell_indices=[0])
     for handle in get_raw_actor_handles(cell):
         ray.get(handle.set_fail_methods.remote([fn_name]))

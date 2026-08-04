@@ -1,4 +1,4 @@
-"""Lightweight Ray actor for unit testing RayTrainCell/RayTrainGroup without GPU or real training.
+"""Lightweight Ray actor for unit testing TrainerCell/TrainerController without GPU or real training.
 
 Records all method calls so tests can verify what was dispatched.
 """

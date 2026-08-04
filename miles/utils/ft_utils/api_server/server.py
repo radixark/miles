@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 def start_api_server(
     *,
     args,
-    actor_model: RayTrainGroup,
+    actor_model: TrainerController,
     inference_controller: object,
     port: int,
     ft_components: list[str],
