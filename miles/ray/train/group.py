@@ -19,12 +19,13 @@ from miles.utils.audit_utils.event_logger.models import (
     WitnessAllocateIdEvent,
 )
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
+from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
-from miles.utils.workers.naming import parse_cell_id
+from miles.utils.workers.naming import compute_cell_id, parse_cell_id
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
@@ -353,6 +354,12 @@ class RayTrainGroup:
 
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
+
+    def get_cell_statuses(self) -> dict[str, CellStatus]:
+        return {
+            compute_cell_id(pool_id=self._pool_id, cell_index=cell.cell_index): cell.cell_status()
+            for cell in self._cells
+        }
 
     async def stop_cell(self, cell_index: int) -> None:
         await self._cells_by_index[cell_index].stop()
