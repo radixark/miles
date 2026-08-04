@@ -160,7 +160,17 @@ class MockWorkerManager:
 
     @property
     def get_cell_infos(self) -> MockRemoteCall:
-        return MockRemoteCall(dict(self._summaries), effect=lambda **kwargs: self.cell_info_calls.append(kwargs))
+        def _filtered(**kwargs: object) -> dict[str, CellInfo]:
+            pool_ids = kwargs.get("pool_ids")
+            if pool_ids is None:
+                return dict(self._summaries)
+            return {cell_id: info for cell_id, info in self._summaries.items() if info.pool_id in pool_ids}
+
+        return MockRemoteCall(
+            None,
+            effect=lambda **kwargs: self.cell_info_calls.append(kwargs),
+            factory=_filtered,
+        )
 
     @property
     def stop_cells(self) -> MockRemoteCall:
@@ -227,13 +237,15 @@ class MockRayTrainCell:
         )
 
 
-def make_mock_group(cells: list[MockRayTrainCell]) -> object:
-    from miles.ray.train.group import TrainerController
+def make_mock_group(cells: list[MockRayTrainCell], *, pool_id: str = "trainer-actor") -> object:
+    from miles.ray.train.group import RayTrainGroup
 
     group = object.__new__(RayTrainGroup)
     group._cells_by_index = dict(enumerate(cells))
+    group._pool_id = pool_id
     group._indep_dp_quorum_id = 0
-    group._alive_cell_ids = frozenset()
+    for cell_index, cell in enumerate(cells):
+        cell.cell_index = cell_index
     return group
 
 

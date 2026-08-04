@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.api_server.handles import _ActorCellHandler, _CellHandler, _RolloutCellHandler
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.test_utils.fault_injector import FailureMode
@@ -29,85 +28,96 @@ def _running_status(health: TriState) -> CellStatus:
     )
 
 
+ACTOR_CELL_ID = "trainer-actor-0"
+
+
+def _make_actor_handler(
+    *,
+    cells: list[MockRayTrainCell] | None = None,
+    suspended: bool = False,
+) -> tuple[_ActorCellHandler, object, MockWorkerManager]:
+    group = make_mock_group(cells if cells is not None else [MockRayTrainCell()])
+    manager = MockWorkerManager(make_cell_summaries(ACTOR_CELL_ID, suspended=suspended))
+    handler = _ActorCellHandler(worker_manager=manager, group=group, trainer_pool_ids=["trainer-actor"])
+    return handler, group, manager
+
+
 class TestActorCellHandler:
+    @pytest.mark.asyncio
     async def test_every_cell_of_the_group_is_listed(self) -> None:
-        """The api server addresses trainer cells by their index in the group."""
-        handler = _ActorCellHandler(group=make_mock_group([MockRayTrainCell(), MockRayTrainCell()]))
-        assert await handler.list_cell_ids() == ["actor-0", "actor-1"]
+        """The api server addresses trainer cells by the manager's cell id."""
+        handler, _group, _manager = _make_actor_handler()
+
+        assert await handler.list_cell_ids() == [ACTOR_CELL_ID]
 
     def test_cell_type(self) -> None:
         """The cell type is the api-server-visible label the ft controller filters on."""
-        handler = _ActorCellHandler(group=make_mock_group([MockRayTrainCell()]))
+        handler, _group, _manager = _make_actor_handler()
+
         assert handler.cell_type == "actor"
 
     @pytest.mark.asyncio
-    async def test_get_cell_returns_full_cell_structure(self) -> None:
-        group = make_mock_group([MockRayTrainCell()])
-        handler = _ActorCellHandler(group=group)
-        cell = await handler.get_cell("actor-0")
+    async def test_a_running_cell_reports_the_controller_status(self) -> None:
+        """The trainer group is the only place that knows a cell's own phase."""
+        handler, _group, _manager = _make_actor_handler()
 
-        assert cell.model_dump() == {
-            "apiVersion": "miles.io/v1",
-            "kind": "Cell",
-            "metadata": {
-                "name": "actor-0",
-                "labels": {
-                    "miles.io/cell-type": "actor",
-                    "miles.io/cell-id": "actor-0",
-                },
-            },
-            "spec": {"suspend": False},
-            "status": {
-                "phase": "Running",
-                "conditions": [
-                    {
-                        "type": "Allocated",
-                        "status": "True",
-                        "reason": None,
-                        "message": None,
-                        "lastTransitionTime": None,
-                    },
-                    {"type": "Healthy", "status": "True", "reason": None, "message": None, "lastTransitionTime": None},
-                ],
-                "observedWorkersHash": None,
-            },
-        }
+        cell = await handler.get_cell(ACTOR_CELL_ID)
+
+        assert cell.metadata.name == ACTOR_CELL_ID
+        assert cell.metadata.labels["miles.io/cell-type"] == "actor"
+        assert cell.spec.suspend is False
+        assert cell.status.phase == "Running"
 
     @pytest.mark.asyncio
-    async def test_get_cell_suspended(self) -> None:
-        group = make_mock_group(
-            [
-                MockRayTrainCell(
-                    phase="Suspended",
-                    conditions=[
-                        {"type": "Allocated", "status": "False"},
-                        {"type": "Healthy", "status": "False"},
-                    ],
-                    is_stopped=True,
-                )
-            ]
-        )
-        handler = _ActorCellHandler(group=group)
-        cell = await handler.get_cell("actor-0")
+    async def test_suspension_comes_from_the_worker_manager(self) -> None:
+        """The manager owns the processes, so it alone knows a cell was suspended."""
+        handler, _group, _manager = _make_actor_handler(suspended=True)
+
+        cell = await handler.get_cell(ACTOR_CELL_ID)
 
         assert cell.spec.suspend is True
         assert cell.status.phase == "Suspended"
 
     @pytest.mark.asyncio
-    async def test_suspend_delegates_to_group(self) -> None:
-        group = make_mock_group([MockRayTrainCell()])
-        group.stop_cell = AsyncMock()
-        handler = _ActorCellHandler(group=group)
-        await handler.suspend("actor-2")
-        group.stop_cell.assert_called_once_with(2)
+    async def test_a_cell_the_group_has_not_observed_yet_is_pending(self) -> None:
+        """Between a manager restart and the next poll the group knows nothing about it."""
+        handler, group, _manager = _make_actor_handler()
+        group._cells_by_index = {}
+
+        cell = await handler.get_cell(ACTOR_CELL_ID)
+
+        assert cell.status.phase == "Pending"
 
     @pytest.mark.asyncio
-    async def test_resume_delegates_to_group(self) -> None:
-        group = make_mock_group([MockRayTrainCell()])
+    async def test_suspend_delegates_to_the_group(self) -> None:
+        """The group must see the stop so its state machine stays in sync."""
+        handler, group, _manager = _make_actor_handler()
+        group.stop_cell = AsyncMock()
+
+        await handler.suspend(ACTOR_CELL_ID)
+
+        group.stop_cell.assert_awaited_once_with(0)
+
+    @pytest.mark.asyncio
+    async def test_resume_delegates_to_the_group(self) -> None:
+        """Resuming marks the cell pending; the actual restart happens in train."""
+        handler, group, _manager = _make_actor_handler()
         group.start_cell = MagicMock()
-        handler = _ActorCellHandler(group=group)
-        await handler.resume("actor-1")
-        group.start_cell.assert_called_once_with(1)
+
+        await handler.resume(ACTOR_CELL_ID)
+
+        group.start_cell.assert_called_once_with(0)
+
+    @pytest.mark.asyncio
+    async def test_injection_is_forwarded_to_the_worker_manager(self) -> None:
+        """The manager owns the actors, so it is the one that can crash them."""
+        handler, _group, manager = _make_actor_handler()
+        manager.injected = []
+        manager.inject_fault = MockRemoteCall(None, effect=lambda *a, **kw: manager.injected.append((a, kw)))
+
+        await handler.inject_fault(ACTOR_CELL_ID, mode=FailureMode.SIGKILL, sub_index=1)
+
+        assert manager.injected == [((ACTOR_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 1})]
 
 
 ENGINE_CELL_ID = "inference-engine-0-0-0"
@@ -329,39 +339,6 @@ class TestRolloutCellHandler:
         assert controller.status_calls == 1
 
 
-class _FakeRemoteMethod:
-    def __init__(self) -> None:
-        self.remote_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-
-    def remote(self, *args: object, **kwargs: object) -> None:
-        self.remote_calls.append((args, kwargs))
-
-
-class _FakeActor:
-    def __init__(self) -> None:
-        self.inject_fault = _FakeRemoteMethod()
-
-
-class _FakeInjectCell:
-    def __init__(self, *, is_alive: bool = True, num_actors: int = 2) -> None:
-        self._is_alive = is_alive
-        self._actor = _FakeActor()
-        self._num_actors = num_actors
-
-    @property
-    def is_alive(self) -> bool:
-        return self._is_alive
-
-    def _get_actor_handles(self) -> list[_FakeActor]:
-        return [self._actor for _ in range(self._num_actors)]
-
-
-def _make_inject_group(cell: _FakeInjectCell) -> object:
-    group = object.__new__(RayTrainGroup)
-    group._cells_by_index = {0: cell}
-    return group
-
-
 class _ConcreteCellHandler(_CellHandler):
     @property
     def cell_type(self) -> str:
@@ -380,63 +357,6 @@ class _ConcreteCellHandler(_CellHandler):
         raise NotImplementedError
 
 
-class TestActorCellHandlerInjectFault:
-    @pytest.mark.asyncio
-    async def test_inject_fault_calls_actor_with_mode_value(self) -> None:
-        """inject_fault forwards mode.value to the selected actor's remote handle."""
-        cell = _FakeInjectCell(is_alive=True, num_actors=2)
-        group = _make_inject_group(cell)
-        handler = _ActorCellHandler(group=group)
-
-        await handler.inject_fault("actor-0", mode=FailureMode.SIGKILL, sub_index=1)
-
-        assert cell._actor.inject_fault.remote_calls == [(("sigkill",), {})]
-
-    @pytest.mark.asyncio
-    async def test_inject_fault_raises_when_cell_not_alive(self) -> None:
-        """inject_fault raises RuntimeError when the target cell is not alive."""
-        cell = _FakeInjectCell(is_alive=False, num_actors=2)
-        group = _make_inject_group(cell)
-        handler = _ActorCellHandler(group=group)
-
-        with pytest.raises(RuntimeError, match="not alive"):
-            await handler.inject_fault("actor-0", mode=FailureMode.SIGKILL, sub_index=0)
-
-        assert cell._actor.inject_fault.remote_calls == []
-
-    @pytest.mark.asyncio
-    async def test_inject_fault_raises_index_error_when_sub_index_out_of_range(self) -> None:
-        """inject_fault raises IndexError when sub_index exceeds the actor count."""
-        cell = _FakeInjectCell(is_alive=True, num_actors=2)
-        group = _make_inject_group(cell)
-        handler = _ActorCellHandler(group=group)
-
-        with pytest.raises(IndexError, match="out of range"):
-            await handler.inject_fault("actor-0", mode=FailureMode.SIGKILL, sub_index=2)
-
-        assert cell._actor.inject_fault.remote_calls == []
-
-    @pytest.mark.asyncio
-    async def test_inject_fault_raises_index_error_when_sub_index_negative(self) -> None:
-        """inject_fault raises IndexError when sub_index is negative."""
-        cell = _FakeInjectCell(is_alive=True, num_actors=2)
-        group = _make_inject_group(cell)
-        handler = _ActorCellHandler(group=group)
-
-        with pytest.raises(IndexError, match="out of range"):
-            await handler.inject_fault("actor-0", mode=FailureMode.SIGKILL, sub_index=-1)
-
-
-class TestBaseCellHandlerInjectFault:
-    @pytest.mark.asyncio
-    async def test_base_inject_fault_raises_not_implemented(self) -> None:
-        """The base handler names the subclass that cannot inject faults."""
-        handler = _ConcreteCellHandler()
-
-        with pytest.raises(NotImplementedError, match="_ConcreteCellHandler does not support fault injection"):
-            await handler.inject_fault("actor-0", mode=FailureMode.SIGKILL, sub_index=0)
-
-
 class TestRolloutCellHandlerInjectFault:
     @pytest.mark.asyncio
     async def test_injection_is_forwarded_to_the_worker_manager(self) -> None:
@@ -453,3 +373,16 @@ class TestRolloutCellHandlerInjectFault:
         assert manager.inject_fault.calls == [
             ((ENGINE_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 1}),
         ]
+
+
+class TestActorCellResumeReporting:
+    @pytest.mark.asyncio
+    async def test_a_resumed_cell_is_pending_not_suspended(self) -> None:
+        """The manager only restarts on the next train step, and Suspended would re-trigger healing."""
+        resumed = MockRayTrainCell(phase="Pending", conditions=[{"type": "Allocated", "status": "False"}])
+        handler, _group, _manager = _make_actor_handler(cells=[resumed], suspended=True)
+
+        cell = await handler.get_cell(ACTOR_CELL_ID)
+
+        assert cell.status.phase == "Pending"
+        assert cell.spec.suspend is False

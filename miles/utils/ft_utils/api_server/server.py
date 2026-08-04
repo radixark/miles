@@ -7,6 +7,7 @@ import uvicorn
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
 
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.group import RayTrainGroup
 from miles.utils.ft_utils.api_server.handles import _ActorCellHandler, _CellHandler, _RolloutCellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
@@ -30,7 +31,13 @@ def start_api_server(
     handlers: list[_CellHandler] = []
 
     if "train" in ft_components:
-        handlers.append(_ActorCellHandler(group=actor_model))
+        handlers.append(
+            _ActorCellHandler(
+                worker_manager=RayWorkerManager.get_handle(),
+                group=actor_model,
+                trainer_pool_ids=[compute_trainer_pool_id("actor")],
+            )
+        )
 
     if "rollout" in ft_components:
         handlers.append(
