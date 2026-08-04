@@ -68,7 +68,7 @@ def _make_controller(
         rollout_executor=rollout_executor,
     )
     for cell_index in range(num_cells):
-        cell = group._create_cell(f"{group._pool_id}-{cell_index}", cell_index=cell_index)
+        cell = group._create_cell(f"{group._pool_id}-{cell_index}", cell_index=cell_index, workers_hash="pseudo-hash-1")
         group._cells_by_id[cell.cell_id] = cell
     return group
 

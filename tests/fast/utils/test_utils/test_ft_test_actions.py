@@ -79,12 +79,15 @@ def test_load_actions_rejects_invalid_action_literal() -> None:
 
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor, FTTestActionControllerExecutor
 
+_POOL_ID = "trainer-actor"
 _CELL_IDS = ["trainer-actor-0", "trainer-actor-1", "trainer-actor-2"]
 
 
 class FakeController:
-    def __init__(self, num_cells: int) -> None:
-        self.cell_ids = _CELL_IDS[:num_cells]
+    def __init__(self, num_cells: int, *, alive_cell_ids: list[str] | None = None) -> None:
+        self.pool_id = _POOL_ID
+        self.expected_num_cells = num_cells
+        self.cell_ids = _CELL_IDS[:num_cells] if alive_cell_ids is None else alive_cell_ids
 
 
 class FakeRemoteMethod:
@@ -105,14 +108,14 @@ class FakeWorkerManager:
 
 class TestResolveCellId:
     def test_non_negative_index_selects_that_cell(self):
-        """resolve_cell_id indexes the controller's cell ids when the index is explicit."""
+        """resolve_cell_id names the cell whose stable cell_index the action asked for."""
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        assert action.resolve_cell_id(_CELL_IDS) == "trainer-actor-1"
+        assert action.resolve_cell_id(pool_id=_POOL_ID, num_cells=3) == "trainer-actor-1"
 
     def test_negative_index_resolves_to_last_cell(self):
-        """resolve_cell_id maps the default -1 to the last cell."""
+        """resolve_cell_id maps the default -1 to the last cell of the configured pool."""
         action = FTTestAction(at_rollout=5, action="start_cell_at_end", cell_index=-1)
-        assert action.resolve_cell_id(_CELL_IDS) == "trainer-actor-2"
+        assert action.resolve_cell_id(pool_id=_POOL_ID, num_cells=3) == "trainer-actor-2"
 
     def test_omitted_cell_index_resolves_to_last_cell(self):
         """An action that never spells cell_index falls back to the model default and hits the last cell."""
@@ -162,6 +165,33 @@ class TestRunAfterStep:
 
         assert manager.started == ["trainer-actor-2"]
         assert manager.stopped == []
+
+    @pytest.mark.asyncio
+    async def test_start_cell_after_a_stopped_cell_was_dropped_still_targets_that_cell(self):
+        """A cell removed by _remove_cell shrinks the live list, but cell_index -1 must still name it."""
+        controller = FakeController(num_cells=2, alive_cell_ids=["trainer-actor-0"])
+        manager = FakeWorkerManager()
+        action = FTTestAction(at_rollout=3, action="start_cell_at_end", cell_index=-1)
+        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
+
+        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
+            await executor.run_after_step(3)
+
+        assert manager.started == ["trainer-actor-1"]
+        assert manager.stopped == []
+
+    @pytest.mark.asyncio
+    async def test_start_cell_on_a_single_cell_group_whose_only_cell_was_dropped(self):
+        """With every cell dropped the live list is empty, and positional lookup would raise IndexError."""
+        controller = FakeController(num_cells=1, alive_cell_ids=[])
+        manager = FakeWorkerManager()
+        action = FTTestAction(at_rollout=1, action="start_cell_at_end", cell_index=-1)
+        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
+
+        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
+            await executor.run_after_step(1)
+
+        assert manager.started == ["trainer-actor-0"]
 
     @pytest.mark.asyncio
     async def test_two_actions_same_rollout_both_fire(self):
