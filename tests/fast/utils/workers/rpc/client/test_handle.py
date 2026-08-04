@@ -17,7 +17,7 @@ from miles.utils.workers.rpc.client import handle as rpc_handle_module
 from miles.utils.workers.rpc.client import misc as rpc_misc_module
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.client.misc import RpcProtocolError, RpcWorkerCallError, ServerRestartedError
-from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER
+from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, EXPECTED_BOOT_UUID_HEADER, HEALTH_PATH
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 
@@ -161,6 +161,7 @@ async def _handle_over(
     worker_cls: type = _Worker,
     require_stable_boot_uuid: bool = False,
     call_timeout_seconds: float = 3600.0,
+    ready_timeout_seconds: float = rpc_handle_module.DEFAULT_READY_TIMEOUT_SECONDS,
     follow_redirects: bool = False,
 ) -> AsyncIterator[RpcWorkerHandle]:
     async with httpx.AsyncClient(transport=transport, follow_redirects=follow_redirects) as http_client:
@@ -169,6 +170,7 @@ async def _handle_over(
             server_url="http://testserver",
             require_stable_boot_uuid=require_stable_boot_uuid,
             call_timeout_seconds=call_timeout_seconds,
+            ready_timeout_seconds=ready_timeout_seconds,
             http_client=http_client,
         )
 
@@ -291,6 +293,36 @@ class TestReadyHandshake:
 
         assert rpc_handle_module.DEFAULT_READY_TIMEOUT_SECONDS == 600.0
         assert observed_timeouts == [expected_timeout]
+
+    async def test_implicit_stable_handshake_honors_ready_timeout_before_submit(self) -> None:
+        """The first call on a stable-boot handle really health-checks on the ready timeout before submitting."""
+
+        class _HealthTimeoutRecordingTransport(_HookTransport):
+            def __init__(self, app: Any) -> None:
+                super().__init__(app)
+                self.health_boot_uuid: str | None = None
+                self.health_read_timeouts: list[float] = []
+
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                is_health = request.method == "GET" and str(request.url).endswith(HEALTH_PATH)
+                if is_health:
+                    self.health_read_timeouts.append(request.extensions["timeout"]["read"])
+                response = await super().handle_async_request(request)
+                if is_health:
+                    self.health_boot_uuid = response.headers[BOOT_UUID_HEADER]
+                return response
+
+        async with _running_app(_Worker()) as app:
+            transport = _HealthTimeoutRecordingTransport(app)
+            async with _handle_over(transport, require_stable_boot_uuid=True, ready_timeout_seconds=2.5) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+        assert transport.seen[0].method == "GET" and str(transport.seen[0].url).endswith(HEALTH_PATH)
+        submit_request = next(request for request in transport.seen if request.method == "POST")
+        assert transport.health_boot_uuid is not None
+        assert submit_request.headers[EXPECTED_BOOT_UUID_HEADER] == transport.health_boot_uuid
+        assert transport.health_read_timeouts
+        assert 2.0 < transport.health_read_timeouts[0] <= 2.5
 
 
 class TestSubmitRetry:
@@ -795,6 +827,57 @@ class TestWaitReady:
             async with _handle_over(transport) as handle:
                 await handle.wait_ready(timeout=5.0)
                 assert transport.requests >= 3
+
+    async def test_wait_ready_probe_timeout_is_clamped_to_remaining_budget(self, fast_retries) -> None:
+        """A health probe never gets more time than the caller's remaining readiness budget."""
+
+        class _HealthTimeoutRecordingTransport(httpx.AsyncBaseTransport):
+            def __init__(self) -> None:
+                self.observations: list[tuple[float, float]] = []
+
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                self.observations.append((time.monotonic(), request.extensions["timeout"]["read"]))
+                raise httpx.ConnectError("refused", request=request)
+
+        transport = _HealthTimeoutRecordingTransport()
+        async with _handle_over(transport) as handle:
+            with pytest.raises(WorkerUnreachableError):
+                await handle.wait_ready(timeout=0.4)
+
+        assert len(transport.observations) >= 2
+        first_request_at, first_timeout = transport.observations[0]
+        for request_at, read_timeout in transport.observations[1:]:
+            elapsed = request_at - first_request_at
+            assert read_timeout <= first_timeout - elapsed + 0.01
+        assert transport.observations[-1][1] < first_timeout - 0.1
+
+    async def test_wait_ready_protocol_error_is_not_retried(self) -> None:
+        """A 4xx health response is a protocol error, so wait_ready gives up after one request."""
+        transport = _HookTransport(
+            None,
+            hook=_status_hook(status_code=404, times=-1, method="GET", path_fragment=HEALTH_PATH),
+        )
+        async with _handle_over(transport) as handle:
+            with pytest.raises(RpcProtocolError) as exc_info:
+                await handle.wait_ready(timeout=5.0)
+
+        assert exc_info.value.status_code == 404
+        assert transport.requests == 1
+
+    async def test_wait_ready_persistent_server_error_exhausts_as_unreachable(self, fast_retries) -> None:
+        """A health endpoint stuck on 5xx is retried until the deadline and then reported unreachable."""
+        timeout = 0.5
+        transport = _HookTransport(
+            None,
+            hook=_status_hook(status_code=503, times=-1, method="GET", path_fragment=HEALTH_PATH),
+        )
+        async with _handle_over(transport) as handle:
+            started = time.monotonic()
+            with pytest.raises(WorkerUnreachableError):
+                await handle.wait_ready(timeout=timeout)
+
+        assert transport.requests >= 3
+        assert transport.request_times[-1] - started >= timeout - 0.1
 
 
 class TestPositionalCalls:

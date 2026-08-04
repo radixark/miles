@@ -16,6 +16,14 @@ class TestNoRequestIsSent:
             _ = handle.no_such_method
         assert dead_proxy.requests == []
 
+    async def test_private_attribute_lookup_raises_attribute_error_without_sending(self, dead_proxy, make_handle):
+        """A private worker method is refused by name alone, so it never becomes a remote call."""
+        handle = make_handle(dead_proxy)
+        with pytest.raises(AttributeError) as exc_info:
+            _ = handle._bump
+        assert str(exc_info.value) == "_bump"
+        assert dead_proxy.requests == []
+
     async def test_missing_required_argument(self, dead_proxy, make_handle):
         """A missing argument is caught locally, not by the server."""
         handle = make_handle(dead_proxy)
