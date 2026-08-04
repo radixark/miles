@@ -17,6 +17,7 @@ from tests.fast.utils.workers.reconcile.utils import (
 from miles.utils.test_utils.clock import FakeClock
 
 from miles.utils.workers.reconcile.loop import ReconcileLoop
+from miles.utils.workers.reconcile.retry_scheduler import POLL_INTERVAL
 from miles.utils.workers.reconcile.source_event import DeleteEvent, UpsertEvent
 
 
@@ -430,22 +431,206 @@ class TestWorkQueueDiscipline:
         await loop.stop()
 
 
-class TestFailures:
-    async def test_a_failing_reconcile_does_not_kill_the_worker(self):
-        """A reconcile that raises is logged and the next key is still served."""
-        loop, source, recorder, _ = await make_loop(initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"})
-        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1", cell="cell-b")))
-        await settle()
+class TestFailureBackoff:
+    async def test_failed_reconcile_is_retried_only_after_the_backoff_delay(self):
+        """A raising reconcile is requeued when — and not before — the delay elapses."""
+        loop, _, recorder, clock = await make_loop(
+            initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"}, failure_base_delay=2.0
+        )
+        assert recorder.counts() == {"cell-a": 1}
 
-        assert recorder.counts() == {"cell-a": 1, "cell-b": 1}
+        await clock.elapse(1.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 1}
+
+        await clock.elapse(1.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2}
         await loop.stop()
 
-    async def test_a_failing_key_is_not_retried_on_its_own(self):
-        """Without a retry policy a failure costs one reconcile, not a redelivery."""
-        loop, _, recorder, _ = await make_loop(initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"})
+    async def test_backoff_grows_exponentially_and_resets_on_success(self):
+        """Retry delay doubles per consecutive failure and resets after a success."""
+        source = FakeSource()
+        recorder = Recorder()
+        clock = FakeClock()
+        loop = ReconcileLoop(
+            source=source,
+            reconcile=recorder,
+            key_map=pod_cell,
+            clock=clock,
+            failure_base_delay=1.0,
+            failure_max_delay=8.0,
+        )
+        recorder.loop = loop
+        recorder.fail_parent_keys = {"cell-a"}
+        start_task = asyncio.create_task(loop.start())
         await settle()
-
+        source.emit(replace_of(make_pod("pod-0")))
+        await settle()
+        await start_task
         assert recorder.counts() == {"cell-a": 1}
+
+        await clock.elapse(1.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2}
+
+        await clock.elapse(1.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2}
+        await clock.elapse(1.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 3}
+
+        recorder.fail_parent_keys = set()
+        await clock.elapse(4.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 4}
+
+        recorder.fail_parent_keys = {"cell-a"}
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1")))
+        await settle()
+        assert recorder.counts() == {"cell-a": 5}
+        await clock.elapse(1.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 6}
+        await loop.stop()
+
+    async def test_backoff_is_capped(self):
+        """The retry delay never exceeds failure_max_delay."""
+        source = FakeSource()
+        recorder = Recorder()
+        clock = FakeClock()
+        loop = ReconcileLoop(
+            source=source,
+            reconcile=recorder,
+            key_map=pod_cell,
+            clock=clock,
+            failure_base_delay=1.0,
+            failure_max_delay=2.0,
+        )
+        recorder.loop = loop
+        recorder.fail_parent_keys = {"cell-a"}
+        start_task = asyncio.create_task(loop.start())
+        await settle()
+        source.emit(replace_of(make_pod("pod-0")))
+        await settle()
+        await start_task
+
+        for expected in range(2, 8):
+            await clock.elapse(2.0)
+            await settle()
+            assert recorder.counts() == {"cell-a": expected}
+        await loop.stop()
+
+    async def test_a_fresh_failure_installs_its_own_delay(self):
+        """Retry is latest-wins: a new failure replaces the pending timer, even with a longer delay."""
+        loop, source, recorder, clock = await make_loop(
+            initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"}, failure_base_delay=1.0, failure_max_delay=64.0
+        )
+        assert recorder.counts() == {"cell-a": 1}
+
+        await clock.elapse(0.5)
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1")))
+        await settle()
+        assert recorder.counts() == {"cell-a": 2}
+
+        await clock.elapse(0.5)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2}
+
+        await clock.elapse(1.5)
+        await settle()
+        assert recorder.counts() == {"cell-a": 3}
+        await loop.stop()
+
+    async def test_a_success_cancels_the_pending_retry(self):
+        """A key that recovers must not be woken again by the timer its failure installed."""
+        loop, source, recorder, clock = await make_loop(
+            initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"}, failure_base_delay=10.0, failure_max_delay=10.0
+        )
+        recorder.fail_parent_keys = set()
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1")))
+        await settle()
+        assert recorder.counts() == {"cell-a": 2}
+
+        await clock.elapse(100.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2}
+        assert loop._retry._infos == {}
+        await loop.stop()
+
+    async def test_endless_failures_do_not_kill_the_worker(self):
+        """A very large consecutive-failure count must not overflow the backoff computation."""
+        loop, _, recorder, clock = await make_loop(
+            initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"}, failure_base_delay=1.0, failure_max_delay=2.0
+        )
+        loop._retry._infos["cell-a"].failures = 5000
+
+        await clock.elapse(2.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2}
+
+        await clock.elapse(2.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 3}
+        await loop.stop()
+
+    async def test_another_keys_success_does_not_reset_a_failing_keys_backoff(self):
+        """Failure counters are per key."""
+        pods = [make_pod("pod-a", cell="cell-a"), make_pod("pod-b", cell="cell-b")]
+        loop, source, recorder, clock = await make_loop(
+            initial=pods, fail_parent_keys={"cell-a"}, failure_base_delay=1.0, failure_max_delay=64.0
+        )
+        await clock.elapse(1.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2, "cell-b": 1}
+
+        source.emit(UpsertEvent(key="pod-b2", obj=make_pod("pod-b2", cell="cell-b")))
+        await settle()
+        assert recorder.counts() == {"cell-a": 2, "cell-b": 2}
+
+        await clock.elapse(1.9)
+        await settle()
+        assert recorder.counts()["cell-a"] == 2
+
+        await clock.elapse(0.1 + POLL_INTERVAL)
+        await settle()
+        assert recorder.counts()["cell-a"] == 3
+        await loop.stop()
+
+    async def test_failing_keys_keep_independent_retry_deadlines(self):
+        """One key rescheduling its retry must not cancel another key's pending timer."""
+        loop, source, recorder, clock = await make_loop(
+            initial=[make_pod("pod-0")], fail_parent_keys={"cell-a", "cell-b"}, failure_base_delay=2.0
+        )
+        assert recorder.counts() == {"cell-a": 1}
+
+        await clock.elapse(1.0)
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1", cell="cell-b")))
+        await settle()
+        assert recorder.counts() == {"cell-a": 1, "cell-b": 1}
+
+        await clock.elapse(1.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2, "cell-b": 1}
+
+        await clock.elapse(1.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 2, "cell-b": 2}
+        await loop.stop()
+
+    async def test_other_keys_progress_while_one_key_backs_off(self):
+        """A failing key does not block reconciles of other keys."""
+        loop, source, recorder, clock = await make_loop(
+            initial=[make_pod("pod-0", cell="cell-a")], failure_base_delay=100.0, failure_max_delay=100.0
+        )
+        recorder.fail_parent_keys = {"cell-a"}
+        recorder.parent_keys.clear()
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1", cell="cell-a")))
+        await settle()
+        source.emit(UpsertEvent(key="pod-2", obj=make_pod("pod-2", cell="cell-b")))
+        await settle()
+        assert recorder.parent_keys == ["cell-a", "cell-b"]
         await loop.stop()
 
 
@@ -546,6 +731,18 @@ class TestStop:
         assert shutdown is not None
         await shutdown
         assert source.closed_count == 1
+
+    async def test_stop_cancels_pending_backoff_retries(self):
+        """Pending retry timers do not survive stop()."""
+        loop, _, recorder, clock = await make_loop(
+            initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"}, failure_base_delay=5.0
+        )
+        await loop.stop()
+
+        assert loop._retry._poller.cancelled()
+        await clock.elapse(100.0)
+        await settle()
+        assert recorder.counts() == {"cell-a": 1}
 
 
 class TestInStreamRelist:
