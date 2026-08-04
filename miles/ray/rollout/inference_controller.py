@@ -78,7 +78,7 @@ class InferenceController:
     @with_lock
     async def prepare_rollout(self, rollout_id):
         await self._health_monitoring_resume()
-        dashboard_hooks.register_engines(self.servers)
+        await dashboard_hooks.register_engines(self.servers)
 
     @with_lock
     async def prepare_eval(self):

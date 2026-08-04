@@ -30,6 +30,7 @@ def _make_spec(
     num_gpu_slots_per_worker: int = 0,
     pg_name: str | None = None,
     env_var=None,
+    worker_class: str = _WORKER_CLASS_PATH,
 ) -> ServeWorkerSpec:
     return ServeWorkerSpec(
         name=name,
@@ -43,7 +44,7 @@ def _make_spec(
             num_gpu_slots_per_worker=num_gpu_slots_per_worker,
             pg_name=pg_name,
         ),
-        worker_class=_WORKER_CLASS_PATH,
+        worker_class=worker_class,
         ctor_kwargs=ctor_kwargs if ctor_kwargs is not None else (lambda _ctx: {}),
         concurrency_groups=concurrency_groups,
     )
@@ -114,6 +115,19 @@ class TestServeWorkersAreLaunched:
 
         env_vars = [options["runtime_env"]["env_vars"] for options in _options(fake_ray_cluster)]
         assert env_vars == [{"RANK_DIR": "/d/0"}, {"RANK_DIR": "/d/1"}]
+
+
+class TestServeWorkerClassFailures:
+    async def test_an_unloadable_worker_class_rolls_back_the_serve_cell(self, fake_ray_cluster: FakeRayCluster):
+        """A cell left alive around a class that cannot be imported would never be retried nor serve."""
+        spec = _make_spec(worker_class=f"{_WORKER_CLASS_PATH}Missing")
+        manager = RayWorkerManager()
+
+        with pytest.raises(Exception, match="DemoServeWorkerMissing"):
+            await manager.init([spec], {})
+
+        assert fake_ray_cluster.handles == []
+        assert not manager.get_cell_infos(pool_ids=["trainer"])["trainer-0"].alive
 
 
 class TestServeSchedulingOptions:

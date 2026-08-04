@@ -68,6 +68,38 @@ def test_attempt_and_gen_events_carry_identity_and_version():
     assert _pushed(handle)[-1].detail == Sample.Status.PENDING.value
 
 
+def test_event_without_weight_version_spans_uses_empty_version():
+    """A sample whose generation reported no weight version is still emitted, with an empty version."""
+    handle = FakeHandle()
+    sink = TrajectorySink(handle)
+
+    sink.attempt_start(_sample(versions=()))
+    sink.flush()
+
+    [event] = _pushed(handle)
+    assert (event.kind, event.sample_index, event.weight_version) == (TrajectoryEventKind.ATTEMPT_START, 7, "")
+
+
+def test_event_uses_last_span_from_multi_span_generation_call():
+    """The reported version is the last span of the last call, not that call's first span."""
+    handle = FakeHandle()
+    sample = Sample(
+        index=7,
+        group_index=2,
+        weight_versions=[
+            WeightVersionsPerCall(spans=[WeightVersionSpan("3", 0, 1)]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan("4", 1, 2), WeightVersionSpan("5", 2, 3)]),
+        ],
+    )
+    sink = TrajectorySink(handle)
+
+    sink.gen_start(sample)
+    sink.flush()
+
+    [event] = _pushed(handle)
+    assert event.weight_version == "5"
+
+
 def test_spans_use_explicit_timestamps_and_turns():
     handle = FakeHandle()
     sink = TrajectorySink(handle)

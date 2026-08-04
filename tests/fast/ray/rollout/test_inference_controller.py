@@ -5,10 +5,16 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout import inference_controller as inference_controller_module
-from miles.ray.rollout.inference_controller import InferenceController, _compute_server_cell_meta_from_info
+from miles.ray.rollout.inference_controller import (
+    InferenceController,
+    UpdatableEngines,
+    _compute_server_cell_meta_from_info,
+)
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
@@ -60,7 +66,14 @@ def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
 
 
 class _RecordingServer:
-    def __init__(self, server_cells: dict | None = None, *, model_name: str = "model", update_weights: bool = False):
+    def __init__(
+        self,
+        server_cells: dict | None = None,
+        *,
+        model_name: str = "model",
+        update_weights: bool = False,
+        cells_gate: asyncio.Event | None = None,
+    ):
         self.server_cells = server_cells or {}
         self.update_weights = update_weights
         self.model_name = model_name
@@ -68,12 +81,28 @@ class _RecordingServer:
         self.api_clients: list = []
         self.engine_gpu_counts: list[int] = []
         self.engine_gpu_offsets: list[int] = []
+        self.offload_tags: list = []
+        self.onload_tags: list = []
+        self.check_weights_kwargs: list[dict] = []
+        self.waited_expected_num_cells = 0
+        self.dispose_count = 0
+        self._cells_gate = cells_gate
 
     async def offload(self, tags=None):
         self.calls.append(("offload",))
+        self.offload_tags.append(tags)
+
+    async def onload(self, tags=None):
+        self.onload_tags.append(tags)
+
+    async def dispose(self):
+        self.dispose_count += 1
 
     async def check_weights(self, action, allow_quant_error=False, selector="all", skip_list=None):
         self.calls.append(("check_weights", action))
+        self.check_weights_kwargs.append(
+            dict(action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list)
+        )
         return [self.model_name]
 
     async def add_cell(self, cell_meta: ServerCellMetadata):
@@ -85,7 +114,35 @@ class _RecordingServer:
         del self.server_cells[cell_id]
 
     async def wait_expected_num_cells(self) -> None:
-        return None
+        if self._cells_gate is not None:
+            await self._cells_gate.wait()
+        self.waited_expected_num_cells += 1
+
+
+class _FakeUpdatableCell:
+    def __init__(self, workers_hash: str):
+        self.meta = SimpleNamespace(workers_hash=workers_hash)
+        self.marked_ready = 0
+        self.is_pending_weights = True
+        self.is_pending_weights_or_serving = True
+
+    async def mark_weights_ready(self) -> None:
+        self.marked_ready += 1
+
+
+class _TickingCell:
+    def __init__(self, cell_id: str = "engine-0"):
+        self.meta = SimpleNamespace(cell_id=cell_id)
+        self.tick_count = 0
+
+    async def tick(self) -> None:
+        self.tick_count += 1
+
+
+class _RecordingEvalFleet:
+    def __init__(self, args: Namespace, *, srv):
+        self.args = args
+        self.srv = srv
 
 
 def _make_controller(servers: dict) -> InferenceController:
@@ -128,6 +185,22 @@ class TestHealthCheckerActiveness:
         await controller.prepare_rollout(rollout_id=0)
 
         assert controller._health_checker_activeness.get().active
+
+    @pytest.mark.asyncio
+    async def test_preparing_a_rollout_awaits_the_dashboard_engine_registration(self, monkeypatch):
+        """The dashboard hook is a coroutine, so prepare_rollout must await it instead of leaving it unscheduled."""
+        awaited: list[dict] = []
+
+        async def _record(servers: dict) -> None:
+            awaited.append(servers)
+
+        monkeypatch.setattr(dashboard_hooks, "register_engines", _record)
+        servers = {"default": _RecordingServer()}
+        controller = _make_controller(servers)
+
+        await controller.prepare_rollout(rollout_id=0)
+
+        assert awaited == [servers]
 
     @pytest.mark.asyncio
     async def test_preparing_an_eval_resumes_probing(self):
@@ -231,6 +304,7 @@ class _FakeWorkerProvider:
         self._cell_infos = cell_infos
         self._pools: list[str] = []
         self.watched_pool_ids: list[str] | None = None
+        self.stop_watch_calls = 0
 
     def created_with(self, pool_ids: list[str]) -> "_FakeWorkerProvider":
         self._pools = list(pool_ids)
@@ -244,7 +318,7 @@ class _FakeWorkerProvider:
                 await reconcile(info.cell_id, info)
 
         async def _stop_watch() -> None:
-            return None
+            self.stop_watch_calls += 1
 
         return _stop_watch
 
@@ -476,3 +550,214 @@ class TestUpdatableModelSelection:
 
         assert await self._controller(ref).check_weights(action="compare") == []
         assert ref.calls == []
+
+    @pytest.mark.asyncio
+    async def test_check_weights_forwards_all_selection_arguments(self):
+        """Losing the selector or the skip list here would compare tensors the caller asked to leave alone."""
+        actor = _RecordingServer(model_name="actor", update_weights=True)
+
+        await self._controller(actor).check_weights(
+            action="compare", allow_quant_error=True, selector="first", skip_list=["lm_head"]
+        )
+
+        assert actor.check_weights_kwargs == [
+            dict(action="compare", allow_quant_error=True, selector="first", skip_list=["lm_head"])
+        ]
+
+
+class TestMemoryLifecycleFanOut:
+    @pytest.mark.asyncio
+    async def test_memory_lifecycle_entrypoints_fan_out_with_exact_tags(self):
+        """Every server must be told exactly which memory pools to release and to reclaim."""
+        first, second = _RecordingServer(model_name="a"), _RecordingServer(model_name="b")
+        controller = _make_controller({"a": first, "b": second})
+
+        await controller.offload(tags=[GPU_MEMORY_TYPE_KV_CACHE])
+        await controller.onload(tags=[GPU_MEMORY_TYPE_CUDA_GRAPH])
+        await controller.onload_weights()
+        await controller.onload_kv()
+
+        for srv in (first, second):
+            assert srv.offload_tags == [[GPU_MEMORY_TYPE_KV_CACHE]]
+            assert srv.onload_tags == [
+                [GPU_MEMORY_TYPE_CUDA_GRAPH],
+                [GPU_MEMORY_TYPE_WEIGHTS],
+                [GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH],
+            ]
+
+
+class TestUpdatableEnginesPayload:
+    @pytest.mark.asyncio
+    async def test_start_update_weights_returns_clients_gpu_layout_and_generation_snapshot(self):
+        """The trainer indexes these four lists in parallel, so swapping or dropping one misplaces every shard."""
+        srv = _RecordingServer(
+            {"engine-0": _FakeUpdatableCell("hash-a"), "engine-1": _FakeUpdatableCell("hash-b")},
+            model_name="actor",
+            update_weights=True,
+        )
+        srv.api_clients = ["client-0", "client-1"]
+        srv.engine_gpu_counts = [2, 4]
+        srv.engine_gpu_offsets = [0, 2]
+        controller = _make_controller({"actor": srv, "ref": _RecordingServer(model_name="ref")})
+
+        updatable = await controller.start_update_weights()
+        await controller.end_update_weights(snapshot_cell_id_to_hashes=updatable.snapshot_cell_id_to_hashes)
+
+        assert updatable == UpdatableEngines(
+            rollout_engines=["client-0", "client-1"],
+            engine_gpu_counts=[2, 4],
+            engine_gpu_offsets=[0, 2],
+            snapshot_cell_id_to_hashes={"engine-0": "hash-a", "engine-1": "hash-b"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_end_update_weights_skips_a_cell_from_a_different_worker_generation(self):
+        """A cell relaunched during the update runs new processes that never received these weights."""
+        relaunched, untouched = _FakeUpdatableCell("hash-new"), _FakeUpdatableCell("hash-b")
+        srv = _RecordingServer(
+            {"engine-0": relaunched, "engine-1": untouched}, model_name="actor", update_weights=True
+        )
+        controller = _make_controller({"actor": srv})
+
+        await controller.start_update_weights()
+        await controller.end_update_weights(snapshot_cell_id_to_hashes={"engine-0": "hash-old", "engine-1": "hash-b"})
+
+        assert (relaunched.marked_ready, untouched.marked_ready) == (0, 1)
+
+
+class TestInitLifecycle:
+    @pytest.mark.asyncio
+    async def test_debug_train_only_init_has_no_rollout_side_effects(self, monkeypatch: pytest.MonkeyPatch):
+        """A train-only debug run owns no engines, so init must not reach any rollout machinery."""
+
+        async def _no_servers(args: Namespace, **kwargs: Any) -> dict:
+            raise AssertionError("debug_train_only must not create rollout servers")
+
+        async def _no_session_server(args: Namespace) -> None:
+            raise AssertionError("debug_train_only must not wait for the session server")
+
+        monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _no_servers)
+        monkeypatch.setattr(inference_controller_module, "wait_session_server_ready", _no_session_server)
+        monkeypatch.setattr(
+            inference_controller_module,
+            "RayWorkerProvider",
+            SimpleNamespace(create=lambda **kwargs: pytest.fail("debug_train_only must not watch cells")),
+        )
+        monkeypatch.setattr(
+            dashboard_hooks, "register_router", lambda args: pytest.fail("debug_train_only has no router")
+        )
+        controller = InferenceController(make_args(debug_train_only=True))
+
+        await controller.init()
+
+        assert controller.servers == {}
+        assert controller.eval_fleet is None
+        assert controller._watcher_disposers == []
+        assert controller._ticker is None
+
+    @pytest.mark.asyncio
+    async def test_init_passes_its_exact_context_lock_to_the_server_factory(self, monkeypatch: pytest.MonkeyPatch):
+        """A server built on a second lock would let engine work run inside the controller's own window."""
+        received: dict[str, Any] = {}
+
+        async def _fake_create_rollout_servers(args: Namespace, **kwargs: Any) -> dict[str, _RecordingServer]:
+            received.update(kwargs)
+            return {"default": _RecordingServer()}
+
+        monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
+        monkeypatch.setattr(
+            inference_controller_module,
+            "RayWorkerProvider",
+            SimpleNamespace(create=lambda *, pool_ids: _FakeWorkerProvider([]).created_with(pool_ids)),
+        )
+        controller = InferenceController(make_args())
+
+        await controller.init()
+        await controller.dispose()
+
+        assert received["context_lock"] is controller.context_lock
+
+    @pytest.mark.asyncio
+    async def test_init_creates_the_eval_fleet_from_the_eval_server(self, monkeypatch: pytest.MonkeyPatch):
+        """The eval fleet drives the dedicated eval engines, so it must be handed that server and no other."""
+        monkeypatch.setattr(inference_controller_module, "EvalFleet", _RecordingEvalFleet)
+        default, eval_srv = _RecordingServer(model_name="default"), _RecordingServer(model_name="eval")
+        _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"default": default, "eval": eval_srv})
+        controller = InferenceController(make_args(eval_num_gpus=2))
+
+        await controller.init()
+        await controller.dispose()
+
+        assert isinstance(controller.eval_fleet, _RecordingEvalFleet)
+        assert controller.eval_fleet.srv is eval_srv
+        assert controller.eval_fleet.args is controller.args
+
+    @pytest.mark.asyncio
+    async def test_init_without_eval_gpus_creates_no_eval_fleet(self, monkeypatch: pytest.MonkeyPatch):
+        """A run without dedicated eval engines has no eval server to build a fleet from."""
+        monkeypatch.setattr(
+            inference_controller_module,
+            "EvalFleet",
+            lambda *args, **kwargs: pytest.fail("no eval fleet without eval gpus"),
+        )
+        _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"default": _RecordingServer()})
+        controller = InferenceController(make_args(eval_num_gpus=0))
+
+        await controller.init()
+        await controller.dispose()
+
+        assert controller.eval_fleet is None
+
+    @pytest.mark.asyncio
+    async def test_init_registers_routing_and_waits_for_every_startup_gate(self, monkeypatch: pytest.MonkeyPatch):
+        """Returning before every server has its cells would start a rollout against engines that are not up."""
+        registered: list[Namespace] = []
+        waited_session: list[Namespace] = []
+
+        async def _wait_session_server_ready(args: Namespace) -> None:
+            waited_session.append(args)
+
+        monkeypatch.setattr(dashboard_hooks, "register_router", registered.append)
+        monkeypatch.setattr(inference_controller_module, "wait_session_server_ready", _wait_session_server_ready)
+        gate = asyncio.Event()
+        ready, blocked = _RecordingServer(), _RecordingServer(cells_gate=gate)
+        _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"default": ready, "frozen": blocked})
+        args = make_args()
+        controller = InferenceController(args)
+
+        task = asyncio.create_task(controller.init())
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not task.done()
+        assert ready.waited_expected_num_cells == 1
+        gate.set()
+        await asyncio.wait_for(task, timeout=5)
+        await controller.dispose()
+
+        assert registered == [args]
+        assert waited_session == [args]
+        assert blocked.waited_expected_num_cells == 1
+
+    @pytest.mark.asyncio
+    async def test_init_and_dispose_own_the_cell_watch_and_ticker_lifetimes(self, monkeypatch: pytest.MonkeyPatch):
+        """A watch or tick loop outliving the controller keeps dialing engines that nobody owns any more."""
+        monkeypatch.setattr(inference_controller_module, "TICK_INTERVAL_SECONDS", 0.01)
+        cell = _TickingCell()
+        provider = _FakeWorkerProvider([])
+        _patch_init(monkeypatch, provider=provider, servers={"default": _RecordingServer({"engine-0": cell})})
+        controller = InferenceController(make_args())
+
+        await controller.init()
+        await asyncio.sleep(0.05)
+        assert cell.tick_count > 0
+        assert controller._ticker._interval_seconds == inference_controller_module.TICK_INTERVAL_SECONDS
+        assert len(controller._watcher_disposers) == 1
+
+        await controller.dispose()
+        ticks_at_dispose = cell.tick_count
+        await asyncio.sleep(0.01)
+
+        assert provider.stop_watch_calls == 1
+        assert controller._watcher_disposers == []
+        assert controller._ticker is None
+        assert cell.tick_count == ticks_at_dispose

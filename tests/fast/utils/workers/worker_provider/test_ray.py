@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 import miles.utils.workers.worker_provider.ray as ray_worker_provider_mod
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -116,6 +117,14 @@ class _FakeRayModule:
         return [ref.infos for ref in refs]
 
 
+class _FakeWorkerHandle(BaseWorkerHandle):
+    async def wait_ready(self, *, timeout: float) -> None:
+        return None
+
+    async def wait_dead(self, *, timeout: float) -> None:
+        return None
+
+
 def _worker_infos(cell_id: str, *, count: int) -> list[WorkerInfo]:
     return [
         WorkerInfo(
@@ -123,7 +132,7 @@ def _worker_infos(cell_id: str, *, count: int) -> list[WorkerInfo]:
             generation=1,
             self_addrs={"primary": HostAndPort(host="10.0.0.7", port=15000 + worker_index)},
             gpu_ids=[worker_index],
-            actor_handle=None,
+            handle=_FakeWorkerHandle(),
         )
         for worker_index in range(count)
     ]

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
-from tests.fast.ray.train.conftest import make_alive_cell, make_cell
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell, make_cell
 
 from miles.ray.train.group import TrainerController
 
@@ -19,7 +19,7 @@ def _make_controller(cells: list) -> RayTrainGroup:
 def _reconcile_calls_of(cell) -> list:
     return [
         [call for call in ray.get(handle.get_calls.remote()) if call[0] == "reconcile_adapters"]
-        for handle in cell._get_actor_handles()
+        for handle in get_raw_actor_handles(cell)
     ]
 
 
@@ -37,7 +37,7 @@ class TestReconcileAdapters:
     async def test_a_failing_worker_in_a_later_cell_propagates_instead_of_being_swallowed(self):
         """A stale adapter set would corrupt routing, so a failure in any cell must reach the caller."""
         cells = [make_cell(index) for index in range(2)]
-        ray.get(cells[1]._get_actor_handles()[0].set_fail_methods.remote(["reconcile_adapters"]))
+        ray.get(get_raw_actor_handles(cells[1])[0].set_fail_methods.remote(["reconcile_adapters"]))
         group = _make_controller(cells)
 
         with pytest.raises(Exception, match="Injected failure"):
