@@ -2944,20 +2944,17 @@ def miles_validate_args(args):
             args.log_probs_max_tokens_per_gpu = args.max_tokens_per_gpu
 
     # --use-dynamic-global-batch-size has two motivations:
-    # 1. compaction/subagent rollouts: the number of samples per rollout is unpredictable
-    #    at runtime, so steps must size themselves to the collected data. Assembling such
-    #    steps with static micro-batching is not supported yet -- no config keeps
-    #    ceil(step_size / micro_batch_size) aligned to dp_size * mb_group -- so
-    #    --use-dynamic-batch-size is required.
+    # 1. compaction/subagent rollouts: static micro-batching cannot guarantee alignment
+    #    when the physical sample count is data-dependent, so --use-dynamic-batch-size
+    #    is required.
     # 2. multi-LoRA (auto-enabled, no compaction/subagent): the per-round sample count is
     #    a config-shaped multiple of dp_size trained as exactly one step on the legacy
     #    training-side schedule; static micro-batching stays valid there.
     if args.use_dynamic_global_batch_size and not args.multi_lora:
         assert args.use_dynamic_batch_size, (
             "--use-dynamic-global-batch-size requires --use-dynamic-batch-size (with --max-tokens-per-gpu): "
-            "the per-step sample count is data-dependent, static micro-batching cannot keep the micro-batch "
-            "count aligned to dp_size * mb_group, and training would crash mid-run on build_dp_schedule's "
-            "alignment check."
+            "static micro-batching cannot guarantee dp_size * mb_group alignment when the physical sample count "
+            "is data-dependent; this configuration is not supported."
         )
 
     if getattr(args, "balance_by_flops", False):
