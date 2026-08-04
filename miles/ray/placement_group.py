@@ -7,7 +7,7 @@ from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.specs.train import compute_critic_args
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from ..utils.ray_utils import compute_ray_pin_head_options
 from .rollout.inference_controller import InferenceController
 from .rollout.rollout_executor import RolloutExecutor
@@ -125,7 +125,7 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
 
 
 async def create_training_models(args, inference_controller, rollout_executor):
-    actor_model = RayTrainGroup(
+    actor_model = TrainerController(
         args=args,
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
@@ -136,7 +136,7 @@ async def create_training_models(args, inference_controller, rollout_executor):
     actor_start_rollout_ids = await actor_model.init()
 
     if args.use_critic:
-        critic_model = RayTrainGroup(
+        critic_model = TrainerController(
             args=compute_critic_args(args),
             role="critic",
             with_ref=False,

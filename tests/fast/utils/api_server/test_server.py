@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import FastAPI
+
 from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
@@ -244,6 +246,25 @@ class TestPatchCell:
         assert resp.json()["kind"] == "Status"
         assert resp.json()["reason"] == "InternalError"
 
+    @pytest.mark.asyncio
+    async def test_resume_error_returns_500_k8s_status(
+        self, actor_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A resume that fails must be reported as loudly as a suspend that fails, or the cell looks resumed."""
+        actor_handler.add("actor-0", is_suspended=True, resume_error=RuntimeError("relaunch rejected"))
+
+        resp = await async_client.patch("/api/v1/cells/actor-0", json={"spec": {"suspend": False}})
+
+        assert resp.status_code == 500
+        assert resp.json() == {
+            "apiVersion": "v1",
+            "kind": "Status",
+            "status": "Failure",
+            "message": "Failed to patch cell 'actor-0'",
+            "reason": "InternalError",
+            "code": 500,
+        }
+
 
 class TestStartApiServerRegistration:
     def _start(
@@ -317,6 +338,99 @@ class TestStartApiServerRegistration:
 
         assert [handler.cell_type for handler in registry._handlers] == ["actor", "rollout"]
 
+    @pytest.mark.asyncio
+    async def test_mixed_ft_serves_the_trainer_and_the_engine_cells(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Mixed ft is the only mode where one endpoint must answer for two pools, so both must be enumerable."""
+        registry = self._start(
+            monkeypatch,
+            ft_components=["train", "rollout"],
+            cell_ids=["trainer-actor-0", "inference-engine-0-0-0"],
+            actor_cells=[MockTrainerCell(phase="Running")],
+        )
+
+        cells = await registry.list_cells()
+        assert [(cell.metadata.name, cell.metadata.labels["miles.io/cell-type"]) for cell in cells] == [
+            ("trainer-actor-0", "actor"),
+            ("inference-engine-0-0-0", "rollout"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_actor_handler_exists_when_train_ft_is_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Exposing suspend on trainer cells nobody heals would let one request strand the whole run."""
+        registry = self._start(
+            monkeypatch,
+            ft_components=["rollout"],
+            cell_ids=["trainer-actor-0"],
+            actor_cells=[MockTrainerCell(phase="Running")],
+        )
+
+        assert await registry.list_cells() == []
+
+    @pytest.mark.asyncio
+    async def test_the_requested_port_reaches_the_server_that_binds_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The FT controller is told this port out of band, so binding any other one makes the api unreachable."""
+        ports: list[int] = []
+        manager = MockWorkerManager(make_cell_summaries("trainer-actor-0"))
+        monkeypatch.setattr(server, "RayWorkerManager", SimpleNamespace(get_handle=lambda: manager))
+        monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: ports.append(port))
+
+        server.start_api_server(
+            args=make_rollout_args(),
+            actor_model=make_mock_controller([MockTrainerCell()]),
+            inference_controller=MockInferenceController(),
+            port=19137,
+            ft_components=["train"],
+        )
+
+        assert ports == [19137]
+
+
+class TestStartApiServerRaw:
+    def test_uvicorn_serves_the_registry_app_on_a_daemon_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A foreground server blocks the training driver, and a loopback bind hides it from the FT controller."""
+        serving_threads: list[threading.Thread] = []
+        start_and_wait_thread = server._start_and_wait_thread
+
+        def _record_thread(**kwargs) -> threading.Thread:
+            thread = start_and_wait_thread(**kwargs)
+            serving_threads.append(thread)
+            return thread
+
+        monkeypatch.setattr(server, "_start_and_wait_thread", _record_thread)
+        port = find_available_port(21200)
+
+        running = server._start_api_server_raw(registry=_CellRegistry([]), port=port)
+
+        try:
+            [thread] = serving_threads
+            assert thread.daemon is True
+            assert isinstance(running.config.app, FastAPI)
+            assert (running.config.host, running.config.port) == ("0.0.0.0", port)
+        finally:
+            running.should_exit = True
+
+    def test_a_bound_port_serves_and_can_be_reached(self) -> None:
+        """The happy path must still return once uvicorn is actually accepting connections."""
+        port = find_available_port(21000)
+
+        running = server._start_api_server_raw(registry=_CellRegistry([]), port=port)
+        try:
+            resp = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=10.0)
+            assert resp.status_code == 200
+        finally:
+            running.should_exit = True
+
+    def test_a_port_already_taken_fails_the_caller(self) -> None:
+        """A second job silently losing the port would then poll the first job's cell registry."""
+        port = find_available_port(21100)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            occupied.bind(("0.0.0.0", port))
+            occupied.listen()
+
+            with pytest.raises(RuntimeError, match=f"port {port} failed during startup"):
+                server._start_api_server_raw(registry=_CellRegistry([]), port=port)
+
 
 class TestDynamicCells:
     @pytest.mark.asyncio
@@ -370,29 +484,56 @@ class TestInjectFault:
 
         assert resp.status_code == 400
 
+    @pytest.mark.asyncio
+    async def test_inject_fault_uses_zero_sub_index_by_default(
+        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """The documented default targets worker zero, and a client omitting sub_index relies on it."""
+        rollout_handler.supports_inject_fault = True
+        rollout_handler.add("rollout-engine-0")
 
-class TestStartApiServerRaw:
-    def test_a_bound_port_serves_and_can_be_reached(self) -> None:
-        """The happy path must still return once uvicorn is actually accepting connections."""
-        port = find_available_port(21000)
+        resp = await async_client.post("/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "exit"})
 
-        running = server._start_api_server_raw(registry=_CellRegistry([]), port=port)
-        try:
-            resp = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=10.0)
-            assert resp.status_code == 200
-        finally:
-            running.should_exit = True
+        assert resp.status_code == 200
+        assert resp.json() == {"status": "ok"}
+        assert rollout_handler.injected == [("rollout-engine-0", FailureMode.EXIT, 0)]
 
-    def test_a_port_already_taken_fails_the_caller(self) -> None:
-        """A second job silently losing the port would then poll the first job's cell registry."""
-        port = find_available_port(21100)
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
-            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            occupied.bind(("0.0.0.0", port))
-            occupied.listen()
+    @pytest.mark.asyncio
+    async def test_inject_fault_rejects_missing_or_unknown_mode(
+        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """An unrecognised failure mode must be refused by the schema rather than forwarded to the cell."""
+        rollout_handler.supports_inject_fault = True
+        rollout_handler.add("rollout-engine-0")
 
-            with pytest.raises(RuntimeError, match=f"port {port} failed during startup"):
-                server._start_api_server_raw(registry=_CellRegistry([]), port=port)
+        missing = await async_client.post("/api/v1/cells/rollout-engine-0/inject-fault", json={})
+        unknown = await async_client.post("/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "nuke"})
+
+        assert (missing.status_code, unknown.status_code) == (422, 422)
+        assert rollout_handler.injected == []
+
+    @pytest.mark.asyncio
+    async def test_an_injection_that_blows_up_returns_500_k8s_status(
+        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
+    ) -> None:
+        """A crashed injection is not a bad request, and the CI harness needs the difference to fail the run."""
+        rollout_handler.supports_inject_fault = True
+        rollout_handler.inject_fault_error = RuntimeError("worker manager unreachable")
+        rollout_handler.add("rollout-engine-0")
+
+        resp = await async_client.post(
+            "/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "sigkill", "sub_index": 1}
+        )
+
+        assert resp.status_code == 500
+        assert resp.json() == {
+            "apiVersion": "v1",
+            "kind": "Status",
+            "status": "Failure",
+            "message": "Failed to inject fault into cell 'rollout-engine-0'",
+            "reason": "InternalError",
+            "code": 500,
+        }
 
 
 class TestStartAndWaitThread:
@@ -450,34 +591,6 @@ class TestStartAndWaitThread:
         server._start_and_wait_thread(
             target=_ready_then_raise, is_ready=ready.is_set, description="probe", timeout_seconds=5.0
         )
-
-    @pytest.mark.asyncio
-    async def test_inject_fault_uses_zero_sub_index_by_default(
-        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
-    ) -> None:
-        """The documented default targets worker zero, and a client omitting sub_index relies on it."""
-        rollout_handler.supports_inject_fault = True
-        rollout_handler.add("rollout-engine-0")
-
-        resp = await async_client.post("/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "exit"})
-
-        assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
-        assert rollout_handler.injected == [("rollout-engine-0", FailureMode.EXIT, 0)]
-
-    @pytest.mark.asyncio
-    async def test_inject_fault_rejects_missing_or_unknown_mode(
-        self, rollout_handler: MockHandler, async_client: httpx.AsyncClient
-    ) -> None:
-        """An unrecognised failure mode must be refused by the schema rather than forwarded to the cell."""
-        rollout_handler.supports_inject_fault = True
-        rollout_handler.add("rollout-engine-0")
-
-        missing = await async_client.post("/api/v1/cells/rollout-engine-0/inject-fault", json={})
-        unknown = await async_client.post("/api/v1/cells/rollout-engine-0/inject-fault", json={"mode": "nuke"})
-
-        assert (missing.status_code, unknown.status_code) == (422, 422)
-        assert rollout_handler.injected == []
 
 
 class TestRequestValidation:

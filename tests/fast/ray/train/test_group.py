@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,7 +9,7 @@ from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import get_raw_actor_handles
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -27,8 +28,9 @@ def _make_mock_args(
     enable_witness: bool = False,
     gpus_per_cell: int = 1,
     num_cells: int = 3,
+    ci_ft_test_actions: str | None = None,
 ) -> SimpleNamespace:
-    # Use SimpleNamespace (not MagicMock) so the args object is picklable. RayTrainCell.init
+    # Use SimpleNamespace (not MagicMock) so the args object is picklable. TrainerCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
     # recursion limit because its __getattr__ creates new sub-mocks indefinitely.
     return SimpleNamespace(
@@ -39,11 +41,11 @@ def _make_mock_args(
         trainer_heartbeat_checker_timeout=10.0,
         trainer_heartbeat_checker_first_wait=300.0,
         trainer_heartbeat_checker_failure_threshold=3,
-        ci_ft_test_actions=None,
+        ci_ft_test_actions=ci_ft_test_actions,
         debug_train_only=False,
         debug_rollout_only=False,
         # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
-        # gpus_per_cell so RayTrainGroup computes num_cells correctly.
+        # gpus_per_cell so TrainerController computes num_cells correctly.
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         context_parallel_size=gpus_per_cell,
@@ -58,14 +60,23 @@ def _make_controller(
     actor_count_per_cell: int = 1,
     inference_controller: object | None = None,
     rollout_executor: object | None = None,
-) -> RayTrainGroup:
-    """Create a RayTrainGroup and let it observe every cell, as the watcher would."""
+    with_ref: bool = False,
+    with_opd_teacher: bool = False,
+    ci_ft_test_actions: str | None = None,
+) -> TrainerController:
+    """Create a TrainerController and let it observe every cell, as the watcher would."""
     train_conftest.fake_worker_manager.num_cells = num_cells
     train_conftest.fake_worker_manager.actor_count_per_cell = actor_count_per_cell
-    group = RayTrainGroup(
-        args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell, num_cells=num_cells),
+    group = TrainerController(
+        args=_make_mock_args(
+            indep_dp=True,
+            gpus_per_cell=actor_count_per_cell,
+            num_cells=num_cells,
+            ci_ft_test_actions=ci_ft_test_actions,
+        ),
         role="actor",
-        with_ref=False,
+        with_ref=with_ref,
+        with_opd_teacher=with_opd_teacher,
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,
     )
@@ -77,28 +88,28 @@ def _make_controller(
     return group
 
 
-async def _stop_cell(group: RayTrainGroup, cell_index: int) -> None:
+async def _stop_cell(group: TrainerController, cell_index: int) -> None:
     """Suspension stops the cell in the manager; reconcile then drops it from the bookkeeping."""
     cell_id = f"{group._pool_id}-{cell_index}"
     train_conftest.fake_worker_manager._stop_cells([cell_id])
     await group._reconcile(cell_id, None)
 
 
-def _cell(group: RayTrainGroup, cell_index: int) -> object:
+def _cell(group: TrainerController, cell_index: int) -> object:
     return group._cells_by_id[f"{group._pool_id}-{cell_index}"]
 
 
-def _start_cell(group: RayTrainGroup, cell_index: int) -> None:
+def _start_cell(group: TrainerController, cell_index: int) -> None:
     """The manager relaunches the cell, so reconcile hands the controller a fresh object."""
     cell_id = f"{group._pool_id}-{cell_index}"
     group._cells_by_id[cell_id] = group._create_cell(cell_id, cell_index=cell_index, workers_hash="pseudo-hash-2")
 
 
-def _was_stopped(group: RayTrainGroup, cell_index: int) -> bool:
+def _was_stopped(group: TrainerController, cell_index: int) -> bool:
     return [f"{group._pool_id}-{cell_index}"] in train_conftest.fake_worker_manager.stopped_cell_ids
 
 
-def _was_killed(group: RayTrainGroup, cell_index: int) -> bool:
+def _was_killed(group: TrainerController, cell_index: int) -> bool:
     for handle in get_raw_actor_handles(_cell(group, cell_index)):
         try:
             ray.get(handle.get_calls.remote())
@@ -108,12 +119,12 @@ def _was_killed(group: RayTrainGroup, cell_index: int) -> bool:
     return True
 
 
-async def _init_controller(group: RayTrainGroup) -> None:
+async def _init_controller(group: TrainerController) -> None:
     """Call init and wait for all cells to become alive."""
     await group.init()
 
 
-async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> RayTrainGroup:
+async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerController:
     """Create a group and init all cells to alive."""
     group = _make_controller(num_cells=num_cells, **kwargs)
     await _init_controller(group)
@@ -179,32 +190,6 @@ class TestStopStartCell:
         _start_cell(group, 1)
 
         assert _cell(group, 1).is_uninitialized
-
-
-class TestSetRolloutExecutor:
-    async def test_set_rollout_executor_reaches_every_initial_cell(self):
-        """The group fans the executor handle out to every actor of every cell exactly once."""
-        group = await _make_alive_group(num_cells=3, actor_count_per_cell=2, rollout_executor="executor-handle")
-
-        await group.set_rollout_executor()
-
-        for cell in group._cells:
-            for handle in cell._get_actor_handles():
-                calls = ray.get(handle.get_calls.remote())
-                set_calls = [c for c in calls if c[0] == "set_rollout_executor"]
-                assert len(set_calls) == 1
-                assert set_calls[0][1] == ("executor-handle",)
-
-    async def test_set_rollout_executor_propagates_a_cell_failure(self):
-        """A failing actor makes the fan-out raise and takes its own cell down."""
-        group = await _make_alive_group(num_cells=2, rollout_executor="executor-handle")
-        for handle in group._cells[1]._get_actor_handles():
-            ray.get(handle.set_fail_methods.remote(["set_rollout_executor"]))
-
-        with pytest.raises(RuntimeError, match="Injected failure"):
-            await group.set_rollout_executor()
-
-        assert group._cells[1].is_stopped
 
 
 class TestExecuteFirstAlive:
@@ -884,29 +869,29 @@ class TestCheckTrainOneAttempt:
     def test_compute_attempt_outcomes_buckets_cells_by_index(self):
         """_compute_attempt_outcomes buckets each alive cell into errored / discarded / normal by index."""
         results = [_ERR, [DISCARDED], [NORMAL, NORMAL]]
-        outcomes = RayTrainGroup._compute_attempt_outcomes(_alive_cells_for(results), results)
+        outcomes = TrainerController._compute_attempt_outcomes(_alive_cells_for(results), results)
         assert outcomes == {"errored": [0], "discarded": [1], "normal": [2]}
 
     def test_a_payload_carrying_output_is_bucketed_by_its_outcome(self):
         """The critic ships values alongside its outcome, so the payload must not hide a retry request."""
         results = [[TrainStepOutput(outcome=TrainStepOutcome.DISCARDED_SHOULD_RETRY, values=Box("ref"))]]
-        outcomes = RayTrainGroup._compute_attempt_outcomes(_alive_cells_for(results), results)
+        outcomes = TrainerController._compute_attempt_outcomes(_alive_cells_for(results), results)
         assert outcomes == {"errored": [], "discarded": [0], "normal": []}
 
 
-async def _set_all_train_return(group: RayTrainGroup, value: TrainStepOutput) -> None:
+async def _set_all_train_return(group: TrainerController, value: TrainStepOutput) -> None:
     for cell in group._cells:
         for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_train_return_value.remote(value))
 
 
-async def _set_all_train_returns_per_attempt(group: RayTrainGroup, values: list[TrainStepOutput]) -> None:
+async def _set_all_train_returns_per_attempt(group: TrainerController, values: list[TrainStepOutput]) -> None:
     for cell in group._cells:
         for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_train_return_values_per_attempt.remote(values))
 
 
-def _count_train_calls(group: RayTrainGroup, cell_index: int) -> int:
+def _count_train_calls(group: TrainerController, cell_index: int) -> int:
     total = 0
     for handle in get_raw_actor_handles(_cell(group, cell_index)):
         calls = ray.get(handle.get_calls.remote())
@@ -1140,8 +1125,8 @@ class TestCellStatusesUnderConcurrentReconcile:
 
 
 class TestUpdateWeightsReturnsTheVersion:
-    def _make_group(self, *, per_worker_versions: list[int | None]) -> RayTrainGroup:
-        group = RayTrainGroup.__new__(RayTrainGroup)
+    def _make_group(self, *, per_worker_versions: list[int | None]) -> TrainerController:
+        group = TrainerController.__new__(TrainerController)
         group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False)
         group._inference_controller = AsyncMock()
         group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
@@ -1159,3 +1144,118 @@ class TestUpdateWeightsReturnsTheVersion:
         group = self._make_group(per_worker_versions=[None])
 
         assert await group.update_weights() is None
+
+
+class TestInitForwardsModelFlags:
+    async def test_every_worker_learns_its_role_and_which_extra_models_to_build(self):
+        """These flags decide which models a worker allocates, so dropping one silently changes the objective."""
+        group = _make_controller(num_cells=2, actor_count_per_cell=2, with_ref=True, with_opd_teacher=True)
+
+        await _init_controller(group)
+
+        for cell in group._cells:
+            for handle in get_raw_actor_handles(cell):
+                [init_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "init"]
+                assert init_call[2]["role"] == "actor"
+                assert init_call[2]["with_ref"] is True
+                assert init_call[2]["with_opd_teacher"] is True
+
+
+class TestTrainRunsFTTestActions:
+    async def test_train_applies_the_action_armed_for_that_rollout_before_returning(self):
+        """The FT scenario's stop must have landed by the time the driver starts the next rollout."""
+        actions = json.dumps([{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-actor-2"}])
+        group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
+
+        await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
+
+        assert train_conftest.fake_worker_manager.stopped_cell_ids == [["trainer-actor-2"]]
+
+    async def test_train_leaves_the_pool_alone_on_a_rollout_no_action_names(self):
+        """An action that fires on every rollout would tear the pool down for the whole run."""
+        actions = json.dumps([{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-actor-2"}])
+        group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
+
+        await group.train(rollout_id=3, rollout_data_pack=_DUMMY_DATA_PACK)
+
+        assert train_conftest.fake_worker_manager.stopped_cell_ids == []
+
+
+class TestSaveModel:
+    async def test_the_selected_cell_is_told_whether_the_save_must_be_synchronous(self):
+        """An async save that the caller asked to block on would let training race the checkpoint writer."""
+        group = await _make_alive_controller(num_cells=2)
+
+        await group.save_model(rollout_id=9, force_sync=True)
+
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            save_calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "save_model"]
+            assert [c[2] for c in save_calls] == [{"rollout_id": 9, "force_sync": True}]
+
+
+class TestExportHf:
+    async def test_a_failed_first_cell_hands_the_same_export_to_the_next_alive_cell(self):
+        """The exported checkpoint must land at the requested path even when the first cell dies mid-export."""
+        group = await _make_alive_controller(num_cells=2)
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            ray.get(handle.set_fail_methods.remote(["export_hf"]))
+
+        await group.export_hf(rollout_id=4, path="/ckpt/hf-4")
+
+        assert _was_killed(group, 0)
+        for handle in get_raw_actor_handles(_cell(group, 1)):
+            export_calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "export_hf"]
+            assert [c[2] for c in export_calls] == [{"rollout_id": 4, "path": "/ckpt/hf-4"}]
+
+
+class _RecordingInferenceController:
+    def __init__(self, info: SimpleNamespace) -> None:
+        self._info = info
+        self.ended_with: list[dict[str, str]] = []
+
+    async def start_update_weights(self) -> SimpleNamespace:
+        return self._info
+
+    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
+        self.ended_with.append(snapshot_cell_id_to_hashes)
+
+
+class TestUpdateWeightsReachesTheWorker:
+    async def test_the_engine_snapshot_reaches_the_worker_and_its_version_comes_back(self):
+        """A worker that never sees the snapshot broadcasts to engines that were not part of the update window."""
+        info = SimpleNamespace(snapshot_cell_id_to_hashes={"trainer-actor-0": "workers-hash-9"})
+        inference_controller = _RecordingInferenceController(info)
+        group = await _make_alive_controller(num_cells=1, inference_controller=inference_controller)
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            ray.get(handle.set_update_weights_return_value.remote(11))
+
+        assert await group.update_weights(rollout_id=3) == 11
+
+        for handle in get_raw_actor_handles(_cell(group, 0)):
+            [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
+            assert update_call[2]["info"].snapshot_cell_id_to_hashes == {"trainer-actor-0": "workers-hash-9"}
+        assert inference_controller.ended_with == [{"trainer-actor-0": "workers-hash-9"}]
+
+
+class TestSetRolloutExecutorFanOut:
+    async def test_every_worker_of_every_observed_cell_receives_the_executor(self):
+        """A worker without the handle cannot ship its samples, and the run stalls on that rank alone."""
+        group = await _make_alive_controller(num_cells=3, actor_count_per_cell=2, rollout_executor="executor-handle")
+
+        await group.set_rollout_executor()
+
+        for cell in group._cells:
+            for handle in get_raw_actor_handles(cell):
+                set_calls = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "set_rollout_executor"]
+                assert [c[2] for c in set_calls] == [{"rollout_executor": "executor-handle"}]
+
+    async def test_a_cell_that_refuses_the_executor_is_reported(self):
+        """Swallowing this would start the run with a rank that silently drops every sample it produces."""
+        group = await _make_alive_controller(num_cells=2, rollout_executor="executor-handle")
+        for handle in get_raw_actor_handles(_cell(group, 1)):
+            ray.get(handle.set_fail_methods.remote(["set_rollout_executor"]))
+
+        with pytest.raises(RuntimeError, match="Injected failure"):
+            await group.set_rollout_executor()
+
+        assert _cell(group, 1).is_errored

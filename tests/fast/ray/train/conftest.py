@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -7,8 +8,9 @@ import ray
 from tests.fast.ray.train.fake_worker_manager import FakeWorkerManager
 
 import miles.ray.train.group as group_module
-from miles.ray.train.cell import RayTrainCell
-from miles.utils.ft_utils.health_checker import NoopHealthChecker
+from miles.ray.train.cell import TrainerCell
+from miles.utils.ft_utils.api_server.models import TriState
+from miles.utils.ft_utils.health_checker import BaseHealthChecker, NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import retry
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -47,7 +49,36 @@ def instant_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(group_module, "retry", _retry_without_sleeping)
 
 
-def get_raw_actor_handles(cell: RayTrainCell) -> list[ray.actor.ActorHandle]:
+class RecordingHealthChecker(BaseHealthChecker):
+    def __init__(self) -> None:
+        self.start_count: int = 0
+        self.stopped: bool = False
+        self.task_started: bool = False
+        self.alive_when_started: bool | None = None
+        self.observe_alive: Callable[[], bool] | None = None
+        self._task: asyncio.Task[None] | None = None
+
+    @property
+    def status(self) -> TriState:
+        return TriState.UNKNOWN
+
+    def start(self) -> None:
+        self.start_count += 1
+        if self.observe_alive is not None:
+            self.alive_when_started = self.observe_alive()
+        self._task = asyncio.create_task(self._run())
+
+    def stop(self) -> None:
+        self.stopped = True
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+
+    async def _run(self) -> None:
+        self.task_started = True
+
+
+def get_raw_actor_handles(cell: TrainerCell) -> list[ray.actor.ActorHandle]:
     return [handle._actor_handle for handle in cell._get_worker_handles()]
 
 
@@ -74,9 +105,10 @@ def make_cell(
     *,
     actor_count: int = 2,
     rollout_executor: object | None = None,
-) -> RayTrainCell:
+    health_checker: BaseHealthChecker | None = None,
+) -> TrainerCell:
     fake_worker_manager.actor_count_per_cell = actor_count
-    return RayTrainCell(
+    return TrainerCell(
         args=MagicMock(),
         role="actor",
         with_ref=False,
@@ -84,11 +116,11 @@ def make_cell(
         cell_index=cell_index,
         workers_hash="pseudo-hash-1",
         rollout_executor=rollout_executor,
-        health_checker=NoopHealthChecker(),
+        health_checker=health_checker if health_checker is not None else NoopHealthChecker(),
     )
 
 
-def make_alive_cell(cell_index: int, *, alive_cell_indices: list[int], quorum_id: int = 0) -> RayTrainCell:
+def make_alive_cell(cell_index: int, *, alive_cell_indices: list[int], quorum_id: int = 0) -> TrainerCell:
     """Create a cell and transition it to Alive state."""
     cell = make_cell(cell_index)
     cell._mark_as_alive(

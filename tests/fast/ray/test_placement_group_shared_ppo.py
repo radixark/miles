@@ -6,7 +6,7 @@ import pytest
 
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _get_placement_group_layout
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -71,7 +71,7 @@ class _RecordingWorkerProvider(BaseWorkerProvider):
         return _stop_watch
 
 
-async def _fake_init(self: RayTrainGroup) -> list[int]:
+async def _fake_init(self: TrainerController) -> list[int]:
     """Stand in for init(), keeping its cell-observation prologue and dropping the GPU work."""
     provider = RayWorkerProvider.create(pool_ids=[self._pool_id])
     self._watcher_disposer = await provider.watch_cells(self._reconcile)
@@ -79,14 +79,14 @@ async def _fake_init(self: RayTrainGroup) -> list[int]:
     return [0]
 
 
-async def _fake_set_rollout_executor(self: RayTrainGroup) -> None:
+async def _fake_set_rollout_executor(self: TrainerController) -> None:
     return None
 
 
 _waited_roles: list[str] = []
 
 
-async def _fake_wait_expected_num_cells(self: RayTrainGroup) -> None:
+async def _fake_wait_expected_num_cells(self: TrainerController) -> None:
     """The startup barrier waits for the provider to report cells, and this provider reports none.
 
     Recording the role keeps init()'s call to the barrier under test: deleting that await
@@ -97,9 +97,9 @@ async def _fake_wait_expected_num_cells(self: RayTrainGroup) -> None:
 async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypatch):
     """Both training groups go through the real create(), and only the critic args are rewritten."""
     provider = _RecordingWorkerProvider()
-    monkeypatch.setattr(RayTrainGroup, "init", _fake_init)
-    monkeypatch.setattr(RayTrainGroup, "set_rollout_executor", _fake_set_rollout_executor)
-    monkeypatch.setattr(RayTrainGroup, "_wait_expected_num_cells", _fake_wait_expected_num_cells)
+    monkeypatch.setattr(TrainerController, "init", _fake_init)
+    monkeypatch.setattr(TrainerController, "set_rollout_executor", _fake_set_rollout_executor)
+    monkeypatch.setattr(TrainerController, "_wait_expected_num_cells", _fake_wait_expected_num_cells)
     _waited_roles.clear()
 
     args = Namespace(
