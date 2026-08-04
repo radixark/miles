@@ -37,7 +37,14 @@ from . import checkpoint
 from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
 from .adaptations.packing import apply_packing
 from .adaptations.post_load_fixups import apply_post_load_fixups
-from .adaptations.precision import apply_fp32_master, precision_forward_context, resolve_precision_policy
+from .adaptations.precision import (
+    PrecisionSpec,
+    apply_fp32_master,
+    compile_precision,
+    log_precision_summary,
+    precision_forward_context,
+    resolve_precision_policy,
+)
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
@@ -153,6 +160,7 @@ class FSDPTrainRayActor(TrainRayActor):
             args=self.args,
             param_dtype=self.precision_policy.param_dtype,
             reduce_dtype=self.precision_policy.reduce_dtype,
+            precision_spec=self.precision_policy.precision_spec,
         )
 
         model = self._fsdp2_load_full_state_dict(
@@ -631,6 +639,7 @@ class FSDPTrainRayActor(TrainRayActor):
                 args=self.args,
                 param_dtype=self.precision_policy.param_dtype,
                 reduce_dtype=self.precision_policy.reduce_dtype,
+                precision_spec=self.precision_policy.precision_spec,
             )
             ref_model = self._fsdp2_load_full_state_dict(
                 ref_model,
@@ -689,12 +698,22 @@ def move_torch_optimizer(optimizer, device):
     torch.cuda.synchronize()
 
 
-def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None, reduce_dtype=None):
+def apply_fsdp2(
+    model,
+    mesh=None,
+    cpu_offload=False,
+    args=None,
+    param_dtype=None,
+    reduce_dtype=None,
+    precision_spec=None,
+):
     """Apply FSDP2 (fully_shard) to the model.
 
     ``cpu_offload`` offloads params/grads/optimizer to CPU (the optimizer step runs on CPU).
     ``param_dtype``/``reduce_dtype`` are the MixedPrecisionPolicy dtypes; None falls back to the
-    args-based default (bf16 / fp32, or fp16 param when args.fp16).
+    args-based default (bf16 / fp32, or fp16 param when args.fp16). ``param_dtype`` is the *default*
+    gather dtype: ``precision_spec`` refines it per module by lowering onto nested wrap units, which
+    keeps every override inside FSDP (DTensor params, FSDP grad reduction, DCP/offload unchanged).
 
     Ref: https://github.com/volcengine/verl/blob/main/verl/utils/fsdp_utils.py
     """
@@ -717,20 +736,23 @@ def apply_fsdp2(model, mesh=None, cpu_offload=False, args=None, param_dtype=None
     if reduce_dtype is None:
         reduce_dtype = torch.float32
 
+    compiled = compile_precision(model, precision_spec or PrecisionSpec(), default_dtype=param_dtype)
+    log_precision_summary(compiled, default_dtype=param_dtype)
     logger.info(f"FSDP MixedPrecision Policy: param_dtype={param_dtype}, reduce_dtype={reduce_dtype}")
 
-    fsdp_kwargs = {
-        "mp_policy": MixedPrecisionPolicy(
-            param_dtype=param_dtype,
-            reduce_dtype=reduce_dtype,
-        ),
-        "offload_policy": offload_policy,
-        "mesh": mesh,
-    }
+    def fsdp_kwargs(unit_param_dtype):
+        return {
+            "mp_policy": MixedPrecisionPolicy(
+                param_dtype=unit_param_dtype,
+                reduce_dtype=reduce_dtype,
+            ),
+            "offload_policy": offload_policy,
+            "mesh": mesh,
+        }
 
-    # fully_shard each layer first, then the root model
-    for module in modules:
-        fully_shard(module, **fsdp_kwargs)
-    fully_shard(model, **fsdp_kwargs)
+    # Deepest module first, so FSDP2 nests child-before-parent and inner overrides survive.
+    for unit in compiled.wrap_plan(model, modules):
+        fully_shard(unit.module, **fsdp_kwargs(unit.param_dtype))
+    fully_shard(model, **fsdp_kwargs(param_dtype))
 
     return model

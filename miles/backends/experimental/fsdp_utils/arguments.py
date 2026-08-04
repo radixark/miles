@@ -36,6 +36,9 @@ class FSDPArgs:
     gradient_checkpointing: bool = False
     fp16: bool = False
     keep_fp32_master: bool = True
+    # Per-module gather-dtype overrides on top of the arch spec, as comma-separated
+    # <fqn|cls>:<glob>=<dtype> entries (see adaptations.precision.parse_precision_rules).
+    fsdp_precision_rules: str | None = None
 
     # FSDP configuration
     fsdp_state_dict_cpu_offload: bool = True  # If True, offload full state dict to CPU during collection.
