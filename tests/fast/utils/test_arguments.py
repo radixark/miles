@@ -624,16 +624,17 @@ def test_bridge_mode_accepts_critic(tmp_path):
     assert args.use_critic is True
 
 
-def test_critic_rejects_experimental_ft_trainer(tmp_path, monkeypatch):
-    monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+def test_critic_is_accepted_on_the_only_trainer(tmp_path):
+    """Shared actor/critic PPO used to be rejected on the cell based trainer, which is now the only one."""
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(
         ["--advantage-estimator", "ppo", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"] + REQUIRED_ARGS
     )
 
-    with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
-        miles_validate_args(args)
+    miles_validate_args(args)
+
+    assert args.use_critic is True
 
 
 def test_critic_rejects_reward_level_kl(tmp_path):
@@ -730,9 +731,8 @@ class TestMultiLoRAValidation:
         with pytest.raises(AssertionError, match="requires --optimizer adam"):
             miles_validate_args(args)
 
-    def test_accepts_experimental_ft_trainer(self, monkeypatch):
-        """The v2 train group implements reconcile_adapters, so multi-LoRA may use it."""
-        monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+    def test_is_accepted_on_the_only_trainer(self):
+        """Multi-LoRA used to be rejected on the cell based trainer, which is now the only one."""
         args = self._parse([])
 
         miles_validate_args(args)

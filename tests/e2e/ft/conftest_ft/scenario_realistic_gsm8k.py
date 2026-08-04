@@ -3,6 +3,7 @@
 
 import os
 import shutil
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -11,6 +12,7 @@ from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.fault_injection import API_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigure_events
 
 app: typer.Typer = typer.Typer()
 
@@ -59,9 +61,6 @@ def run_ci(
             num_gpus_per_node=_TRAIN_GPUS + _ROLLOUT_GPUS,
             megatron_model_type=_MODEL_TYPE,
             extra_env_vars={
-                # --ft-components train depends on cell-based indep_dp, which only
-                # the v2 RayTrainGroup supports.
-                "MILES_EXPERIMENTAL_FT_TRAINER": "1",
                 # Same as run_training: a cell respawned after a crash cold-recompiles
                 # its first forward, which is slow and memory-heavy enough to OOM.
                 "TORCHDYNAMO_DISABLE": "1",
@@ -71,6 +70,11 @@ def run_ci(
         )
     finally:
         injector.stop_and_join(timeout_seconds=5)
+
+    assert_soak_reconfigure_events(
+        Path(dump_dir) / "events",
+        num_successful_injections=injector.num_successful_injections,
+    )
 
     print(f"Random failure gsm8k accuracy test PASSED (seed={seed}, rollouts={num_rollout})")
 

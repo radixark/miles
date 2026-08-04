@@ -215,7 +215,84 @@ def test_finalize_preserves_activations_and_pins_model_dumps_to_step_zero(
         assert torch.load(dump_file, weights_only=False)["meta"]["step"] == 0
 
 
+def _make_distributed_optimizer_bucket_group(param: torch.nn.Parameter, grad_data: torch.Tensor) -> SimpleNamespace:
+    bucket = SimpleNamespace(grad_data=grad_data, param_to_index={param: (0, grad_data.numel())})
+    return SimpleNamespace(
+        ddp_config=SimpleNamespace(use_distributed_optimizer=True),
+        intra_distributed_optimizer_instance_group=None,
+        intra_distributed_optimizer_instance_size=1,
+        intra_distributed_optimizer_instance_rank=0,
+        buckets=[bucket],
+    )
+
+
+class TestDumperMegatronUtilFinalize:
+    def test_finalize_dumps_distributed_optimizer_gradients_without_param_grad(self, tmp_path: Path) -> None:
+        """A distributed-optimizer param carries its gradient only in the bucket buffer, and that must be dumped."""
+        args = _make_args(tmp_path)
+        args.dumper_fwd_bwd = ["enable_model_grad=true"]
+        model = torch.nn.Linear(2, 1, bias=False)
+        model.bucket_groups = [_make_distributed_optimizer_bucket_group(model.weight, torch.full((2,), 3.5))]
+        state = SimpleNamespace(
+            effective_dp=SimpleNamespace(rank=0),
+            indep_dp=SimpleNamespace(rank=0, group=None),
+        )
+
+        with (
+            patch("miles.utils.dumper_utils.get_parallel_state", return_value=state),
+            patch("miles.utils.dumper_utils.dist") as mock_dist,
+        ):
+            mock_dist.is_initialized.return_value = False
+            util = DumperMegatronUtil(args, [model], DumperPhase.FWD_BWD, rollout_id=1)
+            assert model.weight.grad is None
+            try:
+                util.finalize([model])
+            finally:
+                dumper_utils.dumper.reset()
+                dumper_utils.dumper.configure(enable=False)
+
+        dump_files = sorted((tmp_path / "fwd_bwd" / "rollout_1").glob("*.pt"))
+        assert len(dump_files) == 1
+        dumped = torch.load(dump_files[0], weights_only=False)
+        assert dumped["meta"]["name"] == "grad__param__weight"
+        assert torch.equal(dumped["value"], torch.full((1, 2), 3.5))
+
+
 class TestBarrierAfterDumpDirCleanup:
+    @staticmethod
+    def _run(group: MagicMock) -> None:
+        state = SimpleNamespace(indep_dp=SimpleNamespace(rank=1, size=2, group=group, debug_info={"quorum": 7}))
+        with (
+            patch("miles.utils.dumper_utils.get_parallel_state", return_value=state),
+            patch("miles.utils.dumper_utils.dist") as mock_dist,
+        ):
+            mock_dist.is_initialized.return_value = False
+            dumper_utils._barrier_after_dump_dir_cleanup()
+
+    def test_successful_cross_cell_barrier_records_keep_the_ft_tag(self, caplog) -> None:
+        """The start and success records stay discoverable by the external ft structured-log tag."""
+        with caplog.at_level(logging.INFO, logger="miles.utils.dumper_utils"):
+            self._run(MagicMock())
+
+        messages = [record.getMessage() for record in caplog.records if record.name == "miles.utils.dumper_utils"]
+        assert all(message.startswith("ft ") for message in messages)
+        assert "op=cross_cell phase=start kind=dump_barrier" in messages[0]
+        assert "op=cross_cell phase=end kind=dump_barrier" in messages[1]
+        assert "quorum=7 success=true" in messages[1]
+
+    def test_degraded_cross_cell_barrier_record_keeps_the_ft_tag(self, caplog) -> None:
+        """The degraded end record stays discoverable by the external ft structured-log tag."""
+        group = MagicMock()
+        group.barrier.side_effect = RuntimeError("NCCL communicator was aborted on rank 1")
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.dumper_utils"):
+            self._run(group)
+
+        messages = [record.getMessage() for record in caplog.records if record.name == "miles.utils.dumper_utils"]
+        assert all(message.startswith("ft ") for message in messages)
+        assert "op=cross_cell phase=end kind=dump_barrier" in messages[1]
+        assert "success=false degraded=true" in messages[1]
+
     def test_cross_cell_barrier_abort_does_not_raise(self) -> None:
         """A peer death aborts the cross-cell PG mid-barrier; the survivor continues instead of erroring."""
         group = MagicMock()
@@ -334,6 +411,58 @@ class TestConfigureSglang:
             await dumper_utils.configure_sglang(self._make_args(tmp_path))
 
         assert posted == ["http://a:1/dumper/configure", "http://b:2/dumper/configure"]
+
+    @pytest.mark.asyncio
+    async def test_surplus_registered_engines_are_accepted_and_configured(self, tmp_path: Path) -> None:
+        """More registered engines than expected is a complete roster, and every one of them is configured."""
+        posted: list[str] = []
+
+        async def _post(url, body):
+            posted.append(url)
+
+        get_worker_urls = AsyncMock(return_value=["http://a:1", "http://b:2", "http://c:3"])
+
+        with (
+            patch(
+                "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
+                new=get_worker_urls,
+            ),
+            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
+            patch("miles.utils.http_utils.post", new=_post),
+            patch("miles.utils.dumper_utils._cleanup_dump_dir"),
+        ):
+            await dumper_utils.configure_sglang(self._make_args(tmp_path))
+
+        assert get_worker_urls.await_count == 1
+        assert posted == [
+            "http://a:1/dumper/configure",
+            "http://b:2/dumper/configure",
+            "http://c:3/dumper/configure",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_configuring_engines_does_not_enter_a_process_group_barrier(self, tmp_path: Path) -> None:
+        """A cell recovering on its own must configure its engines without waiting for the other cells."""
+        posted: list[str] = []
+
+        async def _post(url, body):
+            posted.append(url)
+
+        with (
+            patch(
+                "miles.rollout.inference_rollout.inference_rollout_train.get_worker_urls",
+                new=AsyncMock(return_value=["http://a:1", "http://b:2"]),
+            ),
+            patch("miles.utils.dumper_utils.resolve_sglang_config", return_value=self.resolved_config),
+            patch("miles.utils.http_utils.post", new=_post),
+            patch("miles.utils.dumper_utils._cleanup_dump_dir"),
+            patch("miles.utils.dumper_utils.dist") as mock_dist,
+        ):
+            mock_dist.is_initialized.return_value = True
+            await dumper_utils.configure_sglang(self._make_args(tmp_path))
+
+        assert len(posted) == 2
+        mock_dist.barrier.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_an_incomplete_router_roster_is_waited_out(self, tmp_path: Path) -> None:

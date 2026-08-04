@@ -9,7 +9,7 @@ that do not support deterministic execution may still pass validation.
 
 ## What it turns on
 
-### At actor spawn (`miles/ray/actor_group.py`)
+### At actor spawn (`miles/ray/train/actor_factory.py`)
 
 ```bash
 NCCL_DETERMINISTIC=1

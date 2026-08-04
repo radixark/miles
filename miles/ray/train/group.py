@@ -289,6 +289,13 @@ class RayTrainGroup:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
+    async def export_hf(self, rollout_id: int, path: str):
+        """Export current weights as an HF checkpoint. Only cell 0 exports to avoid file write conflicts."""
+        await retry(
+            lambda _: self._execute_first_alive("export_hf", rollout_id=rollout_id, path=path),
+            max_attempts=_RETRY_MAX_ATTEMPTS,
+        )
+
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights to rollout engines."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
