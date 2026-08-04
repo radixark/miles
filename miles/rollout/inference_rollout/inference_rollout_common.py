@@ -120,63 +120,50 @@ async def generate_and_rm(
     return sample
 
 
-class SubmissionScheduler:
-    """Paces prompt-group submission for a rollout driver: when may another group go
-    out, and what counts as progress worth re-checking that on.
+class GroupLevelSubmission:
+    """A submission slot frees only when the whole group task returns."""
 
-    See ``--rollout-submission-granularity`` for the two policies. The driver resolves
-    which one it gets, because the default differs by how much overshooting a batch
-    costs it: the fully-async worker queues the extra groups for later steps, while
-    ``generate_rollout_async`` aborts them.
-    """
+    sample_done_callback = None
 
-    def __init__(self, args: Namespace, *, granularity: str):
-        assert granularity in ("group", "sample"), f"unknown submission granularity: {granularity}"
-        self.backfill_on_sample_completion = granularity == "sample"
-        self.group_size = args.n_samples_per_prompt
+    def has_capacity(self, *, pending_groups: int, group_budget: int) -> bool:
+        return pending_groups < group_budget
+
+    def on_submit(self, groups: list[list[Sample]]) -> None:
+        pass
+
+    async def wait_for_progress(self, pendings: set[asyncio.Task]) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
+        return await asyncio.wait(pendings, return_when=asyncio.FIRST_COMPLETED)
+
+
+class SampleBackfillSubmission:
+    """Each finished sample frees its own slot: a replacement group fits once
+    ``group_size`` samples complete, whichever groups they came from."""
+
+    def __init__(self, group_size: int):
+        self.group_size = group_size
         self.samples_in_flight = 0
         self._sample_done = asyncio.Event()
 
-    @property
-    def sample_done_callback(self) -> Callable[[], None] | None:
-        """Passed to ``generate_and_rm_group``; ``None`` under the group-level policy."""
-        return self._on_sample_done if self.backfill_on_sample_completion else None
+    def sample_done_callback(self) -> None:
+        self.samples_in_flight -= 1
+        self._sample_done.set()
 
     def has_capacity(self, *, pending_groups: int, group_budget: int) -> bool:
-        """Whether one more prompt group fits in a budget of ``group_budget`` groups."""
-        if not self.backfill_on_sample_completion:
-            return pending_groups < group_budget
-        return self.samples_in_flight + self.group_size <= group_budget * self.group_size
+        """A False return arms the sample wakeup: the event is cleared at the moment
+        we decide to wait, so only later completions wake ``wait_for_progress``."""
+        if pending_groups == 0:
+            # No group in flight means no sample is either; drop orphaned credits
+            # from groups that returned without ever spawning their sample tasks.
+            self.samples_in_flight = 0
+        if self.samples_in_flight + self.group_size <= group_budget * self.group_size:
+            return True
+        self._sample_done.clear()
+        return False
 
     def on_submit(self, groups: list[list[Sample]]) -> None:
-        if not self.backfill_on_sample_completion:
-            # Nothing decrements the counter without the callback; keep it meaningful.
-            return
         self.samples_in_flight += sum(len(group) for group in groups)
 
-    def arm(self, *, pending_groups: int) -> None:
-        """Drop sample completions already reflected in ``samples_in_flight``, and
-        resync that count when nothing is in flight.
-
-        Callers must not await between ``arm`` and ``wait_for_progress``, so that no
-        completion can be missed in between.
-
-        No group in flight means no sample is either, so a credit still outstanding
-        then belongs to a sample whose callback never ran -- a group that returned
-        before submitting any, as ``generate_and_rm_group`` does when the state is
-        already aborted. Left alone it is permanent: capacity never reopens, and
-        ``wait_for_progress`` parks on a sample event that nothing can set.
-        """
-        if pending_groups == 0:
-            self.samples_in_flight = 0
-        self._sample_done.clear()
-
-    async def wait_for_progress(self, pendings: set[asyncio.Task]) -> tuple[set, set]:
-        """``asyncio.wait(FIRST_COMPLETED)`` over the group tasks, also returning on a
-        single sample completion under the backfill policy."""
-        if not self.backfill_on_sample_completion:
-            return await asyncio.wait(pendings, return_when=asyncio.FIRST_COMPLETED)
-
+    async def wait_for_progress(self, pendings: set[asyncio.Task]) -> tuple[set[asyncio.Task], set[asyncio.Task]]:
         waiter = asyncio.create_task(self._sample_done.wait())
         try:
             done, pending = await asyncio.wait(pendings | {waiter}, return_when=asyncio.FIRST_COMPLETED)
@@ -184,9 +171,13 @@ class SubmissionScheduler:
             waiter.cancel()
         return done - {waiter}, pending - {waiter}
 
-    def _on_sample_done(self) -> None:
-        self.samples_in_flight -= 1
-        self._sample_done.set()
+
+def make_submission_scheduler(args: Namespace, *, default: str) -> GroupLevelSubmission | SampleBackfillSubmission:
+    granularity = args.rollout_submission_granularity or default
+    if granularity == "group":
+        return GroupLevelSubmission()
+    assert granularity == "sample", f"unknown submission granularity: {granularity}"
+    return SampleBackfillSubmission(args.n_samples_per_prompt)
 
 
 async def generate_and_rm_group(

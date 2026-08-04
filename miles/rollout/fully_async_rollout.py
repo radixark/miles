@@ -34,8 +34,8 @@ from miles.rollout.base_types import (
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.inference_rollout_common import (
     GenerateState,
-    SubmissionScheduler,
     generate_and_rm_group,
+    make_submission_scheduler,
 )
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.utils.http_utils import get
@@ -112,9 +112,7 @@ class FullyAsyncRolloutFn:
         self.state = GenerateState(input.args)
         # Groups completed beyond a step's batch stay in the output queue for the next
         # step, so backfilling past the straggler of a group costs nothing here.
-        self._scheduler = SubmissionScheduler(
-            input.args, granularity=input.args.rollout_submission_granularity or "sample"
-        )
+        self._scheduler = make_submission_scheduler(input.args, default="sample")
         self._dynamic_filter = load_function(input.args.dynamic_sampling_filter_path)
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._weight_version = _CachedWeightVersion()
@@ -181,9 +179,6 @@ class FullyAsyncRolloutFn:
         active: set[asyncio.Task] = set()
         while True:
             await self._producer_resumed.wait()
-            # Armed after the pause gate: `arm` must not be separated from
-            # `wait_for_progress` by an await, or a completion in between is dropped.
-            self._scheduler.arm(pending_groups=len(active))
             while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
                 active.add(self._submit_one_group())
             done, active = await self._scheduler.wait_for_progress(active)

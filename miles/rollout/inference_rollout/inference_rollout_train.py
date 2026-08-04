@@ -12,8 +12,8 @@ from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_fil
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.inference_rollout.inference_rollout_common import (
     GenerateState,
-    SubmissionScheduler,
     generate_and_rm_group,
+    make_submission_scheduler,
 )
 from miles.utils import dumper_utils
 from miles.utils.http_utils import get, post, router_worker_base_urls
@@ -103,7 +103,7 @@ async def generate_rollout_async(
 
     # Groups completed beyond target_data_size are aborted below, so overshooting the
     # batch costs generation this step throws away: pace by whole groups unless asked.
-    scheduler = SubmissionScheduler(args, granularity=args.rollout_submission_granularity or "group")
+    scheduler = make_submission_scheduler(args, default="group")
 
     pendings = set()
     data = []
@@ -111,7 +111,6 @@ async def generate_rollout_async(
     do_print = True
     pbar = tqdm(total=target_data_size * args.n_samples_per_prompt, desc="Rollout generation")
     while len(data) < target_data_size:
-        scheduler.arm(pending_groups=len(pendings))
         while scheduler.has_capacity(pending_groups=len(pendings), group_budget=target_data_size - len(data)):
             # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)

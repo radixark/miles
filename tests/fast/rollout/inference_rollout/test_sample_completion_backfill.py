@@ -8,7 +8,11 @@ from argparse import Namespace
 import pytest
 
 import miles.rollout.inference_rollout.inference_rollout_train as train
-from miles.rollout.inference_rollout.inference_rollout_common import SubmissionScheduler
+from miles.rollout.inference_rollout.inference_rollout_common import (
+    GroupLevelSubmission,
+    SampleBackfillSubmission,
+    make_submission_scheduler,
+)
 from miles.utils.types import Sample
 
 GROUP_SIZE = 4
@@ -178,56 +182,61 @@ async def test_backfill_does_not_oversubmit_below_one_group(monkeypatch):
     assert len(output.samples) == 2
 
 
-class TestSubmissionScheduler:
+class TestSubmissionSchedulers:
     # Which granularity each driver defaults to is the driver's decision, and is pinned
     # by the driver-level tests above and in test_fully_async_rollout.py.
 
+    @pytest.mark.parametrize(
+        "granularity,default,expected",
+        [
+            (None, "group", GroupLevelSubmission),
+            (None, "sample", SampleBackfillSubmission),
+            ("group", "sample", GroupLevelSubmission),
+            ("sample", "group", SampleBackfillSubmission),
+        ],
+    )
+    def test_factory_resolves_granularity(self, granularity, default, expected):
+        args = make_args(rollout_submission_granularity=granularity)
+        assert type(make_submission_scheduler(args, default=default)) is expected
+
     def test_group_level_counts_groups(self):
-        scheduler = SubmissionScheduler(make_args(), granularity="group")
+        scheduler = GroupLevelSubmission()
         assert scheduler.sample_done_callback is None
         assert scheduler.has_capacity(pending_groups=1, group_budget=2)
         assert not scheduler.has_capacity(pending_groups=2, group_budget=2)
 
-        # No callback decrements it at group level, so it must not accumulate either.
-        scheduler.on_submit([make_group(1), make_group(2)])
-        assert scheduler.samples_in_flight == 0
-
-    def test_arm_resyncs_credits_whose_callback_never_ran(self):
-        scheduler = SubmissionScheduler(make_args(), granularity="sample")
-        scheduler.on_submit([make_group(1), make_group(2)])
-        assert not scheduler.has_capacity(pending_groups=0, group_budget=2)
-
-        # Nothing in flight, so nothing is left that could fire the callback: without
-        # the resync these credits are permanent and submission never reopens.
-        scheduler.arm(pending_groups=0)
-        assert scheduler.samples_in_flight == 0
-        assert scheduler.has_capacity(pending_groups=0, group_budget=2)
-
-    def test_arm_keeps_credits_while_groups_are_in_flight(self):
-        scheduler = SubmissionScheduler(make_args(), granularity="sample")
-        scheduler.on_submit([make_group(1)])
-        scheduler.arm(pending_groups=1)
-        assert scheduler.samples_in_flight == GROUP_SIZE
-
     def test_backfill_counts_samples(self):
-        scheduler = SubmissionScheduler(make_args(), granularity="sample")
-        assert scheduler.sample_done_callback is not None
+        scheduler = SampleBackfillSubmission(GROUP_SIZE)
 
         scheduler.on_submit([make_group(1), make_group(2)])
         assert scheduler.samples_in_flight == 2 * GROUP_SIZE
-        # Full: pending_groups is irrelevant once samples are accounted for.
-        assert not scheduler.has_capacity(pending_groups=0, group_budget=2)
+        assert not scheduler.has_capacity(pending_groups=2, group_budget=2)
 
         for _ in range(GROUP_SIZE - 1):
             scheduler.sample_done_callback()
-        assert not scheduler.has_capacity(pending_groups=0, group_budget=2)
+        assert not scheduler.has_capacity(pending_groups=2, group_budget=2)
 
         scheduler.sample_done_callback()
-        assert scheduler.has_capacity(pending_groups=0, group_budget=2)
+        assert scheduler.has_capacity(pending_groups=2, group_budget=2)
 
-    @pytest.mark.parametrize("granularity", ["group", "sample"])
-    async def test_wait_for_progress_returns_on_group_completion(self, granularity):
-        scheduler = SubmissionScheduler(make_args(), granularity=granularity)
+    def test_orphaned_credits_resync_when_nothing_is_pending(self):
+        scheduler = SampleBackfillSubmission(GROUP_SIZE)
+        # Credits whose sample tasks never spawned: no callback will ever return them.
+        scheduler.on_submit([make_group(1), make_group(2)])
+
+        assert scheduler.has_capacity(pending_groups=0, group_budget=2)
+        assert scheduler.samples_in_flight == 0
+
+    def test_credits_survive_while_groups_are_pending(self):
+        scheduler = SampleBackfillSubmission(GROUP_SIZE)
+        scheduler.on_submit([make_group(1)])
+
+        scheduler.has_capacity(pending_groups=1, group_budget=2)
+        assert scheduler.samples_in_flight == GROUP_SIZE
+
+    @pytest.mark.parametrize("scheduler_cls", [GroupLevelSubmission, lambda: SampleBackfillSubmission(GROUP_SIZE)])
+    async def test_wait_for_progress_returns_on_group_completion(self, scheduler_cls):
+        scheduler = scheduler_cls()
         blocker = asyncio.Event()
 
         async def group():
@@ -244,10 +253,9 @@ class TestSubmissionScheduler:
         assert pending == set()
 
     async def test_wait_for_progress_returns_on_sample_completion(self):
-        scheduler = SubmissionScheduler(make_args(), granularity="sample")
+        scheduler = SampleBackfillSubmission(GROUP_SIZE)
         never = asyncio.create_task(asyncio.Event().wait())
 
-        scheduler.arm(pending_groups=1)
         waiter = asyncio.create_task(scheduler.wait_for_progress({never}))
         await asyncio.sleep(0)
         assert not waiter.done()
