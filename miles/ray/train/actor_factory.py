@@ -79,7 +79,6 @@ def allocate_gpus_for_actor(
 
     # Create worker actors
     actor_handles = []
-    master_addr, master_port = None, None
     for rank in range(world_size):
         options = dict(
             num_cpus=num_gpus_per_actor,
@@ -96,15 +95,20 @@ def allocate_gpus_for_actor(
             args=args,
             world_size=world_size,
             rank=rank,
-            master_addr=master_addr,
-            master_port=master_port,
             indep_dp_store_addr=indep_dp_store_addr,
             role=role,
             cell_index=cell_index,
         )
-        if rank == 0:
-            master_addr, master_port = ray.get(actor.get_master_addr_and_port.remote())
         actor_handles.append(actor)
+
+    if actor_handles:
+        master_addr, master_port = ray.get(actor_handles[0].propose_master_addr_and_port.remote())
+        ray.get(
+            [
+                actor.configure_master_addr_and_port.remote(master_addr=master_addr, master_port=master_port)
+                for actor in actor_handles
+            ]
+        )
 
     return actor_handles
 
