@@ -145,8 +145,13 @@ class TestCreateRolloutComponents:
 
 class _FakeRolloutExecutorHandle:
     def __init__(self) -> None:
+        self.train_parallel_configs: list[dict] = []
         self.loaded_rollout_ids: list[int] = []
+        self.set_train_parallel_config = SimpleNamespace(remote=self._set_train_parallel_config_remote)
         self.load = SimpleNamespace(remote=self._load_remote)
+
+    async def _set_train_parallel_config_remote(self, config: dict) -> None:
+        self.train_parallel_configs.append(config)
 
     async def _load_remote(self, rollout_id: int) -> None:
         self.loaded_rollout_ids.append(rollout_id)
@@ -163,11 +168,11 @@ def fake_trainer_controllers(monkeypatch: pytest.MonkeyPatch):
         events.append(("init", self._role))
         return [_TRAINER_START_ROLLOUT_ID]
 
-    async def _fake_set_rollout_executor(self: TrainerController) -> None:
-        events.append(("set_rollout_executor", self._role))
+    async def _fake_get_train_parallel_config(self: TrainerController) -> dict:
+        return {"role": self._role}
 
     monkeypatch.setattr(TrainerController, "init", _fake_init)
-    monkeypatch.setattr(TrainerController, "set_rollout_executor", _fake_set_rollout_executor)
+    monkeypatch.setattr(TrainerController, "get_train_parallel_config", _fake_get_train_parallel_config)
     return SimpleNamespace(events=events)
 
 
@@ -193,8 +198,8 @@ def _training_args(**overrides) -> Namespace:
 
 
 class TestCreateTrainingModels:
-    async def test_only_the_actor_is_wired_to_the_rollout_path(self, fake_trainer_controllers):
-        """The critic never broadcasts weights, so handing it the engines would let it publish over the actor's."""
+    async def test_only_the_actor_config_is_wired_to_the_rollout_path(self, fake_trainer_controllers):
+        """The critic's topology must not replace the actor topology used by rollout."""
         inference_controller = object()
         rollout_executor = _FakeRolloutExecutorHandle()
 
@@ -205,10 +210,9 @@ class TestCreateTrainingModels:
         )
 
         assert actor._inference_controller is inference_controller
-        assert actor._rollout_executor is rollout_executor
         assert critic._inference_controller is None
-        assert critic._rollout_executor is None
         assert critic._with_opd_teacher is False
+        assert rollout_executor.train_parallel_configs == [{"role": "actor"}]
 
     @pytest.mark.parametrize(
         ("use_opd", "opd_type", "expected"),
@@ -233,8 +237,9 @@ class TestCreateTrainingModels:
 
         await create_training_models(args, object(), rollout_executor)
 
-        assert fake_trainer_controllers.events == [("init", "actor"), ("set_rollout_executor", "actor")]
+        assert fake_trainer_controllers.events == [("init", "actor")]
         assert args.start_rollout_id == _TRAINER_START_ROLLOUT_ID
+        assert rollout_executor.train_parallel_configs == [{"role": "actor"}]
         assert rollout_executor.loaded_rollout_ids == [_TRAINER_START_ROLLOUT_ID - 1]
 
 
