@@ -38,7 +38,7 @@ def create_trainer_cell_health_checker(
     )
 
 
-def compute_cell_status(state: CellState, health_checker_status: TriState) -> CellStatus:
+def compute_cell_status(state: CellState, health_checker_status: TriState, *, workers_hash: str) -> CellStatus:
     match state:
         case StateAllocatedAlive():
             return CellStatus(
@@ -47,6 +47,7 @@ def compute_cell_status(state: CellState, health_checker_status: TriState) -> Ce
                     CellCondition.allocated(TriState.TRUE),
                     CellCondition.from_health_checker_status(health_checker_status),
                 ],
+                workers_hash=workers_hash,
             )
 
         case StateAllocatedUninitialized():
@@ -56,6 +57,7 @@ def compute_cell_status(state: CellState, health_checker_status: TriState) -> Ce
                     CellCondition.allocated(TriState.TRUE),
                     CellCondition.healthy(TriState.TRUE),
                 ],
+                workers_hash=workers_hash,
             )
 
         case StateAllocatedErrored():
@@ -65,6 +67,7 @@ def compute_cell_status(state: CellState, health_checker_status: TriState) -> Ce
                     CellCondition.allocated(TriState.TRUE),
                     CellCondition.healthy(TriState.FALSE, reason="ExecutionErrored"),
                 ],
+                workers_hash=workers_hash,
             )
 
         case _:

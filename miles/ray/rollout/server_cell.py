@@ -84,7 +84,7 @@ class ServerCell:
     def cell_status(self) -> CellStatus:
         match self._state:
             case StateUninitialized() | StateInitializing():
-                return compute_pending_rollout_cell_status()
+                return compute_pending_rollout_cell_status(workers_hash=self.meta.workers_hash)
 
             case StatePendingWeights() | StateServing():
                 return CellStatus(
@@ -94,12 +94,14 @@ class ServerCell:
                         CellCondition.from_health_checker_status(self._health_checker.status),
                         CellCondition.serving(TriState.TRUE if self.is_serving else TriState.FALSE),
                     ],
+                    workers_hash=self.meta.workers_hash,
                 )
 
             case StateDisposed():
                 return CellStatus(
                     phase="Suspended",
                     conditions=[CellCondition.allocated(TriState.FALSE)],
+                    workers_hash=self.meta.workers_hash,
                 )
 
             case _:
@@ -292,8 +294,9 @@ def create_rollout_cell_health_checker(
     return SimpleHealthChecker(name=name, check_fn=_check, get_activeness=get_activeness, config=config)
 
 
-def compute_pending_rollout_cell_status() -> CellStatus:
+def compute_pending_rollout_cell_status(*, workers_hash: str) -> CellStatus:
     return CellStatus(
         phase="Pending",
         conditions=[CellCondition.allocated(TriState.TRUE)],
+        workers_hash=workers_hash,
     )

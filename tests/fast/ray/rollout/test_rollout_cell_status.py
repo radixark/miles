@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.cell_state import (
@@ -12,7 +14,7 @@ from miles.ray.rollout.cell_state import (
     StateUninitialized,
 )
 from miles.ray.rollout.inference_controller import InferenceController
-from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata, compute_pending_rollout_cell_status
 from miles.utils.ft_utils.api_server.models import CellStatus, TriState
 
 _ADDR_INFO = CellAddrInfo(server_url="http://10.0.0.1:30000", bootstrap_port=None, gate_url="http://10.0.0.1:13000")
@@ -111,6 +113,49 @@ class TestServerCellStatus:
         assert _conditions(status) == [("Allocated", TriState.FALSE)]
 
 
+class TestServerCellStatusGeneration:
+    @pytest.mark.parametrize(
+        "state",
+        [
+            StateUninitialized(),
+            StateInitializing(addr_info=_ADDR_INFO, start_time=time.monotonic()),
+            StatePendingWeights(addr_info=_ADDR_INFO),
+            StateServing(addr_info=_ADDR_INFO),
+            StateDisposed(),
+        ],
+    )
+    def test_a_status_is_stamped_with_the_generation_of_the_cell_that_computed_it(self, state: CellState):
+        """No state may publish a verdict without saying which process it is about, whatever phase it reports."""
+        status = _make_cell(state, workers_hash="hash-7").cell_status()
+
+        assert status.workers_hash == "hash-7"
+
+    def test_a_cell_stuck_booting_past_its_deadline_still_names_its_generation(self):
+        """The deadline branch builds its own condition list, so it must not drop the stamp with it."""
+        started_long_ago = time.monotonic() - INITIALIZING_TIMEOUT_SECONDS - 1.0
+        cell = _make_cell(StateInitializing(addr_info=_ADDR_INFO, start_time=started_long_ago), workers_hash="hash-7")
+
+        assert cell.cell_status().workers_hash == "hash-7"
+
+    def test_two_cells_of_different_generations_report_different_stamps(self):
+        """A stamp shared by every cell could not distinguish a replaced engine from its predecessor."""
+        old = _make_cell(StateServing(addr_info=_ADDR_INFO), workers_hash="hash-1").cell_status()
+        new = _make_cell(StateServing(addr_info=_ADDR_INFO), workers_hash="hash-2").cell_status()
+
+        assert (old.workers_hash, new.workers_hash) == ("hash-1", "hash-2")
+
+
+class TestComputePendingRolloutCellStatus:
+    @pytest.mark.parametrize("past_startup_deadline", [False, True])
+    def test_a_pending_status_carries_the_generation_it_was_asked_about(self, past_startup_deadline: bool):
+        """The api server builds this itself for a cell the controller has not observed yet, from the live listing."""
+        status = compute_pending_rollout_cell_status(
+            workers_hash="hash-7", past_startup_deadline=past_startup_deadline
+        )
+
+        assert status.workers_hash == "hash-7"
+
+
 class TestGetCellStatuses:
     def _controller(self, servers: dict[str, SimpleNamespace]) -> SimpleNamespace:
         return SimpleNamespace(servers=servers)
@@ -132,6 +177,20 @@ class TestGetCellStatuses:
             "engine-0": "Running",
             "engine-1": "Pending",
         }
+
+    def test_each_status_carries_the_generation_it_describes(self):
+        """A status without its generation is indistinguishable from one about the process it replaced."""
+        controller = self._controller(
+            {
+                "actor": SimpleNamespace(
+                    server_cells={"engine-0": _make_cell(StateServing(addr_info=_ADDR_INFO), workers_hash="hash-7")}
+                )
+            }
+        )
+
+        statuses = InferenceController.get_cell_statuses(controller)
+
+        assert statuses["engine-0"].workers_hash == "hash-7"
 
     def test_a_controller_without_servers_reports_nothing(self):
         """debug-train-only runs have no rollout cells, and must not fabricate any."""

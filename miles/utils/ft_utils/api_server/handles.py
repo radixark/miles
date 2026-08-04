@@ -1,40 +1,36 @@
 from __future__ import annotations
 
-import abc
-import asyncio
+from typing import Protocol
 
 import ray
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
-from miles.ray.train.group import RayTrainGroup
 from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
-class _CellHandler(abc.ABC):
+class _CellStatusSource(Protocol):
+    def get_cell_statuses(self) -> dict[str, CellStatus]: ...
+
+
+class _CellHandler:
+    def __init__(
+        self,
+        *,
+        cell_type: str,
+        worker_manager: ray.actor.ActorHandle,
+        controller: _CellStatusSource,
+        pool_ids: list[str],
+    ) -> None:
+        self._cell_type = cell_type
+        self._worker_manager = worker_manager
+        self._controller = controller
+        self._pool_ids = pool_ids
+
     @property
-    @abc.abstractmethod
-    def cell_type(self) -> str: ...
-
-    @abc.abstractmethod
-    async def list_cell_ids(self) -> list[str]: ...
-
-    @abc.abstractmethod
-    async def get_cell(self, cell_id: str) -> Cell: ...
-
-    @abc.abstractmethod
-    async def suspend(self, cell_id: str) -> None: ...
-
-    @abc.abstractmethod
-    async def resume(self, cell_id: str) -> None: ...
-
-    async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        raise NotImplementedError(f"{type(self).__name__} does not support fault injection")
-
-    async def list_cells(self) -> list[Cell]:
-        cell_ids = await self.list_cell_ids()
-        return list(await asyncio.gather(*(self.get_cell(cell_id) for cell_id in cell_ids)))
+    def cell_type(self) -> str:
+        return self._cell_type
 
     def _compute_metadata(self, cell_id: str) -> CellMetadata:
         return CellMetadata(
@@ -45,29 +41,12 @@ class _CellHandler(abc.ABC):
             },
         )
 
-
-class _ActorCellHandler(_CellHandler):
-    def __init__(
-        self,
-        *,
-        worker_manager: ray.actor.ActorHandle,
-        group: RayTrainGroup,
-        trainer_pool_ids: list[str],
-    ) -> None:
-        self._worker_manager = worker_manager
-        self._group = group
-        self._trainer_pool_ids = trainer_pool_ids
-
-    @property
-    def cell_type(self) -> str:
-        return "actor"
-
     async def list_cell_ids(self) -> list[str]:
         return sorted(await self._get_cell_infos())
 
     async def list_cells(self) -> list[Cell]:
         cell_infos = await self._get_cell_infos()
-        statuses = self._group.get_cell_statuses()
+        statuses = self._controller.get_cell_statuses()
         return [
             self._compute_cell(cell_id, cell_infos=cell_infos, statuses=statuses) for cell_id in sorted(cell_infos)
         ]
@@ -76,23 +55,28 @@ class _ActorCellHandler(_CellHandler):
         return self._compute_cell(
             cell_id,
             cell_infos=await self._get_cell_infos(),
-            statuses=self._group.get_cell_statuses(),
+            statuses=self._controller.get_cell_statuses(),
         )
 
     def _compute_cell(self, cell_id: str, *, cell_infos: dict[str, CellInfo], statuses: dict[str, CellStatus]) -> Cell:
-        suspended = not cell_infos[cell_id].alive
+        info = cell_infos[cell_id]
+        suspended = not info.alive
         return Cell(
             metadata=self._compute_metadata(cell_id),
             spec=CellSpec(suspend=suspended),
             status=(
-                CellStatus(phase="Suspended", conditions=[CellCondition.allocated(TriState.FALSE)])
+                CellStatus(
+                    phase="Suspended",
+                    conditions=[CellCondition.allocated(TriState.FALSE)],
+                    workers_hash=info.workers_hash,
+                )
                 if suspended
-                else statuses.get(cell_id) or compute_pending_rollout_cell_status()
+                else _compute_status_of_generation(statuses.get(cell_id), workers_hash=info.workers_hash)
             ),
         )
 
     async def _get_cell_infos(self) -> dict[str, CellInfo]:
-        return await self._worker_manager.get_cell_infos.remote(pool_ids=self._trainer_pool_ids)
+        return await self._worker_manager.get_cell_infos.remote(pool_ids=self._pool_ids)
 
     async def suspend(self, cell_id: str) -> None:
         await self._worker_manager.stop_cells.remote([cell_id])
@@ -104,45 +88,20 @@ class _ActorCellHandler(_CellHandler):
         await self._worker_manager.inject_fault.remote(cell_id, mode=mode.value, worker_in_cell_index=sub_index)
 
 
-class _RolloutCellHandler(_CellHandler):
-    def __init__(
-        self,
-        *,
-        worker_manager: ray.actor.ActorHandle,
-        inference_controller: object,
-    ) -> None:
-        self._worker_manager = worker_manager
-        self._inference_controller = inference_controller
-
-    @property
-    def cell_type(self) -> str:
-        return "rollout"
-
-    async def list_cell_ids(self) -> list[str]:
-        return sorted(self._inference_controller.get_cell_statuses())
-
-    async def list_cells(self) -> list[Cell]:
-        statuses = self._inference_controller.get_cell_statuses()
-        return [self._compute_cell(cell_id, statuses=statuses) for cell_id in sorted(statuses)]
-
-    async def get_cell(self, cell_id: str) -> Cell:
-        return self._compute_cell(cell_id, statuses=self._inference_controller.get_cell_statuses())
-
-    def _compute_cell(self, cell_id: str, *, statuses: dict[str, object]) -> Cell:
-        status = statuses.get(cell_id) or compute_pending_rollout_cell_status()
-        return Cell(
-            metadata=self._compute_metadata(cell_id),
-            spec=CellSpec(suspend=status.phase == "Suspended"),
-            status=status,
+def _compute_status_of_generation(status: CellStatus | None, *, workers_hash: str) -> CellStatus:
+    if status is None:
+        return compute_pending_rollout_cell_status(workers_hash=workers_hash)
+    if status.workers_hash != workers_hash:
+        return status.model_copy(
+            update={
+                "conditions": [_compute_unknown_condition(condition) for condition in status.conditions],
+                "workers_hash": workers_hash,
+            }
         )
+    return status
 
-    async def suspend(self, cell_id: str) -> None:
-        await self._worker_manager.stop_cells.remote([cell_id])
-        self._inference_controller.notify_cell_suspended(cell_id)
 
-    async def resume(self, cell_id: str) -> None:
-        self._inference_controller.notify_cell_resumed(cell_id)
-        await self._worker_manager.start_cells.remote([cell_id])
-
-    async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        await self._worker_manager.inject_fault.remote(cell_id, mode=mode.value, worker_in_cell_index=sub_index)
+def _compute_unknown_condition(condition: CellCondition) -> CellCondition:
+    if condition.type == "Healthy":
+        return CellCondition.from_health_checker_status(TriState.UNKNOWN)
+    return CellCondition(type=condition.type, status=TriState.UNKNOWN)

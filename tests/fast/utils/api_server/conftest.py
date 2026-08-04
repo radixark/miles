@@ -56,6 +56,10 @@ class MockHandler(_CellHandler):
     async def list_cell_ids(self) -> list[str]:
         return list(self.cells)
 
+    async def list_cells(self) -> list[Cell]:
+        cell_ids = await self.list_cell_ids()
+        return list(await asyncio.gather(*(self.get_cell(cell_id) for cell_id in cell_ids)))
+
     async def get_cell(self, cell_id: str) -> Cell:
         state = self.cells[cell_id]
         return Cell(
@@ -64,6 +68,7 @@ class MockHandler(_CellHandler):
             status=CellStatus(
                 phase=state.phase,
                 conditions=[CellCondition(**c) for c in state.conditions],
+                workers_hash="pseudo-hash-0",
             ),
         )
 
@@ -93,7 +98,7 @@ class MockHandler(_CellHandler):
 
     async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
         if not self.supports_inject_fault:
-            await super().inject_fault(cell_id, mode=mode, sub_index=sub_index)
+            raise NotImplementedError(f"{type(self).__name__} does not support fault injection")
         self.injected.append((cell_id, mode, sub_index))
 
 
@@ -187,14 +192,16 @@ class MockWorkerManager:
             self._summaries[cell_id] = dataclasses.replace(previous, alive=not suspended)
 
 
-def make_cell_summaries(*cell_ids: str, suspended: bool = False) -> dict[str, CellInfo]:
+def make_cell_summaries(
+    *cell_ids: str, suspended: bool = False, workers_hash: str = "pseudo-hash-0"
+) -> dict[str, CellInfo]:
     return {
         cell_id: CellInfo(
             cell_id=cell_id,
             pool_id=cell_id.rsplit("-", 1)[0],
             alive=not suspended,
             worker_names=[] if suspended else [f"{cell_id}-0"],
-            workers_hash="pseudo-hash-0",
+            workers_hash=workers_hash,
             meta={"model_id": "default"},
         )
         for cell_id in cell_ids
@@ -207,12 +214,14 @@ class MockRayTrainCell:
         *,
         phase: str = "Running",
         conditions: list[dict[str, str | None]] | None = None,
+        workers_hash: str = "pseudo-hash-0",
     ) -> None:
         self._phase = phase
         self._conditions = conditions or [
             {"type": "Allocated", "status": "True"},
             {"type": "Healthy", "status": "True"},
         ]
+        self.workers_hash = workers_hash
 
     @property
     def phase(self) -> str:
@@ -228,6 +237,7 @@ class MockRayTrainCell:
         return CellStatus(
             phase=self._phase,
             conditions=[CellCondition(**c) for c in self._conditions],
+            workers_hash=self.workers_hash,
         )
 
 

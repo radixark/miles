@@ -286,7 +286,7 @@ class RayTrainCell:
         return type(self._state).__name__
 
     def cell_status(self) -> CellStatus:
-        return compute_cell_status(self._state, self.health_checker.status)
+        return compute_cell_status(self._state, self.health_checker.status, workers_hash=self.workers_hash)
 
     @property
     def indep_dp_info(self) -> IndepDPInfo | None:
