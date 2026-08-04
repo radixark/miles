@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
+from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import make_alive_cell, make_cell, make_indep_dp_info
 
 from miles.ray.train import cell as cell_module
@@ -18,8 +19,7 @@ class TestInitialState:
 
         assert cell.is_allocated
         assert not cell.is_alive
-        assert not cell.is_pending
-        assert not cell.is_stopped
+        assert cell.is_uninitialized
 
     def test_actor_handles_are_real_ray_actors(self):
         cell = make_cell(actor_count=3)
@@ -29,30 +29,22 @@ class TestInitialState:
         assert all(isinstance(h, ray.actor.ActorHandle) for h in handles)
 
 
-class TestStopTransitions:
-    async def test_stop_from_uninitialized_kills_actors(self):
+class TestStop:
+    async def test_stop_asks_the_worker_manager_to_stop_the_cell(self):
+        """The manager owns the actors, so the cell only forwards the request."""
         cell = make_cell(actor_count=2)
 
         await cell.stop()
 
-        assert cell.is_stopped
-        assert not cell.is_allocated
+        assert train_conftest.fake_worker_manager.stopped_cell_ids == [[cell.cell_id]]
 
-    async def test_stop_from_alive_kills_actors(self):
+    async def test_stop_from_alive_asks_the_worker_manager_too(self):
+        """An alive cell is torn down the same way; reconcile then drops the object."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
 
         await cell.stop()
 
-        assert cell.is_stopped
-
-    async def test_stop_from_pending_transitions_to_stopped(self):
-        cell = make_cell()
-        await cell.stop()
-        cell.mark_as_pending()
-
-        await cell.stop()
-
-        assert cell.is_stopped
+        assert train_conftest.fake_worker_manager.stopped_cell_ids == [[cell.cell_id]]
 
     async def test_stop_kills_the_underlying_workers(self):
         """Stopping a cell really kills its workers, so every handle is confirmed dead and rejects new calls."""
@@ -65,56 +57,6 @@ class TestStopTransitions:
             await asyncio.wait_for(cell_module._confirm_actor_dead(handle), timeout=30.0)
             with pytest.raises(ray.exceptions.RayActorError):
                 ray.get(handle.get_calls.remote())
-
-    async def test_stop_already_stopped_is_idempotent(self):
-        cell = make_cell()
-        await cell.stop()
-
-        await cell.stop()
-
-        assert cell.is_stopped
-
-
-class TestMarkAsPending:
-    async def test_from_stopped(self):
-        cell = make_cell()
-        await cell.stop()
-
-        cell.mark_as_pending()
-
-        assert cell.is_pending
-
-    async def test_idempotent_when_pending(self):
-        cell = make_cell()
-        await cell.stop()
-        cell.mark_as_pending()
-
-        cell.mark_as_pending()
-
-        assert cell.is_pending
-
-    def test_idempotent_when_allocated(self):
-        cell = make_cell()
-
-        cell.mark_as_pending()
-
-        assert cell.is_allocated
-
-
-class TestAllocateForPending:
-    async def test_reallocate_after_stop_start(self):
-        """After stop → pending → allocate, cell has fresh actors."""
-        cell = make_cell(actor_count=2)
-        old_handles = cell._get_actor_handles()
-
-        await cell.stop()
-        cell.mark_as_pending()
-        await cell.allocate_for_pending()
-
-        assert cell.is_allocated
-        new_handles = cell._get_actor_handles()
-        assert len(new_handles) == 2
-        assert new_handles != old_handles
 
 
 class TestMarkAsAlive:
@@ -196,44 +138,28 @@ class TestMarkAsErrored:
         assert cell.indep_dp_info is None
 
 
-class TestInvalidTransitions:
-    async def test_allocate_for_pending_rejects_from_alive(self):
-        cell = make_alive_cell(0, alive_cell_indices=[0])
-
-        with pytest.raises(AssertionError):
-            await cell.allocate_for_pending()
-
-    async def test_allocate_for_pending_rejects_from_stopped(self):
-        cell = make_cell()
-        await cell.stop()
-
-        with pytest.raises(AssertionError):
-            await cell.allocate_for_pending()
-
-
-class TestErroredToStopped:
-    async def test_stop_from_errored_transitions_to_stopped(self):
+class TestErroredCellTeardown:
+    async def test_stop_from_errored_reaches_the_worker_manager(self):
+        """An errored cell is torn down through the manager like any other."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
         cell._mark_as_errored()
         assert cell.is_errored
 
         await cell.stop()
 
-        assert cell.is_stopped
-        assert not cell.is_errored
+        assert train_conftest.fake_worker_manager.stopped_cell_ids == [[cell.cell_id]]
 
-    async def test_full_error_recovery_lifecycle(self):
-        """Errored → stop → pending → allocate → alive (full recovery from error)."""
+    async def test_the_replacement_cell_recovers_the_lifecycle(self):
+        """Errored → stop → reconcile builds a fresh cell on the new workers → alive."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
         cell._mark_as_errored()
-
         await cell.stop()
-        cell.mark_as_pending()
-        await cell.allocate_for_pending()
-        cell._mark_as_alive(indep_dp_info=make_indep_dp_info(quorum_id=99))
 
-        assert cell.is_alive
-        assert cell.indep_dp_info.quorum_id == 99
+        replacement = make_cell(cell.cell_index)
+        replacement._mark_as_alive(indep_dp_info=make_indep_dp_info(quorum_id=99))
+
+        assert replacement.is_alive
+        assert replacement.indep_dp_info.quorum_id == 99
 
 
 class TestAsyncInit:
@@ -257,8 +183,8 @@ class TestAsyncInit:
 
 
 class TestAsyncInitFailure:
-    async def test_init_failure_leaves_cell_stopped_not_alive(self):
-        """A failed remote init routes through errored to stopped; the cell is never reported alive."""
+    async def test_init_failure_leaves_cell_not_alive(self):
+        """A failed remote init marks the cell errored and tears it down; it is never reported alive."""
         cell = make_cell(actor_count=1)
         for handle in cell._get_actor_handles():
             ray.get(handle.set_fail_methods.remote(["init"]))
@@ -267,7 +193,7 @@ class TestAsyncInitFailure:
             await cell.init(indep_dp_info=make_indep_dp_info())
 
         assert not cell.is_alive
-        assert cell.is_stopped
+        assert train_conftest.fake_worker_manager.stopped_cell_ids == [[cell.cell_id]]
 
 
 class TestPrepareIndepDPModeAlive:
@@ -339,86 +265,57 @@ class TestSetRolloutExecutor:
 
 
 class TestStatePredicates:
-    async def test_pending(self):
-        cell = make_cell()
-        await cell.stop()
-        cell.mark_as_pending()
-
-        assert cell.is_pending
-        assert not cell.is_allocated
-        assert not cell.is_alive
-        assert not cell.is_errored
-        assert not cell.is_stopped
-
     def test_uninitialized(self):
         cell = make_cell()
 
-        assert not cell.is_pending
         assert cell.is_allocated
+        assert cell.is_uninitialized
         assert not cell.is_alive
         assert not cell.is_errored
-        assert not cell.is_stopped
 
     def test_alive(self):
         cell = make_alive_cell(0, alive_cell_indices=[0])
 
-        assert not cell.is_pending
         assert cell.is_allocated
+        assert not cell.is_uninitialized
         assert cell.is_alive
         assert not cell.is_errored
-        assert not cell.is_stopped
 
     def test_errored(self):
         cell = make_alive_cell(0, alive_cell_indices=[0])
         cell._mark_as_errored()
 
-        assert not cell.is_pending
         assert cell.is_allocated
+        assert not cell.is_uninitialized
         assert not cell.is_alive
         assert cell.is_errored
-        assert not cell.is_stopped
-
-    async def test_stopped(self):
-        cell = make_cell()
-        await cell.stop()
-
-        assert not cell.is_pending
-        assert not cell.is_allocated
-        assert not cell.is_alive
-        assert not cell.is_errored
-        assert cell.is_stopped
 
 
 class TestFullLifecycle:
-    async def test_full_stop_start_cycle(self):
-        """Full lifecycle: init → alive → stop → pending → allocate → alive."""
-        # Step 1: Create (Pending → Uninitialized)
+    async def test_full_stop_and_replacement_cycle(self):
+        """Full lifecycle: attach → alive → stop → reconcile replaces the object → alive again."""
+        # Step 1: Create (attaches to the manager's workers)
         cell = make_cell(actor_count=2)
-        assert cell.is_allocated and not cell.is_alive
+        assert cell.is_uninitialized and not cell.is_alive
 
         # Step 2: Alive
         info_v1 = make_indep_dp_info(alive_cell_indices=[0, 1, 2], quorum_id=1)
         cell._mark_as_alive(indep_dp_info=info_v1)
         assert cell.is_alive
 
-        # Step 3: Stop
+        # Step 3: Stop through the manager
         await cell.stop()
-        assert cell.is_stopped
+        assert train_conftest.fake_worker_manager.stopped_cell_ids == [[cell.cell_id]]
 
-        # Step 4: Pending
-        cell.mark_as_pending()
-        assert cell.is_pending
+        # Step 4: The provider drops it and reconcile builds a fresh object on the new workers
+        cell = make_cell(actor_count=2)
+        assert cell.is_uninitialized and not cell.is_alive
 
-        # Step 5: Allocate (new actors)
-        await cell.allocate_for_pending()
-        assert cell.is_allocated and not cell.is_alive
-
-        # Step 6: Alive again with new config
+        # Step 5: Alive again with new config
         info_v2 = make_indep_dp_info(alive_cell_indices=[0, 2], quorum_id=2)
         cell._mark_as_alive(indep_dp_info=info_v2)
         assert cell.is_alive
         assert cell.indep_dp_info.quorum_id == 2
-        assert cell.indep_dp_info.alive_size == 2
 
 
 def _make_coro_factory(behavior):

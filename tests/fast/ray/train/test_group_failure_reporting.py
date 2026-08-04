@@ -1,9 +1,11 @@
+import logging
 from types import SimpleNamespace
 
 import pytest
 import ray
-from tests.fast.ray.train.conftest import make_alive_cell
+from tests.fast.ray.train.conftest import make_alive_cell, make_cell
 
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import NonRetryableError
@@ -76,20 +78,230 @@ class TestLifecycleCallsAreNotSilent:
         assert f"Injected failure in {actor_fn_name}" in str(excinfo.value.__cause__)
 
 
-class TestPendingCellsDoNotCountAsRecoverable:
-    async def test_a_lost_last_alive_cell_is_reported_even_with_a_pending_cell(self):
-        """A pending cell has no live source to heal from, so losing the last alive cell must still be reported."""
-        cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
-        cells[1].stop()
-        cells[1].mark_as_pending()
-        ray.get(cells[0]._get_actor_handles()[0].set_fail_methods.remote(["sleep"]))
-        group = _make_controller(cells)
+class TestOnlyAliveCellsKeepTheControllerRetryable:
+    async def test_a_failed_attempt_is_retryable_while_another_cell_is_still_alive(self):
+        """The next attempt runs on the surviving cell, so the failure must stay retryable, not fatal."""
+        errored_cell = make_alive_cell(0, alive_cell_indices=[0, 1])
+        surviving_cell = make_alive_cell(1, alive_cell_indices=[0, 1])
+        group = _make_controller([errored_cell, surviving_cell])
+        errored_cell._mark_as_errored()
 
-        with pytest.raises(NonRetryableError) as excinfo:
+        with pytest.raises(RuntimeError) as excinfo:
+            group._check_train_one_attempt(
+                snapshot_alive_cells=[errored_cell],
+                results=[ValueError("Injected failure in train")],
+            )
+
+        assert not isinstance(excinfo.value, NonRetryableError)
+        assert surviving_cell.is_alive
+
+    async def test_a_failed_attempt_is_fatal_when_only_a_healing_cell_is_left(self):
+        """The next attempt refreshes on alive cells alone, so calling a healing cell recoverable only stalls."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0])
+        uninitialized_cell = make_cell(1)
+        group = _make_controller([alive_cell, uninitialized_cell])
+        alive_cell._mark_as_errored()
+
+        with pytest.raises(NonRetryableError):
+            group._check_train_one_attempt(
+                snapshot_alive_cells=[alive_cell],
+                results=[ValueError("Injected failure in train")],
+            )
+
+        assert uninitialized_cell.is_uninitialized
+
+    async def test_a_failed_attempt_is_fatal_once_no_cell_can_come_back(self):
+        """With every cell errored there is nothing left to heal, so the group must fail fast."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0])
+        group = _make_controller([alive_cell])
+        alive_cell._mark_as_errored()
+
+        with pytest.raises(NonRetryableError):
+            group._check_train_one_attempt(
+                snapshot_alive_cells=[alive_cell],
+                results=[ValueError("Injected failure in train")],
+            )
+
+    async def test_offload_fails_fast_when_the_last_alive_cell_is_lost(self):
+        """_refresh_cells accepts alive cells only, so a healing cell must not be reported as a survivor."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0])
+        for handle in alive_cell._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["sleep"]))
+        uninitialized_cell = make_cell(1)
+        group = _make_controller([alive_cell, uninitialized_cell])
+
+        with pytest.raises(NonRetryableError):
             await group.offload()
 
-        assert "Injected failure in sleep" in str(excinfo.value.__cause__)
-        assert cells[1].is_pending
+        assert not alive_cell.is_alive
+        assert uninitialized_cell.is_uninitialized
+
+
+class TestIsRecoverableCountsOnlyAliveCells:
+    async def test_an_alive_cell_next_to_an_errored_one_keeps_the_group_recoverable(self):
+        """One survivor can carry the next attempt, so the group must still be reported as retryable."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0, 1])
+        errored_cell = make_alive_cell(1, alive_cell_indices=[0, 1])
+        errored_cell._mark_as_errored()
+        group = _make_controller([alive_cell, errored_cell])
+
+        assert group._is_recoverable()
+
+    async def test_a_healing_cell_next_to_an_alive_one_keeps_the_group_recoverable(self):
+        """A cell that is still coming back must not make a group with a survivor look doomed."""
+        group = _make_controller([make_alive_cell(0, alive_cell_indices=[0]), make_cell(1)])
+
+        assert group._is_recoverable()
+
+    async def test_a_group_of_only_healing_cells_is_not_recoverable(self):
+        """The next attempt refreshes on alive cells alone, so healing cells alone cannot rescue the group."""
+        group = _make_controller([make_cell(0), make_cell(1)])
+
+        assert not group._is_recoverable()
+
+    async def test_an_errored_cell_next_to_a_healing_one_is_not_recoverable(self):
+        """Neither an errored nor a healing cell can run the next attempt, so the group must be fatal."""
+        errored_cell = make_alive_cell(0, alive_cell_indices=[0])
+        errored_cell._mark_as_errored()
+        group = _make_controller([errored_cell, make_cell(1)])
+
+        assert not group._is_recoverable()
+
+    async def test_a_group_without_any_cell_is_not_recoverable(self):
+        """With no cell at all there is nothing to heal from, so the group must never be called retryable."""
+        group = _make_controller([])
+
+        assert not group._is_recoverable()
+
+
+class TestSaveModelNeedsAnAliveCellToRetryOnto:
+    async def test_save_model_reports_the_original_failure_when_only_a_healing_cell_is_left(self):
+        """A healing cell cannot take the save, so retrying past it would bury the real error behind 'no alive cells'."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0])
+        for handle in get_raw_actor_handles(alive_cell):
+            ray.get(handle.set_fail_methods.remote(["save_model"]))
+        uninitialized_cell = make_cell(1)
+        group = _make_controller([alive_cell, uninitialized_cell])
+
+        with pytest.raises(NonRetryableError) as excinfo:
+            await group.save_model(3)
+
+        assert "All cells failed during execute_first_alive#save_model" in str(excinfo.value)
+        assert "Injected failure in save_model" in str(excinfo.value.__cause__)
+        assert uninitialized_cell.is_uninitialized
+
+    async def test_save_model_moves_on_to_the_next_alive_cell(self):
+        """A second alive cell keeps the save retryable, so the group must not give up when the first cell dies."""
+        failing_cell = make_alive_cell(0, alive_cell_indices=[0, 1])
+        surviving_cell = make_alive_cell(1, alive_cell_indices=[0, 1])
+        for handle in get_raw_actor_handles(failing_cell):
+            ray.get(handle.set_fail_methods.remote(["save_model"]))
+        group = _make_controller([failing_cell, surviving_cell])
+
+        await group.save_model(3)
+
+        assert not failing_cell.is_alive
+        for handle in get_raw_actor_handles(surviving_cell):
+            assert [call[0] for call in ray.get(handle.get_calls.remote())] == ["save_model"]
+
+
+class TestTerminalDecisionLogging:
+    async def test_an_unrecoverable_attempt_is_logged_as_giving_up(self, caplog: pytest.LogCaptureFixture):
+        """A log that says retry while the raised error is fatal sends every reader looking for a retry that never came."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0])
+        group = _make_controller([alive_cell])
+        alive_cell._mark_as_errored()
+
+        with caplog.at_level(logging.ERROR, logger="miles.ray.train.group"), pytest.raises(NonRetryableError):
+            group._check_train_one_attempt(
+                snapshot_alive_cells=[alive_cell],
+                results=[ValueError("Injected failure in train")],
+            )
+
+        assert any("decision=give_up" in record.message for record in caplog.records)
+
+    async def test_a_recoverable_attempt_is_logged_as_retrying(self, caplog: pytest.LogCaptureFixture):
+        """A surviving cell makes the failure retryable, and the log must say so."""
+        errored_cell = make_alive_cell(0, alive_cell_indices=[0, 1])
+        surviving_cell = make_alive_cell(1, alive_cell_indices=[0, 1])
+        group = _make_controller([errored_cell, surviving_cell])
+        errored_cell._mark_as_errored()
+
+        with caplog.at_level(logging.ERROR, logger="miles.ray.train.group"), pytest.raises(RuntimeError):
+            group._check_train_one_attempt(
+                snapshot_alive_cells=[errored_cell],
+                results=[ValueError("Injected failure in train")],
+            )
+
+        assert any("decision=retry" in record.message for record in caplog.records)
+
+    async def test_a_discarded_attempt_with_no_survivor_is_logged_as_giving_up(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The retry it asks for cannot happen once refresh finds no alive cell, so the log must not promise one."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0])
+        group = _make_controller([alive_cell])
+        alive_cell._mark_as_errored()
+        monkeypatch.setattr(
+            TrainerController,
+            "_compute_attempt_outcomes",
+            staticmethod(lambda cells, results: {"normal": [], "discarded": [0], "errored": []}),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="miles.ray.train.group"), pytest.raises(ValueError):
+            group._check_train_one_attempt(snapshot_alive_cells=[alive_cell], results=[None])
+
+        assert any("decision=give_up" in record.message for record in caplog.records)
+
+    async def test_a_fatal_cause_is_logged_as_giving_up_even_while_another_cell_survives(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """A cause that forbids retrying wins over the surviving cell, so a log reading the pool instead of the raised error lies."""
+        errored_cell = make_alive_cell(0, alive_cell_indices=[0, 1])
+        surviving_cell = make_alive_cell(1, alive_cell_indices=[0, 1])
+        group = _make_controller([errored_cell, surviving_cell])
+        errored_cell._mark_as_errored()
+
+        with caplog.at_level(logging.ERROR, logger="miles.ray.train.group"), pytest.raises(NonRetryableError):
+            group._check_train_one_attempt(
+                snapshot_alive_cells=[errored_cell],
+                results=[NonRetryableError("Injected fatal failure in train")],
+            )
+
+        assert surviving_cell.is_alive
+        assert any("decision=give_up" in record.message for record in caplog.records)
+        assert not any("decision=retry" in record.message for record in caplog.records)
+
+    async def test_a_discarded_attempt_with_a_survivor_is_logged_as_retrying(self, caplog: pytest.LogCaptureFixture):
+        """A discarded step is replayed while a cell is still alive, so the log must announce that retry."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0])
+        group = _make_controller([alive_cell])
+
+        with caplog.at_level(logging.WARNING, logger="miles.ray.train.group"), pytest.raises(ValueError):
+            group._check_train_one_attempt(
+                snapshot_alive_cells=[alive_cell],
+                results=[[SimpleNamespace(outcome=TrainStepOutcome.DISCARDED_SHOULD_RETRY)]],
+            )
+
+        assert any("decision=retry" in record.message for record in caplog.records)
+        assert not any("decision=give_up" in record.message for record in caplog.records)
+
+    async def test_the_terminal_decision_log_still_names_the_cells_behind_it(self, caplog: pytest.LogCaptureFixture):
+        """A decision without the per-cell outcomes leaves an operator unable to tell which cells drove it."""
+        errored_cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
+        group = _make_controller(errored_cells)
+        for cell in errored_cells:
+            cell._mark_as_errored()
+
+        with caplog.at_level(logging.ERROR, logger="miles.ray.train.group"), pytest.raises(NonRetryableError):
+            group._check_train_one_attempt(
+                snapshot_alive_cells=errored_cells,
+                results=[ValueError("Injected failure in train") for _ in errored_cells],
+            )
+
+        decision_records = [record.message for record in caplog.records if "decision=give_up" in record.message]
+        assert decision_records
+        assert all("errored=0,1" in message for message in decision_records)
 
 
 class TestMultipleCellsStillTolerateFailures:
@@ -101,5 +313,5 @@ class TestMultipleCellsStillTolerateFailures:
 
         await group.offload()
 
-        assert cells[0].is_stopped
+        assert not cells[0].is_alive
         assert cells[1].is_alive
