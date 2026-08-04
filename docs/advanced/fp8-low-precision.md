@@ -96,7 +96,7 @@ Block layout is 128×128 with FP32 scales.
 | `--use-tis` | Truncated Importance Sampling for residual precision drift. |
 
 Set `NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1` in the Ray runtime env to use FP32
-scales (`miles/ray/train/actor_factory.py` already sets this in the actor env).
+scales (`compute_trainer_env_vars` in `miles/ray/specs/train.py` already sets this in the actor env).
 
 For models that already ship 128×128 block-wise FP8 weights (DeepSeek-V3,
 DeepSeek-R1, `Qwen/Qwen3-30B-A3B-FP8`), point `--hf-checkpoint` at the

@@ -7,6 +7,7 @@ from tests.fast.ray.train.conftest import make_alive_cell
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.ray_utils import Box
 
 pytestmark = pytest.mark.asyncio
@@ -20,7 +21,7 @@ def _make_controller(cells: list) -> RayTrainGroup:
     group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
     group._witness_allocator = None
     group._indep_dp_quorum_id = 0
-    group._health_checker_activeness = True
+    group._health_checker_activeness = ActivenessTracker(active=True)
     group._test_action_executor = SimpleNamespace(run_after_step=lambda **kwargs: None)
     return group
 
