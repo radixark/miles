@@ -1,0 +1,17 @@
+apiVersion: v2
+name: miles-workbench
+description: In-cluster operator seat for Miles - a long-lived CPU pod with the training image, shared storage and the RBAC needed to install miles-run releases.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - miles
+  - kubernetes
+  - workbench
+home: https://github.com/radixark/miles
+sources:
+  - https://github.com/radixark/miles
+dependencies:
+  - name: miles-common
+    version: 0.1.0
+    repository: file://../miles-common
