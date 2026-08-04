@@ -181,9 +181,8 @@ class TestAsyncInit:
 
         for handle in get_raw_actor_handles(cell):
             calls = ray.get(handle.get_calls.remote())
-            assert len(calls) == 1
-            assert calls[0][0] == "init"
-            kwargs = calls[0][2]
+            assert [name for name, _args, _kwargs in calls] == ["configure_master_addr_and_port", "init"]
+            kwargs = calls[1][2]
             assert kwargs["indep_dp_info"] == info
             assert kwargs["recv_ckpt_src_rank"] is None
 
