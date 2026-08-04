@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.actor_group import RayTrainGroup
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.utils.context_lock import ContextLock
 
@@ -113,19 +112,7 @@ async def test_start_update_weights_initializes_colocated_cells_before_snapshott
     assert init_counts_at_snapshot == [1]
 
 
-def _make_v1_group(order: list[str]) -> RayTrainGroup:
-    group = RayTrainGroup.__new__(RayTrainGroup)
-    group.args = Namespace(debug_train_only=False, debug_rollout_only=False, use_fault_tolerance=False)
-    group._inference_controller = _OrderRecordingInferenceController(order)
-
-    async def _record_broadcast(*args: object, **kwargs: object) -> None:
-        order.append("broadcast")
-
-    group._broadcast = AsyncMock(side_effect=_record_broadcast)
-    return group
-
-
-def _make_v2_group(order: list[str]):
+def _make_controller(order: list[str]):
     from miles.ray.train.group import TrainerController as FaultTolerantTrainGroup
 
     group = TrainerController.__new__(TrainerController)
@@ -141,22 +128,10 @@ def _make_v2_group(order: list[str]):
 
 
 @pytest.mark.asyncio
-async def test_v1_brackets_the_broadcast_with_start_and_end_update_weights():
-    """The trainer broadcast is recorded strictly between the start and end of the update window."""
-    order: list[str] = []
-    group = _make_v1_group(order)
-
-    await group.update_weights()
-
-    assert order == ["start_update_weights", "broadcast", "end_update_weights"]
-    group._broadcast.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_v2_brackets_the_broadcast_with_start_and_end_update_weights():
+async def test_the_trainer_brackets_the_broadcast_with_start_and_end_update_weights():
     """The fault-tolerant trainer runs the actual update RPC strictly inside the update window."""
     order: list[str] = []
-    group = _make_v2_group(order)
+    group = _make_controller(order)
 
     await group.update_weights()
 
@@ -165,63 +140,14 @@ async def test_v2_brackets_the_broadcast_with_start_and_end_update_weights():
 
 
 @pytest.mark.asyncio
-async def test_v1_hands_end_update_weights_the_snapshot_start_returned():
-    """A dropped or substituted snapshot leaves every pending cell unregistered with the router."""
+async def test_the_trainer_hands_end_update_weights_the_snapshot_start_returned():
+    """The snapshot start_update_weights returned is handed back to end_update_weights unchanged."""
     order: list[str] = []
-    group = _make_v1_group(order)
+    group = _make_controller(order)
 
     await group.update_weights()
 
     _assert_the_snapshot_is_handed_back_unchanged(group._inference_controller)
-
-
-@pytest.mark.asyncio
-async def test_v2_hands_end_update_weights_the_snapshot_start_returned():
-    """Same snapshot pass-through requirement on the fault-tolerant trainer group."""
-    order: list[str] = []
-    group = _make_v2_group(order)
-
-    await group.update_weights()
-
-    _assert_the_snapshot_is_handed_back_unchanged(group._inference_controller)
-
-
-@pytest.mark.asyncio
-async def test_v1_aborts_the_window_when_the_broadcast_raises():
-    """A failed weight transfer must close the lock window instead of leaving it open forever."""
-    order: list[str] = []
-    group = RayTrainGroup.__new__(RayTrainGroup)
-    group.args = Namespace(debug_train_only=False, debug_rollout_only=False, use_fault_tolerance=False)
-    group._inference_controller = _OrderRecordingInferenceController(order)
-    group._broadcast = AsyncMock(side_effect=RuntimeError("weight transfer died"))
-
-    with pytest.raises(RuntimeError, match="weight transfer died"):
-        await group.update_weights()
-
-    assert order == ["start_update_weights", "abort_update_weights"]
-
-
-@pytest.mark.asyncio
-async def test_v2_aborts_the_window_when_the_broadcast_raises(monkeypatch):
-    """Same abort requirement on the fault-tolerant trainer group, after its retries are exhausted."""
-    from miles.ray.train import group as train_group_module
-
-    async def _retry_once(fn, **kwargs):
-        await fn(0)
-
-    monkeypatch.setattr(train_group_module, "retry", _retry_once)
-
-    order: list[str] = []
-    group = train_group_module.RayTrainGroup.__new__(train_group_module.RayTrainGroup)
-    group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
-    group._inference_controller = _OrderRecordingInferenceController(order)
-    group._execute_first_alive = AsyncMock(side_effect=RuntimeError("weight transfer died"))
-    group._maybe_log_inference_engine_weight_checksums = AsyncMock()
-
-    with pytest.raises(RuntimeError, match="weight transfer died"):
-        await group.update_weights()
-
-    assert order == ["start_update_weights", "abort_update_weights"]
 
 
 def test_fsdp_updater_flushes_only_after_every_engine_is_paused():

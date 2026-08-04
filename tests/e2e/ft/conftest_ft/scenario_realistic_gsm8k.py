@@ -60,9 +60,6 @@ def run_ci(
             megatron_model_type=_MODEL_TYPE,
             extra_env_vars={
                 "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
-                # --ft-components train depends on cell-based indep_dp, which only
-                # the v2 RayTrainGroup supports.
-                "MILES_EXPERIMENTAL_FT_TRAINER": "1",
                 # Same as run_training: a cell respawned after a crash cold-recompiles
                 # its first forward, which is slow and memory-heavy enough to OOM.
                 "TORCHDYNAMO_DISABLE": "1",
