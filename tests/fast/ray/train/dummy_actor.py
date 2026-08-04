@@ -3,6 +3,7 @@
 Records all method calls so tests can verify what was dispatched.
 """
 
+import os
 from typing import Any
 
 import ray
@@ -78,6 +79,10 @@ class DummyTrainActor:
 
     def update_weights(self) -> None:
         self._record("update_weights", (), {})
+
+    def kill_self(self) -> None:
+        self._record("kill_self", (), {})
+        os._exit(1)
 
     def set_heartbeat_fail(self, fail: bool) -> None:
         self._heartbeat_fail = fail

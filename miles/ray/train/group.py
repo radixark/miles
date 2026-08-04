@@ -418,8 +418,8 @@ class RayTrainGroup:
         if not snapshot_alive_cells:
             raise NonRetryableError("No alive cells")
         # NOTE: no timeout here. If a cell hangs, the external FT controller
-        # detects stale heartbeat via cell_status(), calls cell.stop() to kill
-        # actors, which unblocks this gather with ActorDiedError.
+        # detects stale heartbeat via cell_status() and suspends the cell through
+        # the worker manager, which unblocks this gather with ActorDiedError.
         outputs = await asyncio.gather(
             *[compute_coroutine(cell) for cell in snapshot_alive_cells],
             return_exceptions=True,

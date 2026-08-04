@@ -18,11 +18,12 @@ from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
+
+KILL_RPC_TIMEOUT_S = 10.0
 
 
 class RayTrainCell:
@@ -139,17 +140,14 @@ class RayTrainCell:
 
     # ------------------------ state transition ------------------------
 
-    async def stop(self) -> None:
-        await RayWorkerManager.get_handle().stop_cells.remote([self.cell_id])
-
-    async def _stop_and_confirm_dead(self) -> None:
+    async def _kill_workers_and_confirm_dead(self) -> None:
         handles = self._get_actor_handles() if self.is_allocated else []
-        await self.stop()
 
         log_structured(
             logger.info, tag="ft", op="confirm_dead", phase="start", cell=self.cell_id, n_actors=len(handles)
         )
         start = time.monotonic()
+        await asyncio.gather(*[_kill_worker(handle) for handle in handles])
         await asyncio.gather(*[_confirm_actor_dead(handle) for handle in handles])
         log_structured(
             logger.info,
@@ -260,7 +258,7 @@ class RayTrainCell:
             )
             if kill_on_failure:
                 self._mark_as_errored()
-                await self._stop_and_confirm_dead()
+                await self._kill_workers_and_confirm_dead()
             raise
 
     # ------------------------ state and misc queries ------------------------
@@ -298,6 +296,15 @@ class RayTrainCell:
             self._state, StateAllocatedBase
         ), f"Cell {self.cell_id} is not allocated (state={type(self._state).__name__})"
         return self._state.actor_handles
+
+
+async def _kill_worker(handle: ray.actor.ActorHandle) -> None:
+    try:
+        await asyncio.wait_for(handle.kill_self.remote(), timeout=KILL_RPC_TIMEOUT_S)
+    except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
+        return
+    except (TimeoutError, asyncio.TimeoutError):
+        logger.warning("Timed out asking a worker to kill itself; falling back to the death confirmation probe")
 
 
 async def _confirm_actor_dead(handle: ray.actor.ActorHandle) -> None:
