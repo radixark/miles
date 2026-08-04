@@ -137,7 +137,7 @@ Cadence and scope can be tuned, though the defaults are appropriate for most run
 | `--dashboard-sglang-scrape-interval` | `2.0` | Engine scrape cadence, in seconds |
 | `--dashboard-sglang-scrape-mode` | `auto` | `auto` scrapes `{router}/engine_metrics`, or each engine's `/metrics` under `--use-miles-router`. `router` and `direct` force one or the other |
 | `--dashboard-sglang-metrics` | whitelist | Comma separated override of the scraped sglang metric whitelist |
-| `--dashboard-forward-prometheus` | off | Also push dashboard gauges to the `--use-prometheus` collector for external Grafana |
+| `--dashboard-forward-prometheus` | off | Also push dashboard gauges to the `--use-prometheus` collector for external Grafana. No-op under `--cluster-backend kubernetes`, where that collector is not started |
 
 A curated subset of the run's arguments, including the wandb identifiers, the parallelism
 layout, and the key sglang settings, is persisted into `meta.json` for the dashboard header.
