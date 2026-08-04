@@ -113,6 +113,17 @@ anything else is rejected at load time. The base supplies the constructor and no
 `save` / `load`, so a stateless implementation only adds the base class. Plain function
 rollout functions, and the default non-experimental path, are unaffected.
 
+## Custom data sources are now saved as well as loaded
+
+`RolloutExecutor.save` used to call `data_source.save` only under
+`--rollout-global-dataset`, while `load` was always called. A custom
+`--data-source-path` used together with `--disable-rollout-global-dataset` — the
+combination that flag exists for — was therefore restored from state it was never
+allowed to write. Both directions are now unconditional. The built-in
+`RolloutDataSource` is unchanged: it already returns early from both `save` and `load`
+when there is no global dataset. A custom source whose `save` assumed it would never be
+called now has to be a no-op explicitly.
+
 ## Other recent breakages
 
 ### v0.0.8 → v0.0.9
