@@ -448,3 +448,57 @@ class TestRecoverUpdatableEngines:
         assert slot0.is_allocated
         assert slot0.actor_handle is not actor0_before
         assert ray.get(slot0.actor_handle.health_generate.remote(timeout=1.0)) is True
+
+
+@pytest.mark.asyncio
+class TestRolloutFaultToleranceIsUnsupported:
+    async def test_health_monitoring_hooks_are_noops_without_fault_tolerance(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """A plain run never asked for fault tolerance, so the hooks stay out of its way."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+
+        await controller.health_monitoring_pause()
+        await controller.health_monitoring_resume()
+
+    async def test_health_monitoring_hooks_refuse_to_run_under_fault_tolerance(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """Asking for fault tolerance must fail loudly, not run unmonitored."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+        controller.args.use_fault_tolerance = True
+
+        with pytest.raises(NotImplementedError):
+            await controller.health_monitoring_pause()
+        with pytest.raises(NotImplementedError):
+            await controller.health_monitoring_resume()
+
+    async def test_fault_injection_refuses_to_run(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """The injector depended on the deleted monitor to observe the crash."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+
+        with pytest.raises(NotImplementedError):
+            await controller._try_ci_fault_injection()
