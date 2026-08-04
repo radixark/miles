@@ -193,7 +193,9 @@ class RayTrainGroup:
     def _log_step_end_event(self, *, rollout_id: int, snapshot_alive_cells: list, results: list):
         if is_event_logger_initialized():
             cell_outcomes = {
-                cell.cell_index: ("error" if isinstance(cell_results, BaseException) else [r for r in cell_results])
+                cell.cell_index: (
+                    "error" if isinstance(cell_results, BaseException) else [r.outcome for r in cell_results]
+                )
                 for cell, cell_results in zip(snapshot_alive_cells, results, strict=True)
             }
             get_event_logger().log(
@@ -235,7 +237,8 @@ class RayTrainGroup:
         discarded = [
             c.cell_index
             for c, r in paired
-            if not isinstance(r, BaseException) and any(o == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
+            if not isinstance(r, BaseException)
+            and any(o.outcome == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
         ]
         normal = [c.cell_index for c, r in paired if c.cell_index not in errored and c.cell_index not in discarded]
         return {"errored": errored, "discarded": discarded, "normal": normal}

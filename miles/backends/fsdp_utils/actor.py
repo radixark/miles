@@ -10,6 +10,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.ci_utils import check_grad_norm
 from miles.backends.training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
 from miles.backends.training_utils.log_utils import (
@@ -441,7 +442,7 @@ class FSDPTrainRayActor(TrainRayActor):
         rollout_data_ref: Box,
         witness_info: "WitnessInfo | None" = None,
         attempt: int = 0,
-    ) -> None:
+    ) -> TrainStepOutput:
         """Run one training update over a rollout batch (``rollout_data_ref`` is a Box handle to the
         Ray object ref with the rollout tensors; fetched and partitioned by data-parallel rank)."""
         assert witness_info is None
@@ -455,7 +456,7 @@ class FSDPTrainRayActor(TrainRayActor):
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
             stack.enter_context(store_get_result)
             if self.args.debug_rollout_only:
-                return
+                return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
 
         train_metric_utils.log_perf_data_raw(
@@ -470,6 +471,7 @@ class FSDPTrainRayActor(TrainRayActor):
         )
 
         self._heartbeat.bump()
+        return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)

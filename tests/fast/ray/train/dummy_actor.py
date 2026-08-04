@@ -7,7 +7,7 @@ from typing import Any
 
 import ray
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 
 
@@ -17,7 +17,7 @@ class DummyTrainActor:
     def __init__(self):
         self._calls: list[tuple[str, tuple, dict]] = []
         self._fail_methods: set[str] = set()
-        self._train_return_value: Any = TrainStepOutcome.NORMAL
+        self._train_return_value: Any = TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
         self._heartbeat = SimpleHeartbeat()
         self._heartbeat.bump()
         self._heartbeat_fail: bool = False
