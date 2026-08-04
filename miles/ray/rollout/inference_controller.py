@@ -159,12 +159,18 @@ class InferenceController:
         )
 
     @requires_lock
+    def _all_cells(self) -> list[ServerCell]:
+        return [cell for srv in self.servers.values() for cell in srv.server_cells.values()]
+
+    @requires_lock
     async def _ensure_cells_ready(self) -> None:
         deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
         while True:
-            cells = [cell for srv in self.servers.values() for cell in srv.server_cells.values()]
             if self.args.colocate:
-                await asyncio.gather(*[cell.init() for cell in cells if cell.is_uninitialized])
+                await asyncio.gather(*[cell.init() for cell in self._all_cells() if cell.is_uninitialized])
+            # Re-read after the awaits above: reconcile can add a cell while we initialize,
+            # and returning on the older list would leave that cell out of the window.
+            cells = self._all_cells()
             pending = [cell for cell in cells if not cell.is_pending_weights_or_serving]
             if not pending:
                 return
