@@ -4,10 +4,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-import ray
-
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
-from miles.ray.specs.train import compute_trainer_pool_id
+from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import RayTrainCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils.async_utils import AsyncioGatherUtils
@@ -26,7 +24,9 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError, retry
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.naming import parse_cell_id
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 logger = logging.getLogger(__name__)
 
@@ -48,41 +48,23 @@ class RayTrainGroup:
         self.args = args
         self._inference_controller = inference_controller
         self._rollout_executor = rollout_executor
+        self._role = role
+        self._with_ref = with_ref
+        self._with_opd_teacher = with_opd_teacher
         self._pool_id = compute_trainer_pool_id(role)
-        self._worker_manager = RayWorkerManager.get_handle()
-
-        num_cells = self._compute_num_cells()
+        self._watcher_disposer: StopWatchFn | None = None
 
         self._indep_dp_quorum_id = 0
 
-        health_checker_config = (
-            SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker") if num_cells > 1 else None
+        self._health_checker_config = (
+            SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker")
+            if self._expected_num_cells > 1
+            else None
         )
 
         self._health_checker_activeness = ActivenessTracker(active=True)
 
-        def _create_cell(cell_index: int):
-            cell = RayTrainCell(
-                args=args,
-                role=role,
-                with_ref=with_ref,
-                with_opd_teacher=with_opd_teacher,
-                cell_index=cell_index,
-                rollout_executor=rollout_executor,
-                pool_id=self._pool_id,
-                health_checker=NoopHealthChecker(),
-            )
-
-            if health_checker_config is not None:
-                cell.health_checker = create_trainer_cell_health_checker(
-                    cell=cell,
-                    config=health_checker_config,
-                    get_activeness=self._health_checker_activeness.get,
-                )
-
-            return cell
-
-        self._cells: list[RayTrainCell] = [_create_cell(cell_index) for cell_index in range(num_cells)]
+        self._cells_by_index: dict[int, RayTrainCell] = {}
 
         self._witness_allocator: WitnessIdAllocator | None = (
             WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
@@ -92,8 +74,47 @@ class RayTrainGroup:
 
         self._test_action_executor = FTTestActionControllerExecutor.from_args(args, group=self)
 
-    def _compute_num_cells(self) -> int:
-        return len(ray.get(self._worker_manager.get_cell_infos.remote(pools=[self._pool_id])))
+    @property
+    def _expected_num_cells(self) -> int:
+        return compute_trainer_num_cells(self.args, role=self._role)
+
+    @property
+    def _cells(self) -> list[RayTrainCell]:
+        return [self._cells_by_index[index] for index in sorted(self._cells_by_index)]
+
+    async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
+        if observed is None:
+            return
+
+        cell_index = parse_cell_id(cell_id).cell_index
+        if cell_index not in self._cells_by_index:
+            self._cells_by_index[cell_index] = self._create_cell(cell_index)
+
+    def _create_cell(self, cell_index: int) -> RayTrainCell:
+        cell = RayTrainCell(
+            args=self.args,
+            role=self._role,
+            with_ref=self._with_ref,
+            with_opd_teacher=self._with_opd_teacher,
+            cell_index=cell_index,
+            rollout_executor=self._rollout_executor,
+            pool_id=self._pool_id,
+            health_checker=NoopHealthChecker(),
+        )
+
+        if self._health_checker_config is not None:
+            cell.health_checker = create_trainer_cell_health_checker(
+                cell=cell,
+                config=self._health_checker_config,
+                get_activeness=self._health_checker_activeness.get,
+            )
+
+        return cell
+
+    async def dispose(self) -> None:
+        if (disposer := self._watcher_disposer) is not None:
+            await disposer()
+            self._watcher_disposer = None
 
     # ------------------------ API :: train ------------------------
 
@@ -224,8 +245,12 @@ class RayTrainGroup:
 
     async def init(self):
         """
-        Allocate GPU resourced and initialize model, optimzier, local ckpt, etc.
+        Observe the controller's cells, then allocate GPU resources and initialize
+        model, optimzier, local ckpt, etc.
         """
+        provider: BaseWorkerProvider = RayWorkerProvider.create(pool_ids=[self._pool_id])
+        self._watcher_disposer = await provider.watch_cells(self._reconcile)
+
         cell_results = await asyncio.gather(
             *[
                 cell.init(
@@ -313,11 +338,11 @@ class RayTrainGroup:
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 
     async def stop_cell(self, cell_index: int) -> None:
-        await self._cells[cell_index].stop()
+        await self._cells_by_index[cell_index].stop()
 
     def start_cell(self, cell_index: int) -> None:
         """Mark a stopped cell as pending. Actual startup happens in train()."""
-        self._cells[cell_index].mark_as_pending()
+        self._cells_by_index[cell_index].mark_as_pending()
 
     # ------------------------ utils to forward calls to cells ------------------------
 

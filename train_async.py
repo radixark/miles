@@ -135,6 +135,9 @@ async def train(args):
     await eval_dispatcher.drain()
     await rollout_executor.dispose.remote()
     await inference_controller.dispose()
+    await actor_model.dispose()
+    if critic_model is not None:
+        await critic_model.dispose()
 
 
 if __name__ == "__main__":

@@ -358,7 +358,7 @@ class _FakeInjectCell:
 
 def _make_inject_group(cell: _FakeInjectCell) -> object:
     group = object.__new__(RayTrainGroup)
-    group._cells = [cell]
+    group._cells_by_index = {0: cell}
     return group
 
 
