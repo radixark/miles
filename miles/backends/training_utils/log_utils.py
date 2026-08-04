@@ -16,7 +16,7 @@ from miles.utils.types import RolloutBatch
 
 from ...utils.tracking_utils import tracking
 from .cp_utils import get_sum_of_sample_mean
-from .data import DataIterator
+from .data import DataIterator, get_thd_padded_total_lengths
 from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
@@ -123,6 +123,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
         loss_masks = rollout_data["loss_masks"]
         total_lengths = rollout_data["total_lengths"]
         max_seq_lens = rollout_data.get("max_seq_lens", None)
+        padded_total_lengths = get_thd_padded_total_lengths(args, total_lengths)
 
         for key, val in rollout_data.items():
             if key in [
@@ -172,6 +173,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                             loss_masks,
                             qkv_format=args.qkv_format,
                             max_seq_lens=max_seq_lens,
+                            padded_total_lengths=padded_total_lengths,
                         )
                         val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
                     else:
@@ -267,12 +269,15 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             correct_response_lengths = []
             correct_total_lengths = []
             correct_loss_masks = []
+            correct_max_seq_lens = []
             correct_entropy = []
             for i, raw_reward in enumerate(raw_rewards):
                 if raw_reward == 1:
                     correct_response_lengths.append(response_lengths[i])
                     correct_total_lengths.append(total_lengths[i])
                     correct_loss_masks.append(loss_masks[i])
+                    if max_seq_lens is not None:
+                        correct_max_seq_lens.append(max_seq_lens[i])
                     correct_entropy.append(-rollout_data["log_probs"][i])
             num_correct_responses = len(correct_total_lengths)
             rollout_data["correct_response_lengths"] = correct_response_lengths
@@ -282,8 +287,14 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             for p, val in correct_response_length_percentile.items():
                 rollout_data[f"correct_length/{p}"] = [val] * num_correct_responses
             if len(correct_entropy) > 0:
+                correct_padded_total_lengths = get_thd_padded_total_lengths(args, correct_total_lengths)
                 sum_of_sample_mean = get_sum_of_sample_mean(
-                    correct_total_lengths, correct_response_lengths, correct_loss_masks
+                    correct_total_lengths,
+                    correct_response_lengths,
+                    correct_loss_masks,
+                    qkv_format=args.qkv_format,
+                    max_seq_lens=correct_max_seq_lens if max_seq_lens is not None else None,
+                    padded_total_lengths=correct_padded_total_lengths,
                 )
                 correct_entropy = sum_of_sample_mean(torch.cat(correct_entropy, dim=0))
                 rollout_data["correct_entropy"] = [correct_entropy.item()] * num_correct_responses

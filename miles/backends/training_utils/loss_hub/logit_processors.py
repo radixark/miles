@@ -16,6 +16,7 @@ def get_responses(
     total_lengths: list[int],
     response_lengths: list[int],
     max_seq_lens: list[int] | None = None,
+    padded_total_lengths: list[int] | None = None,
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     """Yield response-aligned `(logits_chunk, tokens_chunk)` pairs per sample.
 
@@ -62,12 +63,17 @@ def get_responses(
 
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
+    if padded_total_lengths is not None and len(padded_total_lengths) != len(total_lengths):
+        raise ValueError(
+            f"padded_total_lengths has {len(padded_total_lengths)} entries for {len(total_lengths)} samples"
+        )
     end = 0
     seq_start = 0
     for i, (tokens, total_length, response_length) in enumerate(
         zip(unconcat_tokens, total_lengths, response_lengths, strict=False)
     ):
         max_seq_len = max_seq_lens[i] if max_seq_lens is not None else None
+        padded_total_length = padded_total_lengths[i] if padded_total_lengths is not None else total_length
 
         if cp_size == 1:
             if qkv_format == "bshd":
@@ -75,10 +81,12 @@ def get_responses(
                 start = end - response_length
                 logits_chunk = logits[start - 1 : end - 1]
             else:
-                end += total_length
-                start = end - response_length
-                logits_chunk = logits[start - 1 : end - 1]
-            tokens_chunk = tokens[-response_length:]
+                sample_start = end
+                end += padded_total_length
+                start = sample_start + total_length - response_length
+                sample_end = sample_start + total_length
+                logits_chunk = logits[start - 1 : sample_end - 1]
+            tokens_chunk = tokens[-response_length:] if response_length > 0 else tokens[:0]
         elif args.allgather_cp:
             # DSA: global concat then contiguous CP split. Each rank owns logits for
             # global positions [chunk_start, chunk_end).
@@ -105,7 +113,7 @@ def get_responses(
         else:
             # TODO: this is super ugly... do better abstraction.
             chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
-                total_length, response_length, qkv_format, max_seq_len
+                total_length, response_length, qkv_format, max_seq_len, padded_total_length
             )
 
             logits_0, logits_1 = logits[end : end + chunk_size], logits[end + chunk_size : end + 2 * chunk_size]
@@ -123,7 +131,7 @@ def get_responses(
             logits_chunk = torch.cat([logits_0, logits_1], dim=0)
             tokens_chunk = torch.cat([tokens_0, tokens_1], dim=0)
 
-        seq_start += total_length
+        seq_start += padded_total_length
 
         yield logits_chunk, tokens_chunk
 
@@ -139,6 +147,7 @@ def get_log_probs_and_entropy(
     entropy_requires_grad: bool = True,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
+    padded_total_lengths: list[int] | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Compute per-token log-probabilities (and optionally entropy) on responses.
 
@@ -174,6 +183,7 @@ def get_log_probs_and_entropy(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
+        padded_total_lengths=padded_total_lengths,
     ):
         log_prob, entropy = calculate_log_probs_and_entropy(
             logits_chunk,
@@ -205,6 +215,7 @@ def get_log_probs_and_entropy(
             total_lengths=total_lengths,
             response_lengths=response_lengths,
             max_seq_lens=max_seq_lens,
+            padded_total_lengths=padded_total_lengths,
         )
 
     return res
@@ -220,6 +231,7 @@ def get_values(
     with_entropy: bool = False,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
+    padded_total_lengths: list[int] | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Extract per-token value predictions over response tokens.
 
@@ -248,6 +260,7 @@ def get_values(
         total_lengths=total_lengths,
         response_lengths=response_lengths,
         max_seq_lens=max_seq_lens,
+        padded_total_lengths=padded_total_lengths,
     ):
         assert logits_chunk.size(-1) == 1, f"{logits_chunk.shape}"
         # upcast (no-op for fp32) so value-head outputs stay fp32 even when logits arrive bf16
@@ -265,6 +278,7 @@ def get_values(
             total_lengths=total_lengths,
             response_lengths=response_lengths,
             max_seq_lens=max_seq_lens,
+            padded_total_lengths=padded_total_lengths,
         )
 
     return res

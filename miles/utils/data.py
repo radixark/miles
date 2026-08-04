@@ -85,11 +85,33 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
     if max_length is None:
         return origin_samples
 
-    if not isinstance(origin_samples[0].prompt, str):
-        logger.warning(
-            "Skipping max_length check for list prompt. Set apply_chat_template=True to enable length filtering."
-        )
+    if not origin_samples:
         return origin_samples
+
+    if not isinstance(origin_samples[0].prompt, str):
+        filtered_samples = []
+        for sample in origin_samples:
+            if processor:
+                from miles.utils.processing_utils import call_processor, process_vision_info
+
+                multimodal_inputs = process_vision_info(sample.prompt, processor)
+                processor_output = call_processor(processor, sample.prompt, multimodal_inputs)
+                input_ids = processor_output["input_ids"][0]
+            else:
+                input_ids = chat_template_utils.apply_chat_template(
+                    sample.prompt,
+                    tokenizer=tokenizer,
+                    tools=sample.metadata.get("tools") if sample.metadata else None,
+                    tokenize=True,
+                    add_generation_prompt=False,
+                )
+            if len(input_ids) <= max_length:
+                filtered_samples.append(sample)
+
+        logger.info(
+            f"Filtered {len(origin_samples) - len(filtered_samples)} samples longer than max_length={max_length}."
+        )
+        return filtered_samples
 
     if processor:
         # Use processor only for samples with actual multimodal content; use batched tokenizer for text-only.

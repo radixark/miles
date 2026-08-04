@@ -49,7 +49,12 @@ def _patch_single_rank_loss_helpers(monkeypatch):
     monkeypatch.setattr(
         loss_utils,
         "get_local_response_loss_masks",
-        lambda total_lengths, response_lengths, loss_masks, qkv_format="thd", max_seq_lens=None: loss_masks,
+        lambda total_lengths,
+        response_lengths,
+        loss_masks,
+        qkv_format="thd",
+        max_seq_lens=None,
+        padded_total_lengths=None: loss_masks,
     )
     monkeypatch.setattr(
         loss_utils,

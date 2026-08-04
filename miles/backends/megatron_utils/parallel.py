@@ -98,6 +98,7 @@ def get_packed_seq_params(batch: dict[str, torch.Tensor], args: Namespace) -> Pa
             max_seqlen_kv=batch["max_seqlen"],
             qkv_format="thd",
         )
+        packed_seq_params.miles_allgather_cp = bool(getattr(args, "allgather_cp", False))
         batch["packed_seq_params"] = packed_seq_params
         return packed_seq_params
     else:
