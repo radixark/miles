@@ -259,6 +259,7 @@
        "developer/debug",
        "developer/migration",
        "developer/architecture",
+       "developer/reconcile-loop",
        "developer/experimental-features"
       ]
      }
