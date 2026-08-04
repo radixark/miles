@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout import inference_controller as inference_controller_module
 from miles.ray.rollout.inference_controller import InferenceController, _compute_server_cell_meta_from_info
 from miles.ray.rollout.rollout_server import RolloutServer
@@ -128,6 +129,22 @@ class TestHealthCheckerActiveness:
         await controller.prepare_rollout(rollout_id=0)
 
         assert controller._health_checker_activeness.get().active
+
+    @pytest.mark.asyncio
+    async def test_preparing_a_rollout_awaits_the_dashboard_engine_registration(self, monkeypatch):
+        """The dashboard hook is a coroutine, so prepare_rollout must await it instead of leaving it unscheduled."""
+        awaited: list[dict] = []
+
+        async def _record(servers: dict) -> None:
+            awaited.append(servers)
+
+        monkeypatch.setattr(dashboard_hooks, "register_engines", _record)
+        servers = {"default": _RecordingServer()}
+        controller = _make_controller(servers)
+
+        await controller.prepare_rollout(rollout_id=0)
+
+        assert awaited == [servers]
 
     @pytest.mark.asyncio
     async def test_preparing_an_eval_resumes_probing(self):

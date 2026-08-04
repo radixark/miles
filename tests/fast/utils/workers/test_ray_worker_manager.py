@@ -840,7 +840,7 @@ class TestGetWorkerInfos:
         assert [info.generation for info in infos] == [1, 1]
         assert [info.gpu_ids for info in infos] == [[4, 5], [6, 7]]
         assert [info.self_addrs for info in infos] == manager.get_addrs()["engine"][2:]
-        assert [info.actor_handle for info in infos] == fake_ray_cluster.handles[2:]
+        assert [info.handle._actor_handle for info in infos] == fake_ray_cluster.handles[2:]
 
 
 class TestGetWorkerInfosErrors:
@@ -933,6 +933,15 @@ class TestStartAndStopCells:
         await manager.start_cells(["engine-0"])
 
         assert len(fake_ray_cluster.calls_of("run")) == 2
+
+    async def test_starting_a_running_cell_leaves_it_alone(self, fake_ray_cluster: FakeRayCluster):
+        """Relaunching a live cell would orphan its current actors, so a repeated resume is a no-op."""
+        manager = await _launch([_make_spec("engine")])
+        handles_before = list(fake_ray_cluster.handles)
+
+        await manager.start_cells(["engine-0"])
+
+        assert fake_ray_cluster.handles == handles_before
 
     async def test_stopping_an_already_stopped_cell_is_a_noop(self, fake_ray_cluster: FakeRayCluster):
         """Heal loops retry, so a redundant suspend must not blow up on missing actors."""
