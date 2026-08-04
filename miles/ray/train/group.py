@@ -262,7 +262,7 @@ class RayTrainGroup:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
-            lambda _: self._execute_first_alive("save_model", rollout_id, force_sync=force_sync),
+            lambda _: self._execute_first_alive("save_model", rollout_id=rollout_id, force_sync=force_sync),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
@@ -329,23 +329,23 @@ class RayTrainGroup:
 
     # ------------------------ utils to forward calls to cells ------------------------
 
-    async def _execute_all_alive_and_catch(self, fn_name: str, *args, **kwargs):
+    async def _execute_all_alive_and_catch(self, fn_name: str, **kwargs):
         snapshot_alive_cells = [c for c in self._cells if c.is_alive]
         assert snapshot_alive_cells, "No alive cells"
         # NOTE: no timeout here. If a cell hangs, the external FT controller
         # detects stale heartbeat via cell_status(), calls cell.stop() to kill
         # actors, which unblocks this gather with ActorDiedError.
         outputs = await asyncio.gather(
-            *[cell.execute(fn_name, *args, **kwargs) for cell in snapshot_alive_cells],
+            *[cell.execute(fn_name, **kwargs) for cell in snapshot_alive_cells],
             return_exceptions=True,
         )
         AsyncioGatherUtils.log_error(outputs, debug_name=f"execute_all_alive_and_catch#{fn_name}")
         return snapshot_alive_cells, outputs
 
-    async def _execute_first_alive(self, fn_name: str, *args, **kwargs):
+    async def _execute_first_alive(self, fn_name: str, **kwargs):
         alive_cells = [c for c in self._cells if c.is_alive]
         assert alive_cells, "No alive cells, therefore cannot heal anymore"
-        return await alive_cells[0].execute(fn_name, *args, **kwargs)
+        return await alive_cells[0].execute(fn_name, **kwargs)
 
     # ------------------------ internals for stop/start ------------------------
 
