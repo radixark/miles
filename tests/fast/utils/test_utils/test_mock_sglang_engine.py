@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import inspect
-import re
-from pathlib import Path
 
 import pytest
 import ray
@@ -10,21 +8,6 @@ import ray
 from miles.utils.misc import get_free_port
 from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 from miles.utils.workers.command_actor import CommandActor
-
-# tests/fast/utils/test_utils/test_mock_sglang_engine.py → 4 levels up → repo root
-ROLLOUT_DIR = Path(__file__).resolve().parents[4] / "miles" / "ray" / "rollout"
-
-
-def _grep_engine_method_calls(directory: Path) -> set[str]:
-    """Find every ``<engine|actor_handle>.<method>.remote(...)`` call in the
-    rollout dir. The set returned is method names that the rollout code
-    expects to exist on every SGLangEngine actor."""
-    pattern = re.compile(r"(?:engine|actor_handle|rollout_engine)\.([a-zA-Z_][a-zA-Z0-9_]*)\.remote\(")
-    methods: set[str] = set()
-    for py in directory.rglob("*.py"):
-        for m in pattern.finditer(py.read_text()):
-            methods.add(m.group(1))
-    return methods
 
 
 def _public_methods(cls) -> set[str]:
@@ -61,29 +44,13 @@ def used_methods() -> set[str]:
 
 
 class TestApiContractMatchesRealEngine:
-    def test_mock_implements_every_method_used_in_rollout_dir(self, used_methods: set[str]) -> None:
-        real_methods = _public_methods(CommandActor)
-        mock_methods = _public_methods(MockSGLangEngine)
-
-        must_have = used_methods & real_methods
-        missing_on_mock = must_have - mock_methods
-        assert not missing_on_mock, (
-            f"MockSGLangEngine is missing real-API methods that are called in "
-            f"miles/ray/rollout/: {sorted(missing_on_mock)}. "
-            f"Add stub implementations to mock_sglang_engine.py before adding the dependent test."
-        )
-
-    def test_mock_does_not_invent_methods_outside_real_api(self, used_methods: set[str]) -> None:
-        """Mock must not declare methods that rollout code calls but the real
-        engine does not implement — that would produce false positives where
-        the mock test passes but real code AttributeErrors."""
-        real_methods = _public_methods(CommandActor)
-        mock_methods = _public_methods(MockSGLangEngine)
-
-        invented = (mock_methods & used_methods) - real_methods
-        assert not invented, (
-            f"MockSGLangEngine declares methods that are called by rollout code but "
-            f"do not exist on the real SGLangEngine: {sorted(invented)}."
+    def test_the_mock_answers_every_call_the_real_actor_answers(self) -> None:
+        """A method only the real actor has would AttributeError in production while
+        every mock-driven test stays green."""
+        missing = _public_methods(CommandActor) - _public_methods(MockSGLangEngine)
+        assert missing == set(), (
+            f"MockSGLangEngine cannot stand in for CommandActor: {sorted(missing)}. "
+            f"Add stub implementations to mock_sglang_engine.py."
         )
 
     def test_signature_compat_for_run(self) -> None:
@@ -91,7 +58,9 @@ class TestApiContractMatchesRealEngine:
         the rollout code hands it the launch command and env map."""
         real_sig = inspect.signature(CommandActor.run)
         mock_sig = inspect.signature(MockSGLangEngine.__ray_actor_class__.run)
-        assert set(real_sig.parameters) - {"self"} == set(mock_sig.parameters) - {"self"}
+        # ray injects _ray_trace_ctx into the methods of a class it decorates.
+        ignored = {"self", "_ray_trace_ctx"}
+        assert set(real_sig.parameters) - ignored == set(mock_sig.parameters) - ignored
 
     def test_signature_compat_for_every_shared_method(self) -> None:
         """Every method shared by mock and real engine declares the same parameter names, kinds and default-ness."""

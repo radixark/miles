@@ -5,7 +5,8 @@ from miles.rollout.data_source import RolloutDataSource
 
 
 def _make_args(**overrides) -> SimpleNamespace:
-    return SimpleNamespace(rollout_global_dataset=False, save=None, load=None, rollout_shuffle=False, **overrides)
+    defaults = dict(rollout_global_dataset=False, save=None, load=None, rollout_shuffle=False)
+    return SimpleNamespace(**{**defaults, **overrides})
 
 
 def test_save_writes_nothing_without_a_global_dataset(tmp_path: Path) -> None:
