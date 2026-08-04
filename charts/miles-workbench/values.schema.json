@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "miles-workbench values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["infra"],
+  "properties": {
+    "objectName": {"type": "string", "maxLength": 52, "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"},
+    "global": {
+      "type": "object",
+      "description": "Helm injects the umbrella chart's global values into every subchart, so a strict root has to accept them."
+    },
+    "miles-common": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"global": {"type": "object"}},
+      "description": "Helm reserves a values section per dependency; the library chart itself consumes none."
+    },
+    "infra": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "sharedStorage"],
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "tag"],
+          "properties": {
+            "repository": {"type": "string", "minLength": 1},
+            "tag": {"type": "string", "minLength": 1},
+            "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]},
+            "pullSecrets": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"}}
+          }
+        },
+        "sharedStorage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "mountPath"],
+          "properties": {
+            "type": {"enum": ["hostPath", "pvc", "none"]},
+            "hostPath": {"type": "string", "pattern": "^(/.*)?$", "not": {"pattern": "(^|/)\\.\\.(/|$)"}},
+            "pvcClaimName": {"type": "string", "maxLength": 253, "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"},
+            "mountPath": {"type": "string", "pattern": "^/", "not": {"pattern": "(^|/)\\.\\.(/|$)"}}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"type": {"const": "hostPath"}}, "required": ["type"]},
+              "then": {"properties": {"hostPath": {"minLength": 1}}, "required": ["hostPath"]}
+            },
+            {
+              "if": {"properties": {"type": {"const": "pvc"}}, "required": ["type"]},
+              "then": {"properties": {"pvcClaimName": {"minLength": 1}}, "required": ["pvcClaimName"]}
+            }
+          ]
+        },
+        "scheduling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+            "tolerations": {"type": "array", "items": {"type": "object"}},
+            "affinity": {"type": "object"}
+          }
+        },
+        "env": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[ -<>-~]+$"},
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {"type": "object", "additionalProperties": {"type": ["string", "number"]}},
+        "limits": {"type": "object", "additionalProperties": {"type": ["string", "number"]}}
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": {"type": "boolean"},
+        "leaderWorkerSets": {"type": "boolean"}
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$", "maxLength": 253}
+      }
+    }
+  }
+}
