@@ -15,16 +15,16 @@ turning that recipe into a running cloud sandbox:
       auto-stop+auto-delete TTL armed as a dead-man's switch: a keepalive
       thread beats the activity timer while the creating process lives, so
       a hard-killed caller's orphans are reclaimed instead of billing forever.
-  bake CLI (``python tb2_sandbox_daytona.py ...``)  optionally pre-register
-      named snapshots ``<prefix><task-id>`` as a warm cache.
+
+There is deliberately no bake step here: on this provider the image definition
+IS the cache key, so a create either hits the build cache or warms it, and
+nothing a create passes can name a pre-registered snapshot — registering one
+per task would only spend the org quota the declarative path exists to avoid.
 """
 
-import argparse
 import getpass
 import os
-import re
 import shlex
-import sys
 import threading
 import time
 from pathlib import Path
@@ -36,10 +36,6 @@ from tb2_sandbox_recipe import (
     server_layer_commands,
     wait_server_ready,
 )
-
-
-def snapshot_name(prefix: str, task_id: str) -> str:
-    return prefix + re.sub(r"[^a-z0-9-]", "-", task_id.lower())
 
 
 def build_task_image(task_dir: Path, docker_image: str | None = None):
@@ -205,7 +201,7 @@ def resolve_api_key() -> str:
 def make_daytona():
     """Daytona client: key from resolve_api_key(), endpoint from optional
     DAYTONA_API_URL. Public: callers driving create_task_sandbox() need a
-    client configured the same way this module's own CLI is."""
+    client configured this way."""
     from daytona import Daytona, DaytonaConfig
 
     return Daytona(
@@ -214,60 +210,3 @@ def make_daytona():
             api_url=os.getenv("DAYTONA_API_URL", "https://app.daytona.io/api"),
         )
     )
-
-
-def bake(daytona, tasks_dir: Path, task_id: str, prefix: str, force: bool) -> None:
-    """Register the named snapshot ``<prefix><task-id>`` (optional warm cache)."""
-    from daytona import CreateSnapshotParams
-
-    task_dir = tasks_dir / task_id
-    name = snapshot_name(prefix, task_id)
-    try:
-        existing = daytona.snapshot.get(name)
-    except Exception:
-        existing = None
-    if existing is not None:
-        if not force:
-            print(f"[skip] {name} already exists (state={getattr(existing, 'state', '?')})")
-            return
-        print(f"[force] deleting existing {name}")
-        daytona.snapshot.delete(existing)
-
-    resources = task_resources(task_dir)
-    print(f"[bake] {name}  cpu={resources.cpu} mem={resources.memory}G disk={resources.disk}G")
-    daytona.snapshot.create(
-        CreateSnapshotParams(
-            name=name,
-            image=build_task_image(task_dir),
-            resources=resources,
-            entrypoint=["sleep", "infinity"],
-        ),
-        on_logs=lambda line: print(f"  | {line}", flush=True),
-        timeout=1800,
-    )
-    print(f"[done] {name}")
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--tasks-dir", required=True, help="local terminal-bench-2 checkout")
-    group = ap.add_mutually_exclusive_group(required=True)
-    group.add_argument("--tasks", help="comma-separated task_ids")
-    group.add_argument("--all", action="store_true", help="every dir with a task.toml")
-    ap.add_argument("--prefix", default="tb2-", help="snapshot name prefix (default: tb2-)")
-    ap.add_argument("--force", action="store_true", help="recreate existing snapshots")
-    args = ap.parse_args()
-
-    daytona = make_daytona()
-    tasks_dir = Path(args.tasks_dir).expanduser().resolve()
-    if args.all:
-        task_ids = sorted(p.name for p in tasks_dir.iterdir() if (p / "task.toml").is_file())
-    else:
-        task_ids = [t.strip() for t in args.tasks.split(",") if t.strip()]
-
-    for task_id in task_ids:
-        bake(daytona, tasks_dir, task_id, args.prefix, args.force)
-
-
-if __name__ == "__main__":
-    sys.exit(main())

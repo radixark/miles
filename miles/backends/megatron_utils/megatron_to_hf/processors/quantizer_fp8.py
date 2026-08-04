@@ -1,3 +1,4 @@
+import os
 import re
 
 import torch
@@ -119,7 +120,11 @@ def _quantize_param(args, name, weight, weight_block_size):
             qweight, scale = quant_weight_ue8m0(weight, weight_block_size=weight_block_size)
             scale = transform_scale_ue8m0(scale, mn=qweight.shape[-2])
         # TODO: this [128, 128] is hacky. need improve
-        elif per_block_cast_to_fp8 is not None and list(weight_block_size) == [128, 128]:
+        elif (
+            os.environ["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] == "0"
+            and per_block_cast_to_fp8 is not None
+            and list(weight_block_size) == [128, 128]
+        ):
             qweight, scale = per_block_cast_to_fp8(weight)
         else:
             qweight, scale = blockwise_cast_to_fp8_triton(weight, weight_block_size)
