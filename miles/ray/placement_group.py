@@ -102,7 +102,7 @@ def _get_placement_group_layout(args) -> tuple[int, int]:
         return args.rollout_num_gpus, 0
     if args.colocate:
         return max(actor_num_gpus, args.rollout_num_gpus), 0
-    return actor_num_gpus + args.rollout_num_gpus, actor_num_gpus
+    return actor_num_gpus + args.rollout_num_gpus + args.eval_num_gpus, actor_num_gpus
 
 
 def create_placement_groups(args):

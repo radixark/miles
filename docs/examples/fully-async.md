@@ -174,9 +174,10 @@ check GPU utilization.
 
 ## Limitations
 
-* **No evaluation mode.** `FullyAsyncRolloutFn` raises on eval; `--fully-async`
-  therefore points `--eval-function-path` at the standard inference rollout unless you
-  set it yourself.
+* **Shared-engine eval pauses production.** Without `--eval-num-gpus`, eval runs on the
+  rollout engines and the producer stops submitting for its duration; see the
+  [fully-async guide's Evaluation section](/user-guide/fully-async#evaluation) for the
+  dedicated-fleet and external-service postures that keep training unblocked.
 * **Requires `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`.** Class-based rollout functions
   only load on the new rollout API.
 * **Best-effort ordering.** Samples are sorted by index at drain time, but exact-order

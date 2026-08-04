@@ -9,7 +9,8 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
-from miles.ray.rollout.metrics import log_eval_rollout_data, log_rollout_data
+from miles.ray.rollout.eval_fleet import EvalFleet
+from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
@@ -26,6 +27,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     call_rollout_fn,
 )
+from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -33,6 +35,7 @@ from miles.utils.audit_utils.event_logger import checkpoint as event_logger_chec
 from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdentity
 from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.health_monitor import RolloutHealthMonitor
+from miles.utils.hf_config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
@@ -68,7 +71,12 @@ class RolloutManager:
         if self.use_experimental_refactor:
             input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
             self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
-            self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
+            if self.args.eval_function_path == self.args.rollout_function_path:
+                # Reuse the instance so train and eval share one state (and stateful
+                # rollout fns like FullyAsyncRolloutFn are not constructed twice).
+                self.eval_generate_rollout = self.generate_rollout
+            else:
+                self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
@@ -90,6 +98,8 @@ class RolloutManager:
             dashboard_hooks.register_router(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
+        self._eval_lock = asyncio.Lock()
+        self._eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
 
         self._metric_checker = MetricChecker.maybe_create(args)
 
@@ -115,6 +125,8 @@ class RolloutManager:
         event_analyzer.run_analysis_from_args(self.args)
         if self._metric_checker is not None:
             self._metric_checker.dispose()
+        if isinstance(self.eval_generate_rollout, CheckpointEvalFn):
+            self.eval_generate_rollout.dispose()
         for monitor in self._health_monitors:
             monitor.stop()
 
@@ -147,11 +159,20 @@ class RolloutManager:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
         return dict(sample_indices=sample_indices, data_ref=data_ref)
 
-    async def eval(self, rollout_id):
+    async def eval(
+        self,
+        rollout_id,
+        hf_dir: str | None = None,
+        export_time_seconds: float | None = None,
+        require_marker: bool = True,
+    ):
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
         self._health_monitoring_resume()
+
+        if self.args.eval_uses_snapshots:
+            return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
 
         with timer("eval_rollout"):
             if self.use_experimental_refactor:
@@ -172,6 +193,43 @@ class RolloutManager:
         metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
+
+    async def _eval_checkpoint(
+        self, rollout_id: int, hf_dir: str | None, export_time_seconds: float | None, require_marker: bool
+    ):
+        """Evaluate a snapshot through the checkpoint eval fn (fleet or external
+        backend) and log at ``rollout_id``. Every failure degrades to a skipped
+        point; the lock serializes pins against a single backend."""
+        assert hf_dir is not None, "checkpoint eval requires an HF snapshot dir"
+        start_time = time.time()
+        async with self._eval_lock:
+            if require_marker and not is_complete_hf_export(hf_dir):
+                logger.warning(f"Eval snapshot {hf_dir} missing or incomplete, skipping eval {rollout_id}")
+                return self.report_eval_skip(rollout_id, "ckpt_missing")
+
+            version = str(rollout_id)
+            try:
+                state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
+                eval_input = RolloutFnEvalInput(
+                    rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
+                )
+                result = await asyncio.to_thread(call_rollout_function, self.eval_generate_rollout, eval_input)
+            except EvalSkip as e:
+                return self.report_eval_skip(rollout_id, e.reason)
+
+            data = result.data
+            save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
+            extra_metrics = dict(result.metrics or {})
+            extra_metrics["eval/lag_steps"] = max(self.rollout_id - rollout_id, 0)
+            extra_metrics["eval/duration_seconds"] = time.time() - start_time
+            if export_time_seconds is not None:
+                extra_metrics["eval/export_time_seconds"] = export_time_seconds
+            metrics = log_eval_rollout_data(rollout_id, self.args, data, extra_metrics)
+            if self._metric_checker is not None:
+                self._metric_checker.on_eval(metrics)
+
+    def report_eval_skip(self, rollout_id: int, reason: str) -> None:
+        log_eval_skip(rollout_id, self.args, reason)
 
     async def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data:

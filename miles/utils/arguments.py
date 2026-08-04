@@ -7,9 +7,10 @@ from typing import Any
 import yaml
 from sglang_router.launch_router import RouterArgs
 
-from miles.backends.sglang_utils.arguments import add_sglang_arguments
+from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
+from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_ft_trainer, enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
@@ -32,10 +33,10 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
     else:
         standard_path = "miles.rollout.sglang_rollout.generate_rollout"
     rollout_path = args.rollout_function_path or standard_path
-    # Resolved before the fully-async override: fully async does not serve eval.
-    eval_path = args.eval_function_path or rollout_path
     if args.fully_async:
         rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+    # Resolved after the override: shared-engine eval must reach the producer it pauses.
+    eval_path = args.eval_function_path or rollout_path
     return rollout_path, eval_path
 
 
@@ -59,7 +60,16 @@ def _resolve_rollout_functions(args) -> None:
             args.rollout_all_samples_process_path is None
         ), "--fully-async does not support --rollout-all-samples-process-path"
 
+    user_eval_path = args.eval_function_path
     args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
+    # An inherited eval path is the rollout fn serving eval itself, never a checkpoint
+    # backend: skip the resolve so custom rollout modules are not imported on the driver.
+    checkpoint_backend = user_eval_path is not None and is_checkpoint_eval_fn(args.eval_function_path)
+    assert not (args.eval_num_gpus > 0 and checkpoint_backend), (
+        "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
+        "backend; the fleet would boot and then hand the work to the other one."
+    )
+    args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
 def reset_arg(parser, name, **kwargs):
@@ -1077,8 +1087,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to the eval generation function."
-                    "If not set, we will use rollout_function_path as the default. "
+                    "Path to the eval fn. Two kinds fit here. A rollout fn generates against the "
+                    "engines the framework hands it: the training engines, or the dedicated fleet "
+                    "when --eval-num-gpus is set. A CheckpointEvalFn subclass gets the snapshot "
+                    "path instead and owns the rest itself — weight delivery, endpoint, generation. "
+                    "If not set, defaults to --rollout-function-path."
                 ),
             )
 
@@ -1129,6 +1142,64 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--eval-max-prompt-len", type=int, default=None)
             parser.add_argument("--eval-min-new-tokens", type=int, default=None)
             parser.add_argument("--eval-max-context-len", type=int, default=None)
+
+            parser.add_argument(
+                "--eval-num-gpus",
+                type=int,
+                default=0,
+                help=(
+                    "Number of GPUs for a dedicated eval engine fleet. When > 0, eval runs on "
+                    "its own engines behind its own router, synced by loading HF checkpoint "
+                    "snapshots (never by joining training weight updates). 0 disables the "
+                    "fleet and keeps today's shared-engine eval behavior. The fleet's engine "
+                    "settings inherit every --sglang-* value; override individually with "
+                    "--eval-sglang-* (e.g. --eval-sglang-mem-fraction-static 0.9)."
+                ),
+            )
+            parser.add_argument(
+                "--eval-num-gpus-per-engine",
+                type=int,
+                default=1,
+                help="GPUs per eval engine (TP size), independent of --rollout-num-gpus-per-engine.",
+            )
+            parser.add_argument(
+                "--eval-hf-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Staging directory for per-eval HF snapshots (written to "
+                    "`{eval_hf_dir}/step_{rollout_id}`). Point at tmpfs (e.g. /dev/shm/...) to "
+                    "avoid disk. When unset and --save-hf is set, eval reuses the --save-hf "
+                    "checkpoints instead of exporting its own snapshots."
+                ),
+            )
+            parser.add_argument(
+                "--eval-max-in-flight",
+                type=int,
+                default=2,
+                help="Maximum number of concurrently pending async evals.",
+            )
+            parser.add_argument(
+                "--eval-overflow-policy",
+                type=str,
+                choices=["backpressure", "skip"],
+                default="backpressure",
+                help=(
+                    "What to do when an eval is due but --eval-max-in-flight evals are pending: "
+                    "'backpressure' awaits the oldest pending eval (deterministic curve, bounded "
+                    "stall); 'skip' drops the new eval point and logs eval/skipped_busy at that "
+                    "step (training cadence is never stalled)."
+                ),
+            )
+            parser.add_argument(
+                "--eval-keep-snapshots",
+                type=int,
+                default=2,
+                help=(
+                    "How many snapshot dirs to keep under --eval-hf-dir (consumed snapshots "
+                    "beyond this are deleted). --save-hf checkpoints are never deleted."
+                ),
+            )
 
             return parser
 
@@ -2764,6 +2835,18 @@ def miles_validate_args(args):
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
 
+    if args.eval_num_gpus > 0:
+        assert args.eval_num_gpus % args.eval_num_gpus_per_engine == 0, (
+            f"eval_num_gpus ({args.eval_num_gpus}) must be divisible by "
+            f"eval_num_gpus_per_engine ({args.eval_num_gpus_per_engine})."
+        )
+    else:
+        overrides = collect_eval_sglang_overrides(args)
+        assert not overrides, (
+            f"--eval-sglang-* configures the dedicated eval fleet, which needs --eval-num-gpus > 0. "
+            f"Got {sorted(overrides)} with --eval-num-gpus 0."
+        )
+
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
 
@@ -3078,6 +3161,28 @@ def miles_validate_args(args):
         )
 
     _resolve_rollout_functions(args)
+
+    # Both snapshot postures drive the same RolloutManager._eval_checkpoint path.
+    # (The fleet-vs-CheckpointEvalFn conflict is asserted where the posture is derived.)
+    if args.eval_uses_snapshots:
+        assert (
+            enable_experimental_rollout_refactor()
+        ), "Snapshot eval requires the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
+        assert args.eval_interval is not None, "Snapshot eval requires --eval-interval."
+        assert args.eval_hf_dir is not None or args.save_hf is not None, (
+            "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
+            "or --save-hf (reuse periodic HF checkpoints)."
+        )
+        assert not args.colocate, "Snapshot eval is not supported with --colocate."
+        assert (
+            not args.debug_train_only and not args.debug_rollout_only
+        ), "Snapshot eval is not supported with debug_train_only/debug_rollout_only."
+        if args.eval_hf_dir is None:
+            assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
+                "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
+                f"multiple of save_interval (got eval_interval={args.eval_interval}, "
+                f"save_interval={args.save_interval}). Set --eval-hf-dir for independent snapshots."
+            )
 
     if args.num_steps_per_rollout is not None:
         global_batch_size = args.rollout_batch_size * args.n_samples_per_prompt // args.num_steps_per_rollout

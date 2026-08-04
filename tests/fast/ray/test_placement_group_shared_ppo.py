@@ -11,6 +11,7 @@ def _layout_args(**overrides):
         "actor_num_nodes": 1,
         "actor_num_gpus_per_node": 2,
         "rollout_num_gpus": 4,
+        "eval_num_gpus": 0,
         "debug_train_only": False,
         "debug_rollout_only": False,
         "rollout_external": False,

@@ -63,7 +63,6 @@ def _has_loadable_ckpt(load_dir: str | None) -> bool:
 
 
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
-from .lora_utils import save_lora_checkpoint
 
 
 def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer) -> OptimizerParamScheduler:
@@ -893,63 +892,6 @@ def save(
         save_model_hashes(args, model, iteration, hashes)
     if should_disable_forward_pre_hook(args):
         enable_forward_pre_hook(model)
-
-
-def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
-    """Save Megatron model in HuggingFace format.
-
-    For LoRA models this saves both:
-    - A **merged** HF model (adapter weights folded into base) at ``{path}/``
-      so it can be loaded directly with ``AutoModelForCausalLM.from_pretrained``.
-    - An **adapter-only** HF PEFT checkpoint at ``{path}/adapter/``
-      so it can be loaded with ``PeftModel.from_pretrained``.
-
-    This function is collective — all ranks must call it.
-
-    Args:
-        args: Runtime arguments.
-        model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
-        rollout_id (int): Rollout ID for path formatting.
-    """
-    should_log = get_parallel_state().effective_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
-
-    try:
-        from megatron.bridge import AutoBridge
-
-        from miles.utils.megatron_bridge_utils import patch_megatron_model
-
-        path = Path(args.save_hf.format(rollout_id=rollout_id))
-
-        if should_log:
-            logger.info(f"Saving model in HuggingFace format to {path}")
-
-        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-
-        path.mkdir(parents=True, exist_ok=True)
-
-        with patch_megatron_model(model):
-            # For LoRA models, merge_adapter_weights=True (default) merges
-            # adapter weights into base weights for a standalone HF model.
-            bridge.save_hf_pretrained(model, path=path)
-
-        if should_log:
-            logger.info(f"Successfully saved merged HuggingFace model to {path}")
-    except Exception as e:
-        if should_log:
-            logger.error(f"Failed to save HuggingFace format: {e}")
-
-    # Additionally save adapter-only checkpoint for LoRA models
-    if is_lora_model(model):
-        try:
-            adapter_path = Path(args.save_hf.format(rollout_id=rollout_id)) / "adapter"
-            if should_log:
-                logger.info(f"Saving LoRA adapter (HF PEFT format) to {adapter_path}")
-            save_lora_checkpoint(model, args, str(adapter_path))
-            if should_log:
-                logger.info(f"Successfully saved LoRA adapter to {adapter_path}")
-        except Exception as e:
-            if should_log:
-                logger.error(f"Failed to save LoRA adapter: {e}")
 
 
 def initialize_model_and_optimizer(

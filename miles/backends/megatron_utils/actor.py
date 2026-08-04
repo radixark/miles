@@ -184,7 +184,7 @@ class MegatronTrainRayActor(TrainRayActor):
             dict(no_load_optim=False, no_load_rng=False, finetune=False) if recv_ckpt_src_rank is not None else {}
         )
         with inplace_modify_args(args, heal_load_overrides):
-            (self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id) = initialize_model_and_optimizer(
+            self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
                 args, role, checkpointing_context=checkpointing_context
             )
 
@@ -662,7 +662,7 @@ class MegatronTrainRayActor(TrainRayActor):
             maybe_finalize_async_save(blocking=True)
 
         if self.args.save_hf is not None and self.role == "actor":
-            from miles.backends.megatron_utils.model import save_hf_model
+            from miles.backends.megatron_utils.hf_export import save_hf_model
 
             save_hf_model(self.args, rollout_id, self.model)
 
@@ -682,6 +682,21 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             post_save_hook = load_function(self.args.custom_megatron_post_save_hook_path)
             post_save_hook(self.args, rollout_id, checkpoint_dir, hf_checkpoint_dir)
+
+    @with_logs
+    @timer
+    def export_hf(self, rollout_id: int, path: str) -> None:
+        """Export current weights as an HF checkpoint to ``path`` (collective).
+
+        Uses the direct megatron->HF converters (the weight updater's machinery), so
+        export coverage matches weight-sync coverage. Unlike the periodic --save-hf
+        path inside save_model, failures propagate to the caller so an eval snapshot
+        that failed to export can be skipped loudly.
+        """
+        self._heartbeat.bump()
+        from miles.backends.megatron_utils.hf_export import save_hf_model
+
+        save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
 
     @with_logs
     @timer

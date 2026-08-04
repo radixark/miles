@@ -743,9 +743,6 @@ def _compute_server_args(
     if os.environ.get("MILES_SGLANG_DUMMY_LOAD") == "1":
         kwargs["load_format"] = "dummy"
 
-    if sglang_overrides:
-        kwargs.update(sglang_overrides)
-
     if worker_type == "prefill":
         kwargs["disaggregation_mode"] = "prefill"
         kwargs.setdefault("load_balance_method", "round_robin")
@@ -765,7 +762,6 @@ def _compute_server_args(
         kwargs["dtype"] = "float16"
     if engine_info_bootstrap_port is not None:
         kwargs["engine_info_bootstrap_port"] = engine_info_bootstrap_port
-    external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
     if is_multi_lora_enabled(args):
         kwargs["enable_lora"] = True
@@ -799,6 +795,12 @@ def _compute_server_args(
                 "LoRA + colocate: enabling SGLang enable_weights_cpu_backup=True; "
                 "the trainer will skip per-step base weight sync."
             )
+
+    # Last, so a per-group override wins over every args-derived default above.
+    if sglang_overrides:
+        kwargs.update(sglang_overrides)
+
+    external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
 
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):
