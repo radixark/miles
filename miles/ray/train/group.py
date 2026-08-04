@@ -143,7 +143,7 @@ class RayTrainGroup:
 
         worker_results = await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
 
-        self._test_action_executor.run_after_step(rollout_id=rollout_id)
+        await self._test_action_executor.run_after_step(rollout_id=rollout_id)
 
         return worker_results
 
@@ -312,8 +312,8 @@ class RayTrainGroup:
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 
-    def stop_cell(self, cell_index: int) -> None:
-        self._cells[cell_index].stop()
+    async def stop_cell(self, cell_index: int) -> None:
+        await self._cells[cell_index].stop()
 
     def start_cell(self, cell_index: int) -> None:
         """Mark a stopped cell as pending. Actual startup happens in train()."""
@@ -434,9 +434,9 @@ class RayTrainGroup:
 
         # Step 2: Allocate pending actors
         # We currently do not consider this phase to have errors (because it does not touch GPUs)
-        for c in self._cells:
-            if c.cell_index in snapshotted_pending_indices:
-                c.allocate_for_pending()
+        await asyncio.gather(
+            *[c.allocate_for_pending() for c in self._cells if c.cell_index in snapshotted_pending_indices]
+        )
 
         # Step 3: Cooperatively prepare
         src_cell_index = snapshotted_alive_indices[0]  # TODO make it balanced, and support multi-src-to-one-dst

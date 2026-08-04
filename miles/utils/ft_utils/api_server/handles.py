@@ -77,7 +77,7 @@ class _ActorCellHandler(_CellHandler):
         )
 
     async def suspend(self, cell_id: str) -> None:
-        self._group.stop_cell(_parse_actor_cell_index(cell_id))
+        await self._group.stop_cell(_parse_actor_cell_index(cell_id))
 
     async def resume(self, cell_id: str) -> None:
         self._group.start_cell(_parse_actor_cell_index(cell_id))

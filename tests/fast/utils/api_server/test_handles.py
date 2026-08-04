@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -96,7 +96,7 @@ class TestActorCellHandler:
     @pytest.mark.asyncio
     async def test_suspend_delegates_to_group(self) -> None:
         group = make_mock_group([MockRayTrainCell()])
-        group.stop_cell = MagicMock()
+        group.stop_cell = AsyncMock()
         handler = _ActorCellHandler(group=group)
         await handler.suspend("actor-2")
         group.stop_cell.assert_called_once_with(2)

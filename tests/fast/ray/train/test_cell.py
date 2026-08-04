@@ -30,51 +30,63 @@ class TestInitialState:
 
 
 class TestStopTransitions:
-    def test_stop_from_uninitialized_kills_actors(self):
+    async def test_stop_from_uninitialized_kills_actors(self):
         cell = make_cell(actor_count=2)
 
-        cell.stop()
+        await cell.stop()
 
         assert cell.is_stopped
         assert not cell.is_allocated
 
-    def test_stop_from_alive_kills_actors(self):
+    async def test_stop_from_alive_kills_actors(self):
         cell = make_alive_cell(0, alive_cell_indices=[0])
 
-        cell.stop()
+        await cell.stop()
 
         assert cell.is_stopped
 
-    def test_stop_from_pending_transitions_to_stopped(self):
+    async def test_stop_from_pending_transitions_to_stopped(self):
         cell = make_cell()
-        cell.stop()
+        await cell.stop()
         cell.mark_as_pending()
 
-        cell.stop()
+        await cell.stop()
 
         assert cell.is_stopped
 
-    def test_stop_already_stopped_is_idempotent(self):
-        cell = make_cell()
-        cell.stop()
+    async def test_stop_kills_the_underlying_workers(self):
+        """Stopping a cell really kills its workers, so every handle is confirmed dead and rejects new calls."""
+        cell = make_cell(actor_count=2)
+        handles = cell._get_actor_handles()
 
-        cell.stop()
+        await cell.stop()
+
+        for handle in handles:
+            await asyncio.wait_for(cell_module._confirm_actor_dead(handle), timeout=30.0)
+            with pytest.raises(ray.exceptions.RayActorError):
+                ray.get(handle.get_calls.remote())
+
+    async def test_stop_already_stopped_is_idempotent(self):
+        cell = make_cell()
+        await cell.stop()
+
+        await cell.stop()
 
         assert cell.is_stopped
 
 
 class TestMarkAsPending:
-    def test_from_stopped(self):
+    async def test_from_stopped(self):
         cell = make_cell()
-        cell.stop()
+        await cell.stop()
 
         cell.mark_as_pending()
 
         assert cell.is_pending
 
-    def test_idempotent_when_pending(self):
+    async def test_idempotent_when_pending(self):
         cell = make_cell()
-        cell.stop()
+        await cell.stop()
         cell.mark_as_pending()
 
         cell.mark_as_pending()
@@ -90,14 +102,14 @@ class TestMarkAsPending:
 
 
 class TestAllocateForPending:
-    def test_reallocate_after_stop_start(self):
+    async def test_reallocate_after_stop_start(self):
         """After stop → pending → allocate, cell has fresh actors."""
         cell = make_cell(actor_count=2)
         old_handles = cell._get_actor_handles()
 
-        cell.stop()
+        await cell.stop()
         cell.mark_as_pending()
-        cell.allocate_for_pending()
+        await cell.allocate_for_pending()
 
         assert cell.is_allocated
         new_handles = cell._get_actor_handles()
@@ -185,39 +197,39 @@ class TestMarkAsErrored:
 
 
 class TestInvalidTransitions:
-    def test_allocate_for_pending_rejects_from_alive(self):
+    async def test_allocate_for_pending_rejects_from_alive(self):
         cell = make_alive_cell(0, alive_cell_indices=[0])
 
         with pytest.raises(AssertionError):
-            cell.allocate_for_pending()
+            await cell.allocate_for_pending()
 
-    def test_allocate_for_pending_rejects_from_stopped(self):
+    async def test_allocate_for_pending_rejects_from_stopped(self):
         cell = make_cell()
-        cell.stop()
+        await cell.stop()
 
         with pytest.raises(AssertionError):
-            cell.allocate_for_pending()
+            await cell.allocate_for_pending()
 
 
 class TestErroredToStopped:
-    def test_stop_from_errored_transitions_to_stopped(self):
+    async def test_stop_from_errored_transitions_to_stopped(self):
         cell = make_alive_cell(0, alive_cell_indices=[0])
         cell._mark_as_errored()
         assert cell.is_errored
 
-        cell.stop()
+        await cell.stop()
 
         assert cell.is_stopped
         assert not cell.is_errored
 
-    def test_full_error_recovery_lifecycle(self):
+    async def test_full_error_recovery_lifecycle(self):
         """Errored → stop → pending → allocate → alive (full recovery from error)."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
         cell._mark_as_errored()
 
-        cell.stop()
+        await cell.stop()
         cell.mark_as_pending()
-        cell.allocate_for_pending()
+        await cell.allocate_for_pending()
         cell._mark_as_alive(indep_dp_info=make_indep_dp_info(quorum_id=99))
 
         assert cell.is_alive
@@ -327,9 +339,9 @@ class TestSetRolloutExecutor:
 
 
 class TestStatePredicates:
-    def test_pending(self):
+    async def test_pending(self):
         cell = make_cell()
-        cell.stop()
+        await cell.stop()
         cell.mark_as_pending()
 
         assert cell.is_pending
@@ -366,9 +378,9 @@ class TestStatePredicates:
         assert cell.is_errored
         assert not cell.is_stopped
 
-    def test_stopped(self):
+    async def test_stopped(self):
         cell = make_cell()
-        cell.stop()
+        await cell.stop()
 
         assert not cell.is_pending
         assert not cell.is_allocated
@@ -378,7 +390,7 @@ class TestStatePredicates:
 
 
 class TestFullLifecycle:
-    def test_full_stop_start_cycle(self):
+    async def test_full_stop_start_cycle(self):
         """Full lifecycle: init → alive → stop → pending → allocate → alive."""
         # Step 1: Create (Pending → Uninitialized)
         cell = make_cell(actor_count=2)
@@ -390,7 +402,7 @@ class TestFullLifecycle:
         assert cell.is_alive
 
         # Step 3: Stop
-        cell.stop()
+        await cell.stop()
         assert cell.is_stopped
 
         # Step 4: Pending
@@ -398,7 +410,7 @@ class TestFullLifecycle:
         assert cell.is_pending
 
         # Step 5: Allocate (new actors)
-        cell.allocate_for_pending()
+        await cell.allocate_for_pending()
         assert cell.is_allocated and not cell.is_alive
 
         # Step 6: Alive again with new config

@@ -20,6 +20,8 @@ from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.naming import compute_cell_id
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -51,7 +53,7 @@ class RayTrainCell:
 
         # NOTE: do *NOT* directly modify `self._state`, but instead use `self._change_state`
         self._state: CellState = StatePending()
-        self.allocate_for_pending()
+        self._attach_workers()
 
     # ------------------------ API ------------------------
 
@@ -135,7 +137,7 @@ class RayTrainCell:
 
     # ------------------------ state transition ------------------------
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         if self.is_stopped:
             log_structured(
                 logger.info,
@@ -148,9 +150,7 @@ class RayTrainCell:
             )
             return
 
-        if self.is_allocated:
-            for actor in self._get_actor_handles():
-                ray.kill(actor)
+        await RayWorkerManager.get_handle().stop_cells.remote([self.cell_id])
 
         self._change_state("stop", (StatePending, StateAllocatedBase), StateStopped())
 
@@ -159,7 +159,7 @@ class RayTrainCell:
             return
 
         handles = self._get_actor_handles() if self.is_allocated else []
-        self.stop()
+        await self.stop()
 
         log_structured(
             logger.info, tag="ft", op="confirm_dead", phase="start", cell=self.cell_index, n_actors=len(handles)
@@ -190,13 +190,17 @@ class RayTrainCell:
 
         self._change_state("mark_as_pending", StateStopped, StatePending())
 
-    def allocate_for_pending(self) -> None:
+    async def allocate_for_pending(self) -> None:
+        await RayWorkerManager.get_handle().start_cells.remote([self.cell_id])
+        self._attach_workers()
+
+    def _attach_workers(self) -> None:
         worker_infos = RayWorkerProvider.create().get_worker_infos(
             pool=self.pool, cell_index=self.cell_index
         )
         self._master_addr = worker_infos[0].self_addrs[MASTER_PORT_NAME]
         self._change_state(
-            "allocate_for_pending",
+            "attach_workers",
             StatePending,
             StateAllocatedUninitialized(actor_handles=[info.actor_handle for info in worker_infos]),
         )
@@ -305,6 +309,10 @@ class RayTrainCell:
             raise
 
     # ------------------------ state and misc queries ------------------------
+
+    @property
+    def cell_id(self) -> str:
+        return compute_cell_id(pool=self.pool, cell_index=self.cell_index)
 
     @property
     def is_pending(self) -> bool:
