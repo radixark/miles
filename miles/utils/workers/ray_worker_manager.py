@@ -238,26 +238,66 @@ class _BaseActorManager(Generic[SpecT]):
     async def launch_actor(self) -> None:
         raise NotImplementedError
 
-    async def alloc_ports(self) -> None:
-        raise NotImplementedError
-
     async def post_setup(self) -> None:
         raise NotImplementedError
+
+    async def alloc_ports(self) -> None:
+        allocated: NamedHostAndPorts = {}
+
+        node_ip = await self.actor_handle._get_node_ip.remote()
+        for port_info in self.spec.port_infos:
+            if self.worker_in_cell_index != 0 and port_info.mode == "master":
+                continue
+            port = (
+                self.manager.port_allocator.alloc(
+                    self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
+                )
+                if port_info.allow_dynamic
+                else port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
+            )
+            allocated[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
+
+        self.self_addrs = allocated
+
+    def _compute_remote_options(self) -> dict:
+        return {}
+
+    def _create_actor(self, actor_class: type, **ctor_kwargs) -> ray.actor.ActorHandle:
+        scheduling_strategy = None
+        if (pg_name := self.spec.scheduling.pg_name) is not None:
+            pg = self.manager.pgs[pg_name]
+            scheduling_strategy = PlacementGroupSchedulingStrategy(
+                placement_group=pg.pg,
+                placement_group_capture_child_tasks=True,
+                placement_group_bundle_index=pg.pg_reordered_bundle_indices[self.gpu_slot_index],
+            )
+
+        remote_options = self._compute_remote_options()
+        remote_class = ray.remote(**remote_options)(actor_class) if remote_options else ray.remote(actor_class)
+
+        return remote_class.options(
+            # TODO generalize
+            num_cpus=0.2,
+            num_gpus=self.spec.scheduling.num_gpus_per_worker,
+            **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
+            runtime_env={"env_vars": self.spec.env_var()},
+            **(compute_ray_pin_head_options() if self.spec.scheduling.pin_to_head else {}),
+        ).remote(**ctor_kwargs)
 
     async def stop(self) -> None:
         if self.actor_handle is None:
             return
 
-        try:
-            await asyncio.wait_for(self.actor_handle.shutdown.remote(), timeout=_SHUTDOWN_TIMEOUT)
-        except Exception as e:
-            logger.warning(f"Graceful shutdown of {self=} failed ({e})")
+        await self._shutdown_gracefully()
 
         try:
             ray.kill(self.actor_handle)
             logger.info(f"Killed actor at {self=}")
         except Exception as e:
             logger.warning(f"Failed to kill actor at {self=} ({e})")
+
+    async def _shutdown_gracefully(self) -> None:
+        pass
 
     @property
     def name(self) -> str:
@@ -287,52 +327,7 @@ class _BaseActorManager(Generic[SpecT]):
 @dataclass
 class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
     async def launch_actor(self) -> None:
-        scheduling_strategy = None
-        if (pg_name := self.spec.scheduling.pg_name) is not None:
-            pg = self.manager.pgs[pg_name]
-            scheduling_strategy = PlacementGroupSchedulingStrategy(
-                placement_group=pg.pg,
-                placement_group_capture_child_tasks=True,
-                placement_group_bundle_index=pg.pg_reordered_bundle_indices[self.gpu_slot_index],
-            )
-
-        self.actor_handle = (
-            ray.remote(CommandActor)
-            .options(
-                # TODO generalize
-                num_cpus=0.2,
-                num_gpus=self.spec.scheduling.num_gpus_per_worker,
-                **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
-                runtime_env={"env_vars": self.spec.env_var()},
-                **(compute_ray_pin_head_options() if self.spec.scheduling.pin_to_head else {}),
-            )
-            .remote()
-        )
-
-    async def alloc_ports(self) -> None:
-        allocated: NamedHostAndPorts = {}
-
-        node_ip = await self.actor_handle._get_node_ip.remote()
-        for port_info in self.spec.port_infos:
-            if self.worker_in_cell_index != 0 and port_info.mode == "master":
-                continue
-            if port_info.allow_dynamic:
-                port = self.manager.port_allocator.alloc(
-                    self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
-                )
-            else:
-                port = port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
-                await self._assert_static_port_is_free(port=port, port_name=port_info.name, node_ip=node_ip)
-            allocated[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
-
-        self.self_addrs = allocated
-
-    async def _assert_static_port_is_free(self, *, port: int, port_name: str, node_ip: str) -> None:
-        free = await self.actor_handle._is_port_available.remote(port=port)
-        assert free, (
-            f"Port {port} on {node_ip} is already in use, so {self.name} cannot serve its {port_name!r} "
-            f"endpoint there; a stale process from an earlier run is the usual cause"
-        )
+        self.actor_handle = self._create_actor(CommandActor)
 
     async def post_setup(self) -> None:
         ctx = LaunchCommandContext(
@@ -347,6 +342,12 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
         )
         launch_cmd = self.spec.launch_command(ctx)
         self.actor_handle.run.remote(cmd=launch_cmd, envs={})
+
+    async def _shutdown_gracefully(self) -> None:
+        try:
+            await asyncio.wait_for(self.actor_handle.shutdown.remote(), timeout=_SHUTDOWN_TIMEOUT)
+        except Exception as e:
+            logger.warning(f"Graceful shutdown of {self=} failed ({e})")
 
 
 async def _gather_or_raise(coros: list[Coroutine[Any, Any, None]]) -> None:
