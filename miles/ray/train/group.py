@@ -21,7 +21,7 @@ from miles.utils.audit_utils.event_logger.models import (
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.retry_utils import NonRetryableError, retry
+from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.naming import parse_cell_id
@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 _RETRY_MAX_ATTEMPTS = 30
+_CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
 class RayTrainGroup:
@@ -81,6 +82,21 @@ class RayTrainGroup:
     @property
     def _cells(self) -> list[RayTrainCell]:
         return [self._cells_by_index[index] for index in sorted(self._cells_by_index)]
+
+    async def _wait_expected_num_cells(self, timeout: float = _CELLS_READY_TIMEOUT_SECONDS) -> None:
+        async def _check(_remaining: float) -> None:
+            expected = self._expected_num_cells
+            if len(self._cells_by_index) < expected:
+                raise TimeoutError(f"only {len(self._cells_by_index)} of {expected} trainer cells observed")
+
+        await retry_until_deadline(
+            _check,
+            total_seconds=timeout,
+            retry_on=TimeoutError,
+            initial_delay=1.0,
+            max_delay=5.0,
+            log_fields=dict(tag="ft", spec=self._pool_id),
+        )
 
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
         if observed is None:
@@ -250,6 +266,7 @@ class RayTrainGroup:
         """
         provider: BaseWorkerProvider = RayWorkerProvider.create(pool_ids=[self._pool_id])
         self._watcher_disposer = await provider.watch_cells(self._reconcile)
+        await self._wait_expected_num_cells()
 
         cell_results = await asyncio.gather(
             *[
