@@ -432,6 +432,15 @@ def get_data_iterator(
     expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
 
     parallel_state = get_parallel_state()
+
+    if "micro_batch_indices" in rollout_data:
+        assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
+        micro_batch_indices = rollout_data["micro_batch_indices"]
+        data_iterator = [
+            DataIterator(rollout_data, micro_batch_indices=micro_batch_indices) for _ in range(parallel_state.vpp_size)
+        ]
+        return data_iterator, rollout_data["num_microbatches"]
+
     dp_size = parallel_state.effective_dp.size
     dp_group = parallel_state.effective_dp.group
     vpp_size = parallel_state.vpp_size
