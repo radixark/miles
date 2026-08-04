@@ -67,53 +67,41 @@ class RayTrainGroup:
         """
         Allocate GPU resourced and initialize model, optimizer, local ckpt, etc.
         """
-        indep_dp_info = IndepDPInfo.create_trivial()
         return await self._broadcast(
             "init",
-            self.args,
-            self.role,
+            args=self.args,
+            role=self.role,
             with_ref=self.with_ref,
             with_opd_teacher=self.with_opd_teacher,
-            indep_dp_info=indep_dp_info,
+            indep_dp_info=IndepDPInfo.create_trivial(),
         )
 
     async def train(self, rollout_id, rollout_data_pack, external_data=None):
         """Do one rollout training"""
-        rollout_data_ref = rollout_data_pack["data_ref"]
-        if external_data is None:
-            return await self._broadcast(
-                "train",
-                rollout_id,
-                rollout_data_ref,
+        external_data_kwargs = self._compute_external_data_kwargs(external_data)
+        return await self._broadcast_per_worker(
+            "train",
+            compute_kwargs=lambda worker_index: dict(
+                rollout_id=rollout_id,
+                rollout_data_ref=rollout_data_pack["data_ref"],
                 witness_info=None,
                 attempt=0,
-            )
-        if isinstance(external_data, list):
-            if len(external_data) != len(self._actor_handles):
-                raise ValueError("external_data must contain one payload per train worker")
-            refs = [
-                actor.train.remote(
-                    rollout_id,
-                    rollout_data_ref,
-                    witness_info=None,
-                    attempt=0,
-                    external_data=rank_data,
-                )
-                for actor, rank_data in zip(self._actor_handles, external_data, strict=False)
-            ]
-            return await asyncio.gather(*refs)
-        return await self._broadcast(
-            "train",
-            rollout_id,
-            rollout_data_ref,
-            witness_info=None,
-            attempt=0,
-            external_data=external_data,
+                **external_data_kwargs[worker_index],
+            ),
         )
+
+    def _compute_external_data_kwargs(self, external_data) -> list[dict]:
+        if external_data is None:
+            return [{} for _ in self._actor_handles]
+        if not isinstance(external_data, list):
+            return [dict(external_data=external_data) for _ in self._actor_handles]
+        if len(external_data) != len(self._actor_handles):
+            raise ValueError("external_data must contain one payload per train worker")
+        return [dict(external_data=payload) for payload in external_data]
 
     async def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
-        await self._broadcast("save_model", rollout_id, force_sync=force_sync)
+        await self._broadcast("save_model", rollout_id=rollout_id, force_sync=force_sync)
 
     async def export_hf(self, rollout_id: int, path: str):
         """Export current weights as an HF checkpoint (collective across all ranks)."""
@@ -142,8 +130,14 @@ class RayTrainGroup:
         await self._broadcast("clear_memory")
 
     async def set_rollout_executor(self):
-        await self._broadcast("set_rollout_executor", self._rollout_executor)
+        await self._broadcast("set_rollout_executor", rollout_executor=self._rollout_executor)
 
-    async def _broadcast(self, method_name: str, *args, **kwargs) -> list:
-        refs = [getattr(actor, method_name).remote(*args, **kwargs) for actor in self._actor_handles]
+    async def _broadcast(self, method_name: str, **kwargs) -> list:
+        return await self._broadcast_per_worker(method_name, compute_kwargs=lambda _: kwargs)
+
+    async def _broadcast_per_worker(self, method_name: str, *, compute_kwargs) -> list:
+        refs = [
+            getattr(actor, method_name).remote(**compute_kwargs(worker_index))
+            for worker_index, actor in enumerate(self._actor_handles)
+        ]
         return await asyncio.gather(*refs)
