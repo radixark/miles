@@ -24,6 +24,7 @@ from miles.utils.megatron_args_utils import compute_megatron_world_size_except_d
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
+from miles.utils.workers.types import ClusterBackend
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         # Ray
         def add_cluster_arguments(parser):
+            parser.add_argument(
+                "--cluster-backend",
+                type=str,
+                default=ClusterBackend.RAY.value,
+                choices=tuple(backend.value for backend in ClusterBackend),
+                help=(
+                    "Which backend provides the worker processes: "
+                    "`ray` launches them from the driver, `kubernetes` expects them to already exist. "
+                    "`kubernetes` is refused until a later milestone provisions those workers."
+                ),
+            )
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
             parser.add_argument(
                 "--actor-num-gpus-per-node", type=int, default=8, help="Number of gpus per node for training actor"
@@ -3533,6 +3545,11 @@ def miles_validate_args(args):
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
+
+    assert args.cluster_backend == ClusterBackend.RAY.value, (
+        f"--cluster-backend {args.cluster_backend} is not usable yet: "
+        f"only {ClusterBackend.RAY.value} provisions workers today"
+    )
 
     args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
 
