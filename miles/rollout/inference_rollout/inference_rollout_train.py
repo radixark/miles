@@ -101,7 +101,9 @@ async def generate_rollout_async(
     # target_data_size is the total number of valid samples to get
     target_data_size = args.rollout_batch_size
 
-    scheduler = SubmissionScheduler(args)
+    # Groups completed beyond target_data_size are aborted below, so overshooting the
+    # batch costs generation this step throws away: pace by whole groups unless asked.
+    scheduler = SubmissionScheduler(args, granularity=args.rollout_submission_granularity or "group")
 
     pendings = set()
     data = []

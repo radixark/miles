@@ -110,7 +110,11 @@ class FullyAsyncRolloutFn:
         self.args = input.args
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
-        self._scheduler = SubmissionScheduler(input.args)
+        # Groups completed beyond a step's batch stay in the output queue for the next
+        # step, so backfilling past the straggler of a group costs nothing here.
+        self._scheduler = SubmissionScheduler(
+            input.args, granularity=input.args.rollout_submission_granularity or "sample"
+        )
         self._dynamic_filter = load_function(input.args.dynamic_sampling_filter_path)
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._weight_version = _CachedWeightVersion()

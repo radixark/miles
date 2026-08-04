@@ -20,7 +20,7 @@ def make_args(**overrides) -> Namespace:
         rollout_batch_size=2,
         n_samples_per_prompt=GROUP_SIZE,
         over_sampling_batch_size=1,
-        rollout_group_level_submission=False,
+        rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
         rollout_all_samples_process_path=None,
@@ -119,13 +119,15 @@ class Harness:
     def finish_samples(self, submission_index: int, count: int) -> None:
         """Report `count` individual sample completions for a still-pending group."""
         callback = self.callbacks[submission_index]
-        assert callback is not None, "backfill is disabled, no sample callback was wired"
+        assert callback is not None, "sample granularity is off, no sample callback was wired"
         for _ in range(count):
             callback()
 
 
-async def test_group_level_submission_opts_out_of_backfill(monkeypatch):
-    harness = Harness(monkeypatch, make_args(rollout_batch_size=2, rollout_group_level_submission=True))
+async def test_sync_driver_defaults_to_group_granularity(monkeypatch):
+    # Unset --rollout-submission-granularity: this driver aborts whatever overshoots the
+    # batch, so it pays for backfill rather than banking it, and opts out by default.
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=2))
     task = harness.run()
     await asyncio.sleep(0)
 
@@ -140,7 +142,7 @@ async def test_group_level_submission_opts_out_of_backfill(monkeypatch):
 
 
 async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch):
-    harness = Harness(monkeypatch, make_args(rollout_batch_size=2))
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=2, rollout_submission_granularity="sample"))
     task = harness.run()
     await asyncio.sleep(0)
     assert harness.submitted_group_indices == [1, 2]
@@ -160,7 +162,7 @@ async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch
 
 
 async def test_backfill_does_not_oversubmit_below_one_group(monkeypatch):
-    harness = Harness(monkeypatch, make_args(rollout_batch_size=2))
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=2, rollout_submission_granularity="sample"))
     task = harness.run()
     await asyncio.sleep(0)
     assert harness.submitted_group_indices == [1, 2]
@@ -177,8 +179,11 @@ async def test_backfill_does_not_oversubmit_below_one_group(monkeypatch):
 
 
 class TestSubmissionScheduler:
+    # Which granularity each driver defaults to is the driver's decision, and is pinned
+    # by the driver-level tests above and in test_fully_async_rollout.py.
+
     def test_group_level_counts_groups(self):
-        scheduler = SubmissionScheduler(make_args(rollout_group_level_submission=True))
+        scheduler = SubmissionScheduler(make_args(), granularity="group")
         assert scheduler.sample_done_callback is None
         assert scheduler.has_capacity(pending_groups=1, group_budget=2)
         assert not scheduler.has_capacity(pending_groups=2, group_budget=2)
@@ -188,7 +193,7 @@ class TestSubmissionScheduler:
         assert scheduler.samples_in_flight == 0
 
     def test_backfill_counts_samples(self):
-        scheduler = SubmissionScheduler(make_args())
+        scheduler = SubmissionScheduler(make_args(), granularity="sample")
         assert scheduler.sample_done_callback is not None
 
         scheduler.on_submit([make_group(1), make_group(2)])
@@ -203,9 +208,9 @@ class TestSubmissionScheduler:
         scheduler.sample_done_callback()
         assert scheduler.has_capacity(pending_groups=0, group_budget=2)
 
-    @pytest.mark.parametrize("group_level", [False, True])
-    async def test_wait_for_progress_returns_on_group_completion(self, group_level):
-        scheduler = SubmissionScheduler(make_args(rollout_group_level_submission=group_level))
+    @pytest.mark.parametrize("granularity", ["group", "sample"])
+    async def test_wait_for_progress_returns_on_group_completion(self, granularity):
+        scheduler = SubmissionScheduler(make_args(), granularity=granularity)
         blocker = asyncio.Event()
 
         async def group():
@@ -222,7 +227,7 @@ class TestSubmissionScheduler:
         assert pending == set()
 
     async def test_wait_for_progress_returns_on_sample_completion(self):
-        scheduler = SubmissionScheduler(make_args())
+        scheduler = SubmissionScheduler(make_args(), granularity="sample")
         never = asyncio.create_task(asyncio.Event().wait())
 
         scheduler.arm()

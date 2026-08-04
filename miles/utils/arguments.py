@@ -605,14 +605,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--rollout-group-level-submission",
-                action="store_true",
-                default=False,
+                "--rollout-submission-granularity",
+                type=str,
+                choices=["group", "sample"],
+                default=None,
                 help=(
-                    "Hold a submission slot until the whole prompt group returns, instead of the "
-                    "default sample-completion backfill (which submits a replacement group once "
-                    "n_samples_per_prompt individual samples finish, whichever groups they came "
-                    "from). Expected to be slower than the default continuous filling mode."
+                    "Granularity at which a completed unit frees rollout submission capacity. "
+                    "`group` holds a slot until the whole prompt group returns; `sample` frees each "
+                    "slot as its own sample finishes, so a replacement group goes out once "
+                    "n_samples_per_prompt samples complete, whichever groups they came from. "
+                    "Prompt groups are submitted whole either way. Unset picks the driver default: "
+                    "`sample` under --fully-async, where groups completed beyond the batch are queued "
+                    "for later steps; `group` otherwise, where they are aborted at the end of the step "
+                    "and, without --partial-rollout, discarded."
                 ),
             )
 

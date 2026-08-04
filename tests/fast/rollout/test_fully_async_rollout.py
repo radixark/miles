@@ -74,7 +74,7 @@ def make_args(**overrides) -> Namespace:
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
-        rollout_group_level_submission=False,
+        rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
@@ -385,8 +385,8 @@ async def test_weight_version_throttles_failed_queries(monkeypatch):
     assert len(calls) == 2
 
 
-async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch):
-    """Under the default backfill policy, finished samples free slots immediately."""
+async def test_worker_defaults_to_sample_granularity(monkeypatch):
+    """Unset --rollout-submission-granularity: this driver backfills on sample completion."""
     callbacks = []
     release = asyncio.Event()
 
@@ -410,6 +410,33 @@ async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch
 
     # A replacement group went out even though the first group has not returned.
     assert data_source.num_get_calls == 2
+
+    release.set()
+    output = await drain
+    assert len(output.samples) == 1
+
+
+async def test_group_granularity_opts_the_worker_out_of_backfill(monkeypatch):
+    callbacks = []
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        callbacks.append(sample_done_callback)
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    args = make_args(rollout_batch_size=1, rollout_submission_granularity="group")
+    fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+    # No callback is wired, so nothing can free a slot before the group task returns.
+    assert callbacks == [None]
+
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
 
     release.set()
     output = await drain
