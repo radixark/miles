@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 ReconcileFn = Callable[[ParentKey], Awaitable[None]]
 
+DEFAULT_RESYNC_PERIOD = 10 * 60 * 60.0
+
 
 class ReconcileLoop:
     """A source stream feeds a store; every changed parent key is reconciled once, level-triggered.
@@ -35,14 +37,17 @@ class ReconcileLoop:
         source: SourceWatchFn,
         reconcile: ReconcileFn,
         key_map: KeyMapFn | None = None,
+        resync_period: float | None = DEFAULT_RESYNC_PERIOD,
         failure_base_delay: float = 1.0,
         failure_max_delay: float = 60.0,
         source_retry_delay: float = 1.0,
         clock: Clock | None = None,
     ) -> None:
+        assert resync_period is None or resync_period > 0, f"{resync_period=} must be positive or None"
         assert source_retry_delay > 0, f"{source_retry_delay=} must be positive"
 
         self._reconcile = reconcile
+        self._resync_period = resync_period
         self._clock = clock or RealClock()
 
         self._store = ObjectStore(key_map=key_map)
@@ -84,6 +89,8 @@ class ReconcileLoop:
             raise
 
         self._tasks = [asyncio.create_task(self._worker_loop()), driver_task]
+        if self._resync_period is not None:
+            self._tasks.append(asyncio.create_task(self._resync_loop()))
 
     async def stop(self) -> None:
         assert self._start_called, "ReconcileLoop.stop() must come after start()"
@@ -105,6 +112,9 @@ class ReconcileLoop:
     def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
         return self._store.get_by_parent(parent_key)
 
+    def parent_keys(self) -> set[ParentKey]:
+        return self._store.parent_keys()
+
     def _enqueue_all(self, parent_keys: set[ParentKey]) -> None:
         for parent_key in sorted(parent_keys):
             self._queue.add(parent_key)
@@ -120,3 +130,9 @@ class ReconcileLoop:
             except Exception:
                 logger.error(f"ReconcileLoop reconcile failed {parent_key=}", exc_info=True)
                 self._retry.note_failure(parent_key)
+
+    async def _resync_loop(self) -> None:
+        assert self._resync_period is not None
+        while True:
+            await self._clock.sleep(self._resync_period)
+            self._enqueue_all(self._store.parent_keys())
