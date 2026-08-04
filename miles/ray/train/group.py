@@ -42,14 +42,12 @@ class TrainerController:
         args,
         *,
         inference_controller: object | None,
-        rollout_executor: object | None,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
         self.args = args
         self._inference_controller = inference_controller
-        self._rollout_executor = rollout_executor
         self._role = role
         self._with_ref = with_ref
         self._with_opd_teacher = with_opd_teacher
@@ -139,7 +137,6 @@ class TrainerController:
             cell_id=cell_id,
             cell_index=cell_index,
             workers_hash=workers_hash,
-            rollout_executor=self._rollout_executor,
             health_checker=NoopHealthChecker(),
         )
 
@@ -387,8 +384,8 @@ class TrainerController:
     async def reconcile_adapters(self) -> None:
         await asyncio.gather(*[cell.execute("reconcile_adapters") for cell in self._cells])
 
-    async def set_rollout_executor(self):
-        await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
+    async def get_train_parallel_config(self) -> dict:
+        return (await self._execute_first_alive("get_train_parallel_config"))[0]
 
     def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {cell_id: cell.cell_status() for cell_id, cell in list(self._cells_by_id.items())}
