@@ -7,12 +7,13 @@ import pytest
 import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import RayTrainGroup
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
+from miles.utils.ray_utils import Box
 from miles.utils.retry_utils import NonRetryableError
 
 pytestmark = pytest.mark.asyncio
@@ -825,8 +826,8 @@ class TestHeartbeatMonitor:
         assert group._health_checker_activeness.get().active
 
 
-NORMAL = TrainStepOutcome.NORMAL
-DISCARDED = TrainStepOutcome.DISCARDED_SHOULD_RETRY
+NORMAL = TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
+DISCARDED = TrainStepOutput(outcome=TrainStepOutcome.DISCARDED_SHOULD_RETRY)
 
 
 _ERR = RuntimeError("boom")
@@ -885,8 +886,14 @@ class TestCheckTrainOneAttempt:
         outcomes = RayTrainGroup._compute_attempt_outcomes(_alive_cells_for(results), results)
         assert outcomes == {"errored": [0], "discarded": [1], "normal": [2]}
 
+    def test_a_payload_carrying_output_is_bucketed_by_its_outcome(self):
+        """The critic ships values alongside its outcome, so the payload must not hide a retry request."""
+        results = [[TrainStepOutput(outcome=TrainStepOutcome.DISCARDED_SHOULD_RETRY, values=Box("ref"))]]
+        outcomes = RayTrainGroup._compute_attempt_outcomes(_alive_cells_for(results), results)
+        assert outcomes == {"errored": [], "discarded": [0], "normal": []}
 
-async def _set_all_train_return(group: RayTrainGroup, value: TrainStepOutcome) -> None:
+
+async def _set_all_train_return(group: RayTrainGroup, value: TrainStepOutput) -> None:
     for cell in group._cells:
         for handle in cell._get_actor_handles():
             ray.get(handle.set_train_return_value.remote(value))
@@ -913,7 +920,7 @@ class TestTrainRetry:
     async def test_retry_on_all_discarded_then_normal(self):
         """First attempt: all DISCARDED. Second attempt: all NORMAL. Train called twice."""
         group = await _make_alive_controller(num_cells=2)
-        await _set_all_train_return(group, TrainStepOutcome.DISCARDED_SHOULD_RETRY)
+        await _set_all_train_return(group, DISCARDED)
 
         # After first train call, switch to NORMAL so second attempt succeeds
         async def _do_train():
@@ -924,7 +931,7 @@ class TestTrainRetry:
         task = asyncio.create_task(_do_train())
         # Give first attempt time to dispatch
         await asyncio.sleep(0.3)
-        await _set_all_train_return(group, TrainStepOutcome.NORMAL)
+        await _set_all_train_return(group, NORMAL)
         await task
 
         for i in range(2):
@@ -935,7 +942,7 @@ class TestTrainRetry:
         group = await _make_alive_controller(num_cells=2)
 
         # Use a counter-based actor to track attempts
-        await _set_all_train_return(group, TrainStepOutcome.DISCARDED_SHOULD_RETRY)
+        await _set_all_train_return(group, DISCARDED)
 
         async def _do_train():
             await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
@@ -948,7 +955,7 @@ class TestTrainRetry:
         for _ in range(3):
             await asyncio.sleep(0.2)
 
-        await _set_all_train_return(group, TrainStepOutcome.NORMAL)
+        await _set_all_train_return(group, NORMAL)
         await task
 
         for i in range(2):
@@ -1013,9 +1020,9 @@ class TestLogStepEndEvent:
 
         snapshot_alive_cells = [mock_cell_0, mock_cell_1, mock_cell_2]
         results = [
-            [TrainStepOutcome.NORMAL, TrainStepOutcome.NORMAL],
+            [NORMAL, NORMAL],
             RuntimeError("boom"),
-            [TrainStepOutcome.NORMAL],
+            [NORMAL],
         ]
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True), patch(

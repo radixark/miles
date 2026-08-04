@@ -1,16 +1,19 @@
 import importlib
 import sys
 from argparse import Namespace
+from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
 import torch
 
-from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
-
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.utils.ray_utils import Box
+from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 
 
 @pytest.fixture(scope="module")
@@ -77,7 +80,8 @@ def _worker(actor_module, role, *, asleep=True):
 
 def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "critic")
-    worker.train_critic = Mock(return_value={"values": ["cpu-value"]})
+    critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
+    worker.train_critic = Mock(return_value=critic_output)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
     )
@@ -95,7 +99,9 @@ def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypat
     worker.wake_up.assert_called_once_with()
     worker.train_critic.assert_called_once()
     worker.sleep.assert_not_called()
-    assert result == {"values": ["cpu-value"]}
+    assert result is critic_output
+    assert result.outcome is TrainStepOutcome.NORMAL
+    assert result.values.inner == "cpu-values-ref"
     assert phases == ["data_preprocess", "critic_train"]
 
 
@@ -105,7 +111,7 @@ def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
     )
-    values = {"values": ["cpu-value"]}
+    values = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
 
     result = worker.train(4, object(), external_data=values)
 
@@ -463,3 +469,102 @@ def test_skip_actor_forward_only_rejects_existing_actor_log_probs(actor_module, 
     worker.compute_log_prob.assert_not_called()
     actor_module.compute_advantages_and_returns.assert_not_called()
     actor_module.train.assert_not_called()
+
+
+class _FakeRay:
+    def __init__(self) -> None:
+        self._objects: list[Any] = []
+
+    def put(self, value: Any) -> int:
+        self._objects.append(value)
+        return len(self._objects) - 1
+
+    def get(self, ref: int) -> Any:
+        return self._objects[ref]
+
+
+@contextmanager
+def _noop_timer(_name: str) -> Iterator[None]:
+    yield
+
+
+def _patch_shared_train_helpers(actor_module: Any, monkeypatch: pytest.MonkeyPatch, fake_ray: _FakeRay) -> None:
+    monkeypatch.setattr(actor_module, "ray", fake_ray)
+    monkeypatch.setattr(actor_module, "all_replay_managers", [])
+    monkeypatch.setattr(actor_module, "get_data_iterator", lambda *_args, **_kwargs: (object(), [1]))
+    monkeypatch.setattr(actor_module, "compute_advantages_and_returns", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "train", lambda *_args, **_kwargs: TrainStepOutcome.NORMAL)
+    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace(is_pp_last_stage=True))
+    monkeypatch.setattr(actor_module, "timer", _noop_timer)
+
+
+def _critic_worker(actor_module: Any) -> Any:
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(global_batch_size=1, loss_type=None)
+    worker.role = "critic"
+    worker.model = object()
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker._heartbeat = Mock()
+    return worker
+
+
+def _actor_worker(actor_module: Any) -> Any:
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        colocate=True,
+        compute_advantages_and_returns=True,
+        get_mismatch_metrics=False,
+        global_batch_size=1,
+        keep_old_actor=False,
+        ref_update_interval=None,
+        skip_actor_forward_only=False,
+        use_critic=True,
+        use_rollout_logprobs=True,
+    )
+    worker.role = "actor"
+    worker.with_ref = False
+    worker.with_opd_teacher = False
+    worker.model = object()
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker.prof = Mock()
+    worker.rollout_data_postprocess = None
+    worker.weight_updater = Mock()
+    worker.weights_backuper = Mock()
+    worker.weights_backuper.backup_tags = ()
+    worker._active_model_tag = "actor"
+    worker._ft_test_action_executor = None
+    worker._heartbeat = Mock()
+    worker._switch_model = Mock()
+    return worker
+
+
+def test_critic_output_roundtrips_into_actor_external_data(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real train_critic ships values that real train_actor reads back through TrainStepOutput.values."""
+    fake_ray = _FakeRay()
+    _patch_shared_train_helpers(actor_module, monkeypatch, fake_ray)
+    monkeypatch.setattr(actor_module, "forward_only", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(actor_module, "inverse_timer", _noop_timer)
+    monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "log_train_advantage_computation_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "log_perf_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: False)
+    monkeypatch.setattr(actor_module.train_dump_utils, "save_debug_train_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module.torch.cuda, "current_device", lambda: torch.device("cpu"))
+    critic_values = [torch.tensor([1.0, 2.0]), torch.tensor([3.0])]
+
+    critic_output = _critic_worker(actor_module).train_critic(rollout_id=7, rollout_data={"values": critic_values})
+
+    assert isinstance(critic_output, TrainStepOutput)
+    assert critic_output.outcome is TrainStepOutcome.NORMAL
+    assert critic_output.values is not None
+
+    actor_rollout_data: dict[str, Any] = {"tokens": []}
+    actor_output = _actor_worker(actor_module).train_actor(
+        8, actor_rollout_data, critic_output, witness_info=None, attempt=0
+    )
+
+    assert isinstance(actor_output, TrainStepOutput)
+    assert actor_output.outcome is TrainStepOutcome.NORMAL
+    assert [value.tolist() for value in actor_rollout_data["values"]] == [[1.0, 2.0], [3.0]]

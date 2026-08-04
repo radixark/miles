@@ -12,6 +12,7 @@ import torch
 import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
+from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.train_actor import TrainRayActor
@@ -431,7 +432,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 stack.enter_context(store_get_result)
                 if self.args.debug_rollout_only:
                     log_rollout_data(rollout_id, self.args, rollout_data)
-                    return TrainStepOutcome.NORMAL
+                    return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
 
             if self.role == "critic":
                 with timer("critic_train"):
@@ -448,7 +449,7 @@ class MegatronTrainRayActor(TrainRayActor):
             return result
 
     @with_logs
-    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> dict:
+    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutput:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         rollout_data.update(
@@ -478,11 +479,11 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
         self._heartbeat.bump()
-        result = {"train_step_outcome": train_step_outcome}
+        values = None
         if get_parallel_state().is_pp_last_stage and "values" in rollout_data:
             # Ship by object reference
-            result["values"] = Box(ray.put([value.detach().cpu() for value in rollout_data["values"]]))
-        return result
+            values = Box(ray.put([value.detach().cpu() for value in rollout_data["values"]]))
+        return TrainStepOutput(outcome=train_step_outcome, values=values)
 
     def _use_rollout_replay(self, m) -> bool:
         return getattr(self.args, f"use_rollout_{m.name}_replay", False)
@@ -496,7 +497,7 @@ class MegatronTrainRayActor(TrainRayActor):
         *,
         witness_info: WitnessInfo | None,
         attempt: int,
-    ) -> TrainStepOutcome:
+    ) -> TrainStepOutput:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         num_optimizer_steps = len(num_microbatches)
@@ -570,7 +571,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
                 if self.args.use_critic:
                     if external_data is not None and get_parallel_state().is_pp_last_stage:
-                        values_ref = external_data.get("values")
+                        values_ref = external_data.values
                         assert values_ref is not None, (
                             "actor and critic share the same parallel topology, so the critic rank "
                             "paired with a pp-last-stage actor rank must have shipped 'values'"
@@ -643,7 +644,7 @@ class MegatronTrainRayActor(TrainRayActor):
         log_perf_data(rollout_id, self.args, extra_metrics=self.weight_updater.pop_metrics())
 
         self._heartbeat.bump()
-        return train_step_outcome
+        return TrainStepOutput(outcome=train_step_outcome)
 
     @with_logs
     @timer
