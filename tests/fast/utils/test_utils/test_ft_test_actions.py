@@ -96,7 +96,7 @@ class FakeController:
         self.stopped: list[int] = []
         self.started: list[int] = []
 
-    def stop_cell(self, cell_index: int) -> None:
+    async def stop_cell(self, cell_index: int) -> None:
         self.stopped.append(cell_index)
 
     def start_cell(self, cell_index: int) -> None:
@@ -116,57 +116,62 @@ class TestResolveCellIndex:
 
 
 class TestRunAfterStep:
-    def test_stop_cell_fires_on_matching_rollout(self):
+    @pytest.mark.asyncio
+    async def test_stop_cell_fires_on_matching_rollout(self):
         """stop_cell_at_end triggers controller.stop_cell with the resolved cell index on its rollout."""
         controller = FakeController(num_cells=3)
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
         executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
 
-        executor.run_after_step(5)
+        await executor.run_after_step(5)
 
         assert controller.stopped == [1]
         assert controller.started == []
 
-    def test_no_action_on_non_matching_rollout(self):
+    @pytest.mark.asyncio
+    async def test_no_action_on_non_matching_rollout(self):
         """run_after_step does nothing when no action's at_rollout matches the given rollout."""
         controller = FakeController(num_cells=3)
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
         executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
 
-        executor.run_after_step(4)
+        await executor.run_after_step(4)
 
         assert controller.stopped == []
         assert controller.started == []
 
-    def test_start_cell_with_default_index_resolves_to_last_cell(self):
+    @pytest.mark.asyncio
+    async def test_start_cell_with_default_index_resolves_to_last_cell(self):
         """start_cell_at_end with cell_index -1 calls controller.start_cell on the last cell."""
         controller = FakeController(num_cells=3)
         action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_index=-1)
         executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
 
-        executor.run_after_step(2)
+        await executor.run_after_step(2)
 
         assert controller.started == [2]
         assert controller.stopped == []
 
-    def test_two_actions_same_rollout_both_fire(self):
+    @pytest.mark.asyncio
+    async def test_two_actions_same_rollout_both_fire(self):
         """Two actions sharing the same rollout both dispatch to their respective controller methods."""
         controller = FakeController(num_cells=3)
         stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_index=0)
         start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_index=2)
         executor = FTTestActionControllerExecutor(actions=[stop_action, start_action], controller=controller)
 
-        executor.run_after_step(7)
+        await executor.run_after_step(7)
 
         assert controller.stopped == [0]
         assert controller.started == [2]
 
-    def test_empty_actions_is_noop(self):
+    @pytest.mark.asyncio
+    async def test_empty_actions_is_noop(self):
         """An executor with no actions performs no controller calls."""
         controller = FakeController(num_cells=3)
         executor = FTTestActionControllerExecutor(actions=[], controller=controller)
 
-        executor.run_after_step(5)
+        await executor.run_after_step(5)
 
         assert controller.stopped == []
         assert controller.started == []
