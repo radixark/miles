@@ -17,7 +17,9 @@ class TestClose:
 
         server.close()
 
-        with pytest.raises(OSError):
+        # A severed connection surfaces either as a socket error or as the client
+        # library refusing to read a response it never got.
+        with pytest.raises((OSError, http.client.HTTPException)):
             connection.request("GET", "/after")
             connection.getresponse().read()
         assert server.paths == ["/before"]
