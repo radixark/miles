@@ -11,7 +11,7 @@ pytestmark = pytest.mark.asyncio
 
 def _make_controller(cells: list) -> RayTrainGroup:
     group = object.__new__(RayTrainGroup)
-    group._cells = cells
+    group._cells_by_index = dict(enumerate(cells))
     group.args = SimpleNamespace()
     return group
 
