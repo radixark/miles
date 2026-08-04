@@ -1,0 +1,402 @@
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import pytest
+from tests.fast.utils.workers.reconcile.utils import FakeSource, make_pod, pod_cell, settle
+
+from miles.utils.workers.reconcile.loop import ReconcileLoop
+from miles.utils.workers.reconcile.source_event import DeleteEvent, UpsertEvent
+
+
+class Recorder:
+    def __init__(self) -> None:
+        self.parent_keys: list[str] = []
+        self.snapshots: list[list[str]] = []
+        self.concurrency = 0
+        self.max_concurrency = 0
+        self.gate: asyncio.Event | None = None
+        self.fail_parent_keys: set[str] = set()
+        self.loop: ReconcileLoop | None = None
+
+    async def __call__(self, parent_key: str) -> None:
+        self.concurrency += 1
+        self.max_concurrency = max(self.max_concurrency, self.concurrency)
+        try:
+            self.parent_keys.append(parent_key)
+            if self.loop is not None:
+                self.snapshots.append([pod.metadata.name for pod in self.loop.get_by_parent(parent_key)])
+            if self.gate is not None:
+                await self.gate.wait()
+            if parent_key in self.fail_parent_keys:
+                raise RuntimeError(f"reconcile failed for {parent_key}")
+        finally:
+            self.concurrency -= 1
+
+    def counts(self) -> dict[str, int]:
+        return {parent_key: self.parent_keys.count(parent_key) for parent_key in set(self.parent_keys)}
+
+
+async def make_loop(
+    *,
+    source: FakeSource | None = None,
+    recorder: Recorder | None = None,
+    key_map: Any = pod_cell,
+    initial: list[Any] | None = None,
+    fail_parent_keys: set[str] | None = None,
+    gated: bool = False,
+) -> tuple[ReconcileLoop, FakeSource, Recorder]:
+    source = source or FakeSource()
+    recorder = recorder or Recorder()
+    loop = ReconcileLoop(source=source, reconcile=recorder, key_map=key_map)
+    recorder.loop = loop
+    recorder.fail_parent_keys = fail_parent_keys or set()
+    if gated:
+        recorder.gate = asyncio.Event()
+
+    await loop.start()
+    await settle()
+    source.emit(*(UpsertEvent(key=pod.metadata.name, obj=pod) for pod in initial or []))
+    await settle()
+    return loop, source, recorder
+
+
+class TestIncrementalEvents:
+    async def test_upsert_enqueues_parent_key(self):
+        """A new pod wakes its cell."""
+        loop, source, recorder = await make_loop(initial=[])
+        source.emit(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
+        await settle()
+        assert recorder.parent_keys == ["cell-a"]
+        await loop.stop()
+
+    async def test_delete_removes_from_store_and_wakes_parent(self):
+        """A deleted pod leaves the store and wakes its cell."""
+        pod = make_pod("pod-0", cell="cell-a")
+        loop, source, recorder = await make_loop(initial=[pod])
+        source.emit(DeleteEvent(key="pod-0", last_obj=pod))
+        await settle()
+        assert recorder.parent_keys == ["cell-a", "cell-a"]
+        assert loop.get_by_parent("cell-a") == []
+        await loop.stop()
+
+    async def test_known_delete_trusts_the_store_over_a_stale_tombstone(self):
+        """For a known object the stored copy decides the parent, and the store entry is really dropped."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0", cell="cell-a")])
+        recorder.parent_keys.clear()
+        source.emit(DeleteEvent(key="pod-0", last_obj=make_pod("pod-0", cell="cell-stale")))
+        await settle()
+
+        assert recorder.parent_keys == ["cell-a"]
+        assert "pod-0" not in loop._store
+        await loop.stop()
+
+    async def test_delete_of_unknown_key_falls_back_to_tombstone(self):
+        """A delete for an object never seen still wakes the cell via its tombstone."""
+        loop, source, recorder = await make_loop(initial=[])
+        source.emit(DeleteEvent(key="pod-9", last_obj=make_pod("pod-9", cell="cell-z")))
+        await settle()
+        assert recorder.parent_keys == ["cell-z"]
+        await loop.stop()
+
+    async def test_delete_without_tombstone_is_ignored(self):
+        """A delete with no last_obj for an unknown key cannot be attributed and is dropped."""
+        loop, source, recorder = await make_loop(initial=[])
+        source.emit(DeleteEvent(key="pod-9", last_obj=None))
+        await settle()
+        assert recorder.parent_keys == []
+
+        source.emit(UpsertEvent(key="pod-0", obj=make_pod("pod-0")))
+        await settle()
+        assert recorder.parent_keys == ["cell-a"]
+        await loop.stop()
+
+    async def test_delete_with_an_unmappable_tombstone_is_dropped(self):
+        """An unknown delete whose tombstone has no parent is discarded, not queued under its own key."""
+        loop, source, recorder = await make_loop(initial=[])
+        source.emit(DeleteEvent(key="pod-orphan", last_obj=make_pod("pod-orphan", cell=None)))
+        await settle()
+
+        assert recorder.parent_keys == []
+        assert "pod-orphan" not in loop._store
+
+        source.emit(UpsertEvent(key="pod-0", obj=make_pod("pod-0")))
+        await settle()
+        assert recorder.parent_keys == ["cell-a"]
+        await loop.stop()
+
+    async def test_reparenting_upsert_wakes_old_and_new_parent(self):
+        """A pod whose cell label changed wakes both the old and the new cell."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0", cell="cell-a")])
+        recorder.parent_keys.clear()
+        source.emit(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-b")))
+        await settle()
+        assert sorted(recorder.parent_keys) == ["cell-a", "cell-b"]
+        assert loop.get_by_parent("cell-a") == []
+        assert [pod.metadata.name for pod in loop.get_by_parent("cell-b")] == ["pod-0"]
+        await loop.stop()
+
+    async def test_repeated_upsert_keeps_one_store_entry(self):
+        """Re-delivery of the same object does not duplicate store membership."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0", resource_version="1")])
+        source.emit(UpsertEvent(key="pod-0", obj=make_pod("pod-0", resource_version="2")))
+        await settle()
+        pods = loop.get_by_parent("cell-a")
+        assert len(pods) == 1
+        assert pods[0].metadata.resource_version == "2"
+        await loop.stop()
+
+    async def test_reconcile_reads_store_snapshot_not_event_payload(self):
+        """Reconcile observes the store, so a burst of pods folds into one complete view."""
+        loop, source, recorder = await make_loop(initial=[])
+        source.emit(
+            UpsertEvent(key="pod-0", obj=make_pod("pod-0")),
+            UpsertEvent(key="pod-1", obj=make_pod("pod-1")),
+            UpsertEvent(key="pod-2", obj=make_pod("pod-2")),
+        )
+        await settle()
+        assert recorder.parent_keys == ["cell-a"]
+        assert recorder.snapshots[-1] == ["pod-0", "pod-1", "pod-2"]
+        await loop.stop()
+
+    async def test_an_unmappable_object_is_dropped_not_stored(self):
+        """A key_map that raises drops that one object; the stream keeps running."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0")])
+        recorder.parent_keys.clear()
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1", cell=None)))
+        await settle()
+
+        assert "pod-1" not in loop._store
+        assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-0"]
+        assert source.open_count == 1
+
+        source.emit(UpsertEvent(key="pod-2", obj=make_pod("pod-2")))
+        await settle()
+        assert recorder.parent_keys == ["cell-a"]
+        await loop.stop()
+
+    async def test_store_is_updated_before_the_key_is_enqueued(self):
+        """The invariant that a handler never reads a world older than the event it woke on."""
+        loop, source, _ = await make_loop(initial=[make_pod("pod-0")])
+        seen_at_enqueue: list[list[str]] = []
+        original_add = loop._queue.add
+
+        def recording_add(key: str) -> None:
+            seen_at_enqueue.append([pod.metadata.name for pod in loop.get_by_parent(key)])
+            original_add(key)
+
+        loop._queue.add = recording_add
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1")))
+        await settle()
+        assert seen_at_enqueue == [["pod-0", "pod-1"]]
+
+        source.emit(DeleteEvent(key="pod-1", last_obj=make_pod("pod-1")))
+        await settle()
+        assert seen_at_enqueue[-1] == ["pod-0"]
+        await loop.stop()
+
+    async def test_an_object_that_becomes_unmappable_leaves_its_parent(self):
+        """Losing the label is observed as the object leaving the cell."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0")])
+        recorder.parent_keys.clear()
+        source.emit(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell=None)))
+        await settle()
+
+        assert recorder.parent_keys == ["cell-a"]
+        assert loop.get_by_parent("cell-a") == []
+        assert "pod-0" not in loop._store
+        await loop.stop()
+
+
+class TestWorkQueueDiscipline:
+    async def test_a_busy_key_is_never_reconciled_twice_at_once(self):
+        """The single worker serializes everything, so a key can never overlap itself."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0")], gated=True)
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1")))
+        await settle()
+        source.emit(UpsertEvent(key="pod-2", obj=make_pod("pod-2", cell="cell-b")))
+        await settle()
+        assert recorder.max_concurrency == 1
+
+        assert recorder.gate is not None
+        recorder.gate.set()
+        await settle()
+        assert recorder.max_concurrency == 1
+        assert sorted(set(recorder.parent_keys)) == ["cell-a", "cell-b"]
+        await loop.stop()
+
+    async def test_repeated_events_while_busy_collapse_into_one_requeue(self):
+        """Many events for a busy key produce exactly one follow-up reconcile."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0")])
+        recorder.parent_keys.clear()
+        recorder.gate = asyncio.Event()
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1")))
+        await settle()
+        for index in range(5):
+            source.emit(UpsertEvent(key=f"pod-extra-{index}", obj=make_pod(f"pod-extra-{index}")))
+            await settle()
+
+        recorder.gate.set()
+        await settle()
+        assert recorder.parent_keys == ["cell-a", "cell-a"]
+        await loop.stop()
+
+    async def test_distinct_keys_are_serialized_by_default(self):
+        """The default single worker mirrors controller-runtime's MaxConcurrentReconciles=1."""
+        pods = [make_pod("pod-a", cell="cell-a"), make_pod("pod-b", cell="cell-b")]
+        loop, _, recorder = await make_loop(initial=pods, gated=True)
+        assert recorder.max_concurrency == 1
+
+        assert recorder.gate is not None
+        recorder.gate.set()
+        await settle()
+        assert sorted(recorder.parent_keys) == ["cell-a", "cell-b"]
+        await loop.stop()
+
+    async def test_events_before_worker_pickup_collapse(self):
+        """Two events for the same key arriving back-to-back yield one reconcile."""
+        loop, source, recorder = await make_loop(initial=[])
+        source.emit(
+            UpsertEvent(key="pod-0", obj=make_pod("pod-0")),
+            UpsertEvent(key="pod-0", obj=make_pod("pod-0", resource_version="2")),
+        )
+        await settle()
+        assert recorder.parent_keys == ["cell-a"]
+        await loop.stop()
+
+    async def test_keys_are_dispatched_in_arrival_order(self):
+        """The queue is FIFO, not a stack."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0")], gated=True)
+        source.emit(UpsertEvent(key="pod-b", obj=make_pod("pod-b", cell="cell-b")))
+        await settle()
+        source.emit(UpsertEvent(key="pod-c", obj=make_pod("pod-c", cell="cell-c")))
+        await settle()
+
+        assert recorder.gate is not None
+        recorder.gate.set()
+        await settle()
+        assert recorder.parent_keys == ["cell-a", "cell-b", "cell-c"]
+        await loop.stop()
+
+
+class TestFailures:
+    async def test_a_failing_reconcile_does_not_kill_the_worker(self):
+        """A reconcile that raises is logged and the next key is still served."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"})
+        source.emit(UpsertEvent(key="pod-1", obj=make_pod("pod-1", cell="cell-b")))
+        await settle()
+
+        assert recorder.counts() == {"cell-a": 1, "cell-b": 1}
+        await loop.stop()
+
+    async def test_a_failing_key_is_not_retried_on_its_own(self):
+        """Without a retry policy a failure costs one reconcile, not a redelivery."""
+        loop, _, recorder = await make_loop(initial=[make_pod("pod-0")], fail_parent_keys={"cell-a"})
+        await settle()
+
+        assert recorder.counts() == {"cell-a": 1}
+        await loop.stop()
+
+
+class TestLister:
+    async def test_get_by_parent_returns_members_sorted_by_key(self):
+        """get_by_parent is the Lister equivalent and is deterministic."""
+        pods = [make_pod("pod-2"), make_pod("pod-0"), make_pod("pod-1")]
+        loop, _, _ = await make_loop(initial=pods)
+        assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-0", "pod-1", "pod-2"]
+        await loop.stop()
+
+    async def test_without_key_map_object_key_is_the_reconcile_key(self):
+        """key_map=None means the object key is used verbatim as the reconcile key."""
+        loop, _, recorder = await make_loop(key_map=None, initial=[make_pod("pod-0"), make_pod("pod-1")])
+        assert sorted(recorder.parent_keys) == ["pod-0", "pod-1"]
+        await loop.stop()
+
+    async def test_get_by_parent_unknown_key_is_empty(self):
+        """Unknown parents read as empty, not as an error."""
+        loop, _, _ = await make_loop(initial=[])
+        assert loop.get_by_parent("nope") == []
+        await loop.stop()
+
+
+class TestStop:
+    async def test_stop_halts_reconciles(self):
+        """After stop() no further events are processed."""
+        loop, source, recorder = await make_loop(initial=[])
+        await loop.stop()
+        source.emit(UpsertEvent(key="pod-0", obj=make_pod("pod-0")))
+        await settle()
+        assert recorder.parent_keys == []
+
+    async def test_stop_closes_the_source_stream(self):
+        """Cancelling the consumer closes the stream it was iterating."""
+        loop, source, _ = await make_loop(initial=[make_pod("pod-0")])
+        assert source.closed_count == 0
+
+        await loop.stop()
+        assert source.closed_count == 1
+
+    async def test_a_second_stop_is_rejected(self):
+        """stop() runs exactly once; a second call is a caller error, not a wait."""
+        loop, _, _ = await make_loop(initial=[])
+        await loop.stop()
+        with pytest.raises(AssertionError):
+            await loop.stop()
+
+    async def test_stop_before_start_is_rejected(self):
+        """stop() has nothing to wait for before start(); calling it early is a caller error."""
+        loop = ReconcileLoop(source=FakeSource(), reconcile=Recorder())
+        with pytest.raises(AssertionError):
+            await loop.stop()
+
+    async def test_start_twice_is_rejected(self):
+        """start() is single-shot."""
+        loop, _, _ = await make_loop(initial=[make_pod("pod-0")])
+        with pytest.raises(AssertionError):
+            await loop.start()
+        await loop.stop()
+
+    async def test_awaiting_stop_inside_reconcile_is_rejected(self):
+        """stop() waits for the worker, so awaiting it from inside reconcile is a caller error, not a hang."""
+        source = FakeSource()
+        rejected: list[BaseException] = []
+        loop: ReconcileLoop | None = None
+
+        async def reconcile(key: str) -> None:
+            assert loop is not None
+            try:
+                await loop.stop()
+            except AssertionError as error:
+                rejected.append(error)
+
+        loop = ReconcileLoop(source=source, reconcile=reconcile, key_map=pod_cell)
+        await loop.start()
+        await settle()
+        source.emit(UpsertEvent(key="pod-0", obj=make_pod("pod-0")))
+        await settle()
+
+        assert len(rejected) == 1
+        await loop.stop()
+
+    async def test_a_reconcile_shuts_the_loop_down_by_spawning_a_task(self):
+        """The sanctioned way for reconcile to request shutdown is a task that outlives the worker."""
+        source = FakeSource()
+        loop: ReconcileLoop | None = None
+        shutdown: asyncio.Task[None] | None = None
+
+        async def reconcile(key: str) -> None:
+            nonlocal shutdown
+            assert loop is not None
+            if shutdown is None:
+                shutdown = asyncio.create_task(loop.stop())
+
+        loop = ReconcileLoop(source=source, reconcile=reconcile, key_map=pod_cell)
+        await loop.start()
+        await settle()
+        source.emit(UpsertEvent(key="pod-0", obj=make_pod("pod-0")))
+        await settle()
+
+        assert shutdown is not None
+        await shutdown
+        assert source.closed_count == 1
