@@ -13,7 +13,6 @@ from miles.ray.train.cell_state import (
     StateAllocatedErrored,
     StateAllocatedUninitialized,
     StatePending,
-    StateStopped,
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import BaseHealthChecker
@@ -139,26 +138,9 @@ class RayTrainCell:
     # ------------------------ state transition ------------------------
 
     async def stop(self) -> None:
-        if self.is_stopped:
-            log_structured(
-                logger.info,
-                tag="ft",
-                op="state",
-                name="stop",
-                cell=self.cell_id,
-                skipped=True,
-                reason="already_stopped",
-            )
-            return
-
         await RayWorkerManager.get_handle().stop_cells.remote([self.cell_id])
 
-        self._change_state("stop", (StatePending, StateAllocatedBase), StateStopped())
-
     async def _stop_and_confirm_dead(self) -> None:
-        if self.is_stopped:
-            return
-
         handles = self._get_actor_handles() if self.is_allocated else []
         await self.stop()
 
@@ -175,25 +157,6 @@ class RayTrainCell:
             cell=self.cell_id,
             elapsed_s=round(time.monotonic() - start, 1),
         )
-
-    def mark_as_pending(self) -> None:
-        if self.is_pending or self.is_allocated:
-            log_structured(
-                logger.info,
-                tag="ft",
-                op="state",
-                name="mark_as_pending",
-                cell=self.cell_id,
-                skipped=True,
-                current=type(self._state).__name__,
-            )
-            return
-
-        self._change_state("mark_as_pending", StateStopped, StatePending())
-
-    async def allocate_for_pending(self) -> None:
-        await RayWorkerManager.get_handle().start_cells.remote([self.cell_id])
-        self._attach_workers()
 
     def _attach_workers(self) -> None:
         (worker_infos,) = RayWorkerProvider.create().get_worker_infos(cell_ids=[self.cell_id])
@@ -310,10 +273,6 @@ class RayTrainCell:
     # ------------------------ state and misc queries ------------------------
 
     @property
-    def is_pending(self) -> bool:
-        return isinstance(self._state, StatePending)
-
-    @property
     def is_allocated(self) -> bool:
         return isinstance(self._state, StateAllocatedBase)
 
@@ -326,8 +285,8 @@ class RayTrainCell:
         return isinstance(self._state, StateAllocatedErrored)
 
     @property
-    def is_stopped(self) -> bool:
-        return isinstance(self._state, StateStopped)
+    def is_uninitialized(self) -> bool:
+        return isinstance(self._state, StateAllocatedUninitialized)
 
     @property
     def state_name(self) -> str:

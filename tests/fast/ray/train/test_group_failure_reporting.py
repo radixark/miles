@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
-from tests.fast.ray.train.conftest import make_alive_cell
+from tests.fast.ray.train.conftest import make_alive_cell, make_cell
 
 from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.health_checker import ActivenessTracker
@@ -76,20 +76,47 @@ class TestLifecycleCallsAreNotSilent:
         assert f"Injected failure in {actor_fn_name}" in str(excinfo.value.__cause__)
 
 
-class TestPendingCellsDoNotCountAsRecoverable:
-    async def test_a_lost_last_alive_cell_is_reported_even_with_a_pending_cell(self):
-        """A pending cell has no live source to heal from, so losing the last alive cell must still be reported."""
-        cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
-        cells[1].stop()
-        cells[1].mark_as_pending()
-        ray.get(cells[0]._get_actor_handles()[0].set_fail_methods.remote(["sleep"]))
-        group = _make_controller(cells)
+class TestUninitializedCellsKeepTheControllerRetryable:
+    async def test_a_failed_attempt_is_retryable_while_a_cell_is_still_healing(self):
+        """A healing cell can still join the next attempt, so the failure must stay retryable, not fatal."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0])
+        uninitialized_cell = make_cell(1)
+        group = _make_controller([alive_cell, uninitialized_cell])
+        alive_cell._mark_as_errored()
 
-        with pytest.raises(NonRetryableError) as excinfo:
-            await group.offload()
+        with pytest.raises(RuntimeError) as excinfo:
+            group._check_train_one_attempt(
+                snapshot_alive_cells=[alive_cell],
+                results=[ValueError("Injected failure in train")],
+            )
 
-        assert "Injected failure in sleep" in str(excinfo.value.__cause__)
-        assert cells[1].is_pending
+        assert not isinstance(excinfo.value, NonRetryableError)
+        assert uninitialized_cell.is_uninitialized
+
+    async def test_a_failed_attempt_is_fatal_once_no_cell_can_come_back(self):
+        """With every cell errored there is nothing left to heal, so the group must fail fast."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0])
+        group = _make_controller([alive_cell])
+        alive_cell._mark_as_errored()
+
+        with pytest.raises(NonRetryableError):
+            group._check_train_one_attempt(
+                snapshot_alive_cells=[alive_cell],
+                results=[ValueError("Injected failure in train")],
+            )
+
+    async def test_offload_tolerates_losing_the_last_alive_cell_while_a_cell_is_still_healing(self):
+        """A healing cell keeps the group recoverable, so the lifecycle call must not raise at all."""
+        alive_cell = make_alive_cell(0, alive_cell_indices=[0])
+        for handle in alive_cell._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["sleep"]))
+        uninitialized_cell = make_cell(1)
+        group = _make_controller([alive_cell, uninitialized_cell])
+
+        await group.offload()
+
+        assert not alive_cell.is_alive
+        assert uninitialized_cell.is_uninitialized
 
 
 class TestMultipleCellsStillTolerateFailures:
@@ -101,5 +128,5 @@ class TestMultipleCellsStillTolerateFailures:
 
         await group.offload()
 
-        assert cells[0].is_stopped
+        assert not cells[0].is_alive
         assert cells[1].is_alive
