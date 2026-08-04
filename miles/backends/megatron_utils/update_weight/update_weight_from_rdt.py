@@ -1,19 +1,11 @@
-"""
-Update SchedulerActor engines via RDT/NIXL for p2p weight transfer.
+"""Update SchedulerActor engines via RDT/NIXL weight transfer.
 
-Trainer all-gathers params (bucketed) and converts them to HF format using
-``DistBucketedWeightUpdateMixin``. Instead of holding
-a full GPU replica of the rollout model, each engine rank is backed by a small,
-reusable fixed-size GPU bucket. For every flush the bucket is re-staged to the
-shapes of the ready params, ``model_replica.load_weights`` writes the
-TP-rank-correct sglang shard into the bucket views, and the views are exported
-via ``ray.put(..., _tensor_transport="nixl")``. Each rollout ``SchedulerActor``
-then pulls its shard via RDT directly into its own ``param.data`` buffers.
-
-Lifecycle (inherited from the mixin):
-    1. Pause engines, flush cache, pre-process quantization
-    2. Bucketed TP/EP all-gather -> HF convert -> per-bucket transfer
-    3. Resume engines, post-process quantization + post_load_weights
+Reuses ``DistBucketedWeightUpdateMixin`` for the bucketed TP/EP all-gather and HF
+conversion. Instead of a full GPU replica of the rollout model, each engine rank
+is backed by a small reusable GPU bucket: per flush the bucket is re-staged to the
+ready params' shapes, ``model_replica.load_weights`` writes the TP-rank-correct
+sglang shard into the views, and each ``SchedulerActor`` pulls its shard from
+``ray.put(..., _tensor_transport="nixl")`` straight into its ``param.data``.
 """
 
 from __future__ import annotations
@@ -49,13 +41,8 @@ logger = logging.getLogger(__name__)
 
 
 class _EngineRankBucket:
-    """Per-engine-rank transfer context.
-
-    Holds a GPU model replica whose ``param.data`` is re-pointed into a fixed-size
-    GPU bucket each flush, the bucket itself (allocated once), the recorded param
-    specs needed to carve correctly-shaped views, and the scheduler actor handles
-    that pull this engine rank's shard.
-    """
+    """Transfer context for one engine rank: model replica, its fixed-size GPU
+    bucket, the param specs used to carve views, and the actors that pull it."""
 
     def __init__(
         self,
@@ -72,11 +59,8 @@ class _EngineRankBucket:
         self.actors = actors
 
     def stage(self, names: list[str]) -> list[torch.Tensor]:
-        """Re-point ``params_dict[name].data`` to a view inside the fixed bucket.
-
-        Lays the ready params out contiguously (FlattenedTensorBucket style) and
-        returns the staged views in the same order as ``names``.
-        """
+        """Re-point each ``params_dict[name].data`` to a contiguous view inside the
+        fixed bucket, returning the views in ``names`` order."""
         offset = 0
         views: list[torch.Tensor] = []
         capacity = self.gpu_bucket.numel()
@@ -97,14 +81,11 @@ class _EngineRankBucket:
 
 
 class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
-    """RDT/NIXL p2p weight transfer built on the P2P bucketed all-gather + HF conversion.
+    """RDT/NIXL weight transfer on the P2P bucketed all-gather + HF conversion.
 
-    All training GPUs sharing the same PP rank hold a complete weight replica
-    after TP/EP all-gather; each source rank transfers to its planned rollout
-    ranks. For every HF bucket flushed by the mixin we:
-        stage fixed GPU bucket -> load_weights (HF -> sglang shard)
-        -> ray.put(views, nixl) -> actor.pull_weights -> ray.get
-    using a separate bucket per engine rank so concurrent pulls never clobber.
+    Per HF bucket flushed by the mixin: stage GPU bucket -> load_weights
+    -> ray.put(views, nixl) -> actor.pull_weights -> ray.get. One bucket per
+    engine rank, so concurrent pulls never clobber each other.
     """
 
     def __init__(
@@ -123,9 +104,8 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
 
-        # Initialize LoRA state via the mixin contract (the shared update_weights
-        # guards base-sync on self.is_lora). RDT is full-param sync, so is_lora is
-        # False and the guard short-circuits; this just registers the attribute.
+        # RDT is full-param sync; this only registers the attribute the mixin's
+        # update_weights guards on.
         self._init_lora(
             args=args,
             model=model,
@@ -138,7 +118,6 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._group_name = "miles-rdt"
 
-        # Staging bookkeeping shared with the P2P readiness logic.
         self._staged_tensors: dict[str, list[tuple[str, torch.Tensor]]] = {}
         self._tensor_update_pending: dict[str, int] = {}
         self._shared_params_dict: dict[str, torch.nn.Parameter] = {}
@@ -150,12 +129,8 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
 
     @property
     def _is_source(self) -> bool:
-        """Whether this training rank sends weights to rollout.
-
-        All training GPUs sharing the same PP rank hold a complete weight replica
-        after TP/EP all-gather. Only the first ``_rollout_num_gpus`` ranks (by
-        gathered_dp_rank) are sources; the rest are idle during transfer.
-        """
+        """Whether this training rank sends weights to rollout. Every rank holds a
+        full replica after all-gather, so only the first _rollout_num_gpus are used."""
         return self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
 
     def connect_rollout_engines(
@@ -167,12 +142,8 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
     ) -> None:
         """Plan transfers, build a GPU replica + fixed bucket per engine rank.
 
-        ``rollout_engine_lock`` and ``engine_gpu_counts/offsets`` are accepted
-        for caller-interface parity with the NCCL broadcast path but unused
-        here -- NIXL routes via SchedulerActor handles resolved from the
-        transfer plan, and the one-sided RDMA pulls have no collective that
-        could deadlock (inference is already gated by the mixin's pause/resume
-        lifecycle), so no engine lock is required.
+        The lock and gpu count/offset args exist for parity with the broadcast path;
+        one-sided RDMA pulls have no collective to deadlock, so they are unused here.
         """
         self.rollout_engines = rollout_engines
         self._staged_tensors.clear()
@@ -211,13 +182,9 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
                 self._shared_param_mapper = ParameterMapper.from_model(model_replica)
                 first_engine_rank = False
 
-            # CRITICAL: the bucket must NOT live in an expandable (VMM /
-            # cuMemCreate) segment. VMM memory cannot export legacy CUDA-IPC
-            # handles, so UCX's cuda_ipc lane silently drops for it and NIXL
-            # falls back to software-emulated RMA over TCP.
-            # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True on the source
-            # alone reproduces the slowdown. Allocate the bucket from a
-            # non-expandable segment.
+            # CRITICAL: expandable (VMM) memory cannot export CUDA-IPC handles, so
+            # UCX silently drops its cuda_ipc lane and NIXL falls back to emulated
+            # RMA over TCP (~0.3 GB/s vs ~150 GB/s). Force the bucket off it.
             expandable = "expandable_segments:True" in os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
             if expandable:
                 torch._C._accelerator_setAllocatorSettings("expandable_segments:False")
@@ -230,11 +197,9 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
             finally:
                 if expandable:
                     torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
-            # Pin the bucket's NIXL registration for the process lifetime.
-            # Otherwise every per-flush ray.put registers the full bucket and
-            # the ref drop afterwards deregisters it AND bumps the NIXL agent
-            # meta version, which invalidates the engines' cached remote agent
-            # and forces a re-handshake on the next flush.
+            # Pin for the process lifetime: otherwise each ray.put re-registers the
+            # bucket and the ref drop bumps the NIXL agent meta version, forcing the
+            # engines to re-handshake every flush.
             from ray.experimental import register_nixl_memory
 
             register_nixl_memory(gpu_bucket)
@@ -265,10 +230,9 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
     ) -> tuple[torch.nn.Module, dict[str, torch.nn.Parameter], dict[str, tuple[torch.Size, torch.dtype, int]]]:
         """Create a GPU model replica that loads the right shard and skips post_load_weights.
 
-        The dummy load allocates the full model on GPU momentarily; we record each
-        param's (shape, dtype, nbytes) and immediately free the storage so the
-        replica only keeps nn.Parameter/weight_loader metadata. The actual weight
-        bytes live in a reusable fixed-size bucket re-pointed during staging.
+        The dummy load allocates the full model momentarily; we record each param's
+        (shape, dtype, nbytes) and free the storage, keeping only the weight_loader
+        metadata. The bytes live in the fixed bucket re-pointed during staging.
         """
         load_config = LoadConfig(
             load_format="dummy",
@@ -280,12 +244,8 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         initialize_fp8_gemm_config(server_args)
         initialize_fp4_gemm_config(server_args)
 
-        # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
-        # because get_model() calls it internally, which may invoke kernels that
-        # should only run on the rollout engine after the RDMA transfer (the engine
-        # runs them itself when the mixin's end_weight_update() closes the session).
-        # sglang #28001 exposes this module function publicly (was _post_load_weights);
-        # callers use a bare name so patching the module attr intercepts them.
+        # get_model() calls post_load_weights internally; those kernels belong on the
+        # rollout engine after the transfer, where end_weight_update() runs them.
         from sglang.srt.model_loader import loader as model_loader_module
 
         original_post_load_weights = model_loader_module.post_load_weights
@@ -309,8 +269,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         for name, param in params_dict.items():
             nbytes = param.data.numel() * param.data.element_size()
             param_specs[name] = (param.data.shape, param.data.dtype, nbytes)
-            # Release the full-model dummy allocation; storage is re-pointed into
-            # the fixed-size bucket during staging.
+            # Release the dummy allocation; stage() re-points this into the bucket.
             param.data = torch.empty(0, dtype=param.data.dtype, device=param.data.device)
 
         return model, params_dict, param_specs
@@ -320,22 +279,14 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
     ) -> tuple[list[str], list[tuple[str, torch.Tensor]]]:
         """Determine which sglang params have all shards present, returning their accumulated tensors.
 
-        Some parameters are trained separately on the training side but fused into a
-        single tensor on the rollout side (e.g., Q/K/V projections are separate in
-        Megatron but merged into one qkv_proj in sglang). This function stages
-        incoming HF tensors in self._staged_tensors until all shards for a
-        sglang param are collected. Only returns tensors for fully-ready params,
-        preventing partial load_weights() calls.
-
-        Return:
-            transfer_ready_params: tensors' names for the ones ready to be transferred.
-            ready_hf_tensors: corresponding complete tensors ready to be transferred.
+        Params fused on the rollout side (e.g. Megatron's separate Q/K/V vs sglang's
+        qkv_proj) are staged in self._staged_tensors until every shard has arrived,
+        so load_weights() is never called on a partial param.
         """
         transfer_ready_params = []
         params_dict = self._shared_params_dict
 
         for name, tensor in converted_named_tensors:
-            # map the tensor name of huggingface to the one of sglang.
             mapped_result = self._shared_param_mapper.map(name)
             mapped, num_shards, num_experts = (
                 mapped_result.sglang_name,
@@ -374,12 +325,10 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
     ) -> None:
-        """Stage incoming tensors; when all shards for a param are collected, load
-        into each engine rank's bucket and pull via RDT.
+        """Stage incoming tensors; once a param is complete, load it into each engine
+        rank's bucket and pull via RDT.
 
-        Each engine rank uses its own fixed bucket so all pulls can be in flight
-        concurrently; we wait for them at the end of the flush before the buckets
-        are restaged on the next call.
+        Buckets are per engine rank, so all pulls stay in flight until the flush ends.
         """
         if not self._is_source or not converted_named_tensors:
             return
@@ -393,8 +342,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
                 bucket.stage(transfer_ready_params)
 
                 bucket.model_replica.load_weights(ready_hf_tensors)
-                # Make sure the async GPU copy finishes before ray.put hands the
-                # views to NIXL.
+                # The async copies must land before ray.put hands the views to NIXL.
                 torch.cuda.synchronize()
 
                 # Re-read post-load in case a weight loader reassigned param.data.
@@ -423,10 +371,8 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         )
 
     def _finalize_and_resume_engines(self):
-        # The `update_weight_version` here is necessary because the engine was not
-        # aware that the RDMA pull happened. After transfer, some models (e.g.
-        # Deepseek-arch) on the rollout side must invoke `post_load_weights` to
-        # regenerate params not registered as `model.named_parameters()`.
+        # The engine never saw the RDMA pull, so nothing else bumps the version the
+        # trainer's post-update check compares against.
         if dist.get_rank() == 0:
             ray.get(
                 [

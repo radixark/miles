@@ -142,11 +142,6 @@ class SGLangEngine(RayActor):
         self.base_gpu_id = base_gpu_id
         self.sglang_overrides = sglang_overrides or {}
         self.num_gpus_per_engine = num_gpus_per_engine
-        # RDT no-double-booking: miles' rollout PG (global ID, namespace-independent)
-        # + this engine's per-GPU bundle indices, forwarded to sglang's RayEngine
-        # via env so it reuses these reserved bundles instead of auto-creating a
-        # second PG. The child mp.Process is a separate Ray job/namespace, so it
-        # must reference the PG by ID, not name.
         self.pg_id = pg_id
         self.pg_bundles = pg_bundles
         self._scheduler_actors = []
@@ -260,15 +255,10 @@ class SGLangEngine(RayActor):
         if use_rdt:
             server_args_dict["use_ray"] = True
             server_args_dict["enable_rdt_weight_sync"] = True
-            # No-double-booking: hand miles' reserved rollout PG + this engine's
-            # per-GPU bundle indices to sglang's RayEngine via env. The server is
-            # launched in an mp.Process child that loses the PG context, so it
-            # would otherwise auto-create a second PG and double-book the rollout
-            # GPUs. The child inherits os.environ and runs on this engine's node,
-            # so sglang derives the rank-0 / nccl init IP from its own node.
+            # The mp.Process child loses the PG context and would auto-create a
+            # second PG, double-booking the rollout GPUs. It is a separate Ray job,
+            # so pass the PG by global ID rather than by name.
             if self.pg_id and self.pg_bundles:
-                # Global PG ID is the cross-job/namespace-safe handle (the child
-                # is a separate Ray job).
                 os.environ["MILES_RDT_PG_ID"] = self.pg_id
                 os.environ["MILES_RDT_PG_BUNDLES"] = ",".join(str(b) for b in self.pg_bundles)
         logger.info(
@@ -537,21 +527,12 @@ class SGLangEngine(RayActor):
     def get_scheduler_actors(self) -> list:
         """Return this engine's SchedulerActor handles (RDT mode, use_ray=True).
 
-        This is itself a Ray actor method (the trainer calls it via
-        ``engine.get_scheduler_actors.remote()``); it resolves the rollout
-        scheduler actors entirely through Ray -- no HTTP round-trip.
-
-        sglang's RayEngine registers one named actor per (pp, tp) rank with a name
-        like ``sglang_scheduler_node{ip}[_dp{dp}]_pp{pp}_tp{tp}_port{port}_pg{hex}_bundle{idx}``.
-        The ``pg``/``bundle`` suffix is generated at launch and unknown to us, but
-        the http ``port`` is unique per engine and known here, so we list named
-        actors across namespaces (the server may run in a different Ray namespace)
-        and match on the ``_port{port}_`` + ``_tp{tp}_`` tokens. The port makes the
-        match unambiguous even when multiple engines are co-located on one node.
-
-        Raises if any tp_rank does not match exactly one actor -- a silent
-        empty/partial list would otherwise turn the weight sync into a no-op or
-        index the wrong actor.
+        RayEngine names one actor per (pp, tp) rank
+        ``sglang_scheduler_node{ip}[_dp{dp}]_pp{pp}_tp{tp}_port{port}_pg{hex}_bundle{idx}``.
+        The pg/bundle suffix is unknown here, but the http port is unique per engine,
+        so match on the port and tp tokens across namespaces. Raises unless every
+        tp_rank matches exactly one actor: a partial list would silently sync a
+        subset of the ranks.
         """
         if self._scheduler_actors:
             return self._scheduler_actors
@@ -567,9 +548,8 @@ class SGLangEngine(RayActor):
             # Older Ray without the all_namespaces kwarg.
             raw = ray.util.list_named_actors()
         entries = [(e["name"], e.get("namespace")) if isinstance(e, dict) else (e, None) for e in raw]
-        # Kept for the failure message below: which named actors looked scheduler-like.
+        # Kept for the failure message below.
         sched_like = [(n, ns) for (n, ns) in entries if "scheduler" in n.lower() or "sglang" in n.lower()]
-        # Restrict to this engine's scheduler actors via the unique http port token.
         engine_entries = [(n, ns) for (n, ns) in entries if n.startswith("sglang_scheduler_node") and port_token in n]
 
         actors = []
