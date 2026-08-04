@@ -1,4 +1,5 @@
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -75,57 +76,53 @@ def test_load_actions_rejects_invalid_action_literal() -> None:
         _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
-def test_resolve_cell_index_uses_last_cell_for_default() -> None:
-    """A default cell_index of -1 resolves to the last cell index (num_cells - 1)."""
-    action = FTTestAction(at_rollout=0, action="stop_cell_at_end")
-    assert action.resolve_cell_index(num_cells=4) == 3
+from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor, FTTestActionControllerExecutor
 
 
-def test_resolve_cell_index_keeps_explicit_index() -> None:
-    """A non-negative cell_index is returned unchanged by resolve_cell_index."""
-    action = FTTestAction(at_rollout=0, action="stop_cell_at_end", cell_index=1)
-    assert action.resolve_cell_index(num_cells=4) == 1
-
-
-from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
+_CELL_IDS = ["trainer-actor-0", "trainer-actor-1", "trainer-actor-2"]
 
 
 class FakeController:
     def __init__(self, num_cells: int) -> None:
-        self.num_cells = num_cells
-        self.stopped: list[int] = []
-        self.started: list[int] = []
+        self.cell_ids = _CELL_IDS[:num_cells]
+        self.stopped: list[str] = []
+        self.started: list[str] = []
 
-    async def stop_cell(self, cell_index: int) -> None:
-        self.stopped.append(cell_index)
+    async def stop_cell(self, cell_id: str) -> None:
+        self.stopped.append(cell_id)
 
-    def start_cell(self, cell_index: int) -> None:
-        self.started.append(cell_index)
+    def start_cell(self, cell_id: str) -> None:
+        self.started.append(cell_id)
 
 
-class TestResolveCellIndex:
-    def test_non_negative_index_returned_as_is(self):
-        """resolve_cell_index returns the explicit index when it is non-negative."""
+class TestResolveCellId:
+    def test_non_negative_index_selects_that_cell(self):
+        """resolve_cell_id indexes the controller's cell ids when the index is explicit."""
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        assert action.resolve_cell_index(num_cells=3) == 1
+        assert action.resolve_cell_id(_CELL_IDS) == "trainer-actor-1"
 
     def test_negative_index_resolves_to_last_cell(self):
-        """resolve_cell_index maps the default -1 to the last cell (num_cells - 1)."""
+        """resolve_cell_id maps the default -1 to the last cell."""
         action = FTTestAction(at_rollout=5, action="start_cell_at_end", cell_index=-1)
-        assert action.resolve_cell_index(num_cells=3) == 2
+        assert action.resolve_cell_id(_CELL_IDS) == "trainer-actor-2"
+
+    def test_omitted_cell_index_resolves_to_last_cell(self):
+        """An action that never spells cell_index falls back to the model default and hits the last cell."""
+        action = FTTestAction(at_rollout=0, action="stop_cell_at_end")
+        assert action.resolve_cell_id(_CELL_IDS) == "trainer-actor-2"
 
 
 class TestRunAfterStep:
     @pytest.mark.asyncio
     async def test_stop_cell_fires_on_matching_rollout(self):
-        """stop_cell_at_end triggers controller.stop_cell with the resolved cell index on its rollout."""
+        """stop_cell_at_end triggers controller.stop_cell with the resolved cell id on its rollout."""
         controller = FakeController(num_cells=3)
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
         executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
 
         await executor.run_after_step(5)
 
-        assert controller.stopped == [1]
+        assert controller.stopped == ["trainer-actor-1"]
         assert controller.started == []
 
     @pytest.mark.asyncio
@@ -149,7 +146,7 @@ class TestRunAfterStep:
 
         await executor.run_after_step(2)
 
-        assert controller.started == [2]
+        assert controller.started == ["trainer-actor-2"]
         assert controller.stopped == []
 
     @pytest.mark.asyncio
@@ -162,8 +159,8 @@ class TestRunAfterStep:
 
         await executor.run_after_step(7)
 
-        assert controller.stopped == [0]
-        assert controller.started == [2]
+        assert controller.stopped == ["trainer-actor-0"]
+        assert controller.started == ["trainer-actor-2"]
 
     @pytest.mark.asyncio
     async def test_empty_actions_is_noop(self):
@@ -175,3 +172,73 @@ class TestRunAfterStep:
 
         assert controller.stopped == []
         assert controller.started == []
+
+
+_TWO_CELL_IDS = _CELL_IDS[:2]
+
+_CRASH_ACTION = FTTestAction(at_rollout=4, action="crash_before_allreduce", cell_index=1, rank=0, attempt=0)
+
+
+def _make_actor_executor(*, cell_id: str, rank: int) -> FTTestActionActorExecutor:
+    return FTTestActionActorExecutor(actions=[_CRASH_ACTION], cell_id=cell_id, cell_ids=_TWO_CELL_IDS, rank=rank)
+
+
+@pytest.fixture
+def recorded_exit_codes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    exit_codes: list[int] = []
+    monkeypatch.setattr(os, "_exit", lambda code: exit_codes.append(code))
+    return exit_codes
+
+
+class TestMaybeCrash:
+    def test_targeted_cell_and_rank_exits(self, recorded_exit_codes: list[int]) -> None:
+        """The rank named by the action reaches os._exit(1) on the target rollout and attempt."""
+        executor = _make_actor_executor(cell_id="trainer-actor-1", rank=0)
+
+        executor.maybe_crash(rollout_id=4, attempt=0)
+
+        assert recorded_exit_codes == [1]
+
+    def test_other_cell_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
+        """A worker in a cell the action does not name keeps running."""
+        executor = _make_actor_executor(cell_id="trainer-actor-0", rank=0)
+
+        executor.maybe_crash(rollout_id=4, attempt=0)
+
+        assert recorded_exit_codes == []
+
+    def test_other_rank_in_targeted_cell_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
+        """Only the named rank of the named cell crashes, not its siblings."""
+        executor = _make_actor_executor(cell_id="trainer-actor-1", rank=1)
+
+        executor.maybe_crash(rollout_id=4, attempt=0)
+
+        assert recorded_exit_codes == []
+
+    def test_other_rollout_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
+        """The crash is armed for one rollout only."""
+        executor = _make_actor_executor(cell_id="trainer-actor-1", rank=0)
+
+        executor.maybe_crash(rollout_id=3, attempt=0)
+
+        assert recorded_exit_codes == []
+
+    def test_other_attempt_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
+        """The retry after the injected crash must not crash again."""
+        executor = _make_actor_executor(cell_id="trainer-actor-1", rank=0)
+
+        executor.maybe_crash(rollout_id=4, attempt=1)
+
+        assert recorded_exit_codes == []
+
+    def test_default_cell_index_targets_the_last_cell(self, recorded_exit_codes: list[int]) -> None:
+        """With the default cell_index the last cell crashes and the first one survives."""
+        action = FTTestAction(at_rollout=4, action="crash_before_allreduce")
+        last = FTTestActionActorExecutor(actions=[action], cell_id="trainer-actor-1", cell_ids=_TWO_CELL_IDS, rank=0)
+        first = FTTestActionActorExecutor(actions=[action], cell_id="trainer-actor-0", cell_ids=_TWO_CELL_IDS, rank=0)
+
+        first.maybe_crash(rollout_id=4, attempt=0)
+        assert recorded_exit_codes == []
+
+        last.maybe_crash(rollout_id=4, attempt=0)
+        assert recorded_exit_codes == [1]

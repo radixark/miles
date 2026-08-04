@@ -25,7 +25,6 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
-from miles.utils.workers.naming import compute_cell_id, parse_cell_id
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
@@ -66,7 +65,7 @@ class RayTrainGroup:
 
         self._health_checker_activeness = ActivenessTracker(active=True)
 
-        self._cells_by_index: dict[int, RayTrainCell] = {}
+        self._cells_by_id: dict[str, RayTrainCell] = {}
 
         self._witness_allocator: WitnessIdAllocator | None = (
             WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
@@ -82,13 +81,17 @@ class RayTrainGroup:
 
     @property
     def _cells(self) -> list[RayTrainCell]:
-        return [self._cells_by_index[index] for index in sorted(self._cells_by_index)]
+        return sorted(self._cells_by_id.values(), key=lambda cell: cell.cell_index)
+
+    @property
+    def cell_ids(self) -> list[str]:
+        return [cell.cell_id for cell in self._cells]
 
     async def _wait_expected_num_cells(self, timeout: float = _CELLS_READY_TIMEOUT_SECONDS) -> None:
         async def _check(_remaining: float) -> None:
             expected = self._expected_num_cells
-            if len(self._cells_by_index) < expected:
-                raise TimeoutError(f"only {len(self._cells_by_index)} of {expected} trainer cells observed")
+            if len(self._cells_by_id) < expected:
+                raise TimeoutError(f"only {len(self._cells_by_id)} of {expected} trainer cells observed")
 
         await retry_until_deadline(
             _check,
@@ -103,19 +106,18 @@ class RayTrainGroup:
         if observed is None:
             return
 
-        cell_index = parse_cell_id(cell_id).cell_index
-        if cell_index not in self._cells_by_index:
-            self._cells_by_index[cell_index] = self._create_cell(cell_index)
+        if cell_id not in self._cells_by_id:
+            self._cells_by_id[cell_id] = self._create_cell(cell_id, cell_index=observed.meta["cell_index"])
 
-    def _create_cell(self, cell_index: int) -> RayTrainCell:
+    def _create_cell(self, cell_id: str, *, cell_index: int) -> RayTrainCell:
         cell = RayTrainCell(
             args=self.args,
             role=self._role,
             with_ref=self._with_ref,
             with_opd_teacher=self._with_opd_teacher,
+            cell_id=cell_id,
             cell_index=cell_index,
             rollout_executor=self._rollout_executor,
-            pool_id=self._pool_id,
             health_checker=NoopHealthChecker(),
         )
 
@@ -356,17 +358,14 @@ class RayTrainGroup:
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 
     def get_cell_statuses(self) -> dict[str, CellStatus]:
-        return {
-            compute_cell_id(pool_id=self._pool_id, cell_index=cell.cell_index): cell.cell_status()
-            for cell in self._cells
-        }
+        return {cell_id: cell.cell_status() for cell_id, cell in list(self._cells_by_id.items())}
 
-    async def stop_cell(self, cell_index: int) -> None:
-        await self._cells_by_index[cell_index].stop()
+    async def stop_cell(self, cell_id: str) -> None:
+        await self._cells_by_id[cell_id].stop()
 
-    def start_cell(self, cell_index: int) -> None:
+    def start_cell(self, cell_id: str) -> None:
         """Mark a stopped cell as pending. Actual startup happens in train()."""
-        self._cells_by_index[cell_index].mark_as_pending()
+        self._cells_by_id[cell_id].mark_as_pending()
 
     # ------------------------ utils to forward calls to cells ------------------------
 

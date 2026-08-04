@@ -20,7 +20,7 @@ _DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
 
 def _make_controller(cells: list) -> RayTrainGroup:
     group = object.__new__(RayTrainGroup)
-    group._cells_by_index = dict(enumerate(cells))
+    group._cells_by_id = {cell.cell_id: cell for cell in cells}
     group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
     group._witness_allocator = None
     group._indep_dp_quorum_id = 0

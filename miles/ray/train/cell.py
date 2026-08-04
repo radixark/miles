@@ -20,7 +20,6 @@ from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
-from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
@@ -36,18 +35,18 @@ class RayTrainCell:
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
+        cell_id: str,
         cell_index: int,
-        pool: str,
         rollout_executor: object | None,
         health_checker: BaseHealthChecker,
     ) -> None:
         self.args = args
+        self.cell_id = cell_id
         self.cell_index = cell_index
         self.role = role
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
         self.rollout_executor = rollout_executor
-        self.pool = pool
         self.health_checker = health_checker
         self._master_addr: HostAndPort | None = None
 
@@ -144,7 +143,7 @@ class RayTrainCell:
                 tag="ft",
                 op="state",
                 name="stop",
-                cell=self.cell_index,
+                cell=self.cell_id,
                 skipped=True,
                 reason="already_stopped",
             )
@@ -162,7 +161,7 @@ class RayTrainCell:
         await self.stop()
 
         log_structured(
-            logger.info, tag="ft", op="confirm_dead", phase="start", cell=self.cell_index, n_actors=len(handles)
+            logger.info, tag="ft", op="confirm_dead", phase="start", cell=self.cell_id, n_actors=len(handles)
         )
         start = time.monotonic()
         await asyncio.gather(*[_confirm_actor_dead(handle) for handle in handles])
@@ -171,7 +170,7 @@ class RayTrainCell:
             tag="ft",
             op="confirm_dead",
             phase="end",
-            cell=self.cell_index,
+            cell=self.cell_id,
             elapsed_s=round(time.monotonic() - start, 1),
         )
 
@@ -182,7 +181,7 @@ class RayTrainCell:
                 tag="ft",
                 op="state",
                 name="mark_as_pending",
-                cell=self.cell_index,
+                cell=self.cell_id,
                 skipped=True,
                 current=type(self._state).__name__,
             )
@@ -195,9 +194,7 @@ class RayTrainCell:
         self._attach_workers()
 
     def _attach_workers(self) -> None:
-        worker_infos = RayWorkerProvider.create().get_worker_infos(
-            pool=self.pool, cell_index=self.cell_index
-        )
+        (worker_infos,) = RayWorkerProvider.create().get_worker_infos(cell_ids=[self.cell_id])
         self._master_addr = worker_infos[0].self_addrs[MASTER_PORT_NAME]
         self._change_state(
             "attach_workers",
@@ -222,7 +219,7 @@ class RayTrainCell:
     def _mark_as_errored(self) -> None:
         assert isinstance(
             self._state, (StateAllocatedUninitialized, StateAllocatedAlive, StateAllocatedErrored)
-        ), f"{self.cell_index=} {self._state=}"
+        ), f"{self.cell_id=} {self._state=}"
         indep_dp_info = None if isinstance(self._state, StateAllocatedUninitialized) else self._state.indep_dp_info
         self._change_state(
             "_mark_as_errored",
@@ -242,10 +239,10 @@ class RayTrainCell:
             op="state",
             phase="start",
             name=debug_name,
-            cell=self.cell_index,
+            cell=self.cell_id,
             from_state=type(self._state).__name__,
         )
-        assert isinstance(self._state, old_state_cls), f"{self.cell_index=} {self._state=}"
+        assert isinstance(self._state, old_state_cls), f"{self.cell_id=} {self._state=}"
         self._state = new_state
         log_structured(
             logger.info,
@@ -253,7 +250,7 @@ class RayTrainCell:
             op="state",
             phase="end",
             name=debug_name,
-            cell=self.cell_index,
+            cell=self.cell_id,
             to_state=type(self._state).__name__,
         )
 
@@ -274,7 +271,7 @@ class RayTrainCell:
     ) -> list:
         handles = self._get_actor_handles()
         log_structured(
-            logger.info, tag="ft", op="execute", phase="start", cell=self.cell_index, fn=fn_name, n_actors=len(handles)
+            logger.info, tag="ft", op="execute", phase="start", cell=self.cell_id, fn=fn_name, n_actors=len(handles)
         )
         start = time.monotonic()
         try:
@@ -286,7 +283,7 @@ class RayTrainCell:
                 tag="ft",
                 op="execute",
                 phase="end",
-                cell=self.cell_index,
+                cell=self.cell_id,
                 fn=fn_name,
                 ok=True,
                 elapsed_s=round(time.monotonic() - start, 1),
@@ -298,7 +295,7 @@ class RayTrainCell:
                 tag="ft",
                 op="execute",
                 phase="fail",
-                cell=self.cell_index,
+                cell=self.cell_id,
                 fn=fn_name,
                 elapsed_s=round(time.monotonic() - start, 1),
                 exc_info=True,
@@ -309,10 +306,6 @@ class RayTrainCell:
             raise
 
     # ------------------------ state and misc queries ------------------------
-
-    @property
-    def cell_id(self) -> str:
-        return compute_cell_id(pool=self.pool, cell_index=self.cell_index)
 
     @property
     def is_pending(self) -> bool:
@@ -349,7 +342,7 @@ class RayTrainCell:
     def _get_actor_handles(self) -> list[ray.actor.ActorHandle]:
         assert isinstance(
             self._state, StateAllocatedBase
-        ), f"Cell {self.cell_index} is not allocated (state={type(self._state).__name__})"
+        ), f"Cell {self.cell_id} is not allocated (state={type(self._state).__name__})"
         return self._state.actor_handles
 
 

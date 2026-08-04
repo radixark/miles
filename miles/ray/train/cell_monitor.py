@@ -33,7 +33,7 @@ def create_trainer_cell_health_checker(
         await cell.execute("get_heartbeat_status", kill_on_failure=False)
 
     return SimpleHealthChecker(
-        name=f"trainer-cell-{cell.cell_index}",
+        name=f"trainer-cell-{cell.cell_id}",
         check_fn=_check,
         get_activeness=get_activeness,
         config=config,

@@ -63,7 +63,7 @@ class _RecordingWorkerProvider(BaseWorkerProvider):
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         raise NotImplementedError
 
-    def get_worker_infos(self, *, pool: str, cell_index: int) -> list[WorkerInfo]:
+    def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         raise NotImplementedError
 
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
