@@ -1,4 +1,4 @@
-from miles.utils.mask_utils import MultiTurnLossMaskGenerator
+from miles.utils.mask_utils import LOSS_MASK_REGISTRY, MultiTurnLossMaskGenerator
 from miles.utils.processing_utils import load_tokenizer
 
 
@@ -10,7 +10,7 @@ def test_loss_mask_qwen3_simple(model_name: str = "Qwen/Qwen3-8B"):
         {"role": "user", "content": "USER CONTENT FOR TESTING ONLY"},
         {"role": "assistant", "content": "ASSISTANT RESPONSE FOR TESTING ONLY"},
     ]
-    all_token_ids, all_loss_masks = mask_generator.gen_multi_turn_loss_mask_qwen3(messages)
+    all_token_ids, all_loss_masks = mask_generator.get_loss_mask(messages)
     assert len(all_token_ids) == len(all_loss_masks), f"{len(all_token_ids)} != {len(all_loss_masks)}"
     selected_texts = mask_generator.get_text_from_loss_mask(all_token_ids, all_loss_masks)
     assert len(selected_texts) == 1, f"Expected 1 text, got {len(selected_texts)}"
@@ -81,7 +81,7 @@ def test_loss_mask_qwen3_tools(model_name: str = "Qwen/Qwen3-8B"):
         },
     ]
 
-    all_token_ids, all_loss_masks = mask_generator.gen_multi_turn_loss_mask_qwen3(messages, tools)
+    all_token_ids, all_loss_masks = mask_generator.get_loss_mask(messages, tools=tools)
     assert len(all_token_ids) == len(all_loss_masks), f"{len(all_token_ids)} != {len(all_loss_masks)}"
     selected_texts = mask_generator.get_text_from_loss_mask(all_token_ids, all_loss_masks)
     assert len(selected_texts) == 2, f"Expected 2 texts, got {len(selected_texts)}"
@@ -93,6 +93,31 @@ def test_loss_mask_qwen3_tools(model_name: str = "Qwen/Qwen3-8B"):
     print("selected_texts = ", selected_texts)
 
 
+def test_loss_mask_registry_contains_builtins():
+    assert "qwen" in LOSS_MASK_REGISTRY
+    assert "qwen3" in LOSS_MASK_REGISTRY
+    assert "distill_qwen" in LOSS_MASK_REGISTRY
+
+
+def test_loss_mask_custom_class_path(model_name: str = "Qwen/Qwen3-8B"):
+    tokenizer = load_tokenizer(model_name)
+    mask_generator = MultiTurnLossMaskGenerator(
+        tokenizer,
+        tokenizer_type="miles.utils.mask_utils.Qwen3LossMaskStrategy",
+    )
+    messages = [
+        {"role": "system", "content": "SYSTEM MESSAGE FOR TESTING ONLY"},
+        {"role": "user", "content": "USER CONTENT FOR TESTING ONLY"},
+        {"role": "assistant", "content": "ASSISTANT RESPONSE FOR TESTING ONLY"},
+    ]
+    all_token_ids, all_loss_masks = mask_generator.get_loss_mask(messages)
+    assert len(all_token_ids) == len(all_loss_masks)
+    selected_texts = mask_generator.get_text_from_loss_mask(all_token_ids, all_loss_masks)
+    assert len(selected_texts) == 1, f"Expected 1 text, got {len(selected_texts)}"
+
+
 if __name__ == "__main__":
     test_loss_mask_qwen3_simple("Qwen/Qwen3-Coder-30B-A3B-Instruct")
     test_loss_mask_qwen3_tools("Qwen/Qwen3-Coder-30B-A3B-Instruct")
+    test_loss_mask_registry_contains_builtins()
+    test_loss_mask_custom_class_path("Qwen/Qwen3-Coder-30B-A3B-Instruct")

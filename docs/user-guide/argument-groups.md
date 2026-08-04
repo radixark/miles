@@ -68,6 +68,7 @@ produces.
 | Rollout volume | `--rollout-batch-size`, `--n-samples-per-prompt`, `--num-rollout` |
 | Training consumption | `--global-batch-size`, `--num-steps-per-rollout` |
 | Sampling | `--rollout-temperature`, `--rollout-top-p`, `--rollout-max-response-len` |
+| Loss mask | `--loss-mask-type` |
 | Reward | `--rm-type`, `--custom-rm-path` |
 | Filtering | `--over-sampling-batch-size`, `--dynamic-sampling-filter-path` |
 
