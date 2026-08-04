@@ -45,6 +45,7 @@ from .adaptations.precision import (
     precision_forward_context,
     resolve_precision_policy,
 )
+from .debug_dump import maybe_dumper_step, maybe_register_module_dumper
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
@@ -556,9 +557,11 @@ class FSDPTrainRayActor(TrainRayActor):
 
     def _train_step(self, batch, step_id, num_microbatches):
         model_args = self._get_model_inputs_args(batch)
+        maybe_register_module_dumper(self.model)
         # bf16 logits (see log_probs phase); per-response chunks are upcast to fp32 in the loss path.
         with precision_forward_context(self.precision_policy):
             logits = self.model(**model_args).logits
+        maybe_dumper_step()
 
         loss, normalizer, log_dict = loss_function(
             args=self.args,
