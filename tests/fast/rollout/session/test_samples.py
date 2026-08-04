@@ -37,6 +37,8 @@ def _make_record(
     prompt_tokens: int | None = None,
     weight_version: str | None = None,
     routed_experts: str | None = None,
+    sampling_masks: list[list[int]] | None = None,
+    sampling_log_probs: list[float] | None = None,
 ) -> SessionRecord:
     """Build a minimal session record mimicking SGLang's response format.
 
@@ -63,12 +65,18 @@ def _make_record(
         meta_info["weight_version"] = weight_version
     if routed_experts is not None:
         meta_info["routed_experts"] = routed_experts
+    if sampling_masks is not None:
+        meta_info["output_token_sampling_mask"] = sampling_masks
+        meta_info["output_token_sampling_logprobs"] = sampling_log_probs
+    request = {"messages": [{"role": "user", "content": "hello"}], "input_ids": prompt_token_ids}
+    if sampling_masks is not None:
+        request["return_sampling_mask"] = True
     return SessionRecord(
         timestamp=0.0,
         method="POST",
         path="/v1/chat/completions",
         status_code=200,
-        request={"messages": [{"role": "user", "content": "hello"}], "input_ids": prompt_token_ids},
+        request=request,
         response={
             "choices": [
                 {
@@ -103,6 +111,23 @@ class TestComputeSamplesFromRecords:
         assert s.response_length == 2
         assert s.loss_mask == [1, 1]
         assert s.status == Sample.Status.COMPLETED
+
+    def test_single_record_uses_native_top_p_support_and_log_probs(self):
+        tok = _mock_tokenizer()
+        record = _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+            output_log_probs=[-2.5, -2.6],
+            sampling_masks=[[10, 4, 7], [11, 3]],
+            sampling_log_probs=[-0.5, -0.6],
+        )
+
+        (sample,) = compute_samples_from_openai_records(_ARGS, [record], tok)
+
+        assert sample.rollout_log_probs == [-0.5, -0.6]
+        assert sample.rollout_sampling_mask_ids == [10, 4, 7, 11, 3]
+        assert sample.rollout_sampling_mask_offsets == [0, 3, 5]
+        sample.validate()
 
     def test_multiple_records_produce_multiple_samples(self):
         tok = _mock_tokenizer()

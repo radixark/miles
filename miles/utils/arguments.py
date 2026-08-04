@@ -481,7 +481,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="the temperature for the inference engine during rollout.",
             )
             parser.add_argument(
-                "--rollout-top-p", type=float, default=1.0, help="the top-p for the inference engine during rollout."
+                "--rollout-top-p",
+                type=float,
+                default=1.0,
+                help=(
+                    "the top-p for the inference engine during rollout. Values below 1 automatically enable "
+                    "exact sampling-mask replay during training."
+                ),
             )
             parser.add_argument(
                 "--rollout-top-k", type=int, default=-1, help="the top-k for the inference engine during rollout."
@@ -2348,6 +2354,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="Number of prefill servers for disaggregation.",
             )
+            parser.add_argument(
+                "--sglang-disaggregation-sampling-mask-max-tokens",
+                type=int,
+                default=4096,
+                help=(
+                    "Maximum exact sampling-support size carried per token between SGLang prefill and decode "
+                    "servers. Increase this if top-p support exceeds the configured capacity."
+                ),
+            )
             return parser
 
         def add_ci_arguments(parser):
@@ -2676,6 +2691,22 @@ def miles_validate_args(args):
 
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
+
+    if not 0.0 < args.rollout_top_p <= 1.0:
+        raise ValueError(f"--rollout-top-p must be in (0, 1], got {args.rollout_top_p}")
+    if args.rollout_top_p < 1.0:
+        if args.recompute_logprobs_via_prefill:
+            raise ValueError(
+                "--rollout-top-p < 1 cannot be combined with --recompute-logprobs-via-prefill; "
+                "prefill scoring does not preserve the rollout sampling support"
+            )
+        if getattr(args, "sglang_speculative_algorithm", None):
+            raise ValueError(
+                "--rollout-top-p < 1 exact sampling-mask replay cannot be combined with speculative decoding; "
+                "current SGLang workers do not return one aligned sampling support per accepted token"
+            )
+        if args.sglang_disaggregation_sampling_mask_max_tokens <= 0:
+            raise ValueError("--sglang-disaggregation-sampling-mask-max-tokens must be positive with top-p masking")
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(

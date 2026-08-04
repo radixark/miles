@@ -28,6 +28,7 @@ from megatron.training.training import get_model
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
+from miles.backends.training_utils.sampling_mask import get_rollout_sampling_mask
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -285,6 +286,7 @@ def forward_only(
         iterator.reset()
 
     config = get_model_config(model[0])
+    use_rollout_sampling_mask = store_prefix == "" and args.rollout_top_p < 1.0
 
     @dumper_phase_util.wrap_forward_step
     def forward_step(
@@ -305,21 +307,27 @@ def forward_only(
         assert not return_schedule_plan, "forward_only step should never return schedule plan"
 
         # Get the batch.
+        forward_only_keys = [
+            "tokens",
+            "loss_masks",
+            "multimodal_train_inputs",
+            "total_lengths",
+            "response_lengths",
+            "max_seq_lens",
+            "witness_ids",
+        ]
+        if use_rollout_sampling_mask:
+            forward_only_keys.extend(["rollout_sampling_mask_ids", "rollout_sampling_mask_offsets"])
         batch = get_batch(
             data_iterator,
-            [
-                "tokens",
-                "loss_masks",
-                "multimodal_train_inputs",
-                "total_lengths",
-                "response_lengths",
-                "max_seq_lens",
-                "witness_ids",
-            ],
+            forward_only_keys,
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
         )
+        sampling_mask_ids = sampling_mask_offsets = None
+        if use_rollout_sampling_mask:
+            sampling_mask_ids, sampling_mask_offsets = get_rollout_sampling_mask(batch)
         unconcat_tokens = batch["unconcat_tokens"]
         tokens = batch["tokens"]
         packed_seq_params = get_packed_seq_params(batch, args)
@@ -350,6 +358,8 @@ def forward_only(
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
+            rollout_sampling_mask_ids=sampling_mask_ids,
+            rollout_sampling_mask_offsets=sampling_mask_offsets,
         )
 
     # Turn on evaluation mode which disables dropout.
@@ -491,6 +501,8 @@ def train_one_step(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
+                "rollout_sampling_mask_ids",
+                "rollout_sampling_mask_offsets",
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",

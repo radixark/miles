@@ -155,6 +155,7 @@ def _make_args(dump_dir: Path, *, num_prompts: int, n_samples_per_prompt: int) -
         grpo_std_normalization=True,
         rollout_batch_size=num_prompts,
         n_samples_per_prompt=n_samples_per_prompt,
+        rollout_top_p=1.0,
         reward_key=None,
     )
 

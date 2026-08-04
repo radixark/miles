@@ -40,6 +40,7 @@ from .generate_utils.generate_endpoint_utils import (
     policy_uses_routing_key,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
+from .generate_utils.sampling_mask import append_sampling_metadata, should_return_sampling_mask
 from .rm_hub import async_rm, batched_async_rm
 
 __all__ = ["generate_rollout", "get_model_url"]
@@ -220,6 +221,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
+    if should_return_sampling_mask(args, sampling_params):
+        payload["return_sampling_mask"] = True
     opd_top_k = getattr(args, "opd_log_prob_top_k", 0) or 0
     opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
@@ -281,6 +284,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
     else:
         new_response_tokens, new_response_log_probs = [], []
+
+    if payload.get("return_sampling_mask", False):
+        new_response_log_probs = append_sampling_metadata(sample, new_response_tokens, output["meta_info"])
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens

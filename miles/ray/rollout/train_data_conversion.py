@@ -12,6 +12,8 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "tokens": "int32",
     "loss_masks": "int32",
     "rollout_log_probs": "float32",
+    "rollout_sampling_mask_ids": "int32",
+    "rollout_sampling_mask_offsets": "int32",
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
     "rollout_routed_experts": "int32",
@@ -98,6 +100,14 @@ def convert_samples_to_train_data(
     # Add rollout log probabilities for off-policy correction
     if samples[0].rollout_log_probs is not None:
         train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
+
+    if args.rollout_top_p < 1.0:
+        for sample in samples:
+            sample.validate()
+            if sample.rollout_sampling_mask_ids is None:
+                raise ValueError("--rollout-top-p < 1 requires sampling-mask data for every training sample")
+        train_data["rollout_sampling_mask_ids"] = [sample.rollout_sampling_mask_ids for sample in samples]
+        train_data["rollout_sampling_mask_offsets"] = [sample.rollout_sampling_mask_offsets for sample in samples]
 
     if samples[0].rollout_routed_experts is not None:
         train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
@@ -232,6 +242,8 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
             "round_number",
             "sample_indices",
             "rollout_log_probs",
+            "rollout_sampling_mask_ids",
+            "rollout_sampling_mask_offsets",
             "rollout_routed_experts",
             "rollout_indexer_topk",
             "prompt",

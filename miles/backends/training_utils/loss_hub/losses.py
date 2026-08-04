@@ -19,6 +19,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_policy_loss,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.sampling_mask import get_rollout_sampling_mask
 from miles.utils.misc import load_function
 from miles.utils.types import RolloutBatch
 
@@ -97,6 +98,9 @@ def policy_loss_function(
     total_lengths = batch["total_lengths"]
     max_seq_lens = batch.get("max_seq_lens", None)
     calculate_entropy = args.entropy_coef != 0 or args.observe_training_entropy
+    sampling_mask_ids = sampling_mask_offsets = None
+    if args.rollout_top_p < 1.0:
+        sampling_mask_ids, sampling_mask_offsets = get_rollout_sampling_mask(batch)
 
     log_probs_and_entropy = get_log_probs_and_entropy(
         logits,
@@ -107,6 +111,8 @@ def policy_loss_function(
         with_entropy=calculate_entropy,
         entropy_requires_grad=args.entropy_coef != 0,
         max_seq_lens=max_seq_lens,
+        rollout_sampling_mask_ids=sampling_mask_ids,
+        rollout_sampling_mask_offsets=sampling_mask_offsets,
     )
 
     log_probs = log_probs_and_entropy["log_probs"]

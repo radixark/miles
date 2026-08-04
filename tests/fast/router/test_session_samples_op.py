@@ -25,7 +25,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.fast.rollout.session.test_samples import _make_record
 
-from miles.rollout.session.core import SessionCore
+from miles.rollout.session.core import SessionCore, _configure_top_p_sampling_request
+from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
@@ -69,6 +70,39 @@ def _build_core() -> SessionCore:
     )
     registry = SessionRegistry(_ARGS, tokenizer, tito_tokenizer=tito_tokenizer)
     return SessionCore(_UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id)
+
+
+def test_top_p_request_contract_injects_replay_settings():
+    request_body = {"top_k": 32}
+
+    _configure_top_p_sampling_request(
+        request_body,
+        temperature=0.7,
+        top_p=0.95,
+    )
+
+    assert request_body == {"temperature": 0.7, "top_p": 0.95, "top_k": 32}
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("frequency_penalty", 0.1),
+        ("presence_penalty", 0.1),
+        ("repetition_penalty", 1.1),
+        ("logit_bias", {"7": 1.0}),
+        ("custom_logit_processor", "serialized-processor"),
+    ],
+)
+def test_top_p_request_contract_rejects_logits_the_trainer_cannot_replay(key, value):
+    request_body = {key: value}
+
+    with pytest.raises(MessageValidationError, match=key):
+        _configure_top_p_sampling_request(
+            request_body,
+            temperature=1.0,
+            top_p=0.95,
+        )
 
 
 @pytest.fixture(scope="module")
