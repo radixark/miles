@@ -197,6 +197,16 @@ class TestTick:
 
         assert cell_env["memory_calls"] == [("release", dict(tags=None)), ("resume", dict(tags=["weights"]))]
 
+    async def test_the_weight_checker_snapshots_before_the_memory_is_handed_back(self, cell_env):
+        """Releasing the occupation discards the loaded weights, so a later snapshot records garbage."""
+        cell = _make_cell(needs_offload=True, args_overrides=dict(check_weight_update_equal=True))
+        await cell.init()
+
+        await cell.tick()
+
+        names = [name for name, _kwargs in cell_env["memory_calls"]]
+        assert names.index("check_weights") < names.index("release")
+
     async def test_an_engine_on_its_own_gpus_keeps_its_memory(self, cell_env):
         """Without colocation there is nobody to hand the memory to."""
         cell = _make_cell(needs_offload=False)
