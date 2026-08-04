@@ -57,7 +57,6 @@ def _make_group(
     num_cells: int = 3,
     actor_count_per_cell: int = 1,
     inference_controller: object | None = None,
-    rollout_executor: object | None = None,
 ) -> TrainerController:
     """Create a TrainerController and let it observe every cell, as the watcher would."""
     train_conftest.fake_worker_manager.num_cells = num_cells
@@ -66,7 +65,6 @@ def _make_group(
         args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell, num_cells=num_cells),
         role="actor",
         inference_controller=inference_controller,
-        rollout_executor=rollout_executor,
     )
     for cell_index in range(num_cells):
         cell = group._create_cell(
@@ -206,6 +204,30 @@ class TestExecuteFirstAlive:
             assert any(c[0] == "update_weights" for c in calls)
 
 
+class TestGetTrainParallelConfig:
+    @staticmethod
+    def _set_configs(cell, configs: list[dict]) -> None:
+        handles = cell._get_actor_handles()
+        ray.get(
+            [handle.set_train_parallel_config.remote(config) for handle, config in zip(handles, configs, strict=True)]
+        )
+
+    async def test_returns_config_of_rank_zero_of_the_first_alive_cell(self):
+        """The driver reads the config the cell's own rank 0 computed at init."""
+        group = await _make_alive_group(num_cells=2, actor_count_per_cell=2)
+        self._set_configs(group._cells[0], [{"dp_size": 4}, {"dp_size": 99}])
+
+        assert await group.get_train_parallel_config() == {"dp_size": 4}
+
+    async def test_skips_stopped_cells(self):
+        """A stopped cell 0 must not be asked; the next alive cell answers instead."""
+        group = await _make_alive_group(num_cells=2)
+        self._set_configs(group._cells[1], [{"dp_size": 2}])
+        await group._cells[0].stop()
+
+        assert await group.get_train_parallel_config() == {"dp_size": 2}
+
+
 class TestComputeIndepDPInfo:
     def test_all_alive(self):
         group = _make_group(num_cells=3)
@@ -338,22 +360,6 @@ class TestRefreshCellsHealing:
             assert len(send_calls) == 2
             dst_ranks = sorted(c[2]["dst_rank"] for c in send_calls)
             assert dst_ranks == [1, 2]
-
-    async def test_healed_cell_receives_set_rollout_executor(self):
-        """A healed cell is handed the executor handle again after init."""
-        group = await _make_alive_group(num_cells=2, rollout_executor="executor-handle")
-        await _stop_cell(group, 1)
-        _start_cell(group, 1)
-
-        await group._refresh_cells(rollout_id=0)
-
-        assert _cell(group, 1).is_alive
-        for handle in get_raw_actor_handles(_cell(group, 1)):
-            calls = ray.get(handle.get_calls.remote())
-            set_calls = [c for c in calls if c[0] == "set_rollout_executor"]
-            assert set_calls, "healed cell never received set_rollout_executor"
-            for call in set_calls:
-                assert call[2] == {"rollout_executor": "executor-handle"}
 
     async def test_pending_cell_with_stopped_cell(self):
         """Pending + stopped: only alive and pending participate, stopped excluded."""

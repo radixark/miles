@@ -52,8 +52,7 @@ while still letting `critic_model.train` proceed. That's hard to write with sync
 + await rollout_manager.generate.remote(rollout_id)
 ```
 
-Same pattern applies to `offload`, `onload`, `clear_memory` and
-`set_rollout_executor`.
+Same pattern applies to `offload`, `onload` and `clear_memory`.
 
 #### 3. Dispatch handles → eager tasks
 
@@ -95,9 +94,10 @@ Same pattern applies to `offload`, `onload`, `clear_memory` and
 ```
 
 The controller is not a Ray actor, so nothing inside another actor may call it. Train
-actors receive only the executor handle (`set_rollout_manager` → `set_rollout_executor`),
-and the trainer group — which runs in the driver — brackets the weight update with
-`start_update_weights` / `end_update_weights` instead of rank 0 doing it. Whether the
+actors no longer hold the executor handle: the driver reads `get_train_parallel_config()`
+off the trainer and writes it into the executor, and the trainer group — which runs in the
+driver — brackets the weight update with `start_update_weights` / `end_update_weights`
+instead of rank 0 doing it. Whether the
 trainer must reconnect is derived from the cell snapshot those calls carry, not from a
 hand-maintained flag. `start_api_server` (formerly `start_control_server`) takes
 `inference_controller=`.

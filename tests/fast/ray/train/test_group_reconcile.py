@@ -28,7 +28,6 @@ def _make_group(*, num_cells: int = 2, indep_dp: bool = False) -> TrainerControl
     group._with_ref = False
     group._with_opd_teacher = False
     group._spec_name = _SPEC_NAME
-    group._rollout_executor = None
     group._health_checker_config = None
     group._health_checker_activeness = True
     group._cells_by_id = {}
