@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from miles.utils.retry_utils import retry, retry_until_deadline
+from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 
 pytestmark = pytest.mark.asyncio
 
@@ -77,6 +77,40 @@ class TestRetryBasic:
         await retry(fn, initial_delay=1.0, sleep_fn=fake_sleep)
 
         assert received_attempts == [0, 1, 2, 3]
+
+
+class TestRetryNonRetryable:
+    async def test_non_retryable_error_is_raised_after_a_single_attempt(self):
+        """A NonRetryableError aborts immediately: fn is called once and no backoff sleep happens."""
+        call_count = 0
+        fake_sleep = _FakeSleep()
+
+        async def fn(_attempt: int) -> None:
+            nonlocal call_count
+            call_count += 1
+            raise NonRetryableError("cannot heal anymore")
+
+        with pytest.raises(NonRetryableError, match="cannot heal anymore"):
+            await retry(fn, initial_delay=1.0, sleep_fn=fake_sleep, max_attempts=5)
+
+        assert call_count == 1
+        assert fake_sleep.delays == []
+
+    async def test_ordinary_error_is_retried_up_to_max_attempts(self):
+        """The same setup with an ordinary exception keeps retrying, proving the fast path is what stops it."""
+        call_count = 0
+        fake_sleep = _FakeSleep()
+
+        async def fn(_attempt: int) -> None:
+            nonlocal call_count
+            call_count += 1
+            raise ValueError("transient")
+
+        with pytest.raises(ValueError, match="transient"):
+            await retry(fn, initial_delay=1.0, sleep_fn=fake_sleep, max_attempts=5)
+
+        assert call_count == 5
+        assert len(fake_sleep.delays) == 4
 
 
 class TestRetryLogging:
