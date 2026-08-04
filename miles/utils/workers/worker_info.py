@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pydantic import ConfigDict
 
-import ray.actor
-
+from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 
-@dataclass(kw_only=True)
-class WorkerInfo:
+class WorkerInfo(StrictBaseModel):
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
     name: str
     generation: int
     self_addrs: NamedHostAndPorts
     gpu_ids: list[int]
-    actor_handle: ray.actor.ActorHandle
+    handle: BaseWorkerHandle

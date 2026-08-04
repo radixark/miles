@@ -67,7 +67,7 @@ class FakeWorkerManager:
                 generation=1 + len(self.started_cell_ids),
                 self_addrs={MASTER_PORT_NAME: HostAndPort(host="10.0.0.1", port=20000)},
                 gpu_ids=[worker_index],
-                actor_handle=handle,
+                handle=RayWorkerHandle(handle),
             )
             for worker_index, handle in enumerate(self._handles[cell_id])
         ]

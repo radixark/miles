@@ -1,6 +1,6 @@
 import pytest
 import ray
-from tests.fast.ray.train.conftest import make_cell, make_indep_dp_info
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_cell, make_indep_dp_info
 
 pytestmark = pytest.mark.asyncio
 
@@ -8,7 +8,7 @@ pytestmark = pytest.mark.asyncio
 def _calls_of(cell, method: str) -> list:
     return [
         [call for call in ray.get(handle.get_calls.remote()) if call[0] == method]
-        for handle in cell._get_actor_handles()
+        for handle in get_raw_actor_handles(cell)
     ]
 
 
@@ -28,5 +28,5 @@ class TestMasterAddrConfiguration:
 
         await cell.init(indep_dp_info=make_indep_dp_info(quorum_id=0))
 
-        methods = [call[0] for call in ray.get(cell._get_actor_handles()[0].get_calls.remote())]
+        methods = [call[0] for call in ray.get(get_raw_actor_handles(cell)[0].get_calls.remote())]
         assert methods.index("configure_master_addr_and_port") < methods.index("init")
