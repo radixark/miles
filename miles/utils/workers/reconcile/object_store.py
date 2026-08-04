@@ -34,6 +34,9 @@ class ObjectStore:
     def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
         return [self._cache[key].obj for key in sorted(self._cache) if self._cache[key].parent == parent_key]
 
+    def parent_keys(self) -> set[ParentKey]:
+        return {entry.parent for entry in self._cache.values()}
+
     def __contains__(self, key: ObjectKey) -> bool:
         return key in self._cache
 
