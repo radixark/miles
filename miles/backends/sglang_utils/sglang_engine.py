@@ -64,11 +64,9 @@ def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
 
 
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
-    if getattr(server_args, "use_ray", False):
-        # RDT: the Ray launcher uses RayEngine, which creates the named (detached)
-        # SchedulerActors that expose pull_weights and that the trainer discovers via
-        # get_scheduler_actors. The regular entrypoints.http_server launcher ignores
-        # use_ray and starts mp.Process schedulers (no actors), so RDT can't find them.
+    if server_args.use_ray:
+        # entrypoints.http_server ignores use_ray and starts mp.Process schedulers,
+        # which have no SchedulerActor for RDT to pull from.
         from sglang.srt.ray.http_server import launch_server
     else:
         from sglang.srt.entrypoints.http_server import launch_server
@@ -261,9 +259,7 @@ class SGLangEngine(RayActor):
         use_rdt = self.args.update_weight_transfer_mode == "rdt"
         if use_rdt:
             server_args_dict["use_ray"] = True
-            # RDT needs the engine-info bootstrap server for per-rank parallelism
-            # config, but not the mooncake/verbs P2P transfer-engine seeding.
-            server_args_dict["enable_engine_info_bootstrap"] = True
+            server_args_dict["enable_rdt_weight_sync"] = True
             # No-double-booking: hand miles' reserved rollout PG + this engine's
             # per-GPU bundle indices to sglang's RayEngine via env. The server is
             # launched in an mp.Process child that loses the PG context, so it
