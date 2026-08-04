@@ -43,9 +43,10 @@ def _pack_micro_batches_dynamic(
         micro_batch_count = max(1, (total_tokens + max_per_bin - 1) // max_per_bin)
         if micro_batch_count >= len(step_lengths):
             return [[i] for i in range(len(step_lengths))]
-        workloads = _calculate_workloads(step_lengths, args)
-        # NOTE: FLOPs balancing does not enforce the token cap per micro-batch.
-        return get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
+        else:
+            workloads = _calculate_workloads(step_lengths, args)
+            # NOTE: FLOPs balancing does not enforce the token cap per micro-batch.
+            return get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
     return first_fit_decreasing_pack(step_lengths, max_per_bin)
 
 
@@ -127,22 +128,20 @@ def build_dp_schedule(
                 max_per_bin=max_per_bin,
                 balance_by_flops=balance_by_flops,
             )
-        else:
-            step_micro_batches = _pack_micro_batches_static(
-                step_lengths, micro_batch_size=getattr(args, "micro_batch_size", None)
-            )
-
-        # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
-        target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
-        if target != len(step_micro_batches):
-            if args.use_dynamic_batch_size:
+            # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
+            target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
+            if target != len(step_micro_batches):
                 expand_bins_by_splitting(step_micro_batches, target, step_lengths)
                 assert len(step_micro_batches) == target, (
                     f"dynamic path: could only produce {len(step_micro_batches)} micro-batches after maximal "
                     f"splitting; need {target}. step {step_i} has {len(sample_indices)} samples, below the "
                     f"alignment threshold ({align_to})."
                 )
-            else:
+        else:
+            step_micro_batches = _pack_micro_batches_static(
+                step_lengths, micro_batch_size=getattr(args, "micro_batch_size", None)
+            )
+            if len(step_micro_batches) % align_to != 0:
                 raise AssertionError(
                     f"static path: micro-batch count ({len(step_micro_batches)}) is not a multiple of "
                     f"dp_size * mb_group ({align_to}); got "
