@@ -22,6 +22,7 @@ from miles.utils.workers.worker_spec import (
     HostAndPort,
     LaunchCommandContext,
     NamedHostAndPorts,
+    WorkerLaunchContext,
     WorkerMetaContext,
 )
 
@@ -246,6 +247,14 @@ class _BaseActorManager(Generic[SpecT]):
             )
             self.self_addrs[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
 
+    @property
+    def launch_context(self) -> WorkerLaunchContext:
+        return WorkerLaunchContext(
+            cell_index=self.parent.cell_index,
+            worker_in_cell_index=self.worker_in_cell_index,
+            gpu_ids=self.gpu_ids,
+        )
+
     def _compute_remote_options(self) -> dict:
         return {}
 
@@ -263,11 +272,10 @@ class _BaseActorManager(Generic[SpecT]):
         remote_class = ray.remote(**remote_options)(actor_class) if remote_options else ray.remote(actor_class)
 
         return remote_class.options(
-            # TODO generalize
-            num_cpus=0.2,
+            num_cpus=self.spec.scheduling.num_cpus_per_worker,
             num_gpus=self.spec.scheduling.num_gpus_per_worker,
             **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
-            runtime_env={"env_vars": self.spec.env_var()},
+            runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
             **(compute_ray_pin_head_options() if self.spec.scheduling.pin_to_head else {}),
         ).remote(**ctor_kwargs)
 
@@ -318,14 +326,12 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
 
     async def post_setup(self) -> None:
         ctx = LaunchCommandContext(
-            cell_index=self.parent.cell_index,
-            worker_in_cell_index=self.worker_in_cell_index,
+            **dict(self.launch_context),
             self_addrs={
                 **self.self_addrs,
                 **self.parent.actors[0].master_mode_addrs,
             },
             spec_addrs=self.manager.get_addrs(),
-            gpu_ids=self.gpu_ids,
         )
         launch_cmd = self.spec.launch_command(ctx)
         self.actor_handle.run.remote(cmd=launch_cmd, envs={})

@@ -12,7 +12,14 @@ from miles.utils.workers.worker_spec import (
     PortInfo,
     SchedulingSpec,
     ServeWorkerSpec,
+    WorkerLaunchContext,
 )
+
+
+def _make_launch_context(**overrides) -> WorkerLaunchContext:
+    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[])
+    kwargs.update(overrides)
+    return WorkerLaunchContext(**kwargs)
 
 
 def _make_port_info(**overrides) -> PortInfo:
@@ -37,7 +44,7 @@ def _make_base_kwargs(**overrides) -> dict:
     kwargs = dict(
         name="demo-worker",
         port_infos=[_make_port_info()],
-        env_var=lambda: {"DEMO": "1"},
+        env_var=lambda _ctx: {"DEMO": "1"},
         scheduling=SchedulingSpec(num_cells=2, num_workers_per_cell=4, num_gpus_per_worker=0.4),
     )
     kwargs.update(overrides)
@@ -84,13 +91,13 @@ class TestBaseWorkerSpec:
         """The env_var callable is stored as-is and only evaluated on demand."""
         calls = []
 
-        def env_var() -> dict[str, str]:
+        def env_var(_ctx) -> dict[str, str]:
             calls.append(1)
             return {"A": "b"}
 
         spec = BaseWorkerSpec(**_make_base_kwargs(env_var=env_var))
         assert calls == []
-        assert spec.env_var() == {"A": "b"}
+        assert spec.env_var(_make_launch_context()) == {"A": "b"}
 
     def test_rejects_extra_field(self):
         """Unknown fields are forbidden."""
@@ -135,7 +142,7 @@ class TestServeWorkerSpec:
         spec = ServeWorkerSpec(
             **_make_base_kwargs(),
             worker_class="miles.ray.rollout.inference_controller.InferenceController",
-            ctor_kwargs=lambda: {},
+            ctor_kwargs=lambda _ctx: {},
         )
         assert spec.worker_class == "miles.ray.rollout.inference_controller.InferenceController"
         assert isinstance(spec, BaseWorkerSpec)
@@ -144,7 +151,7 @@ class TestServeWorkerSpec:
         """The ctor_kwargs callable is stored as-is and only evaluated on demand."""
         calls = []
 
-        def ctor_kwargs() -> dict:
+        def ctor_kwargs(_ctx) -> dict:
             calls.append(1)
             return {"x": 1}
 
@@ -154,7 +161,7 @@ class TestServeWorkerSpec:
             ctor_kwargs=ctor_kwargs,
         )
         assert calls == []
-        assert spec.ctor_kwargs() == {"x": 1}
+        assert spec.ctor_kwargs(_make_launch_context()) == {"x": 1}
 
 
 class TestServeWorkerSpecRpcPortInjection:
@@ -162,7 +169,7 @@ class TestServeWorkerSpecRpcPortInjection:
         return ServeWorkerSpec(
             **_make_base_kwargs(**overrides),
             worker_class="miles.demo.Worker",
-            ctor_kwargs=lambda: {},
+            ctor_kwargs=lambda _ctx: {},
         )
 
     def test_rpc_port_is_injected_by_default(self):
@@ -209,3 +216,38 @@ class TestSchedulingSpecPinToHead:
         assert (scheduling.num_cells, scheduling.num_workers_per_cell) == (1, 1)
         assert scheduling.num_gpus_per_worker == 0.5
         assert scheduling.pin_to_head is True
+
+
+class TestServeWorkerSpecExtraScheduling:
+    def test_concurrency_groups_default_to_absent(self):
+        """Most workers need no concurrency groups, so the field stays optional."""
+        spec = ServeWorkerSpec(
+            **_make_base_kwargs(),
+            worker_class="miles.demo.Worker",
+            ctor_kwargs=lambda _ctx: {},
+        )
+
+        assert spec.concurrency_groups is None
+
+    def test_concurrency_groups_are_carried_on_the_spec(self):
+        """The trainer needs its heartbeat rpc served outside the default group."""
+        spec = ServeWorkerSpec(
+            **_make_base_kwargs(),
+            worker_class="miles.demo.Worker",
+            ctor_kwargs=lambda _ctx: {},
+            concurrency_groups={"heartbeat_status": 1, "default": 1},
+        )
+
+        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1}
+
+    def test_ctor_kwargs_receive_the_worker_position(self):
+        """Each worker needs its own rank, so the callable is per worker."""
+        spec = ServeWorkerSpec(
+            **_make_base_kwargs(),
+            worker_class="miles.demo.Worker",
+            ctor_kwargs=lambda ctx: {"rank": ctx.worker_in_cell_index, "gpu_ids": ctx.gpu_ids},
+        )
+
+        kwargs = spec.ctor_kwargs(_make_launch_context(worker_in_cell_index=3, gpu_ids=[2]))
+
+        assert kwargs == {"rank": 3, "gpu_ids": [2]}
