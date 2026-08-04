@@ -50,12 +50,20 @@ from unittest.mock import MagicMock
 import pytest
 from transformers import AutoTokenizer
 
-from miles.utils.chat_template_utils import MismatchType, apply_chat_template, resolve_fixed_chat_template
+from miles.utils.chat_template_utils import (
+    TEMPLATE_DIR,
+    MismatchType,
+    apply_chat_template,
+    apply_chat_template_from_str,
+    resolve_fixed_chat_template,
+)
 from miles.utils.chat_template_utils.tito_tokenizer import (
     ALL_APPEND_ROLES,
+    DeepSeekV4TITOTokenizer,
     DeepSeekV32TITOTokenizer,
     FixedTemplate,
     GLM47TITOTokenizer,
+    InklingTITOTokenizer,
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
     QwenNextTITOTokenizer,
@@ -252,10 +260,129 @@ class TestConfig:
 
         assert tito.chat_template_kwargs["thinking"] is expected
 
+    @pytest.mark.parametrize("tito_cls", [DeepSeekV32TITOTokenizer, DeepSeekV4TITOTokenizer])
+    def test_deepseek_request_thinking_overrides_startup_mode(self, tito_cls):
+        tokenizer = MagicMock()
+        tokenizer.convert_tokens_to_ids.return_value = 1
+        startup_tito = tito_cls(tokenizer, chat_template_kwargs={"enable_thinking": False})
+
+        request_tito = startup_tito.clone_with_chat_template_kwargs({"thinking": True})
+
+        assert request_tito.chat_template_kwargs == {"drop_thinking": False, "thinking": True}
+
     def test_comparator_inherits_trailing_ids(self, qwen3_tito: Qwen3TITOTokenizer):
         """create_comparator propagates trailing_token_ids to the comparator's trim set."""
         comp = qwen3_tito.create_comparator()
         assert comp._trim_trailing_ids == set(qwen3_tito.trailing_token_ids)
+
+
+class TestInklingComparatorBoundaries:
+    @staticmethod
+    def _build_comparator():
+        token_ids = {
+            "<|message_user|>": 200000,
+            "<|message_model|>": 200001,
+            "<|message_system|>": 200002,
+            "<|message_tool|>": 200003,
+        }
+        token_text = {token_id: token for token, token_id in token_ids.items()}
+        tokenizer = MagicMock()
+        tokenizer.convert_tokens_to_ids.side_effect = token_ids.__getitem__
+        tokenizer.encode.side_effect = lambda text, add_special_tokens=False: [ord(char) for char in text]
+        tokenizer.decode.side_effect = lambda ids, skip_special_tokens=False: "".join(
+            token_text.get(token_id, chr(token_id)) for token_id in ids
+        )
+        comparator = InklingTITOTokenizer(tokenizer).create_comparator()
+        return token_ids, tokenizer, comparator
+
+    def test_uses_exact_message_role_boundaries(self):
+        token_ids, _, comparator = self._build_comparator()
+
+        assert comparator._special_ids == set(token_ids.values())
+
+    @pytest.mark.parametrize("appended_role", ["user", "system", "tool"])
+    def test_appended_non_assistant_content_is_not_assistant_text(self, appended_role):
+        token_ids, tokenizer, comparator = self._build_comparator()
+        assistant = [token_ids["<|message_model|>"]] + tokenizer.encode("assistant")
+        role_token = token_ids[f"<|message_{appended_role}|>"]
+        expected = assistant + [role_token] + tokenizer.encode("expected")
+        actual = assistant + [role_token] + tokenizer.encode("changed")
+
+        mismatches = comparator.compare_sequences(expected, actual)
+
+        assert [mismatch.type for mismatch in mismatches] == [MismatchType.NON_ASSISTANT_TEXT]
+
+    def test_assistant_content_remains_soft_mismatch(self):
+        token_ids, tokenizer, comparator = self._build_comparator()
+        assistant_role = [token_ids["<|message_model|>"]]
+        expected = assistant_role + tokenizer.encode("expected")
+        actual = assistant_role + tokenizer.encode("changed")
+
+        mismatches = comparator.compare_sequences(expected, actual)
+
+        assert [mismatch.type for mismatch in mismatches] == [MismatchType.ASSISTANT_TEXT]
+
+
+class TestInklingFixedTemplate:
+    @staticmethod
+    def _render(messages):
+        template = (TEMPLATE_DIR / "inkling_fixed.jinja").read_text()
+        return apply_chat_template_from_str(template, messages, add_generation_prompt=False)
+
+    def test_tool_call_only_turn_skips_empty_text_block(self):
+        messages = [
+            {"role": "user", "content": "weather?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "check",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": {"location": "Beijing"}},
+                    }
+                ],
+            },
+        ]
+
+        rendered = self._render(messages)
+
+        assert "<|message_model|><|content_text|><|end_message|>" not in rendered
+        assert (
+            "<|message_model|><|content_thinking|>check<|end_message|>"
+            '<|message_model|>get_weather<|content_invoke_tool_json|>{"name":"get_weather",'
+            '"args":{"location":"Beijing"}}<|end_message|><|content_model_end_sampling|>'
+        ) in rendered
+
+    def test_empty_assistant_turn_skips_bare_terminator(self):
+        rendered = self._render(
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": ""},
+            ]
+        )
+
+        assert "<|message_model|>" not in rendered
+        assert "<|content_model_end_sampling|>" not in rendered
+
+    def test_nonempty_reasoning_and_final_text_are_preserved(self):
+        rendered = self._render(
+            [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "done",
+                    "reasoning_content": "think",
+                },
+            ]
+        )
+
+        assert (
+            "<|message_model|><|content_thinking|>think<|end_message|>"
+            "<|message_model|><|content_text|>done<|end_message|>"
+            "<|content_model_end_sampling|>"
+        ) in rendered
 
 
 class TestDeepSeekV32IncrementalAppend:
@@ -605,6 +732,7 @@ class TestParserBinding:
             (TITOTokenizerType.MINIMAX_M27, "minimax-append-think", "minimax-m2"),
             (TITOTokenizerType.DEEPSEEKV32, "deepseek-v3", "deepseekv32"),
             (TITOTokenizerType.DEEPSEEKV4, "deepseek-v4", "deepseekv4"),
+            (TITOTokenizerType.INKLING, "inkling", "inkling"),
             (TITOTokenizerType.DEFAULT, None, None),
         ],
     )

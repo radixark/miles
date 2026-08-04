@@ -426,7 +426,7 @@ def log_train_step(
     Args:
         args: Configuration.
         loss_dict: Dictionary of loss metrics from aggregate_train_losses.
-        grad_norm: Gradient norm after clipping.
+        grad_norm: Global gradient L2 norm before clipping.
         rollout_id: Rollout ID.
         step_id: Step ID within the rollout.
         num_steps_per_rollout: Total number of steps per rollout.

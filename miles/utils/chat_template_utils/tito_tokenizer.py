@@ -83,6 +83,7 @@ class TITOTokenizer:
 
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
+    chat_template_kwarg_aliases: frozenset[str] = frozenset()
 
     # The family's fixed renderer contract.  DEFAULT uses the model's native
     # template with the maximal best-effort append surface.
@@ -113,6 +114,18 @@ class TITOTokenizer:
         self._assistant_start_str = assistant_start_str
         self.allowed_append_roles = self.FIXED_TEMPLATE.allowed_append_roles
         self.special_token_ids: set[int] = special_token_ids
+
+    def clone_with_chat_template_kwargs(self, request_kwargs: dict[str, Any]) -> TITOTokenizer:
+        """Create a request-scoped copy with negligible overhead."""
+        return type(self)(
+            self.tokenizer,
+            chat_template_kwargs=template.merge_chat_template_kwargs(
+                self.chat_template_kwargs,
+                request_kwargs,
+                alias_keys=self.chat_template_kwarg_aliases,
+            ),
+            assistant_start_str=self._assistant_start_str,
+        )
 
     def create_comparator(self) -> TokenSeqComparator:
         """Create a :class:`TokenSeqComparator` configured with this
@@ -577,6 +590,8 @@ class MinimaxM27TITOTokenizer(MinimaxM25TITOTokenizer):
 # DeepSeek V3.2 implementation
 # ---------------------------------------------------------------------------
 
+_DEEPSEEK_MODE_KWARG_ALIASES = frozenset({"thinking_mode", "enable_thinking", "thinking"})
+
 
 class DeepSeekV32TITOTokenizer(TITOTokenizer):
     """DeepSeek V3.2 — miles' vendored copy of the official ``encoding_dsv32``.
@@ -597,6 +612,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
 
     reasoning_parser = "deepseek-v3"
     tool_call_parser = "deepseekv32"
+    chat_template_kwarg_aliases = _DEEPSEEK_MODE_KWARG_ALIASES
 
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
@@ -645,6 +661,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
 
     reasoning_parser = "deepseek-v4"
     tool_call_parser = "deepseekv4"
+    chat_template_kwarg_aliases = _DEEPSEEK_MODE_KWARG_ALIASES
 
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
@@ -677,11 +694,10 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         # sglang's dsv4 parser separates reasoning only when the request carries
         # `thinking` (DeepSeek-V3.1's template kwarg, kept for the V4 family);
         # make the effective render mode explicit so the session server forwards it.
-        if "thinking" not in self.chat_template_kwargs:
-            self.chat_template_kwargs = {
-                **self.chat_template_kwargs,
-                "thinking": deepseek.V4.render_thinking_enabled(self.chat_template_kwargs),
-            }
+        self.chat_template_kwargs = {
+            **self.chat_template_kwargs,
+            "thinking": deepseek.V4.render_thinking_enabled(self.chat_template_kwargs),
+        }
 
     def tokenize_additional_messages(
         self,
@@ -699,6 +715,43 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
                 "(prefix render changed; check drop_thinking and tool-result ordering)"
             )
         return self._encode_text(text_new[len(text_old) :])
+
+
+class InklingTITOTokenizer(TITOTokenizer):
+    """Inkling family (Inkling / Inkling-Small).
+
+    The runtime serves Inkling through sglang's token-level renderer
+    (``chat_encoding_spec == "inkling"``).  The fixed template matches its
+    empty scalar-content behavior: no empty text block, and no bare assistant
+    terminator when the turn contains no rendered blocks.  All four message-role
+    sentinels remain comparator boundaries so non-assistant mismatches are hard
+    failures after an assistant turn.
+    """
+
+    reasoning_parser = "inkling"
+    tool_call_parser = "inkling"
+
+    FIXED_TEMPLATE = FixedTemplate(template="inkling_fixed.jinja")
+
+    _DEFAULT_ASSISTANT_START = "<|message_model|>"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs=chat_template_kwargs,
+            assistant_start_str=assistant_start_str or self._DEFAULT_ASSISTANT_START,
+            special_token_ids={
+                tokenizer.convert_tokens_to_ids("<|message_user|>"),
+                tokenizer.convert_tokens_to_ids("<|message_model|>"),
+                tokenizer.convert_tokens_to_ids("<|message_system|>"),
+                tokenizer.convert_tokens_to_ids("<|message_tool|>"),
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +772,7 @@ class TITOTokenizerType(StrEnum):
     MINIMAX_M27 = "minimax_m27"
     DEEPSEEKV32 = "deepseekv32"
     DEEPSEEKV4 = "deepseekv4"
+    INKLING = "inkling"
 
     @classmethod
     def get_tokenizer_class(cls, t: TITOTokenizerType) -> type[TITOTokenizer]:
@@ -748,6 +802,8 @@ class TITOTokenizerType(StrEnum):
                 return DeepSeekV32TITOTokenizer
             case cls.DEEPSEEKV4:
                 return DeepSeekV4TITOTokenizer
+            case cls.INKLING:
+                return InklingTITOTokenizer
             case _:
                 raise ValueError(f"Unknown TITOTokenizerType: {t!r}")
 

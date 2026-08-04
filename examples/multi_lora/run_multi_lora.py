@@ -138,7 +138,7 @@ def _train(args: ScriptArgs, service: bool):
 
     topology_args = (
         f"--actor-num-nodes 1 --actor-num-gpus-per-node {args.actor_num_gpus} "
-        f"--rollout-num-gpus {args.rollout_num_gpus} --use-miles-router "
+        f"--rollout-num-gpus {args.rollout_num_gpus} "
     )
 
     save_args = f"--save {args.save_dir} --save-interval {args.save_interval} "

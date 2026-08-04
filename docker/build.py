@@ -45,7 +45,7 @@ VARIANTS = {
         "tag_postfix": "-cu12",
         "build_args": {
             "ENABLE_CUDA_13": "0",
-            "SGLANG_IMAGE_TAG": "v0.5.15-cu129",
+            "SGLANG_IMAGE_TAG": "v0.5.16-cu129",
             "WHEELS_TAG_X86": "cu129-x86_64",
         },
     },
@@ -80,7 +80,7 @@ VARIANTS = {
         "build_args": {
             "GPU_ARCH": "gfx950",
             "SGLANG_IMAGE_REPO": "rocm/sgl-dev",
-            "SGLANG_IMAGE_TAG": "v0.5.14-rocm720-mi35x-20260627",
+            "SGLANG_IMAGE_TAG": "v0.5.16-rocm720-mi35x-20260730",
             "APPLY_ROCR_VMMFIX": "1",
             "TE_USE_WHEEL": "1",
         },

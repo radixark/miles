@@ -6,13 +6,14 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.backends.sglang_utils.arguments import add_sglang_arguments
+from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
     get_miles_extra_args_provider,
     miles_validate_args,
+    resolve_rollout_function_paths,
     validate_async_off_policy_correction,
 )
 from miles.utils.misc import function_registry
@@ -143,6 +144,17 @@ class TestMaybeApplyDumperOverrides:
         assert args.num_rollout == 6
 
 
+def test_fully_async_eval_resolves_to_the_producer_itself():
+    """Only the producer's own instance pauses on eval, and RolloutManager reuses one
+    instance only when both paths match."""
+    path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+    default = SimpleNamespace(rollout_function_path=None, eval_function_path=None, fully_async=True)
+    assert resolve_rollout_function_paths(default) == (path, path)
+
+    override = SimpleNamespace(rollout_function_path=None, eval_function_path="pkg.CustomEval", fully_async=True)
+    assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
+
+
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
@@ -180,6 +192,41 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
     assert args.sglang_pp_size == 3
     assert args.sglang_ep_size == 4
     assert args.sglang_attn_cp_size == 5
+
+
+class TestEvalSglangOverrides:
+    """Unset means "inherit --sglang-*", so an unset flag must leave no attribute at all."""
+
+    def _parse(self, argv):
+        return add_sglang_arguments(argparse.ArgumentParser()).parse_args(argv)
+
+    def test_unset_flags_produce_no_overrides(self):
+        args = self._parse(["--sglang-mem-fraction-static", "0.7"])
+
+        assert collect_eval_sglang_overrides(args) == {}
+        assert not hasattr(args, "eval_sglang_mem_fraction_static")
+
+    def test_set_flag_becomes_an_override_without_touching_the_base_family(self):
+        args = self._parse(["--sglang-mem-fraction-static", "0.7", "--eval-sglang-mem-fraction-static", "0.9"])
+
+        assert collect_eval_sglang_overrides(args) == {"mem_fraction_static": 0.9}
+        assert args.sglang_mem_fraction_static == 0.7
+
+    def test_boolean_can_be_turned_back_off(self):
+        args = self._parse(["--sglang-enable-dp-attention", "--no-eval-sglang-enable-dp-attention"])
+
+        assert args.sglang_enable_dp_attention is True
+        assert collect_eval_sglang_overrides(args) == {"enable_dp_attention": False}
+
+    def test_parallel_sizes_keep_server_args_destinations(self):
+        args = self._parse(["--eval-sglang-data-parallel-size", "2", "--eval-sglang-expert-parallel-size", "4"])
+
+        assert collect_eval_sglang_overrides(args) == {"dp_size": 2, "ep_size": 4}
+
+    def test_tp_size_is_not_exposed(self):
+        """A second TP knob could move tp_size off the bundles --eval-num-gpus-per-engine placed."""
+        with pytest.raises(SystemExit):
+            self._parse(["--eval-sglang-tp-size", "2"])
 
 
 def test_custom_megatron_post_save_hook_path_is_parsed():
@@ -290,6 +337,65 @@ class TestTitoFixedTemplateConfiguration:
         }
 
 
+def test_bridge_mode_rejects_critic(tmp_path):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--advantage-estimator",
+            "ppo",
+            "--megatron-to-hf-mode",
+            "bridge",
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(
+        AssertionError,
+        match="Critic models are not supported with --megatron-to-hf-mode bridge",
+    ):
+        miles_validate_args(args)
+
+
+def test_critic_rejects_experimental_ft_trainer(tmp_path, monkeypatch):
+    monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--advantage-estimator", "ppo", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
+        miles_validate_args(args)
+
+
+def test_critic_rejects_reward_level_kl(tmp_path):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--advantage-estimator",
+            "ppo",
+            "--kl-coef",
+            "0.05",
+            "--ref-load",
+            str(tmp_path),
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="does not support reward-level KL"):
+        miles_validate_args(args)
+
+
 class TestMultiLoRAValidation:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
@@ -368,6 +474,37 @@ class TestMultiLoRAValidation:
 
         with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
             miles_validate_args(args)
+
+    def test_rejects_pipeline_parallelism(self):
+        # Adapter routing is not recompute-safe under a pipelined schedule.
+        args = self._parse([])
+        args.pipeline_model_parallel_size = 2
+        with pytest.raises(AssertionError, match="pipeline-model-parallel-size 1"):
+            miles_validate_args(args)
+
+    def test_rejects_bshd_qkv_format(self):
+        # bshd interleaves samples in the sequence-major flattening the spans assume.
+        args = self._parse([])
+        args.qkv_format = "bshd"
+        with pytest.raises(AssertionError, match="qkv-format thd"):
+            miles_validate_args(args)
+
+    def test_rejects_shared_outer_expert_loras(self):
+        # Per-expert layout only; the flag would switch sglang to a layout training never produces.
+        args = self._parse([])
+        args.experts_shared_outer_loras = True
+        with pytest.raises(AssertionError, match="experts-shared-outer-loras"):
+            miles_validate_args(args)
+
+    def test_accepts_expert_leaf_targets_without_expert_tp_flag(self):
+        # --expert-tensor-parallel-size stays None until Megatron's own validate_args;
+        # comparing the raw value here rejected every run that omitted the flag.
+        args = self._parse(["--target-modules", "gate_proj,up_proj,down_proj"])
+        args.expert_tensor_parallel_size = None
+
+        miles_validate_args(args)
+
+        assert args.multi_lora is True
 
 
 class TestResolveFtComponents:

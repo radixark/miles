@@ -118,13 +118,12 @@ def execute():
         f"{misc_args} "
     )
 
-    U.start_mooncake_master()
-
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
+        before_ray_job_submit=U.start_mooncake_master,
         extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 

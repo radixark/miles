@@ -26,7 +26,7 @@ from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
 from transformers.utils.chat_template_utils import render_jinja_template
 
-from miles.utils.chat_template_utils import deepseek
+from miles.utils.chat_template_utils import deepseek, inkling
 
 
 def load_hf_chat_template(model_id: str) -> str:
@@ -91,6 +91,21 @@ def extract_tool_dicts(tools: list[dict] | None) -> list[dict] | None:
     wrapped = [t if isinstance(t, dict) and "function" in t else {"type": "function", "function": t} for t in tools]
     validated = TypeAdapter(list[Tool]).validate_python(wrapped)
     return [tool.model_dump() for tool in validated]
+
+
+def merge_chat_template_kwargs(
+    base: dict[str, Any],
+    overrides: dict[str, Any],
+    *,
+    alias_keys: Collection[str] = (),
+) -> dict[str, Any]:
+    """Merge one config layer, replacing base aliases as a group."""
+    merged = dict(base)
+    if any(key in overrides for key in alias_keys):
+        for key in alias_keys:
+            merged.pop(key, None)
+    merged.update(overrides)
+    return merged
 
 
 def apply_chat_template_from_str(
@@ -261,6 +276,19 @@ def apply_chat_template(
             tokenizer,
             tools=tools,
             tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            **kwargs,
+        )
+
+    if inkling.is_inkling(tokenizer):
+        # the fixed template needs parsed tool-call arguments and handles the
+        # thinking-effort line, tool_calls, and the end-sampling token itself
+        return tokenizer.apply_chat_template(
+            normalize_tool_arguments(messages, "dict"),
+            chat_template=inkling.fixed_chat_template(),
+            tokenize=tokenize,
+            tools=extract_tool_dicts(tools),
+            return_dict=False,
             add_generation_prompt=add_generation_prompt,
             **kwargs,
         )

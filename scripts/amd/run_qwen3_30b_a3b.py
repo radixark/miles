@@ -202,7 +202,7 @@ tis_batch_normalize: true
 """.strip()
         misc_args += (
             f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
-            "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
+            "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 
     train_args = (

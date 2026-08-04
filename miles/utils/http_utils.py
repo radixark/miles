@@ -139,6 +139,18 @@ def _wrap_ipv6(host):
         return host
 
 
+def router_worker_base_urls(urls: list[str]) -> list[str]:
+    """Strip the `@<rank>` suffix dp-aware routing adds; ranks of one engine dedupe to one address."""
+    bases = []
+    for url in urls:
+        base, sep, rank = url.rpartition("@")
+        if sep and rank.isdigit():
+            url = base
+        if url not in bases:
+            bases.append(url)
+    return bases
+
+
 def run_router(args):
     # Spawned as a fresh interpreter, so it inherits no logging config.
     configure_logger_raw("router")
@@ -224,6 +236,41 @@ async def _post(client, url, payload, max_retries=60, action="post", headers=Non
     return output
 
 
+async def wait_http_ok(url: str, *, json_payload=None, timeout: float = 180.0, request_timeout: float = 60.0) -> None:
+    """Poll ``url`` until it answers HTTP 200 (POST when ``json_payload`` is given,
+    else GET); raise ``TimeoutError`` past the deadline."""
+    deadline = time.time() + timeout
+    last_error = "no attempt made"
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                if json_payload is not None:
+                    response = await client.post(url, json=json_payload, timeout=request_timeout)
+                else:
+                    response = await client.get(url, timeout=request_timeout)
+                if response.status_code == 200:
+                    return
+                last_error = f"HTTP {response.status_code}"
+            except httpx.HTTPError as e:
+                last_error = repr(e)
+            if time.time() > deadline:
+                raise TimeoutError(f"{url} not ready after {timeout}s: {last_error}")
+            await asyncio.sleep(5)
+
+
+async def post_bytes_no_retry(url: str, payload: dict, *, timeout: float) -> bytes:
+    """Perform one raw-bytes POST with a total timeout."""
+    assert _http_client is not None, "init_http_client() must run before post_bytes_no_retry()"
+
+    async def _do() -> bytes:
+        response = await _http_client.post(url, json=payload)
+        if not (200 <= response.status_code < 300):
+            raise RuntimeError(f"POST {url} failed with {response.status_code}: {response.text}")
+        return response.content
+
+    return await asyncio.wait_for(_do(), timeout=timeout)
+
+
 def init_http_client(args):
     """Initialize HTTP client and optionally enable distributed POST via Ray."""
     global _http_client, _client_concurrency, _distributed_post_enabled
@@ -231,6 +278,8 @@ def init_http_client(args):
         return
 
     _client_concurrency = args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
+    if args.eval_num_gpus > 0:
+        _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
     if _http_client is None:
         _http_client = httpx.AsyncClient(
             limits=httpx.Limits(max_connections=_client_concurrency),

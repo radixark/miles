@@ -201,6 +201,13 @@ Sections mirror the launch-script argument groups.
 | `--eval-max-response-len` | int | – | Max eval response length. Inherits from rollout if unset. |
 | `--eval-temperature` | float | – | Eval temperature. Inherits from rollout if unset. |
 | `--eval-top-p` | float | – | Eval top-p. Inherits from rollout if unset. |
+| `--eval-num-gpus` | int | `0` | Dedicated eval fleet size. `0` = shared-engine eval. Requires `train_async.py`. |
+| `--eval-num-gpus-per-engine` | int | `1` | Eval engine TP, independent of rollout TP. |
+| `--eval-hf-dir` | str | – | Staging dir for per-eval HF snapshots (tmpfs recommended). Unset + `--save-hf` = reuse mode. |
+| `--eval-max-in-flight` | int | `2` | Snapshots the trainer may export ahead of the eval backend. Evals are serialized, so this buys lead time, not concurrency — and one more staged snapshot. |
+| `--eval-overflow-policy` | str | `backpressure` | At the cap: await the oldest eval, or `skip` the new point (logged as `eval/skipped_busy`). |
+| `--eval-keep-snapshots` | int | `2` | Retired snapshots kept under `--eval-hf-dir`; with `--eval-max-in-flight` this bounds the staging dir. `--save-hf` output is never deleted. |
+| `--eval-sglang-*` | – | – | Per-field override of any `--sglang-*` setting for the eval fleet only. Unset = inherit the rollout engines' value. Booleans take a `--no-` form (`--no-eval-sglang-enable-dp-attention`) so an inherited `True` can be turned off. `tp_size` is not exposed — use `--eval-num-gpus-per-engine`. |
 
 ### Performance
 
@@ -221,6 +228,7 @@ Sections mirror the launch-script argument groups.
 | `--gradient-checkpointing` | flag | off | FSDP equivalent of recompute flags. |
 | `--fsdp-cpu-offload` | flag | off | FSDP: offload params, grads, optimizer state to CPU. |
 | `--fsdp-cpu-backend` | str | `gloo` | FSDP: CPU backend for hybrid offload. |
+| `--dp-replicate-size` | int | `1` | FSDP2 hybrid-shard replica count. |
 | `--attn-implementation` | enum | `flash_attention_2` | FSDP only: `flash_attention_2`, `sdpa`, `eager`. |
 
 ### RL algorithm

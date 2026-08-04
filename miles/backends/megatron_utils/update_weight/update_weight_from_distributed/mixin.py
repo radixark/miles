@@ -21,6 +21,8 @@ from ..common import (
     end_weight_update,
     get_atomic_update_groups,
     get_named_value_update_units,
+    is_routed_expert_param,
+    weight_update_selector,
 )
 from ..hf_weight_iterator_base import HfWeightIteratorBase
 
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 def _is_expert_update_unit(update_unit: list[tuple[str, torch.Tensor]]) -> bool:
     assert update_unit, "Update unit must contain at least one param"
     name, _tensor = update_unit[0]
-    return ".experts." in name
+    return is_routed_expert_param(name)
 
 
 class DistBucketedWeightUpdateMixin:
@@ -176,7 +178,7 @@ class DistBucketedWeightUpdateMixin:
         atomic_update_groups = get_atomic_update_groups(self.args, self.model_name)
         update_units = get_named_value_update_units(named_tensors, atomic_update_groups)
         for unit in update_units:
-            assert len({".experts." in name for name, _tensor in unit}) == 1, [name for name, _tensor in unit]
+            assert len({is_routed_expert_param(name) for name, _tensor in unit}) == 1, [name for name, _tensor in unit]
         return [unit for unit in update_units if _is_expert_update_unit(unit) == is_expert]
 
     def _update_expert_bucket_weights(
@@ -306,13 +308,14 @@ class DistBucketedWeightUpdateMixin:
 
     def _pause_and_prepare_engines(self) -> None:
         """Pause rollout engines, flush cache, and open the weight-update session."""
+        self._weight_update_selector = weight_update_selector(self.args)
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             if mode != "in_place":
                 ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
-            begin_weight_update(self.rollout_engines)
+            begin_weight_update(self.rollout_engines, self._weight_update_selector)
 
     def _finalize_and_resume_engines(self) -> None:
         """Close the weight-update session and resume rollout engines."""
