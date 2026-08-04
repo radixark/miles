@@ -113,6 +113,7 @@ class TestSglangConfigUpdateWeights:
         config = SglangConfig.from_yaml(path)
         assert config.total_num_gpus == 12
 
+
 class TestGetModelUrl:
     def test_get_model_url_basic(self):
         """get_model_url should return the correct URL for a named model."""

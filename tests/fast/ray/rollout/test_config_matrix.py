@@ -199,7 +199,7 @@ class TestWeightsBackupModeResolveValidation:
         m = ModelConfig(
             name="actor",
             model_path="/actor/model",
-            weights_backup_mode="disk", # TODO: disk?
+            weights_backup_mode="disk",
             server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=4)],
         )
         with pytest.raises(ValueError, match="conflicts with update_weights=True"):
