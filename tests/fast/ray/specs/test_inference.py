@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 import sys
+from argparse import Namespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
@@ -11,9 +12,11 @@ from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupCo
 from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
     _compute_router_primary_port_info,
+    _compute_session_server_primary_port_info,
     _compute_spec_router,
     compute_engine_pool_id,
     compute_engine_pool_ids,
+    compute_inference_engine_env_vars,
     compute_router_pool_id,
     spec_session_server,
     specs_inference_engine,
@@ -184,6 +187,85 @@ class TestComputeSpecSessionServer:
         """Disabling the session server removes its cells instead of launching idle servers."""
         args = make_args(use_session_server=False)
         assert spec_session_server(args).scheduling.num_cells == 0
+
+
+def _make_session_server_args(**overrides) -> Namespace:
+    return make_args(
+        use_session_server="v1",
+        session_server_workers=2,
+        miles_router_timeout=None,
+        chat_template_path=None,
+        tito_model="default",
+        apply_chat_template_kwargs=None,
+        lora_adapter_path=None,
+        **overrides,
+    )
+
+
+class TestSessionServerAddressPinning:
+    def test_an_unpinned_session_server_may_move_off_its_preferred_port(self):
+        """Nothing outside the job names it, so a busy 8000 must not fail the launch nor be shifted per cell."""
+        port_info = _compute_session_server_primary_port_info(make_args(session_server_port=None))
+
+        assert (port_info.static_port, port_info.allow_dynamic, port_info.offset_by_cell) == (8000, True, False)
+
+    def test_pinned_session_servers_take_consecutive_ports_from_the_configured_one(self):
+        """A pinned port must stay put and be shifted per cell, otherwise every session server races for one socket."""
+        port_info = _compute_session_server_primary_port_info(make_args(session_server_port=5100))
+
+        assert (port_info.static_port, port_info.allow_dynamic, port_info.offset_by_cell) == (5100, False, True)
+
+    def test_a_configured_session_server_ip_overrides_the_allocated_host(self):
+        """Operators pin the advertised ip so clients can reach it; binding the ray node ip instead ignores them."""
+        args = _make_session_server_args(session_server_ip="10.20.30.40")
+        spec = spec_session_server(args)
+        ctx = LaunchCommandContext(
+            cell_index=0,
+            worker_in_cell_index=0,
+            self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
+            spec_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
+            gpu_ids=[],
+        )
+
+        config = parse_config_argv(SessionServerConfig, shlex.split(spec.launch_command(ctx))[3:])
+
+        assert config.host == "10.20.30.40"
+        assert config.port == 5006
+
+
+class TestInferenceEngineEnvVars:
+    def test_a_process_level_override_wins_over_the_built_in_default(self, monkeypatch):
+        """The launcher's environment is how operators retune sglang per cluster, so defaults must not overwrite it."""
+        monkeypatch.setenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "true")
+        monkeypatch.setenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", "false")
+
+        envs = compute_inference_engine_env_vars(make_args())
+
+        assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "true"
+        assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "false"
+
+    def test_the_built_in_defaults_apply_without_a_process_override(self, monkeypatch):
+        """Without an override the engine must still get miles' own safety values rather than sglang's."""
+        monkeypatch.delenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", raising=False)
+        monkeypatch.delenv("SGLANG_MEMORY_SAVER_CUDA_GRAPH", raising=False)
+
+        envs = compute_inference_engine_env_vars(make_args())
+
+        assert envs["SGLANG_JIT_DEEPGEMM_PRECOMPILE"] == "false"
+        assert envs["SGLANG_MEMORY_SAVER_CUDA_GRAPH"] == "true"
+
+    def test_custom_all_reduce_v2_is_disabled_only_for_colocated_multi_gpu_engines(self, monkeypatch):
+        """Only a colocated engine spanning several gpus hits the v2 all-reduce conflict; disabling it elsewhere
+        silently gives up throughput."""
+        monkeypatch.delenv("SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2", raising=False)
+
+        def _value_for(*, colocate: bool, num_gpus_per_engine: int) -> str:
+            args = make_args(colocate=colocate, rollout_num_gpus_per_engine=num_gpus_per_engine)
+            return compute_inference_engine_env_vars(args)["SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"]
+
+        assert _value_for(colocate=True, num_gpus_per_engine=2) == "0"
+        assert _value_for(colocate=True, num_gpus_per_engine=1) == "1"
+        assert _value_for(colocate=False, num_gpus_per_engine=2) == "1"
 
 
 class TestSpecsInferenceEngine:

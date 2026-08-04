@@ -33,6 +33,7 @@ class SchedulingSpec(FrozenStrictBaseModel):
     num_cells: int
     num_workers_per_cell: int
     num_gpus_per_worker: float
+    num_cpus_per_worker: float = 0.2
     num_gpu_slots_per_worker: int = 0
     pg_name: str | None = None
     pg_slot_offset: int = 0
@@ -53,10 +54,16 @@ class WorkerMetaContext(FrozenStrictBaseModel):
     cell_index: int
 
 
+class WorkerLaunchContext(FrozenStrictBaseModel):
+    cell_index: int
+    worker_in_cell_index: int
+    gpu_ids: list[int]
+
+
 class BaseWorkerSpec(FrozenStrictBaseModel):
     name: str
     port_infos: list[PortInfo]
-    env_var: Callable[[], dict[str, str]]
+    env_var: Callable[[WorkerLaunchContext], dict[str, str]]
     scheduling: SchedulingSpec
     meta: Callable[[WorkerMetaContext], dict[str, Any]] | None = None
 
@@ -74,12 +81,9 @@ class HostAndPort(FrozenStrictBaseModel):
 NamedHostAndPorts = dict[str, HostAndPort]
 
 
-class LaunchCommandContext(FrozenStrictBaseModel):
-    cell_index: int
-    worker_in_cell_index: int
+class LaunchCommandContext(WorkerLaunchContext):
     self_addrs: NamedHostAndPorts
     pool_addrs: dict[str, list[NamedHostAndPorts]]
-    gpu_ids: list[int]
 
 
 class CommandWorkerSpec(BaseWorkerSpec):
@@ -88,7 +92,8 @@ class CommandWorkerSpec(BaseWorkerSpec):
 
 class ServeWorkerSpec(BaseWorkerSpec):
     worker_class: str
-    ctor_kwargs: Callable[[], dict[str, Any]]
+    ctor_kwargs: Callable[[WorkerLaunchContext], dict[str, Any]]
+    concurrency_groups: dict[str, int] | None = None
 
     @model_validator(mode="before")
     @classmethod

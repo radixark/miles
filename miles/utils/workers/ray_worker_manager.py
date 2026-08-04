@@ -22,6 +22,7 @@ from miles.utils.workers.worker_spec import (
     HostAndPort,
     LaunchCommandContext,
     NamedHostAndPorts,
+    WorkerLaunchContext,
     WorkerMetaContext,
 )
 
@@ -248,16 +249,31 @@ class _BaseActorManager(Generic[SpecT]):
         for port_info in self.spec.port_infos:
             if self.worker_in_cell_index != 0 and port_info.mode == "master":
                 continue
-            port = (
-                self.manager.port_allocator.alloc(
+            if port_info.allow_dynamic:
+                port = self.manager.port_allocator.alloc(
                     self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
                 )
-                if port_info.allow_dynamic
-                else port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
-            )
+            else:
+                port = port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
+                await self._assert_static_port_is_free(port=port, port_name=port_info.name, node_ip=node_ip)
             allocated[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
 
         self.self_addrs = allocated
+
+    async def _assert_static_port_is_free(self, *, port: int, port_name: str, node_ip: str) -> None:
+        free = await self.actor_handle._is_port_available.remote(port=port)
+        assert free, (
+            f"Port {port} on {node_ip} is already in use, so {self.name} cannot serve its {port_name!r} "
+            f"endpoint there; a stale process from an earlier run is the usual cause"
+        )
+
+    @property
+    def launch_context(self) -> WorkerLaunchContext:
+        return WorkerLaunchContext(
+            cell_index=self.parent.cell_index,
+            worker_in_cell_index=self.worker_in_cell_index,
+            gpu_ids=self.gpu_ids,
+        )
 
     def _compute_remote_options(self) -> dict:
         return {}
@@ -276,11 +292,10 @@ class _BaseActorManager(Generic[SpecT]):
         remote_class = ray.remote(**remote_options)(actor_class) if remote_options else ray.remote(actor_class)
 
         return remote_class.options(
-            # TODO generalize
-            num_cpus=0.2,
+            num_cpus=self.spec.scheduling.num_cpus_per_worker,
             num_gpus=self.spec.scheduling.num_gpus_per_worker,
             **(dict(scheduling_strategy=s) if (s := scheduling_strategy) is not None else {}),
-            runtime_env={"env_vars": self.spec.env_var()},
+            runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
             **(compute_ray_pin_head_options() if self.spec.scheduling.pin_to_head else {}),
         ).remote(**ctor_kwargs)
 
@@ -331,14 +346,12 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
 
     async def post_setup(self) -> None:
         ctx = LaunchCommandContext(
-            cell_index=self.parent.cell_index,
-            worker_in_cell_index=self.worker_in_cell_index,
+            **dict(self.launch_context),
             self_addrs={
                 **self.self_addrs,
                 **self.parent.actors[0].master_mode_addrs,
             },
             pool_addrs=self.manager.get_addrs(),
-            gpu_ids=self.gpu_ids,
         )
         launch_cmd = self.spec.launch_command(ctx)
         self.actor_handle.run.remote(cmd=launch_cmd, envs={})
