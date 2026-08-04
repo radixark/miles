@@ -205,29 +205,6 @@ class TestAsyncInit:
         assert checker.task_started
 
 
-class TestSetRolloutExecutor:
-    async def test_a_cell_without_an_executor_issues_no_worker_rpc(self):
-        """The critic pool has no executor, and a None handle reaching a worker would break its next rollout call."""
-        cell = make_cell(actor_count=2, rollout_executor=None)
-
-        assert await cell.set_rollout_executor() == []
-
-        for handle in get_raw_actor_handles(cell):
-            calls = ray.get(handle.get_calls.remote())
-            assert [name for name, _args, _kwargs in calls] == []
-
-    async def test_present_rollout_executor_reaches_every_actor(self):
-        """A configured rollout executor handle is forwarded to every actor of the cell."""
-        cell = make_cell(actor_count=2, rollout_executor="executor-handle")
-
-        results = await cell.set_rollout_executor()
-
-        assert len(results) == 2
-        for handle in get_raw_actor_handles(cell):
-            calls = ray.get(handle.get_calls.remote())
-            assert calls == [("set_rollout_executor", (), {"rollout_executor": "executor-handle"})]
-
-
 class _EntryBarrier:
     def __init__(self, party_size: int) -> None:
         self._remaining = party_size

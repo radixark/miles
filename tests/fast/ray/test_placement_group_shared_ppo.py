@@ -47,8 +47,18 @@ def test_external_rollout_only_reserves_no_local_bundles():
     assert _get_placement_group_layout(_layout_args(debug_rollout_only=True, rollout_external=True)) == (0, 0)
 
 
-async def _noop_remote(*_args, **_kwargs):
-    return None
+class _RecordingRolloutExecutor:
+    def __init__(self):
+        self.train_parallel_config = None
+        self.loaded_rollout_id = None
+        self.set_train_parallel_config = SimpleNamespace(remote=self._set_train_parallel_config)
+        self.load = SimpleNamespace(remote=self._load)
+
+    async def _set_train_parallel_config(self, config):
+        self.train_parallel_config = config
+
+    async def _load(self, rollout_id):
+        self.loaded_rollout_id = rollout_id
 
 
 async def _stop_watch() -> None:
@@ -79,8 +89,50 @@ async def _fake_init(self: TrainerController) -> list[int]:
     return [0]
 
 
-async def _fake_set_rollout_executor(self: TrainerController) -> None:
-    return None
+async def _fake_get_train_parallel_config(self: TrainerController) -> dict:
+    return {"dp_size": 2}
+
+
+def _patch_train_group(monkeypatch) -> list:
+    groups = []
+
+    class _Group:
+        def __init__(self, *, args, role, **_kwargs):
+            self.args = args
+            self.role = role
+            groups.append(self)
+
+        @classmethod
+        async def create(cls, args, **kwargs):
+            return cls(args=args, **kwargs)
+
+        async def init(self):
+            return [0]
+
+        async def get_train_parallel_config(self):
+            return {"dp_size": 2 if self.role == "actor" else 99}
+
+    monkeypatch.setattr(placement_group_module, "TrainerController", _Group)
+    return groups
+
+
+def _training_models_args(**overrides):
+    values = {
+        "actor_num_nodes": 1,
+        "actor_num_gpus_per_node": 2,
+        "critic_num_nodes": 1,
+        "critic_num_gpus_per_node": 2,
+        "use_critic": True,
+        "kl_coef": 0.1,
+        "use_kl_loss": False,
+        "use_opd": True,
+        "opd_type": "megatron",
+        "disable_param_buffers_cpu_backup": True,
+        "start_rollout_id": None,
+        "rollout_global_dataset": False,
+    }
+    values.update(overrides)
+    return Namespace(**values)
 
 
 _waited_roles: list[str] = []
@@ -98,26 +150,11 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
     """Both training groups go through the real create(), and only the critic args are rewritten."""
     provider = _RecordingWorkerProvider()
     monkeypatch.setattr(TrainerController, "init", _fake_init)
-    monkeypatch.setattr(TrainerController, "set_rollout_executor", _fake_set_rollout_executor)
     monkeypatch.setattr(TrainerController, "_wait_expected_num_cells", _fake_wait_expected_num_cells)
+    monkeypatch.setattr(TrainerController, "get_train_parallel_config", _fake_get_train_parallel_config)
     _waited_roles.clear()
 
-    args = Namespace(
-        actor_num_nodes=1,
-        actor_num_gpus_per_node=2,
-        critic_num_nodes=1,
-        critic_num_gpus_per_node=2,
-        use_critic=True,
-        kl_coef=0.1,
-        use_kl_loss=False,
-        use_opd=True,
-        opd_type="megatron",
-        disable_param_buffers_cpu_backup=True,
-        start_rollout_id=None,
-        rollout_global_dataset=False,
-        indep_dp=False,
-        enable_witness=False,
-    )
+    args = _training_models_args(indep_dp=False, enable_witness=False)
 
     def _create(*, pool_ids: list[str] | None = None) -> _RecordingWorkerProvider:
         provider.built_for.append(list(pool_ids or []))
@@ -127,7 +164,7 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
         actor, critic = await placement_group_module.create_training_models(
             args,
             inference_controller=object(),
-            rollout_executor=SimpleNamespace(load=SimpleNamespace(remote=_noop_remote)),
+            rollout_executor=_RecordingRolloutExecutor(),
         )
 
     assert provider.built_for == [["trainer-actor"], ["trainer-critic"]]
@@ -147,3 +184,32 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
     assert critic.args.kl_coef == 0
     assert critic.args.use_opd is False
     assert critic.args.disable_param_buffers_cpu_backup is False
+
+
+async def test_train_parallel_config_travels_from_trainer_to_rollout_executor(monkeypatch):
+    """The driver reads the parallel config off the trainer and writes it into the executor."""
+    _patch_train_group(monkeypatch)
+    rollout_executor = _RecordingRolloutExecutor()
+
+    await placement_group_module.create_training_models(
+        _training_models_args(use_critic=False),
+        inference_controller=object(),
+        rollout_executor=rollout_executor,
+    )
+
+    assert rollout_executor.train_parallel_config == {"dp_size": 2}
+    assert rollout_executor.loaded_rollout_id == -1
+
+
+async def test_train_parallel_config_comes_from_the_actor_not_the_critic(monkeypatch):
+    """With a critic present, the config still comes from the actor group."""
+    _patch_train_group(monkeypatch)
+    rollout_executor = _RecordingRolloutExecutor()
+
+    await placement_group_module.create_training_models(
+        _training_models_args(use_critic=True),
+        inference_controller=object(),
+        rollout_executor=rollout_executor,
+    )
+
+    assert rollout_executor.train_parallel_config == {"dp_size": 2}

@@ -29,7 +29,6 @@ def _make_controller(*, num_cells: int = 2, indep_dp: bool = False) -> TrainerCo
     group._with_ref = False
     group._with_opd_teacher = False
     group._pool_id = _POOL_ID
-    group._rollout_executor = None
     group._health_checker_config = None
     group._health_checker_activeness = True
     group._cells_by_id = {}

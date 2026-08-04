@@ -163,11 +163,7 @@ def fake_trainer_controllers(monkeypatch: pytest.MonkeyPatch):
         events.append(("init", self._role))
         return [_TRAINER_START_ROLLOUT_ID]
 
-    async def _fake_set_rollout_executor(self: TrainerController) -> None:
-        events.append(("set_rollout_executor", self._role))
-
     monkeypatch.setattr(TrainerController, "init", _fake_init)
-    monkeypatch.setattr(TrainerController, "set_rollout_executor", _fake_set_rollout_executor)
     return SimpleNamespace(events=events)
 
 
@@ -233,7 +229,7 @@ class TestCreateTrainingModels:
 
         await create_training_models(args, object(), rollout_executor)
 
-        assert fake_trainer_controllers.events == [("init", "actor"), ("set_rollout_executor", "actor")]
+        assert fake_trainer_controllers.events == [("init", "actor")]
         assert args.start_rollout_id == _TRAINER_START_ROLLOUT_ID
         assert rollout_executor.loaded_rollout_ids == [_TRAINER_START_ROLLOUT_ID - 1]
 

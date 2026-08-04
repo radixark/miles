@@ -37,7 +37,6 @@ class TrainerCell:
         cell_id: str,
         cell_index: int,
         workers_hash: str,
-        rollout_executor: object | None,
         health_checker: BaseHealthChecker,
     ) -> None:
         self.args = args
@@ -47,7 +46,6 @@ class TrainerCell:
         self.role = role
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
-        self.rollout_executor = rollout_executor
         self.health_checker = health_checker
 
         (worker_infos,) = RayWorkerProvider.create().get_worker_infos(cell_ids=[cell_id])
@@ -106,11 +104,6 @@ class TrainerCell:
             ),
         )
 
-    async def set_rollout_executor(self):
-        if (executor := self.rollout_executor) is not None:
-            return await self.execute("set_rollout_executor", rollout_executor=executor)
-        return []
-
     # ------------------------ API :: cooperatively prepare ------------------------
 
     async def prepare_indep_dp_mode_alive(
@@ -133,8 +126,6 @@ class TrainerCell:
             indep_dp_info=indep_dp_info,
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
-
-        await self.set_rollout_executor()
 
     # ------------------------ state transition ------------------------
 
