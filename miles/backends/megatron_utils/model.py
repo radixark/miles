@@ -411,6 +411,7 @@ def train_one_step(
     optimizer: MegatronOptimizer | None,
     opt_param_scheduler: OptimizerParamScheduler | None,
     num_microbatches: int,
+    step_global_batch_size: int,
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
@@ -433,6 +434,7 @@ def train_one_step(
         optimizer: Optimizer instance.
         opt_param_scheduler: LR/WD scheduler.
         num_microbatches: Number of microbatches to process.
+        step_global_batch_size: Per-step sample count (loss normalizer + LR increment).
 
     Returns:
         Tuple of (reduced loss dict, gradient norm, step outcome).
@@ -494,6 +496,7 @@ def train_one_step(
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
+                "rollout_mask_sums",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -544,7 +547,14 @@ def train_one_step(
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
 
-        return output_tensor, partial(loss_function, args, batch, num_microbatches, apply_megatron_loss_scaling=True)
+        return output_tensor, partial(
+            loss_function,
+            args,
+            batch,
+            num_microbatches,
+            apply_megatron_loss_scaling=True,
+            step_global_batch_size=step_global_batch_size,
+        )
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
@@ -570,8 +580,9 @@ def train_one_step(
         if ft_test_action_executor is not None:
             ft_test_action_executor.maybe_crash(rollout_id=rollout_id, attempt=attempt)
 
+        constant_divisor = None if args.calculate_per_token_loss else step_global_batch_size
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
-            args, model, parallel_state, losses_reduced=losses_reduced
+            args, model, parallel_state, losses_reduced=losses_reduced, constant_divisor=constant_divisor
         )
         if not ok:
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
@@ -614,7 +625,7 @@ def train_one_step(
 
             # Update learning rate.
             assert update_successful
-            opt_param_scheduler.step(increment=args.global_batch_size)
+            opt_param_scheduler.step(increment=step_global_batch_size)
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)
@@ -637,8 +648,11 @@ def train_one_step(
             witness_dump_and_clear_stale(model=model, witness_info=witness_info, optimizer=optimizer)
 
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
+            constant_divisor = None if args.calculate_per_token_loss else step_global_batch_size
             loss_reduced = (
-                indep_dp_loss_reduced if parallel_state.indep_dp.size > 1 else aggregate_train_losses(losses_reduced)
+                indep_dp_loss_reduced
+                if parallel_state.indep_dp.size > 1
+                else aggregate_train_losses(losses_reduced, constant_divisor)
             )
             return loss_reduced, grad_norm, outcome
 
@@ -664,6 +678,7 @@ def train(
     opt_param_scheduler: OptimizerParamScheduler | None,
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
+    global_batch_sizes: Sequence[int],
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
@@ -680,10 +695,16 @@ def train(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
+        global_batch_sizes (Sequence[int]): Sample count per step (total across DP).
     """
     parallel_state = get_parallel_state()
     args = get_args()
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
+
+    assert len(num_microbatches) == len(global_batch_sizes), (
+        f"num_microbatches and global_batch_sizes must have the same length, "
+        f"got {len(num_microbatches)} vs {len(global_batch_sizes)}"
+    )
 
     for iterator in data_iterator:
         iterator.reset()
@@ -764,6 +785,7 @@ def train(
             optimizer,
             opt_param_scheduler,
             num_microbatches[step_id],
+            global_batch_sizes[step_id],
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,

@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample
 
-from miles.ray.rollout.rollout_data_conversion import _compute_dynamic_global_batch_size, postprocess_rollout_data
+from miles.ray.rollout.rollout_data_conversion import (
+    _compute_dynamic_global_batch_size,
+    postprocess_rollout_data,
+    validate_compact_rollout_ids,
+)
 
 
 class TestComputeDynamicGlobalBatchSize:
@@ -72,3 +76,34 @@ class TestPostprocessRolloutData:
         nested = [[make_sample(index=0), make_sample(index=1)], [make_sample(index=2)]]
         out, _meta = postprocess_rollout_data(args, nested, train_parallel_config={"dp_size": 1})
         assert len(out) == 3
+
+
+class TestValidateRolloutIdAnnotated:
+    def test_flat_list_skips_validation(self):
+        """Depth-1 leaf (flat list[Sample]) is the default rollout shape — no rollout_id required."""
+        validate_compact_rollout_ids([make_sample(index=i) for i in range(4)])
+
+    def test_default_nested_shape_skips_validation(self):
+        """list[list[Sample]] (prompt x rollout): leaf at depth 1 — no rollout_id required."""
+        validate_compact_rollout_ids([[make_sample(index=0), make_sample(index=1)]])
+
+    def test_compact_shape_requires_rollout_id(self):
+        """list[list[list[Sample]]]: leaf at depth 2 with >1 sibling requires rollout_id."""
+        compact = [[[make_sample(index=0), make_sample(index=1)]]]
+        with pytest.raises(AssertionError, match="rollout_id is unset"):
+            validate_compact_rollout_ids(compact)
+
+    def test_compact_shape_siblings_must_share_rollout_id(self):
+        a, b = make_sample(index=0), make_sample(index=1)
+        a.rollout_id, b.rollout_id = 7, 8
+        with pytest.raises(AssertionError, match="share rollout_id"):
+            validate_compact_rollout_ids([[[a, b]]])
+
+    def test_compact_shape_valid_when_annotated(self):
+        a, b = make_sample(index=0), make_sample(index=1)
+        a.rollout_id = b.rollout_id = 7
+        validate_compact_rollout_ids([[[a, b]]])
+
+    def test_compact_singleton_leaf_needs_no_annotation(self):
+        """A single-sample leaf at depth >= 2 is unambiguous — no rollout_id required."""
+        validate_compact_rollout_ids([[[make_sample(index=0)]]])

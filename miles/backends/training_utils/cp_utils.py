@@ -96,10 +96,14 @@ def get_sum_of_sample_mean(
     calculate_per_token_loss: bool = False,
     qkv_format: str = "thd",
     max_seq_lens: list[int] | None = None,
+    *,
+    sample_denoms: list[torch.Tensor] | torch.Tensor | None = None,
 ) -> Callable[[torch.Tensor], torch.Tensor]:
-    """
-    Calculate correct sample mean for CP
-    """
+    """Calculate correct sample mean for CP; ``sample_denoms`` overrides the
+    per-sample ``loss_mask.sum()`` denominators (e.g. ``rollout_mask_sums``)."""
+    if sample_denoms is None:
+        sample_denoms = [m.sum() for m in loss_masks]
+
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
     if cp_size == 1:
@@ -107,8 +111,10 @@ def get_sum_of_sample_mean(
         def sum_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
             return sum(
                 [
-                    (x_i * loss_mask_i).sum() / torch.clamp_min(loss_mask_i.sum(), 1)
-                    for x_i, loss_mask_i in zip(x.split(response_lengths, dim=0), loss_masks, strict=True)
+                    (x_i * loss_mask_i).sum() / torch.clamp_min(denom, 1)
+                    for x_i, loss_mask_i, denom in zip(
+                        x.split(response_lengths, dim=0), loss_masks, sample_denoms, strict=True
+                    )
                 ]
             )
 
@@ -135,9 +141,9 @@ def get_sum_of_sample_mean(
         def sum_of_sample_mean(x: torch.Tensor) -> torch.Tensor:
             return sum(
                 [
-                    (x_i * chunked_loss_mask).sum() / torch.clamp_min(loss_mask.sum(), 1)
-                    for x_i, chunked_loss_mask, loss_mask in zip(
-                        x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, loss_masks, strict=True
+                    (x_i * chunked_loss_mask).sum() / torch.clamp_min(denom, 1)
+                    for x_i, chunked_loss_mask, denom in zip(
+                        x.split(cp_chunk_lengths, dim=0), chunked_loss_masks, sample_denoms, strict=True
                     )
                 ]
             )
