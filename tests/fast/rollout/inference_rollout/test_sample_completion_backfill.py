@@ -20,7 +20,7 @@ def make_args(**overrides) -> Namespace:
         rollout_batch_size=2,
         n_samples_per_prompt=GROUP_SIZE,
         over_sampling_batch_size=1,
-        rollout_sample_completion_backfill=False,
+        rollout_group_level_submission=False,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
         rollout_all_samples_process_path=None,
@@ -124,8 +124,8 @@ class Harness:
             callback()
 
 
-async def test_group_level_scheduling_is_the_default(monkeypatch):
-    harness = Harness(monkeypatch, make_args(rollout_batch_size=2))
+async def test_group_level_submission_opts_out_of_backfill(monkeypatch):
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=2, rollout_group_level_submission=True))
     task = harness.run()
     await asyncio.sleep(0)
 
@@ -140,7 +140,7 @@ async def test_group_level_scheduling_is_the_default(monkeypatch):
 
 
 async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch):
-    harness = Harness(monkeypatch, make_args(rollout_batch_size=2, rollout_sample_completion_backfill=True))
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=2))
     task = harness.run()
     await asyncio.sleep(0)
     assert harness.submitted_group_indices == [1, 2]
@@ -160,7 +160,7 @@ async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch
 
 
 async def test_backfill_does_not_oversubmit_below_one_group(monkeypatch):
-    harness = Harness(monkeypatch, make_args(rollout_batch_size=2, rollout_sample_completion_backfill=True))
+    harness = Harness(monkeypatch, make_args(rollout_batch_size=2))
     task = harness.run()
     await asyncio.sleep(0)
     assert harness.submitted_group_indices == [1, 2]
@@ -177,18 +177,18 @@ async def test_backfill_does_not_oversubmit_below_one_group(monkeypatch):
 
 
 class TestSubmissionScheduler:
-    def test_disabled_counts_groups(self):
-        scheduler = SubmissionScheduler(make_args())
+    def test_group_level_counts_groups(self):
+        scheduler = SubmissionScheduler(make_args(rollout_group_level_submission=True))
         assert scheduler.sample_done_callback is None
         assert scheduler.has_capacity(pending_groups=1, group_budget=2)
         assert not scheduler.has_capacity(pending_groups=2, group_budget=2)
 
-        # No callback decrements it when disabled, so it must not accumulate either.
+        # No callback decrements it at group level, so it must not accumulate either.
         scheduler.on_submit([make_group(1), make_group(2)])
         assert scheduler.samples_in_flight == 0
 
-    def test_enabled_counts_samples(self):
-        scheduler = SubmissionScheduler(make_args(rollout_sample_completion_backfill=True))
+    def test_backfill_counts_samples(self):
+        scheduler = SubmissionScheduler(make_args())
         assert scheduler.sample_done_callback is not None
 
         scheduler.on_submit([make_group(1), make_group(2)])
@@ -203,9 +203,9 @@ class TestSubmissionScheduler:
         scheduler.sample_done_callback()
         assert scheduler.has_capacity(pending_groups=0, group_budget=2)
 
-    @pytest.mark.parametrize("enabled", [False, True])
-    async def test_wait_for_progress_returns_on_group_completion(self, enabled):
-        scheduler = SubmissionScheduler(make_args(rollout_sample_completion_backfill=enabled))
+    @pytest.mark.parametrize("group_level", [False, True])
+    async def test_wait_for_progress_returns_on_group_completion(self, group_level):
+        scheduler = SubmissionScheduler(make_args(rollout_group_level_submission=group_level))
         blocker = asyncio.Event()
 
         async def group():
@@ -222,7 +222,7 @@ class TestSubmissionScheduler:
         assert pending == set()
 
     async def test_wait_for_progress_returns_on_sample_completion(self):
-        scheduler = SubmissionScheduler(make_args(rollout_sample_completion_backfill=True))
+        scheduler = SubmissionScheduler(make_args())
         never = asyncio.create_task(asyncio.Event().wait())
 
         scheduler.arm()

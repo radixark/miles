@@ -74,7 +74,7 @@ def make_args(**overrides) -> Namespace:
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
-        rollout_sample_completion_backfill=False,
+        rollout_group_level_submission=False,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
@@ -318,7 +318,7 @@ async def test_weight_version_throttles_failed_queries(monkeypatch):
 
 
 async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch):
-    """With --rollout-sample-completion-backfill, finished samples free slots immediately."""
+    """Under the default backfill policy, finished samples free slots immediately."""
     callbacks = []
     release = asyncio.Event()
 
@@ -328,7 +328,7 @@ async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch
         return group
 
     data_source = FakeDataSource()
-    args = make_args(rollout_batch_size=1, rollout_sample_completion_backfill=True)
+    args = make_args(rollout_batch_size=1)
     fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
 
     drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))

@@ -595,14 +595,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--rollout-sample-completion-backfill",
+                "--rollout-group-level-submission",
                 action="store_true",
                 default=False,
                 help=(
-                    "Submit a replacement prompt group once n_samples_per_prompt individual samples "
-                    "finish, instead of waiting for a whole group task to return. Keeps in-flight "
-                    "sample concurrency saturated when trials within a group finish at very different "
-                    "times (long-horizon agentic rollouts). Off by default: group-level scheduling."
+                    "Hold a submission slot until the whole prompt group returns, instead of the "
+                    "default sample-completion backfill (which submits a replacement group once "
+                    "n_samples_per_prompt individual samples finish, whichever groups they came "
+                    "from). Expected to be slower than the default continuous filling mode."
                 ),
             )
 

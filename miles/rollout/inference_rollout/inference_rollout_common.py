@@ -127,17 +127,17 @@ class SubmissionScheduler:
     Both rollout drivers (the sync one below and the fully-async worker) use it, under
     one of two policies:
 
-    - **group level** (default): a group occupies its slot until the whole group task
-      returns, so submission is paced by completed groups.
-    - **sample-completion backfill** (``--rollout-sample-completion-backfill``): every
-      finished sample frees its own slot, so a replacement group goes out once
-      ``n_samples_per_prompt`` samples finish, whichever groups they came from. With
-      long-horizon agentic trials, waiting for the slowest sibling of each group is a
-      primary rollout-throughput limiter.
+    - **sample-completion backfill** (default): every finished sample frees its own
+      slot, so a replacement group goes out once ``n_samples_per_prompt`` samples
+      finish, whichever groups they came from. With long-horizon agentic trials,
+      waiting for the slowest sibling of each group is a primary rollout-throughput
+      limiter.
+    - **group level** (``--rollout-group-level-submission``): a group occupies its slot
+      until the whole group task returns, so submission is paced by completed groups.
     """
 
     def __init__(self, args: Namespace):
-        self.backfill_on_sample_completion = args.rollout_sample_completion_backfill
+        self.backfill_on_sample_completion = not args.rollout_group_level_submission
         self.group_size = args.n_samples_per_prompt
         self.samples_in_flight = 0
         self._sample_done = asyncio.Event()
