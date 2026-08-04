@@ -53,7 +53,7 @@ while still letting `critic_model.train` proceed. That's hard to write with sync
 ```
 
 Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
-`set_rollout_manager`.
+`set_rollout_executor`.
 
 #### 3. Dispatch handles → eager tasks
 
@@ -71,8 +71,35 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 
 ```diff
 - actor, critic = create_training_models(args, pgs, rollout_manager)
-+ actor, critic = await create_training_models(args, pgs, rollout_manager)
++ actor, critic = await create_training_models(args, pgs, inference_controller, rollout_executor)
 ```
+
+## `RolloutManager` split into `InferenceController` + `RolloutExecutor`
+
+| | Owns | Lives in |
+|---|---|---|
+| `InferenceController` | sglang servers, router, engine lock, health monitors | the driver, as a plain object |
+| `RolloutExecutor` | data source, rollout functions, data conversion | its own Ray actor |
+
+```diff
+- rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
++ inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
++     args, pgs["rollout"]
++ )
+
+- await rollout_manager.generate.remote(rollout_id)
++ await inference_controller.prepare_rollout(rollout_id)
++ await rollout_executor.generate.remote(rollout_id)
+
+- await rollout_manager.onload_weights.remote()
++ await inference_controller.onload_weights()
+```
+
+The controller is not a Ray actor, so nothing inside another actor may call it. Train
+actors receive only the executor handle (`set_rollout_manager` → `set_rollout_executor`),
+and the trainer group — which runs in the driver — clears `has_new_engines` after the
+weight update instead of rank 0 doing it. `start_control_server` takes
+`inference_controller=`.
 
 ## Other recent breakages
 
