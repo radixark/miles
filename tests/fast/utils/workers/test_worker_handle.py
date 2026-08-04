@@ -240,7 +240,12 @@ class TestRpcWorkerHandleWaitDead:
     @pytest.mark.asyncio
     async def test_is_not_implemented_yet(self):
         """Death confirmation over rpc is platform work that has not been built."""
-        handle = RpcWorkerHandle(type("Worker", (), {}), server_url="http://localhost:1")
+
+        # The handle refuses a worker with no rpc surface, so give it one method.
+        class Worker:
+            def ping(self) -> None: ...
+
+        handle = RpcWorkerHandle(Worker, server_url="http://localhost:1")
 
         with pytest.raises(NotImplementedError):
             await handle.wait_dead(timeout=1.0)

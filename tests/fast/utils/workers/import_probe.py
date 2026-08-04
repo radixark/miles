@@ -4,8 +4,20 @@ import sys
 
 IMPORTED_MODULES_SEPARATOR = ","
 
+# Everything here lands in sys.modules through site initialization, before the
+# entrypoint runs a line of its own, so none of it says anything about what the
+# entrypoint imports. nvidia_cutlass_dsl arrives via a .pth in dist-packages.
 ALLOWED_LIGHT_ENTRYPOINT_IMPORTS = frozenset(
-    {"__main__", "miles", "tests", "sitecustomize", "usercustomize", "_distutils_hack", "_virtualenv"}
+    {
+        "__main__",
+        "miles",
+        "tests",
+        "sitecustomize",
+        "usercustomize",
+        "_distutils_hack",
+        "_virtualenv",
+        "nvidia_cutlass_dsl",
+    }
 )
 
 
