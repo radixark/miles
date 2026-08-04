@@ -83,6 +83,7 @@ async def main(args):
             continue
 
         try:
+            await rollout_manager.prepare_rollout.remote(rollout_id)
             rollout_data = await rollout_manager.generate.remote(rollout_id)
         except ray.exceptions.RayTaskError as e:
             if _is_empty_batch_timeout(e):
