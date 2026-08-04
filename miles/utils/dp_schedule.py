@@ -28,27 +28,30 @@ def _calculate_workloads(step_lengths, args):
     return [calculate_fwd_flops([sl], args) for sl in step_lengths]
 
 
-def _pack_samples_into_micro_batches(
+def _pack_micro_batches_dynamic(
     step_lengths: list[int],
     *,
     args: Any,
-    use_dynamic_batch_size: bool,
-    max_per_bin: int | None,
-    micro_batch_size: int | None,
+    max_per_bin: int,
     balance_by_flops: bool = False,
 ) -> list[list[int]]:
-    """Group a step's samples into micro-batches. Returns ``micro_batches[k]`` = local indices into ``step_lengths``."""
-    if use_dynamic_batch_size:
-        assert max_per_bin is not None
-        if balance_by_flops:
-            total_tokens = sum(step_lengths)
-            micro_batch_count = max(1, (total_tokens + max_per_bin - 1) // max_per_bin)
-            if micro_batch_count >= len(step_lengths):
-                return [[i] for i in range(len(step_lengths))]
-            workloads = _calculate_workloads(step_lengths, args)
-            # NOTE: FLOPs balancing does not enforce the token cap per micro-batch.
-            return get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
-        return first_fit_decreasing_pack(step_lengths, max_per_bin)
+    """First-fit token packing, or FLOPs-balanced partitions under ``balance_by_flops``.
+    Returns ``micro_batches[k]`` = local indices into ``step_lengths``."""
+    assert max_per_bin is not None
+    if balance_by_flops:
+        total_tokens = sum(step_lengths)
+        micro_batch_count = max(1, (total_tokens + max_per_bin - 1) // max_per_bin)
+        if micro_batch_count >= len(step_lengths):
+            return [[i] for i in range(len(step_lengths))]
+        workloads = _calculate_workloads(step_lengths, args)
+        # NOTE: FLOPs balancing does not enforce the token cap per micro-batch.
+        return get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
+    return first_fit_decreasing_pack(step_lengths, max_per_bin)
+
+
+def _pack_micro_batches_static(step_lengths: list[int], *, micro_batch_size: int) -> list[list[int]]:
+    """Fixed-size chunks of ``micro_batch_size`` samples.
+    Returns ``micro_batches[k]`` = local indices into ``step_lengths``."""
     assert micro_batch_size is not None
     n = len(step_lengths)
     return [list(range(i, min(i + micro_batch_size, n))) for i in range(0, n, micro_batch_size)]
@@ -117,14 +120,17 @@ def build_dp_schedule(
         )
 
         balance_by_flops = getattr(args, "balance_by_flops", False)
-        step_micro_batches = _pack_samples_into_micro_batches(
-            step_lengths,
-            args=args,
-            use_dynamic_batch_size=args.use_dynamic_batch_size,
-            max_per_bin=max_per_bin,
-            micro_batch_size=getattr(args, "micro_batch_size", None),
-            balance_by_flops=balance_by_flops,
-        )
+        if args.use_dynamic_batch_size:
+            step_micro_batches = _pack_micro_batches_dynamic(
+                step_lengths,
+                args=args,
+                max_per_bin=max_per_bin,
+                balance_by_flops=balance_by_flops,
+            )
+        else:
+            step_micro_batches = _pack_micro_batches_static(
+                step_lengths, micro_batch_size=getattr(args, "micro_batch_size", None)
+            )
 
         # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
         target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
