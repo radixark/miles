@@ -6,7 +6,7 @@ import os
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import ray
 import torch
@@ -26,8 +26,6 @@ from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 
-if TYPE_CHECKING:
-    pass
 
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update, weight_update_selector
 from .hf_weight_iterator_base import HfWeightIteratorBase
@@ -275,8 +273,8 @@ class UpdateWeightFromTensor:
                 mm_tower_tensors = [
                     (name, tensor.to(torch.cuda.current_device())) for name, tensor in mm_tower_tensors
                 ]
-                refs, long_lived_tensors = self._send_base_params(mm_tower_tensors)
-                results = ray.get(refs)
+                futures, long_lived_tensors = self._send_base_params(mm_tower_tensors)
+                results = async_utils.wait_futures(futures)
                 _check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors, mm_tower_tensors
 
