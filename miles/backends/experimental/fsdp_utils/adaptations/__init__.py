@@ -28,6 +28,7 @@ from .precision import (
     log_precision_summary,
     precision_forward_context,
     register_precision_policy,
+    resolve_dtype,
     resolve_precision_policy,
 )
 from .weight_bridge import ParamTransform, get_param_transform, register_param_transform
@@ -61,6 +62,7 @@ __all__ = [
     "apply_fp32_master",
     "precision_forward_context",
     "register_precision_policy",
+    "resolve_dtype",
     "resolve_precision_policy",
     "ParamTransform",
     "get_param_transform",

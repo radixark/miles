@@ -26,6 +26,7 @@ from miles.backends.experimental.fsdp_utils.adaptations import (
     apply_packing,
     apply_post_load_fixups,
     precision_forward_context,
+    resolve_dtype,
     resolve_precision_policy,
 )
 from miles.backends.experimental.fsdp_utils.debug_dump import maybe_dumper_step, maybe_register_module_dumper
@@ -43,6 +44,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--disable-fp32-master", dest="keep_fp32_master", action="store_false", default=True)
     parser.add_argument("--fsdp-precision-rules", default=None)
+    # Explore a policy the arch has no spec for yet; a finding here becomes a specs/<arch>.py hook.
+    parser.add_argument("--gather-dtype", choices=["fp32", "bf16", "fp16"], default=None)
+    parser.add_argument("--autocast-dtype", choices=["fp32", "bf16", "fp16", "none"], default=None)
     parser.add_argument("--gradient-checkpointing", action="store_true")
     parser.add_argument("--backward", action="store_true", help="also run a backward, dumping grad dtypes")
     # Knobs the shared construction path reads but this harness does not vary.
@@ -61,6 +65,10 @@ def build_model(args, hf_config, mesh):
         attn_implementation=args.attn_implementation,
     )
     policy = resolve_precision_policy(hf_config, args)
+    if args.gather_dtype:
+        policy.param_dtype = resolve_dtype(args.gather_dtype)
+    if args.autocast_dtype:
+        policy.autocast_dtype = None if args.autocast_dtype == "none" else resolve_dtype(args.autocast_dtype)
     if policy.keep_fp32_master:
         model = apply_fp32_master(model, policy.sync_dtype_resolver)
     apply_post_load_fixups(model, hf_config, args.hf_checkpoint)
