@@ -49,7 +49,18 @@ def init_mlflow(args, *, primary: bool = True, **kwargs) -> None:
     if not args.use_mlflow:
         args.mlflow_run_id = None
         return
+    try:
+        _init_mlflow_impl(args, primary=primary, **kwargs)
+    except Exception as e:
+        # Same contract as log_metrics: the tracking server is a shared remote service
+        # and must not be able to stop a training job. A pool-exhausted server took a
+        # run down mid-flight at step 52, and then took the *relaunch* down during
+        # init_tracking before a single rollout ran. Degrade to no tracking and train.
+        args.mlflow_run_id = None
+        logger.warning(f"MLflow init failed, continuing without MLflow tracking: {e!r}")
 
+
+def _init_mlflow_impl(args, *, primary: bool = True, **kwargs) -> None:
     import mlflow
 
     tracking_uri = args.mlflow_tracking_uri or os.environ.get("MLFLOW_TRACKING_URI")
