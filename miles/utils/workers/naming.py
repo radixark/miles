@@ -1,3 +1,16 @@
+from typing import NamedTuple
+
+
+class ParsedCellId(NamedTuple):
+    pool_id: str
+    cell_index: int
+
+
+def parse_cell_id(cell_id: str) -> ParsedCellId:
+    pool_id, cell_index = cell_id.rsplit("-", maxsplit=1)
+    return ParsedCellId(pool_id=pool_id, cell_index=int(cell_index))
+
+
 def compute_cell_id(*, pool_id: str, cell_index: int) -> str:
     return f"{pool_id}-{cell_index}"
 
