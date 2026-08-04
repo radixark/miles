@@ -78,6 +78,7 @@ def make_cell(
         with_ref=False,
         cell_id=f"trainer-actor-{cell_index}",
         cell_index=cell_index,
+        workers_hash="pseudo-hash-1",
         rollout_executor=rollout_executor,
         health_checker=NoopHealthChecker(),
     )
