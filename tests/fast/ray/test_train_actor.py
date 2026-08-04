@@ -3,19 +3,9 @@ import socket
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.ray.fake_rollout_executor import FakeRolloutExecutor
 
-from miles.ray import train_actor
+from miles.ray import placement_group, train_actor
 from miles.ray.train_actor import TrainRayActor
-
-_TRAIN_PARALLEL_CONFIG = {"dp_size": 2, "cp_size": 1}
-
-
-def _make_actor(*, rank: int) -> TrainRayActor:
-    actor = object.__new__(TrainRayActor)
-    actor.args = SimpleNamespace(rank=rank)
-    actor.train_parallel_config = _TRAIN_PARALLEL_CONFIG
-    return actor
 
 
 class TestConstructorSignature:
@@ -55,50 +45,6 @@ class TestKillSelf:
         assert exit_statuses == [1]
 
 
-class TestSetRolloutExecutor:
-    def _make_executor(self, published: list[object]) -> SimpleNamespace:
-        return SimpleNamespace(
-            set_train_parallel_config=SimpleNamespace(remote=lambda config: published.append(config))
-        )
-
-    def test_rank_zero_publishes_the_train_parallel_config(self, monkeypatch) -> None:
-        """On rank zero the executor handle is stored and the train parallel config is pushed to it."""
-        awaited_refs: list[str] = []
-        monkeypatch.setattr(train_actor, "ray", SimpleNamespace(get=awaited_refs.append))
-        actor = _make_actor(rank=0)
-        executor = FakeRolloutExecutor()
-
-        actor.set_rollout_executor(executor)
-
-        assert actor.rollout_executor is executor
-        assert executor.set_train_parallel_config.calls == [(_TRAIN_PARALLEL_CONFIG,)]
-        assert awaited_refs == ["object-ref-1"]
-
-    def test_only_rank_zero_configures_the_rollout_executor(self, monkeypatch) -> None:
-        """A nonzero rank stores the executor handle but issues no configuration RPC."""
-        awaited_refs: list[str] = []
-        monkeypatch.setattr(train_actor, "ray", SimpleNamespace(get=awaited_refs.append))
-        actor = _make_actor(rank=1)
-        executor = FakeRolloutExecutor()
-
-        actor.set_rollout_executor(executor)
-
-        assert actor.rollout_executor is executor
-        assert executor.set_train_parallel_config.calls == []
-        assert awaited_refs == []
-
-    def test_the_published_config_is_the_actors_own_train_parallel_config(self, monkeypatch: pytest.MonkeyPatch):
-        """The rollout side needs the trainer topology verbatim, whatever keys that topology carries."""
-        monkeypatch.setattr(train_actor, "ray", SimpleNamespace(get=lambda ref: ref))
-        published: list[object] = []
-        actor = _make_actor(rank=0)
-        actor.train_parallel_config = {"tensor_model_parallel_size": 4}
-
-        actor.set_rollout_executor(self._make_executor(published))
-
-        assert published == [{"tensor_model_parallel_size": 4}]
-
-
 class TestConfigureMasterAddrAndPort:
     def _make_actor(self) -> TrainRayActor:
         return TrainRayActor.__new__(TrainRayActor)
@@ -122,3 +68,50 @@ class TestConfigureMasterAddrAndPort:
 
         assert os.environ["MASTER_ADDR"] == "10.0.0.2"
         assert os.environ["MASTER_PORT"] == "20002"
+
+
+class TestTrainParallelConfigWiring:
+    async def test_the_driver_passes_the_resolved_actor_config_to_the_rollout_executor(self, monkeypatch):
+        """The driver resolves the actor config before handing it to the rollout executor."""
+        train_parallel_config = {"dp_size": 4, "topology": {"tp_size": 2}}
+
+        class FakeTrainerController:
+            def __init__(self, *, role, **_kwargs):
+                self.role = role
+
+            async def init(self):
+                return [0]
+
+            async def get_train_parallel_config(self):
+                return train_parallel_config if self.role == "actor" else {"dp_size": 99}
+
+        class FakeRolloutExecutor:
+            def __init__(self):
+                self.received_config = None
+                self.set_train_parallel_config = SimpleNamespace(remote=self._set_train_parallel_config)
+                self.load = SimpleNamespace(remote=self._load)
+
+            async def _set_train_parallel_config(self, config):
+                assert not isinstance(config, FakeTrainerController)
+                self.received_config = config
+
+            async def _load(self, rollout_id):
+                pass
+
+        rollout_executor = FakeRolloutExecutor()
+        monkeypatch.setattr(placement_group, "TrainerController", FakeTrainerController)
+
+        await placement_group.create_training_models(
+            SimpleNamespace(
+                kl_coef=0.0,
+                use_kl_loss=False,
+                use_opd=False,
+                opd_type=None,
+                use_critic=True,
+                start_rollout_id=None,
+            ),
+            inference_controller=object(),
+            rollout_executor=rollout_executor,
+        )
+
+        assert rollout_executor.received_config is train_parallel_config
