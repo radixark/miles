@@ -14,7 +14,7 @@ from miles.ray.train.cell import RayTrainCell
 from miles.utils.ft_utils.health_checker import NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import retry
-from miles.utils.workers.ray_worker_manager import WorkerInfo
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_spec import HostAndPort
 
 
