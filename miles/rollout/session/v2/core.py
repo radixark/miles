@@ -177,13 +177,6 @@ class SessionCoreV2(SessionCore):
                 logger.warning(f"Session {session_id} closed during proxy, skipping state update")
                 return _chat_client_response(result, response, client_stream)
 
-            if session.active_leaf is not attach_parent:
-                logger.warning(
-                    f"Session {session_id} state changed during proxy "
-                    f"(the active view moved), skipping state update"
-                )
-                return _chat_client_response(result, response, client_stream)
-
             record = SessionRecord(
                 timestamp=time.time(),
                 request_timestamp=request_timestamp,

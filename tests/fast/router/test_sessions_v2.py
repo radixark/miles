@@ -6,8 +6,10 @@ server. The rollback pin classes mirror test_sessions_v1_pins.py so v1/v2
 behavior stays byte-comparable.
 """
 
+import asyncio
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -21,6 +23,7 @@ from tests.fast.router.test_sessions import _create_session, _post_chat
 from miles.rollout.session.server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.misc import function_registry
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
@@ -119,6 +122,62 @@ def test_lora_adapter_reaches_backend():
 
         assert response.status_code == 200
         assert env.backend.request_log[-1]["lora_path"] == LORA_ADAPTER_NAME
+
+
+def _keep_all_picker(leaf_samples, _session_metadata):
+    return list(leaf_samples)
+
+
+def test_concurrent_requests_from_same_parent_commit_siblings():
+    """Successful concurrent generations from one parent are both collected."""
+    picker_path = "miles.rollout.session.v2.picker_hub.drop_retries"
+    with function_registry.temporary(picker_path, _keep_all_picker):
+        with _serve_router() as env:
+            session_id = _create_session(env.url)
+            first = _post_chat(env.url, session_id, {"messages": [{"role": "user", "content": "start"}]})
+            assert first.status_code == 200
+            assistant = first.json()["choices"][0]["message"]
+            payload = {
+                "messages": [
+                    {"role": "user", "content": "start"},
+                    assistant,
+                    {"role": "user", "content": "branch"},
+                ]
+            }
+
+            arrivals = 0
+            release = None
+
+            async def wait_for_pair(self, request, compute_fn):
+                nonlocal arrivals, release
+                payload = await request.json()
+                self.request_log.append(payload)
+                if release is None:
+                    release = asyncio.Event()
+                arrivals += 1
+                if arrivals == 2:
+                    release.set()
+                await asyncio.wait_for(release.wait(), timeout=5.0)
+                return JSONResponse(content=compute_fn(payload))
+
+            with patch.object(MockSGLangServer, "_handle_generate_like_request", new=wait_for_pair):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    futures = [pool.submit(_post_chat, env.url, session_id, payload) for _ in range(2)]
+                    responses = [future.result(timeout=10.0) for future in futures]
+
+            assert all(response.status_code == 200 for response in responses)
+            response_ids = {response.json()["id"] for response in responses}
+            tree = requests.get(f"{env.url}/sessions/{session_id}", timeout=5.0).json()["metadata"]["tree"]
+            parent_id = tree["nodes"][0]["id"]
+            children = tree["nodes"][1:]
+            assert len(children) == 2
+            assert {child["parent"] for child in children} == {parent_id}
+            assert {child["response_id"] for child in children} == response_ids
+
+            samples = requests.post(f"{env.url}/sessions/{session_id}/samples", json={}, timeout=10.0)
+            assert samples.status_code == 200
+            sample_meta = _decode_samples_meta(samples.content)
+            assert {sample["metadata"]["leaf"]["response_id"] for sample in sample_meta["samples"]} == response_ids
 
 
 class TestRollbackPins:
