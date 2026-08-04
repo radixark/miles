@@ -203,9 +203,7 @@ def _install_mamba_model_loss_mask_shim() -> None:
         # mtp_labels arg (MTP loss is gated on it, mirroring gpt_model.forward);
         # the main path keeps labels=None and returns logits for the PG loss.
         mtp_labels = (mtp_kwargs or {}).get("mtp_labels")
-        return _orig_forward(
-            self, *args, loss_mask=loss_mask, mtp_labels=mtp_labels, **kwargs
-        )
+        return _orig_forward(self, *args, loss_mask=loss_mask, mtp_labels=mtp_labels, **kwargs)
 
     MambaModel.forward = forward
     MambaModel._miles_loss_mask_shim_installed = True
