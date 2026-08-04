@@ -1,3 +1,4 @@
+import builtins
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -103,12 +104,44 @@ class TestScheduling:
 
         assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (4, 2)
 
+    def test_independent_dp_critic_cells_use_the_critic_gpu_shape(self, monkeypatch):
+        """A critic sized differently from the actor must be split by its own GPU count."""
+        monkeypatch.setattr("miles.ray.specs.train.compute_megatron_world_size_except_dp", lambda _args: 2)
+        monkeypatch.setattr("miles.ray.specs.train._create_indep_dp_store_addr", lambda: "10.0.0.1:1234")
+
+        _actor_spec, critic_spec = specs_trainer(
+            _make_args(
+                use_critic=True,
+                indep_dp=True,
+                actor_num_nodes=3,
+                actor_num_gpus_per_node=8,
+                critic_num_nodes=2,
+                critic_num_gpus_per_node=4,
+            )
+        )
+
+        assert (critic_spec.scheduling.num_cells, critic_spec.scheduling.num_workers_per_cell) == (4, 2)
+
+    def test_a_nondivisible_independent_dp_trainer_layout_is_rejected(self, monkeypatch):
+        """A GPU count that cannot be split into equal cells must fail loudly instead of dropping ranks."""
+        monkeypatch.setattr("miles.ray.specs.train.compute_megatron_world_size_except_dp", lambda _args: 2)
+
+        with pytest.raises(AssertionError, match="must be divisible"):
+            specs_trainer(_make_args(indep_dp=True, actor_num_nodes=1, actor_num_gpus_per_node=5))
+
     def test_a_worker_reserves_a_fraction_of_its_gpu(self):
         """The rollout engine shares the same GPU slot, so the trainer must not claim it whole."""
         (spec,) = specs_trainer(_make_args())
 
         assert spec.scheduling.num_gpus_per_worker == 0.4
         assert spec.scheduling.num_gpu_slots_per_worker == 1
+
+    def test_a_trainer_worker_reserves_matching_fractional_cpu_and_gpu_resources(self):
+        """Claiming a whole CPU per worker would let Ray refuse to co-schedule the rollout engine."""
+        (spec,) = specs_trainer(_make_args())
+
+        assert spec.scheduling.num_cpus_per_worker == 0.4
+        assert spec.scheduling.num_cpus_per_worker == spec.scheduling.num_gpus_per_worker
 
 
 class TestConstructorArguments:
@@ -192,6 +225,29 @@ class TestEnvironmentVariables:
 
         assert spec.env_var(_make_context())["MY_VAR"] == "1"
 
+    def test_user_train_env_vars_override_framework_defaults(self, monkeypatch):
+        """A user who overrides a framework default must win, otherwise the flag is unusable."""
+        monkeypatch.setenv("NCCL_CUMEM_ENABLE", "0")
+        monkeypatch.setenv("NVSHMEM_DISABLE_NCCL", "1")
+        monkeypatch.setenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", "0")
+
+        (spec,) = specs_trainer(
+            _make_args(
+                train_env_vars={
+                    "NCCL_CUMEM_ENABLE": "1",
+                    "NVSHMEM_DISABLE_NCCL": "0",
+                    "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
+                }
+            )
+        )
+        env_vars = spec.env_var(_make_context())
+
+        assert (
+            env_vars["NCCL_CUMEM_ENABLE"],
+            env_vars["NVSHMEM_DISABLE_NCCL"],
+            env_vars["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"],
+        ) == ("1", "0", "1")
+
     def test_the_fp8_scaling_default_is_captured_when_the_spec_is_built(self, monkeypatch):
         """The environment is rendered later inside the gpu-less worker manager, which would decide the wrong default."""
         monkeypatch.delenv("NVTE_FP8_BLOCK_SCALING_FP32_SCALES", raising=False)
@@ -256,6 +312,20 @@ class TestEnvironmentVariables:
 
         assert [spec.env_var(_make_context())["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] for spec in specs] == ["0", "0"]
 
+    def test_disk_offload_forwards_backend_flags_and_nondefault_chunk_size(self, monkeypatch):
+        """The disk backend must be switched on in place of the cpu one and use the requested chunk size."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
+        args = _make_args(offload_train=True, offload_train_target="disk", offload_train_disk_chunk_mb=128)
+
+        (spec,) = specs_trainer(args)
+        env_vars = spec.env_var(_make_context())
+
+        assert (
+            env_vars["TMS_INIT_ENABLE_CPU_BACKUP"],
+            env_vars["TMS_INIT_ENABLE_DISK_BACKUP"],
+            env_vars["TMS_DISK_BACKUP_CHUNK_MB"],
+        ) == ("0", "1", "128")
+
     def test_disk_offload_gets_a_directory_per_worker(self, monkeypatch):
         """Two ranks sharing one directory would overwrite each other's offloaded weights."""
         _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
@@ -299,6 +369,29 @@ class TestTorchMemorySaverPreload:
         assert env_vars["LD_PRELOAD"] == str(expected_path)
         assert env_vars["TMS_INIT_ENABLE"] == "1"
         assert env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] == "1"
+
+    def test_fsdp_offload_does_not_enable_the_megatron_preload(self, monkeypatch):
+        """fsdp has its own offload implementation, so preloading the hook only breaks its allocator."""
+        original_import = builtins.__import__
+
+        def reject_torch_memory_saver_import(
+            name: str,
+            globals_: dict[str, object] | None = None,
+            locals_: dict[str, object] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> ModuleType:
+            if name.partition(".")[0] == "torch_memory_saver":
+                raise AssertionError("FSDP offload must not import torch_memory_saver")
+            return original_import(name, globals_, locals_, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", reject_torch_memory_saver_import)
+
+        (spec,) = specs_trainer(_make_args(train_backend="fsdp", offload_train=True, offload_train_target="cpu"))
+        env_vars = spec.env_var(_make_context())
+
+        assert "LD_PRELOAD" not in env_vars
+        assert "TMS_INIT_ENABLE" not in env_vars
 
     def test_a_missing_preload_library_is_not_swallowed(self, monkeypatch):
         """Silently launching without the hook would make offload corrupt weights."""
