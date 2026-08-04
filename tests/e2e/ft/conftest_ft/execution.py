@@ -168,13 +168,6 @@ _DETERMINISTIC_ENV_VARS: dict[str, str] = {
     "SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE": "8192",
 }
 
-# Selects v2 RayTrainGroup (miles.ray.train.group). Required because
-# --ft-components train depends on cell-based indep_dp; the v1 default path
-# does not support it.
-_TRAINER_FT_ENV_VARS: dict[str, str] = {
-    "MILES_EXPERIMENTAL_FT_TRAINER": "1",
-}
-
 
 def get_train_env_vars_arg(mode: FTTestMode, *, deterministic: bool) -> str:
     env_vars: dict[str, str] = {}
@@ -198,7 +191,6 @@ def run_training(
         shutil.rmtree(dump_dir)
     merged_env_vars = {
         **_DETERMINISTIC_ENV_VARS,
-        **_TRAINER_FT_ENV_VARS,
         # Run eager (no torch.compile). A cell respawned after a crash cold-recompiles its first
         # forward; under dynamic batch sizes that is a per-shape Inductor compile that is slow
         # (observed 124s..1510s, growing) and memory-heavy enough to OOM-kill the actor. That

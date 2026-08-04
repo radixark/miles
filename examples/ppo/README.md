@@ -72,8 +72,8 @@ These are enforced at argument validation, so you get an error rather than a sil
 * **`--kl-coef` must be 0.** Reward-level KL is rejected because the critic trains *before* the
   actor and never sees ref log probs, so its value targets would silently exclude the KL penalty
   applied to the actor's rewards. Use loss-level `--use-kl-loss` / `--kl-loss-coef` instead.
-* **Not compatible with `MILES_EXPERIMENTAL_FT_TRAINER=1`.** The v2 fault-tolerant train group
-  cannot route critic values yet.
+* **Not compatible with `--indep-dp` (which train fault tolerance implies).** Shared actor/critic
+  PPO hands the critic outputs to a single trainer cell as external data.
 
 ## Which numbers here are verified
 

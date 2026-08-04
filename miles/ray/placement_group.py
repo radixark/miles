@@ -7,20 +7,12 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.utils.environ import enable_experimental_ft_trainer
+from miles.ray.train.group import RayTrainGroup
 from ..utils.ray_utils import compute_ray_pin_head_options
 from .rollout.inference_controller import InferenceController
 from .rollout.rollout_executor import RolloutExecutor
 
 logger = logging.getLogger(__name__)
-
-
-def _select_train_group_class():
-    if enable_experimental_ft_trainer():
-        from miles.ray.train.group import RayTrainGroup
-    else:
-        from miles.ray.actor_group import RayTrainGroup
-    return RayTrainGroup
 
 
 @ray.remote(num_gpus=1)
@@ -143,8 +135,7 @@ def allocate_train_group(
     rollout_executor,
     with_opd_teacher: bool = False,
 ):
-    train_group_cls = _select_train_group_class()
-    return train_group_cls(
+    return RayTrainGroup(
         args=args,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
