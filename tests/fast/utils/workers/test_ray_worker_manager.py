@@ -52,7 +52,7 @@ def _make_spec(
         port_infos=(
             port_infos if port_infos is not None else [PortInfo(name="primary", static_port=8000, allow_dynamic=True)]
         ),
-        env_var=lambda: dict(env_var or {}),
+        env_var=lambda _ctx: dict(env_var or {}),
         scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=num_workers_per_cell,
@@ -479,7 +479,7 @@ class TestSpecEnvVars:
         """The spec's env callable is what the manager stores, evaluated per worker rather than cached globally."""
         calls: list[int] = []
 
-        def _env() -> dict[str, str]:
+        def _env(_ctx) -> dict[str, str]:
             calls.append(len(calls))
             return {"CALL_INDEX": str(len(calls))}
 
