@@ -76,7 +76,7 @@ class FakeRayRemoteClass:
     actor_options: dict[str, Any] = field(default_factory=dict)
 
     def options(self, **kwargs: Any) -> FakeRayRemoteClass:
-        return replace(self, actor_options=kwargs)
+        return replace(self, actor_options={**self.actor_options, **kwargs})
 
     def remote(self, *args: Any, **kwargs: Any) -> FakeRayActorHandle:
         assert not args, "actor constructors must be called with keyword arguments"
@@ -92,8 +92,10 @@ class FakeRayRemoteClass:
 class FakeRayModule:
     cluster: FakeRayCluster
 
-    def remote(self, actor_class: type) -> FakeRayRemoteClass:
-        return FakeRayRemoteClass(cluster=self.cluster, actor_class=actor_class)
+    def remote(self, actor_class: type | None = None, **decorator_options: Any):
+        if actor_class is not None:
+            return FakeRayRemoteClass(cluster=self.cluster, actor_class=actor_class)
+        return lambda cls: FakeRayRemoteClass(cluster=self.cluster, actor_class=cls, actor_options=decorator_options)
 
     def get(self, ref: FakeRayObjectRef, timeout: float | None = None) -> Any:
         self.cluster.resolved_refs.append(ref.method)
