@@ -340,6 +340,9 @@ class RayTrainGroup:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
+    async def reconcile_adapters(self) -> None:
+        await asyncio.gather(*[cell.execute("reconcile_adapters") for cell in self._cells])
+
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 
