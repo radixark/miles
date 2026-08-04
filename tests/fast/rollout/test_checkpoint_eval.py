@@ -264,6 +264,8 @@ def make_dispatcher(eval_dispatch, manager, actor_model, **arg_overrides):
         eval_hf_dir="/dev/shm/eval_hf",
         eval_max_in_flight=2,
         eval_overflow_policy="backpressure",
+        eval_keep_snapshots=2,
+        save_hf=None,
     )
     dispatcher_defaults.update(arg_overrides)
     args = make_args(**dispatcher_defaults)
