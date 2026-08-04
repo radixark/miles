@@ -20,8 +20,8 @@ pytestmark = pytest.mark.asyncio
 _DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
 
 
-def _make_controller(cells: list) -> RayTrainGroup:
-    group = object.__new__(RayTrainGroup)
+def _make_controller(cells: list) -> TrainerController:
+    group = object.__new__(TrainerController)
     group._cells_by_id = {cell.cell_id: cell for cell in cells}
     group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
     group._witness_allocator = None
@@ -31,7 +31,7 @@ def _make_controller(cells: list) -> RayTrainGroup:
     return group
 
 
-def _make_failing_controller(fn_name: str) -> RayTrainGroup:
+def _make_failing_controller(fn_name: str) -> TrainerController:
     cell = make_alive_cell(0, alive_cell_indices=[0])
     for handle in get_raw_actor_handles(cell):
         ray.get(handle.set_fail_methods.remote([fn_name]))
@@ -302,6 +302,61 @@ class TestTerminalDecisionLogging:
         decision_records = [record.message for record in caplog.records if "decision=give_up" in record.message]
         assert decision_records
         assert all("errored=0,1" in message for message in decision_records)
+
+
+class TestTrainWithoutAnyCell:
+    async def test_train_fails_fast_once_reconcile_has_dropped_every_cell(self):
+        """A pool the manager no longer reports can never come back on its own, so retrying only stalls the driver."""
+        group = _make_controller([])
+
+        with pytest.raises(NonRetryableError, match="Cannot recover when all cells are dead"):
+            await group.train(3, _DUMMY_DATA_PACK)
+
+
+class TestExportHf:
+    async def test_export_stops_once_no_cell_is_left_to_take_it(self):
+        """Retrying an export forever would hide the crash behind a run that never finishes the checkpoint."""
+        group = _make_failing_controller("export_hf")
+
+        with pytest.raises(NonRetryableError):
+            await group.export_hf(3, "/ckpt/hf-3")
+
+
+class _ActivenessRecordingCell:
+    def __init__(self, cell_id: str) -> None:
+        self.cell_id = cell_id
+        self.cell_index = int(cell_id.rsplit("-", 1)[1])
+        self.tracker: ActivenessTracker | None = None
+        self.calls: list[tuple[str, bool]] = []
+
+    @property
+    def is_alive(self) -> bool:
+        return True
+
+    @property
+    def is_uninitialized(self) -> bool:
+        return False
+
+    async def execute(self, fn_name: str, **_kwargs) -> None:
+        self.calls.append((fn_name, self.tracker.get().active))
+
+
+class TestOffloadOnloadBracketsHealthChecking:
+    async def test_health_checks_are_off_for_the_whole_sleep_and_wake_up_window(self):
+        """A probe that reaches a sleeping or half-woken worker recycles a perfectly healthy cell."""
+        cells = [_ActivenessRecordingCell(f"trainer-actor-{cell_index}") for cell_index in range(2)]
+        group = _make_controller(cells)
+        for cell in cells:
+            cell.tracker = group._health_checker_activeness
+
+        await group.offload()
+        assert not group._health_checker_activeness.get().active
+
+        await group.onload()
+
+        assert group._health_checker_activeness.get().active
+        for cell in cells:
+            assert cell.calls == [("sleep", False), ("wake_up", False)]
 
 
 class TestMultipleCellsStillTolerateFailures:

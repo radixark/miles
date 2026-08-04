@@ -3,7 +3,13 @@ import asyncio
 import pytest
 import ray
 from tests.fast.ray.train import conftest as train_conftest
-from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell, make_cell, make_indep_dp_info
+from tests.fast.ray.train.conftest import (
+    RecordingHealthChecker,
+    get_raw_actor_handles,
+    make_alive_cell,
+    make_cell,
+    make_indep_dp_info,
+)
 
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
@@ -186,6 +192,105 @@ class TestAsyncInit:
             assert kwargs["indep_dp_info"] == info
             assert kwargs["recv_ckpt_src_rank"] is None
 
+    async def test_health_checking_starts_on_an_alive_cell_and_is_running_when_init_returns(self):
+        """A checker that is only scheduled never probes until the next await, which may be a whole train step away."""
+        checker = RecordingHealthChecker()
+        cell = make_cell(actor_count=1, health_checker=checker)
+        checker.observe_alive = lambda: cell.is_alive
+
+        await cell.init(indep_dp_info=make_indep_dp_info())
+
+        assert checker.start_count == 1
+        assert checker.alive_when_started is True
+        assert checker.task_started
+
+
+class TestSetRolloutExecutor:
+    async def test_a_cell_without_an_executor_issues_no_worker_rpc(self):
+        """The critic pool has no executor, and a None handle reaching a worker would break its next rollout call."""
+        cell = make_cell(actor_count=2, rollout_executor=None)
+
+        assert await cell.set_rollout_executor() == []
+
+        for handle in get_raw_actor_handles(cell):
+            calls = ray.get(handle.get_calls.remote())
+            assert [name for name, _args, _kwargs in calls] == []
+
+    async def test_present_rollout_executor_reaches_every_actor(self):
+        """A configured rollout executor handle is forwarded to every actor of the cell."""
+        cell = make_cell(actor_count=2, rollout_executor="executor-handle")
+
+        results = await cell.set_rollout_executor()
+
+        assert len(results) == 2
+        for handle in get_raw_actor_handles(cell):
+            calls = ray.get(handle.get_calls.remote())
+            assert calls == [("set_rollout_executor", (), {"rollout_executor": "executor-handle"})]
+
+
+class _EntryBarrier:
+    def __init__(self, party_size: int) -> None:
+        self._remaining = party_size
+        self._all_entered = asyncio.Event()
+
+    async def enter(self) -> None:
+        self._remaining -= 1
+        if self._remaining == 0:
+            self._all_entered.set()
+        await asyncio.wait_for(self._all_entered.wait(), timeout=10.0)
+
+
+class _BarrierWorkerHandle:
+    def __init__(self, barrier: _EntryBarrier) -> None:
+        self._barrier = barrier
+
+    async def train(self, **_kwargs) -> str:
+        await self._barrier.enter()
+        return "done"
+
+
+class TestExecuteConcurrency:
+    async def test_every_worker_rpc_is_entered_before_any_of_them_returns(self, monkeypatch: pytest.MonkeyPatch):
+        """Worker methods enter a collective, so dispatching them one at a time deadlocks the cell."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        barrier = _EntryBarrier(3)
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: [_BarrierWorkerHandle(barrier) for _ in range(3)])
+
+        results = await cell.execute("train", rollout_id=0)
+
+        assert results == ["done", "done", "done"]
+
+
+class TestPartialWorkerFailure:
+    async def test_one_failing_rank_errors_the_cell_and_kills_every_rank(self):
+        """A surviving rank of a broken cell would sit in the collective and stall the cells that are still healthy."""
+        cell = make_cell(actor_count=3)
+        cell._mark_as_alive(indep_dp_info=make_indep_dp_info())
+        handles = get_raw_actor_handles(cell)
+        ray.get(handles[1].set_fail_methods.remote(["train"]))
+
+        with pytest.raises(RuntimeError, match="Injected failure"):
+            await cell.execute("train", rollout_id=0)
+
+        assert cell.is_errored
+        for handle in handles:
+            with pytest.raises(ray.exceptions.RayActorError):
+                ray.get(handle.get_calls.remote())
+
+    async def test_a_failure_that_must_not_kill_leaves_the_cell_alive_and_reachable(self):
+        """The heartbeat probe rides on execute; recycling a cell because one probe raised would kill live training."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        handles = get_raw_actor_handles(cell)
+        ray.get(handles[0].set_fail_methods.remote(["train"]))
+
+        with pytest.raises(RuntimeError, match="Injected failure"):
+            await cell.execute("train", kill_on_failure=False, rollout_id=0)
+
+        assert cell.is_alive
+        assert not cell.is_errored
+        for handle in handles:
+            assert ray.get(handle.get_calls.remote())
+
 
 class TestAsyncInitFailure:
     async def test_init_failure_leaves_cell_not_alive(self):
@@ -246,29 +351,6 @@ class TestPrepareIndepDPModeHealing:
         handle = get_raw_actor_handles(cell)[0]
         calls = ray.get(handle.get_calls.remote())
         assert any(c[0] == "init" for c in calls)
-
-
-class TestSetRolloutExecutor:
-    async def test_missing_rollout_executor_skips_worker_rpc(self):
-        """A cell configured without a rollout executor returns an empty result and dispatches nothing."""
-        cell = make_cell(actor_count=2)
-
-        results = await cell.set_rollout_executor()
-
-        assert results == []
-        for handle in cell._get_actor_handles():
-            assert ray.get(handle.get_calls.remote()) == []
-
-    async def test_present_rollout_executor_reaches_every_actor(self):
-        """A configured rollout executor handle is forwarded positionally to every actor of the cell."""
-        cell = make_cell(actor_count=2, rollout_executor="executor-handle")
-
-        results = await cell.set_rollout_executor()
-
-        assert len(results) == 2
-        for handle in cell._get_actor_handles():
-            calls = ray.get(handle.get_calls.remote())
-            assert calls == [("set_rollout_executor", ("executor-handle",), {})]
 
 
 class TestStatePredicates:

@@ -31,6 +31,7 @@ class FakeWorkerManager:
         self.stopped_cell_ids: list[list[str]] = []
         self._handles: dict[str, list] = {}
         self._cell_indices_failing_init: set[int] = set()
+        self.master_addr_per_worker: list[HostAndPort] | None = None
 
         self.get_cell_infos = _FakeRemoteMethod(self._get_cell_infos)
         self.get_worker_infos = _FakeRemoteMethod(self._get_worker_infos)
@@ -65,12 +66,17 @@ class FakeWorkerManager:
             WorkerInfo(
                 name=f"{cell_id}-{worker_index}",
                 generation=1 + len(self.started_cell_ids),
-                self_addrs={MASTER_PORT_NAME: HostAndPort(host="10.0.0.1", port=20000)},
+                self_addrs={MASTER_PORT_NAME: self._compute_master_addr(worker_index)},
                 gpu_ids=[worker_index],
                 handle=RayWorkerHandle(handle),
             )
             for worker_index, handle in enumerate(self._handles[cell_id])
         ]
+
+    def _compute_master_addr(self, worker_index: int) -> HostAndPort:
+        if self.master_addr_per_worker is None:
+            return HostAndPort(host="10.0.0.1", port=20000)
+        return self.master_addr_per_worker[worker_index]
 
     def _stop_cells(self, cell_ids: list[str]) -> None:
         self.stopped_cell_ids.append(cell_ids)
