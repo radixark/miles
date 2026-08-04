@@ -452,6 +452,9 @@ class TestWaitReminder:
         await waiter
 
         with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            # Only the window after the acquisition is under test; the reminders
+            # from the legitimate wait above are captured too and are expected.
+            caplog.clear()
             await asyncio.sleep(0.05)
 
         assert _reminder_messages(caplog) == []
@@ -495,6 +498,8 @@ class TestWaitReminder:
         await asyncio.sleep(0.03)
         await _cancel(waiter)
         with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            # Only the window after the cancellation is under test.
+            caplog.clear()
             await asyncio.sleep(0.05)
         await holder.finish()
 
