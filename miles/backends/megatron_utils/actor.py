@@ -15,6 +15,7 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
@@ -35,6 +36,7 @@ from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.structured_log import with_logs
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.types import RolloutBatch
+from miles.utils.workers.naming import compute_cell_id
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
@@ -110,10 +112,13 @@ class MegatronTrainRayActor(TrainRayActor):
             indep_dp_info=indep_dp_info,
         )
 
+        trainer_pool_id = compute_trainer_pool_id(role)
         self._ft_test_action_executor = FTTestActionActorExecutor.from_args(
             args,
-            cell_index=indep_dp_info.cell_index,
-            num_cells=indep_dp_info.num_cells,
+            cell_id=compute_cell_id(pool_id=trainer_pool_id, cell_index=indep_dp_info.cell_index),
+            cell_ids=[
+                compute_cell_id(pool_id=trainer_pool_id, cell_index=i) for i in range(indep_dp_info.num_cells)
+            ],
             rank=self._rank,
         )
 

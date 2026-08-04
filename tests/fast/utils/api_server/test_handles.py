@@ -82,7 +82,7 @@ class TestActorCellHandler:
     async def test_a_cell_the_group_has_not_observed_yet_is_pending(self) -> None:
         """Between a manager restart and the next poll the group knows nothing about it."""
         handler, group, _manager = _make_actor_handler()
-        group._cells_by_index = {}
+        group._cells_by_id = {}
 
         cell = await handler.get_cell(ACTOR_CELL_ID)
 
@@ -96,7 +96,7 @@ class TestActorCellHandler:
 
         await handler.suspend(ACTOR_CELL_ID)
 
-        group.stop_cell.assert_awaited_once_with(0)
+        group.stop_cell.assert_awaited_once_with(ACTOR_CELL_ID)
 
     @pytest.mark.asyncio
     async def test_resume_delegates_to_the_group(self) -> None:
@@ -106,7 +106,7 @@ class TestActorCellHandler:
 
         await handler.resume(ACTOR_CELL_ID)
 
-        group.start_cell.assert_called_once_with(0)
+        group.start_cell.assert_called_once_with(ACTOR_CELL_ID)
 
     @pytest.mark.asyncio
     async def test_injection_is_forwarded_to_the_worker_manager(self) -> None:
