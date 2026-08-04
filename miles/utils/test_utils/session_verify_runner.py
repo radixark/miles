@@ -162,6 +162,10 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
     ]
     if ns.sglang_tool_call_parser:
         parts.append(f"--sglang-tool-call-parser {ns.sglang_tool_call_parser}")
+    if ns.sglang_context_length is not None:
+        parts.append(f"--sglang-context-length {ns.sglang_context_length}")
+    if ns.sglang_cuda_graph_backend_prefill is not None:
+        parts.append(f"--sglang-cuda-graph-backend-prefill {ns.sglang_cuda_graph_backend_prefill}")
     # DeepSeek V3.2 (and other NSA/MoE archs) requires expert-parallel > 1 in
     # sglang; the default is 1, which is fatal at engine init.  Only emit the
     # flag when the caller asks for ep>1 so single-expert models stay untouched.

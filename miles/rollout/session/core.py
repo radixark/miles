@@ -26,6 +26,7 @@ from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,10 @@ class SessionCore:
             # Must be False so stop-token text is trimmed from assistant content;
             # token IDs still come from logprobs below.
             request_body["no_stop_trim"] = False
+            # Without this the engine serves the base weights, so the adapter being
+            # trained would never shape the trajectories it is scored on.
+            if is_lora_enabled(self.args):
+                request_body["lora_path"] = LORA_ADAPTER_NAME
             # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
             # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.
             request_ctk = request_body.get("chat_template_kwargs")

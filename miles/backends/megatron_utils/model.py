@@ -57,8 +57,12 @@ from .parallel import get_packed_seq_params
 logger = logging.getLogger(__name__)
 
 
+def _has_loadable_ckpt(load_dir: str | None) -> bool:
+    """Whether ``--load`` holds anything; ``load_checkpoint`` dispatches dist vs HF itself."""
+    return bool(load_dir) and Path(load_dir).is_dir() and any(Path(load_dir).iterdir())
+
+
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
-from .lora_utils import save_lora_checkpoint
 
 
 def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer) -> OptimizerParamScheduler:
@@ -146,7 +150,16 @@ def setup_model_and_optimizer(
     ):
         model = _setup_lora_model_via_bridge(args)
     else:
-        model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+        provider_func = get_model_provider_func(args, role)
+        if (
+            is_lora_enabled(args)
+            and role == "actor"
+            and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
+        ):
+            from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
+
+            provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
+        model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
@@ -165,6 +178,12 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        if config.muon_split_qkv and "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
+            if is_first_replica_megatron_main_rank():
+                logger.info(
+                    "Inkling fused qkvr detected: forcing muon_split_qkv=False " "(whole-matrix orthogonalization)."
+                )
+            config.muon_split_qkv = False
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
@@ -181,6 +200,12 @@ def setup_model_and_optimizer(
             model_chunks=model,
             use_gloo_process_groups=args.enable_gloo_process_groups,
         )
+
+    if args.stream_optimizer_state_to_disk:
+        from miles_plugins.optimizers.nvme_stream import setup_optimizer_state_streaming
+
+        setup_optimizer_state_streaming(args, optimizer)
+
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
     return model, optimizer, opt_param_scheduler
 
@@ -626,6 +651,9 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
+    from .lora_utils import reduce_marked_lora_grads
+
+    reduce_marked_lora_grads(args[0])
     return finalize_model_grads(*args, **kwargs)
 
 
@@ -866,63 +894,6 @@ def save(
         enable_forward_pre_hook(model)
 
 
-def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
-    """Save Megatron model in HuggingFace format.
-
-    For LoRA models this saves both:
-    - A **merged** HF model (adapter weights folded into base) at ``{path}/``
-      so it can be loaded directly with ``AutoModelForCausalLM.from_pretrained``.
-    - An **adapter-only** HF PEFT checkpoint at ``{path}/adapter/``
-      so it can be loaded with ``PeftModel.from_pretrained``.
-
-    This function is collective — all ranks must call it.
-
-    Args:
-        args: Runtime arguments.
-        model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
-        rollout_id (int): Rollout ID for path formatting.
-    """
-    should_log = get_parallel_state().effective_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
-
-    try:
-        from megatron.bridge import AutoBridge
-
-        from miles.utils.megatron_bridge_utils import patch_megatron_model
-
-        path = Path(args.save_hf.format(rollout_id=rollout_id))
-
-        if should_log:
-            logger.info(f"Saving model in HuggingFace format to {path}")
-
-        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-
-        path.mkdir(parents=True, exist_ok=True)
-
-        with patch_megatron_model(model):
-            # For LoRA models, merge_adapter_weights=True (default) merges
-            # adapter weights into base weights for a standalone HF model.
-            bridge.save_hf_pretrained(model, path=path)
-
-        if should_log:
-            logger.info(f"Successfully saved merged HuggingFace model to {path}")
-    except Exception as e:
-        if should_log:
-            logger.error(f"Failed to save HuggingFace format: {e}")
-
-    # Additionally save adapter-only checkpoint for LoRA models
-    if is_lora_model(model):
-        try:
-            adapter_path = Path(args.save_hf.format(rollout_id=rollout_id)) / "adapter"
-            if should_log:
-                logger.info(f"Saving LoRA adapter (HF PEFT format) to {adapter_path}")
-            save_lora_checkpoint(model, args, str(adapter_path))
-            if should_log:
-                logger.info(f"Successfully saved LoRA adapter to {adapter_path}")
-        except Exception as e:
-            if should_log:
-                logger.error(f"Failed to save LoRA adapter: {e}")
-
-
 def initialize_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
@@ -951,8 +922,7 @@ def initialize_model_and_optimizer(
     model[0].role = role
     clear_memory()
 
-    multi_lora = is_multi_lora_enabled(args)
-    if multi_lora:
+    if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
         # while loading the base checkpoint.
         from megatron.bridge.peft.multi_lora_layers import hide_adapters
@@ -961,14 +931,38 @@ def initialize_model_and_optimizer(
     else:
         load_ctx = nullcontext()
 
-    with load_ctx:
-        iteration, _ = load_checkpoint(
-            model,
-            optimizer,
-            opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=False,
-        )
+    load_dir = getattr(args, "load", None)
+    # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
+    if load_dir is None or _has_loadable_ckpt(load_dir):
+        with load_ctx:
+            iteration, _ = load_checkpoint(
+                model,
+                optimizer,
+                opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=False,
+            )
+    else:
+        if is_first_replica_megatron_main_rank():
+            logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
+        iteration = 0
+
+    if (
+        is_lora_enabled(args)
+        and role == "actor"
+        and args.megatron_to_hf_mode != "bridge"
+        and getattr(args, "lora_adapter_path", None)
+        and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
+    ):
+        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists():
+            from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
+
+            load_inkling_lora_adapter(model, args.lora_adapter_path)
+            if optimizer is not None:
+                # refresh the fp32 masters, or the first step() restores the
+                # pre-load init values over the adapter we just wrote
+                optimizer.reload_model_params()
+
     check_peak_gpu_memory_after_load(args)
     clear_memory()
 

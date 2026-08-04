@@ -195,7 +195,11 @@ def test_qwen3_ref_model_uses_fp32_master_storage(monkeypatch):
 
     monkeypatch.setattr(actor_module.os.path, "isdir", lambda path: True)
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 0)
-    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace(dp_mesh=mesh))
+    monkeypatch.setattr(
+        actor_module,
+        "get_parallel_state",
+        lambda: SimpleNamespace(get_mesh=lambda name: {"fsdp": mesh}[name]),
+    )
     monkeypatch.setattr(actor_module, "apply_fsdp2", capture_apply_fsdp2)
 
     ref = actor._create_ref_model("/checkpoint")

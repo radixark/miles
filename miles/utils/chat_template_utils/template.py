@@ -26,7 +26,7 @@ from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
 from transformers.utils.chat_template_utils import render_jinja_template
 
-from miles.utils.chat_template_utils import deepseek
+from miles.utils.chat_template_utils import deepseek, inkling
 
 
 def load_hf_chat_template(model_id: str) -> str:
@@ -276,6 +276,19 @@ def apply_chat_template(
             tokenizer,
             tools=tools,
             tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            **kwargs,
+        )
+
+    if inkling.is_inkling(tokenizer):
+        # the fixed template needs parsed tool-call arguments and handles the
+        # thinking-effort line, tool_calls, and the end-sampling token itself
+        return tokenizer.apply_chat_template(
+            normalize_tool_arguments(messages, "dict"),
+            chat_template=inkling.fixed_chat_template(),
+            tokenize=tokenize,
+            tools=extract_tool_dicts(tools),
+            return_dict=False,
             add_generation_prompt=add_generation_prompt,
             **kwargs,
         )

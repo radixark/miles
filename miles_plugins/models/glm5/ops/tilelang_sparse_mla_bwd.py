@@ -78,7 +78,10 @@ def postprocess(
     pass_configs={
         tilelang.PassConfigKey.TL_DISABLE_TMA_LOWER: True,
         tilelang.PassConfigKey.TL_DISABLE_WARP_SPECIALIZED: True,
-        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: True,
+        # Aggressive smem merge aliases buffers that are still live, giving NaN
+        # dQ/dKV. Hopper's scheduling happens to hide it; that is luck, not
+        # safety, so keep it off everywhere. Costs ~5% on this kernel.
+        tilelang.PassConfigKey.TL_ENABLE_AGGRESSIVE_SHARED_MEMORY_MERGE: False,
     },
 )
 def bwd(

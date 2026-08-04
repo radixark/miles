@@ -10,14 +10,13 @@ leakage.
 
 The agent loop and training wrapper live in ``openenv_agent_function``
 (sibling module) and are reused unchanged; this module only supplies its own
-``run_episode`` — how an env comes into being and which server contract it
-speaks (``native_evaluate``, see the episode-wiring note there). The image
-recipe lives in ``tb2_sandbox_recipe`` and its Daytona materialization in
-``tb2_sandbox_daytona``; the recipe bakes the installed ``tbench2_env``
-package -- OpenEnv's Terminal-Bench-2 environment package -- into the image,
-so this variant needs the pinned tbench2_env install from the README
-(canonical test.sh scoring and verifier-asset withholding built into the
-server).
+``run_episode`` — how an env comes into being (see the episode-wiring note
+there). The image recipe lives in ``tb2_sandbox_recipe`` and its Daytona
+materialization in ``tb2_sandbox_daytona``; the recipe bakes the installed
+``tbench2_env`` package -- OpenEnv's Terminal-Bench-2 environment package --
+into the image, so this variant needs the pinned tbench2_env install from
+the README (canonical test.sh scoring and verifier-asset withholding built
+into the server).
 
 Env vars (the agent-loop ones in ``openenv_agent_function`` apply too):
   OPENENV_TB2_TASKS_DIR        path to a terminal-bench-2 checkout: build the
@@ -59,13 +58,12 @@ logger = logging.getLogger(__name__)
 # definition, read off the local TB2 checkout (OPENENV_TB2_TASKS_DIR); repeat
 # creates hit Daytona's build cache, and no named snapshot is involved.
 #
-# The sandbox's env server is the CURRENT upstream tbench2_env baked by the
-# recipe — carrying the fixes upstreamed via huggingface/OpenEnv#965 + #972:
-# canonical tests/test.sh scoring built into `evaluate`, task WORKDIR resolved
-# server-side, verifier assets withheld. So run_episode here sets
-# native_evaluate=True and the adapter-side compensation machinery in
-# openenv_agent_function (_apply_workdir / _CANONICAL_EVAL_CMD) is deliberately
-# not applied — the launcher preflight rejects an older install outright.
+# The sandbox's env server is the tbench2_env baked by the recipe, installed
+# per the README (at or after the huggingface/OpenEnv#1012 merge): canonical
+# tests/test.sh scoring built into `evaluate`, task WORKDIR resolved
+# server-side, verifier assets withheld. The launcher preflight rejects an
+# older install outright, and the shared agent loop's harness-marker guard
+# backstops it per episode.
 #
 # Daytona rate-limits sandbox creation (ThrottlerException: Too Many Requests).
 # A rollout fans out many episodes at once; cap in-flight creates process-wide
@@ -219,10 +217,7 @@ async def run_episode(
     """One episode in its own Daytona sandbox, with the caller's own
     policy. Direct-drive entry, same contract as openenv_agent_function's.
 
-    native_evaluate=True: the baked server carries the OpenEnv#965/#972 fixes —
-    raw exec commands (WORKDIR resolved server-side), scoring via the native
-    `evaluate` action. No post-episode hygiene: the sandbox is deleted when
-    the episode ends.
+    No post-episode hygiene: the sandbox is deleted when the episode ends.
     """
     return await oaf._multi_turn(
         oaf._load_tbench2(),
@@ -232,7 +227,6 @@ async def run_episode(
         request_kwargs,
         metadata,
         run_body=_sandbox_run_body,
-        native_evaluate=True,
     )
 
 

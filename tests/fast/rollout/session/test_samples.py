@@ -16,8 +16,10 @@ from miles.utils.types import Sample
 
 # ── helpers ──────────────────────────────────────────────────────────
 
-_ARGS = SimpleNamespace(save_debug_trajectory_data=None)
-_ARGS_RECORDING = SimpleNamespace(save_debug_trajectory_data="/unused/{rollout_id}.jsonl")
+_ARGS = SimpleNamespace(save_debug_trajectory_data=None, sglang_speculative_algorithm=None)
+_ARGS_RECORDING = SimpleNamespace(
+    save_debug_trajectory_data="/unused/{rollout_id}.jsonl", sglang_speculative_algorithm=None
+)
 
 
 def _mock_tokenizer():

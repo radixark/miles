@@ -12,7 +12,7 @@ from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_fil
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.utils import dumper_utils
-from miles.utils.http_utils import get, post
+from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.misc import as_completed_async, call_agent_abort_hook, load_function
 from miles.utils.types import Sample
 
@@ -54,10 +54,11 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 async def get_worker_urls(args: Namespace):
     if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
         response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
-        return response["urls"]
+        urls = response["urls"]
     else:
         response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
-        return [worker["url"] for worker in response["workers"]]
+        urls = [worker["url"] for worker in response["workers"]]
+    return router_worker_base_urls(urls)
 
 
 def submit_generate_tasks(state: GenerateState, samples: list[list[Sample]]):

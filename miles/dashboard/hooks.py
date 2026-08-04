@@ -77,6 +77,7 @@ class PhaseSink:
         self._last_flush = time.monotonic()
         self._identity: _Identity | None = None
         self._warner = RateLimitedWarner(logger)
+        self._flusher = None
 
     def begin(self, name: str, t0: float) -> None:
         """Timer.start notification: push an OPEN interval immediately (no
@@ -120,6 +121,7 @@ class PhaseSink:
                     )
                 )
                 batch = self._take_batch_if_due()
+            self._ensure_flusher()
             if batch:
                 self._handle.push_phases.remote(batch)
         except Exception:
@@ -140,6 +142,26 @@ class PhaseSink:
                 self._handle.push_phases.remote(batch)
         except Exception:
             self._warner.warn("dashboard phase sink flush failed; dropping events")
+
+    def _ensure_flusher(self) -> None:
+        """Background flush: _take_batch_if_due only runs when a new event
+        arrives, so on a process that goes idle (train ranks during a
+        shared-engine eval) the closing events of its last phases sit in the
+        buffer indefinitely and the UI shows them as still-open."""
+        if self._flusher is not None:
+            return
+        import threading
+
+        def _loop():
+            while True:
+                time.sleep(BATCH_MAX_SECONDS)
+                with self._lock:
+                    due = bool(self._buffer)
+                if due:
+                    self.flush()
+
+        self._flusher = threading.Thread(target=_loop, daemon=True, name="dashboard-phase-flush")
+        self._flusher.start()
 
 
 class TrajectorySink:

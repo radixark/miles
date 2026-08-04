@@ -71,8 +71,6 @@ def validate_multi_lora_args(args: Any) -> None:
         return
 
     # Swap in the multi-LoRA rollout fn and data source unless the user pointed these flags elsewhere.
-    # `rollout_function_path is None` means nothing has selected one yet; see
-    # `resolve_rollout_function_path`.
     if args.rollout_function_path is None:
         args.rollout_function_path = "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
     if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":

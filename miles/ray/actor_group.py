@@ -74,19 +74,47 @@ class RayTrainGroup:
             indep_dp_info=indep_dp_info,
         )
 
-    async def train(self, rollout_id, rollout_data_pack):
+    async def train(self, rollout_id, rollout_data_pack, external_data=None):
         """Do one rollout training"""
-        await self._broadcast(
+        rollout_data_ref = rollout_data_pack["data_ref"]
+        if external_data is None:
+            return await self._broadcast(
+                "train",
+                rollout_id,
+                rollout_data_ref,
+                witness_info=None,
+                attempt=0,
+            )
+        if isinstance(external_data, list):
+            if len(external_data) != len(self._actor_handles):
+                raise ValueError("external_data must contain one payload per train worker")
+            refs = [
+                actor.train.remote(
+                    rollout_id,
+                    rollout_data_ref,
+                    witness_info=None,
+                    attempt=0,
+                    external_data=rank_data,
+                )
+                for actor, rank_data in zip(self._actor_handles, external_data, strict=False)
+            ]
+            return await asyncio.gather(*refs)
+        return await self._broadcast(
             "train",
             rollout_id,
-            rollout_data_pack["data_ref"],
+            rollout_data_ref,
             witness_info=None,
             attempt=0,
+            external_data=external_data,
         )
 
     async def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
+
+    async def export_hf(self, rollout_id: int, path: str):
+        """Export current weights as an HF checkpoint (collective across all ranks)."""
+        await self._broadcast("export_hf", rollout_id, path)
 
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights from rank 0 to all other ranks."""
@@ -114,13 +142,6 @@ class RayTrainGroup:
 
     async def clear_memory(self):
         await self._broadcast("clear_memory")
-
-    async def connect(self, critic_group):
-        refs = [
-            actor.connect_actor_critic.remote(critic)
-            for actor, critic in zip(self._actor_handles, critic_group._actor_handles, strict=False)
-        ]
-        await asyncio.gather(*refs)
 
     async def set_rollout_manager(self):
         self.rollout_manager = self._rollout_manager

@@ -9,9 +9,11 @@ so per-iteration wall time moves from ``rollout_time + train_time`` toward
 Selected by ``train_async.py --fully-async``, which also requires the class-based
 rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``).
 
-Evaluation is not served by this function; ``--fully-async`` therefore points
-``--eval-function-path`` at the standard inference rollout unless it is set
-explicitly.
+Evaluation targets whatever ``GenerateState`` ``RolloutManager`` passes via
+``RolloutFnEvalInput.generate_state`` (see ``miles/rollout/checkpoint_eval.py``
+for how the dedicated-fleet state is built). When unset, eval shares the
+rollout engines, pausing producer submissions for the duration of the
+(blocking) eval.
 """
 
 import asyncio
@@ -22,9 +24,19 @@ from collections.abc import Callable, Iterator
 
 import httpx
 
-from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnInput, RolloutFnOutput, RolloutFnTrainOutput
+from miles.rollout.base_types import (
+    RolloutFnConstructorInput,
+    RolloutFnEvalInput,
+    RolloutFnEvalOutput,
+    RolloutFnInput,
+    RolloutFnOutput,
+    RolloutFnTrainOutput,
+)
+from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
+from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.utils.http_utils import get
+from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -37,6 +49,10 @@ WEIGHT_VERSION_QUERY_TIMEOUT_SECS = 2.0
 # returns multiple samples per trajectory (e.g. multi-agent).
 Group = list[Sample | list[Sample]]
 
+# A finished group next to the prompt group that produced it, kept together so a
+# recycled group can be resubmitted.
+BufferEntry = tuple[list[Sample], Group]
+
 
 def _iter_samples(group: Group) -> Iterator[Sample]:
     for item in group:
@@ -44,6 +60,10 @@ def _iter_samples(group: Group) -> Iterator[Sample]:
             yield from item
         else:
             yield item
+
+
+def _first_sample(group: Group) -> Sample:
+    return group[0][0] if isinstance(group[0], list) else group[0]
 
 
 def group_oldest_weight_version(group: Group) -> int | None:
@@ -89,7 +109,7 @@ class GroupBuffer:
         order: str,
         max_groups: int | None,
         max_staleness: int | None,
-        on_evict: Callable[[Group], None],
+        on_evict: Callable[[list[Sample]], None],
     ):
         assert order in ("fifo", "lifo"), f"unknown buffer order: {order}"
         self._order = order
@@ -97,7 +117,7 @@ class GroupBuffer:
         self._evict_on_overflow = max_groups is not None
         self._max_staleness = max_staleness
         self._on_evict = on_evict
-        self._groups: list[Group] = []
+        self._entries: list[BufferEntry] = []
         self._cond = asyncio.Condition()
         self.entered_groups = 0
         self.evicted_stale_groups = 0
@@ -109,46 +129,46 @@ class GroupBuffer:
         return self._evict_on_overflow and self._max_staleness is not None
 
     def qsize(self) -> int:
-        return len(self._groups)
+        return len(self._entries)
 
-    async def put(self, group: Group, *, current_version: int | None = None) -> None:
+    async def put(self, entry: BufferEntry, *, current_version: int | None = None) -> None:
         async with self._cond:
             if not self._evict_on_overflow:
-                while len(self._groups) >= self._capacity:
+                while len(self._entries) >= self._capacity:
                     await self._cond.wait()
-            self._groups.append(group)
+            self._entries.append(entry)
             self.entered_groups += 1
-            if self._evict_on_overflow and len(self._groups) > self._capacity:
+            if self._evict_on_overflow and len(self._entries) > self._capacity:
                 self._evict_overflow(current_version)
             self._cond.notify_all()
 
-    async def get(self) -> Group:
+    async def get(self) -> BufferEntry:
         async with self._cond:
-            while not self._groups:
+            while not self._entries:
                 await self._cond.wait()
-            group = self._groups.pop() if self._order == "lifo" else self._groups.pop(0)
+            entry = self._entries.pop() if self._order == "lifo" else self._entries.pop(0)
             self._cond.notify_all()
-            return group
+            return entry
 
     def _evict_overflow(self, current_version: int | None) -> None:
         if self._max_staleness is not None and current_version is not None:
-            fresh: list[Group] = []
-            stale: list[Group] = []
-            for group in self._groups:
-                oldest = group_oldest_weight_version(group)
+            fresh: list[BufferEntry] = []
+            stale: list[BufferEntry] = []
+            for entry in self._entries:
+                oldest = group_oldest_weight_version(entry[1])
                 too_stale = oldest is not None and current_version - oldest > self._max_staleness
-                (stale if too_stale else fresh).append(group)
+                (stale if too_stale else fresh).append(entry)
             if stale:
-                self._groups = fresh
+                self._entries = fresh
                 self.evicted_stale_groups += len(stale)
-                for group in stale:
-                    self._on_evict(group)
-        while len(self._groups) > self._capacity:
-            keys = [_eviction_key(group) for group in self._groups]
+                for prompt_group, _ in stale:
+                    self._on_evict(prompt_group)
+        while len(self._entries) > self._capacity:
+            keys = [_eviction_key(group) for _, group in self._entries]
             stalest = min(keys)
             index = random.choice([i for i, key in enumerate(keys) if key == stalest])
             self.evicted_overflow_groups += 1
-            self._on_evict(self._groups.pop(index))
+            self._on_evict(self._entries.pop(index)[0])
 
     def staleness_stats(self, current_version: int | None) -> tuple[float, int] | None:
         """(average, max) staleness across buffered groups, or None when unknown."""
@@ -156,7 +176,7 @@ class GroupBuffer:
             return None
         values = [
             current_version - oldest
-            for group in self._groups
+            for _, group in self._entries
             if (oldest := group_oldest_weight_version(group)) is not None
         ]
         if not values:
@@ -175,21 +195,23 @@ class _CachedWeightVersion:
     def __init__(self, ttl: float = 1.0):
         self._ttl = ttl
         self._value: int | None = None
-        self._last_query = 0.0
+        self._last_query = float("-inf")
 
     async def get(self, args) -> int | None:
-        now = time.monotonic()
-        if self._value is not None and (now - self._last_query) < self._ttl:
+        # Throttles failures too: the drain queries once per group, and an unreachable
+        # router would otherwise cost every one of them the full timeout.
+        if (time.monotonic() - self._last_query) < self._ttl:
             return self._value
         url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/model_info"
         try:
             data = await asyncio.wait_for(get(url), timeout=WEIGHT_VERSION_QUERY_TIMEOUT_SECS)
+            self._value = int(data["weight_version"])
         except (httpx.HTTPError, asyncio.TimeoutError) as e:
             # Transient router unavailability; the staleness filter is best-effort.
             logger.debug(f"Failed to query engine weight version: {e}")
-            return self._value
-        self._value = int(data["weight_version"])
-        self._last_query = now
+        finally:
+            # Stamped on completion, so a router slower than the TTL still gets throttled.
+            self._last_query = time.monotonic()
         return self._value
 
 
@@ -206,16 +228,18 @@ class FullyAsyncRolloutFn:
         self.args = input.args
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
+        self._dynamic_filter = load_function(input.args.dynamic_sampling_filter_path)
+        self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._weight_version = _CachedWeightVersion()
         self._worker: asyncio.Task | None = None
+        self._eval_prompt_dataset_cache: dict = {}
+        self._producer_resumed = asyncio.Event()
+        self._producer_resumed.set()
         self._output: GroupBuffer | None = None
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
-            raise ValueError(
-                "FullyAsyncRolloutFn does not serve eval; set --eval-function-path to "
-                "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-            )
+            return await self._call_eval(input)
         if self._worker is None:
             self._output = GroupBuffer(
                 order=self.args.async_buffer_order,
@@ -227,6 +251,20 @@ class FullyAsyncRolloutFn:
             logger.info("Started fully-async rollout worker")
         return await self._drain(input.rollout_id)
 
+    async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
+        if input.generate_state is not None:
+            results = await run_eval_datasets(input.generate_state, self._eval_prompt_dataset_cache)
+            return RolloutFnEvalOutput(data=results)
+
+        logger.info("Pausing fully-async producer submissions for shared-engine eval")
+        self._producer_resumed.clear()
+        try:
+            results = await run_eval_datasets(self.state, self._eval_prompt_dataset_cache)
+        finally:
+            self._producer_resumed.set()
+            logger.info("Resumed fully-async producer submissions after eval")
+        return RolloutFnEvalOutput(data=results)
+
     # -------------------------- producer --------------------------
 
     def _max_in_flight_groups(self) -> int:
@@ -236,19 +274,28 @@ class FullyAsyncRolloutFn:
         return self.args.rollout_batch_size
 
     def _submit_one_group(self) -> asyncio.Task:
-        [group] = self.data_source.get_samples(1)
-        return asyncio.create_task(
-            generate_and_rm_group(
-                self.state,
-                group,
-                sampling_params=self.state.sampling_params.copy(),
-                evaluation=False,
-            )
+        [prompt_group] = self.data_source.get_samples(1)
+        return asyncio.create_task(self._generate_group(prompt_group))
+
+    async def _generate_group(self, prompt_group: list[Sample]) -> tuple[list[Sample], Group]:
+        """Return the submitted prompt group next to its result.
+
+        A retry has to resubmit the prompt group: a generate function may expand one
+        trajectory into several samples, and ``generate_and_rm_group`` does not accept
+        that shape back.
+        """
+        result = await generate_and_rm_group(
+            self.state,
+            prompt_group,
+            sampling_params=self.state.sampling_params.copy(),
+            evaluation=False,
         )
+        return prompt_group, result
 
     async def _worker_loop(self):
         active: set[asyncio.Task] = set()
         while True:
+            await self._producer_resumed.wait()
             while len(active) < self._max_in_flight_groups():
                 active.add(self._submit_one_group())
             done, active = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
@@ -261,7 +308,7 @@ class FullyAsyncRolloutFn:
 
     # -------------------------- consumer --------------------------
 
-    async def _next_group(self) -> Group:
+    async def _next_group(self) -> BufferEntry:
         queue_get = asyncio.create_task(self._output.get())
         try:
             while True:
@@ -270,11 +317,13 @@ class FullyAsyncRolloutFn:
                     return_when=asyncio.FIRST_COMPLETED,
                     timeout=NO_PROGRESS_WARN_SECS,
                 )
-                if queue_get in done:
-                    return queue_get.result()
+                # Checked before the queue: the worker loop never returns normally, so a
+                # dead worker fails the step now instead of after its backlog drains.
                 if self._worker in done:
                     self._worker.result()
                     raise RuntimeError("fully-async rollout worker exited without an exception")
+                if queue_get in done:
+                    return queue_get.result()
                 logger.warning(
                     f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s (queued: {self._output.qsize()})"
                 )
@@ -291,15 +340,16 @@ class FullyAsyncRolloutFn:
         aborted_groups_recycled = 0
         stale_groups_recycled = 0
         staleness_values: list[int] = []
+        metric_gatherer = MetricGatherer()
         do_print = True
 
         while len(data) < target_data_size:
-            group = await self._next_group()
+            prompt_group, group = await self._next_group()
             assert len(group) == args.n_samples_per_prompt
 
             # A weight update paused generation mid-group: return it for re-sampling.
             if any(s.status == Sample.Status.ABORTED for s in _iter_samples(group)):
-                self._recycle(group)
+                self._recycle(prompt_group)
                 aborted_groups_recycled += 1
                 continue
 
@@ -309,7 +359,7 @@ class FullyAsyncRolloutFn:
                 staleness = current - oldest
                 staleness_values.append(staleness)
                 if args.max_weight_staleness is not None and staleness > args.max_weight_staleness:
-                    self._recycle(group)
+                    self._recycle(prompt_group)
                     stale_groups_recycled += 1
                     logger.info(
                         f"Recycled stale group (oldest_version={oldest}, current={current}, "
@@ -317,8 +367,14 @@ class FullyAsyncRolloutFn:
                     )
                     continue
 
+            filter_output = call_dynamic_filter(self._dynamic_filter, args, group)
+            if not filter_output.keep:
+                # Dropped, not recycled: no usable gradient signal.
+                metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+                continue
+
             if do_print:
-                sample = group[0][0] if isinstance(group[0], list) else group[0]
+                sample = _first_sample(group)
                 logger.info(
                     f"First rollout sample: {[str(sample.prompt) + sample.response]}, "
                     f"label: {sample.label}, reward: {sample.reward}"
@@ -327,13 +383,16 @@ class FullyAsyncRolloutFn:
 
             data.append(group)
 
-        sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
+        sample = _first_sample(data[-1])
         logger.info(
             f"Finish rollout: {[str(sample.prompt) + sample.response]}, "
             f"label: {sample.label}, reward: {sample.reward}"
         )
 
-        data.sort(key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
+        data.sort(key=lambda group: _first_sample(group).index)
+
+        if self._sample_filter is not None:
+            self._sample_filter(args, data)
 
         buffer = self._output
         metrics = {
@@ -342,6 +401,7 @@ class FullyAsyncRolloutFn:
             "rollout/fully_async/stale_groups_recycled": stale_groups_recycled,
             "rollout/fully_async/evicted_stale_groups": buffer.evicted_stale_groups,
             "rollout/fully_async/evicted_overflow_groups": buffer.evicted_overflow_groups,
+            **metric_gatherer.collect(),
         }
         if buffer.entered_groups:
             evicted = buffer.evicted_stale_groups + buffer.evicted_overflow_groups
@@ -358,7 +418,7 @@ class FullyAsyncRolloutFn:
 
         return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
-    def _recycle(self, group: Group) -> None:
-        for sample in _iter_samples(group):
+    def _recycle(self, prompt_group: list[Sample]) -> None:
+        for sample in prompt_group:
             sample.reset_for_retry()
-        self.data_source.add_samples([group])
+        self.data_source.add_samples([prompt_group])

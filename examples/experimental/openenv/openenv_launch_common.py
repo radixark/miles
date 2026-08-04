@@ -222,7 +222,7 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
             raise RuntimeError(
                 "the Daytona sandbox mode needs tbench2_env in the rollout "
                 "process's environment: pip install -e '<OpenEnv>/envs/tbench2_env' "
-                "from the pinned checkout in this directory's README"
+                "from the checkout described in this directory's README"
             ) from e
         server_src = Path(tbench2_env.__file__).resolve().parent / "server" / "tbench2_env_environment.py"
         src_text = server_src.read_text(encoding="utf-8") if server_src.is_file() else ""
@@ -230,7 +230,7 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
             raise RuntimeError(
                 "the installed tbench2_env server lacks the native-evaluate "
                 "contract (canonical test.sh scoring / TB2_WITHHOLD_TESTS): "
-                "install the pinned checkout from this directory's README, "
-                "not upstream main"
+                "install from an OpenEnv checkout at or after the #1012 merge "
+                "(04d259ea6) — see this directory's README"
             )
         env["OPENENV_TB2_TASKS_DIR"] = args.openenv_tb2_tasks_dir

@@ -83,6 +83,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     enable_mtp: bool = False
     enable_pd: bool = True
     enable_optimizer_offload: bool = False
+    # Engine recipe. "low-latency": one TP8 engine per node pair, EAGLE 5/1/6.
+    # "balanced": the GLM-5.2 cookbook serving shape -- one 4-GPU engine per
+    # node with dp-attention + deepep and EAGLE 1/1/2.
+    sglang_config: Literal["low-latency", "balanced"] = "low-latency"
     num_rollout: int = 3000
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -101,6 +105,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.num_nodes == 1:
             self.enable_pd = False
             self.mode = "debug_minimal"
+        if self.sglang_config == "balanced":
+            assert not self.enable_pd, "balanced is a single-engine shape; PD disaggregation needs low-latency"
+            assert self.num_gpus_per_node % 4 == 0, "balanced places one 4-GPU engine per node"
 
         if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
             self.megatron_model_type = f"glm5.2-744B-A40B_{m.group(1)}layer"
@@ -151,10 +158,15 @@ def _convert_to_fp8(args: ScriptArgs):
     """Convert HF checkpoint to FP8 (block quantization). Megatron still uses bf16."""
     src = f"{args.model_dir}/{args.model_name}"
     dst = f"{args.model_dir}/{args.model_name}_fp8"
+    sentinel = Path(dst) / "model.safetensors.index.json"
+    if sentinel.exists():
+        print(f"_convert_to_fp8 skip {dst} since {sentinel} exists")
+        return
     U.exec_command(
         f"python tools/convert_hf_to_fp8.py "
         f"--model-dir {src} --save-dir {dst} "
-        f"--strategy block --block-size 128 128"
+        f"--strategy block --block-size 128 128 "
+        f"--max-workers 16"
     )
 
 
@@ -180,9 +192,12 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         num_gpus_per_node = 1
         multinode = False
     else:
+        # torch_dist is parallelism-agnostic on load, so EP can follow the
+        # hardware rather than the training config.
+        world_size = args.num_nodes * args.num_gpus_per_node
         extra_args += (
             "--pipeline-model-parallel-size 4 "
-            "--expert-model-parallel-size 32 "
+            f"--expert-model-parallel-size {world_size // 4} "
             "--decoder-first-pipeline-num-layers 18 "
             "--decoder-last-pipeline-num-layers 20 "
         )
@@ -255,6 +270,20 @@ def _execute_train(args: ScriptArgs):
             f"--expert-model-parallel-size {args.num_gpus_per_node} "
             "--expert-tensor-parallel-size 1 "
         )
+    elif args.num_nodes >= 16 and args.num_gpus_per_node == 4:  # GB300 64-GPU config
+        # TP=8 * PP=4 * DP=2 = 64 GPUs. EP=16 is what fits the fp32 optimizer
+        # states on 276GB GPUs; 18/20 puts the DSA stage starts (see below) on
+        # computing layers 1,19,39,59.
+        perf_args = (
+            "--tensor-model-parallel-size 8 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 4 "
+            "--decoder-first-pipeline-num-layers 18 "
+            "--decoder-last-pipeline-num-layers 20 "
+            "--context-parallel-size 1 "
+            "--expert-model-parallel-size 16 "
+            "--expert-tensor-parallel-size 1 "
+        )
     elif args.num_nodes >= 16:  # slime's setting for the full model
         # TP=4 * PP=8 * CP=8 = 256 GPUs (32 nodes) for one training group; EP=32.
         # DSA cross-layer index sharing needs every pipeline stage to START on a
@@ -313,6 +342,7 @@ def _execute_train(args: ScriptArgs):
             "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
         )
 
+    balanced = args.sglang_config == "balanced"
     if args.enable_pd:
         sglang_decode_max_bs = 8
         if args.num_nodes < 16:
@@ -320,28 +350,48 @@ def _execute_train(args: ScriptArgs):
         else:
             sglang_world_size = 64
     else:
-        sglang_decode_max_bs = 256
-        sglang_world_size = min(8, args.num_gpus_per_node)
+        sglang_decode_max_bs = 32
+        sglang_world_size = 4 if balanced else min(8, args.num_gpus_per_node)
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
-        "--sglang-mem-fraction-static 0.70 "
-        "--sglang-enable-dp-attention "
+        # 0.85: measured on the full 744B, 64x GB300 (276GB). 0.75 there leaves
+        # ~59GB per GPU unused and the KV pool at 26k tokens, which caps
+        # trajectories and starves concurrency; 0.85 gives 553k tokens and still
+        # ends steady state with 33GB spare.
+        # 0.70: the value the 5-layer smoke test passes with on 4x H200 (140GB).
+        # Pruned weights make 0.85 nearly all KV cache there, leaving the
+        # weight-checker snapshot nowhere to allocate.
+        f"--sglang-mem-fraction-static {0.70 if args.num_nodes == 1 else 0.85} "
         f"--sglang-ep-size {sglang_world_size} "
-        f"--sglang-dp-size {sglang_world_size} "
-        "--sglang-moe-dense-tp-size 1 "
-        "--sglang-enable-dp-lm-head "
+        "--sglang-router-policy consistent_hashing "
     )
+    if args.enable_pd:
+        # slime native config
+        sglang_args += (
+            "--sglang-enable-dp-attention "
+            f"--sglang-dp-size {sglang_world_size} "
+            "--sglang-moe-dense-tp-size 1 "
+            "--sglang-enable-dp-lm-head "
+        )
+    elif balanced:
+        # dp-attention implies dp-aware routing (set in sglang_utils.arguments):
+        # min_load must see the dp ranks, or requests pile onto whichever rank
+        # sglang picks internally while the others sit idle.
+        sglang_args += "--sglang-enable-dp-attention " f"--sglang-dp-size {sglang_world_size} "
+    if balanced or (args.fp8_rollout and args.use_deepep):
+        sglang_args += "--sglang-moe-a2a-backend deepep "
     if args.fp8_rollout and args.use_deepep:
-        sglang_args += "--sglang-moe-a2a-backend deepep " "--sglang-deepep-mode auto "
+        sglang_args += "--sglang-deepep-mode auto "
     if args.enable_mtp:
-        # EAGLE using the model's own next-token-prediction layer (full GLM-5.2 only;
-        # the MTP layer is stripped from the pruned checkpoints).
+        # balanced follows the cookbook's serving depth; low-latency drafts
+        # deeper, which pays off only when the engine is not already busy.
+        steps, draft_tokens = (1, 2) if balanced else (5, 6)
         sglang_args += (
             "--sglang-speculative-algorithm EAGLE "
-            "--sglang-speculative-num-steps 4 "
+            f"--sglang-speculative-num-steps {steps} "
             "--sglang-speculative-eagle-topk 1 "
-            "--sglang-speculative-num-draft-tokens 5 "
+            f"--sglang-speculative-num-draft-tokens {draft_tokens} "
             "--sglang-speculative-draft-attention-backend nsa "
         )
     if args.enable_pd:
@@ -355,11 +405,11 @@ def _execute_train(args: ScriptArgs):
         "--sglang-page-size 64 "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # concurrency
-        "--sglang-max-running-requests 512 "
-        f"--sglang-chunked-prefill-size {2048 * sglang_world_size} "
+        f"--sglang-max-running-requests {256 if balanced else 512} "
+        f"--sglang-chunked-prefill-size {32768 if balanced else 2048 * sglang_world_size} "
         "--sglang-watchdog-timeout 3600 "
     )
-    if args.hardware in ("B200", "GB300") and not (args.fp8_rollout and args.use_deepep):
+    if args.hardware in ("B200", "GB300") and not balanced and not (args.fp8_rollout and args.use_deepep):
         # TODO: fix bf16 trtllm weight update
         if args.fp8_rollout:
             sglang_args += "--sglang-moe-runner-backend flashinfer_trtllm_routed "

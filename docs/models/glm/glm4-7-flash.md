@@ -53,11 +53,11 @@ The Python launcher does the conversion automatically.
 cd /root/miles
 bash scripts/run-glm4.7-flash.sh
 
-# Python launcher (H200 only — `hardware` literal in the dataclass)
+# Python launcher (defaults to H200; pass --hardware B200 on B200)
 python scripts/run_glm47_flash.py
 ```
 
-Defaults of the Python launcher (see `ScriptArgs`): `model_org=zai-org`, `model_name=GLM-4.7-Flash`, `num_gpus_per_node=8`, `hardware=H200`, `data_dir=/root/datasets`, `model_dir=/root/models`.
+Defaults of the Python launcher (see `ScriptArgs`): `model_org=zai-org`, `model_name=GLM-4.7-Flash`, `num_gpus_per_node=8`, `hardware=H200`, `sglang_attention_backend=None`, `data_dir=/root/datasets`, `model_dir=/root/models`. The `hardware` CLI also accepts `B200`.
 
 ## 5. Recipe Configuration
 
@@ -67,7 +67,7 @@ Defaults of the Python launcher (see `ScriptArgs`): `model_org=zai-org`, `model_
 |---|---|---|---|---|---|---|
 | 4 | 1 | 1 | 8 | 1 | 32768 | 8 (1 × 8) |
 
-`--rollout-num-gpus-per-engine 4` (TP must divide 20 attention heads, so TP=4). The bash launcher's `SGLANG_ARGS` keeps `--sglang-enable-dp-attention` / `--sglang-dp-size` commented out — the in-source comment notes that DP-attention requires `tp_size % dp_size == 0`.
+The Python launcher uses `--rollout-num-gpus-per-engine 2` on B200 and 1 on H200; both values divide the model's 20 attention heads. The bash launcher's `SGLANG_ARGS` keeps `--sglang-enable-dp-attention` / `--sglang-dp-size` commented out — the in-source comment notes that DP-attention requires `tp_size % dp_size == 0`.
 
 ### 5.2 Algorithm
 
