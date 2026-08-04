@@ -78,7 +78,6 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
 
     await placement_group_module.create_training_models(
         args,
-        pgs={"actor": object(), "critic": object()},
         inference_controller=object(),
         rollout_executor=SimpleNamespace(load=SimpleNamespace(remote=_noop_remote)),
     )
