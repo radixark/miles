@@ -1,0 +1,25 @@
+Workbench "{{ include "miles-workbench.fullname" . }}" installed in namespace {{ .Release.Namespace }}.
+
+Wait for it, then get a shell:
+
+  kubectl rollout status statefulset/{{ include "miles-workbench.fullname" . }} -n {{ .Release.Namespace }}
+  kubectl exec -it statefulset/{{ include "miles-workbench.fullname" . }} -n {{ .Release.Namespace }} -- bash
+
+Inside the pod, run long-lived launches under tmux; helm and kubectl act as the
+ServiceAccount "{{ include "miles-workbench.serviceAccountName" . }}".
+
+{{- if not .Values.rbac.create }}
+
+rbac.create=false: the ServiceAccount "{{ include "miles-workbench.serviceAccountName" . }}" and its
+bindings must already exist, otherwise the pod has no cluster permissions.
+{{- end }}
+{{- if not .Values.rbac.leaderWorkerSets }}
+
+rbac.leaderWorkerSets=false: the Role carries no LeaderWorkerSet rules, so a
+cluster admin must have granted them to
+"{{ include "miles-workbench.serviceAccountName" . }}" separately; otherwise
+miles-run cannot create LeaderWorkerSets.
+{{- end }}
+
+Remove it with: helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+(training releases installed from the workbench keep running).
