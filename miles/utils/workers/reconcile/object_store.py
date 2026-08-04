@@ -6,7 +6,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from miles.utils.workers.reconcile.source_event import DeleteEvent, ObjectKey, ParentKey, SourceEvent, UpsertEvent
+from miles.utils.workers.reconcile.source_event import (
+    DeleteEvent,
+    ObjectKey,
+    ParentKey,
+    ReplaceEvent,
+    SourceEvent,
+    UpsertEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +39,25 @@ class ObjectStore:
 
     def handle_event(self, event: SourceEvent) -> set[ParentKey]:
         match event:
+            case ReplaceEvent():
+                return self._handle_replace(event)
             case UpsertEvent():
                 return self._handle_upsert(event)
             case DeleteEvent():
                 return self._handle_delete(event)
             case _:
                 raise AssertionError(f"Unknown source event {event=}")
+
+    def _handle_replace(self, event: ReplaceEvent) -> set[ParentKey]:
+        parents = {key: self._parent_key_or_none(key=key, obj=obj) for key, obj in event.objects.items()}
+        mapped = {key: obj for key, obj in event.objects.items() if parents[key] is not None}
+
+        affected_parents: set[ParentKey] = set()
+        for key, obj in mapped.items():
+            affected_parents |= self._apply_upsert(key=key, obj=obj, parent=parents[key])
+        for key in [key for key in self._cache if key not in mapped]:
+            affected_parents |= self._apply_delete(key=key, last_obj=None)
+        return affected_parents
 
     def _handle_upsert(self, event: UpsertEvent) -> set[ParentKey]:
         parent = self._parent_key_or_none(key=event.key, obj=event.obj)
