@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import TypeAdapter
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 if TYPE_CHECKING:
     from miles.ray.train.controller import RayTrainGroup
@@ -55,10 +56,11 @@ class FTTestActionControllerExecutor:
                 cell_id = action.resolve_cell_id(self._controller.cell_ids)
                 logger.info("FT test action: %s cell %s after rollout %d", action.action, cell_id, rollout_id)
 
+                worker_manager = RayWorkerManager.get_handle()
                 if action.action == "stop_cell_at_end":
-                    await self._controller.stop_cell(cell_id)
+                    await worker_manager.stop_cells.remote([cell_id])
                 elif action.action == "start_cell_at_end":
-                    self._controller.start_cell(cell_id)
+                    await worker_manager.start_cells.remote([cell_id])
 
 
 class FTTestActionActorExecutor:

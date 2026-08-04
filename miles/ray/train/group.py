@@ -360,13 +360,6 @@ class RayTrainGroup:
     def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {cell_id: cell.cell_status() for cell_id, cell in list(self._cells_by_id.items())}
 
-    async def stop_cell(self, cell_id: str) -> None:
-        await self._cells_by_id[cell_id].stop()
-
-    def start_cell(self, cell_id: str) -> None:
-        """Mark a stopped cell as pending. Actual startup happens in train()."""
-        self._cells_by_id[cell_id].mark_as_pending()
-
     # ------------------------ utils to forward calls to cells ------------------------
 
     def _is_recoverable(self) -> bool:
