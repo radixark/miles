@@ -934,6 +934,15 @@ class TestStartAndStopCells:
 
         assert len(fake_ray_cluster.calls_of("run")) == 2
 
+    async def test_starting_a_running_cell_leaves_it_alone(self, fake_ray_cluster: FakeRayCluster):
+        """Relaunching a live cell would orphan its current actors, so a repeated resume is a no-op."""
+        manager = await _launch([_make_spec("engine")])
+        handles_before = list(fake_ray_cluster.handles)
+
+        await manager.start_cells(["engine-0"])
+
+        assert fake_ray_cluster.handles == handles_before
+
     async def test_stopping_an_already_stopped_cell_is_a_noop(self, fake_ray_cluster: FakeRayCluster):
         """Heal loops retry, so a redundant suspend must not blow up on missing actors."""
         manager = await _launch([_make_spec("engine")])

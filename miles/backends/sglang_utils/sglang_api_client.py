@@ -28,33 +28,6 @@ async def probe_server_healthy(server_url: str, api_key: str | None, timeout: fl
         return False
 
 
-async def wait_server_healthy(server_url, api_key):
-    headers = _compute_headers(api_key)
-
-    http_client = GeneralHttpClientProvider.client()
-    while True:
-        try:
-            response = await http_client.get(f"{server_url}/health_generate", headers=headers)
-            if response.status_code == 200:
-                break
-        except httpx.HTTPError:
-            pass
-
-        await asyncio.sleep(2)
-
-    # use flush_cache to make sure the working queue is empty, so that we can do offload
-    while True:
-        try:
-            response = await http_client.get(f"{server_url}/flush_cache", headers=headers)
-            if response.status_code == 200:
-                break
-
-        except httpx.HTTPError:
-            pass
-
-        await asyncio.sleep(2)
-
-
 @dataclasses.dataclass(frozen=True)
 class SGLangApiClient:
     server_url: str
