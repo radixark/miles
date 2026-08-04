@@ -39,11 +39,11 @@ def build_dp_schedule(
     vpp_size = train_parallel_config["vpp_size"] or 1
     mb_group = train_parallel_config["microbatch_group_size_per_vp_stage"]
 
-    # micro-batch count per step must divide evenly across ranks and, under VPP, mb groups.
+    # micro-batch size per step must divide evenly across dp and vpp
     align_to = dp_size * (mb_group if vpp_size > 1 else 1)
 
-    # Group sample positions by rollout id (first-occurrence order) so a rollout's
-    # samples always land in the same training step.
+    # Rollout can include multiple samples (compaction, subagent, fork, etc.)
+    # Samples in the same rollout should be trained in the same step, or dropped together.
     rollout_id_to_sample_index: dict[int, list[int]] = {}
     for sample_pos, rid in enumerate(rollout_indices):
         rollout_id_to_sample_index.setdefault(rid, []).append(sample_pos)
