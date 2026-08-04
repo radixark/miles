@@ -65,6 +65,7 @@ def _make_group(
     group = TrainerController(
         args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell, num_cells=num_cells),
         role="actor",
+        with_ref=False,
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,
     )
