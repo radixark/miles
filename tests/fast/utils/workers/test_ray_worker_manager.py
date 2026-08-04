@@ -251,6 +251,19 @@ class TestInitAllocatesPorts:
         with pytest.raises(AssertionError, match="7777 on 10.0.0.1 is already in use"):
             await _launch([spec])
 
+    async def test_static_ports_marked_offset_by_cell_advance_per_cell(self, fake_ray_cluster: FakeRayCluster):
+        """Cells sharing one pinned base port would bind the same address twice on a node."""
+        spec = _make_spec(
+            "session-server",
+            num_cells=3,
+            port_infos=[PortInfo(name="primary", static_port=7000, allow_dynamic=False, offset_by_cell=True)],
+        )
+        manager = await _launch([spec])
+
+        assert [
+            manager.get_worker_addrs(f"session-server-{cell_index}-0")["primary"].port for cell_index in range(3)
+        ] == [7000, 7001, 7002]
+
     async def test_ports_are_tracked_per_node(self, fake_ray_cluster: FakeRayCluster):
         """Workers on different nodes may reuse the same port number."""
         fake_ray_cluster.use_node_ips("10.0.0.1", "10.0.0.2")
@@ -756,6 +769,28 @@ class TestConcurrentPhases:
         assert sorted(entered) == [0, 1, 2]
         assert len({manager.get_worker_addrs(f"engine-{index}-0")["primary"].port for index in range(3)}) == 3
 
+    async def test_workers_within_one_cell_run_each_phase_concurrently(self, fake_ray_cluster: FakeRayCluster):
+        """The ranks of one engine configure together; serialising them adds a full setup per rank."""
+        from miles.utils.workers.ray_worker_manager import _CommandActorManager
+
+        original_alloc_ports = _CommandActorManager.alloc_ports
+        entered: list[int] = []
+        release = asyncio.Event()
+
+        async def gated_alloc(self) -> None:
+            entered.append(self.worker_in_cell_index)
+            if len(entered) == 3:
+                release.set()
+            await asyncio.wait_for(release.wait(), timeout=5)
+            await original_alloc_ports(self)
+
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(_CommandActorManager, "alloc_ports", gated_alloc)
+            manager = await asyncio.wait_for(_launch([_make_spec("engine", num_workers_per_cell=3)]), timeout=10)
+
+        assert sorted(entered) == [0, 1, 2]
+        assert len({manager.get_worker_addrs(f"engine-0-{index}")["primary"].port for index in range(3)}) == 3
+
 
 class TestAddressPublication:
     async def test_reading_the_addrs_of_a_worker_mid_allocation_is_refused(self, fake_ray_cluster: FakeRayCluster):
@@ -1209,6 +1244,20 @@ class TestStopDetails:
 
         assert polls_during_stop > 20
 
+    async def test_a_hung_shutdown_does_not_delay_killing_peer_workers(self, fake_ray_cluster: FakeRayCluster):
+        """One rank ignoring shutdown must not keep its peers holding gpus for the whole grace period."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        fake_ray_cluster.handles[0].hanging_methods["shutdown"] = 3600
+
+        with patch.object(ray_worker_manager, "_SHUTDOWN_TIMEOUT", 0.5):
+            stop_task = asyncio.create_task(manager._pools["engine"].cells[0].stop())
+            await asyncio.sleep(0.05)
+            assert fake_ray_cluster.handles[1].killed
+            assert not stop_task.done()
+            await asyncio.wait_for(stop_task, timeout=5)
+
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 2
+
     async def test_all_workers_are_killed_even_when_one_shutdown_hangs(self, fake_ray_cluster: FakeRayCluster):
         """One broken worker must not save its peers from teardown."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=3)])
@@ -1239,7 +1288,7 @@ class TestGetWorkerInfos:
         assert [info.generation for info in infos] == [1, 1]
         assert [info.gpu_ids for info in infos] == [[4, 5], [6, 7]]
         assert [info.self_addrs for info in infos] == manager.get_addrs()["engine"][2:]
-        assert [info.actor_handle for info in infos] == fake_ray_cluster.handles[2:]
+        assert [info.handle._actor_handle for info in infos] == fake_ray_cluster.handles[2:]
 
     async def test_a_stopped_cell_reports_no_workers_instead_of_raising(self, fake_ray_cluster: FakeRayCluster):
         """A cell stopped between snapshot and round-trip must report an empty worker list, not crash."""
@@ -1301,6 +1350,21 @@ class TestGetCellInfos:
 
         assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
 
+    async def test_each_cell_meta_is_computed_from_its_own_cell_index(self, fake_ray_cluster: FakeRayCluster):
+        """Meta carries per-cell placement facts, so a shared index would mislabel every cell but one."""
+        spec = _make_spec("engine", num_cells=3).model_copy(
+            update={"meta": lambda ctx: {"gpu_offset": ctx.cell_index * 2}}
+        )
+        manager = await _launch([spec])
+
+        infos = manager.get_cell_infos(pool_ids=["engine"])
+
+        assert [infos[f"engine-{cell_index}"].meta for cell_index in range(3)] == [
+            {"gpu_offset": 0},
+            {"gpu_offset": 2},
+            {"gpu_offset": 4},
+        ]
+
 
 class TestStartAndStopCells:
     async def test_stopping_by_id_releases_only_the_named_cell(self, fake_ray_cluster: FakeRayCluster):
@@ -1341,6 +1405,15 @@ class TestStartAndStopCells:
         await manager.start_cells(["engine-0"])
 
         assert len(fake_ray_cluster.calls_of("run")) == 2
+
+    async def test_starting_a_running_cell_leaves_it_alone(self, fake_ray_cluster: FakeRayCluster):
+        """Relaunching a live cell would orphan its current actors, so a repeated resume is a no-op."""
+        manager = await _launch([_make_spec("engine")])
+        handles_before = list(fake_ray_cluster.handles)
+
+        await manager.start_cells(["engine-0"])
+
+        assert fake_ray_cluster.handles == handles_before
 
     async def test_stopping_an_already_stopped_cell_is_a_noop(self, fake_ray_cluster: FakeRayCluster):
         """Heal loops retry, so a redundant suspend must not blow up on missing actors."""
@@ -1384,6 +1457,13 @@ class TestStartAndStopCells:
 
         with pytest.raises(AssertionError):
             await manager.stop_cells(["engine-7"])
+
+    async def test_starting_an_unknown_cell_id_fails_loudly(self, fake_ray_cluster: FakeRayCluster):
+        """A typo'd cell id must not silently start nothing while the caller believes it resumed."""
+        manager = await _launch([_make_spec("engine")])
+
+        with pytest.raises(AssertionError):
+            await manager.start_cells(["engine-7"])
 
     async def test_a_cell_that_fails_while_allocating_ports_is_rolled_back_and_can_be_retried(
         self, fake_ray_cluster: FakeRayCluster
@@ -1540,6 +1620,31 @@ class TestStartCellsRollback:
 
         assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
         assert len(fake_ray_cluster.calls_of("run")) == 2
+
+    async def test_a_failed_start_leaves_no_late_sibling_actor_alive(self, fake_ray_cluster: FakeRayCluster):
+        """A sibling still launching when the request failed must not survive the rollback holding its gpus."""
+        from miles.utils.workers.ray_worker_manager import _CommandActorManager
+
+        original_launch_actor = _CommandActorManager.launch_actor
+        first_failed = asyncio.Event()
+
+        async def staggered_launch(self) -> None:
+            if self.parent.cell_index == 0:
+                first_failed.set()
+                raise RuntimeError("no capacity")
+            await first_failed.wait()
+            await asyncio.sleep(0.05)
+            await original_launch_actor(self)
+
+        manager = RayWorkerManager()
+        with pytest.raises(RuntimeError, match="no capacity"):
+            with pytest.MonkeyPatch.context() as patched:
+                patched.setattr(_CommandActorManager, "launch_actor", staggered_launch)
+                await manager.init([_make_spec("engine", num_cells=2)], {})
+        await asyncio.sleep(0.1)
+
+        assert all(handle.killed for handle in fake_ray_cluster.handles)
+        assert not any(info.alive for info in manager.get_cell_infos(pool_ids=["engine"]).values())
 
     async def test_a_failed_start_rolls_back_the_siblings_of_the_failing_cell(self, fake_ray_cluster: FakeRayCluster):
         """One request is one transaction, so no cell of it may survive half configured."""

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import ray
 from tests.fast.ray.train import conftest as train_conftest
+from tests.fast.ray.train.conftest import get_raw_actor_handles
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import RayTrainGroup
@@ -64,38 +65,41 @@ def _make_controller(
     group = RayTrainGroup(
         args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell, num_cells=num_cells),
         role="actor",
+        with_ref=False,
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,
     )
     for cell_index in range(num_cells):
-        cell = group._create_cell(f"{group._pool_id}-{cell_index}", cell_index=cell_index, workers_hash="pseudo-hash-1")
+        cell = group._create_cell(
+            f"{group._pool_id}-{cell_index}", cell_index=cell_index, workers_hash="pseudo-hash-1"
+        )
         group._cells_by_id[cell.cell_id] = cell
     return group
 
 
 async def _stop_cell(group: RayTrainGroup, cell_index: int) -> None:
     """Suspension stops the cell in the manager; reconcile then drops it from the bookkeeping."""
-    cell_id = f"{group._pool}-{cell_index}"
+    cell_id = f"{group._pool_id}-{cell_index}"
     train_conftest.fake_worker_manager._stop_cells([cell_id])
     await group._reconcile(cell_id, None)
 
 
 def _cell(group: RayTrainGroup, cell_index: int) -> object:
-    return group._cells_by_id[f"{group._pool}-{cell_index}"]
+    return group._cells_by_id[f"{group._pool_id}-{cell_index}"]
 
 
 def _start_cell(group: RayTrainGroup, cell_index: int) -> None:
     """The manager relaunches the cell, so reconcile hands the controller a fresh object."""
-    cell_id = f"{group._pool}-{cell_index}"
+    cell_id = f"{group._pool_id}-{cell_index}"
     group._cells_by_id[cell_id] = group._create_cell(cell_id, cell_index=cell_index, workers_hash="pseudo-hash-2")
 
 
 def _was_stopped(group: RayTrainGroup, cell_index: int) -> bool:
-    return [f"{group._pool}-{cell_index}"] in train_conftest.fake_worker_manager.stopped_cell_ids
+    return [f"{group._pool_id}-{cell_index}"] in train_conftest.fake_worker_manager.stopped_cell_ids
 
 
 def _was_killed(group: RayTrainGroup, cell_index: int) -> bool:
-    for handle in _cell(group, cell_index)._get_actor_handles():
+    for handle in get_raw_actor_handles(_cell(group, cell_index)):
         try:
             ray.get(handle.get_calls.remote())
             return False
@@ -133,7 +137,7 @@ class TestInit:
     def test_each_cell_has_own_actors(self):
         group = _make_controller(num_cells=3, actor_count_per_cell=2)
 
-        handles_per_cell = [cell._get_actor_handles() for cell in group._cells]
+        handles_per_cell = [get_raw_actor_handles(cell) for cell in group._cells]
         assert all(len(h) == 2 for h in handles_per_cell)
 
         all_handles = [h for handles in handles_per_cell for h in handles]
@@ -209,12 +213,12 @@ class TestExecuteFirstAlive:
 
         await group._execute_first_alive("save_model", rollout_id=42)
 
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             calls = ray.get(handle.get_calls.remote())
             assert any(c[0] == "save_model" for c in calls)
 
         for cell in group._cells[1:]:
-            for handle in cell._get_actor_handles():
+            for handle in get_raw_actor_handles(cell):
                 calls = ray.get(handle.get_calls.remote())
                 assert not any(c[0] == "save_model" for c in calls)
 
@@ -224,7 +228,7 @@ class TestExecuteFirstAlive:
 
         await group._execute_first_alive("update_weights")
 
-        for handle in _cell(group, 1)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 1)):
             calls = ray.get(handle.get_calls.remote())
             assert any(c[0] == "update_weights" for c in calls)
 
@@ -255,7 +259,7 @@ class TestExecuteAllAliveAndCatch:
 
         await group._execute_all_alive_and_catch("train")
 
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             calls = ray.get(handle.get_calls.remote())
             assert any(c[0] == "train" for c in calls)
 
@@ -296,7 +300,7 @@ class TestRefreshCellsReconfigure:
 
         # Step 6: Actors received reconfigure_indep_dp
         for cell in [_cell(group, 0), _cell(group, 2)]:
-            for handle in cell._get_actor_handles():
+            for handle in get_raw_actor_handles(cell):
                 calls = ray.get(handle.get_calls.remote())
                 assert any(c[0] == "reconfigure_indep_dp" for c in calls)
 
@@ -329,12 +333,12 @@ class TestRefreshCellsHealing:
             assert cell.indep_dp_info.alive_size == 3
 
         # Step 5: Healed cell's actors received init
-        for handle in _cell(group, 2)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 2)):
             calls = ray.get(handle.get_calls.remote())
             assert any(c[0] == "init" for c in calls)
 
         # Step 6: Source cell sent ckpt to healed cell's alive_rank
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             calls = ray.get(handle.get_calls.remote())
             send_calls = [c for c in calls if c[0] == "send_ckpt"]
             assert len(send_calls) == 1
@@ -355,7 +359,7 @@ class TestRefreshCellsHealing:
             assert cell.indep_dp_info.alive_cell_indices == [0, 1, 2]
 
         # Source (cell 0) sent ckpt to both healed cells
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             calls = ray.get(handle.get_calls.remote())
             send_calls = [c for c in calls if c[0] == "send_ckpt"]
             assert len(send_calls) == 2
@@ -371,7 +375,7 @@ class TestRefreshCellsHealing:
         await group._refresh_cells(rollout_id=0)
 
         assert _cell(group, 1).is_alive
-        for handle in _cell(group, 1)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 1)):
             calls = ray.get(handle.get_calls.remote())
             set_calls = [c for c in calls if c[0] == "set_rollout_executor"]
             assert set_calls, "healed cell never received set_rollout_executor"
@@ -469,7 +473,7 @@ class TestRefreshCellsNoOp:
         # Clear init calls by noting current call count
         init_call_counts = {}
         for cell in group._cells:
-            for handle in cell._get_actor_handles():
+            for handle in get_raw_actor_handles(cell):
                 calls = ray.get(handle.get_calls.remote())
                 init_call_counts[id(handle)] = len(calls)
 
@@ -480,7 +484,7 @@ class TestRefreshCellsNoOp:
 
         # No new calls dispatched
         for cell in group._cells:
-            for handle in cell._get_actor_handles():
+            for handle in get_raw_actor_handles(cell):
                 calls = ray.get(handle.get_calls.remote())
                 assert len(calls) == init_call_counts[id(handle)]
 
@@ -530,7 +534,7 @@ class TestTrain:
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
         for cell in group._cells:
-            for handle in cell._get_actor_handles():
+            for handle in get_raw_actor_handles(cell):
                 calls = ray.get(handle.get_calls.remote())
                 assert any(c[0] == "train" for c in calls)
 
@@ -541,7 +545,7 @@ class TestTrain:
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
         for cell in [_cell(group, 0), _cell(group, 2)]:
-            for handle in cell._get_actor_handles():
+            for handle in get_raw_actor_handles(cell):
                 calls = ray.get(handle.get_calls.remote())
                 assert any(c[0] == "train" for c in calls)
 
@@ -554,7 +558,7 @@ class TestTrain:
         # Note init call count
         init_counts = {}
         for cell in group._cells:
-            for handle in cell._get_actor_handles():
+            for handle in get_raw_actor_handles(cell):
                 init_counts[id(handle)] = len(ray.get(handle.get_calls.remote()))
 
         for step in range(3):
@@ -563,7 +567,7 @@ class TestTrain:
         assert group._indep_dp_quorum_id == 0
 
         for cell in group._cells:
-            for handle in cell._get_actor_handles():
+            for handle in get_raw_actor_handles(cell):
                 calls = ray.get(handle.get_calls.remote())
                 new_calls = calls[init_counts[id(handle)] :]
                 assert not any(c[0] == "reconfigure_indep_dp" for c in new_calls)
@@ -619,7 +623,7 @@ class TestPerCellErrorIsolation:
         group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Make cell 1's actors fail on train
-        for handle in _cell(group, 1)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 1)):
             ray.get(handle.set_fail_methods.remote(["train"]))
 
         # Step 2: Broadcast train
@@ -632,7 +636,7 @@ class TestPerCellErrorIsolation:
 
         # Step 4: Other cells received train call
         for cell_idx in [0, 2]:
-            for handle in _cell(group, cell_idx)._get_actor_handles():
+            for handle in get_raw_actor_handles(_cell(group, cell_idx)):
                 calls = ray.get(handle.get_calls.remote())
                 assert any(c[0] == "train" for c in calls)
 
@@ -641,7 +645,7 @@ class TestPerCellErrorIsolation:
         group = await _make_alive_controller(num_cells=2)
 
         # Step 1: Make cell 0 fail
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_fail_methods.remote(["train"]))
 
         await group._execute_all_alive_and_catch("train", rollout_id=0, rollout_data_ref="data")
@@ -650,7 +654,7 @@ class TestPerCellErrorIsolation:
         # Step 2: Next broadcast only goes to cell 1
         await group._execute_all_alive_and_catch("train", rollout_id=1, rollout_data_ref="data")
 
-        for handle in _cell(group, 1)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 1)):
             calls = ray.get(handle.get_calls.remote())
             train_calls = [c for c in calls if c[0] == "train"]
             assert len(train_calls) == 2
@@ -662,7 +666,7 @@ class TestExecuteFirstAliveFallback:
         group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Make cell 0 fail on save_model
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_fail_methods.remote(["save_model"]))
 
         # Step 2: save_model uses retry(lambda _: self._execute_first_alive(...))
@@ -672,7 +676,7 @@ class TestExecuteFirstAliveFallback:
         assert _was_killed(group, 0)
         assert _cell(group, 1).is_alive
 
-        for handle in _cell(group, 1)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 1)):
             calls = ray.get(handle.get_calls.remote())
             assert any(c[0] == "save_model" for c in calls)
 
@@ -680,7 +684,7 @@ class TestExecuteFirstAliveFallback:
         """A single _execute_first_alive call raises (no retry) when the first cell fails."""
         group = await _make_alive_controller(num_cells=2)
 
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_fail_methods.remote(["save_model"]))
 
         with pytest.raises(Exception):  # noqa: B017
@@ -692,7 +696,7 @@ class TestExecuteFirstAliveFallback:
         """Without the cause the driver traceback says nothing about why the last cell died."""
         group = await _make_alive_controller(num_cells=1)
 
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_fail_methods.remote(["save_model"]))
 
         with pytest.raises(NonRetryableError) as excinfo:
@@ -706,7 +710,7 @@ class TestExecuteFirstAliveFallback:
         await _stop_cell(group, 1)
         _start_cell(group, 1)
 
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_fail_methods.remote(["save_model"]))
 
         with pytest.raises(NonRetryableError):
@@ -718,7 +722,7 @@ class TestExecuteFirstAliveFallback:
         """Retrying without a single live cell can never succeed, so it must fail fast."""
         group = await _make_alive_controller(num_cells=1)
 
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_fail_methods.remote(["save_model"]))
 
         attempts = 0
@@ -753,10 +757,12 @@ class TestRefreshCellsErrorHandling:
         # Step 3: Refresh — healing init fails, cell auto-marks errored
         await group._refresh_cells(rollout_id=0)
 
-        # Step 4: Cell 2 errored, cells 0 and 1 still alive
+        # Step 4: Cell 2 errored, cells 0 and 1 still alive. _was_stopped would already be true
+        # from step 1, so it says nothing about the healing failure; the kill does.
         assert _cell(group, 0).is_alive
         assert _cell(group, 1).is_alive
-        assert _was_stopped(group, 2)
+        assert _cell(group, 2).is_errored
+        assert _was_killed(group, 2)
 
 
 class TestHeartbeatMonitor:
@@ -778,7 +784,7 @@ class TestHeartbeatMonitor:
 
         # Drive cell 1's last-active timestamp to the epoch (maximally stale); the
         # liveness check must ignore staleness while the heartbeat RPC keeps returning.
-        for handle in _cell(group, 1)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 1)):
             ray.get(handle.set_last_active_timestamp.remote(0.0))
 
         # Neither check raises (a returned heartbeat proves the process is alive) and
@@ -791,7 +797,7 @@ class TestHeartbeatMonitor:
         """When heartbeat call fails (actor unresponsive), cell is marked errored."""
         group = await _make_alive_controller(num_cells=2)
 
-        for handle in _cell(group, 0)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 0)):
             ray.get(handle.set_heartbeat_fail.remote(True))
 
         with pytest.raises(RuntimeError, match="Injected heartbeat failure"):
@@ -888,19 +894,19 @@ class TestCheckTrainOneAttempt:
 
 async def _set_all_train_return(group: RayTrainGroup, value: TrainStepOutput) -> None:
     for cell in group._cells:
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_train_return_value.remote(value))
 
 
 async def _set_all_train_returns_per_attempt(group: RayTrainGroup, values: list[TrainStepOutput]) -> None:
     for cell in group._cells:
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_train_return_values_per_attempt.remote(values))
 
 
 def _count_train_calls(group: RayTrainGroup, cell_index: int) -> int:
     total = 0
-    for handle in _cell(group, cell_index)._get_actor_handles():
+    for handle in get_raw_actor_handles(_cell(group, cell_index)):
         calls = ray.get(handle.get_calls.remote())
         total += sum(1 for c in calls if c[0] == "train")
     return total
@@ -946,7 +952,7 @@ class TestTrainRetry:
         group = await _make_alive_controller(num_cells=3)
 
         # Step 1: Make cell 1 fail (exception)
-        for handle in _cell(group, 1)._get_actor_handles():
+        for handle in get_raw_actor_handles(_cell(group, 1)):
             ray.get(handle.set_fail_methods.remote(["train"]))
 
         # Step 2: Train completes without retry (cell 1 errored but others NORMAL)
@@ -1115,7 +1121,7 @@ class TestCellStatusesUnderConcurrentReconcile:
         and iterating the live dict raises RuntimeError instead of answering the request."""
         controller = _make_controller(num_cells=3)
         victim = f"{controller._pool_id}-1"
-        real_cell = controller._cells_by_id[f"{controller._pool_id}-0"]
+        real_cell = _cell(controller, 0)
 
         class _EvictingCell:
             def cell_status(self_inner):

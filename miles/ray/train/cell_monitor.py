@@ -24,7 +24,7 @@ def create_trainer_cell_health_checker(
         # Cell health is liveness, not training progress: the heartbeat RPC runs on
         # a dedicated concurrency group and returns even while the training thread is
         # blocked in a (legitimately waiting) cross-cell collective. A returned result
-        # proves the process is alive; an RayActorError or RPC timeout proves it is not.
+        # proves the process is alive; a WorkerUnreachableError or RPC timeout proves it is not.
         if not cell.is_alive:
             return
 

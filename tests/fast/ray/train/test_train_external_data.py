@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
-from tests.fast.ray.train.conftest import make_alive_cell
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.ray.train import group as group_module
 from miles.ray.train.group import TrainerController
@@ -56,7 +56,7 @@ def _count_cell_train_calls(monkeypatch: pytest.MonkeyPatch, cell) -> list[int]:
 def _train_calls_of(cell) -> list[tuple]:
     return [
         [call for call in ray.get(handle.get_calls.remote()) if call[0] == "train"]
-        for handle in cell._get_actor_handles()
+        for handle in get_raw_actor_handles(cell)
     ]
 
 

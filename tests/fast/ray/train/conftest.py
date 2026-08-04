@@ -47,6 +47,10 @@ def instant_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(group_module, "retry", _retry_without_sleeping)
 
 
+def get_raw_actor_handles(cell: RayTrainCell) -> list[ray.actor.ActorHandle]:
+    return [handle._actor_handle for handle in cell._get_worker_handles()]
+
+
 def make_indep_dp_info(
     *,
     cell_index: int = 0,

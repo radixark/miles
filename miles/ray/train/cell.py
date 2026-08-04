@@ -2,8 +2,6 @@ import asyncio
 import logging
 import time
 
-import ray
-
 from miles.ray.specs.train import MASTER_PORT_NAME
 from miles.ray.train.cell_monitor import compute_cell_status
 from miles.ray.train.cell_state import (
@@ -18,12 +16,14 @@ from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
 
 KILL_RPC_TIMEOUT_S = 10.0
+CONFIRM_DEAD_TIMEOUT_S = 120.0
 
 
 class RayTrainCell:
@@ -54,9 +54,7 @@ class RayTrainCell:
         self._master_addr: HostAndPort = worker_infos[0].self_addrs[MASTER_PORT_NAME]
 
         # NOTE: do *NOT* directly modify `self._state`, but instead use `self._change_state`
-        self._state: CellState = StateAllocatedUninitialized(
-            actor_handles=[info.actor_handle for info in worker_infos]
-        )
+        self._state: CellState = StateAllocatedUninitialized(worker_handles=[info.handle for info in worker_infos])
 
     # ------------------------ API ------------------------
 
@@ -94,7 +92,7 @@ class RayTrainCell:
         attempt: int,
         external_data: list | None = None,
     ) -> list:
-        if external_data is not None and len(external_data) != len(self._get_actor_handles()):
+        if external_data is not None and len(external_data) != len(self._get_worker_handles()):
             raise NonRetryableError("external_data must contain one payload per train worker")
 
         return await self._execute_raw(
@@ -141,14 +139,14 @@ class RayTrainCell:
     # ------------------------ state transition ------------------------
 
     async def _kill_workers_and_confirm_dead(self) -> None:
-        handles = self._get_actor_handles() if self.is_allocated else []
+        handles = self._get_worker_handles() if self.is_allocated else []
 
         log_structured(
             logger.info, tag="ft", op="confirm_dead", phase="start", cell=self.cell_id, n_actors=len(handles)
         )
         start = time.monotonic()
         await asyncio.gather(*[_kill_worker(handle) for handle in handles])
-        await asyncio.gather(*[_confirm_actor_dead(handle) for handle in handles])
+        await asyncio.gather(*[handle.wait_dead(timeout=CONFIRM_DEAD_TIMEOUT_S) for handle in handles])
         log_structured(
             logger.info,
             tag="ft",
@@ -162,14 +160,14 @@ class RayTrainCell:
         self._change_state(
             "_mark_as_alive",
             StateAllocatedUninitialized,
-            StateAllocatedAlive(actor_handles=self._state.actor_handles, indep_dp_info=indep_dp_info),
+            StateAllocatedAlive(worker_handles=self._state.worker_handles, indep_dp_info=indep_dp_info),
         )
 
     def _update_indep_dp_info(self, indep_dp_info: IndepDPInfo) -> None:
         self._change_state(
             "_update_indep_dp_info",
             StateAllocatedAlive,
-            StateAllocatedAlive(actor_handles=self._state.actor_handles, indep_dp_info=indep_dp_info),
+            StateAllocatedAlive(worker_handles=self._state.worker_handles, indep_dp_info=indep_dp_info),
         )
 
     def _mark_as_errored(self) -> None:
@@ -180,7 +178,7 @@ class RayTrainCell:
         self._change_state(
             "_mark_as_errored",
             (StateAllocatedUninitialized, StateAllocatedAlive, StateAllocatedErrored),
-            StateAllocatedErrored(actor_handles=self._state.actor_handles, indep_dp_info=indep_dp_info),
+            StateAllocatedErrored(worker_handles=self._state.worker_handles, indep_dp_info=indep_dp_info),
         )
 
     def _change_state(
@@ -225,14 +223,14 @@ class RayTrainCell:
         compute_kwargs,
         kill_on_failure: bool = True,
     ) -> list:
-        handles = self._get_actor_handles()
+        handles = self._get_worker_handles()
         log_structured(
             logger.info, tag="ft", op="execute", phase="start", cell=self.cell_id, fn=fn_name, n_actors=len(handles)
         )
         start = time.monotonic()
         try:
             result = await asyncio.gather(
-                *[getattr(actor, fn_name).remote(**compute_kwargs(i)) for i, actor in enumerate(handles)]
+                *[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]
             )
             log_structured(
                 logger.info,
@@ -291,40 +289,17 @@ class RayTrainCell:
         assert isinstance(self._state, (StateAllocatedAlive, StateAllocatedErrored))
         return self._state.indep_dp_info
 
-    def _get_actor_handles(self) -> list[ray.actor.ActorHandle]:
+    def _get_worker_handles(self) -> list[BaseWorkerHandle]:
         assert isinstance(
             self._state, StateAllocatedBase
         ), f"Cell {self.cell_id} is not allocated (state={type(self._state).__name__})"
-        return self._state.actor_handles
+        return self._state.worker_handles
 
 
-async def _kill_worker(handle: ray.actor.ActorHandle) -> None:
+async def _kill_worker(handle: BaseWorkerHandle) -> None:
     try:
-        await asyncio.wait_for(handle.kill_self.remote(), timeout=KILL_RPC_TIMEOUT_S)
-    except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
+        await asyncio.wait_for(handle.kill_self(), timeout=KILL_RPC_TIMEOUT_S)
+    except WorkerUnreachableError:
         return
     except (TimeoutError, asyncio.TimeoutError):
         logger.warning("Timed out asking a worker to kill itself; falling back to the death confirmation probe")
-
-
-async def _confirm_actor_dead(handle: ray.actor.ActorHandle) -> None:
-    CONFIRM_DEAD_TIMEOUT_S = 120.0
-    CONFIRM_DEAD_PROBE_INTERVAL_S = 1.0
-
-    async def _probe() -> None:
-        await handle.__ray_ready__.remote()
-
-    deadline = time.monotonic() + CONFIRM_DEAD_TIMEOUT_S
-    while True:
-        try:
-            await asyncio.wait_for(_probe(), timeout=CONFIRM_DEAD_PROBE_INTERVAL_S)
-        except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
-            return
-        except (TimeoutError, asyncio.TimeoutError):
-            pass
-
-        if time.monotonic() >= deadline:
-            logger.error("Timed out after %.0fs confirming actor death; proceeding anyway", CONFIRM_DEAD_TIMEOUT_S)
-            return
-
-        await asyncio.sleep(CONFIRM_DEAD_PROBE_INTERVAL_S)

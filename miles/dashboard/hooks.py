@@ -10,6 +10,7 @@ rate-limited warnings — a deliberate exception to fail-loud (design doc
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -321,7 +322,7 @@ def register_router(args) -> None:
         _warner.warn("dashboard router registration failed; engine metrics will be missing")
 
 
-def register_engines(servers) -> None:
+async def register_engines(servers) -> None:
     """Called at the top of every InferenceController.prepare_rollout(): pushes an engine
     topology snapshot whenever the set of engine actors changed (startup,
     fault-tolerance recovery). Steady state costs one worker-manager round trip
@@ -342,7 +343,7 @@ def register_engines(servers) -> None:
         )
         if fingerprint == _engines_fingerprint:
             return
-        engines = _compute_engine_infos(cells, worker_infos_per_cell)
+        engines = await _compute_engine_infos(cells, worker_infos_per_cell)
         handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=engines))
         _engines_fingerprint = fingerprint
     except Exception:
@@ -389,13 +390,11 @@ def _collect_worker_infos(cells) -> list[list]:
     return _ray_get(futures)
 
 
-def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
-    uuid_refs = [
-        info.actor_handle._get_gpu_uuids.remote(info.gpu_ids)
-        for worker_infos in worker_infos_per_cell
-        for info in worker_infos
-    ]
-    probed_uuids = iter(_ray_get(uuid_refs))
+async def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
+    flat_infos = [info for worker_infos in worker_infos_per_cell for info in worker_infos]
+    probed_uuids = iter(
+        await asyncio.gather(*[info.handle._get_gpu_uuids(gpu_ids=info.gpu_ids) for info in flat_infos])
+    )
 
     engines = []
     for engine_rank, (cell, worker_infos) in enumerate(zip(cells, worker_infos_per_cell, strict=True)):
