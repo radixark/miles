@@ -117,7 +117,7 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
     """Shared-engine eval: producer submissions pause during eval and resume after."""
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
