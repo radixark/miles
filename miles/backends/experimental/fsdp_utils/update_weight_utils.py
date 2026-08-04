@@ -3,7 +3,6 @@ import logging
 import socket
 from argparse import Namespace
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
 
 import ray
 import torch
@@ -22,9 +21,6 @@ from sglang.srt.utils import MultiprocessingSerializer
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
-
-if TYPE_CHECKING:
-    pass
 
 
 try:

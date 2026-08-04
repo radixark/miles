@@ -1,7 +1,6 @@
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -33,8 +32,6 @@ from .p2p_transfer_utils import (
     register_cpu_memory,
 )
 
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 

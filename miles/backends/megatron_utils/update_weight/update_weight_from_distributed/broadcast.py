@@ -3,7 +3,6 @@ from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import AbstractContextManager, nullcontext
-from typing import TYPE_CHECKING
 
 import ray
 import torch
@@ -20,9 +19,6 @@ from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
-
-if TYPE_CHECKING:
-    pass
 
 
 class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):

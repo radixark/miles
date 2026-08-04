@@ -9,7 +9,6 @@ from argparse import Namespace
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING
 
 import numpy as np
 import safetensors.numpy
@@ -28,8 +27,6 @@ from miles.utils.distributed_utils import get_gloo_group
 from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
 
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
