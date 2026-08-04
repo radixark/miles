@@ -383,6 +383,9 @@ def test_report_data_buffer_swallows_push_failures(monkeypatch, caplog):
     handle = FakeHandle()
     handle.push_data_buffer = FakeRemoteMethod(fail=True)
     monkeypatch.setattr(backend, "_handle", handle)
+    # The module-level warner is rate limited, so an earlier warning in this
+    # process would otherwise swallow the one this test is looking for.
+    monkeypatch.setattr(hooks._warner, "_last_warn", float("-inf"))
     with caplog.at_level(logging.WARNING):
         hooks.report_data_buffer(7)  # must not raise
     assert any("data-buffer report failed" in r.message for r in caplog.records)
