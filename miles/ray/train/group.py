@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_spec_name
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
@@ -295,6 +295,15 @@ class TrainerController:
     @staticmethod
     def _compute_attempt_outcomes(snapshot_alive_cells, results) -> dict[str, list[int]]:
         paired = list(zip(snapshot_alive_cells, results, strict=True))
+        for cell, cell_results in paired:
+            if isinstance(cell_results, BaseException):
+                continue
+            for worker_result in cell_results:
+                if not isinstance(worker_result, TrainStepOutput):
+                    raise NonRetryableError(
+                        f"Cell {cell.cell_index} returned {type(worker_result).__name__} from train, "
+                        f"expected TrainStepOutput"
+                    )
         errored = [c.cell_index for c, r in paired if isinstance(r, BaseException)]
         discarded = [
             c.cell_index

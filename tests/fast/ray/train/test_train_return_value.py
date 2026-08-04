@@ -9,6 +9,7 @@ from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.retry_utils import NonRetryableError
 from miles.utils.ray_utils import Box
 
 pytestmark = pytest.mark.asyncio
@@ -138,3 +139,11 @@ class TestWorkerResultShape:
 
         assert [result.values.inner for result in results] == ["after_retry"] * 2
         assert _count_train_calls(cell) == 4
+
+    async def test_a_worker_result_of_the_wrong_type_is_not_retried(self):
+        """Retrying a broken worker contract 30 times turns an instant bug into a 20-minute stall."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        results = [{"train_step_outcome": TrainStepOutcome.NORMAL}]
+
+        with pytest.raises(NonRetryableError):
+            TrainerController._compute_attempt_outcomes([cell], [results])
