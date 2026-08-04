@@ -29,29 +29,32 @@ class TestInitialState:
         assert all(isinstance(h, ray.actor.ActorHandle) for h in handles)
 
 
-class TestStop:
-    async def test_stop_asks_the_worker_manager_to_stop_the_cell(self):
-        """The manager owns the actors, so the cell only forwards the request."""
-        cell = make_cell(actor_count=2)
+class TestKillWorkers:
+    async def test_killing_reaches_every_worker(self):
+        """The dead workers must not linger in a cross-cell collective."""
+        cell = make_alive_cell(0, alive_cell_indices=[0])
+        handles = cell._get_actor_handles()
 
-        await cell.stop()
+        await cell._kill_workers_and_confirm_dead()
 
-        assert train_conftest.fake_worker_manager.stopped_cell_ids == [[cell.cell_id]]
+        for handle in handles:
+            with pytest.raises(ray.exceptions.RayActorError):
+                ray.get(handle.get_calls.remote())
 
-    async def test_stop_from_alive_asks_the_worker_manager_too(self):
-        """An alive cell is torn down the same way; reconcile then drops the object."""
+    async def test_killing_does_not_involve_the_worker_manager(self):
+        """The manager keeps reporting the cell alive so its errored status stays visible."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
 
-        await cell.stop()
+        await cell._kill_workers_and_confirm_dead()
 
-        assert train_conftest.fake_worker_manager.stopped_cell_ids == [[cell.cell_id]]
+        assert train_conftest.fake_worker_manager.stopped_cell_ids == []
 
     async def test_stop_kills_the_underlying_workers(self):
         """Stopping a cell really kills its workers, so every handle is confirmed dead and rejects new calls."""
         cell = make_cell(actor_count=2)
         handles = cell._get_actor_handles()
 
-        await cell.stop()
+        await cell._kill_workers_and_confirm_dead()
 
         for handle in handles:
             await asyncio.wait_for(cell_module._confirm_actor_dead(handle), timeout=30.0)
@@ -139,22 +142,26 @@ class TestMarkAsErrored:
 
 
 class TestErroredCellTeardown:
-    async def test_stop_from_errored_reaches_the_worker_manager(self):
-        """An errored cell is torn down through the manager like any other."""
+    async def test_kill_from_errored_reaches_the_workers(self):
+        """An errored cell is torn down by killing its own workers."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
         cell._mark_as_errored()
         assert cell.is_errored
+        handles = cell._get_actor_handles()
 
-        await cell.stop()
+        await cell._kill_workers_and_confirm_dead()
 
-        assert train_conftest.fake_worker_manager.stopped_cell_ids == [[cell.cell_id]]
+        for handle in handles:
+            with pytest.raises(ray.exceptions.RayActorError):
+                ray.get(handle.get_calls.remote())
 
     async def test_the_replacement_cell_recovers_the_lifecycle(self):
-        """Errored → stop → reconcile builds a fresh cell on the new workers → alive."""
+        """Errored → kill → heal restarts the cell → reconcile builds a fresh one → alive."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
         cell._mark_as_errored()
-        await cell.stop()
+        await cell._kill_workers_and_confirm_dead()
 
+        train_conftest.fake_worker_manager._stop_cells([cell.cell_id])
         replacement = make_cell(cell.cell_index)
         replacement._mark_as_alive(indep_dp_info=make_indep_dp_info(quorum_id=99))
 
@@ -175,9 +182,8 @@ class TestAsyncInit:
 
         for handle in cell._get_actor_handles():
             calls = ray.get(handle.get_calls.remote())
-            assert len(calls) == 1
-            assert calls[0][0] == "init"
-            kwargs = calls[0][2]
+            assert [name for name, _args, _kwargs in calls] == ["configure_master_addr_and_port", "init"]
+            kwargs = calls[1][2]
             assert kwargs["indep_dp_info"] == info
             assert kwargs["recv_ckpt_src_rank"] is None
 
@@ -193,7 +199,9 @@ class TestAsyncInitFailure:
             await cell.init(indep_dp_info=make_indep_dp_info())
 
         assert not cell.is_alive
-        assert train_conftest.fake_worker_manager.stopped_cell_ids == [[cell.cell_id]]
+        for handle in cell._get_actor_handles():
+            with pytest.raises(ray.exceptions.RayActorError):
+                ray.get(handle.get_calls.remote())
 
 
 class TestPrepareIndepDPModeAlive:
@@ -292,8 +300,8 @@ class TestStatePredicates:
 
 
 class TestFullLifecycle:
-    async def test_full_stop_and_replacement_cycle(self):
-        """Full lifecycle: attach → alive → stop → reconcile replaces the object → alive again."""
+    async def test_full_kill_and_replacement_cycle(self):
+        """Full lifecycle: attach → alive → kill → heal restarts → reconcile replaces the object → alive again."""
         # Step 1: Create (attaches to the manager's workers)
         cell = make_cell(actor_count=2)
         assert cell.is_uninitialized and not cell.is_alive
@@ -303,11 +311,11 @@ class TestFullLifecycle:
         cell._mark_as_alive(indep_dp_info=info_v1)
         assert cell.is_alive
 
-        # Step 3: Stop through the manager
-        await cell.stop()
-        assert train_conftest.fake_worker_manager.stopped_cell_ids == [[cell.cell_id]]
+        # Step 3: Kill the workers directly
+        await cell._kill_workers_and_confirm_dead()
 
-        # Step 4: The provider drops it and reconcile builds a fresh object on the new workers
+        # Step 4: The ft controller heals it and reconcile builds a fresh object on the new workers
+        train_conftest.fake_worker_manager._stop_cells([cell.cell_id])
         cell = make_cell(actor_count=2)
         assert cell.is_uninitialized and not cell.is_alive
 
