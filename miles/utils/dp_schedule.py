@@ -39,15 +39,15 @@ def build_dp_schedule(
     vpp_size = train_parallel_config["vpp_size"] or 1
     mb_group = train_parallel_config["microbatch_group_size_per_vp_stage"]
 
-    # mbs count per step must divide evenly across ranks and, under VPP, mb groups.
+    # micro-batch count per step must divide evenly across ranks and, under VPP, mb groups.
     align_to = dp_size * (mb_group if vpp_size > 1 else 1)
 
     # Group sample positions by rollout id (first-occurrence order) so a rollout's
     # samples always land in the same training step.
-    rollout_to_samples: dict[int, list[int]] = {}
+    rollout_id_to_sample_index: dict[int, list[int]] = {}
     for sample_pos, rid in enumerate(rollout_indices):
-        rollout_to_samples.setdefault(rid, []).append(sample_pos)
-    rollout_ids = list(rollout_to_samples.keys())
+        rollout_id_to_sample_index.setdefault(rid, []).append(sample_pos)
+    rollout_ids = list(rollout_id_to_sample_index.keys())
 
     # Plan the rollout count of each training step: full steps of global_batch_size,
     # plus (under --allow-partial-train-step) one smaller final step for the trailing
@@ -60,7 +60,7 @@ def build_dp_schedule(
     num_rollouts = [global_batch_size] * num_full_steps
     leftover = len(rollout_ids) - num_full_steps * global_batch_size
     if leftover and getattr(args, "allow_partial_train_step", False) and args.use_dynamic_batch_size:
-        leftover_samples = sum(len(rollout_to_samples[rid]) for rid in rollout_ids[-leftover:])
+        leftover_samples = sum(len(rollout_id_to_sample_index[rid]) for rid in rollout_ids[-leftover:])
         if leftover_samples >= dp_size:
             num_rollouts.append(leftover)
         else:
@@ -72,68 +72,70 @@ def build_dp_schedule(
 
     step_start = 0
     for step_num_rollouts in num_rollouts:
-        step_rollouts = rollout_ids[step_start : step_start + step_num_rollouts]
+        picked_rollouts = rollout_ids[step_start : step_start + step_num_rollouts]
         step_start += step_num_rollouts
-        sample_indices = [pos for rid in step_rollouts for pos in rollout_to_samples[rid]]
+        sample_indices = [pos for rid in picked_rollouts for pos in rollout_id_to_sample_index[rid]]
         step_lengths = [total_lengths[i] for i in sample_indices]
         assert len(sample_indices) >= dp_size, (
             f"step of {step_num_rollouts} rollouts has {len(sample_indices)} samples < dp_size {dp_size}; "
             f"each step needs at least one sample per rank."
         )
 
-        # Pack the step's samples into micro-batches; step_mbs[k] holds local
+        # Pack the step's samples into micro-batches; step_micro_batches[k] holds local
         # indices into step_lengths.
         workloads = None
         if not args.use_dynamic_batch_size:
             assert args.micro_batch_size is not None
             n = len(step_lengths)
-            step_mbs = [list(range(i, min(i + args.micro_batch_size, n))) for i in range(0, n, args.micro_batch_size)]
+            step_micro_batches = [
+                list(range(i, min(i + args.micro_batch_size, n))) for i in range(0, n, args.micro_batch_size)
+            ]
         elif getattr(args, "balance_by_flops", False):
             assert args.max_tokens_per_gpu is not None
             max_per_bin = args.max_tokens_per_gpu * cp_size
             workloads = [calculate_fwd_flops([length], args) for length in step_lengths]
-            num_mbs = max(1, (sum(step_lengths) + max_per_bin - 1) // max_per_bin)
-            if num_mbs >= len(step_lengths):
-                step_mbs = [[i] for i in range(len(step_lengths))]
+            micro_batch_count = max(1, (sum(step_lengths) + max_per_bin - 1) // max_per_bin)
+            if micro_batch_count >= len(step_lengths):
+                step_micro_batches = [[i] for i in range(len(step_lengths))]
             else:
-                # NOTE: FLOPs balancing does not enforce the token cap per mbs.
-                step_mbs = get_seqlen_balanced_partitions(workloads, num_mbs, equal_size=False)
+                # NOTE: FLOPs balancing does not enforce the token cap per micro-batch.
+                step_micro_batches = get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
         else:
             assert args.max_tokens_per_gpu is not None
-            step_mbs = first_fit_decreasing_pack(step_lengths, args.max_tokens_per_gpu * cp_size)
+            step_micro_batches = first_fit_decreasing_pack(step_lengths, args.max_tokens_per_gpu * cp_size)
 
-        # Grow the mbs count to a multiple of align_to by splitting multi-sample mbs.
-        target = max((len(step_mbs) + align_to - 1) // align_to * align_to, align_to)
-        if target != len(step_mbs):
+        # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
+        target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
+        if target != len(step_micro_batches):
             if not args.use_dynamic_batch_size:
                 raise AssertionError(
-                    f"static path: num_mbs ({len(step_mbs)}) is not a multiple of {align_to}; "
+                    f"static path: micro-batch count ({len(step_micro_batches)}) is not a multiple of {align_to}; "
                     f"adjust the config so step_size % (dp_size * micro_batch_size * mb_group) == 0."
                 )
-            expand_bins_by_splitting(step_mbs, target, step_lengths)
+            expand_bins_by_splitting(step_micro_batches, target, step_lengths)
             assert (
-                len(step_mbs) == target
-            ), f"could only produce {len(step_mbs)} mbs after maximal splitting; need {target}."
+                len(step_micro_batches) == target
+            ), f"could only produce {len(step_micro_batches)} micro-batches after maximal splitting; need {target}."
 
-        num_microbatches.append(len(step_mbs) // dp_size)
+        num_microbatches.append(len(step_micro_batches) // dp_size)
 
-        # Distribute the mbs across DP ranks, len(step_mbs) / dp_size each: strided
-        # round-robin, or Karmarkar-Karp on mbs weights (tokens under --balance-data,
+        # Distribute the micro-batches across DP ranks, len(step_micro_batches) / dp_size each: strided
+        # round-robin, or Karmarkar-Karp on micro-batch weights (tokens under --balance-data,
         # FLOPs under --balance-by-flops).
         if args.balance_data or getattr(args, "balance_by_flops", False):
             if workloads is not None:
-                weights = [sum(workloads[i] for i in mbs) for mbs in step_mbs]
+                weights = [sum(workloads[i] for i in micro_batch) for micro_batch in step_micro_batches]
             else:
-                weights = [sum(step_lengths[i] for i in mbs) for mbs in step_mbs]
-            rank_mbs_idx = get_seqlen_balanced_partitions(weights, dp_size, equal_size=True)
+                weights = [sum(step_lengths[i] for i in micro_batch) for micro_batch in step_micro_batches]
+            rank_micro_batch_ids = get_seqlen_balanced_partitions(weights, dp_size, equal_size=True)
         else:
-            rank_mbs_idx = [list(range(rank, len(step_mbs), dp_size)) for rank in range(dp_size)]
+            rank_micro_batch_ids = [list(range(rank, len(step_micro_batches), dp_size)) for rank in range(dp_size)]
 
-        for rank, mbs_idx in enumerate(rank_mbs_idx):
-            for k in mbs_idx:
-                mbs = step_mbs[k]
+        for rank, micro_batch_ids in enumerate(rank_micro_batch_ids):
+            for k in micro_batch_ids:
+                micro_batch = step_micro_batches[k]
                 local_start = len(partitions[rank])
-                partitions[rank].extend(sample_indices[i] for i in mbs)
-                micro_batch_indices[rank].append(list(range(local_start, local_start + len(mbs))))
+                partitions[rank].extend(sample_indices[i] for i in micro_batch)
+                micro_batch_indices[rank].append(list(range(local_start, local_start + len(micro_batch))))
 
     return partitions, micro_batch_indices, num_microbatches, num_rollouts

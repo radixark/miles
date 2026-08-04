@@ -80,11 +80,11 @@ def assert_invariants(
         partition = partitions[r]
         mbi = micro_batch_indices[r]
 
-        # Same num_mbs per rank (PP sync).
-        assert len(mbi) == sum(num_microbatches), f"rank {r}: mbs count mismatch"
+        # Same micro-batch count per rank (PP sync).
+        assert len(mbi) == sum(num_microbatches), f"rank {r}: micro-batch count mismatch"
 
         # Flattened micro_batch_indices == range(len(partition)).
-        flat = [i for mbs in mbi for i in mbs]
+        flat = [i for micro_batch in mbi for i in micro_batch]
         assert flat == list(range(len(partition))), f"rank {r}: micro_batch_indices don't tile [0, n)"
 
         # Disjoint partitions whose union covers every kept sample.
@@ -95,13 +95,15 @@ def assert_invariants(
     if max_per_bin is None:
         return
 
-    # Every mbs <= max_per_bin tokens, EXCEPT a singleton bin holding an oversized sample.
+    # Every micro-batch <= max_per_bin tokens, EXCEPT a singleton bin holding an oversized sample.
     for r in range(dp_size):
         partition = partitions[r]
-        for mbs in micro_batch_indices[r]:
-            bin_total = sum(total_lengths[partition[i]] for i in mbs)
+        for micro_batch in micro_batch_indices[r]:
+            bin_total = sum(total_lengths[partition[i]] for i in micro_batch)
             if bin_total > max_per_bin:
-                assert len(mbs) == 1, f"rank {r}: mbs sum {bin_total} > {max_per_bin} but contains {len(mbs)} samples"
+                assert (
+                    len(micro_batch) == 1
+                ), f"rank {r}: micro-batch sum {bin_total} > {max_per_bin} but contains {len(micro_batch)} samples"
 
 
 def test_static_stride_single_step():
@@ -151,7 +153,7 @@ def test_static_balance_multi_step():
 
 
 def test_dynamic_uniform():
-    """Dynamic mbs on uniform-length samples."""
+    """Dynamic micro-batching on uniform-length samples."""
     total_lengths = [5] * 8
     rollout_indices = list(range(8))
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=10)
@@ -174,7 +176,7 @@ def test_dynamic_uniform():
 
 
 def test_dynamic_oversized_sample_lands_alone():
-    """A sample larger than max_per_bin must end up alone in its mbs."""
+    """A sample larger than max_per_bin must end up alone in its micro-batch."""
     total_lengths = [15, 3, 3, 3, 3, 3, 3, 3]
     rollout_indices = list(range(8))
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=10)
@@ -199,9 +201,9 @@ def test_dynamic_oversized_sample_lands_alone():
         if oversize_idx not in partitions[r]:
             continue
         local = partitions[r].index(oversize_idx)
-        for mbs in mbi[r]:
-            if local in mbs:
-                assert mbs == [local], f"oversized sample shares an mbs: {mbs}"
+        for micro_batch in mbi[r]:
+            if local in micro_batch:
+                assert micro_batch == [local], f"oversized sample shares a micro-batch: {micro_batch}"
                 found = True
     assert found
 
@@ -244,18 +246,20 @@ def test_rollout_grouping_keeps_samples_together():
 
     # 3 rollouts / 1 per step -> 3 steps, gbs constant.
     assert num_rollouts_per_step == [1, 1, 1]
-    # For each step, collect the samples (global indices) that landed in that step's mbs
+    # For each step, collect the samples (global indices) that landed in that step's micro-batches
     # on rank 0, then verify they exactly equal the rollout's sample positions.
     expected_per_step = [[0, 1, 2], [3, 4], [5, 6, 7, 8]]
     rank0_partition = partitions[0]
-    mbs_cursor = 0
-    for step_i, n_mbs in enumerate(nmb):
-        step_locals = sorted(j for mbs in mbi[0][mbs_cursor : mbs_cursor + n_mbs] for j in mbs)
+    micro_batch_cursor = 0
+    for step_i, n_micro_batches in enumerate(nmb):
+        step_locals = sorted(
+            j for micro_batch in mbi[0][micro_batch_cursor : micro_batch_cursor + n_micro_batches] for j in micro_batch
+        )
         step_globals = [rank0_partition[j] for j in step_locals]
         assert (
             sorted(step_globals) == expected_per_step[step_i]
         ), f"step {step_i} samples = {step_globals}, expected {expected_per_step[step_i]}"
-        mbs_cursor += n_mbs
+        micro_batch_cursor += n_micro_batches
     assert_invariants(
         partitions,
         mbi,
@@ -342,8 +346,8 @@ def test_rejects_when_fewer_rollouts_than_gbs():
         build_dp_schedule(args, tp, [3] * 6, global_batch_size=4, rollout_indices=[0, 0, 1, 1, 2, 2])
 
 
-def test_static_misaligned_mbs_count_asserts():
-    """Static path: mbs count not a multiple of dp_size * mb_group must fail loudly."""
+def test_static_misaligned_micro_batch_count_asserts():
+    """Static path: micro_batch count not a multiple of dp_size * mb_group must fail loudly."""
     args = make_args(micro_batch_size=3)
     tp = make_tp(dp_size=2)
     with pytest.raises(AssertionError, match="static path"):
@@ -411,7 +415,7 @@ def test_balance_by_flops_packs_and_distributes():
 
 
 def test_balance_by_flops_singleton_fallback():
-    """When ceil(total/cap) >= n samples, every sample gets its own mbs."""
+    """When ceil(total/cap) >= n samples, every sample gets its own micro_batch."""
     total_lengths = [100] * 4
     args = make_args(use_dynamic_batch_size=True, max_tokens_per_gpu=100, balance_by_flops=True)
     tp = make_tp(dp_size=2)
@@ -419,10 +423,10 @@ def test_balance_by_flops_singleton_fallback():
     partitions, mbi, nmb, _ = build_dp_schedule(
         args, tp, total_lengths, global_batch_size=4, rollout_indices=list(range(4))
     )
-    assert sum(nmb) * 2 == 4  # 4 singleton mbs over 2 ranks
+    assert sum(nmb) * 2 == 4  # 4 singleton micro_batch over 2 ranks
     for r in range(2):
-        for mbs in mbi[r]:
-            assert len(mbs) == 1
+        for micro_batch in mbi[r]:
+            assert len(micro_batch) == 1
 
 
 def test_has_full_schedule_config():
