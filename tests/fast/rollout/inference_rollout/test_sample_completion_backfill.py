@@ -192,6 +192,23 @@ class TestSubmissionScheduler:
         scheduler.on_submit([make_group(1), make_group(2)])
         assert scheduler.samples_in_flight == 0
 
+    def test_arm_resyncs_credits_whose_callback_never_ran(self):
+        scheduler = SubmissionScheduler(make_args(), granularity="sample")
+        scheduler.on_submit([make_group(1), make_group(2)])
+        assert not scheduler.has_capacity(pending_groups=0, group_budget=2)
+
+        # Nothing in flight, so nothing is left that could fire the callback: without
+        # the resync these credits are permanent and submission never reopens.
+        scheduler.arm(pending_groups=0)
+        assert scheduler.samples_in_flight == 0
+        assert scheduler.has_capacity(pending_groups=0, group_budget=2)
+
+    def test_arm_keeps_credits_while_groups_are_in_flight(self):
+        scheduler = SubmissionScheduler(make_args(), granularity="sample")
+        scheduler.on_submit([make_group(1)])
+        scheduler.arm(pending_groups=1)
+        assert scheduler.samples_in_flight == GROUP_SIZE
+
     def test_backfill_counts_samples(self):
         scheduler = SubmissionScheduler(make_args(), granularity="sample")
         assert scheduler.sample_done_callback is not None
@@ -230,7 +247,7 @@ class TestSubmissionScheduler:
         scheduler = SubmissionScheduler(make_args(), granularity="sample")
         never = asyncio.create_task(asyncio.Event().wait())
 
-        scheduler.arm()
+        scheduler.arm(pending_groups=1)
         waiter = asyncio.create_task(scheduler.wait_for_progress({never}))
         await asyncio.sleep(0)
         assert not waiter.done()

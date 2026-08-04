@@ -183,7 +183,7 @@ class FullyAsyncRolloutFn:
             await self._producer_resumed.wait()
             # Armed after the pause gate: `arm` must not be separated from
             # `wait_for_progress` by an await, or a completion in between is dropped.
-            self._scheduler.arm()
+            self._scheduler.arm(pending_groups=len(active))
             while self._scheduler.has_capacity(pending_groups=len(active), group_budget=self._max_in_flight_groups()):
                 active.add(self._submit_one_group())
             done, active = await self._scheduler.wait_for_progress(active)

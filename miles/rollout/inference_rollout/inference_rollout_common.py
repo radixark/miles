@@ -154,12 +154,21 @@ class SubmissionScheduler:
             return
         self.samples_in_flight += sum(len(group) for group in groups)
 
-    def arm(self) -> None:
-        """Drop sample completions already reflected in ``samples_in_flight``.
+    def arm(self, *, pending_groups: int) -> None:
+        """Drop sample completions already reflected in ``samples_in_flight``, and
+        resync that count when nothing is in flight.
 
         Callers must not await between ``arm`` and ``wait_for_progress``, so that no
         completion can be missed in between.
+
+        No group in flight means no sample is either, so a credit still outstanding
+        then belongs to a sample whose callback never ran -- a group that returned
+        before submitting any, as ``generate_and_rm_group`` does when the state is
+        already aborted. Left alone it is permanent: capacity never reopens, and
+        ``wait_for_progress`` parks on a sample event that nothing can set.
         """
+        if pending_groups == 0:
+            self.samples_in_flight = 0
         self._sample_done.clear()
 
     async def wait_for_progress(self, pendings: set[asyncio.Task]) -> tuple[set, set]:

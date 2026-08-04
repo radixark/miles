@@ -111,7 +111,7 @@ async def generate_rollout_async(
     do_print = True
     pbar = tqdm(total=target_data_size * args.n_samples_per_prompt, desc="Rollout generation")
     while len(data) < target_data_size:
-        scheduler.arm()
+        scheduler.arm(pending_groups=len(pendings))
         while scheduler.has_capacity(pending_groups=len(pendings), group_budget=target_data_size - len(data)):
             # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)
