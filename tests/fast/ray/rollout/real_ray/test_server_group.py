@@ -263,3 +263,31 @@ class TestStartEnginesRealAllocator:
         for g in (a, b):
             for e in g.all_engines:
                 ray.kill(e.actor_handle)
+
+
+class TestNodeZeroDetectionPrecondition:
+    def test_misaligned_rank_offset_is_rejected(self, placement_group_factory):
+        """A multi-node group whose rank_offset is not a whole number of engines cannot identify its node-0 actors."""
+        pg = placement_group_factory(1)
+        args = make_args(num_gpus_per_node=8)
+        with pytest.raises(AssertionError, match="must be a multiple of"):
+            ServerGroup(
+                args=args,
+                pg=pg,
+                all_engines=[ServerEngine() for _ in range(2)],
+                num_gpus_per_engine=16,
+                has_new_engines=False,
+                rank_offset=1,
+            )
+
+    def test_an_engineless_group_is_exempt(self, placement_group_factory):
+        """A placeholder group holds no engines, so it has no node-0 actor to address."""
+        ServerGroup(
+            args=make_args(num_gpus_per_node=8),
+            pg=placement_group_factory(1),
+            all_engines=[],
+            num_gpus_per_engine=16,
+            has_new_engines=False,
+            worker_type="placeholder",
+            rank_offset=1,
+        )
