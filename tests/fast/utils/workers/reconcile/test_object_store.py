@@ -4,7 +4,7 @@ import pytest
 from tests.fast.utils.workers.reconcile.utils import make_pod, pod_cell
 
 from miles.utils.workers.reconcile.object_store import ObjectStore
-from miles.utils.workers.reconcile.source_event import DeleteEvent, UpsertEvent
+from miles.utils.workers.reconcile.source_event import DeleteEvent, ReplaceEvent, UpsertEvent
 
 
 def make_store() -> ObjectStore:
@@ -82,6 +82,65 @@ class TestQueries:
         store.handle_event(UpsertEvent(key="pod-a", obj=make_pod("pod-a", cell="cell-a")))
 
         assert [pod.metadata.name for pod in store.get_by_parent("cell-a")] == ["pod-a", "pod-b"]
+
+
+class TestReplace:
+    def test_replace_swaps_the_whole_store_and_reports_both_sides(self):
+        """A replace applies atomically and names the parents it added to and removed from."""
+        store = make_store()
+        store.handle_event(UpsertEvent(key="pod-old", obj=make_pod("pod-old", cell="cell-a")))
+
+        pod_new = make_pod("pod-new", cell="cell-b")
+        affected = store.handle_event(ReplaceEvent(objects={"pod-new": pod_new}))
+
+        assert affected == {"cell-a", "cell-b"}
+        assert "pod-old" not in store
+        assert [pod.metadata.name for pod in store.get_by_parent("cell-b")] == ["pod-new"]
+
+    def test_replace_synthesizes_deletions_for_objects_that_vanished(self):
+        """Objects missing from a relist must be removed, or ghost members persist forever."""
+        store = make_store()
+        store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
+        store.handle_event(UpsertEvent(key="pod-1", obj=make_pod("pod-1", cell="cell-a")))
+
+        pod_0 = make_pod("pod-0", cell="cell-a")
+        affected = store.handle_event(ReplaceEvent(objects={"pod-0": pod_0}))
+
+        assert affected == {"cell-a"}
+        assert "pod-1" not in store
+        assert [pod.metadata.name for pod in store.get_by_parent("cell-a")] == ["pod-0"]
+
+    def test_an_empty_replace_clears_the_store(self):
+        """A relist that returns nothing means the pool is gone, not that nothing changed."""
+        store = make_store()
+        store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
+
+        affected = store.handle_event(ReplaceEvent(objects={}))
+
+        assert affected == {"cell-a"}
+        assert store.get_by_parent("cell-a") == []
+
+    def test_a_relist_refreshes_a_survivor_whose_parent_did_not_change(self):
+        """A survivor still in the listing must be replaced by the newly listed copy, not left stale."""
+        store = make_store()
+        store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", resource_version="1")))
+
+        affected = store.handle_event(ReplaceEvent(objects={"pod-0": make_pod("pod-0", resource_version="2")}))
+
+        assert affected == {"cell-a"}
+        assert [pod.metadata.resource_version for pod in store.get_by_parent("cell-a")] == ["2"]
+
+    def test_an_unmappable_object_in_a_replace_is_dropped(self):
+        """One bad object must not stall the rest of the relist."""
+        store = make_store()
+
+        affected = store.handle_event(
+            ReplaceEvent(objects={"pod-0": make_pod("pod-0", cell=None), "pod-1": make_pod("pod-1", cell="cell-a")})
+        )
+
+        assert affected == {"cell-a"}
+        assert "pod-0" not in store
+        assert "pod-1" in store
 
 
 class TestUnknownEvent:
