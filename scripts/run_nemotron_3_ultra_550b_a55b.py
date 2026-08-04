@@ -1,347 +1,358 @@
-#!/usr/bin/env python3
 """
-Nemotron-3-Ultra-550B-A55B GRPO RL launcher (16 nodes x 8 H200 = 128 GPU, colocate).
+NVIDIA Nemotron-3-Ultra-550B-A55B GRPO RL training script.
 
-Self-contained Python sibling of scripts/run-nemotron-3-ultra-550b-a55b.sh:
-starts/join Ray and submits train.py with the Ultra arg set.
+=====================
 
-Prereq: run scripts/convert-nemotron-3-ultra-550b-hf-to-dist.sh once to produce
-the torch_dist checkpoint (--load uses it to skip the slow per-run 512-expert HF
-bridge; --hf-checkpoint still points at HF for tokenizer + SGLang rollout).
+nemotron_h is a hybrid Mamba2 + Attention + latent-MoE architecture (108 layers,
+512 experts top-22, moe_latent_size=2048). It loads through NVIDIA
+``megatron.bridge`` (``--megatron-to-hf-mode bridge``) plus the miles
+NemotronHBridge MoE/latent shim in ``miles_plugins/megatron_bridge/nemotron_h.py``.
 
-Usage (run on each pod):
-    head:   python scripts/run_nemotron_3_ultra_550b_a55b.py head   <head_ip>
-    worker: python scripts/run_nemotron_3_ultra_550b_a55b.py worker <head_ip>
+Tested on H200.
 
-Key knobs (env or flags):
-    MODELS_DIR / DATASETS_DIR   base dirs (default /cluster_public/miles_data/{models,datasets})
-    --num-rollout / --response-len / --rollout-batch-size
+Please use the `radixark/miles:dev` docker image.
 
-Notes
-- Mamba n_groups=8 caps attention/mamba TP at 8. The 550B (~1.1TB bf16) does not
-  fit one 8-GPU SGLang engine, so rollout uses 32-GPU engines with EP=32 +
-  DP-attention (dp=4) so attention/mamba run at attn_tp = 32/4 = 8.
-- Rollout routing-replay (--use-miles-router/--use-rollout-routing-replay) is NOT
-  enabled for the 108-layer Ultra yet (capturer shape fix pending); logprob diff
-  is still ~0.01 without it.
+=====================
+
+Args:
+  --model-name: Model variant to use.
+      NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16          Full 108-layer model (16 nodes)
+      NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16-4layer   4-layer slice (single node)
+  --num-nodes: Number of nodes. Determines the parallelism config (see _parallelism).
+  --mode: "normal" or "debug_minimal" (shorter response length for quick testing)
+  --use-torch-dist-ckpt: Load an offline-converted Megatron dist checkpoint instead
+      of paying the (~10-15 min for 512 experts) HF bridge conversion on every run.
+      Defaults on for the full model, off for the pruned slice.
+  --check-weight-update-equal: Assert the Megatron -> SGLang weight sync restores
+      every tensor exactly (poisons SGLang's weights first).
+
+Mamba n_groups=8 caps attention/mamba tensor-parallel at 8 (n_groups % tp == 0).
+The 550B (~1.1TB bf16) does not fit one 8-GPU SGLang engine, so rollout uses
+32-GPU engines with EP=32 + DP-attention (dp=4) so attention/mamba run at
+attn_tp = 32/4 = 8.
+
+Rollout routing-replay (--use-rollout-routing-replay) is NOT enabled for the
+108-layer Ultra yet (the routing capturer shape needs a fix for per-layer top-22
+under DP-attention); train/rollout logprob diff is ~0.01 without it.
+
+=====================
+
+I. Usage for single node 4-layer smoke test:
+  `python scripts/run_nemotron_3_ultra_550b_a55b.py full-train \
+      --model-name NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16-4layer --num-nodes 1`
+
+=====================
+
+II. Usage for the full model (16 nodes):
+
+  1. Setup containers on all nodes
+
+  2. Start Ray cluster on all nodes
+
+  3. Download model/data + convert to a Megatron dist checkpoint.
+     Run on **head node**; the conversion uses Ray to coordinate multi-node work.
+       `python scripts/run_nemotron_3_ultra_550b_a55b.py prepare --num-nodes 16`
+
+  4. Run training. Execute on head node; uses Ray internally.
+       `python scripts/run_nemotron_3_ultra_550b_a55b.py train --num-nodes 16`
 """
 
-import argparse
-import json
-import os
-import shlex
-import subprocess
-import sys
-import time
+import re
+from dataclasses import dataclass
+from typing import Literal
 
-NUM_NODES = 16
-GPUS_PER_NODE = 8
-TOTAL_GPUS = NUM_NODES * GPUS_PER_NODE  # 128
+import typer
 
+import miles.utils.external_utils.command_utils as U
 
-def sh(cmd: str, check: bool = True):
-    print(f"+ {cmd}", flush=True)
-    return subprocess.run(cmd, shell=True, check=check)
+app = typer.Typer()
+
+FULL_MODEL_NAME = "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"
 
 
-def model_args() -> list[str]:
-    # NVIDIA Nemotron-3-Ultra-550B-A55B (nemotron_h: hybrid Mamba2 + Attention + latent-MoE).
-    # 108 layers, hidden 8192, 512 experts top-22, moe_latent 2048, sigmoid router + expert bias.
-    return [
-        "--disable-bias-linear",
-        "--group-query-attention",
-        "--num-attention-heads",
-        "64",
-        "--num-query-groups",
-        "2",
-        "--kv-channels",
-        "128",
-        "--num-layers",
-        "108",
-        "--hidden-size",
-        "8192",
-        "--ffn-hidden-size",
-        "5120",
-        "--normalization",
-        "RMSNorm",
-        "--position-embedding-type",
-        "none",
-        "--vocab-size",
-        "131072",
-        "--make-vocab-size-divisible-by",
-        "128",
-        "--untie-embeddings-and-output-weights",
-        "--num-experts",
-        "512",
-        "--moe-router-topk",
-        "22",
-        "--moe-ffn-hidden-size",
-        "5120",
-        "--moe-shared-expert-intermediate-size",
-        "10240",
-        "--moe-latent-size",
-        "2048",
-        "--moe-router-score-function",
-        "sigmoid",
-        "--moe-router-enable-expert-bias",
-        "--moe-grouped-gemm",
-        "--moe-router-dtype",
-        "fp32",
-        "--moe-router-num-groups",
-        "1",
-        "--moe-router-group-topk",
-        "1",
-        "--moe-router-topk-scaling-factor",
-        "5.0",
-        "--moe-router-pre-softmax",
-        "--moe-router-load-balancing-type",
-        "seq_aux_loss",
-        "--moe-router-bias-update-rate",
-        "0",
-        "--moe-aux-loss-coeff",
-        "0",
-    ]
+@dataclass
+class ScriptArgs(U.ExecuteTrainConfig):
+    mode: Literal["normal", "debug_minimal"] = "normal"
+    run_id: str = U.create_run_id()
+    model_org: str = "nvidia"
+    model_name: str = FULL_MODEL_NAME
+    megatron_model_type: str = "nemotron-3-ultra-550b-a55b"
+    num_gpus_per_node: int = 8
+    hardware: Literal["H200", "B200", "GB300"] = "H200"
+    enable_eval: bool = False
+    enable_optimizer_offload: bool = True
+    use_torch_dist_ckpt: bool | None = None
+    check_weight_update_equal: bool = False
+    num_rollout: int = 30
+    rollout_batch_size: int = 32
+    n_samples_per_prompt: int = 8
+    global_batch_size: int = 128
+    max_tokens_per_gpu: int = 1024
+    save_interval: int = 50
+    skip_saving: bool = False
+    extra_args: str = ""
+    data_dir: str = "/root/datasets"
+    model_dir: str = "/root/models"
+    megatron_path: str = "/root/Megatron-LM"
+
+    def __post_init__(self):
+        if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
+            self.megatron_model_type = f"nemotron-3-ultra-550b-a55b-{m.group(1)}layer"
+        elif self.model_name != FULL_MODEL_NAME:
+            raise NotImplementedError(f"{self.model_name} is not supported")
+
+        if self.use_torch_dist_ckpt is None:
+            # The pruned slice bridges in seconds; only the 512-expert full model
+            # is worth an offline conversion.
+            self.use_torch_dist_ckpt = not _is_pruned(self)
 
 
-def build_train_argv(a) -> list[str]:
-    hf = a.hf_checkpoint or f"{a.models_dir}/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"
-    dist = a.load or f"{a.models_dir}/nemotron-3-ultra-550b-a55b_torch_dist"
-    data = a.prompt_data or f"{a.datasets_dir}/dapo-math-17k/dapo-math-17k.jsonl"
+def _is_pruned(args: ScriptArgs) -> bool:
+    return re.search(r"(\d+)layer", args.model_name) is not None
 
-    ckpt = [
-        "--hf-checkpoint",
-        hf,  # tokenizer + SGLang rollout
-        "--load",
-        dist,  # Megatron native load (skip per-run HF bridge)
-        "--ref-load",
-        dist,
-        "--save",
-        f"{a.models_dir}/nemotron-3-ultra-550b-a55b_miles",
-        "--save-interval",
-        str(a.save_interval),
-        "--no-save-optim",
-        "--megatron-to-hf-mode",
-        "bridge",
-    ]
-    rollout = [
-        "--prompt-data",
-        data,
-        "--input-key",
-        "prompt",
-        "--label-key",
-        "label",
-        "--apply-chat-template",
-        "--rollout-shuffle",
-        "--rm-type",
-        "deepscaler",
-        "--num-rollout",
-        str(a.num_rollout),
-        "--rollout-batch-size",
-        str(a.rollout_batch_size),
-        "--n-samples-per-prompt",
-        str(a.n_samples_per_prompt),
-        "--rollout-max-response-len",
-        str(a.response_len),
-        "--rollout-temperature",
-        "1",
-        "--global-batch-size",
-        str(a.global_batch_size),
-        "--balance-data",
-    ]
-    perf = [
-        # TP8 PP4 EP32 ETP1 (DP4) = 128. Mamba n_groups=8 -> attention/mamba TP<=8.
-        "--tensor-model-parallel-size",
-        "8",
-        "--sequence-parallel",
-        "--pipeline-model-parallel-size",
-        "4",
-        "--context-parallel-size",
-        "1",
-        "--expert-model-parallel-size",
-        "32",
-        "--expert-tensor-parallel-size",
-        "1",
-        "--recompute-granularity",
-        "full",
-        "--recompute-method",
-        "uniform",
-        "--recompute-num-layers",
-        "1",
-        "--use-dynamic-batch-size",
-        "--max-tokens-per-gpu",
-        str(a.max_tokens_per_gpu),
-        "--log-probs-chunk-size",
-        "128",
-    ]
-    grpo = [
-        "--advantage-estimator",
-        "grpo",
-        "--use-kl-loss",
-        "--kl-loss-coef",
-        "0.00",
-        "--kl-loss-type",
-        "low_var_kl",
-        "--entropy-coef",
-        "0.00",
-        "--eps-clip",
-        "0.2",
-        "--eps-clip-high",
-        "0.28",
-    ]
-    optim = [
-        "--optimizer",
-        "adam",
-        "--lr",
-        "1e-6",
-        "--lr-decay-style",
-        "constant",
-        "--weight-decay",
-        "0.1",
-        "--adam-beta1",
-        "0.9",
-        "--adam-beta2",
-        "0.98",
-        "--optimizer-cpu-offload",
-        "--overlap-cpu-optimizer-d2h-h2d",
-        "--use-precision-aware-optimizer",
-    ]
-    sglang = [
-        # 32-GPU engine + EP=32 + DP-attention (dp=4 -> attn_tp=8, divides n_groups=8).
-        "--rollout-num-gpus-per-engine",
-        "32",
-        "--sglang-ep-size",
-        "32",
-        "--sglang-dp-size",
-        "4",
-        "--sglang-enable-dp-attention",
-        "--sglang-mem-fraction-static",
-        str(a.mem_fraction),
-    ]
-    misc = [
-        "--attention-dropout",
-        "0.0",
-        "--hidden-dropout",
-        "0.0",
-        "--accumulate-allreduce-grads-in-fp32",
-        "--attention-softmax-in-fp32",
-        "--attention-backend",
-        "auto",
-    ]
-    wandb = []
-    if a.wandb_project:
-        wandb = [
-            "--use-wandb",
-            "--wandb-project",
-            a.wandb_project,
-            "--wandb-group",
-            a.wandb_group or "nemotron-3-ultra-550b-a55b",
-        ]
-        if os.environ.get("WANDB_KEY"):
-            wandb += ["--wandb-key", os.environ["WANDB_KEY"]]
 
+def _hf_checkpoint(args: ScriptArgs) -> str:
+    return f"{args.model_dir}/{args.model_name}"
+
+
+def _torch_dist_checkpoint(args: ScriptArgs) -> str:
+    return f"{args.model_dir}/{args.model_name}_torch_dist"
+
+
+def _parallelism(args: ScriptArgs) -> tuple[int, int, int, int]:
+    """(tp, pp, ep, etp). Mamba n_groups=8 caps attention/mamba tp at 8."""
+    total_gpus = args.num_nodes * args.num_gpus_per_node
+    if _is_pruned(args):
+        # A few layers fit on one node; give every rank to expert parallel
+        # (512 experts / EP8 = 64 per rank) and keep attention/mamba at tp 1.
+        return 1, 1, total_gpus, 1
+    if total_gpus == 128:
+        return 8, 4, 32, 1
+    raise NotImplementedError(f"No parallelism config for {total_gpus} GPUs with {args.model_name}")
+
+
+def _sglang_args(args: ScriptArgs) -> str:
+    total_gpus = args.num_nodes * args.num_gpus_per_node
+    if _is_pruned(args):
+        gpus_per_engine, dp_size, mem_fraction = args.num_gpus_per_node, 2, 0.6
+    else:
+        # The 550B does not fit one 8-GPU engine.
+        gpus_per_engine, dp_size, mem_fraction = 32, 4, 0.7
+    assert total_gpus % gpus_per_engine == 0, f"{total_gpus=} must be a multiple of {gpus_per_engine=}"
+    attn_tp = gpus_per_engine // dp_size
+    assert (
+        gpus_per_engine % dp_size == 0 and 8 % attn_tp == 0
+    ), f"attn_tp = {gpus_per_engine}/{dp_size} = {attn_tp} must divide Mamba n_groups=8"
     return (
-        [
-            "python3",
-            "train.py",
-            "--actor-num-nodes",
-            str(NUM_NODES),
-            "--actor-num-gpus-per-node",
-            str(GPUS_PER_NODE),
-            "--rollout-num-gpus",
-            str(TOTAL_GPUS),
-            "--colocate",
-        ]
-        + model_args()
-        + ckpt
-        + rollout
-        + optim
-        + grpo
-        + wandb
-        + perf
-        + sglang
-        + misc
+        f"--rollout-num-gpus-per-engine {gpus_per_engine} "
+        f"--sglang-ep-size {gpus_per_engine} "
+        f"--sglang-dp-size {dp_size} "
+        "--sglang-enable-dp-attention "
+        f"--sglang-mem-fraction-static {mem_fraction} "
     )
 
 
-def main():
-    p = argparse.ArgumentParser(description="Nemotron-3-Ultra-550B-A55B RL launcher (128 GPU).")
-    p.add_argument("role", choices=["head", "worker"])
-    p.add_argument("head_ip")
-    p.add_argument("--models-dir", default=os.environ.get("MODELS_DIR", "/cluster_public/miles_data/models"))
-    p.add_argument("--datasets-dir", default=os.environ.get("DATASETS_DIR", "/cluster_public/miles_data/datasets"))
-    p.add_argument("--hf-checkpoint", default=os.environ.get("HF", ""))
-    p.add_argument("--load", default=os.environ.get("DIST", ""))
-    p.add_argument("--prompt-data", default="")
-    p.add_argument("--num-rollout", type=int, default=30)
-    p.add_argument("--rollout-batch-size", type=int, default=32)
-    p.add_argument("--n-samples-per-prompt", type=int, default=8)
-    p.add_argument("--response-len", type=int, default=8192)
-    p.add_argument("--global-batch-size", type=int, default=128)
-    p.add_argument("--max-tokens-per-gpu", type=int, default=1024)
-    p.add_argument("--mem-fraction", type=float, default=0.7)
-    p.add_argument("--save-interval", type=int, default=50)
-    p.add_argument("--wandb-project", default="")
-    p.add_argument("--wandb-group", default="")
-    a = p.parse_args()
+def _prepare_download(args: ScriptArgs):
+    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {_hf_checkpoint(args)}")
+    U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+    if args.enable_eval:
+        U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    os.chdir(repo_root)
 
-    # clean any prior run on this pod
-    for c in ["pkill -9 sglang", "ray stop --force", "pkill -9 ray", "pkill -9 python3"]:
-        sh(c, check=False)
-    time.sleep(3)
+def _prepare_torch_dist_ckpt(args: ScriptArgs):
+    """Offline HF -> Megatron dist conversion, so training can --load instead of
+    re-running the 512-expert bridge mapping on every start.
 
-    has_nvlink = (
-        "1"
-        if subprocess.run("nvidia-smi topo -m 2>/dev/null | grep -qo 'NV[0-9]'", shell=True).returncode == 0
-        else "0"
+    U.convert_checkpoint drives tools/convert_hf_to_torch_dist.py, whose community
+    ``mbridge`` backend has no nemotron_h support; this uses the megatron.bridge
+    tool instead, which is the same path the training run loads through. The
+    conversion layout MUST match the run's layout, else the load reshards.
+    """
+    tp, pp, ep, etp = _parallelism(args)
+    save_dir = _torch_dist_checkpoint(args)
+    multinode = args.num_nodes > 1
+    run = U.exec_command_all_ray_node if multinode else U.exec_command
+    multinode_args = (
+        "--master-addr {{master_addr}} --master-port 23456 --nnodes={{nnodes}} --node-rank {{node_rank}} "
+        if multinode
+        else ""
     )
 
-    if a.role == "worker":
-        # wait for head, then join and block
-        for _ in range(60):
-            if subprocess.run(f"nc -z {a.head_ip} 6379", shell=True).returncode == 0:
-                break
-            print(f"waiting for head {a.head_ip}:6379 ...", flush=True)
-            time.sleep(5)
-        sh(f"ray start --address={a.head_ip}:6379 --num-gpus={GPUS_PER_NODE} --disable-usage-stats --block")
-        return
-
-    # head: start ray, wait for all 128 GPUs, submit
-    sh(
-        f"ray start --head --node-ip-address {a.head_ip} --num-gpus {GPUS_PER_NODE} "
-        f"--disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265"
+    U.exec_command(f"mkdir -p {save_dir}")
+    run(
+        f"source {U.repo_base_dir}/scripts/models/{args.megatron_model_type}.sh && "
+        f"PYTHONPATH={U.repo_base_dir}:{args.megatron_path} "
+        f"torchrun --nproc-per-node {args.num_gpus_per_node} {multinode_args}"
+        f"{U.repo_base_dir}/tools/convert_hf_to_torch_dist_bridge.py "
+        '"${MODEL_ARGS[@]}" '
+        f"--tensor-model-parallel-size {tp} "
+        f"--pipeline-model-parallel-size {pp} "
+        f"--expert-model-parallel-size {ep} "
+        f"--expert-tensor-parallel-size {etp} "
+        "--seq-length 4096 "
+        "--max-position-embeddings 4096 "
+        f"--hf-checkpoint {_hf_checkpoint(args)} "
+        f"--save {save_dir} "
+        "--megatron-to-hf-mode bridge "
     )
-    print(f"Waiting for {TOTAL_GPUS} GPUs in the Ray cluster ...", flush=True)
-    for _ in range(240):
-        r = subprocess.run("ray status 2>/dev/null", shell=True, capture_output=True, text=True)
-        if f"{float(TOTAL_GPUS)} GPU" in r.stdout:
-            print(f"[ray] cluster ready: {TOTAL_GPUS} GPUs", flush=True)
-            break
-        time.sleep(5)
 
-    runtime_env = {
-        "env_vars": {
-            "PYTHONPATH": "/root/Megatron-LM/",
-            "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-            "NCCL_NVLS_ENABLE": has_nvlink,
-            # nemotron DP-attention uses existing kernels; skip the blanket sgl-kernel guard.
+
+def _execute_train(args: ScriptArgs):
+    tp, pp, ep, etp = _parallelism(args)
+    total_gpus = args.num_nodes * args.num_gpus_per_node
+    load_path = _torch_dist_checkpoint(args) if args.use_torch_dist_ckpt else _hf_checkpoint(args)
+
+    ckpt_args = (
+        f"--hf-checkpoint {_hf_checkpoint(args)} "  # tokenizer + SGLang rollout
+        f"--ref-load {load_path} "
+        "--megatron-to-hf-mode bridge "
+    )
+    if args.use_torch_dist_ckpt:
+        # Megatron native load, skipping the per-run bridge conversion.
+        ckpt_args += f"--load {load_path} "
+    if not args.skip_saving:
+        ckpt_args += (
+            f"--save {args.output_dir}/{args.run_id}/checkpoints "
+            f"--save-interval {args.save_interval} "
+            "--no-save-optim "  # weights-only
+        )
+
+    rollout_args = (
+        f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
+        "--input-key prompt "
+        "--label-key label "
+        "--apply-chat-template "
+        "--rollout-shuffle "
+        "--rm-type deepscaler "
+        f"--num-rollout {args.num_rollout} "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
+        f"--rollout-max-response-len {256 if args.mode == 'debug_minimal' else 8192} "
+        "--rollout-temperature 1 "
+        f"--global-batch-size {args.global_batch_size} "
+        "--balance-data "
+    )
+
+    eval_args = ""
+    if args.enable_eval:
+        eval_args = (
+            "--eval-interval 20 "
+            f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
+            "--n-samples-per-eval-prompt 16 "
+            "--eval-max-response-len 16384 "
+            "--eval-top-p 1 "
+        )
+
+    perf_args = (
+        f"--tensor-model-parallel-size {tp} "
+        f"--pipeline-model-parallel-size {pp} "
+        "--context-parallel-size 1 "
+        f"--expert-model-parallel-size {ep} "
+        f"--expert-tensor-parallel-size {etp} "
+        "--recompute-granularity full "
+        "--recompute-method uniform "
+        "--recompute-num-layers 1 "
+        "--use-dynamic-batch-size "
+        f"--max-tokens-per-gpu {args.max_tokens_per_gpu} "
+        "--log-probs-chunk-size 128 "
+    )
+    if tp > 1:
+        perf_args += "--sequence-parallel "
+
+    grpo_args = (
+        "--advantage-estimator grpo "
+        "--use-kl-loss "
+        "--kl-loss-coef 0.00 "
+        "--kl-loss-type low_var_kl "
+        "--entropy-coef 0.00 "
+        "--eps-clip 0.2 "
+        "--eps-clip-high 0.28 "
+    )
+
+    optimizer_args = (
+        "--optimizer adam "
+        "--lr 1e-6 "
+        "--lr-decay-style constant "
+        "--weight-decay 0.1 "
+        "--adam-beta1 0.9 "
+        "--adam-beta2 0.98 "
+    )
+    if args.enable_optimizer_offload:
+        optimizer_args += "--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
+
+    misc_args = (
+        "--attention-dropout 0.0 "
+        "--hidden-dropout 0.0 "
+        "--accumulate-allreduce-grads-in-fp32 "
+        "--attention-softmax-in-fp32 "
+        "--attention-backend auto "
+        "--colocate "
+        f"--actor-num-nodes {args.num_nodes} "
+        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
+        f"--rollout-num-gpus {total_gpus} "
+        f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
+    )
+    if args.check_weight_update_equal:
+        misc_args += "--check-weight-update-equal "
+
+    train_args = (
+        f"{ckpt_args} "
+        f"{rollout_args} "
+        f"{optimizer_args} "
+        f"{grpo_args} "
+        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{perf_args} "
+        f"{eval_args} "
+        f"{_sglang_args(args)} "
+        f"{misc_args} "
+        f"{args.extra_args} "
+    )
+
+    U.execute_train(
+        train_args=train_args,
+        config=args,
+        num_gpus_per_node=args.num_gpus_per_node,
+        megatron_model_type=args.megatron_model_type,
+        extra_env_vars={
+            # The nemotron DP-attention path uses existing kernels; skip the
+            # blanket sgl-kernel version guard.
             "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK": "1",
-        }
-    }
-    train_argv = build_train_argv(a)
-    cmd = [
-        "ray",
-        "job",
-        "submit",
-        "--address=http://127.0.0.1:8265",
-        f"--runtime-env-json={json.dumps(runtime_env)}",
-        "--",
-    ] + train_argv
-    print("+ " + " ".join(shlex.quote(x) for x in cmd), flush=True)
-    sys.exit(subprocess.run(cmd).returncode)
+        },
+        megatron_path=args.megatron_path,
+    )
+
+
+@app.command()
+@U.dataclass_cli
+def full_train(args: ScriptArgs):
+    """Full pipeline: download, convert, train."""
+    _prepare_download(args)
+    if args.use_torch_dist_ckpt:
+        _prepare_torch_dist_ckpt(args)
+    _execute_train(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare(args: ScriptArgs):
+    """Download model/data and convert to a Megatron dist checkpoint (run on head node)."""
+    _prepare_download(args)
+    if args.use_torch_dist_ckpt:
+        _prepare_torch_dist_ckpt(args)
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs):
+    """Run training only (assumes data is prepared)."""
+    _execute_train(args)
+
+
+@app.callback()
+def _callback() -> None:
+    pass
 
 
 if __name__ == "__main__":
-    main()
+    app()
