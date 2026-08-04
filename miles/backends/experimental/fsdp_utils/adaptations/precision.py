@@ -30,8 +30,16 @@ logger = logging.getLogger(__name__)
 _DTYPES = {"fp32": torch.float32, "bf16": torch.bfloat16, "fp16": torch.float16}
 
 
+_DTYPE_NAMES = {dtype: name for name, dtype in _DTYPES.items()}
+
+
 def resolve_dtype(name: str) -> torch.dtype:
     return _DTYPES[name]
+
+
+def dtype_name(dtype: torch.dtype) -> str:
+    """Inverse of resolve_dtype, for building Rules from a dtype the policy already resolved."""
+    return _DTYPE_NAMES[dtype]
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +107,15 @@ def resolve_precision_policy(hf_config, args) -> PrecisionPolicy:
         reduce_dtype=torch.float32,
         keep_fp32_master=args.keep_fp32_master,
     )
+    return apply_precision_policy_hooks(policy, hf_config, args)
+
+
+def apply_precision_policy_hooks(policy: PrecisionPolicy, hf_config, args) -> PrecisionPolicy:
+    """Run the arch hooks and the CLI rules over ``policy``.
+
+    Split out so a caller that adjusts the run-level dtypes itself can re-derive the arch's
+    consequences, which several hooks read off the policy rather than off ``args``.
+    """
     for hook in _PRECISION_POLICY_HOOKS:
         if hook.applies_to(hf_config, args):
             policy = hook.resolve(policy, hf_config, args)

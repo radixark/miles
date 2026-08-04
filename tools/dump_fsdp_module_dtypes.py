@@ -21,10 +21,12 @@ from transformers import AutoConfig, AutoModelForCausalLM
 
 from miles.backends.experimental.fsdp_utils.actor import apply_fsdp2
 from miles.backends.experimental.fsdp_utils.adaptations import (
+    PrecisionPolicy,
     apply_class_patches,
     apply_fp32_master,
     apply_packing,
     apply_post_load_fixups,
+    apply_precision_policy_hooks,
     precision_forward_context,
     resolve_dtype,
     resolve_precision_policy,
@@ -65,10 +67,20 @@ def build_model(args, hf_config, mesh):
         attn_implementation=args.attn_implementation,
     )
     policy = resolve_precision_policy(hf_config, args)
-    if args.gather_dtype:
-        policy.param_dtype = resolve_dtype(args.gather_dtype)
-    if args.autocast_dtype:
-        policy.autocast_dtype = None if args.autocast_dtype == "none" else resolve_dtype(args.autocast_dtype)
+    if args.gather_dtype or args.autocast_dtype:
+        # Override the run-level dtypes, then re-derive what the arch spec makes of them.
+        base = PrecisionPolicy(
+            param_dtype=resolve_dtype(args.gather_dtype) if args.gather_dtype else policy.param_dtype,
+            reduce_dtype=policy.reduce_dtype,
+            keep_fp32_master=policy.keep_fp32_master,
+            autocast_dtype=(
+                (None if args.autocast_dtype == "none" else resolve_dtype(args.autocast_dtype))
+                if args.autocast_dtype
+                else policy.autocast_dtype
+            ),
+            sync_dtype_resolver=policy.sync_dtype_resolver,
+        )
+        policy = apply_precision_policy_hooks(base, hf_config, args)
     if policy.keep_fp32_master:
         model = apply_fp32_master(model, policy.sync_dtype_resolver)
     apply_post_load_fixups(model, hf_config, args.hf_checkpoint)
