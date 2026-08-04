@@ -27,6 +27,7 @@ class TestComputeSpecs:
             "session-server",
             "inference-engine-0-0",
             "inference-engine-0-2",
+            "trainer-actor",
         ]
 
     def test_a_disabled_session_server_is_listed_with_no_cells(self, tmp_path):

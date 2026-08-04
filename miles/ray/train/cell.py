@@ -1,10 +1,10 @@
 import asyncio
 import logging
 import time
-from collections.abc import Callable
 
 import ray
 
+from miles.ray.specs.train import MASTER_PORT_NAME
 from miles.ray.train.cell_monitor import compute_cell_status
 from miles.ray.train.cell_state import (
     CellState,
@@ -20,11 +20,10 @@ from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
-
-
-ActorFactory = Callable[[], list[ray.actor.ActorHandle]]
 
 
 class RayTrainCell:
@@ -36,7 +35,7 @@ class RayTrainCell:
         with_ref: bool,
         with_opd_teacher: bool = False,
         cell_index: int,
-        actor_factory: ActorFactory,
+        pool: str,
         rollout_executor: object | None,
         health_checker: BaseHealthChecker,
     ) -> None:
@@ -46,8 +45,9 @@ class RayTrainCell:
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
         self.rollout_executor = rollout_executor
-        self.actor_factory = actor_factory
+        self.pool = pool
         self.health_checker = health_checker
+        self._master_addr: HostAndPort | None = None
 
         # NOTE: do *NOT* directly modify `self._state`, but instead use `self._change_state`
         self._state: CellState = StatePending()
@@ -61,6 +61,11 @@ class RayTrainCell:
         indep_dp_info: IndepDPInfo,
         recv_ckpt_src_rank: int | None = None,
     ):
+        await self.execute(
+            "configure_master_addr_and_port",
+            master_addr=self._master_addr.host.strip("[]"),
+            master_port=self._master_addr.port,
+        )
         results = await self.execute(
             "init",
             args=self.args,
@@ -186,11 +191,14 @@ class RayTrainCell:
         self._change_state("mark_as_pending", StateStopped, StatePending())
 
     def allocate_for_pending(self) -> None:
-        actor_handles = self.actor_factory()
+        worker_infos = RayWorkerProvider.create().get_worker_infos(
+            pool=self.pool, cell_index=self.cell_index
+        )
+        self._master_addr = worker_infos[0].self_addrs[MASTER_PORT_NAME]
         self._change_state(
             "allocate_for_pending",
             StatePending,
-            StateAllocatedUninitialized(actor_handles=actor_handles),
+            StateAllocatedUninitialized(actor_handles=[info.actor_handle for info in worker_infos]),
         )
 
     def _mark_as_alive(self, indep_dp_info: IndepDPInfo) -> None:

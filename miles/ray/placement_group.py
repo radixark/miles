@@ -124,52 +124,20 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     return ans
 
 
-def allocate_train_group(
-    args,
-    num_nodes,
-    num_gpus_per_node,
-    pg,
-    role: str,
-    with_ref: bool,
-    inference_controller,
-    rollout_executor,
-    with_opd_teacher: bool = False,
-):
-    return RayTrainGroup(
-        args=args,
-        num_nodes=num_nodes,
-        num_gpus_per_node=num_gpus_per_node,
-        pg=pg,
-        num_gpus_per_actor=0.4,
-        role=role,
-        with_ref=with_ref,
-        inference_controller=inference_controller,
-        rollout_executor=rollout_executor,
-        with_opd_teacher=with_opd_teacher,
-    )
-
-
 async def create_training_models(args, pgs, inference_controller, rollout_executor):
-    actor_model = allocate_train_group(
+    actor_model = RayTrainGroup(
         args=args,
-        num_nodes=args.actor_num_nodes,
-        num_gpus_per_node=args.actor_num_gpus_per_node,
-        pg=pgs["actor"],
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
+        with_opd_teacher=args.use_opd and args.opd_type == "megatron",
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,
-        with_opd_teacher=args.use_opd and args.opd_type == "megatron",
     )
     actor_start_rollout_ids = await actor_model.init()
 
     if args.use_critic:
-        critic_args = compute_critic_args(args)
-        critic_model = allocate_train_group(
-            args=critic_args,
-            num_nodes=args.critic_num_nodes,
-            num_gpus_per_node=args.critic_num_gpus_per_node,
-            pg=pgs["critic"],
+        critic_model = RayTrainGroup(
+            args=compute_critic_args(args),
             role="critic",
             with_ref=False,
             inference_controller=None,

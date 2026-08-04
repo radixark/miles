@@ -4,10 +4,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from ray.util.placement_group import PlacementGroup
+import ray
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
-from miles.ray.train.actor_factory import allocate_gpus_for_actor
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.cell import RayTrainCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils.async_utils import AsyncioGatherUtils
@@ -22,11 +22,11 @@ from miles.utils.audit_utils.event_logger.models import (
 )
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
-from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
-from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
+from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError, retry
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 logger = logging.getLogger(__name__)
 
@@ -35,33 +35,12 @@ _RETRY_MAX_ATTEMPTS = 30
 
 
 class RayTrainGroup:
-    """
-    A group of ray actors
-
-    Args:
-        args (Namespace): Arguments for the actor group.
-        num_nodes (int): Number of nodes for this actor group.
-        num_gpus_per_node (int): Number of gpus for this actor group.
-        pg (PlacementGroup, optional): Placement group to schedule actor on.
-            If none, create new placement group automatically. Defaults to None.
-        num_gpus_per_actor (float, optional): Number of gpus allocated for each actor.
-            If < 1.0, multiple models can share same gpu. Defaults to 1.
-        resources (Dict[str, float], optional): Custom resources to allocate for each actor.
-            See https://docs.ray.io/en/latest/ray-core/scheduling/resources.html
-        num_resources_per_node (int, optional): Number of custom resources to allocate for each node.
-            See https://docs.ray.io/en/latest/ray-core/scheduling/resources.html
-    """
-
     def __init__(
         self,
         args,
-        num_nodes: int,
-        num_gpus_per_node: int,
-        pg: tuple[PlacementGroup, list[int], list[int]],
         *,
         inference_controller: object | None,
         rollout_executor: object | None,
-        num_gpus_per_actor: float = 1,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
@@ -69,19 +48,12 @@ class RayTrainGroup:
         self.args = args
         self._inference_controller = inference_controller
         self._rollout_executor = rollout_executor
+        self._pool_id = compute_trainer_pool_id(role)
+        self._worker_manager = RayWorkerManager.get_handle()
 
-        total_gpus = num_nodes * num_gpus_per_node
-        num_cells = (total_gpus // compute_megatron_world_size_except_dp(args)) if args.indep_dp else 1
-        gpus_per_cell = total_gpus // num_cells
-        assert total_gpus % num_cells == 0, f"total_gpus ({total_gpus}) must be divisible by num_cells ({num_cells})"
+        num_cells = self._compute_num_cells()
 
         self._indep_dp_quorum_id = 0
-
-        if num_cells > 1:
-            self._indep_dp_store, indep_dp_store_addr = create_tcp_store()
-            logger.info(f"Created TCPStore for independent DP at {indep_dp_store_addr}")
-        else:
-            self._indep_dp_store, indep_dp_store_addr = None, None
 
         health_checker_config = (
             SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker") if num_cells > 1 else None
@@ -90,8 +62,6 @@ class RayTrainGroup:
         self._health_checker_activeness = ActivenessTracker(active=True)
 
         def _create_cell(cell_index: int):
-            cell_pg = _slice_pg(pg, start=cell_index * gpus_per_cell, end=(cell_index + 1) * gpus_per_cell)
-
             cell = RayTrainCell(
                 args=args,
                 role=role,
@@ -99,15 +69,7 @@ class RayTrainGroup:
                 with_opd_teacher=with_opd_teacher,
                 cell_index=cell_index,
                 rollout_executor=rollout_executor,
-                actor_factory=lambda _pg=cell_pg, _ci=cell_index: allocate_gpus_for_actor(
-                    args=args,
-                    gpus_per_cell=gpus_per_cell,
-                    pg=_pg,
-                    num_gpus_per_actor=num_gpus_per_actor,
-                    indep_dp_store_addr=indep_dp_store_addr,
-                    role=role,
-                    cell_index=_ci,
-                ),
+                pool_id=self._pool_id,
                 health_checker=NoopHealthChecker(),
             )
 
@@ -129,6 +91,9 @@ class RayTrainGroup:
             self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
 
         self._test_action_executor = FTTestActionControllerExecutor.from_args(args, group=self)
+
+    def _compute_num_cells(self) -> int:
+        return len(ray.get(self._worker_manager.get_cell_infos.remote(pools=[self._pool_id])))
 
     # ------------------------ API :: train ------------------------
 
@@ -572,13 +537,5 @@ class RayTrainGroup:
         return len(self._cells)
 
 
-PGTuple = tuple[PlacementGroup, list[int], list[int]]
-
-
 def _first_exception(results) -> BaseException | None:
     return next((result for result in results if isinstance(result, BaseException)), None)
-
-
-def _slice_pg(pg: PGTuple, start: int, end: int) -> PGTuple:
-    placement_group, bundle_indices, gpu_ids = pg
-    return placement_group, bundle_indices[start:end], gpu_ids[start:end]

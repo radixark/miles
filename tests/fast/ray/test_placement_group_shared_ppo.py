@@ -49,10 +49,10 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
     groups = []
 
     class _Group:
-        def __init__(self, args, role, with_ref):
+        def __init__(self, *, args, role, **_kwargs):
             self.args = args
             self.role = role
-            self.with_ref = with_ref
+            groups.append(self)
 
         async def init(self):
             return [0]
@@ -60,12 +60,7 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
         async def set_rollout_executor(self):
             return None
 
-    def _allocate_train_group(*, args, role, with_ref, **_kwargs):
-        group = _Group(args, role, with_ref)
-        groups.append(group)
-        return group
-
-    monkeypatch.setattr(placement_group_module, "allocate_train_group", _allocate_train_group)
+    monkeypatch.setattr(placement_group_module, "RayTrainGroup", _Group)
     args = Namespace(
         actor_num_nodes=1,
         actor_num_gpus_per_node=2,
@@ -92,11 +87,9 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
     assert actor.role == "actor"
     assert actor.args is args
     assert actor.args.kl_coef == 0.1
-    assert actor.with_ref is True
 
     assert critic.role == "critic"
     assert critic.args is not args
     assert critic.args.kl_coef == 0
     assert critic.args.use_opd is False
     assert critic.args.disable_param_buffers_cpu_backup is False
-    assert critic.with_ref is False

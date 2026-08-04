@@ -1,4 +1,4 @@
-from miles.ray.specs import inference
+from miles.ray.specs import inference, train
 from miles.utils.workers.worker_spec import BaseWorkerSpec
 
 
@@ -7,5 +7,5 @@ def compute_specs(args) -> list[BaseWorkerSpec]:
         *inference.specs_router(args),
         inference.spec_session_server(args),
         *inference.specs_inference_engine(args),
-        # TODO add more
+        *train.specs_trainer(args),
     ]
