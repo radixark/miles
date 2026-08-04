@@ -17,6 +17,7 @@ CONFIG = ModelConfig(
     ep_size=4,
     enable_spec=True,
     cycles=2,
+    assistant_text_threshold=0.05,
     # V4 sorts tool_result blocks by the preceding assistant's tool_calls
     # order, so a sentinel tool_call_id would not roundtrip; use the
     # universal rollback recovery when the model emits no tool_calls.

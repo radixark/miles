@@ -666,6 +666,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
         extra_kwargs={"drop_thinking": False},
+        allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
