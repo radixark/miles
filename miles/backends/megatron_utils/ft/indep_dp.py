@@ -7,7 +7,6 @@ import torch.distributed as dist
 from megatron.core import mpu
 
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.environ import enable_experimental_ft_trainer
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil, GroupInfo, collective_bool_and
 from miles.utils.tracking_utils.structured_log import log_structured
@@ -148,8 +147,6 @@ def allreduce_grads_and_losses_across_replicas(
                 for bucket in bucket_group.buckets:
                     util.all_reduce(bucket.grad_data, pg, op=dist.ReduceOp.SUM)
     except Exception:
-        if not enable_experimental_ft_trainer():
-            raise
         allreduce_success = False
         log_structured(
             logger.error,
