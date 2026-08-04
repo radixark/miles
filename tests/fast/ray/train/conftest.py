@@ -1,4 +1,3 @@
-import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -25,31 +24,16 @@ def _patch_worker_backends():
         patch("miles.utils.workers.ray_worker_manager.RayWorkerManager.get_handle", lambda: fake_worker_manager),
         patch(
             "miles.utils.workers.worker_provider.ray.RayWorkerProvider.create",
-            lambda: RayWorkerProvider(worker_manager_handle=fake_worker_manager),
+            lambda *, pool_ids=None: RayWorkerProvider(worker_manager_handle=fake_worker_manager, pool_ids=pool_ids),
         ),
     ):
         yield
+    fake_worker_manager.kill_all_actors()
 
 
 @pytest.fixture(scope="module", autouse=True)
-def ray_env():
-    if ray.is_initialized():
-        # Reuse the cluster some outer fixture created (e.g. the session-scoped
-        # one in tests/conftest.py) and never tear down what we did not create.
-        yield
-        return
-
-    init_kwargs: dict = {"ignore_reinit_error": True}
-    if "RAY_ADDRESS" not in os.environ:
-        # address="local" forces a fresh cluster: with no address, ray.init
-        # auto-connects to any leaked local cluster (via /tmp/ray), and
-        # connecting with num_cpus/num_gpus set is a hard ValueError.
-        init_kwargs["address"] = "local"
-        init_kwargs["num_cpus"] = 4
-        init_kwargs["num_gpus"] = 0
-    ray.init(**init_kwargs)
+def ray_env(ray_local_mode):
     yield
-    ray.shutdown()
 
 
 @pytest.fixture(autouse=True)
