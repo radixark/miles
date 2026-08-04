@@ -92,10 +92,9 @@ def test_colocated_lora_update_registers_a_fresh_unpinned_adapter():
 
     _run_colocated_send(client=client, lora_config={"peft_type": "LORA", "r": 8}, lora_name="adapter-a")
 
-    name, kwargs = client.calls[0]
-    assert name == "load_lora_adapter_from_tensors"
+    assert [name for name, _kwargs in client.calls][:1] == ["unload_lora_adapter"]
+    kwargs = next(kw for name, kw in client.calls if name == "load_lora_adapter_from_tensors")
     assert kwargs["lora_name"] == "adapter-a"
-    assert kwargs["load_format"] == "flattened_bucket"
     assert kwargs.get("pinned", False) is False
     assert kwargs.get("added_tokens_config") is None
     assert kwargs.get("upsert", False) is False

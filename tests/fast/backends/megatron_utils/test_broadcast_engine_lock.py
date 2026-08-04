@@ -107,12 +107,14 @@ class TestUpdateWeightUnderTheEngineLock:
     ) -> tuple[MagicMock, MagicMock]:
         with (
             patch(f"{_BROADCAST_MODULE}.update_weights_from_distributed") as broadcast,
-            patch(f"{_BROADCAST_MODULE}.ray") as ray_mock,
+            patch(f"{_BROADCAST_MODULE}.async_utils.wait_futures") as wait_futures,
         ):
             broadcast.side_effect = broadcast_side_effect
-            ray_mock.get.side_effect = engine_failure
+            broadcast.return_value = []
+            wait_futures.side_effect = engine_failure
+            wait_futures.return_value = []
             UpdateWeightFromDistributed._update_weight_implementation(fake_self, named_tensors, pbar=pbar)
-        return broadcast, ray_mock
+        return broadcast, wait_futures
 
     def test_a_finished_update_hands_the_lock_to_the_next_source(self) -> None:
         """The common path: broadcast, drop the bucket, then call the next ticket."""
@@ -121,12 +123,17 @@ class TestUpdateWeightUnderTheEngineLock:
         named_tensors = [("w", torch.zeros(2))]
         pbar = MagicMock()
 
-        broadcast, ray_mock = self._run(fake_self, named_tensors, pbar=pbar)
+        broadcast, wait_futures = self._run(fake_self, named_tensors, pbar=pbar)
 
         broadcast.assert_called_once_with(
-            "miles-pp_0", fake_self._model_update_groups, 7, fake_self.rollout_engines, named_tensors
+            "miles-pp_0",
+            fake_self._model_update_groups,
+            7,
+            fake_self.rollout_engines,
+            named_tensors,
+            selector="all",
         )
-        ray_mock.get.assert_called_once_with(broadcast.return_value)
+        wait_futures.assert_called_once_with(broadcast.return_value)
         assert named_tensors == []
         assert store.add(_SERVING_KEY, 0) == 1
         pbar.update.assert_called_once_with(1)
@@ -148,7 +155,7 @@ class TestUpdateWeightUnderTheEngineLock:
         assert store.add(_SERVING_KEY, 0) == 2
 
     def test_an_engine_failure_keeps_the_lock_and_the_bucket(self) -> None:
-        """Failing closed where it actually fails: ray.get reports one engine without awaiting the rest."""
+        """Failing closed where it actually fails: awaiting the futures reports the dead engine."""
         store = HashStore()
         fake_self = self._make_self(store)
         named_tensors = [("w", torch.zeros(2))]

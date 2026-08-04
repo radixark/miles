@@ -99,7 +99,7 @@ def test_baseline_capture_pulls_with_both_checkpoint_dirs(tmp_path):
         dist_mock.get_rank.return_value = 0
         updater._capture_baseline()
 
-    assert [name for name, _kwargs in calls] == ["pull_weights"]
+    assert [name for name, _kwargs in calls] == ["pull_weights", "get_weight_version"]
     assert calls[0][1] == {
         "target_version": 0,
         "local_checkpoint_dir": "/local/ckpt",
