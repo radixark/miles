@@ -43,6 +43,7 @@ def _server_args(
     server_args_dict = _compute_server_args(
         args or _args(),
         node_rank=node_rank,
+        gated_launch_port=20034,
         dist_init_addr=dist_init_addr,
         nccl_port=20031,
         host="10.0.0.1",
@@ -116,6 +117,14 @@ class TestServerArgsToArgv:
     def test_an_ipv6_dist_init_addr_roundtrips(self):
         """The bracketed v6 rendezvous address survives the argv boundary."""
         server_args = _server_args(dist_init_addr="[fd00::1]:20000")
+        assert _roundtrip(server_args) == server_args
+
+    def test_a_colocate_prefill_cuda_graph_backend_roundtrips(self):
+        """Colocate forces the prefill cuda graph backend off, which sglang folds into a
+        derived config object that has no faithful command-line spelling."""
+        server_args = _server_args(sglang_overrides={"cuda_graph_backend_prefill": "disabled"})
+        argv = server_args_to_argv(server_args)
+        assert "--cuda-graph-config" not in argv
         assert _roundtrip(server_args) == server_args
 
     def test_lora_adapter_paths_roundtrip(self):

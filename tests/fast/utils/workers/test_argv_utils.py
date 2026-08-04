@@ -359,3 +359,42 @@ class TestRenderCliArgvRequiredArgv:
                 make_parser=_make_required_parser,
                 from_parsed=_from_parsed_required,
             )
+
+
+@dataclasses.dataclass
+class _DerivedDemoArgs:
+    count: int = 0
+    doubled: int = 0
+
+
+def _make_derived_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--count", type=int, default=0)
+    parser.add_argument("--doubled", type=int, default=0)
+    return parser
+
+
+def _from_parsed_derived(parsed: argparse.Namespace) -> _DerivedDemoArgs:
+    return _DerivedDemoArgs(count=parsed.count, doubled=parsed.count * 2)
+
+
+class TestRenderCliArgvDerivedFields:
+    def test_a_derived_field_stays_off_the_command_line(self):
+        """The parser recomputes it, so spelling it out would be redundant at best."""
+        argv = render_cli_argv(
+            _DerivedDemoArgs(count=3, doubled=6),
+            make_parser=_make_derived_parser,
+            from_parsed=_from_parsed_derived,
+            derived_fields=frozenset({"doubled"}),
+        )
+        assert argv == ["--count", "3"]
+
+    def test_dropping_a_field_that_is_not_actually_derived_is_caught(self):
+        """The roundtrip is what makes skipping a field safe; it must fail when it is not."""
+        with pytest.raises(AssertionError, match="roundtrip mismatch"):
+            render_cli_argv(
+                _DerivedDemoArgs(count=3, doubled=99),
+                make_parser=_make_derived_parser,
+                from_parsed=_from_parsed_derived,
+                derived_fields=frozenset({"doubled"}),
+            )

@@ -35,22 +35,35 @@ def render_cli_argv(
     required_argv: list[str] | None = None,
     dest_prefix: str = "",
     field_to_dest: Mapping[str, str] | None = None,
+    derived_fields: frozenset[str] = frozenset(),
 ) -> list[str]:
+    """Render *args_obj* back into a command line that parses into an equal object.
+
+    Fields named in *derived_fields* are computed by the parser from other flags and
+    have no faithful command-line spelling of their own, so they are not rendered.
+    The roundtrip below is what proves that omitting them loses nothing.
+    """
     parser = make_parser()
 
     def parse(argv: list[str]) -> _ArgsT:
         return from_parsed(make_parser().parse_args(argv))
 
     base_argv = list(required_argv or [])
+    render_kwargs = dict(parser=parser, dest_prefix=dest_prefix, field_to_dest=field_to_dest or {})
     argv = base_argv + _render_cli_argv(
-        args_obj,
-        cli_defaults=parse(base_argv),
-        parser=parser,
-        dest_prefix=dest_prefix,
-        field_to_dest=field_to_dest or {},
+        args_obj, cli_defaults=parse(base_argv), derived_fields=derived_fields, **render_kwargs
     )
 
     parsed = parse(argv)
+    if parsed != args_obj:
+        # A default the parser derives from other flags (e.g. the PD load balance
+        # method) only reveals itself once those flags are on the command line, so
+        # rendering once against the bare defaults can leave it unspelled.
+        argv = argv + _render_cli_argv(
+            args_obj, cli_defaults=parsed, derived_fields=derived_fields, **render_kwargs
+        )
+        parsed = parse(argv)
+
     assert parsed == args_obj, f"cli argv roundtrip mismatch: {parsed!r} != {args_obj!r}"
     return argv
 
@@ -62,11 +75,14 @@ def _render_cli_argv(
     parser: argparse.ArgumentParser,
     dest_prefix: str,
     field_to_dest: Mapping[str, str],
+    derived_fields: frozenset[str],
 ) -> list[str]:
     actions_by_dest = _actions_by_dest(parser)
 
     argv: list[str] = []
     for field in dataclasses.fields(args_obj):
+        if field.name in derived_fields:
+            continue
         value = getattr(args_obj, field.name)
         if value == getattr(cli_defaults, field.name):
             continue
