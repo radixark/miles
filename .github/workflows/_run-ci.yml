@@ -265,6 +265,11 @@ jobs:
           uv pip install -r requirements.txt -r tests/ci/requirements-ci-cpu.txt
           python tests/ci/verify_source_resolution.py
 
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v4.2.3
+
       - name: Resolve suite plan
         shell: bash
         run: ${{ inputs.execute_command }} --list-only

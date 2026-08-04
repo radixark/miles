@@ -1,0 +1,6 @@
+dependencies:
+- name: miles-common
+  repository: file://../miles-common
+  version: 0.1.0
+digest: sha256:2959f751f0cae05298572e8181d55282bccc0dd8856d6324c18e3772efd8d70f
+generated: "2026-08-04T18:11:30.869545+08:00"
