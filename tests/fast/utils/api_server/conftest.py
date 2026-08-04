@@ -56,6 +56,10 @@ class MockHandler(_CellHandler):
     async def list_cell_ids(self) -> list[str]:
         return list(self.cells)
 
+    async def list_cells(self) -> list[Cell]:
+        cell_ids = await self.list_cell_ids()
+        return list(await asyncio.gather(*(self.get_cell(cell_id) for cell_id in cell_ids)))
+
     async def get_cell(self, cell_id: str) -> Cell:
         state = self.cells[cell_id]
         return Cell(
@@ -93,7 +97,7 @@ class MockHandler(_CellHandler):
 
     async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
         if not self.supports_inject_fault:
-            await super().inject_fault(cell_id, mode=mode, sub_index=sub_index)
+            raise NotImplementedError(f"{type(self).__name__} does not support fault injection")
         self.injected.append((cell_id, mode, sub_index))
 
 
