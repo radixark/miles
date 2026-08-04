@@ -53,3 +53,47 @@ class TestSingleCellFailsFast:
 
         with pytest.raises(NonRetryableError):
             await group.save_model(3)
+
+
+class TestLifecycleCallsAreNotSilent:
+    @pytest.mark.parametrize(
+        ("method_name", "actor_fn_name"),
+        [("onload", "wake_up"), ("offload", "sleep"), ("clear_memory", "clear_memory")],
+    )
+    async def test_a_lost_last_cell_is_reported(self, method_name, actor_fn_name):
+        """Swallowing this hides the real error until an unrelated call fails much later."""
+        group = _make_failing_controller(actor_fn_name)
+
+        with pytest.raises(NonRetryableError) as excinfo:
+            await getattr(group, method_name)()
+
+        assert f"Injected failure in {actor_fn_name}" in str(excinfo.value.__cause__)
+
+
+class TestPendingCellsDoNotCountAsRecoverable:
+    async def test_a_lost_last_alive_cell_is_reported_even_with_a_pending_cell(self):
+        """A pending cell has no live source to heal from, so losing the last alive cell must still be reported."""
+        cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
+        cells[1].stop()
+        cells[1].mark_as_pending()
+        ray.get(cells[0]._get_actor_handles()[0].set_fail_methods.remote(["sleep"]))
+        group = _make_controller(cells)
+
+        with pytest.raises(NonRetryableError) as excinfo:
+            await group.offload()
+
+        assert "Injected failure in sleep" in str(excinfo.value.__cause__)
+        assert cells[1].is_pending
+
+
+class TestMultipleCellsStillTolerateFailures:
+    async def test_one_dead_cell_does_not_stop_the_lifecycle_call(self):
+        """Fault tolerance depends on surviving cells carrying on without the dead one."""
+        cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
+        ray.get(cells[0]._get_actor_handles()[0].set_fail_methods.remote(["sleep"]))
+        group = _make_controller(cells)
+
+        await group.offload()
+
+        assert cells[0].is_stopped
+        assert cells[1].is_alive
