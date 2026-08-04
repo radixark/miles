@@ -5,11 +5,14 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 import asyncio
 from argparse import Namespace
 from collections import deque
+from dataclasses import replace
 
+import httpx
 import pytest
 
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
+from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.utils.types import Sample
 
 N_SAMPLES_PER_PROMPT = 2
@@ -72,6 +75,8 @@ def make_args(**overrides) -> Namespace:
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
         rollout_sample_completion_backfill=False,
+        dynamic_sampling_filter_path=None,
+        rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
     )
@@ -208,6 +213,108 @@ async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release.set()
     output = await drain
     assert len(output.samples) == 4
+
+
+async def test_worker_failure_beats_queued_groups(monkeypatch):
+    """A dead worker fails the step even when it left completed groups behind."""
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+    async def boom():
+        raise RuntimeError("generation exploded")
+
+    fn._output = asyncio.Queue(maxsize=fully_async.OUTPUT_QUEUE_MAX_GROUPS)
+    group = make_group(1)
+    await fn._output.put((group, group))
+    fn._worker = asyncio.create_task(boom())
+    await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="generation exploded"):
+        await fn(RolloutFnTrainInput(rollout_id=0))
+
+
+async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
+    """A generate function may expand one trajectory into several samples; the retry
+    must resubmit the flat prompt group the data source handed out."""
+    prompt_group = make_group(1)
+    data_source = FakeDataSource(scripted=[prompt_group])
+    submitted = []
+
+    async def multi_sample_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        assert all(isinstance(sample, Sample) for sample in group), "resubmitted a nested group"
+        submitted.append(group)
+        if len(submitted) > 1:
+            return group
+        expanded = []
+        for sample in group:
+            aborted = replace(sample, status=Sample.Status.ABORTED)
+            expanded.append([aborted, replace(sample)])
+        return expanded
+
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source, generate=multi_sample_generate)
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert data_source.recycled == [prompt_group]
+    assert all(isinstance(sample, Sample) for sample in data_source.recycled[0])
+    assert len(submitted) > 1
+    assert len(output.samples) == 1
+
+
+async def test_dynamic_filter_drops_group_without_recycling(monkeypatch):
+    rejected = make_group(1)
+    data_source = FakeDataSource(scripted=[rejected])
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
+
+    def reject_group_1(args, group, **kwargs):
+        keep = group[0].group_index != 1
+        return DynamicFilterOutput(keep=keep, reason=None if keep else "rejected")
+
+    fn._dynamic_filter = reject_group_1
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert len(output.samples) == 1
+    assert output.samples[0][0].group_index != 1
+    # Unlike a recycle, a filtered group is not returned to the data source for re-sampling.
+    assert data_source.recycled == []
+    assert output.metrics["rollout/dynamic_filter/drop_rejected"] == 1
+
+
+async def test_sample_filter_marks_samples_without_shrinking_the_batch(monkeypatch):
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2), FakeDataSource())
+
+    def mark_first_of_each_group(args, data):
+        for group in data:
+            group[0].remove_sample = True
+
+    fn._sample_filter = mark_first_of_each_group
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert len(output.samples) == 2
+    assert [sample.remove_sample for sample in output.samples[0]] == [True, False]
+
+
+async def test_weight_version_throttles_failed_queries(monkeypatch):
+    """A drain queries once per group, so an unreachable router must not cost one timeout each."""
+    calls = []
+
+    async def unreachable_router(url):
+        calls.append(url)
+        raise httpx.ConnectError("router down")
+
+    monkeypatch.setattr(fully_async, "get", unreachable_router)
+    args = make_args()
+
+    throttled = fully_async._CachedWeightVersion(ttl=60.0)
+    assert await throttled.get(args) is None
+    assert await throttled.get(args) is None
+    assert len(calls) == 1
+
+    calls.clear()
+    expired = fully_async._CachedWeightVersion(ttl=0.0)
+    assert await expired.get(args) is None
+    assert await expired.get(args) is None
+    assert len(calls) == 2
 
 
 async def test_backfill_submits_replacement_before_the_group_returns(monkeypatch):

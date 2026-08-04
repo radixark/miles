@@ -67,7 +67,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
 
             return quantize_named_params
 
-    if rest in [
+    fp8_param_names = [
         "self_attention.linear_proj.weight",
         "self_attention.linear_qkv.weight",
         "mlp.linear_fc1.weight",
@@ -89,7 +89,17 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         "self_attention.wkv.weight",
         "self_attention.wo_b.weight",
         "self_attention.indexer.linear_wq_b.weight",
-    ]:
+    ]
+    if not getattr(args, "indexer_rope_interleave", False):
+        # Non-interleaved indexers keep wk as a standalone FP8 parameter in SGLang.
+        fp8_param_names.extend(
+            [
+                "self_attention.wk.weight",
+                "self_attention.indexer.linear_wk.weight",
+            ]
+        )
+
+    if rest in fp8_param_names:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
             quantize_named_params.extend(_quantize_param(args, converted_name, param, weight_block_size))

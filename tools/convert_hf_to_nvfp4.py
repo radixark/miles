@@ -351,7 +351,16 @@ def process_file(
                 q_weights.update(_nvfp4_quantized_entries(key, qweight, block_scale, weight_scale_2))
             else:
                 if key.endswith(".weight"):
-                    modules_to_not_convert.append(key.replace(".weight", ""))
+                    module_name = key[: -len(".weight")]
+                    is_dynamic_bf16 = any(prefix in key for prefix in dynamic_skip_layer_prefixes)
+                    if ".experts." not in key:
+                        modules_to_not_convert.append(module_name)
+                    elif is_dynamic_bf16:
+                        # ModelOpt needs the exact FusedMoE container in addition to the layer prefix.
+                        expert_prefix = module_name.split(".experts.", 1)[0] + ".experts"
+                        modules_to_not_convert.append(expert_prefix)
+                    else:
+                        modules_to_not_convert.append(module_name)
                 q_weights[key] = tensor
 
     safetensors.torch.save_file(q_weights, os.path.join(output_path, filename), metadata={"format": "pt"})

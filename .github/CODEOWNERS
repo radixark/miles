@@ -2,6 +2,7 @@
 /.github/workflows/ @yushengsu-thu @guapisolo @yueming-yuan
 /miles/ @fzyzcjy @yueming-yuan @Zhichenzzz
 /miles/backends/ @fzyzcjy @yueming-yuan @maocheng23 @Zhichenzzz @Shi-Dong
+/miles/backends/experimental/fsdp_utils/ @fzyzcjy @yueming-yuan @Zhichenzzz @guapisolo @Rockdu
 /miles/backends/megatron_utils/ @fzyzcjy @yueming-yuan @maocheng23 @yushengsu-thu @Zhichenzzz @Shi-Dong
 /miles/backends/sglang_utils/ @fzyzcjy @yueming-yuan @maocheng23 @yushengsu-thu @Zhichenzzz @Shi-Dong
 /miles/dashboard/ @fzyzcjy @yueming-yuan @Zhichenzzz @guapisolo @Shi-Dong @maocheng23

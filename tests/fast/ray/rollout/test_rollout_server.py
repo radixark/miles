@@ -48,7 +48,7 @@ class TestRolloutServerPureFunctions:
         )
         assert _compute_rollout_offset(args) == 4
 
-    def test_compute_rollout_offset_actor_plus_critic(self):
+    def test_compute_rollout_offset_shared_actor_critic(self):
         args = make_args(
             colocate=False,
             debug_train_only=False,
@@ -60,7 +60,7 @@ class TestRolloutServerPureFunctions:
             critic_num_nodes=1,
             critic_num_gpus_per_node=4,
         )
-        assert _compute_rollout_offset(args) == 12
+        assert _compute_rollout_offset(args) == 8
 
     def test_compute_megatron_num_gpus_for_actor_only(self):
         args = make_args(
@@ -72,7 +72,7 @@ class TestRolloutServerPureFunctions:
         )
         assert _compute_megatron_num_gpus(args) == 16
 
-    def test_compute_megatron_num_gpus_with_critic(self):
+    def test_compute_megatron_num_gpus_with_shared_critic(self):
         args = make_args(
             actor_num_nodes=1,
             actor_num_gpus_per_node=8,
@@ -82,7 +82,7 @@ class TestRolloutServerPureFunctions:
             debug_rollout_only=False,
             critic_train_only=False,
         )
-        assert _compute_megatron_num_gpus(args) == 12
+        assert _compute_megatron_num_gpus(args) == 8
 
     def test_compute_megatron_num_gpus_zero_when_debug_rollout_only(self):
         args = make_args(debug_rollout_only=True)

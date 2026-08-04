@@ -22,12 +22,14 @@ from collections.abc import Iterator
 import httpx
 
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnInput, RolloutFnOutput, RolloutFnTrainOutput
+from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.inference_rollout_common import (
     GenerateState,
     SubmissionScheduler,
     generate_and_rm_group,
 )
 from miles.utils.http_utils import get
+from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,10 @@ def _iter_samples(group: Group) -> Iterator[Sample]:
             yield item
 
 
+def _first_sample(group: Group) -> Sample:
+    return group[0][0] if isinstance(group[0], list) else group[0]
+
+
 def group_oldest_weight_version(group: Group) -> int | None:
     """Return the minimum weight version across all trajectories and turns in a group."""
     versions = [v for s in _iter_samples(group) if (v := s.oldest_weight_version) is not None]
@@ -61,21 +67,23 @@ class _CachedWeightVersion:
     def __init__(self, ttl: float = 1.0):
         self._ttl = ttl
         self._value: int | None = None
-        self._last_query = 0.0
+        self._last_query = float("-inf")
 
     async def get(self, args) -> int | None:
-        now = time.monotonic()
-        if self._value is not None and (now - self._last_query) < self._ttl:
+        # Throttles failures too: the drain queries once per group, and an unreachable
+        # router would otherwise cost every one of them the full timeout.
+        if (time.monotonic() - self._last_query) < self._ttl:
             return self._value
         url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/model_info"
         try:
             data = await asyncio.wait_for(get(url), timeout=WEIGHT_VERSION_QUERY_TIMEOUT_SECS)
+            self._value = int(data["weight_version"])
         except (httpx.HTTPError, asyncio.TimeoutError) as e:
             # Transient router unavailability; the staleness filter is best-effort.
             logger.debug(f"Failed to query engine weight version: {e}")
-            return self._value
-        self._value = int(data["weight_version"])
-        self._last_query = now
+        finally:
+            # Stamped on completion, so a router slower than the TTL still gets throttled.
+            self._last_query = time.monotonic()
         return self._value
 
 
@@ -93,9 +101,11 @@ class FullyAsyncRolloutFn:
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
         self._scheduler = SubmissionScheduler(input.args)
+        self._dynamic_filter = load_function(input.args.dynamic_sampling_filter_path)
+        self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._weight_version = _CachedWeightVersion()
         self._worker: asyncio.Task | None = None
-        self._output: asyncio.Queue[Group] | None = None
+        self._output: asyncio.Queue[tuple[list[Sample], Group]] | None = None
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
@@ -120,16 +130,24 @@ class FullyAsyncRolloutFn:
     def _submit_one_group(self) -> asyncio.Task:
         samples = self.data_source.get_samples(1)
         self._scheduler.on_submit(samples)
-        [group] = samples
-        return asyncio.create_task(
-            generate_and_rm_group(
-                self.state,
-                group,
-                sampling_params=self.state.sampling_params.copy(),
-                evaluation=False,
-                sample_done_callback=self._scheduler.sample_done_callback,
-            )
+        [prompt_group] = samples
+        return asyncio.create_task(self._generate_group(prompt_group))
+
+    async def _generate_group(self, prompt_group: list[Sample]) -> tuple[list[Sample], Group]:
+        """Return the submitted prompt group next to its result.
+
+        A retry has to resubmit the prompt group: a generate function may expand one
+        trajectory into several samples, and ``generate_and_rm_group`` does not accept
+        that shape back.
+        """
+        result = await generate_and_rm_group(
+            self.state,
+            prompt_group,
+            sampling_params=self.state.sampling_params.copy(),
+            evaluation=False,
+            sample_done_callback=self._scheduler.sample_done_callback,
         )
+        return prompt_group, result
 
     async def _worker_loop(self):
         active: set[asyncio.Task] = set()
@@ -145,7 +163,7 @@ class FullyAsyncRolloutFn:
 
     # -------------------------- consumer --------------------------
 
-    async def _next_group(self) -> Group:
+    async def _next_group(self) -> tuple[list[Sample], Group]:
         queue_get = asyncio.create_task(self._output.get())
         try:
             while True:
@@ -154,11 +172,13 @@ class FullyAsyncRolloutFn:
                     return_when=asyncio.FIRST_COMPLETED,
                     timeout=NO_PROGRESS_WARN_SECS,
                 )
-                if queue_get in done:
-                    return queue_get.result()
+                # Checked before the queue: the worker loop never returns normally, so a
+                # dead worker fails the step now instead of after its backlog drains.
                 if self._worker in done:
                     self._worker.result()
                     raise RuntimeError("fully-async rollout worker exited without an exception")
+                if queue_get in done:
+                    return queue_get.result()
                 logger.warning(
                     f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s (queued: {self._output.qsize()})"
                 )
@@ -175,15 +195,16 @@ class FullyAsyncRolloutFn:
         aborted_groups_recycled = 0
         stale_groups_recycled = 0
         staleness_values: list[int] = []
+        metric_gatherer = MetricGatherer()
         do_print = True
 
         while len(data) < target_data_size:
-            group = await self._next_group()
+            prompt_group, group = await self._next_group()
             assert len(group) == args.n_samples_per_prompt
 
             # A weight update paused generation mid-group: return it for re-sampling.
             if any(s.status == Sample.Status.ABORTED for s in _iter_samples(group)):
-                self._recycle(group)
+                self._recycle(prompt_group)
                 aborted_groups_recycled += 1
                 continue
 
@@ -194,7 +215,7 @@ class FullyAsyncRolloutFn:
                     staleness = current - oldest
                     staleness_values.append(staleness)
                     if staleness > args.max_weight_staleness:
-                        self._recycle(group)
+                        self._recycle(prompt_group)
                         stale_groups_recycled += 1
                         logger.info(
                             f"Recycled stale group (oldest_version={oldest}, current={current}, "
@@ -202,8 +223,14 @@ class FullyAsyncRolloutFn:
                         )
                         continue
 
+            filter_output = call_dynamic_filter(self._dynamic_filter, args, group)
+            if not filter_output.keep:
+                # Dropped, not recycled: no usable gradient signal.
+                metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
+                continue
+
             if do_print:
-                sample = group[0][0] if isinstance(group[0], list) else group[0]
+                sample = _first_sample(group)
                 logger.info(
                     f"First rollout sample: {[str(sample.prompt) + sample.response]}, "
                     f"label: {sample.label}, reward: {sample.reward}"
@@ -212,18 +239,22 @@ class FullyAsyncRolloutFn:
 
             data.append(group)
 
-        sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
+        sample = _first_sample(data[-1])
         logger.info(
             f"Finish rollout: {[str(sample.prompt) + sample.response]}, "
             f"label: {sample.label}, reward: {sample.reward}"
         )
 
-        data.sort(key=lambda group: group[0][0].index if isinstance(group[0], list) else group[0].index)
+        data.sort(key=lambda group: _first_sample(group).index)
+
+        if self._sample_filter is not None:
+            self._sample_filter(args, data)
 
         metrics = {
             "rollout/fully_async/queue_size": self._output.qsize(),
             "rollout/fully_async/aborted_groups_recycled": aborted_groups_recycled,
             "rollout/fully_async/stale_groups_recycled": stale_groups_recycled,
+            **metric_gatherer.collect(),
         }
         if staleness_values:
             metrics["rollout/fully_async/avg_staleness"] = sum(staleness_values) / len(staleness_values)
@@ -231,7 +262,7 @@ class FullyAsyncRolloutFn:
 
         return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
-    def _recycle(self, group: Group) -> None:
-        for sample in _iter_samples(group):
+    def _recycle(self, prompt_group: list[Sample]) -> None:
+        for sample in prompt_group:
             sample.reset_for_retry()
-        self.data_source.add_samples([group])
+        self.data_source.add_samples([prompt_group])

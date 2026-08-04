@@ -6,7 +6,7 @@ from typing import Any
 
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_routing_headers, policy_uses_routing_key
 from miles.utils.http_utils import post
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.multi_lora import slot_lora_name
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
@@ -16,7 +16,7 @@ def _lora_path_for_sample(args: Any, sample: Sample) -> str | None:
     """Adapter name to score under: the sample slot's __miles_slot_{N} name, the fixed single-LoRA name, or None."""
     if sample.adapter is not None:
         return slot_lora_name(sample.adapter.slot)
-    if is_lora_enabled(args):
+    if lora_rollout_enabled(args):
         return LORA_ADAPTER_NAME
     return None
 

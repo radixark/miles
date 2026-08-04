@@ -11,11 +11,12 @@ from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
-from miles.utils.environ import enable_experimental_rollout_refactor
+from miles.utils.environ import enable_experimental_ft_trainer, enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.misc import load_function
 from miles.utils.object_store import ObjectStoreBackend
@@ -24,18 +25,18 @@ from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 logger = logging.getLogger(__name__)
 
 
-def default_rollout_function_path() -> str:
-    """The standard rollout function, used when nothing selects another one."""
+def resolve_rollout_function_paths(args) -> tuple[str, str]:
+    """The (rollout, eval) function paths the arguments select."""
     if enable_experimental_rollout_refactor():
-        return "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-    return "miles.rollout.sglang_rollout.generate_rollout"
-
-
-def resolve_rollout_function_path(args) -> str:
-    """The rollout function the arguments select."""
+        standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
+    else:
+        standard_path = "miles.rollout.sglang_rollout.generate_rollout"
+    rollout_path = args.rollout_function_path or standard_path
+    # Resolved before the fully-async override: fully async does not serve eval.
+    eval_path = args.eval_function_path or rollout_path
     if args.fully_async:
-        return "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
-    return args.rollout_function_path or default_rollout_function_path()
+        rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+    return rollout_path, eval_path
 
 
 def _resolve_rollout_functions(args) -> None:
@@ -44,16 +45,21 @@ def _resolve_rollout_functions(args) -> None:
             "--fully-async needs the class-based rollout API: set MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 "
             "(and propagate it through runtime_env when submitting via Ray)"
         )
+        # Runs after validate_multi_lora_args, which selects a rollout function of its own.
+        assert not args.multi_lora, "--fully-async and multi-LoRA select different rollout functions"
         assert (
             args.rollout_function_path is None
         ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
         assert not args.colocate, "--fully-async cannot colocate: rollout must keep generating while training runs"
+        assert not args.partial_rollout, "--fully-async does not support --partial-rollout"
+        assert (
+            not args.recompute_logprobs_via_prefill
+        ), "--fully-async does not support --recompute-logprobs-via-prefill"
+        assert (
+            args.rollout_all_samples_process_path is None
+        ), "--fully-async does not support --rollout-all-samples-process-path"
 
-    args.rollout_function_path = resolve_rollout_function_path(args)
-
-    if args.eval_function_path is None:
-        # Fully async does not serve eval, so eval keeps the standard rollout function.
-        args.eval_function_path = default_rollout_function_path() if args.fully_async else args.rollout_function_path
+    args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
 
 
 def reset_arg(parser, name, **kwargs):
@@ -171,12 +177,47 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--stream-optimizer-state-to-disk",
+                action="store_true",
+                help=(
+                    "Stream the fp32 main params and Adam moments through per-bucket files on "
+                    "node-local NVMe during optimizer.step(), bounding GPU residency to one bucket. "
+                    "For when the optimizer state does not fit the GPU *while the step runs*: "
+                    "--offload-train-target=disk cannot help there, because pause/resume happen at "
+                    "phase boundaries and everything is resident again by the time Adam launches. "
+                    "Bit-identical to keeping the state on GPU, at the cost of disk traffic every "
+                    "step. Distinct from --offload-optimizer-states and --optimizer-cpu-offload, "
+                    "and mutually exclusive with both."
+                ),
+            )
+            parser.add_argument(
+                "--stream-optimizer-state-moment-dtype",
+                type=str,
+                default="fp32",
+                choices=["fp32", "bf16", "fp16", "fp8e4m3", "fp8e5m2"],
+                help=(
+                    "On-disk dtype for the streamed Adam moments; the fp32 master copy is always "
+                    "fp32. This is a serialization format, not a compute precision: the step still "
+                    "hands fp32 tensors to FusedAdam, and the cast happens on the way to and from "
+                    "disk. That makes it distinct from --exp-avg-dtype / --exp-avg-sq-dtype, which "
+                    "change what the optimizer holds and require --use-precision-aware-optimizer, "
+                    "so they cannot be combined with streaming at all. "
+                    "The step is I/O bound and the moments tolerate less precision than the master "
+                    "copy, so bf16 cuts streaming volume by a third (12 bytes per param to 8). "
+                    "fp32 is bit-identical to keeping the moments on GPU. The fp8 options need "
+                    "per-block scaling for exp_avg_sq to be sound, which this does not implement, "
+                    "and are not recommended."
+                ),
+            )
+            parser.add_argument(
                 "--offload-train-disk-dir",
                 type=str,
                 default=None,
                 help=(
-                    "Node-local directory for train disk-offload files when "
-                    "--offload-train-target=disk. Should be fast local NVMe (e.g. /scratch). "
+                    "Node-local directory for the disk-offload files, used by both "
+                    "--offload-train-target=disk and --stream-optimizer-state-to-disk (each under "
+                    "its own subdirectory). Should be fast local NVMe (e.g. /scratch); a tmpfs "
+                    "mount, which /tmp is on many systems, keeps the data in RAM and defeats both. "
                     "Files are per-process and overwritten in place every step (bounded size); "
                     "defaults to $SCRATCH/miles_train_offload_<uid>."
                 ),
@@ -186,8 +227,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=256,
                 help=(
-                    "Chunk size (MiB) for streaming the training actor GPU<->disk in disk-offload "
-                    "mode. Bounds the pinned host staging buffer regardless of the total offloaded size."
+                    "Chunk size (MiB) for the GPU<->disk transfers, i.e. the pinned host staging "
+                    "buffer, which bounds host memory regardless of how much is moved. Used by both "
+                    "--offload-train-target=disk and --stream-optimizer-state-to-disk, and each "
+                    "allocates its own, so enabling both costs 2x this per rank."
                 ),
             )
 
@@ -1149,7 +1192,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             reset_arg(parser, "--calculate-per-token-loss", action="store_true")
             reset_arg(parser, "--lr", type=float, default=1e-6)
 
-            parser.add_argument("--num-critic-only-steps", type=int, default=0, help="Number of critic only steps")
+            parser.add_argument(
+                "--num-critic-only-steps",
+                type=int,
+                default=0,
+                help="Number of initial rollout steps where only the critic trains (value-function warmup) "
+                "while the actor stays frozen. Only takes effect when --advantage-estimator is ppo.",
+            )
             parser.add_argument("--critic-load", type=str, default=None, help="The checkpoint for critic model.")
             parser.add_argument("--critic-save", type=str, default=None, help="The checkpoint for critic model.")
             parser.add_argument("--critic-lr", type=float, default=None, help="The lr for critic model")
@@ -1431,6 +1480,42 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Weighting scheme for top-k OPD token rewards.",
             )
             parser.add_argument(
+                "--opd-topk-per-position",
+                action="store_true",
+                default=False,
+                help=(
+                    "Send per-position token ids to the teacher/student scoring server "
+                    "(token_ids_logprob_positions) instead of the global top-k union, so the "
+                    "response is O(response_len * k) instead of O(response_len * |union|). "
+                    "Requires a patched sglang server that supports token_ids_logprob_positions; "
+                    "leave off for an unpatched server."
+                ),
+            )
+            parser.add_argument(
+                "--opd-teacher-urls",
+                type=str,
+                nargs="+",
+                default=None,
+                metavar="NAME=URL",
+                help=(
+                    "Multi-teacher routing map for --opd-type=sglang, e.g. "
+                    "--opd-teacher-urls math=http://h1:30001/generate code=http://h2:30002/generate. "
+                    "Each sample is routed to the teacher named by "
+                    "sample.metadata[--opd-teacher-key]; the reserved name 'default' is the "
+                    "fallback for samples with a missing or unknown name. When unset, all "
+                    "samples are scored by the single teacher at --rm-url (original behavior)."
+                ),
+            )
+            parser.add_argument(
+                "--opd-teacher-key",
+                type=str,
+                default="opd_teacher",
+                help=(
+                    "Sample metadata key holding the teacher name used for --opd-teacher-urls "
+                    "routing. Populated from the dataset's metadata column (see --metadata-key)."
+                ),
+            )
+            parser.add_argument(
                 "--opd-teacher-load",
                 type=str,
                 default=None,
@@ -1504,6 +1589,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
                     "and skip per-step base sync. Trades host RAM for faster "
                     "onload/offload. Ignored unless --colocate and LoRA are both on."
+                ),
+            )
+            parser.add_argument(
+                "--lora-train-only",
+                action="store_true",
+                default=False,
+                help=(
+                    "Train LoRA adapters in Megatron but keep rollout engines on the frozen "
+                    "base policy: SGLang LoRA serving and adapter weight sync are disabled "
+                    "(only the base weights are synced). For models without SGLang LoRA "
+                    "support (e.g. Inkling native LoRA)."
                 ),
             )
             parser.add_argument(
@@ -2281,7 +2377,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             except SystemExit:
                 return parser
             for path in [
-                resolve_rollout_function_path(args_partial),
+                resolve_rollout_function_paths(args_partial)[0],
                 args_partial.custom_generate_function_path,
             ]:
                 try:
@@ -2408,6 +2504,10 @@ def parse_args(add_custom_arguments=None):
                 "decoder_first_pipeline_num_layers and decoder_last_pipeline_num_layers should be None when "
                 "pipeline_model_parallel_size is 1."
             )
+    else:
+        from miles.backends.experimental.fsdp_utils.arguments import validate_hybrid_shard_args
+
+        validate_hybrid_shard_args(args)
 
     sglang_validate_args(args)
 
@@ -2599,6 +2699,13 @@ def miles_validate_args(args):
             raise ValueError("--opd-log-prob-top-k must be non-negative.")
         if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
             raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
+        if args.opd_teacher_urls:
+            if args.opd_type != "sglang":
+                raise ValueError("--opd-teacher-urls is only supported with --opd-type=sglang.")
+            # Local import to keep miles.utils free of rollout imports at module load.
+            from miles.rollout.on_policy_distillation import parse_teacher_urls
+
+            parse_teacher_urls(args.opd_teacher_urls)  # fail fast on malformed/duplicate entries
 
         if args.opd_type == "megatron":
             if args.opd_teacher_load is None:
@@ -2625,6 +2732,8 @@ def miles_validate_args(args):
     else:
         if args.opd_teacher_load is not None:
             raise ValueError("--opd-teacher-load is set but --use-opd is not enabled. Please add --use-opd flag.")
+        if args.opd_teacher_urls:
+            raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
 
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
@@ -2694,10 +2803,10 @@ def miles_validate_args(args):
 
         # Training and serving must agree on shared-outer grouped-expert LoRA
         # (expert_dim=1 buffers in SGLang).
-        if args.experts_shared_outer_loras:
+        if args.experts_shared_outer_loras and hasattr(args, "sglang_experts_shared_outer_loras"):
             args.sglang_experts_shared_outer_loras = True
         assert args.experts_shared_outer_loras == bool(
-            args.sglang_experts_shared_outer_loras
+            getattr(args, "sglang_experts_shared_outer_loras", args.experts_shared_outer_loras)
         ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
 
         # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
@@ -2769,9 +2878,24 @@ def miles_validate_args(args):
         )
 
     args.use_critic = args.advantage_estimator == "ppo"
-    if args.critic_num_gpus_per_node is None:
+    if args.use_critic:
+        if args.train_backend != "megatron":
+            raise ValueError("Shared Actor/Critic PPO requires the Megatron backend")
+        assert (
+            args.megatron_to_hf_mode != "bridge"
+        ), "Critic models are not supported with --megatron-to-hf-mode bridge"
+        assert not enable_experimental_ft_trainer(), (
+            "Shared Actor/Critic PPO is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: the v2 "
+            "fault-tolerant train group cannot route critic values or lifecycle options yet. "
+            "Unset MILES_EXPERIMENTAL_FT_TRAINER or use a non-PPO advantage estimator."
+        )
+        assert args.kl_coef == 0, (
+            "Shared Actor/Critic PPO does not support reward-level KL (--kl-coef): the critic "
+            "trains before the actor and never sees ref log probs, so its value targets would "
+            "silently exclude the KL penalty applied to the actor's rewards. Use --use-kl-loss "
+            "for KL regularization instead."
+        )
         args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
-    if args.critic_num_nodes is None:
         args.critic_num_nodes = args.actor_num_nodes
     if args.critic_load is None:
         args.critic_load = args.load
@@ -2863,8 +2987,15 @@ def miles_validate_args(args):
                 f"* actor_num_nodes {args.actor_num_nodes}, overriding rollout_num_gpus to match actor_num_gpus_per_node * actor_num_nodes."
             )
             args.rollout_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
-            if args.use_critic:
-                args.rollout_num_gpus += args.critic_num_gpus_per_node * args.critic_num_nodes
+
+    if args.use_critic and not args.debug_rollout_only:
+        if args.offload_train is None:
+            args.offload_train = True
+        elif not args.offload_train:
+            logger.warning(
+                "--no-offload-train with shared Actor/Critic PPO is reserved for offload debugging: "
+                "both models stay resident on the shared train GPUs, so make sure they fit."
+            )
 
     if args.offload_train is None:
         args.offload_train = False
@@ -2894,6 +3025,49 @@ def miles_validate_args(args):
         logger.info(
             f"Train offload target=disk, dir={args.offload_train_disk_dir}, "
             f"chunk={args.offload_train_disk_chunk_mb}MB"
+        )
+
+    if args.stream_optimizer_state_to_disk:
+        assert args.offload_train_target == "disk", (
+            "--stream-optimizer-state-to-disk requires --offload-train-target=disk. Both answer the "
+            "same pressure and are only ever deployed as a pair, so that is the only combination "
+            "validated; streaming alone runs but is untested."
+        )
+        assert not args.indep_dp, (
+            "--stream-optimizer-state-to-disk does not support --indep-dp: each cell has its own "
+            "process group, so torch.distributed.get_rank() restarts at 0 per cell and two cells "
+            "on one node would share a store directory"
+        )
+        assert args.use_distributed_optimizer, "--stream-optimizer-state-to-disk requires the distributed optimizer"
+        assert (
+            args.optimizer == "adam"
+        ), f"--stream-optimizer-state-to-disk requires --optimizer adam, got {args.optimizer}"
+        assert not (args.multi_lora or is_lora_enabled(args)), (
+            "--stream-optimizer-state-to-disk does not support LoRA: the LoRA checkpoint path "
+            "persists optimizer.state_dict(), which the store leaves empty, and restores the "
+            "adapter into the model params without refreshing the streamed main params"
+        )
+        assert not args.optimizer_cpu_offload, "--stream-optimizer-state-to-disk excludes --optimizer-cpu-offload"
+        assert (
+            not args.offload_optimizer_states
+        ), "--stream-optimizer-state-to-disk excludes --offload-optimizer-states"
+        assert (
+            not args.use_precision_aware_optimizer
+        ), "--stream-optimizer-state-to-disk requires mcore to hold the fp32 main params"
+        assert not args.reset_optimizer_states, (
+            "--reset-optimizer-states walks the master optimizer's state, which the NVMe store "
+            "leaves empty, so the reset would silently do nothing"
+        )
+        assert not args.save_local_weight_checksum, (
+            "--save-local-weight-checksum reads param.main_param, whose storage the NVMe store "
+            "resizes to 0 between steps"
+        )
+        assert (
+            not args.enable_witness
+        ), "--enable-witness reads the master optimizer's per-param state, which the NVMe store owns"
+        logger.info(
+            f"Streaming optimizer state to disk, dir={args.offload_train_disk_dir}, "
+            f"chunk={args.offload_train_disk_chunk_mb}MB, moments={args.stream_optimizer_state_moment_dtype}"
         )
 
     if args.async_max_concurrent_samples is not None:

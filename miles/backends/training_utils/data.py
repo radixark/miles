@@ -324,11 +324,16 @@ def get_batch(
     # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
     if multimodal_train_inputs is not None:
+        sample_offsets = [0]
+        for t in batch["unconcat_tokens"]:
+            sample_offsets.append(sample_offsets[-1] + t.size(0))
         multimodal_data = {}  # key -> concatenated tensor
         multimodal_num_items = {}  # key -> list of item counts per sequence
-        for mm_input_dict in multimodal_train_inputs:
+        for i, mm_input_dict in enumerate(multimodal_train_inputs):
             if mm_input_dict is not None:
                 for key, mm_tensor in mm_input_dict.items():
+                    if key.endswith("_positions"):
+                        mm_tensor = mm_tensor + sample_offsets[i]
                     if key not in multimodal_data:
                         multimodal_data[key] = mm_tensor
                         multimodal_num_items[key] = [mm_tensor.size(0)]
@@ -509,56 +514,4 @@ def get_data_iterator(
     return (
         data_iterator,
         num_microbatches,
-    )
-
-
-def sync_actor_critic_data(
-    args: Namespace,
-    rollout_data: RolloutBatch | None = None,
-    group: dist.ProcessGroup | None = None,
-) -> None:
-    """
-    Broadcast `values` (from critic) and optionally `log_probs`/`ref_log_probs`
-    (from actor) across PP ranks to align data dependencies.
-
-    - Values are broadcast from src=1.
-    - Log-probs and ref-log-probs are broadcast from src=0 when KL is used.
-    Updates `rollout_data` in place with the synchronized tensors.
-    """
-    log_probs_key = "log_probs" if not args.use_rollout_logprobs else "rollout_log_probs"
-    values, log_probs, ref_log_probs = map(rollout_data.get, ("values", log_probs_key, "ref_log_probs"))
-
-    # return when not the pp last stage
-    if not values and not log_probs:
-        return
-
-    handles = []
-
-    if not values:
-        values = [torch.empty_like(log_prob) for log_prob in log_probs]
-    for value in values:
-        handles.append(dist.broadcast(value, src=1, group=group, async_op=True))
-
-    if args.kl_coef != 0 or args.use_kl_loss:
-        if not log_probs:
-            log_probs = [torch.empty_like(value) for value in values]
-        if not ref_log_probs:
-            ref_log_probs = [torch.empty_like(value) for value in values]
-        for ref_log_prob, log_prob in zip(ref_log_probs, log_probs, strict=False):
-            handles.append(dist.broadcast(log_prob, src=0, group=group, async_op=True))
-            handles.append(dist.broadcast(ref_log_prob, src=0, group=group, async_op=True))
-
-    for handle in handles:
-        handle.wait()
-
-    rollout_data.update(
-        {
-            k: v
-            for k, v in {
-                "values": values,
-                log_probs_key: log_probs,
-                "ref_log_probs": ref_log_probs,
-            }.items()
-            if v is not None
-        }
     )

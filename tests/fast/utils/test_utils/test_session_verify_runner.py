@@ -2,6 +2,7 @@ import argparse
 import json
 
 import pytest
+from tests.e2e.sglang.test_session_server_multi_role import _common
 
 from miles.utils.test_utils.session_verify_runner import (
     SESSION_VERIFY_INVARIANT_ARGS,
@@ -23,6 +24,8 @@ def _build_args(**overrides) -> str:
         "tool_call_failure_mode": "rollback",
         "sglang_reasoning_parser": "qwen3",
         "sglang_tool_call_parser": "qwen25",
+        "sglang_context_length": None,
+        "sglang_cuda_graph_backend_prefill": None,
     }
     values.update(overrides)
     return namespace_to_train_args(argparse.Namespace(**values))
@@ -51,6 +54,53 @@ def test_namespace_to_train_args_has_no_append_role_policy_flag():
     train_args = _build_args()
 
     assert "allowed-append-roles" not in train_args
+
+
+def test_namespace_to_train_args_omits_context_length_by_default():
+    train_args = _build_args()
+
+    assert "--sglang-context-length" not in train_args
+
+
+def test_namespace_to_train_args_emits_model_context_length():
+    train_args = _build_args(sglang_context_length=32768)
+
+    assert "--sglang-context-length 32768" in train_args
+
+
+def test_namespace_to_train_args_omits_prefill_cuda_graph_backend_by_default():
+    train_args = _build_args()
+
+    assert "--sglang-cuda-graph-backend-prefill" not in train_args
+
+
+def test_namespace_to_train_args_emits_prefill_cuda_graph_backend():
+    train_args = _build_args(sglang_cuda_graph_backend_prefill="disabled")
+
+    assert "--sglang-cuda-graph-backend-prefill disabled" in train_args
+
+
+@pytest.mark.parametrize(("n_samples_per_prompt", "expected_global_batch_size"), [(1, 16), (4, 64)])
+def test_run_one_aligns_global_batch_size_with_sample_count(
+    monkeypatch, n_samples_per_prompt, expected_global_batch_size
+):
+    captured = {}
+    monkeypatch.setattr(_common, "run_session_verify", lambda args: captured.setdefault("args", args))
+    config = _common.ModelConfig(
+        model_name="test-model",
+        reasoning_parser="qwen3",
+        tool_call_parser="qwen25",
+        tito_model="qwen3",
+        n_samples_per_prompt=n_samples_per_prompt,
+        rollout_max_response_len=4096,
+        cuda_graph_backend_prefill="disabled",
+    )
+
+    _common.run_one(config)
+
+    assert captured["args"].global_batch_size == expected_global_batch_size
+    assert captured["args"].rollout_max_response_len == 4096
+    assert captured["args"].sglang_cuda_graph_backend_prefill == "disabled"
 
 
 def test_namespace_to_train_args_omits_expert_parallel_for_single_expert():

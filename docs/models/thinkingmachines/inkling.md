@@ -32,12 +32,12 @@ docker pull radixark/miles:inkling
 
 # Full-parameter GRPO on 16 nodes x 4 GB300, inside the container
 cd /root/miles
-python scripts/run_inkling_975b.py train \
+python scripts/run_inkling.py train \
    --model-name Inkling --train-mode full --task dapo_math \
    --num-nodes 16 --num-gpus-per-node 4
 
 # LoRA GRPO (rank 32, all-linear), same cluster
-python scripts/run_inkling_975b.py train \
+python scripts/run_inkling.py train \
    --model-name Inkling --train-mode lora --task dapo_math \
    --num-nodes 16 --num-gpus-per-node 4
 ```
@@ -72,12 +72,12 @@ Pass `--hf-checkpoint <path>` to the launcher when the weights are already on a 
 
 ### 4.2 HF → Megatron `torch_dist` conversion
 
-Inkling ships in BF16, so conversion is a single distributed `torch_dist` shard (no precision cast). The model definition comes from `scripts/models/inkling-975b.sh`:
+Inkling ships in BF16, so conversion is a single distributed `torch_dist` shard (no precision cast). The model definition comes from `scripts/models/inkling.sh`:
 
 ```bash
 cd /root/miles
-source scripts/models/inkling-975b.sh
-PYTHONPATH=/root/Megatron-LM torchrun \
+source scripts/models/inkling.sh
+CONVERT_KEEP_PP1=1 PYTHONPATH=/root/Megatron-LM torchrun \
    --nproc-per-node 4 --nnodes 4 \
    --master-addr ${MASTER_ADDR} --master-port 12345 \
    --node-rank ${NODE_RANK} \
@@ -89,6 +89,8 @@ PYTHONPATH=/root/Megatron-LM torchrun \
    --hf-checkpoint /root/models/Inkling \
    --save /root/models/Inkling_torch_dist/
 ```
+
+`CONVERT_KEEP_PP1=1` keeps the conversion at PP1: without it the converter auto-bumps PP toward the rank count, which is incompatible with `--tensor-model-parallel-size 4` at 16 ranks.
 
 The saved `torch_dist` checkpoint is parallelism-agnostic: training can load it under any validated TP / PP / EP layout. Point the launcher at the result with `--torch-dist`.
 
@@ -122,7 +124,7 @@ GRPO with truncated importance sampling. The launcher defaults: global batch siz
 
 ### 5.3 Training attention backends
 
-`--inkling-attn-backend` selects the training-side attention implementation:
+The `MILES_INKLING_ATTN_BACKEND` environment variable selects the training-side attention implementation:
 
 | Backend | Role | 8K packed, rel-extent 1024, GB300 |
 |---|---|---|

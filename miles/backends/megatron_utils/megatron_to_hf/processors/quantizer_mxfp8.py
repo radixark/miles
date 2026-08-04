@@ -69,7 +69,7 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
 
             return quantize_named_params
 
-    if rest in [
+    mxfp8_param_names = [
         "self_attention.linear_proj.weight",
         "self_attention.linear_qkv.weight",
         "mlp.linear_fc1.weight",
@@ -81,14 +81,24 @@ def quantize_params_mxfp8(args, megatron_name, converted_named_params, quantizat
         "self_attention.linear_kv_down_proj.weight",
         "self_attention.linear_kv_up_proj.weight",
         "self_attention.wq_b.weight",
-        "self_attention.wk.weight",
         # DeepSeek V4 attention
         "self_attention.wq_a.weight",
         "self_attention.wkv.weight",
         "self_attention.wo_b.weight",
         "self_attention.indexer.linear_wq_b.weight",
-        "self_attention.indexer.linear_wk.weight",
-    ]:
+    ]
+    if not getattr(args, "indexer_rope_interleave", False):
+        # Non-interleaved indexers keep wk as a standalone quantized parameter in
+        # SGLang; interleaved ones fuse wk into the bf16 wk_weights_proj, whose
+        # loader would misread the uint8 e8m0 mxfp8 scales as integers.
+        mxfp8_param_names.extend(
+            [
+                "self_attention.wk.weight",
+                "self_attention.indexer.linear_wk.weight",
+            ]
+        )
+
+    if rest in mxfp8_param_names:
         quantize_named_params = []
         for converted_name, param in converted_named_params:
             quantize_named_params.extend(_quantize_param(converted_name, param))

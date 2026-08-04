@@ -31,6 +31,7 @@ _EXPECTED_FIXED_TEMPLATES = {
     TITOTokenizerType.MINIMAX_M27: ("minimax_m27_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.DEEPSEEKV32: (None, {"drop_thinking": False}),
     TITOTokenizerType.DEEPSEEKV4: (None, {"drop_thinking": False}),
+    TITOTokenizerType.INKLING: ("inkling_fixed.jinja", {}),
 }
 
 
