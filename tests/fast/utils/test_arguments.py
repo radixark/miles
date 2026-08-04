@@ -252,6 +252,25 @@ def test_custom_megatron_post_save_hook_path_requires_save():
         miles_validate_args(args)
 
 
+def test_upcast_logits_after_chunking_is_valid_for_megatron_bf16() -> None:
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    extra = [
+        "--upcast-logits-after-chunking",
+        "--rollout-temperature",
+        "0.8",
+        "--num-rollout",
+        "1",
+    ]
+    args = parser.parse_args(extra + REQUIRED_ARGS)
+    args.fp16 = False
+    args.bf16 = True
+
+    miles_validate_args(args)
+
+    assert args.upcast_logits_after_chunking is True
+
+
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

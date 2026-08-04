@@ -396,6 +396,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
             parser.add_argument(
+                "--upcast-logits-after-chunking",
+                action="store_true",
+                help="Keep Megatron outputs in the model's dtype and upcast them to FP32 after chunking for loss.",
+            )
+            parser.add_argument(
                 "--indep-dp",
                 action="store_true",
                 default=False,
@@ -2677,6 +2682,18 @@ def miles_validate_args(args):
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
 
+    if args.upcast_logits_after_chunking:
+        option = "--upcast-logits-after-chunking"
+        if args.train_backend != "megatron":
+            raise ValueError(f"{option} is specific to the Megatron backend")
+        if not (args.fp16 or args.bf16):
+            raise ValueError(f"{option} requires FP16 or BF16")
+        if args.loss_type == "custom_loss":
+            raise ValueError(f"{option} does not support custom loss functions")
+        if args.entropy_coef != 0:
+            raise ValueError(
+                f"{option} is incompatible with differentiable entropy as it requires upcasting the full unchunked logits"
+            )
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
             f"--tito-model={args.tito_model} requires --use-session-server; "
