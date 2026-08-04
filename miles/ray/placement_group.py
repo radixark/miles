@@ -124,7 +124,7 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     return ans
 
 
-async def create_training_models(args, pgs, inference_controller, rollout_executor):
+async def create_training_models(args, inference_controller, rollout_executor):
     actor_model = RayTrainGroup(
         args=args,
         role="actor",
