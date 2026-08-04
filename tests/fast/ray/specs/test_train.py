@@ -7,6 +7,7 @@ import pytest
 
 from miles.ray.specs import train as train_specs
 from miles.ray.specs.train import compute_trainer_pool_id, specs_trainer
+from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TrainRayActor
 from miles.utils.workers.worker_spec import WorkerLaunchContext
 
 
@@ -124,6 +125,23 @@ class TestConstructorArguments:
 
         assert spec.ctor_kwargs(_make_context())["world_size"] == 4
 
+    def test_a_single_cell_job_is_handed_no_rendezvous_store(self):
+        """The store exists to rendezvous cells with each other, so standing one up for a lone
+        cell leaks a TCPStore and a port on every ordinary run."""
+        (spec,) = specs_trainer(_make_args(actor_num_gpus_per_node=2))
+
+        assert spec.ctor_kwargs(_make_context())["indep_dp_store_addr"] is None
+
+    def test_independent_dp_cells_share_one_rendezvous_store(self, monkeypatch):
+        """Cells that must find each other need the same address, and a real one."""
+        monkeypatch.setattr("miles.ray.specs.train.compute_megatron_world_size_except_dp", lambda _args: 2)
+        monkeypatch.setattr("miles.ray.specs.train._create_indep_dp_store_addr", lambda: "10.0.0.1:1234")
+
+        (spec,) = specs_trainer(_make_args(actor_num_gpus_per_node=4, indep_dp=True))
+
+        addrs = [spec.ctor_kwargs(_make_context(cell_index=i))["indep_dp_store_addr"] for i in range(2)]
+        assert addrs == ["10.0.0.1:1234", "10.0.0.1:1234"]
+
     def test_the_backend_selects_the_worker_class(self):
         """A run must not start Megatron workers for an fsdp job."""
         (megatron_spec,) = specs_trainer(_make_args(train_backend="megatron"))
@@ -134,17 +152,37 @@ class TestConstructorArguments:
 
 
 class TestConcurrencyGroups:
-    def test_fault_tolerance_isolates_the_heartbeat_rpc(self):
+    def test_the_heartbeat_rpc_is_always_isolated(self):
         """A heartbeat queued behind a train step reads as a dead cell."""
         (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
 
-        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
 
-    def test_no_groups_without_fault_tolerance(self):
-        """Runs without fault tolerance keep ray's default scheduling."""
+    def test_the_groups_do_not_depend_on_fault_tolerance(self):
+        """The actor class declares the groups statically, so the spec cannot drop them."""
         (spec,) = specs_trainer(_make_args())
 
-        assert spec.concurrency_groups is None
+        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
+
+    def test_the_isolated_methods_are_annotated_on_the_actor(self):
+        """Dropping a @ray.method annotation would silently queue that call behind a train step."""
+        annotations: dict[str, str | None] = {
+            name: getattr(getattr(TrainRayActor, name), "__ray_concurrency_group__", None)
+            for name in ("get_heartbeat_status", "inject_fault")
+        }
+
+        assert annotations == {"get_heartbeat_status": "heartbeat_status", "inject_fault": "fault_injector"}
+
+    def test_every_annotated_group_is_declared(self):
+        """Ray rejects an actor whose method names a concurrency group the class never declares."""
+        annotated_groups: set[str] = {
+            group
+            for member in vars(TrainRayActor).values()
+            if (group := getattr(member, "__ray_concurrency_group__", None)) is not None
+        }
+
+        assert annotated_groups
+        assert annotated_groups <= set(TRAINER_CONCURRENCY_GROUPS)
 
 
 class TestEnvironmentVariables:
@@ -218,8 +256,9 @@ class TestEnvironmentVariables:
 
         assert [spec.env_var(_make_context())["NVTE_FP8_BLOCK_SCALING_FP32_SCALES"] for spec in specs] == ["0", "0"]
 
-    def test_disk_offload_gets_a_directory_per_worker(self):
+    def test_disk_offload_gets_a_directory_per_worker(self, monkeypatch):
         """Two ranks sharing one directory would overwrite each other's offloaded weights."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
         args = _make_args(offload_train=True, offload_train_target="disk")
 
         (spec,) = specs_trainer(args)
@@ -228,6 +267,17 @@ class TestEnvironmentVariables:
             spec.env_var(_make_context(cell_index=1, worker_in_cell_index=i))["TMS_DISK_BACKUP_DIR"] for i in range(2)
         ]
         assert directories == ["/tmp/offload/cell1_rank0", "/tmp/offload/cell1_rank1"]
+
+    def test_a_library_without_the_disk_backend_is_rejected(self, monkeypatch):
+        """Launching disk offload against a library that cannot write to disk would
+        silently lose the offloaded weights."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
+        monkeypatch.setattr(Path, "read_bytes", lambda self: b"built without the disk backend")
+
+        (spec,) = specs_trainer(_make_args(offload_train=True, offload_train_target="disk"))
+
+        with pytest.raises(AssertionError, match="has no disk backend"):
+            spec.env_var(_make_context())
 
     def test_no_disk_directory_without_disk_offload(self):
         """The cpu backup path must not be told to write to disk."""
