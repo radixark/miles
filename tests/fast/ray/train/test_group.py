@@ -899,6 +899,12 @@ async def _set_all_train_return(group: RayTrainGroup, value: TrainStepOutput) ->
             ray.get(handle.set_train_return_value.remote(value))
 
 
+async def _set_all_train_returns_per_attempt(group: RayTrainGroup, values: list[TrainStepOutput]) -> None:
+    for cell in group._cells:
+        for handle in cell._get_actor_handles():
+            ray.get(handle.set_train_return_values_per_attempt.remote(values))
+
+
 def _count_train_calls(group: RayTrainGroup, cell_index: int) -> int:
     total = 0
     for handle in group._cells[cell_index]._get_actor_handles():
@@ -920,19 +926,9 @@ class TestTrainRetry:
     async def test_retry_on_all_discarded_then_normal(self):
         """First attempt: all DISCARDED. Second attempt: all NORMAL. Train called twice."""
         group = await _make_alive_controller(num_cells=2)
-        await _set_all_train_return(group, DISCARDED)
+        await _set_all_train_returns_per_attempt(group, [DISCARDED, NORMAL])
 
-        # After first train call, switch to NORMAL so second attempt succeeds
-        async def _do_train():
-            await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
-
-        import asyncio
-
-        task = asyncio.create_task(_do_train())
-        # Give first attempt time to dispatch
-        await asyncio.sleep(0.3)
-        await _set_all_train_return(group, NORMAL)
-        await task
+        await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
         for i in range(2):
             assert _count_train_calls(group, i) == 2
@@ -940,26 +936,12 @@ class TestTrainRetry:
     async def test_retry_multiple_times_then_succeed(self):
         """DISCARDED 3 times, then NORMAL on 4th attempt."""
         group = await _make_alive_controller(num_cells=2)
+        await _set_all_train_returns_per_attempt(group, [DISCARDED, DISCARDED, DISCARDED, NORMAL])
 
-        # Use a counter-based actor to track attempts
-        await _set_all_train_return(group, DISCARDED)
-
-        async def _do_train():
-            await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
-
-        import asyncio
-
-        task = asyncio.create_task(_do_train())
-
-        # Wait for 3 retry rounds, then switch to NORMAL
-        for _ in range(3):
-            await asyncio.sleep(0.2)
-
-        await _set_all_train_return(group, NORMAL)
-        await task
+        await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
         for i in range(2):
-            assert _count_train_calls(group, i) >= 2
+            assert _count_train_calls(group, i) == 4
 
     async def test_cell_errored_does_not_retry_when_others_normal(self):
         """One cell errors during train but others return NORMAL → no retry.
