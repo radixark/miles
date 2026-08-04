@@ -185,3 +185,15 @@ def _boolean_option_string(action: argparse.Action, *, value: bool) -> str:
         return positive[0]
     assert negative, f"{action.dest!r} cannot be rendered: no negative option string"
     return negative[0]
+
+
+def render_cli_option(name: str, value: object) -> list[str]:
+    flag = "--" + name.replace("_", "-")
+    if isinstance(value, bool):
+        assert value, f"{flag} cannot be rendered: the CLI only has a flag for the non-default value"
+        return [flag]
+    if isinstance(value, list):
+        return [flag, *(str(item) for item in value)]
+    if isinstance(value, dict):
+        return [flag, *(f"{key}={item}" for key, item in value.items())]
+    return [flag, str(value)]

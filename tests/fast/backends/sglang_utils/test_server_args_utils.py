@@ -19,6 +19,7 @@ from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
 from miles.utils.workers.argv_utils import _actions_by_dest, _render_action_argv, _resolve_action
 
+
 _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "custom_sigquit_handler": "A Python-only callable hook; sglang registers no CLI option for it.",
     "stat_loggers": "A Python-only injection point; sglang registers no CLI option for it.",
@@ -39,7 +40,7 @@ def _server_args(
     sglang_overrides: dict | None = None,
     disaggregation_bootstrap_port: int | None = None,
     num_gpus_per_engine: int = 1,
-) -> ServerArgs:
+) -> dict:
     server_args_dict = _compute_server_args(
         args or _args(),
         node_rank=node_rank,
@@ -55,18 +56,28 @@ def _server_args(
         sglang_overrides=sglang_overrides,
         num_gpus_per_engine=num_gpus_per_engine,
     )
-    return ServerArgs(**server_args_dict)
+    return server_args_dict
 
 
-def _roundtrip(server_args: ServerArgs) -> ServerArgs:
-    return parse_server_args_argv(server_args_to_argv(server_args))
+def _assert_roundtrips(server_args_dict: dict) -> None:
+    """Every field the launched process ends up with matches what miles asked for.
+
+    ``random_seed`` is excluded on purpose: each engine draws its own."""
+    parsed = parse_server_args_argv(server_args_to_argv(server_args_dict))
+    wanted = ServerArgs(**server_args_dict)
+    differing = [
+        field.name
+        for field in dataclasses.fields(wanted)
+        if field.name != "random_seed" and getattr(parsed, field.name) != getattr(wanted, field.name)
+    ]
+    assert differing == []
 
 
 class TestServerArgsToArgv:
     def test_a_regular_engine_launch_roundtrips(self):
         """The exact ServerArgs the launch computes survives the argv boundary."""
         server_args = _server_args()
-        assert _roundtrip(server_args) == server_args
+        _assert_roundtrips(server_args)
 
     def test_the_identity_flags_are_always_rendered_exactly_once(self):
         """model path and addressing must be explicit on the command, even at CLI defaults."""
@@ -77,14 +88,14 @@ class TestServerArgsToArgv:
     def test_a_prefill_worker_roundtrips(self):
         """PD-disaggregation prefill fields survive the argv boundary."""
         server_args = _server_args(worker_type="prefill", disaggregation_bootstrap_port=20090)
-        assert server_args.disaggregation_mode == "prefill"
-        assert _roundtrip(server_args) == server_args
+        assert server_args["disaggregation_mode"] == "prefill"
+        _assert_roundtrips(server_args)
 
     def test_a_decode_worker_roundtrips(self):
         """PD-disaggregation decode fields survive the argv boundary."""
         server_args = _server_args(worker_type="decode")
-        assert server_args.disaggregation_mode == "decode"
-        assert _roundtrip(server_args) == server_args
+        assert server_args["disaggregation_mode"] == "decode"
+        _assert_roundtrips(server_args)
 
     def test_a_multi_node_rank_roundtrips(self):
         """nnodes, node_rank and tp_size of a multi-node engine survive the boundary."""
@@ -93,31 +104,31 @@ class TestServerArgsToArgv:
             num_gpus_per_engine=16,
             args=_args(rollout_num_gpus_per_engine=16),
         )
-        assert server_args.nnodes == 2 and server_args.node_rank == 1
-        assert _roundtrip(server_args) == server_args
+        assert server_args["nnodes"] == 2 and server_args["node_rank"] == 1
+        _assert_roundtrips(server_args)
 
     def test_dtype_and_parallel_sizes_roundtrip(self):
         """fp16 and dp/pp/ep sizes land in the argv and parse back."""
         server_args = _server_args(args=_args(fp16=True, sglang_dp_size=2, sglang_ep_size=2))
-        assert server_args.dtype == "float16"
-        assert _roundtrip(server_args) == server_args
+        assert server_args["dtype"] == "float16"
+        _assert_roundtrips(server_args)
 
     def test_sglang_overrides_roundtrip(self):
         """User overrides merged into the dict survive the argv boundary."""
         server_args = _server_args(sglang_overrides={"mem_fraction_static": 0.5, "log_level": "warning"})
-        assert server_args.mem_fraction_static == 0.5
-        assert _roundtrip(server_args) == server_args
+        assert server_args["mem_fraction_static"] == 0.5
+        _assert_roundtrips(server_args)
 
     def test_lora_fields_roundtrip(self):
         """enable_lora, ranks and the target-modules list survive the boundary."""
         server_args = _server_args(args=_args(lora_rank=8, target_modules=["linear_qkv"]))
-        assert server_args.enable_lora
-        assert _roundtrip(server_args) == server_args
+        assert server_args["enable_lora"]
+        _assert_roundtrips(server_args)
 
     def test_an_ipv6_dist_init_addr_roundtrips(self):
         """The bracketed v6 rendezvous address survives the argv boundary."""
         server_args = _server_args(dist_init_addr="[fd00::1]:20000")
-        assert _roundtrip(server_args) == server_args
+        _assert_roundtrips(server_args)
 
     def test_a_colocate_prefill_cuda_graph_backend_roundtrips(self):
         """Colocate forces the prefill cuda graph backend off, which sglang folds into a
@@ -125,15 +136,14 @@ class TestServerArgsToArgv:
         server_args = _server_args(sglang_overrides={"cuda_graph_backend_prefill": "disabled"})
         argv = server_args_to_argv(server_args)
         assert "--cuda-graph-config" not in argv
-        assert _roundtrip(server_args) == server_args
+        _assert_roundtrips(server_args)
 
     def test_lora_adapter_paths_roundtrip(self):
         """The name=path lora mapping survives the argv boundary."""
         server_args = _server_args(
             args=_args(lora_rank=8, target_modules=["linear_qkv"], lora_adapter_path="/fake/adapter")
         )
-        assert server_args.lora_paths
-        assert _roundtrip(server_args) == server_args
+        _assert_roundtrips(server_args)
 
 
 class TestSglangPrefixedPassthrough:
@@ -149,8 +159,8 @@ class TestSglangPrefixedPassthrough:
     def test_a_prefixed_user_flag_reaches_the_engine_command(self, field_name: str, value: Any) -> None:
         """A --sglang-<field> value lands on the engine ServerArgs and survives the argv boundary."""
         server_args = _server_args(args=_args(**{f"sglang_{field_name}": value}))
-        assert getattr(server_args, field_name) == value
-        assert _roundtrip(server_args) == server_args
+        assert server_args[field_name] == value
+        _assert_roundtrips(server_args)
 
 
 class TestEveryServerArgsFieldIsRenderable:

@@ -84,7 +84,7 @@ def compute_engine_launch_cmd(
         gated_launch_port=gated_launch_port,
     )
 
-    launch_args = ServerArgs(**{**server_args_dict, "host": server_args_dict["host"].strip("[]")})
+    launch_args = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
     return shlex.join([sys.executable, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
 
 
