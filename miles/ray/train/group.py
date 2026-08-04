@@ -3,9 +3,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-import ray
 from ray.util.placement_group import PlacementGroup
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
@@ -24,15 +22,11 @@ from miles.utils.audit_utils.event_logger.models import (
 )
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
-from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.retry_utils import NonRetryableError, retry
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
-
-if TYPE_CHECKING:
-    import torch
-
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +78,7 @@ class RayTrainGroup:
         self._indep_dp_quorum_id = 0
 
         if num_cells > 1:
-            self._indep_dp_store, indep_dp_store_addr = _create_tcp_store()
+            self._indep_dp_store, indep_dp_store_addr = create_tcp_store()
             logger.info(f"Created TCPStore for independent DP at {indep_dp_store_addr}")
         else:
             self._indep_dp_store, indep_dp_store_addr = None, None
@@ -588,17 +582,3 @@ def _first_exception(results) -> BaseException | None:
 def _slice_pg(pg: PGTuple, start: int, end: int) -> PGTuple:
     placement_group, bundle_indices, gpu_ids = pg
     return placement_group, bundle_indices[start:end], gpu_ids[start:end]
-
-
-def _create_tcp_store() -> tuple["torch.distributed.TCPStore", str]:
-    import torch.distributed
-
-    store = torch.distributed.TCPStore(
-        host_name="0.0.0.0",
-        port=0,
-        is_master=True,
-        wait_for_workers=False,
-    )
-    host = ray.util.get_node_ip_address()
-    port = store.port
-    return store, f"{host}:{port}"
