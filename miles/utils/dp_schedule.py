@@ -24,6 +24,36 @@ def has_full_schedule_config(train_parallel_config: dict | None) -> bool:
     return all(key in train_parallel_config for key in SCHEDULE_CONFIG_KEYS)
 
 
+def _calculate_workloads(step_lengths, args):
+    return [calculate_fwd_flops([sl], args) for sl in step_lengths]
+
+
+def _pack_samples_into_micro_batches(
+    step_lengths: list[int],
+    *,
+    args: Any,
+    use_dynamic_batch_size: bool,
+    max_per_bin: int | None,
+    micro_batch_size: int | None,
+    balance_by_flops: bool = False,
+) -> list[list[int]]:
+    """Group a step's samples into micro-batches. Returns ``micro_batches[k]`` = local indices into ``step_lengths``."""
+    if use_dynamic_batch_size:
+        assert max_per_bin is not None
+        if balance_by_flops:
+            total_tokens = sum(step_lengths)
+            micro_batch_count = max(1, (total_tokens + max_per_bin - 1) // max_per_bin)
+            if micro_batch_count >= len(step_lengths):
+                return [[i] for i in range(len(step_lengths))]
+            workloads = _calculate_workloads(step_lengths, args)
+            # NOTE: FLOPs balancing does not enforce the token cap per micro-batch.
+            return get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
+        return first_fit_decreasing_pack(step_lengths, max_per_bin)
+    assert micro_batch_size is not None
+    n = len(step_lengths)
+    return [list(range(i, min(i + micro_batch_size, n))) for i in range(0, n, micro_batch_size)]
+
+
 def build_dp_schedule(
     args: Any,
     train_parallel_config: dict,
@@ -41,6 +71,11 @@ def build_dp_schedule(
 
     # micro-batch size per step must divide evenly across dp and vpp
     align_to = dp_size * (mb_group if vpp_size > 1 else 1)
+
+    max_per_bin = None
+    if args.use_dynamic_batch_size:
+        assert args.max_tokens_per_gpu is not None
+        max_per_bin = args.max_tokens_per_gpu * cp_size
 
     # Rollout can include multiple samples (compaction, subagent, fork, etc.)
     # Samples in the same rollout should be trained in the same step, or dropped together.
@@ -81,28 +116,15 @@ def build_dp_schedule(
             f"each step needs at least one sample per rank."
         )
 
-        # Pack the step's samples into micro-batches; step_micro_batches[k] holds local
-        # indices into step_lengths.
-        workloads = None
-        if not args.use_dynamic_batch_size:
-            assert args.micro_batch_size is not None
-            n = len(step_lengths)
-            step_micro_batches = [
-                list(range(i, min(i + args.micro_batch_size, n))) for i in range(0, n, args.micro_batch_size)
-            ]
-        elif getattr(args, "balance_by_flops", False):
-            assert args.max_tokens_per_gpu is not None
-            max_per_bin = args.max_tokens_per_gpu * cp_size
-            workloads = [calculate_fwd_flops([length], args) for length in step_lengths]
-            micro_batch_count = max(1, (sum(step_lengths) + max_per_bin - 1) // max_per_bin)
-            if micro_batch_count >= len(step_lengths):
-                step_micro_batches = [[i] for i in range(len(step_lengths))]
-            else:
-                # NOTE: FLOPs balancing does not enforce the token cap per micro-batch.
-                step_micro_batches = get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
-        else:
-            assert args.max_tokens_per_gpu is not None
-            step_micro_batches = first_fit_decreasing_pack(step_lengths, args.max_tokens_per_gpu * cp_size)
+        balance_by_flops = getattr(args, "balance_by_flops", False)
+        step_micro_batches = _pack_samples_into_micro_batches(
+            step_lengths,
+            args=args,
+            use_dynamic_batch_size=args.use_dynamic_batch_size,
+            max_per_bin=max_per_bin,
+            micro_batch_size=getattr(args, "micro_batch_size", None),
+            balance_by_flops=balance_by_flops,
+        )
 
         # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
         target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
@@ -122,8 +144,9 @@ def build_dp_schedule(
         # Distribute the micro-batches across DP ranks, len(step_micro_batches) / dp_size each: strided
         # round-robin, or Karmarkar-Karp on micro-batch weights (tokens under --balance-data,
         # FLOPs under --balance-by-flops).
-        if args.balance_data or getattr(args, "balance_by_flops", False):
-            if workloads is not None:
+        if args.balance_data or balance_by_flops:
+            if balance_by_flops:
+                workloads = _calculate_workloads(step_lengths, args)
                 weights = [sum(workloads[i] for i in micro_batch) for micro_batch in step_micro_batches]
             else:
                 weights = [sum(step_lengths[i] for i in micro_batch) for micro_batch in step_micro_batches]
