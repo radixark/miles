@@ -166,13 +166,18 @@ class RolloutExecutor:
 
     # -------------------------- checkpointing -----------------------------
 
+    # TODO the train and eval rollout functions will become one object, so one save/load is enough here
     def save(self, rollout_id):
         if self.args.rollout_global_dataset:
             self.data_source.save(rollout_id)
+        if self.use_experimental_refactor:
+            self.generate_rollout.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
     def load(self, rollout_id=None):
         self.data_source.load(rollout_id)
+        if self.use_experimental_refactor:
+            self.generate_rollout.load(rollout_id)
 
     # -------------------------- misc APIs -----------------------------
 
