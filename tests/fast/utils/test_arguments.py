@@ -220,6 +220,44 @@ def test_fully_async_rejects_abort_pause_mode():
     _resolve_rollout_functions(args)
 
 
+class TestClusterBackend:
+
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + REQUIRED_ARGS)
+
+    def test_defaults_to_ray(self):
+        """Runs that do not mention the flag keep the ray-launched worker behaviour."""
+        assert self._parse([]).cluster_backend == "ray"
+
+    @pytest.mark.parametrize("backend", ["ray", "kubernetes"])
+    def test_accepts_supported_backends(self, backend):
+        """Both supported backends parse into the raw string."""
+        assert self._parse(["--cluster-backend", backend]).cluster_backend == backend
+
+    def test_rejects_unknown_backend(self):
+        """An unsupported backend name fails at parse time instead of later."""
+        with pytest.raises(SystemExit):
+            self._parse(["--cluster-backend", "slurm"])
+
+    def test_validation_rejects_kubernetes_until_it_provisions_workers(self):
+        """kubernetes parses but is refused, so nobody silently gets a ray topology under it."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
+
+        with pytest.raises(AssertionError, match="is not usable yet"):
+            miles_validate_args(args)
+
+    def test_kubernetes_from_the_custom_config_file_is_refused_too(self, tmp_path):
+        """The config file overwrites args after the flags are parsed, so it must not skip the check."""
+        config = tmp_path / "override.yaml"
+        config.write_text("cluster_backend: kubernetes\n")
+        args = self._parse(["--custom-config-path", str(config), "--num-rollout", "1"])
+
+        with pytest.raises(AssertionError, match="is not usable yet"):
+            miles_validate_args(args)
+
+
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
