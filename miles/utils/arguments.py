@@ -2943,6 +2943,16 @@ def miles_validate_args(args):
         if args.log_probs_max_tokens_per_gpu is None:
             args.log_probs_max_tokens_per_gpu = args.max_tokens_per_gpu
 
+    # multi-LoRA auto-enables dynamic global batch size but is excluded from the
+    # rollout-side schedule, so the alignment fragility below does not apply to it.
+    if args.use_dynamic_global_batch_size and not args.multi_lora:
+        assert args.use_dynamic_batch_size, (
+            "--use-dynamic-global-batch-size requires --use-dynamic-batch-size (with --max-tokens-per-gpu). "
+            "With a data-dependent per-step sample count, static micro-batching cannot keep the "
+            "micro-batch count aligned to dp_size * mb_group; no config guarantees alignment, and "
+            "training would crash mid-run on build_dp_schedule's alignment check."
+        )
+
     if getattr(args, "balance_by_flops", False):
         assert args.use_dynamic_batch_size, "--balance-by-flops requires --use-dynamic-batch-size"
 
