@@ -118,7 +118,7 @@ def make_command_spec(
         port_infos=(
             port_infos if port_infos is not None else [PortInfo(name="primary", static_port=8000, allow_dynamic=True)]
         ),
-        env_var=lambda: dict(env_var or {}),
+        env_var=lambda _ctx: dict(env_var or {}),
         scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=num_workers_per_cell,
