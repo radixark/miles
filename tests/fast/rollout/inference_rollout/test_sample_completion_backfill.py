@@ -8,7 +8,7 @@ from argparse import Namespace
 import pytest
 
 import miles.rollout.inference_rollout.inference_rollout_train as train
-from miles.rollout.inference_rollout.inference_rollout_common import (
+from miles.rollout.submission_scheduler import (
     GroupLevelSubmission,
     SampleBackfillSubmission,
     make_submission_scheduler,
@@ -129,8 +129,6 @@ class Harness:
 
 
 async def test_sync_driver_defaults_to_group_granularity(monkeypatch):
-    # Unset --rollout-submission-granularity: this driver aborts whatever overshoots the
-    # batch, so it pays for backfill rather than banking it, and opts out by default.
     harness = Harness(monkeypatch, make_args(rollout_batch_size=2))
     task = harness.run()
     await asyncio.sleep(0)
@@ -183,9 +181,6 @@ async def test_backfill_does_not_oversubmit_below_one_group(monkeypatch):
 
 
 class TestSubmissionSchedulers:
-    # Which granularity each driver defaults to is the driver's decision, and is pinned
-    # by the driver-level tests above and in test_fully_async_rollout.py.
-
     @pytest.mark.parametrize(
         "granularity,default,expected",
         [
@@ -221,7 +216,7 @@ class TestSubmissionSchedulers:
 
     def test_orphaned_credits_resync_when_nothing_is_pending(self):
         scheduler = SampleBackfillSubmission(GROUP_SIZE)
-        # Credits whose sample tasks never spawned: no callback will ever return them.
+        # credits whose sample tasks never spawned
         scheduler.on_submit([make_group(1), make_group(2)])
 
         assert scheduler.has_capacity(pending_groups=0, group_budget=2)

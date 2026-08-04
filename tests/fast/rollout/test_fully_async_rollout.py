@@ -432,7 +432,7 @@ async def test_group_granularity_opts_the_worker_out_of_backfill(monkeypatch):
     drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
     await asyncio.sleep(0.01)
     assert data_source.num_get_calls == 1
-    # No callback is wired, so nothing can free a slot before the group task returns.
+    # no callback wired at group level
     assert callbacks == [None]
 
     await asyncio.sleep(0.01)

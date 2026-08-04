@@ -32,12 +32,9 @@ from miles.rollout.base_types import (
     RolloutFnTrainOutput,
 )
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
-from miles.rollout.inference_rollout.inference_rollout_common import (
-    GenerateState,
-    generate_and_rm_group,
-    make_submission_scheduler,
-)
+from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
+from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils.http_utils import get
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
@@ -110,8 +107,7 @@ class FullyAsyncRolloutFn:
         self.args = input.args
         self.data_source = input.data_source
         self.state = GenerateState(input.args)
-        # Groups completed beyond a step's batch stay in the output queue for the next
-        # step, so backfilling past the straggler of a group costs nothing here.
+        # default to sample level backfill for fully async rollout
         self._scheduler = make_submission_scheduler(input.args, default="sample")
         self._dynamic_filter = load_function(input.args.dynamic_sampling_filter_path)
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)

@@ -10,11 +10,8 @@ from tqdm import tqdm
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
-from miles.rollout.inference_rollout.inference_rollout_common import (
-    GenerateState,
-    generate_and_rm_group,
-    make_submission_scheduler,
-)
+from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
+from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils import dumper_utils
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.misc import as_completed_async, call_agent_abort_hook, load_function
@@ -101,8 +98,7 @@ async def generate_rollout_async(
     # target_data_size is the total number of valid samples to get
     target_data_size = args.rollout_batch_size
 
-    # Groups completed beyond target_data_size are aborted below, so overshooting the
-    # batch costs generation this step throws away: pace by whole groups unless asked.
+    # default to group level submission for sync/one-step async rollout
     scheduler = make_submission_scheduler(args, default="group")
 
     pendings = set()
@@ -117,7 +113,7 @@ async def generate_rollout_async(
             scheduler.on_submit(samples)
             pendings.update(submit_generate_tasks(state, samples, scheduler.sample_done_callback))
 
-        # wait for the generation (or, with backfill, a single sample) to finish
+        # wait for the generation to finish
         logger.debug(f"[rollout] Waiting on {len(pendings)} pending tasks, data={len(data)}/{target_data_size}")
         done, pendings = await scheduler.wait_for_progress(pendings)
         logger.debug(f"[rollout] asyncio.wait returned: {len(done)} done, {len(pendings)} pending")
