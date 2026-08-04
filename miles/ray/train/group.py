@@ -252,13 +252,18 @@ class RayTrainGroup:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def update_weights(self, rollout_id: int | None = None):
+    async def update_weights(self, rollout_id: int | None = None, should_update: bool = True):
         """Broadcast weights to rollout engines."""
         log_structured(logger.info, op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set; the actor releases the lock itself.
         info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
+
+        if not should_update and not info.has_new_engines:
+            log_structured(logger.info, op="update_weights", phase="skip", rollout=rollout_id)
+            return
+
         await self._rollout_manager.health_monitoring_pause.remote()
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(

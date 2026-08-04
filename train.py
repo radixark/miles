@@ -129,7 +129,12 @@ async def train(args):
         await offload_train()
         if args.offload_rollout:
             await rollout_manager.onload_weights.remote()
-        await actor_model.update_weights(rollout_id=rollout_id)
+        # Actor weights don't change during critic-only steps; the pre-loop
+        # update already delivered them to the engines.
+        await actor_model.update_weights(
+            rollout_id=rollout_id,
+            should_update=not (args.use_critic and rollout_id < args.num_critic_only_steps),
+        )
         if args.offload_rollout:
             await rollout_manager.onload_kv.remote()
 
