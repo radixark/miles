@@ -153,6 +153,7 @@ class RayTrainGroup:
             await self._refresh_cells(rollout_id=rollout_id)
             snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
                 "train",
+                check_recoverable=False,
                 rollout_id=rollout_id,
                 rollout_data_ref=rollout_data_pack["data_ref"],
                 witness_info=witness_info,
@@ -331,12 +332,12 @@ class RayTrainGroup:
     # ------------------------ utils to forward calls to cells ------------------------
 
     def _is_recoverable(self) -> bool:
-        return any(cell.is_alive or cell.is_pending for cell in self._cells)
+        return any(cell.is_alive for cell in self._cells)
 
     def _make_all_cells_failed_error(self, message: str) -> Exception:
         return RuntimeError(message) if self._is_recoverable() else NonRetryableError(message)
 
-    async def _execute_all_alive_and_catch(self, fn_name: str, **kwargs):
+    async def _execute_all_alive_and_catch(self, fn_name: str, *, check_recoverable: bool = True, **kwargs):
         snapshot_alive_cells = [c for c in self._cells if c.is_alive]
         if not snapshot_alive_cells:
             raise NonRetryableError("No alive cells")
@@ -348,6 +349,10 @@ class RayTrainGroup:
             return_exceptions=True,
         )
         AsyncioGatherUtils.log_error(outputs, debug_name=f"execute_all_alive_and_catch#{fn_name}")
+        if check_recoverable and not self._is_recoverable():
+            raise self._make_all_cells_failed_error(f"All cells failed during {fn_name}") from _first_exception(
+                outputs
+            )
         return snapshot_alive_cells, outputs
 
     async def _execute_first_alive(self, fn_name: str, **kwargs):
