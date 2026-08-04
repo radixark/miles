@@ -7,11 +7,10 @@ import ray
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
 from miles.ray.train.group import RayTrainGroup
-from miles.utils.ft_utils.api_server.models import Cell, CellMetadata, CellSpec
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.test_utils.fault_injector import FailureMode
-
-
-_ACTOR_CELL_ID_PREFIX = "actor-"
+from miles.utils.workers.naming import parse_cell_id
+from miles.utils.workers.worker_provider.base import CellInfo
 
 
 class _CellHandler(abc.ABC):
@@ -48,51 +47,62 @@ class _CellHandler(abc.ABC):
         )
 
 
-def _compute_actor_cell_id(cell_index: int) -> str:
-    return f"{_ACTOR_CELL_ID_PREFIX}{cell_index}"
-
-
-def _parse_actor_cell_index(cell_id: str) -> int:
-    assert cell_id.startswith(_ACTOR_CELL_ID_PREFIX), f"{cell_id=}"
-    return int(cell_id[len(_ACTOR_CELL_ID_PREFIX) :])
-
-
 class _ActorCellHandler(_CellHandler):
-    def __init__(self, *, group: RayTrainGroup) -> None:
+    def __init__(
+        self,
+        *,
+        worker_manager: ray.actor.ActorHandle,
+        group: RayTrainGroup,
+        trainer_pool_ids: list[str],
+    ) -> None:
+        self._worker_manager = worker_manager
         self._group = group
+        self._trainer_pool_ids = trainer_pool_ids
 
     @property
     def cell_type(self) -> str:
         return "actor"
 
     async def list_cell_ids(self) -> list[str]:
-        return [_compute_actor_cell_id(cell_index) for cell_index in range(len(self._group._cells))]
+        return sorted(await self._get_cell_infos())
+
+    async def list_cells(self) -> list[Cell]:
+        cell_infos = await self._get_cell_infos()
+        statuses = self._group.get_cell_statuses()
+        return [
+            self._compute_cell(cell_id, cell_infos=cell_infos, statuses=statuses) for cell_id in sorted(cell_infos)
+        ]
 
     async def get_cell(self, cell_id: str) -> Cell:
-        cell = self._find_cell(cell_id)
-        return Cell(
-            metadata=self._compute_metadata(cell_id),
-            spec=CellSpec(suspend=cell.is_stopped),
-            status=cell.cell_status(),
+        return self._compute_cell(
+            cell_id,
+            cell_infos=await self._get_cell_infos(),
+            statuses=self._group.get_cell_statuses(),
         )
 
+    def _compute_cell(self, cell_id: str, *, cell_infos: dict[str, CellInfo], statuses: dict[str, CellStatus]) -> Cell:
+        status = statuses.get(cell_id)
+        if not cell_infos[cell_id].alive and (status is None or status.phase != "Pending"):
+            status = CellStatus(phase="Suspended", conditions=[CellCondition.allocated(TriState.FALSE)])
+        elif status is None:
+            status = compute_pending_rollout_cell_status()
+        return Cell(
+            metadata=self._compute_metadata(cell_id),
+            spec=CellSpec(suspend=status.phase == "Suspended"),
+            status=status,
+        )
+
+    async def _get_cell_infos(self) -> dict[str, CellInfo]:
+        return await self._worker_manager.get_cell_infos.remote(pool_ids=self._trainer_pool_ids)
+
     async def suspend(self, cell_id: str) -> None:
-        await self._group.stop_cell(_parse_actor_cell_index(cell_id))
+        await self._group.stop_cell(parse_cell_id(cell_id).cell_index)
 
     async def resume(self, cell_id: str) -> None:
-        self._group.start_cell(_parse_actor_cell_index(cell_id))
+        self._group.start_cell(parse_cell_id(cell_id).cell_index)
 
     async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        cell = self._find_cell(cell_id)
-        if not cell.is_alive:
-            raise RuntimeError(f"Cell {cell_id} is not alive, cannot inject fault")
-        actors = cell._get_actor_handles()
-        if sub_index < 0 or sub_index >= len(actors):
-            raise IndexError(f"sub_index {sub_index} out of range for cell {cell_id} (has {len(actors)} actors)")
-        actors[sub_index].inject_fault.remote(mode.value)
-
-    def _find_cell(self, cell_id: str):
-        return self._group._cells[_parse_actor_cell_index(cell_id)]
+        await self._worker_manager.inject_fault.remote(cell_id, mode=mode.value, worker_in_cell_index=sub_index)
 
 
 class _RolloutCellHandler(_CellHandler):
