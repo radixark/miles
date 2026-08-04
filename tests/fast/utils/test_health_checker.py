@@ -69,6 +69,19 @@ class _Activeness:
         return self._tracker.get()
 
 
+class TestActivenessTracker:
+    def test_repeating_the_same_activeness_does_not_bump_the_epoch(self):
+        """A redundant state publication must not invalidate in-flight probes or re-arm the grace period."""
+        tracker = ActivenessTracker(active=True)
+        tracker.bump_active(False)
+        after_transition = tracker.get()
+
+        tracker.bump_active(False)
+
+        assert after_transition == ActiveAndEpoch(active=False, epoch=1)
+        assert tracker.get() == after_transition
+
+
 class TestStartStop:
     async def test_start_creates_task(self):
         checker, _ = _make_checker()
@@ -343,6 +356,67 @@ class TestNeedFirstWait:
         await clock.elapse(10.0)
         assert checker._need_first_wait is False
 
+        checker.stop()
+
+    async def test_becoming_inactive_during_first_wait_skips_the_due_probe(self):
+        """The probe that becomes due at the end of the grace period must not hit an engine offloaded meanwhile."""
+        call_count = 0
+
+        async def check_fn() -> None:
+            nonlocal call_count
+            call_count += 1
+
+        activeness = _Activeness()
+        checker, clock = _make_checker(check_fn=check_fn, first_wait=100.0, interval=5.0, activeness=activeness)
+        checker.start()
+        await _settle(clock)
+
+        await clock.elapse(50.0)
+        assert call_count == 0
+
+        activeness.active = False
+        await clock.elapse(50.0)
+        assert call_count == 0
+        assert checker.status == TriState.UNKNOWN
+
+        await clock.elapse(10.0)
+        assert call_count == 0
+
+        checker.stop()
+
+
+class TestProbeTimeout:
+    async def test_a_timed_out_probe_is_reported_failed_and_polling_continues(self):
+        """A check hanging past the timeout is cancelled, published as a failure, and followed by later polls."""
+        results: list[bool] = []
+        published = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def check_fn() -> None:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        def on_result(success: bool) -> None:
+            results.append(success)
+            published.set()
+
+        checker, clock = _make_checker(check_fn=check_fn, on_result=on_result, timeout=0.05, interval=5.0)
+        checker.start()
+        await asyncio.wait_for(published.wait(), timeout=10)
+
+        assert results == [False]
+        assert cancelled.is_set()
+        assert checker.status == TriState.FALSE
+
+        published.clear()
+        await _settle(clock)
+        await clock.elapse(5.0)
+        await asyncio.wait_for(published.wait(), timeout=10)
+
+        assert results == [False, False]
         checker.stop()
 
 
@@ -656,6 +730,32 @@ class TestDiscardingStaleProbeResults:
         await clock.elapse(5.0)
 
         assert call_count == 2
+        checker.stop()
+
+    async def test_a_successful_probe_spanning_pause_resume_is_discarded(self):
+        """An old engine's success must not mark its replacement healthy without probing it."""
+        results: list[bool] = []
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def check_fn() -> None:
+            started.set()
+            await release.wait()
+
+        activeness = _Activeness()
+        checker, clock = _make_checker(
+            check_fn=check_fn, on_result=lambda s: results.append(s), interval=5.0, activeness=activeness
+        )
+        checker.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        activeness.active = False
+        activeness.active = True
+        release.set()
+        await _settle(clock)
+
+        assert results == []
+        assert checker.status == TriState.UNKNOWN
         checker.stop()
 
     async def test_a_probe_that_lands_inside_its_own_window_is_published(self):

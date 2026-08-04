@@ -258,6 +258,9 @@ class SimpleHealthChecker(BaseHealthChecker):
 
 
 class NoopHealthChecker(BaseHealthChecker):
+    def __init__(self) -> None:
+        self.stopped: bool = False
+
     @property
     def status(self) -> TriState:
         return TriState.UNKNOWN
