@@ -16,7 +16,7 @@ import pytest
 
 import miles.utils.http_utils as http_utils
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
-from miles.rollout.session.samples.codec import encode_samples
+from miles.rollout.session.samples.codec import COMPUTED_FIELDS, COMPUTED_FIELDS_V2, encode_samples
 from miles.utils.http_utils import post_bytes_no_retry
 from miles.utils.types import Sample
 
@@ -284,8 +284,6 @@ async def test_collect_samples_v2_payload_carries_metadata_and_decodes_extras(mo
 
 @pytest.mark.asyncio
 async def test_create_selects_wire_fields_by_session_server_version(monkeypatch):
-    from miles.rollout.session.samples.codec import COMPUTED_FIELDS, COMPUTED_FIELDS_V2
-
     async def fake_post(url: str, payload: dict, action: str = "post"):
         return {"session_id": "sid-x"}
 
