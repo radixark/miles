@@ -43,6 +43,7 @@ class MockHandler(_CellHandler):
         self.cells: dict[str, MockCellState] = {}
         self.injected: list[tuple[str, FailureMode, int]] = []
         self.supports_inject_fault = False
+        self.inject_fault_error: Exception | None = None
 
     @property
     def cell_type(self) -> str:
@@ -99,6 +100,8 @@ class MockHandler(_CellHandler):
     async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
         if not self.supports_inject_fault:
             raise NotImplementedError(f"{type(self).__name__} does not support fault injection")
+        if self.inject_fault_error is not None:
+            raise self.inject_fault_error
         self.injected.append((cell_id, mode, sub_index))
 
 
@@ -223,7 +226,7 @@ def make_cell_summaries(
     }
 
 
-class MockRayTrainCell:
+class MockTrainerCell:
     def __init__(
         self,
         *,
@@ -256,10 +259,10 @@ class MockRayTrainCell:
         )
 
 
-def make_mock_group(cells: list[MockRayTrainCell], *, pool_id: str = "trainer-actor") -> object:
-    from miles.ray.train.group import RayTrainGroup
+def make_mock_controller(cells: list[MockTrainerCell], *, pool_id: str = "trainer-actor") -> object:
+    from miles.ray.train.group import TrainerController
 
-    group = object.__new__(RayTrainGroup)
+    group = object.__new__(TrainerController)
     for cell_index, cell in enumerate(cells):
         cell.cell_index = cell_index
         cell.cell_id = f"{pool_id}-{cell_index}"

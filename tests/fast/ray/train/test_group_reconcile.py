@@ -6,6 +6,7 @@ import pytest
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.group import TrainerController
 from miles.utils import retry_utils
+from miles.utils.ft_utils.api_server.models import CellStatus, TriState
 from miles.utils.workers.worker_provider.base import CellInfo
 
 pytestmark = pytest.mark.asyncio
@@ -13,8 +14,8 @@ pytestmark = pytest.mark.asyncio
 _POOL_ID = compute_trainer_pool_id("actor")
 
 
-def _make_controller(*, num_cells: int = 2, indep_dp: bool = False) -> RayTrainGroup:
-    group = object.__new__(RayTrainGroup)
+def _make_controller(*, num_cells: int = 2, indep_dp: bool = False) -> TrainerController:
+    group = object.__new__(TrainerController)
     group.args = SimpleNamespace(
         indep_dp=indep_dp,
         actor_num_nodes=1,
@@ -116,10 +117,36 @@ class TestReconcile:
         assert [cell.cell_index for cell in group._cells] == [0, 1, 2]
 
 
+def _healthy_condition(status: CellStatus) -> tuple[TriState, str | None]:
+    [healthy] = [condition for condition in status.conditions if condition.type == "Healthy"]
+    return healthy.status, healthy.reason
+
+
+class TestPublicCellInventory:
+    async def test_the_inventory_and_statuses_follow_the_reconciled_cells(self):
+        """The FT controller heals by these names and statuses, so a stale or mis-ordered view heals the wrong cell."""
+        group = _make_controller(num_cells=3, indep_dp=True)
+        for cell_index in [2, 0, 1]:
+            await group._reconcile(f"{_POOL_ID}-{cell_index}", _make_cell_info(cell_index))
+        group._cells[1]._mark_as_errored()
+
+        assert group.pool_id == _POOL_ID
+        assert group.expected_num_cells == 3
+        assert group.num_cells == 3
+        assert group.cell_ids == [f"{_POOL_ID}-{cell_index}" for cell_index in range(3)]
+
+        statuses = group.get_cell_statuses()
+        assert sorted(statuses) == group.cell_ids
+        assert [status.phase for status in statuses.values()] == ["Running"] * 3
+        assert _healthy_condition(statuses[f"{_POOL_ID}-0"]) == (TriState.TRUE, None)
+        assert _healthy_condition(statuses[f"{_POOL_ID}-1"]) == (TriState.FALSE, "ExecutionErrored")
+        assert _healthy_condition(statuses[f"{_POOL_ID}-2"]) == (TriState.TRUE, None)
+
     async def test_each_status_carries_the_generation_it_describes(self):
         """The api server joins this with a separately polled cell listing, so an unstamped status can mislead."""
         group = _make_controller(num_cells=1, indep_dp=True)
         await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0, workers_hash="hash-9"))
+
         statuses = group.get_cell_statuses()
 
         assert statuses[f"{_POOL_ID}-0"].workers_hash == "hash-9"

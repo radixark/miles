@@ -26,7 +26,7 @@ KILL_RPC_TIMEOUT_S = 10.0
 CONFIRM_DEAD_TIMEOUT_S = 120.0
 
 
-class RayTrainCell:
+class TrainerCell:
     def __init__(
         self,
         *,

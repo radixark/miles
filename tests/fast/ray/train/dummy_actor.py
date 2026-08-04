@@ -1,4 +1,4 @@
-"""Lightweight Ray actor for unit testing RayTrainCell/RayTrainGroup without GPU or real training.
+"""Lightweight Ray actor for unit testing TrainerCell/TrainerController without GPU or real training.
 
 Records all method calls so tests can verify what was dispatched.
 """
@@ -20,6 +20,7 @@ class DummyTrainActor:
         self._fail_methods: set[str] = set()
         self._train_return_value: Any = TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
         self._train_return_values_per_attempt: list[Any] = []
+        self._update_weights_return_value: Any = None
         self._heartbeat = SimpleHeartbeat()
         self._heartbeat.bump()
         self._heartbeat_fail: bool = False
@@ -77,8 +78,15 @@ class DummyTrainActor:
     def save_model(self, *args: Any, **kwargs: Any) -> None:
         self._record("save_model", args, kwargs)
 
-    def update_weights(self) -> None:
-        self._record("update_weights", (), {})
+    def export_hf(self, *args: Any, **kwargs: Any) -> None:
+        self._record("export_hf", args, kwargs)
+
+    def set_update_weights_return_value(self, value: Any) -> None:
+        self._update_weights_return_value = value
+
+    def update_weights(self, *args: Any, **kwargs: Any) -> Any:
+        self._record("update_weights", args, kwargs)
+        return self._update_weights_return_value
 
     def kill_self(self) -> None:
         self._record("kill_self", (), {})

@@ -83,12 +83,44 @@ class TestComputeCellStatusOtherStates:
         assert healthy.reason == "ExecutionErrored"
 
 
-def _make_cell_mock(*, is_alive: bool, execute: AsyncMock) -> MagicMock:
+class TestComputeCellStatusForEveryTrainerState:
+    @pytest.mark.parametrize(
+        "state",
+        [
+            StateAllocatedUninitialized(worker_handles=[]),
+            StateAllocatedAlive(worker_handles=[], indep_dp_info=_make_indep_dp_info()),
+            StateAllocatedErrored(worker_handles=[], indep_dp_info=_make_indep_dp_info()),
+        ],
+    )
+    def test_a_trainer_cell_is_always_running_and_allocated(self, state):
+        """Trainer cells are never pending or stopped, so the FT controller must never see them lose their slots."""
+        result = compute_cell_status(state, TriState.FALSE, workers_hash="pseudo-hash-0")
+
+        assert result.phase == "Running"
+        assert _find_condition(result, "Allocated").status == TriState.TRUE
+
+
+def _make_cell_mock(*, is_alive: bool, execute: AsyncMock, cell_id: str = "trainer-actor-0") -> MagicMock:
     cell = MagicMock()
     cell.is_alive = is_alive
     cell.cell_index = 0
+    cell.cell_id = cell_id
     cell.execute = execute
     return cell
+
+
+class TestTrainerCellHealthCheckerName:
+    def test_the_checker_is_named_after_the_cell_id_not_its_index(self):
+        """Two pools both have a cell 0, so an index-based name makes their health logs indistinguishable."""
+        cell = _make_cell_mock(is_alive=True, execute=AsyncMock(), cell_id="trainer-critic-2")
+
+        checker = create_trainer_cell_health_checker(
+            cell=cell,
+            config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
+            get_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
+        )
+
+        assert checker._name == "trainer-cell-trainer-critic-2"
 
 
 class TestTrainerCellHealthCheckLiveness:

@@ -9,7 +9,7 @@ from miles.utils.workers.naming import parse_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 if TYPE_CHECKING:
-    from miles.ray.train.controller import RayTrainGroup
+    from miles.ray.train.group import TrainerController
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +47,12 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
 
 
 class FTTestActionControllerExecutor:
-    def __init__(self, *, actions: list[FTTestAction], controller: "RayTrainGroup") -> None:
+    def __init__(self, *, actions: list[FTTestAction], controller: "TrainerController") -> None:
         self._actions = actions
         self._controller = controller
 
     @staticmethod
-    def from_args(args: object, *, controller: "RayTrainGroup") -> "FTTestActionControllerExecutor":
+    def from_args(args: object, *, controller: "TrainerController") -> "FTTestActionControllerExecutor":
         return FTTestActionControllerExecutor(actions=_load_actions(args, _CONTROLLER_ACTIONS), controller=controller)
 
     async def run_after_step(self, rollout_id: int) -> None:
