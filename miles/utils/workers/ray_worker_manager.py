@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.utils.function_registry import load_function
 from miles.utils.http_utils import _wrap_ipv6
 from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
@@ -22,6 +23,7 @@ from miles.utils.workers.worker_spec import (
     HostAndPort,
     LaunchCommandContext,
     NamedHostAndPorts,
+    ServeWorkerSpec,
     WorkerLaunchContext,
     WorkerMetaContext,
 )
@@ -158,9 +160,9 @@ class _CellManager(Generic[SpecT]):
         assert self.actors is None
         self.generation += 1
         scheduling = self.spec.scheduling
+        actor_manager_cls = _ServeActorManager if isinstance(self.spec, ServeWorkerSpec) else _CommandActorManager
         self.actors = [
-            # TODO support Serve mode
-            _CommandActorManager(
+            actor_manager_cls(
                 manager=self.manager,
                 parent=self,
                 worker_in_cell_index=worker_in_cell_index,
@@ -341,6 +343,22 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
             await asyncio.wait_for(self.actor_handle.shutdown.remote(), timeout=_SHUTDOWN_TIMEOUT)
         except Exception as e:
             logger.warning(f"Graceful shutdown of {self=} failed ({e})")
+
+
+@dataclass
+class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
+    def _compute_remote_options(self) -> dict:
+        groups = self.spec.concurrency_groups
+        return {} if groups is None else dict(concurrency_groups=groups)
+
+    async def launch_actor(self) -> None:
+        self.actor_handle = self._create_actor(
+            load_function(self.spec.worker_class),
+            **self.spec.ctor_kwargs(self.launch_context),
+        )
+
+    async def post_setup(self) -> None:
+        pass
 
 
 async def _gather_or_raise(coros: list[Coroutine[Any, Any, None]]) -> None:
