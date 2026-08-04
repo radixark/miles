@@ -24,6 +24,10 @@ def has_full_schedule_config(train_parallel_config: dict | None) -> bool:
     return all(key in train_parallel_config for key in SCHEDULE_CONFIG_KEYS)
 
 
+def _calculate_workloads(step_lengths, args):
+    return [calculate_fwd_flops([sl], args) for sl in step_lengths]
+
+
 def build_dp_schedule(
     args: Any,
     train_parallel_config: dict,
@@ -39,11 +43,16 @@ def build_dp_schedule(
     vpp_size = train_parallel_config["vpp_size"] or 1
     mb_group = train_parallel_config["microbatch_group_size_per_vp_stage"]
 
-    # micro-batch count per step must divide evenly across ranks and, under VPP, mb groups.
+    # micro-batch size per step must divide evenly across dp and vpp
     align_to = dp_size * (mb_group if vpp_size > 1 else 1)
 
-    # Group sample positions by rollout id (first-occurrence order) so a rollout's
-    # samples always land in the same training step.
+    max_per_bin = None
+    if args.use_dynamic_batch_size:
+        assert args.max_tokens_per_gpu is not None
+        max_per_bin = args.max_tokens_per_gpu * cp_size
+
+    # Rollout can include multiple samples (compaction, subagent, fork, etc.)
+    # Samples in the same rollout should be trained in the same step, or dropped together.
     rollout_id_to_sample_index: dict[int, list[int]] = {}
     for sample_pos, rid in enumerate(rollout_indices):
         rollout_id_to_sample_index.setdefault(rid, []).append(sample_pos)
@@ -71,7 +80,7 @@ def build_dp_schedule(
     num_microbatches: list[int] = []
 
     step_start = 0
-    for step_num_rollouts in num_rollouts:
+    for step_i, step_num_rollouts in enumerate(num_rollouts):
         picked_rollouts = rollout_ids[step_start : step_start + step_num_rollouts]
         step_start += step_num_rollouts
         sample_indices = [pos for rid in picked_rollouts for pos in rollout_id_to_sample_index[rid]]
@@ -81,49 +90,54 @@ def build_dp_schedule(
             f"each step needs at least one sample per rank."
         )
 
-        # Pack the step's samples into micro-batches; step_micro_batches[k] holds local
-        # indices into step_lengths.
-        workloads = None
-        if not args.use_dynamic_batch_size:
+        balance_by_flops = getattr(args, "balance_by_flops", False)
+        # Shared by FLOPs-balanced packing and FLOPs-balanced distribution below.
+        workloads = _calculate_workloads(step_lengths, args) if balance_by_flops else None
+        if args.use_dynamic_batch_size:
+            # Pack under the token budget: first-fit, or FLOPs-balanced partitions under
+            # --balance-by-flops (which does not enforce the token cap per micro-batch).
+            if balance_by_flops:
+                total_tokens = sum(step_lengths)
+                micro_batch_count = max(1, (total_tokens + max_per_bin - 1) // max_per_bin)
+                if micro_batch_count >= len(step_lengths):
+                    step_micro_batches = [[i] for i in range(len(step_lengths))]
+                else:
+                    step_micro_batches = get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
+            else:
+                step_micro_batches = first_fit_decreasing_pack(step_lengths, max_per_bin)
+            # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
+            target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
+            if target != len(step_micro_batches):
+                expand_bins_by_splitting(step_micro_batches, target, step_lengths)
+                assert len(step_micro_batches) == target, (
+                    f"dynamic path: could only produce {len(step_micro_batches)} micro-batches after maximal "
+                    f"splitting; need {target}. step {step_i} has {len(sample_indices)} samples, below the "
+                    f"alignment threshold ({align_to})."
+                )
+        else:
+            # Fixed-size chunks of micro_batch_size samples.
             assert args.micro_batch_size is not None
             n = len(step_lengths)
             step_micro_batches = [
                 list(range(i, min(i + args.micro_batch_size, n))) for i in range(0, n, args.micro_batch_size)
             ]
-        elif getattr(args, "balance_by_flops", False):
-            assert args.max_tokens_per_gpu is not None
-            max_per_bin = args.max_tokens_per_gpu * cp_size
-            workloads = [calculate_fwd_flops([length], args) for length in step_lengths]
-            micro_batch_count = max(1, (sum(step_lengths) + max_per_bin - 1) // max_per_bin)
-            if micro_batch_count >= len(step_lengths):
-                step_micro_batches = [[i] for i in range(len(step_lengths))]
-            else:
-                # NOTE: FLOPs balancing does not enforce the token cap per micro-batch.
-                step_micro_batches = get_seqlen_balanced_partitions(workloads, micro_batch_count, equal_size=False)
-        else:
-            assert args.max_tokens_per_gpu is not None
-            step_micro_batches = first_fit_decreasing_pack(step_lengths, args.max_tokens_per_gpu * cp_size)
-
-        # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
-        target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
-        if target != len(step_micro_batches):
-            if not args.use_dynamic_batch_size:
+            if len(step_micro_batches) % align_to != 0:
                 raise AssertionError(
-                    f"static path: micro-batch count ({len(step_micro_batches)}) is not a multiple of {align_to}; "
-                    f"adjust the config so step_size % (dp_size * micro_batch_size * mb_group) == 0."
+                    f"static path: micro-batch count ({len(step_micro_batches)}) is not a multiple of "
+                    f"dp_size * mb_group ({align_to}); got "
+                    f"step_size={len(sample_indices)}, micro_batch_size={args.micro_batch_size}, "
+                    f"dp_size={dp_size}, mb_group={mb_group if vpp_size > 1 else 1}. "
+                    f"Splitting static micro-batches would break the fixed-size invariant; adjust the config "
+                    f"so step_size % (dp_size * micro_batch_size * mb_group) == 0."
                 )
-            expand_bins_by_splitting(step_micro_batches, target, step_lengths)
-            assert (
-                len(step_micro_batches) == target
-            ), f"could only produce {len(step_micro_batches)} micro-batches after maximal splitting; need {target}."
 
         num_microbatches.append(len(step_micro_batches) // dp_size)
 
         # Distribute the micro-batches across DP ranks, len(step_micro_batches) / dp_size each: strided
         # round-robin, or Karmarkar-Karp on micro-batch weights (tokens under --balance-data,
         # FLOPs under --balance-by-flops).
-        if args.balance_data or getattr(args, "balance_by_flops", False):
-            if workloads is not None:
+        if args.balance_data or balance_by_flops:
+            if balance_by_flops:
                 weights = [sum(workloads[i] for i in micro_batch) for micro_batch in step_micro_batches]
             else:
                 weights = [sum(step_lengths[i] for i in micro_batch) for micro_batch in step_micro_batches]
