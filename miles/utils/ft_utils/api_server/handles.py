@@ -95,10 +95,10 @@ class _ActorCellHandler(_CellHandler):
         return await self._worker_manager.get_cell_infos.remote(pool_ids=self._trainer_pool_ids)
 
     async def suspend(self, cell_id: str) -> None:
-        await self._group.stop_cell(cell_id)
+        await self._worker_manager.stop_cells.remote([cell_id])
 
     async def resume(self, cell_id: str) -> None:
-        self._group.start_cell(cell_id)
+        await self._worker_manager.start_cells.remote([cell_id])
 
     async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
         await self._worker_manager.inject_fault.remote(cell_id, mode=mode.value, worker_in_cell_index=sub_index)
