@@ -37,7 +37,7 @@ def _find_condition(status, type_: str):
 
 class TestComputeCellStatusAlive:
     def test_health_true_reports_healthy_true(self):
-        result = compute_cell_status(_make_alive_state(), TriState.TRUE)
+        result = compute_cell_status(_make_alive_state(), TriState.TRUE, workers_hash="pseudo-hash-0")
 
         assert result.phase == "Running"
         healthy = _find_condition(result, "Healthy")
@@ -45,7 +45,7 @@ class TestComputeCellStatusAlive:
         assert healthy.reason is None
 
     def test_health_false_reports_healthy_false_with_failed_reason(self):
-        result = compute_cell_status(_make_alive_state(), TriState.FALSE)
+        result = compute_cell_status(_make_alive_state(), TriState.FALSE, workers_hash="pseudo-hash-0")
 
         healthy = _find_condition(result, "Healthy")
         assert healthy.status == TriState.FALSE
@@ -54,7 +54,7 @@ class TestComputeCellStatusAlive:
     def test_health_unknown_reports_healthy_unknown_not_translated_to_true(self):
         """Regression: paused health checker reports UNKNOWN; previously this was
         silently translated to Healthy=TRUE, hiding the transient state from observers."""
-        result = compute_cell_status(_make_alive_state(), TriState.UNKNOWN)
+        result = compute_cell_status(_make_alive_state(), TriState.UNKNOWN, workers_hash="pseudo-hash-0")
 
         healthy = _find_condition(result, "Healthy")
         assert healthy.status == TriState.UNKNOWN
@@ -66,7 +66,7 @@ class TestComputeCellStatusOtherStates:
     def test_uninitialized_ignores_health_checker(self, health_status: TriState):
         state = StateAllocatedUninitialized(actor_handles=[_make_actor_handle_mock()])
 
-        result = compute_cell_status(state, health_status)
+        result = compute_cell_status(state, health_status, workers_hash="pseudo-hash-0")
 
         assert result.phase == "Running"
         healthy = _find_condition(result, "Healthy")
@@ -76,7 +76,7 @@ class TestComputeCellStatusOtherStates:
     def test_errored_always_reports_unhealthy(self, health_status: TriState):
         state = StateAllocatedErrored(actor_handles=[_make_actor_handle_mock()], indep_dp_info=_make_indep_dp_info())
 
-        result = compute_cell_status(state, health_status)
+        result = compute_cell_status(state, health_status, workers_hash="pseudo-hash-0")
 
         healthy = _find_condition(result, "Healthy")
         assert healthy.status == TriState.FALSE
@@ -141,3 +141,21 @@ class TestTrainerCellHealthCheckLiveness:
 
         await checker._check_fn()
         execute.assert_not_awaited()
+
+
+class TestComputeCellStatusGeneration:
+    @pytest.mark.parametrize(
+        "state_factory",
+        [
+            _make_alive_state,
+            lambda: StateAllocatedUninitialized(worker_handles=[_make_worker_handle_mock()]),
+            lambda: StateAllocatedErrored(
+                worker_handles=[_make_worker_handle_mock()], indep_dp_info=_make_indep_dp_info()
+            ),
+        ],
+    )
+    def test_a_status_is_stamped_with_the_generation_it_describes(self, state_factory):
+        """The api server joins this with a separately polled listing, so every branch must name its own process."""
+        result = compute_cell_status(state_factory(), TriState.TRUE, workers_hash="hash-7")
+
+        assert result.workers_hash == "hash-7"

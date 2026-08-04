@@ -17,7 +17,7 @@ from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.context_lock import ContextLock
-from miles.utils.ft_utils.api_server.handles import _RolloutCellHandler
+from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.ft_utils.mini_ft_controller import _compute_cell_snapshot, _MiniFTController
@@ -173,9 +173,11 @@ class _Harness:
             )
         }
         self.worker_manager = _FakeWorkerManager(cell_ids=_CELL_IDS, reconcile=self.controller._reconcile)
-        self.handler = _RolloutCellHandler(
+        self.handler = _CellHandler(
+            cell_type="rollout",
             worker_manager=self.worker_manager,
-            inference_controller=self.controller,
+            controller=self.controller,
+            pool_ids=[_POOL_ID],
         )
         self.ft_controller = _MiniFTController(
             get_cells=self._get_cell_snapshots,

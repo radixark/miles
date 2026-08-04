@@ -90,6 +90,7 @@ class TestGetCells:
                                 "lastTransitionTime": None,
                             },
                         ],
+                        "workers_hash": "pseudo-hash-0",
                     },
                 },
                 {
@@ -118,6 +119,7 @@ class TestGetCells:
                                 "lastTransitionTime": None,
                             },
                         ],
+                        "workers_hash": "pseudo-hash-0",
                     },
                 },
             ],
@@ -154,6 +156,7 @@ class TestGetCell:
                     },
                     {"type": "Healthy", "status": "True", "reason": None, "message": None, "lastTransitionTime": None},
                 ],
+                "workers_hash": "pseudo-hash-0",
             },
         }
 
@@ -263,7 +266,7 @@ class TestStartApiServerRegistration:
             args=make_rollout_args(),
             actor_model=make_mock_group(actor_cells if actor_cells is not None else []),
             inference_controller=MockInferenceController(
-                {cell_id: compute_pending_rollout_cell_status() for cell_id in cell_ids}
+                {cell_id: compute_pending_rollout_cell_status(workers_hash="pseudo-hash-0") for cell_id in cell_ids}
             ),
             port=18080,
             ft_components=ft_components,

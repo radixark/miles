@@ -116,6 +116,37 @@ class TestReconcile:
         assert [cell.cell_index for cell in group._cells] == [0, 1, 2]
 
 
+    async def test_each_status_carries_the_generation_it_describes(self):
+        """The api server joins this with a separately polled cell listing, so an unstamped status can mislead."""
+        group = _make_controller(num_cells=1, indep_dp=True)
+        await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0, workers_hash="hash-9"))
+        statuses = group.get_cell_statuses()
+
+        assert statuses[f"{_POOL_ID}-0"].workers_hash == "hash-9"
+
+    async def test_each_cell_is_stamped_with_its_own_generation(self):
+        """One cell relaunches without the others, so a stamp taken from a neighbour would clear the wrong verdict."""
+        group = _make_controller(num_cells=2, indep_dp=True)
+        await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0, workers_hash="hash-9"))
+        await group._reconcile(f"{_POOL_ID}-1", _make_cell_info(1, workers_hash="hash-10"))
+
+        statuses = group.get_cell_statuses()
+
+        assert (statuses[f"{_POOL_ID}-0"].workers_hash, statuses[f"{_POOL_ID}-1"].workers_hash) == (
+            "hash-9",
+            "hash-10",
+        )
+
+    async def test_a_relaunched_cell_reports_the_new_generation(self):
+        """The stamp is what tells the api server the previous process' verdict no longer applies."""
+        group = _make_controller(num_cells=1, indep_dp=True)
+        await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0, workers_hash="hash-9"))
+
+        await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0, workers_hash="hash-10"))
+
+        assert group.get_cell_statuses()[f"{_POOL_ID}-0"].workers_hash == "hash-10"
+
+
 class _AutoAdvancingClock:
     def __init__(self) -> None:
         self.now: float = 0.0

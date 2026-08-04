@@ -95,6 +95,7 @@ def _build_cell_json(
     name: str = "actor-0",
     healthy_status: str = "True",
     healthy_reason: str | None = None,
+    workers_hash: str = "hash-0",
 ) -> dict[str, Any]:
     return {
         "apiVersion": "miles.io/v1",
@@ -106,6 +107,7 @@ def _build_cell_json(
         "spec": {"suspend": False},
         "status": {
             "phase": "Running",
+            "workers_hash": workers_hash,
             "conditions": [
                 {"type": "Allocated", "status": "True"},
                 {"type": "Healthy", "status": healthy_status, "reason": healthy_reason},
@@ -152,7 +154,7 @@ def _make_cell_object(
     return Cell(
         metadata=CellMetadata(name=name, labels={}),
         spec=CellSpec(),
-        status=CellStatus(phase=phase, conditions=conditions),
+        status=CellStatus(phase=phase, conditions=conditions, workers_hash="pseudo-hash-0"),
     )
 
 
