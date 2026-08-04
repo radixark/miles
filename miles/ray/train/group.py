@@ -244,19 +244,28 @@ class RayTrainGroup:
     def _check_train_one_attempt(self, snapshot_alive_cells, results):
         outcomes = RayTrainGroup._compute_attempt_outcomes(snapshot_alive_cells, results)
         if not outcomes["normal"] and not outcomes["discarded"]:
-            log_structured(
-                logger.error, tag="ft", op="check", **outcomes, decision="retry", reason="all alive cells failed"
-            )
             cause = _first_exception(results)
-            raise self._make_all_cells_failed_error(
-                "All cells failed in this training attempt", cause=cause
-            ) from cause
+            error = self._make_all_cells_failed_error("All cells failed in this training attempt", cause=cause)
+            log_structured(
+                logger.error,
+                tag="ft",
+                op="check",
+                **outcomes,
+                decision="give_up" if isinstance(error, NonRetryableError) else "retry",
+                reason="all alive cells failed",
+            )
+            raise error from cause
 
         # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
         #       This may happen when some cells fails *after* exchanging gradients w/ others
         if outcomes["discarded"]:
             log_structured(
-                logger.warning, tag="ft", op="check", **outcomes, decision="retry", reason="discarded_should_retry"
+                logger.warning,
+                tag="ft",
+                op="check",
+                **outcomes,
+                decision="retry" if self._is_recoverable() else "give_up",
+                reason="discarded_should_retry",
             )
             raise ValueError("Exists DISCARDED_SHOULD_RETRY, thus need retry")
 
@@ -433,9 +442,9 @@ class RayTrainGroup:
     # ------------------------ internals for stop/start ------------------------
 
     async def _refresh_cells(self, *, rollout_id: int) -> None:
-        snapshotted_pending_indices = [c.cell_index for c in self._cells if c.is_pending]
+        snapshotted_healing_indices = [c.cell_index for c in self._cells if c.is_uninitialized]
         snapshotted_alive_indices = [c.cell_index for c in self._cells if c.is_alive]
-        will_alive_indices = sorted(list(set(snapshotted_pending_indices + snapshotted_alive_indices)))
+        will_alive_indices = sorted(list(set(snapshotted_healing_indices + snapshotted_alive_indices)))
         all_states = [(c.cell_index, c.state_name) for c in self._cells]
         log_structured(
             logger.info,
@@ -444,7 +453,7 @@ class RayTrainGroup:
             phase="start",
             rollout=rollout_id,
             alive=snapshotted_alive_indices,
-            pending=snapshotted_pending_indices,
+            healing=snapshotted_healing_indices,
             all_states=all_states,
             quorum=self._indep_dp_quorum_id,
         )
@@ -457,8 +466,8 @@ class RayTrainGroup:
             for cell in self._cells
             if cell.cell_index in snapshotted_alive_indices
         )
-        exists_pending_cell = len(snapshotted_pending_indices) != 0
-        needs_reconfigure = exists_pending_cell or exists_alive_cell_changed_config
+        exists_healing_cell = len(snapshotted_healing_indices) != 0
+        needs_reconfigure = exists_healing_cell or exists_alive_cell_changed_config
         if not needs_reconfigure:
             log_structured(
                 logger.info,
@@ -467,14 +476,14 @@ class RayTrainGroup:
                 phase="decision",
                 rollout=rollout_id,
                 needs_reconfigure=False,
-                reason="alive_config_unchanged,no_pending",
+                reason="alive_config_unchanged,no_healing",
                 quorum=self._indep_dp_quorum_id,
             )
             return
         reason = "+".join(
             r
             for r, on in [
-                ("pending_cell", exists_pending_cell),
+                ("healing_cell", exists_healing_cell),
                 ("alive_config_changed", exists_alive_cell_changed_config),
             ]
             if on
@@ -495,16 +504,10 @@ class RayTrainGroup:
         # Step 1: Bump states
         self._indep_dp_quorum_id += 1
 
-        # Step 2: Allocate pending actors
-        # We currently do not consider this phase to have errors (because it does not touch GPUs)
-        await asyncio.gather(
-            *[c.allocate_for_pending() for c in self._cells if c.cell_index in snapshotted_pending_indices]
-        )
-
-        # Step 3: Cooperatively prepare
+        # Step 2: Cooperatively prepare
         src_cell_index = snapshotted_alive_indices[0]  # TODO make it balanced, and support multi-src-to-one-dst
         src_alive_rank = will_alive_indices.index(src_cell_index)
-        ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_pending_indices]
+        ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_healing_indices]
 
         with self._paused_health_checkers():
             coop_prepare_outputs = await asyncio.gather(
@@ -521,7 +524,7 @@ class RayTrainGroup:
                             indep_dp_info=self._compute_indep_dp_info(
                                 c.cell_index, alive_cell_indices=will_alive_indices
                             ),
-                            recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_pending_indices else None,
+                            recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_healing_indices else None,
                         )
                     )
                     for c in self._cells
@@ -542,13 +545,13 @@ class RayTrainGroup:
                 rollout=rollout_id,
                 quorum=self._indep_dp_quorum_id,
                 alive=will_alive_indices,
-                healed=snapshotted_pending_indices,
+                healed=snapshotted_healing_indices,
                 reconfigured=True,
             )
             self._log_reconfigure_event(
                 rollout_id=rollout_id,
-                src_cell_index=src_cell_index if snapshotted_pending_indices else None,
-                healed_cell_indices=snapshotted_pending_indices,
+                src_cell_index=src_cell_index if snapshotted_healing_indices else None,
+                healed_cell_indices=snapshotted_healing_indices,
                 alive_cell_indices_after=will_alive_indices,
             )
         else:

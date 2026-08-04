@@ -207,14 +207,12 @@ class MockRayTrainCell:
         *,
         phase: str = "Running",
         conditions: list[dict[str, str | None]] | None = None,
-        is_stopped: bool = False,
     ) -> None:
         self._phase = phase
         self._conditions = conditions or [
             {"type": "Allocated", "status": "True"},
             {"type": "Healthy", "status": "True"},
         ]
-        self._is_stopped = is_stopped
 
     @property
     def phase(self) -> str:
@@ -223,10 +221,6 @@ class MockRayTrainCell:
     @property
     def conditions(self) -> list[dict[str, str | None]]:
         return self._conditions
-
-    @property
-    def is_stopped(self) -> bool:
-        return self._is_stopped
 
     def cell_status(self) -> CellStatus:
         from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus

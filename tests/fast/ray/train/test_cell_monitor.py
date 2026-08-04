@@ -9,7 +9,6 @@ from miles.ray.train.cell_state import (
     StateAllocatedErrored,
     StateAllocatedUninitialized,
     StatePending,
-    StateStopped,
 )
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch, SimpleHealthCheckerConfig
@@ -94,12 +93,6 @@ class TestComputeCellStatusOtherStates:
         assert result.phase == "Pending"
         allocated = _find_condition(result, "Allocated")
         assert allocated.status == TriState.FALSE
-        assert all(c.type != "Healthy" for c in result.conditions)
-
-    def test_stopped_reports_suspended_phase_no_healthy_condition(self):
-        result = compute_cell_status(StateStopped(), TriState.UNKNOWN)
-
-        assert result.phase == "Suspended"
         assert all(c.type != "Healthy" for c in result.conditions)
 
 

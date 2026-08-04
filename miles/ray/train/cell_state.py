@@ -30,8 +30,4 @@ class StateAllocatedErrored(StateAllocatedBase):
     indep_dp_info: IndepDPInfo | None
 
 
-class StateStopped(StateBase):
-    pass
-
-
-CellState = StatePending | StateAllocatedUninitialized | StateAllocatedAlive | StateAllocatedErrored | StateStopped
+CellState = StatePending | StateAllocatedUninitialized | StateAllocatedAlive | StateAllocatedErrored
