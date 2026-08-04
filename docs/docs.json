@@ -272,6 +272,7 @@
      "developer/index",
      "developer/contributor-guide",
      "developer/architecture",
+     "developer/reconcile-loop",
      "developer/versions",
      "developer/debug",
      {
