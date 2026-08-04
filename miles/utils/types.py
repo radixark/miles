@@ -28,6 +28,9 @@ class Sample:
 
     group_index: int | None = None
     index: int | None = None
+    # Rollout execution id; None falls back to ``index``. Compact / subagent
+    # siblings must share it so the rollout is counted once.
+    rollout_id: int | None = None
     # prompt
     prompt: str | list[dict[str, str]] = ""
     tokens: list[int] = field(default_factory=list)

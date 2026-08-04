@@ -178,10 +178,21 @@ def get_seqlen_balanced_partitions(seqlen_list: list[int], k_partitions: int, eq
 
 
 def first_fit_pack(total_lengths, max_tokens_per_bin):
-    """First-fit bin packing; bins hold indices, oversized samples land alone."""
+    """First-fit bin packing in arrival order; bins hold indices, oversized samples land alone."""
+    return _first_fit(range(len(total_lengths)), total_lengths, max_tokens_per_bin)
+
+
+def first_fit_decreasing_pack(total_lengths, max_tokens_per_bin):
+    """First-fit over indices sorted by length descending (FFD); never more bins than first-fit."""
+    order = sorted(range(len(total_lengths)), key=lambda i: -total_lengths[i])
+    return _first_fit(order, total_lengths, max_tokens_per_bin)
+
+
+def _first_fit(order, total_lengths, max_tokens_per_bin) -> list[list[int]]:
     bins: list[list[int]] = []
     bin_sums: list[int] = []
-    for idx, length in enumerate(total_lengths):
+    for idx in order:
+        length = total_lengths[idx]
         for j in range(len(bins)):
             if bin_sums[j] + length <= max_tokens_per_bin:
                 bins[j].append(idx)

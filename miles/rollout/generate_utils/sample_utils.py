@@ -146,6 +146,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             Sample,
             group_index=_merge_equal_value("group_index"),
             index=_merge_equal_value("index"),
+            rollout_id=_merge_equal_value("rollout_id"),
             prompt=b.prompt,
             tokens=b.tokens,
             multimodal_inputs=_merge_equal_value("multimodal_inputs"),

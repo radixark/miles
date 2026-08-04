@@ -53,6 +53,10 @@ def get_rollout_data(
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
     ]
+    if "rollout_mask_sums" in rollout_data:
+        rollout_data["rollout_mask_sums"] = torch.tensor(
+            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=torch.cuda.current_device()
+        )
     if args.enable_witness:
         seq_witness_ids = rollout_data.pop("seq_witness_ids")
         rollout_data["witness_ids"] = [
@@ -408,6 +412,13 @@ class DataIterator:
         """Reset internal offset to the start and return self."""
         self.offset = 0
         return self
+
+
+def get_num_rollouts(args: Namespace, rollout_data: RolloutBatch, num_steps: int) -> list[int]:
+    """Per-step rollout counts (total across DP); one entry per training step."""
+    if "num_rollouts" in rollout_data:
+        return rollout_data["num_rollouts"]
+    return [rollout_data.get("dynamic_global_batch_size", args.global_batch_size)] * num_steps
 
 
 def get_data_iterator(
