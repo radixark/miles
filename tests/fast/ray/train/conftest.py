@@ -76,8 +76,8 @@ def make_cell(
         args=MagicMock(),
         role="actor",
         with_ref=False,
+        cell_id=f"trainer-actor-{cell_index}",
         cell_index=cell_index,
-        pool="trainer-actor",
         rollout_executor=rollout_executor,
         health_checker=NoopHealthChecker(),
     )

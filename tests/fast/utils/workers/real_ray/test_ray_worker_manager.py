@@ -324,7 +324,7 @@ class TestWorkerInfosOnRealRay:
         )
         records = probe.wait_for_records(4)
 
-        infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine", 1))
+        infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine-1"))
 
         assert [info.name for info in infos] == ["engine-1-0", "engine-1-1"]
         assert [info.generation for info in infos] == [1, 1]
@@ -342,7 +342,7 @@ class TestWorkerDeathOnRealRay:
         probe = worker_probe_factory()
         manager_factory([make_command_spec("engine", num_workers_per_cell=2, launch_command=probe.launch_command)])
         probe.wait_for_records(2)
-        infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine", 0))
+        infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine-0"))
 
         ray.get(infos[0].actor_handle.kill_subprocess.remote())
 

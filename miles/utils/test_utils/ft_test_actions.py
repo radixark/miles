@@ -19,8 +19,8 @@ class FTTestAction(FrozenStrictBaseModel):
     rank: int = 0  # for actor-level actions: which rank within the cell
     attempt: int = 0  # for actor-level actions: which attempt (0 = first try)
 
-    def resolve_cell_index(self, num_cells: int) -> int:
-        return self.cell_index if self.cell_index >= 0 else num_cells - 1
+    def resolve_cell_id(self, cell_ids: list[str]) -> str:
+        return cell_ids[self.cell_index]
 
 
 _ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestAction])
@@ -52,34 +52,34 @@ class FTTestActionControllerExecutor:
     async def run_after_step(self, rollout_id: int) -> None:
         for action in self._actions:
             if action.at_rollout == rollout_id:
-                cell_index = action.resolve_cell_index(self._controller.num_cells)
-                logger.info("FT test action: %s cell %d after rollout %d", action.action, cell_index, rollout_id)
+                cell_id = action.resolve_cell_id(self._controller.cell_ids)
+                logger.info("FT test action: %s cell %s after rollout %d", action.action, cell_id, rollout_id)
 
                 if action.action == "stop_cell_at_end":
-                    await self._controller.stop_cell(cell_index)
+                    await self._controller.stop_cell(cell_id)
                 elif action.action == "start_cell_at_end":
-                    self._controller.start_cell(cell_index)
+                    self._controller.start_cell(cell_id)
 
 
 class FTTestActionActorExecutor:
-    def __init__(self, *, actions: list[FTTestAction], cell_index: int, num_cells: int, rank: int) -> None:
+    def __init__(self, *, actions: list[FTTestAction], cell_id: str, cell_ids: list[str], rank: int) -> None:
         self._actions = actions
-        self._cell_index = cell_index
-        self._num_cells = num_cells
+        self._cell_id = cell_id
+        self._cell_ids = cell_ids
         self._rank = rank
 
     @staticmethod
     def from_args(
         args: object,
         *,
-        cell_index: int,
-        num_cells: int,
+        cell_id: str,
+        cell_ids: list[str],
         rank: int,
     ) -> "FTTestActionActorExecutor":
         return FTTestActionActorExecutor(
             actions=_load_actions(args, _ACTOR_ACTIONS),
-            cell_index=cell_index,
-            num_cells=num_cells,
+            cell_id=cell_id,
+            cell_ids=cell_ids,
             rank=rank,
         )
 
@@ -88,12 +88,12 @@ class FTTestActionActorExecutor:
             if (
                 action.at_rollout == rollout_id
                 and action.attempt == attempt
-                and action.resolve_cell_index(self._num_cells) == self._cell_index
+                and action.resolve_cell_id(self._cell_ids) == self._cell_id
                 and action.rank == self._rank
             ):
                 msg = (
                     f"FT test action: crash_before_allreduce at rollout {rollout_id} "
-                    f"attempt {attempt} cell {self._cell_index} rank {self._rank} — calling os._exit(1)"
+                    f"attempt {attempt} cell {self._cell_id} rank {self._rank} — calling os._exit(1)"
                 )
                 logger.warning(msg)
                 print(msg, flush=True)
