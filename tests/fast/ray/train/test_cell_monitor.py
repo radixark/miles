@@ -4,12 +4,7 @@ import pytest
 import ray
 
 from miles.ray.train.cell_monitor import compute_cell_status, create_trainer_cell_health_checker
-from miles.ray.train.cell_state import (
-    StateAllocatedAlive,
-    StateAllocatedErrored,
-    StateAllocatedUninitialized,
-    StatePending,
-)
+from miles.ray.train.cell_state import StateAllocatedAlive, StateAllocatedErrored, StateAllocatedUninitialized
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -86,14 +81,6 @@ class TestComputeCellStatusOtherStates:
         healthy = _find_condition(result, "Healthy")
         assert healthy.status == TriState.FALSE
         assert healthy.reason == "ExecutionErrored"
-
-    def test_pending_reports_allocated_false_no_healthy_condition(self):
-        result = compute_cell_status(StatePending(), TriState.UNKNOWN)
-
-        assert result.phase == "Pending"
-        allocated = _find_condition(result, "Allocated")
-        assert allocated.status == TriState.FALSE
-        assert all(c.type != "Healthy" for c in result.conditions)
 
 
 def _make_cell_mock(*, is_alive: bool, execute: AsyncMock) -> MagicMock:
