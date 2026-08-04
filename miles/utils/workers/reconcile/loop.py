@@ -8,6 +8,7 @@ from typing import Any
 
 from miles.utils.test_utils.clock import Clock, RealClock
 from miles.utils.workers.reconcile.object_store import KeyMapFn, ObjectStore
+from miles.utils.workers.reconcile.retry_scheduler import RetryScheduler
 from miles.utils.workers.reconcile.source_event import ParentKey, SourceWatchFn
 from miles.utils.workers.reconcile.source_stream_driver import SourceStreamDriver
 from miles.utils.workers.reconcile.work_queue import WorkQueue
@@ -34,6 +35,8 @@ class ReconcileLoop:
         source: SourceWatchFn,
         reconcile: ReconcileFn,
         key_map: KeyMapFn | None = None,
+        failure_base_delay: float = 1.0,
+        failure_max_delay: float = 60.0,
         source_retry_delay: float = 1.0,
         clock: Clock | None = None,
     ) -> None:
@@ -44,6 +47,12 @@ class ReconcileLoop:
 
         self._store = ObjectStore(key_map=key_map)
         self._queue: WorkQueue[ParentKey] = WorkQueue()
+        self._retry: RetryScheduler[ParentKey] = RetryScheduler(
+            on_retry=self._queue.add,
+            failure_base_delay=failure_base_delay,
+            failure_max_delay=failure_max_delay,
+            clock=self._clock,
+        )
         self._driver = SourceStreamDriver(
             source=source,
             store=self._store,
@@ -84,6 +93,7 @@ class ReconcileLoop:
         )
 
         self._queue.shutdown()
+        await self._retry.shutdown()
 
         for task in self._tasks:
             task.cancel()
@@ -106,5 +116,7 @@ class ReconcileLoop:
                 return
             try:
                 await self._reconcile(parent_key)
+                self._retry.note_success(parent_key)
             except Exception:
                 logger.error(f"ReconcileLoop reconcile failed {parent_key=}", exc_info=True)
+                self._retry.note_failure(parent_key)
