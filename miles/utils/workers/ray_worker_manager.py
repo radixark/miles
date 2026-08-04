@@ -90,8 +90,8 @@ class RayWorkerManager:
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
         return {name: [a.self_addrs for c in g.cells if c.alive for a in c.actors] for name, g in self._pools.items()}
 
-    def get_worker_infos(self, pool_id: str, cell_index: int) -> list[WorkerInfo]:
-        cell = self._pools[pool_id].cells[cell_index]
+    def get_worker_infos(self, cell_id: str) -> list[WorkerInfo]:
+        cell = self._find_cell(cell_id)
         return [
             WorkerInfo(
                 name=actor.name,

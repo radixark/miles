@@ -30,8 +30,9 @@ class RayWorkerProvider(BaseWorkerProvider):
     def create(cls, *, pool_ids: list[str] | None = None) -> "RayWorkerProvider":
         return cls(worker_manager_handle=RayWorkerManager.get_handle(), pool_ids=pool_ids)
 
-    def get_worker_infos(self, *, pool: str, cell_index: int) -> list[WorkerInfo]:
-        return ray.get(self._worker_manager_handle.get_worker_infos.remote(pool, cell_index))
+    def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
+        refs = [self._worker_manager_handle.get_worker_infos.remote(cell_id) for cell_id in cell_ids]
+        return ray.get(refs)
 
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return await self._worker_manager_handle.get_worker_addrs.remote(worker_name)
