@@ -106,7 +106,7 @@ def build_dp_schedule(
     num_microbatches: list[int] = []
 
     step_start = 0
-    for step_num_rollouts in num_rollouts:
+    for step_i, step_num_rollouts in enumerate(num_rollouts):
         picked_rollouts = rollout_ids[step_start : step_start + step_num_rollouts]
         step_start += step_num_rollouts
         sample_indices = [pos for rid in picked_rollouts for pos in rollout_id_to_sample_index[rid]]
@@ -129,15 +129,22 @@ def build_dp_schedule(
         # Grow the micro-batch count to a multiple of align_to by splitting multi-sample micro-batches.
         target = max((len(step_micro_batches) + align_to - 1) // align_to * align_to, align_to)
         if target != len(step_micro_batches):
-            if not args.use_dynamic_batch_size:
-                raise AssertionError(
-                    f"static path: micro-batch count ({len(step_micro_batches)}) is not a multiple of {align_to}; "
-                    f"adjust the config so step_size % (dp_size * micro_batch_size * mb_group) == 0."
+            if args.use_dynamic_batch_size:
+                expand_bins_by_splitting(step_micro_batches, target, step_lengths)
+                assert len(step_micro_batches) == target, (
+                    f"dynamic path: could only produce {len(step_micro_batches)} micro-batches after maximal "
+                    f"splitting; need {target}. step {step_i} has {len(sample_indices)} samples, below the "
+                    f"alignment threshold ({align_to})."
                 )
-            expand_bins_by_splitting(step_micro_batches, target, step_lengths)
-            assert (
-                len(step_micro_batches) == target
-            ), f"could only produce {len(step_micro_batches)} micro-batches after maximal splitting; need {target}."
+            else:
+                raise AssertionError(
+                    f"static path: micro-batch count ({len(step_micro_batches)}) is not a multiple of "
+                    f"dp_size * mb_group ({align_to}); got "
+                    f"step_size={len(sample_indices)}, micro_batch_size={args.micro_batch_size}, "
+                    f"dp_size={dp_size}, mb_group={mb_group if vpp_size > 1 else 1}. "
+                    f"Splitting static micro-batches would break the fixed-size invariant; adjust the config "
+                    f"so step_size % (dp_size * micro_batch_size * mb_group) == 0."
+                )
 
         num_microbatches.append(len(step_micro_batches) // dp_size)
 
