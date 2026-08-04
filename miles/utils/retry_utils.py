@@ -17,6 +17,10 @@ _DEFAULT_JITTER_RATIO = 0.1
 _T = TypeVar("_T")
 
 
+class NonRetryableError(Exception):
+    pass
+
+
 async def retry(
     fn: Callable[[int], Awaitable[Any]],
     *,
@@ -35,6 +39,8 @@ async def retry(
         try:
             await fn(attempt)
             return
+        except NonRetryableError:
+            raise
         except Exception:
             attempt += 1
             if max_attempts is not None and attempt >= max_attempts:
