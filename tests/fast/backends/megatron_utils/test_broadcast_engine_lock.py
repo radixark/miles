@@ -93,6 +93,7 @@ class TestUpdateWeightUnderTheEngineLock:
             _model_update_groups=MagicMock(name="nccl_group"),
             weight_version=7,
             rollout_engines=[MagicMock(name="engine")],
+            _weight_update_selector="all",
         )
 
     @staticmethod
