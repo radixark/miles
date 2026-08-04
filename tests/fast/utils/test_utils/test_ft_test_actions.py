@@ -1,6 +1,7 @@
 import json
 import os
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -78,21 +79,28 @@ def test_load_actions_rejects_invalid_action_literal() -> None:
 
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor, FTTestActionControllerExecutor
 
-
 _CELL_IDS = ["trainer-actor-0", "trainer-actor-1", "trainer-actor-2"]
 
 
 class FakeController:
     def __init__(self, num_cells: int) -> None:
         self.cell_ids = _CELL_IDS[:num_cells]
+
+
+class FakeRemoteMethod:
+    def __init__(self, sink: list[str]) -> None:
+        self._sink = sink
+
+    async def remote(self, cell_ids: list[str]) -> None:
+        self._sink.extend(cell_ids)
+
+
+class FakeWorkerManager:
+    def __init__(self) -> None:
         self.stopped: list[str] = []
         self.started: list[str] = []
-
-    async def stop_cell(self, cell_id: str) -> None:
-        self.stopped.append(cell_id)
-
-    def start_cell(self, cell_id: str) -> None:
-        self.started.append(cell_id)
+        self.stop_cells = FakeRemoteMethod(self.stopped)
+        self.start_cells = FakeRemoteMethod(self.started)
 
 
 class TestResolveCellId:
@@ -115,63 +123,73 @@ class TestResolveCellId:
 class TestRunAfterStep:
     @pytest.mark.asyncio
     async def test_stop_cell_fires_on_matching_rollout(self):
-        """stop_cell_at_end triggers controller.stop_cell with the resolved cell id on its rollout."""
+        """stop_cell_at_end triggers the worker manager with the resolved cell id on its rollout."""
         controller = FakeController(num_cells=3)
+        manager = FakeWorkerManager()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
         executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
 
-        await executor.run_after_step(5)
+        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
+            await executor.run_after_step(5)
 
-        assert controller.stopped == ["trainer-actor-1"]
-        assert controller.started == []
+        assert manager.stopped == ["trainer-actor-1"]
+        assert manager.started == []
 
     @pytest.mark.asyncio
     async def test_no_action_on_non_matching_rollout(self):
         """run_after_step does nothing when no action's at_rollout matches the given rollout."""
         controller = FakeController(num_cells=3)
+        manager = FakeWorkerManager()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
         executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
 
-        await executor.run_after_step(4)
+        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
+            await executor.run_after_step(4)
 
-        assert controller.stopped == []
-        assert controller.started == []
+        assert manager.stopped == []
+        assert manager.started == []
 
     @pytest.mark.asyncio
     async def test_start_cell_with_default_index_resolves_to_last_cell(self):
-        """start_cell_at_end with cell_index -1 calls controller.start_cell on the last cell."""
+        """start_cell_at_end with cell_index -1 calls the worker manager on the last cell."""
         controller = FakeController(num_cells=3)
+        manager = FakeWorkerManager()
         action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_index=-1)
         executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
 
-        await executor.run_after_step(2)
+        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
+            await executor.run_after_step(2)
 
-        assert controller.started == ["trainer-actor-2"]
-        assert controller.stopped == []
+        assert manager.started == ["trainer-actor-2"]
+        assert manager.stopped == []
 
     @pytest.mark.asyncio
     async def test_two_actions_same_rollout_both_fire(self):
         """Two actions sharing the same rollout both dispatch to their respective controller methods."""
         controller = FakeController(num_cells=3)
+        manager = FakeWorkerManager()
         stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_index=0)
         start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_index=2)
         executor = FTTestActionControllerExecutor(actions=[stop_action, start_action], controller=controller)
 
-        await executor.run_after_step(7)
+        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
+            await executor.run_after_step(7)
 
-        assert controller.stopped == ["trainer-actor-0"]
-        assert controller.started == ["trainer-actor-2"]
+        assert manager.stopped == ["trainer-actor-0"]
+        assert manager.started == ["trainer-actor-2"]
 
     @pytest.mark.asyncio
     async def test_empty_actions_is_noop(self):
         """An executor with no actions performs no controller calls."""
         controller = FakeController(num_cells=3)
+        manager = FakeWorkerManager()
         executor = FTTestActionControllerExecutor(actions=[], controller=controller)
 
-        await executor.run_after_step(5)
+        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
+            await executor.run_after_step(5)
 
-        assert controller.stopped == []
-        assert controller.started == []
+        assert manager.stopped == []
+        assert manager.started == []
 
 
 _TWO_CELL_IDS = _CELL_IDS[:2]

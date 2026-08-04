@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -89,24 +88,22 @@ class TestActorCellHandler:
         assert cell.status.phase == "Pending"
 
     @pytest.mark.asyncio
-    async def test_suspend_delegates_to_the_group(self) -> None:
-        """The group must see the stop so its state machine stays in sync."""
-        handler, group, _manager = _make_actor_handler()
-        group.stop_cell = AsyncMock()
+    async def test_suspend_stops_the_cell_in_the_worker_manager(self) -> None:
+        """The manager owns the processes, so suspension must go through it, not the controller."""
+        handler, _group, manager = _make_actor_handler()
 
         await handler.suspend(ACTOR_CELL_ID)
 
-        group.stop_cell.assert_awaited_once_with(ACTOR_CELL_ID)
+        assert manager.stopped_cells == [[ACTOR_CELL_ID]]
 
     @pytest.mark.asyncio
-    async def test_resume_delegates_to_the_group(self) -> None:
-        """Resuming marks the cell pending; the actual restart happens in train."""
-        handler, group, _manager = _make_actor_handler()
-        group.start_cell = MagicMock()
+    async def test_resume_starts_the_cell_in_the_worker_manager(self) -> None:
+        """Resume relaunches the cell, which reconcile then observes as a new generation."""
+        handler, _group, manager = _make_actor_handler()
 
         await handler.resume(ACTOR_CELL_ID)
 
-        group.start_cell.assert_called_once_with(ACTOR_CELL_ID)
+        assert manager.started_cells == [[ACTOR_CELL_ID]]
 
     @pytest.mark.asyncio
     async def test_injection_is_forwarded_to_the_worker_manager(self) -> None:
