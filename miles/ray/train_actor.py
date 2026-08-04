@@ -43,8 +43,6 @@ class TrainRayActor:
         args,
         world_size: int,
         rank: int,
-        master_addr,
-        master_port,
         indep_dp_store_addr: str,
         role: Literal["actor", "critic"],
         cell_index: int,
@@ -58,14 +56,7 @@ class TrainRayActor:
         self._world_size = world_size
         self._rank = rank
         self._indep_dp_store_addr = indep_dp_store_addr
-        if master_addr:
-            self.master_addr, self.master_port = master_addr, master_port
-        else:
-            self.master_addr = get_current_node_ip()
-            self.master_port = get_free_port(start_port=random.randint(20000, 21000))
 
-        os.environ["MASTER_ADDR"] = self.master_addr
-        os.environ["MASTER_PORT"] = str(self.master_port)
         os.environ["WORLD_SIZE"] = str(self._world_size)
         os.environ["RANK"] = str(self._rank)
         # TODO: currently this doesn't work as ray has already set torch.cuda.device_count().
@@ -75,8 +66,12 @@ class TrainRayActor:
 
         object_store.init_instance(args)
 
-    def get_master_addr_and_port(self):
-        return self.master_addr, self.master_port
+    def propose_master_addr_and_port(self) -> tuple[str, int]:
+        return get_current_node_ip(), get_free_port(start_port=random.randint(20000, 21000))
+
+    def configure_master_addr_and_port(self, *, master_addr: str, master_port: int) -> None:
+        os.environ["MASTER_ADDR"] = master_addr
+        os.environ["MASTER_PORT"] = str(master_port)
 
     # TODO mv the args into ctor
     def init(self, args, role, with_ref=False, with_opd_teacher=False):
