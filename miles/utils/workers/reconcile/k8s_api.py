@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, Protocol
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 _CURSOR_REJECTED_CODES = (410, 504)
 _CURSOR_REJECTED_REASONS = ("Expired", "Gone")
 
+EVENT_TYPE_ADDED = "ADDED"
+EVENT_TYPE_MODIFIED = "MODIFIED"
+EVENT_TYPE_DELETED = "DELETED"
+EVENT_TYPE_BOOKMARK = "BOOKMARK"
 EVENT_TYPE_ERROR = "ERROR"
 
 
@@ -34,6 +38,14 @@ class PodWatchEvent(FrozenStrictBaseModel):
             resource_version=_read_resource_version(obj),
             rejects_cursor=event_type == EVENT_TYPE_ERROR and _status_rejects_cursor(obj),
         )
+
+
+class KubernetesPodApi(Protocol):
+    async def list_pods(self, *, namespace: str, label_selector: str) -> PodListPage: ...
+
+    def stream_pods(
+        self, *, namespace: str, label_selector: str, resource_version: str, timeout_seconds: int
+    ) -> AsyncGenerator[PodWatchEvent, None]: ...
 
 
 class KubernetesAsyncioPodApi:
