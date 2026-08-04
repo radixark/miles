@@ -133,8 +133,6 @@ class SGLangEngine(RayActor):
         base_gpu_id: int | None = None,
         sglang_overrides: dict | None = None,
         num_gpus_per_engine: int | None = None,
-        pg_id: str | None = None,
-        pg_bundles: list | None = None,
     ):
         self.args = args
         self.rank = rank
@@ -142,8 +140,6 @@ class SGLangEngine(RayActor):
         self.base_gpu_id = base_gpu_id
         self.sglang_overrides = sglang_overrides or {}
         self.num_gpus_per_engine = num_gpus_per_engine
-        self.pg_id = pg_id
-        self.pg_bundles = pg_bundles
         self._scheduler_actors = []
 
     def get_topology_info(self) -> dict:
@@ -255,12 +251,6 @@ class SGLangEngine(RayActor):
         if use_rdt:
             server_args_dict["use_ray"] = True
             server_args_dict["enable_rdt_weight_sync"] = True
-            # The mp.Process child loses the PG context and would auto-create a
-            # second PG, double-booking the rollout GPUs. It is a separate Ray job,
-            # so pass the PG by global ID rather than by name.
-            if self.pg_id and self.pg_bundles:
-                os.environ["MILES_RDT_PG_ID"] = self.pg_id
-                os.environ["MILES_RDT_PG_BUNDLES"] = ",".join(str(b) for b in self.pg_bundles)
         logger.info(
             f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}"
             f"{' (use_ray=True for RDT)' if use_rdt else ''}"
