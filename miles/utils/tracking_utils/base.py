@@ -18,11 +18,17 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
+from miles.utils.workers.types import ClusterBackend
+
 logger = logging.getLogger(__name__)
 
 
 class TrackingBackend(ABC):
     # Interface every logging backend must satisfy.
+
+    @classmethod
+    def is_supported(cls, args) -> bool:
+        return True
 
     @abstractmethod
     def init(self, args, *, primary: bool = True, **kwargs) -> None: ...
@@ -120,6 +126,10 @@ class PrometheusBackend(TrackingBackend):
     # Wraps the existing Ray-actor based prometheus collector. The actor lifetime is
     # tied to the Ray job, so finish() is intentionally a no-op.
 
+    @classmethod
+    def is_supported(cls, args) -> bool:
+        return ClusterBackend(args.cluster_backend) is not ClusterBackend.KUBERNETES
+
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
         from .prometheus_utils import init_prometheus
 
@@ -168,11 +178,15 @@ class TrackingManager:
 
     def init(self, args, *, primary: bool = True, **kwargs) -> None:
         for name, (cls, flag) in self._registry.items():
-            if getattr(args, flag, False):
-                logger.info("Initialising tracking backend: %s", name)
-                backend = cls()
-                backend.init(args, primary=primary, **kwargs)
-                self._backends.append(backend)
+            if not getattr(args, flag, False):
+                continue
+            if not cls.is_supported(args):
+                logger.warning("Skipping tracking backend %s: unsupported on this cluster backend", name)
+                continue
+            logger.info("Initialising tracking backend: %s", name)
+            backend = cls()
+            backend.init(args, primary=primary, **kwargs)
+            self._backends.append(backend)
 
     def log(self, metrics: dict[str, Any], step: int | None = None, step_key: str | None = None) -> None:
         for backend in self._backends:
