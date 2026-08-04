@@ -76,7 +76,7 @@ class RayTrainCell:
 
     async def set_rollout_executor(self):
         if (executor := self.rollout_executor) is not None:
-            return await self.execute("set_rollout_executor", executor)
+            return await self.execute("set_rollout_executor", rollout_executor=executor)
         return []
 
     # ------------------------ API :: cooperatively prepare ------------------------
@@ -223,10 +223,9 @@ class RayTrainCell:
 
     # ------------------------ API :: directly forward calls to actors ------------------------
 
-    async def execute(self, fn_name: str, *args, kill_on_failure: bool = True, **kwargs) -> list:
+    async def execute(self, fn_name: str, *, kill_on_failure: bool = True, **kwargs) -> list:
         return await self._execute_raw(
             fn_name,
-            compute_args=lambda _: args,
             compute_kwargs=lambda _: kwargs,
             kill_on_failure=kill_on_failure,
         )
@@ -234,7 +233,6 @@ class RayTrainCell:
     async def _execute_raw(
         self,
         fn_name: str,
-        compute_args,
         compute_kwargs,
         kill_on_failure: bool = True,
     ) -> list:
@@ -245,10 +243,7 @@ class RayTrainCell:
         start = time.monotonic()
         try:
             result = await asyncio.gather(
-                *[
-                    getattr(actor, fn_name).remote(*compute_args(i), **compute_kwargs(i))
-                    for i, actor in enumerate(handles)
-                ]
+                *[getattr(actor, fn_name).remote(**compute_kwargs(i)) for i, actor in enumerate(handles)]
             )
             log_structured(
                 logger.info,
