@@ -20,11 +20,13 @@ Args:
       NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16-4layer   4-layer slice (single node)
   --num-nodes: Number of nodes. Determines the parallelism config (see _parallelism).
   --mode: "normal" or "debug_minimal" (shorter response length for quick testing)
-  --use-torch-dist-ckpt: Load an offline-converted Megatron dist checkpoint instead
-      of paying the (~10-15 min for 512 experts) HF bridge conversion on every run.
-      Defaults on for the full model, off for the pruned slice.
   --check-weight-update-equal: Assert the Megatron -> SGLang weight sync restores
       every tensor exactly (poisons SGLang's weights first).
+
+Weights load straight from the HF checkpoint: miles' load_checkpoint dispatches on
+what --load points at, and an HF directory routes to _load_checkpoint_hf, i.e. the
+same megatron.bridge path this model is mapped through. No offline Megatron dist
+conversion step is needed.
 
 Mamba n_groups=8 caps attention/mamba tensor-parallel at 8 (n_groups % tp == 0).
 The 550B (~1.1TB bf16) does not fit one 8-GPU SGLang engine, so rollout uses
@@ -49,8 +51,7 @@ II. Usage for the full model (16 nodes):
 
   2. Start Ray cluster on all nodes
 
-  3. Download model/data + convert to a Megatron dist checkpoint.
-     Run on **head node**; the conversion uses Ray to coordinate multi-node work.
+  3. Download model/data. Run on **head node**.
        `python scripts/run_nemotron_3_ultra_550b_a55b.py prepare --num-nodes 16`
 
   4. Run training. Execute on head node; uses Ray internally.
@@ -81,7 +82,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     hardware: Literal["H200", "B200", "GB300"] = "H200"
     enable_eval: bool = False
     enable_optimizer_offload: bool = True
-    use_torch_dist_ckpt: bool | None = None
     check_weight_update_equal: bool = False
     num_rollout: int = 30
     rollout_batch_size: int = 32
@@ -101,11 +101,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
         elif self.model_name != FULL_MODEL_NAME:
             raise NotImplementedError(f"{self.model_name} is not supported")
 
-        if self.use_torch_dist_ckpt is None:
-            # The pruned slice bridges in seconds; only the 512-expert full model
-            # is worth an offline conversion.
-            self.use_torch_dist_ckpt = not _is_pruned(self)
-
 
 def _is_pruned(args: ScriptArgs) -> bool:
     return re.search(r"(\d+)layer", args.model_name) is not None
@@ -113,10 +108,6 @@ def _is_pruned(args: ScriptArgs) -> bool:
 
 def _hf_checkpoint(args: ScriptArgs) -> str:
     return f"{args.model_dir}/{args.model_name}"
-
-
-def _torch_dist_checkpoint(args: ScriptArgs) -> str:
-    return f"{args.model_dir}/{args.model_name}_torch_dist"
 
 
 def _parallelism(args: ScriptArgs) -> tuple[int, int, int, int]:
@@ -160,57 +151,17 @@ def _prepare_download(args: ScriptArgs):
         U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
 
-def _prepare_torch_dist_ckpt(args: ScriptArgs):
-    """Offline HF -> Megatron dist conversion, so training can --load instead of
-    re-running the 512-expert bridge mapping on every start.
-
-    U.convert_checkpoint drives tools/convert_hf_to_torch_dist.py, whose community
-    ``mbridge`` backend has no nemotron_h support; this uses the megatron.bridge
-    tool instead, which is the same path the training run loads through. The
-    conversion layout MUST match the run's layout, else the load reshards.
-    """
-    tp, pp, ep, etp = _parallelism(args)
-    save_dir = _torch_dist_checkpoint(args)
-    multinode = args.num_nodes > 1
-    run = U.exec_command_all_ray_node if multinode else U.exec_command
-    multinode_args = (
-        "--master-addr {{master_addr}} --master-port 23456 --nnodes={{nnodes}} --node-rank {{node_rank}} "
-        if multinode
-        else ""
-    )
-
-    U.exec_command(f"mkdir -p {save_dir}")
-    run(
-        f"source {U.repo_base_dir}/scripts/models/{args.megatron_model_type}.sh && "
-        f"PYTHONPATH={U.repo_base_dir}:{args.megatron_path} "
-        f"torchrun --nproc-per-node {args.num_gpus_per_node} {multinode_args}"
-        f"{U.repo_base_dir}/tools/convert_hf_to_torch_dist_bridge.py "
-        '"${MODEL_ARGS[@]}" '
-        f"--tensor-model-parallel-size {tp} "
-        f"--pipeline-model-parallel-size {pp} "
-        f"--expert-model-parallel-size {ep} "
-        f"--expert-tensor-parallel-size {etp} "
-        "--seq-length 4096 "
-        "--max-position-embeddings 4096 "
-        f"--hf-checkpoint {_hf_checkpoint(args)} "
-        f"--save {save_dir} "
-        "--megatron-to-hf-mode bridge "
-    )
-
-
 def _execute_train(args: ScriptArgs):
     tp, pp, ep, etp = _parallelism(args)
     total_gpus = args.num_nodes * args.num_gpus_per_node
-    load_path = _torch_dist_checkpoint(args) if args.use_torch_dist_ckpt else _hf_checkpoint(args)
 
     ckpt_args = (
+        # --ref-load at an HF directory routes load_checkpoint to _load_checkpoint_hf,
+        # i.e. megatron.bridge; --load defaults to it when there is nothing to resume.
         f"--hf-checkpoint {_hf_checkpoint(args)} "  # tokenizer + SGLang rollout
-        f"--ref-load {load_path} "
+        f"--ref-load {_hf_checkpoint(args)} "
         "--megatron-to-hf-mode bridge "
     )
-    if args.use_torch_dist_ckpt:
-        # Megatron native load, skipping the per-run bridge conversion.
-        ckpt_args += f"--load {load_path} "
     if not args.skip_saving:
         ckpt_args += (
             f"--save {args.output_dir}/{args.run_id}/checkpoints "
@@ -326,20 +277,16 @@ def _execute_train(args: ScriptArgs):
 @app.command()
 @U.dataclass_cli
 def full_train(args: ScriptArgs):
-    """Full pipeline: download, convert, train."""
+    """Full pipeline: download, train."""
     _prepare_download(args)
-    if args.use_torch_dist_ckpt:
-        _prepare_torch_dist_ckpt(args)
     _execute_train(args)
 
 
 @app.command()
 @U.dataclass_cli
 def prepare(args: ScriptArgs):
-    """Download model/data and convert to a Megatron dist checkpoint (run on head node)."""
+    """Download model/data (run on head node)."""
     _prepare_download(args)
-    if args.use_torch_dist_ckpt:
-        _prepare_torch_dist_ckpt(args)
 
 
 @app.command()
