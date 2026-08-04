@@ -370,16 +370,3 @@ class TestRolloutCellHandlerInjectFault:
         assert manager.inject_fault.calls == [
             ((ENGINE_CELL_ID,), {"mode": "sigkill", "worker_in_cell_index": 1}),
         ]
-
-
-class TestActorCellResumeReporting:
-    @pytest.mark.asyncio
-    async def test_a_resumed_cell_is_pending_not_suspended(self) -> None:
-        """The manager only restarts on the next train step, and Suspended would re-trigger healing."""
-        resumed = MockRayTrainCell(phase="Pending", conditions=[{"type": "Allocated", "status": "False"}])
-        handler, _group, _manager = _make_actor_handler(cells=[resumed], suspended=True)
-
-        cell = await handler.get_cell(ACTOR_CELL_ID)
-
-        assert cell.status.phase == "Pending"
-        assert cell.spec.suspend is False

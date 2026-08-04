@@ -80,15 +80,15 @@ class _ActorCellHandler(_CellHandler):
         )
 
     def _compute_cell(self, cell_id: str, *, cell_infos: dict[str, CellInfo], statuses: dict[str, CellStatus]) -> Cell:
-        status = statuses.get(cell_id)
-        if not cell_infos[cell_id].alive and (status is None or status.phase != "Pending"):
-            status = CellStatus(phase="Suspended", conditions=[CellCondition.allocated(TriState.FALSE)])
-        elif status is None:
-            status = compute_pending_rollout_cell_status()
+        suspended = not cell_infos[cell_id].alive
         return Cell(
             metadata=self._compute_metadata(cell_id),
-            spec=CellSpec(suspend=status.phase == "Suspended"),
-            status=status,
+            spec=CellSpec(suspend=suspended),
+            status=(
+                CellStatus(phase="Suspended", conditions=[CellCondition.allocated(TriState.FALSE)])
+                if suspended
+                else statuses.get(cell_id) or compute_pending_rollout_cell_status()
+            ),
         )
 
     async def _get_cell_infos(self) -> dict[str, CellInfo]:

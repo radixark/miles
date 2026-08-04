@@ -12,7 +12,6 @@ from miles.ray.train.cell_state import (
     StateAllocatedBase,
     StateAllocatedErrored,
     StateAllocatedUninitialized,
-    StatePending,
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import BaseHealthChecker
@@ -49,11 +48,14 @@ class RayTrainCell:
         self.with_opd_teacher = with_opd_teacher
         self.rollout_executor = rollout_executor
         self.health_checker = health_checker
-        self._master_addr: HostAndPort | None = None
+
+        (worker_infos,) = RayWorkerProvider.create().get_worker_infos(cell_ids=[cell_id])
+        self._master_addr: HostAndPort = worker_infos[0].self_addrs[MASTER_PORT_NAME]
 
         # NOTE: do *NOT* directly modify `self._state`, but instead use `self._change_state`
-        self._state: CellState = StatePending()
-        self._attach_workers()
+        self._state: CellState = StateAllocatedUninitialized(
+            actor_handles=[info.actor_handle for info in worker_infos]
+        )
 
     # ------------------------ API ------------------------
 
@@ -156,15 +158,6 @@ class RayTrainCell:
             phase="end",
             cell=self.cell_id,
             elapsed_s=round(time.monotonic() - start, 1),
-        )
-
-    def _attach_workers(self) -> None:
-        (worker_infos,) = RayWorkerProvider.create().get_worker_infos(cell_ids=[self.cell_id])
-        self._master_addr = worker_infos[0].self_addrs[MASTER_PORT_NAME]
-        self._change_state(
-            "attach_workers",
-            StatePending,
-            StateAllocatedUninitialized(actor_handles=[info.actor_handle for info in worker_infos]),
         )
 
     def _mark_as_alive(self, indep_dp_info: IndepDPInfo) -> None:
