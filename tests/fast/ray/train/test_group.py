@@ -13,6 +13,7 @@ from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
+from miles.utils.retry_utils import NonRetryableError
 
 pytestmark = pytest.mark.asyncio
 
@@ -252,11 +253,12 @@ class TestExecuteAllAliveAndCatch:
             calls = ray.get(handle.get_calls.remote())
             assert any(c[0] == "train" for c in calls)
 
-    async def test_asserts_on_no_alive_cells(self):
+    async def test_refuses_to_retry_when_no_cell_is_alive(self):
+        """Retrying without a single live cell can never succeed, so it must fail fast."""
         group = await _make_alive_controller(num_cells=1)
         group._cells[0].stop()
 
-        with pytest.raises(AssertionError, match="No alive cells"):
+        with pytest.raises(NonRetryableError, match="No alive cells"):
             await group._execute_all_alive_and_catch("train")
 
 
@@ -680,6 +682,55 @@ class TestExecuteFirstAliveFallback:
 
         assert group._cells[0].is_stopped
 
+    async def test_losing_the_last_cell_keeps_the_worker_error_as_the_cause(self):
+        """Without the cause the driver traceback says nothing about why the last cell died."""
+        group = await _make_alive_controller(num_cells=1)
+
+        for handle in group._cells[0]._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["save_model"]))
+
+        with pytest.raises(NonRetryableError) as excinfo:
+            await group._execute_first_alive("save_model", rollout_id=42)
+
+        assert "Injected failure in save_model" in str(excinfo.value.__cause__)
+
+    async def test_losing_the_last_cell_stays_retryable_while_a_cell_is_still_healing(self):
+        """A healing cell can still take over, so the failure must stay retryable, not fatal."""
+        group = await _make_alive_controller(num_cells=2)
+        group.stop_cell(1)
+        group.start_cell(1)
+
+        for handle in group._cells[0]._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["save_model"]))
+
+        with pytest.raises(Exception) as excinfo:  # noqa: B017
+            await group._execute_first_alive("save_model", rollout_id=42)
+
+        assert not isinstance(excinfo.value, NonRetryableError)
+        assert group._cells[1].is_pending
+
+    async def test_terminal_failure_does_not_burn_another_backoff(self):
+        """Retrying without a single live cell can never succeed, so it must fail fast."""
+        group = await _make_alive_controller(num_cells=1)
+
+        for handle in group._cells[0]._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["save_model"]))
+
+        attempts = 0
+        execute_first_alive = group._execute_first_alive
+
+        async def _counting_execute_first_alive(fn_name: str, **kwargs: object) -> object:
+            nonlocal attempts
+            attempts += 1
+            return await execute_first_alive(fn_name, **kwargs)
+
+        group._execute_first_alive = _counting_execute_first_alive
+
+        with pytest.raises(NonRetryableError):
+            await group.save_model(rollout_id=42)
+
+        assert attempts == 1
+
 
 def _make_failing_actor_factory() -> Callable:
     """Create a factory that returns actors pre-configured to fail on init."""
@@ -800,7 +851,7 @@ class TestCheckTrainOneAttempt:
         ],
     )
     def test_no_retry_when_no_discarded(self, results):
-        RayTrainGroup._check_train_one_attempt(_alive_cells_for(results), results)  # should not raise
+        _make_controller(num_cells=1)._check_train_one_attempt(_alive_cells_for(results), results)  # should not raise
 
     @pytest.mark.parametrize(
         "results",
@@ -814,7 +865,7 @@ class TestCheckTrainOneAttempt:
     )
     def test_retry_when_discarded_exists(self, results):
         with pytest.raises(ValueError, match="DISCARDED_SHOULD_RETRY"):
-            RayTrainGroup._check_train_one_attempt(_alive_cells_for(results), results)
+            _make_controller(num_cells=1)._check_train_one_attempt(_alive_cells_for(results), results)
 
     @pytest.mark.parametrize(
         "results",
@@ -824,8 +875,9 @@ class TestCheckTrainOneAttempt:
         ],
     )
     def test_raises_when_all_cells_errored(self, results):
-        with pytest.raises(RuntimeError, match="All cells failed"):
-            RayTrainGroup._check_train_one_attempt(_alive_cells_for(results), results)
+        """A freshly built group has no alive or pending cell, so an all-errored attempt is non-retryable."""
+        with pytest.raises(NonRetryableError, match="All cells failed"):
+            _make_controller(num_cells=1)._check_train_one_attempt(_alive_cells_for(results), results)
 
     def test_compute_attempt_outcomes_buckets_cells_by_index(self):
         """_compute_attempt_outcomes buckets each alive cell into errored / discarded / normal by index."""
