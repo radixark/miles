@@ -115,7 +115,17 @@ def log_metrics(metrics: dict[str, Any], step: int | None = None) -> None:
             continue
 
     if sanitized:
-        mlflow.log_metrics(sanitized, step=int(step) if step is not None else None)
+        try:
+            mlflow.log_metrics(sanitized, step=int(step) if step is not None else None)
+        except Exception as e:
+            # Metrics logging must never take down training. The tracking server is a
+            # shared, remote service: on 2026-08-04 its SQLAlchemy pool ran dry
+            # ("QueuePool limit of size 5 overflow 10 reached, connection timed out")
+            # and the RestException propagated out of log_rollout_data -> train_actor,
+            # killing a run at step 52 of 197 -- roughly 15 hours of GPU time lost to a
+            # metrics write. A dropped datapoint is an acceptable trade for a run that
+            # survives; the loss here is a gap in the chart, not in the checkpoint.
+            logger.warning(f"mlflow.log_metrics failed at step {step}, continuing: {e!r}")
 
 
 # ---------------------------------------------------------------------------
