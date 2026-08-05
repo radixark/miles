@@ -59,9 +59,7 @@ def render_cli_argv(
         # A default the parser derives from other flags (e.g. the PD load balance
         # method) only reveals itself once those flags are on the command line, so
         # rendering once against the bare defaults can leave it unspelled.
-        argv = argv + _render_cli_argv(
-            args_obj, cli_defaults=parsed, derived_fields=derived_fields, **render_kwargs
-        )
+        argv = argv + _render_cli_argv(args_obj, cli_defaults=parsed, derived_fields=derived_fields, **render_kwargs)
         parsed = parse(argv)
 
     assert parsed == args_obj, f"cli argv roundtrip mismatch on {_describe_mismatch(parsed, args_obj)}"

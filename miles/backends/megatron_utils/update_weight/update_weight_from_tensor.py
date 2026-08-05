@@ -8,7 +8,6 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from typing import Any
 
-import ray
 import torch
 import torch.distributed as dist
 

@@ -33,13 +33,6 @@ def _comparable_params(func) -> list[tuple[str, str, bool]]:
     ]
 
 
-@pytest.fixture(scope="module")
-def used_methods() -> set[str]:
-    used = _grep_engine_method_calls(ROLLOUT_DIR)
-    assert used, f"Expected to find engine.<method>.remote(...) calls under {ROLLOUT_DIR}"
-    return used
-
-
 # ----------------------------- contract tests -----------------------------
 
 
