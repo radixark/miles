@@ -21,12 +21,6 @@ register_cuda_ci(
     est_time=900,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
-    disabled=(
-        "Waiting on the pruned checkpoint being published. Build it with "
-        "cluster_scripts/debug_tool_set/checkpoint/prune_nemotron_h.py --layers 0,1,7,8 "
-        "off nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16, upload it as "
-        "yueming-yuan/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16-4layer, then drop this flag."
-    ),
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -38,7 +32,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
-        model_org="yueming-yuan",
+        model_org="CharyZeng",
         model_name="NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16-4layer",
         mode="debug_minimal",
         num_nodes=1,
