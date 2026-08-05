@@ -799,8 +799,9 @@ class TestCheckTrainOneAttempt:
         ],
     )
     def test_raises_when_all_cells_errored(self, results):
-        """A freshly built group has no alive or pending cell, so an all-errored attempt is non-retryable."""
-        with pytest.raises(NonRetryableError, match="All cells failed"):
+        """Every cell failing this attempt still leaves live cells to retry on, so the group must
+        raise the retryable error rather than the one that ends the run."""
+        with pytest.raises(RuntimeError, match="All cells failed"):
             _make_group(num_cells=1)._check_train_one_attempt(_alive_cells_for(results), results)
 
     def test_compute_attempt_outcomes_buckets_cells_by_index(self):
@@ -824,7 +825,7 @@ async def _set_all_train_return(group: TrainerController, value: TrainStepOutput
 
 async def _set_all_train_returns_per_attempt(group: TrainerController, values: list[TrainStepOutput]) -> None:
     for cell in group._cells:
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_train_return_values_per_attempt.remote(values))
 
 
