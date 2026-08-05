@@ -28,7 +28,9 @@ def _cmd(*, worker_type: str = "regular", args=None, addr_overrides: dict | None
         node_rank=0,
         worker_type=worker_type,
         base_gpu_id=0,
-        sglang_overrides={},
+        # ServerArgs probes the local accelerator when no device is given, which a CPU-only
+        # CI runner cannot answer. Production resolves it to the engine's own device the same way.
+        sglang_overrides={"device": "cuda"},
         num_gpus_per_engine=1,
         dist_init_addr=addr_and_ports["dist_init_addr"],
         nccl_port=addr_and_ports["nccl_port"],

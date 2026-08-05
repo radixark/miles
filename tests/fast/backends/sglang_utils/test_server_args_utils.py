@@ -41,6 +41,9 @@ def _server_args(
     disaggregation_bootstrap_port: int | None = None,
     num_gpus_per_engine: int = 1,
 ) -> dict:
+    # ServerArgs probes the local accelerator when no device is given, which a CPU-only
+    # CI runner cannot answer. Production resolves it to the engine's own device the same way.
+    overrides = {"device": "cuda", **(sglang_overrides or {})}
     server_args_dict = _compute_server_args(
         args or _args(),
         node_rank=node_rank,
@@ -53,7 +56,7 @@ def _server_args(
         disaggregation_bootstrap_port=disaggregation_bootstrap_port,
         base_gpu_id=0,
         engine_info_bootstrap_port=20033,
-        sglang_overrides=sglang_overrides,
+        sglang_overrides=overrides,
         num_gpus_per_engine=num_gpus_per_engine,
     )
     return server_args_dict
