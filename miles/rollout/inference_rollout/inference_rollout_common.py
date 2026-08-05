@@ -2,6 +2,7 @@ import asyncio
 import logging
 import uuid
 from argparse import Namespace
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
@@ -120,7 +121,11 @@ async def generate_and_rm(
 
 
 async def generate_and_rm_group(
-    state: GenerateState, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
+    state: GenerateState,
+    group: list[Sample],
+    sampling_params: dict[str, Any],
+    evaluation: bool = False,
+    sample_done_callback: Callable[[], None] | None = None,
 ) -> list[Sample]:
     args = state.args
 
@@ -139,11 +144,21 @@ async def generate_and_rm_group(
         current_sampling_params = sampling_params.copy()
         if getattr(args, "sglang_enable_deterministic_inference", False):
             current_sampling_params["sampling_seed"] = args.rollout_seed + idx
-        tasks.append(
-            asyncio.create_task(generate_and_rm(state, sample, current_sampling_params, evaluation=evaluation))
-        )
+        task = asyncio.create_task(generate_and_rm(state, sample, current_sampling_params, evaluation=evaluation))
+        if sample_done_callback is not None:
+            # fires on success, exception, and cancellation, so in-flight accounting is conserved
+            task.add_done_callback(lambda _task: sample_done_callback())
+        tasks.append(task)
 
-    group = await asyncio.gather(*tasks)
+    try:
+        group = await asyncio.gather(*tasks)
+    except BaseException:
+        # cancel siblings and let them settle: the group returns only after every
+        # sample task is done, so no orphan generation or in-flight credit outlives it
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     logger.debug(f"{log_prefix} [group] All {len(group)} samples completed")
     if state.aborted:
         return group

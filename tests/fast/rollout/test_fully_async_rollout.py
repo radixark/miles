@@ -76,6 +76,7 @@ def make_args(**overrides) -> Namespace:
         async_max_concurrent_samples=None,
         async_data_buffer_max_batches=0,
         async_data_buffer_order="fifo",
+        rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
@@ -95,7 +96,7 @@ class FakeWeightVersion:
 
 
 def make_fn(monkeypatch, args, data_source, generate=None):
-    async def default_generate(state, group, sampling_params, evaluation=False):
+    async def default_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await asyncio.sleep(0)
         return group
 
@@ -129,7 +130,7 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
     """Shared-engine eval: producer submissions pause during eval and resume after."""
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
@@ -246,7 +247,7 @@ async def test_stale_group_recycled(monkeypatch):
 
 
 async def test_worker_error_propagates(monkeypatch):
-    async def failing_generate(state, group, sampling_params, evaluation=False):
+    async def failing_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         raise RuntimeError("generation exploded")
 
     fn = make_fn(monkeypatch, make_args(), FakeDataSource(), generate=failing_generate)
@@ -258,7 +259,7 @@ async def test_worker_error_propagates(monkeypatch):
 async def test_worker_bounds_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
@@ -277,7 +278,7 @@ async def test_worker_bounds_in_flight_groups(monkeypatch):
 async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
@@ -319,7 +320,7 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     data_source = FakeDataSource(scripted=[prompt_group])
     submitted = []
 
-    async def multi_sample_generate(state, group, sampling_params, evaluation=False):
+    async def multi_sample_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         assert all(isinstance(sample, Sample) for sample in group), "resubmitted a nested group"
         submitted.append(group)
         if len(submitted) > 1:
@@ -493,3 +494,61 @@ async def test_drain_reports_eviction_metrics(monkeypatch):
 
     output2 = await fn(RolloutFnTrainInput(rollout_id=2))
     assert output2.metrics["rollout/fully_async/evicted_overflow_groups"] == 0
+
+
+async def test_worker_defaults_to_sample_granularity(monkeypatch):
+    """Unset --rollout-submission-granularity: this driver backfills on sample completion."""
+    callbacks = []
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        callbacks.append(sample_done_callback)
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    args = make_args(rollout_batch_size=1)
+    fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+
+    # Report every sample of the still-pending group as finished.
+    for _ in range(N_SAMPLES_PER_PROMPT):
+        callbacks[0]()
+    await asyncio.sleep(0.01)
+
+    # A replacement group went out even though the first group has not returned.
+    assert data_source.num_get_calls == 2
+
+    release.set()
+    output = await drain
+    assert len(output.samples) == 1
+
+
+async def test_group_granularity_opts_the_worker_out_of_backfill(monkeypatch):
+    callbacks = []
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        callbacks.append(sample_done_callback)
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    args = make_args(rollout_batch_size=1, rollout_submission_granularity="group")
+    fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+    # no callback wired at group level
+    assert callbacks == [None]
+
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+
+    release.set()
+    output = await drain
+    assert len(output.samples) == 1

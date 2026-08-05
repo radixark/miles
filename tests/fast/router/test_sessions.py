@@ -68,8 +68,10 @@ def router_env():
                 chat_template_path=None,
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
+                sglang_speculative_algorithm=None,
                 trajectory_manager="linear_trajectory",
                 session_server_instance_id=uuid.uuid4().hex,
+                save_debug_trajectory_data=None,
             )
             server_obj = SessionServer(args, backend_url=backend.url)
 

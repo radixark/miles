@@ -1,12 +1,17 @@
+import logging
 from typing import Any
 
 import torch
 
 from miles.utils import object_store
+from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
+
+logger = logging.getLogger(__name__)
 
 ROLLOUT_DATA_TENSOR_DTYPES = {
     "tokens": "int32",
@@ -27,6 +32,8 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "truncated": ValueSpec(codec="ndarray", dtype="int64"),
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
     "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
+    "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
@@ -34,6 +41,9 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "raw_reward": ValueSpec(codec="auto"),
     "total_lengths": ValueSpec(codec="auto"),
     "dynamic_global_batch_size": ValueSpec(codec="auto"),
+    "num_microbatches": ValueSpec(codec="auto"),
+    "micro_batch_indices": ValueSpec(codec="auto"),
+    "num_rollouts": ValueSpec(codec="auto"),
 }
 
 
@@ -69,6 +79,7 @@ def convert_samples_to_train_data(
         "raw_reward": raw_rewards,
         "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
         "sample_indices": [sample.index for sample in samples],
+        "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
 
     # loss mask
@@ -86,6 +97,8 @@ def convert_samples_to_train_data(
             sample.loss_mask = [0] * sample.response_length
         loss_masks.append(sample.loss_mask)
     train_data["loss_masks"] = loss_masks
+
+    train_data["rollout_mask_sums"] = _compute_rollout_mask_sums(train_data["rollout_ids"], loss_masks)
 
     # overwriting the raw reward
     if samples[0].metadata and "raw_reward" in samples[0].metadata:
@@ -146,6 +159,16 @@ def convert_samples_to_train_data(
     return train_data
 
 
+def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int]]) -> list[int]:
+    """Whole-rollout loss-mask total per sample: every sibling of one rollout carries
+    the sum over all of that rollout's samples, so the loss reducer reconstructs one
+    token-weighted mean per rollout even when siblings land in different micro-batches."""
+    totals: dict[int, int] = {}
+    for rid, mask in zip(rollout_ids, loss_masks, strict=True):
+        totals[rid] = totals.get(rid, 0) + sum(mask)
+    return [totals[rid] for rid in rollout_ids]
+
+
 def _post_process_rewards(
     args,
     samples: list[Sample] | list[list[Sample]],
@@ -193,11 +216,60 @@ def _post_process_rewards(
     return raw_rewards, raw_rewards
 
 
-def split_train_data_by_dp(args, data, dp_size):
-    """Split the train data by data parallel size."""
-    rollout_data_list = split_train_data_by_dp_raw(args, data, dp_size=dp_size)
+def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: dict | None):
+    """Split the train data across DP ranks and put the shards into the object store.
+
+    When the training backend can consume a rollout-side schedule, the shards
+    also carry the precomputed micro-batch layout; otherwise this falls back to
+    the legacy split (the training side schedules locally)."""
+    if can_schedule_on_rollout_side(args, data, train_parallel_config):
+        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
+    else:
+        shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
     store = object_store.get_instance()
-    return [store.put(value=rollout_data, value_spec=ROLLOUT_DATA_VALUE_SPEC) for rollout_data in rollout_data_list]
+    return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+
+
+def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_config: dict | None) -> bool:
+    """Whether the rollout side can precompute the full DP/mbs schedule."""
+    if not has_full_schedule_config(train_parallel_config):
+        return False
+    if is_multi_lora_enabled(args):
+        return False
+    if "multimodal_train_inputs" in data:
+        return False
+    if "rollout_ids" not in data:
+        return False
+    global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+    return len(set(data["rollout_ids"])) >= global_batch_size
+
+
+def split_train_data_by_dp_scheduled_raw(
+    args, data: dict[str, Any], *, train_parallel_config: dict
+) -> list[dict[str, Any]]:
+    """DP split with the micro-batch schedule precomputed on the rollout side."""
+    total_lengths = [len(t) for t in data["tokens"]]
+    data["total_lengths"] = total_lengths
+
+    global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+    partitions, micro_batch_indices, num_microbatches, num_rollouts = build_dp_schedule(
+        args,
+        train_parallel_config,
+        total_lengths,
+        global_batch_size=global_batch_size,
+        rollout_indices=data["rollout_ids"],
+    )
+    logger.info(
+        f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
+        f"num_rollouts={num_rollouts}, num_microbatches={num_microbatches}"
+    )
+
+    shards = _package_shards(args, data, partitions)
+    for rank, shard in enumerate(shards):
+        shard["num_microbatches"] = num_microbatches
+        shard["micro_batch_indices"] = micro_batch_indices[rank]
+        shard["num_rollouts"] = num_rollouts
+    return shards
 
 
 def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> list[dict[str, Any]]:
@@ -216,9 +288,14 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     if adapter_slots is not None:
         partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
 
+    return _package_shards(args, data, partitions)
+
+
+def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, Any]]:
+    """Package one rollout_data shard per DP rank from precomputed partitions."""
     shards = []
 
-    for i in range(dp_size):
+    for i in range(len(partitions)):
         rollout_data = {}
         partition = partitions[i]
         rollout_data["partition"] = partition
@@ -231,6 +308,8 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
             "loss_masks",
             "round_number",
             "sample_indices",
+            "rollout_ids",
+            "rollout_mask_sums",
             "rollout_log_probs",
             "rollout_routed_experts",
             "rollout_indexer_topk",
