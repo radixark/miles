@@ -1,4 +1,5 @@
 from argparse import Namespace
+from functools import partial
 
 import torch
 from torch.utils.checkpoint import checkpoint
@@ -16,7 +17,12 @@ from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.types import RolloutBatch
 
 
-def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) -> None:
+def compute_advantages_and_returns(
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    *,
+    allow_training_logprob_reuse: bool = False,
+) -> None:
     """Compute advantages and returns in-place based on `args.advantage_estimator`.
 
     This function extracts rewards, log-probs, values, and masks from
@@ -28,16 +34,18 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     data-parallel group using masked statistics.
 
     Early returns if both `log_probs` and `values` are None (intermediate
-    pipeline stages), unless the actor log-probs pass was intentionally skipped
-    on the last pipeline stage.
+    pipeline stages), unless the last stage is explicitly allowed to derive
+    zero-KL shapes without the standalone actor pass.
 
     Args:
         args: Configuration specifying estimator type, KL coefficient,
             normalization settings, and other hyperparameters.
-        rollout_data: Dict containing input lists ("rewards", "response_lengths",
-            "loss_masks", "total_lengths"), plus optional "log_probs",
-            "ref_log_probs", and "values". Modified in-place to add "advantages" and
+        rollout_data: Dict containing input lists ("log_probs", "ref_log_probs",
+            "rewards", "values", "response_lengths", "loss_masks",
+            "total_lengths"). Modified in-place to add "advantages" and
             "returns" keys, each mapping to lists of tensors per sample.
+        allow_training_logprob_reuse: Whether the actor intentionally omitted
+            its standalone old-policy log-prob pass.
     """
     log_probs: list[torch.Tensor] = rollout_data.get("rollout_log_probs" if args.use_rollout_logprobs else "log_probs")
     ref_log_probs: list[torch.Tensor] = rollout_data.get("ref_log_probs")
@@ -48,8 +56,9 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     total_lengths: list[int] = rollout_data.get("total_lengths")
     max_seq_lens: list[int] | None = rollout_data.get("max_seq_lens", None)
 
+    # return when not the last pp stage.
     if log_probs is None and values is None:
-        if not (getattr(args, "skip_actor_logprobs_forward", False) and get_parallel_state().is_pp_last_stage):
+        if not (allow_training_logprob_reuse and get_parallel_state().is_pp_last_stage):
             return
         local_masks = get_local_response_loss_masks(
             total_lengths, response_lengths, loss_masks, args.qkv_format, max_seq_lens
@@ -104,6 +113,8 @@ def loss_function(
     logits: torch.Tensor,
     apply_megatron_loss_scaling: bool = False,
     num_rollouts: int | None = None,
+    *,
+    allow_training_logprob_reuse: bool = False,
 ) -> tuple[torch.Tensor, int | torch.Tensor, dict[str, list[str] | torch.Tensor]]:
     """Dispatch to the configured loss and rescale for Megatron integration.
 
@@ -122,6 +133,8 @@ def loss_function(
         num_rollouts: This step's rollout count (total across DP), used as
             the loss normalizer; None falls back to the legacy batch/args value.
 
+        allow_training_logprob_reuse: Whether policy loss may use detached
+            training log-probs as its old-policy input.
     Returns:
         Tuple of `(scaled_loss, normalizer, logging_dict)` where:
         - `scaled_loss` is the loss tensor (scalar) rescaled for Megatron.
@@ -145,6 +158,10 @@ def loss_function(
     )
 
     func = get_loss_function(args)
+    if allow_training_logprob_reuse:
+        if args.loss_type != "policy_loss":
+            raise ValueError("training log-prob reuse is only valid for policy loss")
+        func = partial(func, allow_training_logprob_reuse=True)
 
     if args.recompute_loss_function:
         loss, log = checkpoint(

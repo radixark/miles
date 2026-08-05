@@ -247,3 +247,49 @@ def test_ppo_bshd_cp_uses_padded_layout_metadata() -> None:
 
 def test_ppo_masked_gae_matches_single_rank_baseline() -> None:
     run_multiprocess(_worker_masked_case)
+
+
+def _worker_reused_zero_kl(rank: int, world_size: int, port: int) -> None:
+    init_gloo(rank, world_size, port=port)
+    try:
+        args = Namespace(
+            advantage_estimator="grpo",
+            use_rollout_logprobs=False,
+            kl_coef=0.0,
+            kl_loss_type="k1",
+            gamma=1.0,
+            lambd=0.95,
+            qkv_format="thd",
+            use_opd=False,
+            normalize_advantages=False,
+        )
+        total_length, response_length = 7, 6
+        rollout_data = {
+            "rewards": [3.0],
+            "response_lengths": [response_length],
+            "loss_masks": [torch.ones(response_length)],
+            "total_lengths": [total_length],
+        }
+
+        set_parallel_state(_parallel_state(rank=rank, world_size=world_size))
+        compute_advantages_and_returns(args, rollout_data, allow_training_logprob_reuse=True)
+        cp_advantages = all_gather_with_cp(rollout_data["advantages"][0], total_length, response_length)
+        cp_returns = all_gather_with_cp(rollout_data["returns"][0], total_length, response_length)
+
+        set_parallel_state(_parallel_state())
+        baseline = {
+            **rollout_data,
+            "log_probs": [torch.zeros(response_length)],
+        }
+        baseline.pop("advantages")
+        baseline.pop("returns")
+        compute_advantages_and_returns(args, baseline)
+
+        torch.testing.assert_close(cp_advantages, baseline["advantages"][0])
+        torch.testing.assert_close(cp_returns, baseline["returns"][0])
+    finally:
+        dist.destroy_process_group()
+
+
+def test_reused_zero_kl_matches_single_rank_baseline_with_context_parallelism() -> None:
+    run_multiprocess(_worker_reused_zero_kl)

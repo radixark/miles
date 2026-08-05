@@ -1453,19 +1453,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "If not set, we will use the logprobs from the actor model."
                 ),
             )
-            parser.add_argument(
-                "--skip-actor-logprobs-forward",
-                action="store_true",
-                default=False,
-                help=(
-                    "Megatron-only opt-in: skip the standalone actor log-probs pass and use each "
-                    "training forward's detached log probs as its old-policy baseline. This makes "
-                    "the actor importance ratio exactly 1 and is valid only when a rollout is "
-                    "consumed in exactly one optimizer step. It changes the old-logprob source "
-                    "from an eval forward to the training forward."
-                    " The skipped pass's rollout/log_probs metric is not emitted."
-                ),
-            )
             # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
             parser.add_argument(
                 "--use-tis",
@@ -3331,92 +3318,7 @@ def miles_validate_args(args):
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
-    if args.skip_actor_logprobs_forward:
-        validate_skip_actor_logprobs_forward(args)
-
     _maybe_apply_dumper_overrides(args)
-
-
-def validate_skip_actor_logprobs_forward(args) -> None:
-    """Validate the Megatron single-step training-forward baseline mode."""
-    option = "--skip-actor-logprobs-forward"
-    if args.train_backend != "megatron":
-        raise ValueError(f"{option} only supports --train-backend megatron")
-    if args.loss_type != "policy_loss":
-        raise ValueError(f"{option} only supports --loss-type policy_loss")
-    if not args.compute_advantages_and_returns:
-        raise ValueError(f"{option} requires advantage and return computation in the actor")
-
-    incompatible = (
-        ("use_rollout_logprobs", "--use-rollout-logprobs already selects a different old-logprob source"),
-        ("use_tis", "--use-tis consumes separately recomputed actor log probs"),
-        ("get_mismatch_metrics", "--get-mismatch-metrics consumes separately recomputed actor log probs"),
-        ("use_opd", "--use-opd needs student log probs before advantage computation"),
-        ("keep_old_actor", "--keep-old-actor selects a different model for the old-policy baseline"),
-        ("use_rollout_entropy", "--use-rollout-entropy is produced by the skipped pass"),
-        ("true_on_policy_mode", "--true-on-policy-mode validates the skipped actor log probs"),
-        ("log_correct_samples", "--log-correct-samples consumes the skipped actor log probs"),
-        ("dumper_enable", "--dumper-enable captures the skipped FWD_ONLY phase"),
-        ("use_routing_replay", "--use-routing-replay records state during the skipped pass"),
-        ("use_indexer_replay", "--use-indexer-replay records state during the skipped pass"),
-        ("use_rollout_routing_replay", "--use-rollout-routing-replay needs replay state in training"),
-        ("use_rollout_indexer_replay", "--use-rollout-indexer-replay needs replay state in training"),
-        ("moe_router_force_load_balancing", "--moe-router-force-load-balancing randomizes every forward"),
-    )
-    for attribute, reason in incompatible:
-        if getattr(args, attribute, False):
-            raise ValueError(f"{option} is incompatible with {reason}")
-
-    valued_options = (
-        (
-            "custom_megatron_before_log_prob_hook_path",
-            "--custom-megatron-before-log-prob-hook-path runs only in the skipped pass",
-        ),
-        (
-            "custom_megatron_before_train_step_hook_path",
-            "--custom-megatron-before-train-step-hook-path may change policy state after the old-policy pass",
-        ),
-        (
-            "custom_model_provider_path",
-            "--custom-model-provider-path may define different eval and training forwards",
-        ),
-        (
-            "moe_input_jitter_eps",
-            "--moe-input-jitter-eps randomizes every forward",
-        ),
-        (
-            "moe_router_force_biased",
-            "--moe-router-force-biased randomizes every forward",
-        ),
-        (
-            "rollout_data_postprocess_path",
-            "--rollout-data-postprocess-path may consume the skipped actor log probs",
-        ),
-        ("dump_details", "--dump-details expects actor log probs in saved rollout data"),
-    )
-    for attribute, reason in valued_options:
-        if getattr(args, attribute, None) is not None:
-            raise ValueError(f"{option} is incompatible with {reason}")
-
-    if args.kl_coef != 0:
-        raise ValueError(f"{option} requires --kl-coef 0 because reward KL is computed before training")
-
-    dropout_options = ("attention_dropout", "hidden_dropout", "lora_dropout")
-    enabled_dropout = [name for name in dropout_options if getattr(args, name, 0.0) != 0.0]
-    if enabled_dropout:
-        raise ValueError(f"{option} requires policy dropout to be disabled; nonzero values: {enabled_dropout}")
-
-    if (
-        args.global_batch_size is not None
-        and not args.use_dynamic_global_batch_size
-        and not getattr(args, "multi_lora", False)
-    ):
-        samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
-        if samples_per_rollout != args.global_batch_size:
-            raise ValueError(
-                f"{option} requires one optimizer step to consume all {samples_per_rollout} rollout samples; "
-                f"got global_batch_size={args.global_batch_size}"
-            )
 
 
 def validate_async_off_policy_correction(args) -> None:

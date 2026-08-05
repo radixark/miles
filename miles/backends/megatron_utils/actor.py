@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 import ray
 import torch
 import torch.distributed as dist
-from megatron.core.utils import get_model_config
 from torch_memory_saver import torch_memory_saver
 
 from miles.dashboard import hooks as dashboard_hooks
@@ -68,6 +67,81 @@ if TYPE_CHECKING:
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+
+def _single_step_covers_rollout(
+    data_iterator: list[DataIterator],
+    num_microbatches: list[int],
+    num_rollouts: list[int],
+    num_local_samples: int,
+) -> bool:
+    if (
+        not data_iterator
+        or len(num_microbatches) != 1
+        or len(num_rollouts) != 1
+        or num_microbatches[0] <= 0
+        or num_local_samples <= 0
+    ):
+        return False
+
+    iterator = data_iterator[0]
+    if iterator.micro_batch_indices is None:
+        return (
+            iterator.micro_batch_size is not None
+            and iterator.micro_batch_size > 0
+            and num_microbatches[0] * iterator.micro_batch_size == num_local_samples
+        )
+
+    scheduled_microbatches = iterator.micro_batch_indices
+    scheduled_indices = [index for microbatch in scheduled_microbatches for index in microbatch]
+    return (
+        len(scheduled_microbatches) == num_microbatches[0]
+        and all(scheduled_microbatches)
+        and sorted(scheduled_indices) == list(range(num_local_samples))
+    )
+
+
+def _can_reuse_training_log_probs(
+    args: Namespace,
+    rollout_data: RolloutBatch,
+    data_iterator: list[DataIterator],
+    num_microbatches: list[int],
+    num_rollouts: list[int],
+    *,
+    has_rollout_data_postprocess: bool,
+) -> bool:
+    requires_standalone_forward = any(
+        (
+            args.keep_old_actor,
+            args.kl_coef != 0,
+            args.use_opd,
+            args.use_tis,
+            args.get_mismatch_metrics,
+            args.use_rollout_entropy,
+            args.true_on_policy_mode,
+            args.log_correct_samples,
+            has_rollout_data_postprocess,
+            args.custom_megatron_before_log_prob_hook_path is not None,
+            args.custom_megatron_before_train_step_hook_path is not None,
+            args.custom_model_provider_path is not None,
+            args.dumper_enable or args.dumper_fwd_only is not None,
+            args.save_debug_train_data is not None,
+            any(manager.enabled for manager in all_replay_managers),
+        )
+    )
+    return (
+        args.loss_type == "policy_loss"
+        and args.compute_advantages_and_returns
+        and not args.use_rollout_logprobs
+        and rollout_data.get("log_probs") is None
+        and not requires_standalone_forward
+        and _single_step_covers_rollout(
+            data_iterator,
+            num_microbatches,
+            num_rollouts,
+            len(rollout_data["total_lengths"]),
+        )
+    )
 
 
 def _setup_disk_offload_reclaim(disk_dir: str) -> None:
@@ -462,72 +536,17 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None,
         attempt: int,
     ) -> TrainStepOutcome:
-        if self.args.skip_actor_logprobs_forward:
-            model_config = get_model_config(self.model[0])
-            unsafe_model_settings = []
-            if getattr(model_config, "attention_dropout", 0.0) != 0.0:
-                unsafe_model_settings.append("attention_dropout")
-            if getattr(model_config, "hidden_dropout", 0.0) != 0.0:
-                unsafe_model_settings.append("hidden_dropout")
-            if getattr(model_config, "moe_input_jitter_eps", None) is not None:
-                unsafe_model_settings.append("moe_input_jitter_eps")
-            if getattr(model_config, "moe_router_force_load_balancing", False):
-                unsafe_model_settings.append("moe_router_force_load_balancing")
-            if getattr(model_config, "moe_router_force_biased", None) is not None:
-                unsafe_model_settings.append("moe_router_force_biased")
-            if unsafe_model_settings:
-                raise ValueError(
-                    "--skip-actor-logprobs-forward requires deterministic policy forwards; "
-                    f"model config enables {unsafe_model_settings}"
-                )
-
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         num_rollouts = get_num_rollouts(self.args, rollout_data, len(num_microbatches))
-
-        if self.args.skip_actor_logprobs_forward:
-            if len(num_microbatches) != 1 or len(num_rollouts) != 1:
-                raise ValueError(
-                    "--skip-actor-logprobs-forward requires exactly one optimizer step per rollout; "
-                    f"got {len(num_microbatches)=} and {len(num_rollouts)=}"
-                )
-
-            num_local_samples = len(rollout_data["total_lengths"])
-            iterator = data_iterator[0]
-            if iterator.micro_batch_indices is None:
-                scheduled_samples = num_microbatches[0] * iterator.micro_batch_size
-                schedule_covers_all_samples = scheduled_samples == num_local_samples
-            else:
-                scheduled_microbatches = iterator.micro_batch_indices
-                scheduled_indices = [
-                    sample_index for micro_batch in scheduled_microbatches for sample_index in micro_batch
-                ]
-                schedule_covers_all_samples = len(scheduled_microbatches) == num_microbatches[0] and sorted(
-                    scheduled_indices
-                ) == list(range(num_local_samples))
-
-            if not schedule_covers_all_samples:
-                if iterator.micro_batch_indices is None:
-                    raise ValueError(
-                        "--skip-actor-logprobs-forward requires the single optimizer step's schedule "
-                        "to consume every local training sample exactly once; "
-                        f"{num_local_samples=}, {scheduled_samples=}"
-                    )
-                raise ValueError(
-                    "--skip-actor-logprobs-forward requires the single optimizer step's schedule "
-                    "to consume every local training sample exactly once; "
-                    f"got {len(scheduled_indices)} scheduled positions covering "
-                    f"{len(set(scheduled_indices))} unique indices in {len(scheduled_microbatches)} "
-                    f"microbatches, expected {num_microbatches[0]} microbatches and "
-                    f"{num_local_samples} samples"
-                )
-
-            enabled_replays = [manager.name for manager in all_replay_managers if manager.enabled]
-            if enabled_replays:
-                raise ValueError(
-                    "--skip-actor-logprobs-forward cannot skip the actor pass while replay managers "
-                    f"are enabled: {enabled_replays}"
-                )
+        allow_training_logprob_reuse = _can_reuse_training_log_probs(
+            self.args,
+            rollout_data,
+            data_iterator,
+            num_microbatches,
+            num_rollouts,
+            has_rollout_data_postprocess=self.rollout_data_postprocess is not None,
+        )
 
         for m in all_replay_managers:
             if self._use_rollout_replay(m):
@@ -570,7 +589,7 @@ class MegatronTrainRayActor(TrainRayActor):
                         )
                     )
                 self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
-                if not self.args.skip_actor_logprobs_forward and (
+                if not allow_training_logprob_reuse and (
                     not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics
                 ):
                     for m in all_replay_managers:
@@ -607,7 +626,11 @@ class MegatronTrainRayActor(TrainRayActor):
 
                 # Calculate adv and returns. Need to performed before training (instead of on the fly),
                 # because we may need normalize the whole rollout.
-                compute_advantages_and_returns(self.args, rollout_data)
+                compute_advantages_and_returns(
+                    self.args,
+                    rollout_data,
+                    allow_training_logprob_reuse=allow_training_logprob_reuse,
+                )
                 log_train_advantage_computation_event(rollout_data)
 
             if self.rollout_data_postprocess is not None:
@@ -616,6 +639,8 @@ class MegatronTrainRayActor(TrainRayActor):
             log_rollout_data(rollout_id, self.args, rollout_data)
 
             # Train
+            if not allow_training_logprob_reuse:
+                num_rollouts = get_num_rollouts(self.args, rollout_data, len(num_microbatches))
             self._set_replay_stage("replay_backward")
             with timer("actor_train"):
                 train_step_outcome = train(
@@ -629,6 +654,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     witness_info=witness_info,
                     attempt=attempt,
                     ft_test_action_executor=self._ft_test_action_executor,
+                    allow_training_logprob_reuse=allow_training_logprob_reuse,
                 )
 
             self.prof.step(rollout_id=rollout_id)
