@@ -25,6 +25,9 @@ from tests.ci.metric_history.gate import evaluate_gate
 # in sync with miles.utils.tracking_utils.ci_history.RECORD_DIR_ENV.
 CI_GATE_RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
 
+# Accelerator memory is freed by the driver asynchronously after the holders are killed.
+_REAP_SETTLE_SECONDS = 10.0
+
 
 def _sanitize_for_path(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", name)
@@ -481,6 +484,8 @@ def run_unittest_files(
         passing_record_path: str | None = None
 
         while attempt <= (max_attempts if enable_retry else 1):
+            reap_leaked_accelerator_processes()
+
             if attempt > 1:
                 logger.info(f"\n[CI Retry] Attempt {attempt}/{max_attempts} for {filename}\n")
                 was_retried = True
@@ -650,3 +655,22 @@ def run_unittest_files(
         write_github_step_summary(summary)
 
     return 0 if success else -1
+
+
+def reap_leaked_accelerator_processes() -> None:
+    # A finished e2e leaves sglang scheduler processes behind: they are grandchildren of the
+    # test process, so nothing in the ray or engine teardown path reaches them once the test
+    # exits, and they keep holding accelerator memory. The next test file in the same job then
+    # starts on a dirty device and fails while initializing NCCL, which reads as that test
+    # being broken. The workflow only reaps once per job, before the first file.
+    for argv in (
+        ["ray", "stop", "--force"],
+        ["pkill", "-9", "-f", "sglang::"],
+        ["pkill", "-9", "-f", "ray::"],
+    ):
+        try:
+            subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning(f"Reaping leftovers with {argv[0]} failed: {type(e).__name__}: {e}")
+
+    time.sleep(_REAP_SETTLE_SECONDS)
