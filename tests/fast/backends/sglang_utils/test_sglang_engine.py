@@ -4,7 +4,7 @@ import shlex
 import sys
 
 import pytest
-from tests.fast.backends.sglang_utils.conftest import make_engine_args
+from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_model_path
 
 pytest.importorskip("sglang")
 
@@ -52,7 +52,7 @@ class TestComputeEngineLaunchCmd:
         assert parsed.host == "10.0.0.1" and parsed.port == 30000
         assert parsed.dist_init_addr == "10.0.0.1:20000"
         assert parsed.gated_launch_port == 20034
-        assert parsed.model_path == "/fake/model"
+        assert parsed.model_path == str(tiny_model_path())
 
     def test_every_plan_picks_a_fresh_random_seed(self):
         """Each launch leaves the seed to sglang, so two plans never share one."""

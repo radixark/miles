@@ -85,7 +85,7 @@ class TestCreate:
         """The initial watch sync must fill in the cells before create() returns."""
         group = await _create_group(num_cells=2)
         try:
-            assert sorted(group._cells_by_index) == [0, 1]
+            assert sorted(cell.cell_index for cell in group._cells_by_id.values()) == [0, 1]
             assert [cell.cell_index for cell in group._cells] == [0, 1]
         finally:
             await group.dispose()
