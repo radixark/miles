@@ -73,15 +73,16 @@ def group_oldest_weight_version(group: Group) -> int | None:
 class DataBuffer:
     """Finished groups waiting between rollout production and training consumption.
 
-    ``max_groups`` bounds how much finished data piles up when production outruns
-    training: on overflow the stalest groups (those beyond ``max_staleness``
-    first) are evicted and their prompts recycled for regeneration, so the
-    producer never blocks and queued data stays fresh. Without ``max_groups``
-    the buffer is a large bounded queue that blocks the producer when full.
+    Supported dataflow/staleness control options:
 
-    ``order`` picks what training consumes next: ``"fifo"`` the oldest finished
-    group, ``"lifo"`` the freshest — closest to on-policy, but old groups then
-    sink, so pair lifo with ``max_groups``/``max_staleness``.
+    (1) max groups: use ``--async-data-buffer-max-batches`` to set the max size
+        of the buffer, in multiples of rollout_batch_size. On overflow the most
+        stale groups are evicted and their prompts recycled for regeneration;
+        0 disables eviction and blocks the producer when the buffer is full.
+    (2) order: use ``--async-data-buffer-order`` to set the consumption order,
+        fifo (default) or lifo. lifo trains on the freshest group first — pair
+        it with (1) and/or ``--max-weight-staleness`` so sunk old groups are
+        evicted rather than eventually trained on.
     """
 
     def __init__(
