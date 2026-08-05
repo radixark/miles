@@ -302,9 +302,7 @@ class TestStartApiServerRegistration:
         assert [handler.cell_type for handler in registry._handlers] == ["actor", "rollout"]
 
     @pytest.mark.asyncio
-    async def test_no_rollout_handler_exists_when_only_training_runs(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_no_rollout_handler_exists_when_only_training_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Train-only launches no engine specs, so enumerating them would assert in the manager."""
         registry = self._start(
             monkeypatch,
