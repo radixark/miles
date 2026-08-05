@@ -170,8 +170,9 @@ class TestEnvironmentVariables:
 
         assert spec.env_var(_make_context())["MY_VAR"] == "1"
 
-    def test_disk_offload_gets_a_directory_per_worker(self):
+    def test_disk_offload_gets_a_directory_per_worker(self, monkeypatch):
         """Two ranks sharing one directory would overwrite each other's offloaded weights."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
         args = _make_args(offload_train=True, offload_train_target="disk")
 
         (spec,) = specs_trainer(args)
