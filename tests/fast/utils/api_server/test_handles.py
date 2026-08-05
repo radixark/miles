@@ -134,7 +134,7 @@ def _make_rollout_handler(
     manager = MockWorkerManager(make_cell_summaries(cell_id, suspended=suspended))
     resolved = status if status is not None else (_running_status(health) if health is not None else None)
     if suspended and status is None:
-        resolved = _SUSPENDED_STATUS
+        resolved = None
     controller = MockInferenceController({cell_id: resolved} if resolved is not None else {})
     return _CellHandler(
         cell_type="rollout",

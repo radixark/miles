@@ -113,7 +113,6 @@ def agent_args(tito_model: str, daytona_sandboxes: bool = False) -> str:
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         f"--tito-model {tito_model} "
         "--use-session-server "
-        "--session-server-port 30000 "
     )
 
 

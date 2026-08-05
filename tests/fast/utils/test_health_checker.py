@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import (
     ActiveAndEpoch,
@@ -681,8 +683,9 @@ class TestDiscardingStaleProbeResults:
         probe_task = checker._probe_task
 
         checker.stop()
-        await asyncio.sleep(0)
 
+        with pytest.raises(asyncio.CancelledError):
+            await probe_task
         assert probe_task.cancelled()
 
 

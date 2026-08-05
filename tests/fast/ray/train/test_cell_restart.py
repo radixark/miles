@@ -1,6 +1,4 @@
 import asyncio
-from collections.abc import Coroutine
-from typing import Any
 
 import pytest
 import ray
@@ -13,21 +11,18 @@ pytestmark = pytest.mark.asyncio
 
 
 class _HangingKillSelfHandle:
+    """A worker handle whose kill_self never returns, so _kill_worker has to time it out."""
+
     def __init__(self) -> None:
         self.kill_self_call_count: int = 0
-        self.kill_self = _HangingRemoteMethod(self)
+        self.wait_dead_call_count: int = 0
 
-
-class _HangingRemoteMethod:
-    def __init__(self, owner: _HangingKillSelfHandle) -> None:
-        self._owner = owner
-
-    def remote(self) -> Coroutine[Any, Any, None]:
-        return self._never_returns()
-
-    async def _never_returns(self) -> None:
-        self._owner.kill_self_call_count += 1
+    async def kill_self(self) -> None:
+        self.kill_self_call_count += 1
         await asyncio.Event().wait()
+
+    async def wait_dead(self, *, timeout: float) -> None:
+        self.wait_dead_call_count += 1
 
 
 class TestCellKillAndRestart:
@@ -75,18 +70,11 @@ class TestKillRpcTimeout:
     async def test_a_hanging_kill_rpc_still_reaches_the_death_confirmation(self, monkeypatch: pytest.MonkeyPatch):
         """When every kill_self RPC hangs, teardown must fall through to the death probe instead of stalling."""
         monkeypatch.setattr(cell_module, "KILL_RPC_TIMEOUT_S", 0.05)
-        cell = make_cell(0)
+        cell = make_cell(2)
         hanging_handles: list[_HangingKillSelfHandle] = [_HangingKillSelfHandle(), _HangingKillSelfHandle()]
-        monkeypatch.setattr(cell, "_get_actor_handles", lambda: hanging_handles)
-
-        confirmed: list[object] = []
-
-        async def _record_confirm(handle: object) -> None:
-            confirmed.append(handle)
-
-        monkeypatch.setattr(cell_module, "_confirm_actor_dead", _record_confirm)
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: hanging_handles)
 
         await asyncio.wait_for(cell._kill_workers_and_confirm_dead(), timeout=10.0)
 
-        assert confirmed == hanging_handles
         assert [handle.kill_self_call_count for handle in hanging_handles] == [1, 1]
+        assert [handle.wait_dead_call_count for handle in hanging_handles] == [1, 1]

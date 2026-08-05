@@ -194,4 +194,4 @@ def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch
 
     assert updater.connect_calls == [engines]
     assert updater.update_weights_calls == 2
-    assert not updater.conn_status.needs_reconnect()
+    assert not updater.conn_status.needs_reconnect({})
