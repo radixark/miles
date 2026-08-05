@@ -15,6 +15,10 @@ on:
         # source of the image name, so a dated tag can't rot here.
         type: string
         required: true
+      checkout_ref:
+        description: Git ref to test. PR callers pass the merge ref explicitly.
+        type: string
+        required: true
       skip_dependency_install:
         # Default true: the ROCm image ships SGLang / Megatron-LM baked in.
         # Pass false to fetch and install refs (PR body ci-megatron-pr: /
@@ -22,6 +26,9 @@ on:
         type: boolean
         required: false
         default: true
+    secrets:
+      WANDB_API_KEY:
+        required: false
 
 jobs:
   run:
@@ -57,12 +64,15 @@ jobs:
         working-directory: ${{ github.workspace }}
     env:
       PYTHONPATH: ${{ github.workspace }}
-      GITHUB_COMMIT_NAME: ${{ github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
+      GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref }}
+          persist-credentials: false
 
       - name: Cleanup Ray processes
         shell: bash
