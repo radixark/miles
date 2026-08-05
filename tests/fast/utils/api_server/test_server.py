@@ -308,12 +308,12 @@ class TestStartApiServerRegistration:
         """Train-only launches no engine specs, so enumerating them would assert in the manager."""
         registry = self._start(
             monkeypatch,
-            ft_components=["rollout"],
+            ft_components=["train", "rollout"],
             cell_ids=["inference-engine-0-0-0"],
             debug_train_only=True,
         )
 
-        assert await registry.list_cells() == []
+        assert [handler.cell_type for handler in registry._handlers] == ["actor"]
 
 
 class TestDynamicCells:

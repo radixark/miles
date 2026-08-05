@@ -99,4 +99,10 @@ class TestLoraTargetModules:
         makes the engine's own argument parser reject the whole launch command."""
         targets = self._parsed_lora_targets(["layers.*.self_attention.in_proj"])
 
-        assert targets == ["all"]
+        assert set(targets) == {"all"}
+
+    def test_a_target_the_lora_runtime_does_not_know_aborts_the_launch(self):
+        """An unmapped module name would otherwise widen to auto-detection, training adapters
+        on every module while the trainer fills none of them for that name."""
+        with pytest.raises(AssertionError, match="nor supported by its LoRA runtime"):
+            self._parsed_lora_targets(["layers.*.self_attention.linear_typo"])

@@ -5,6 +5,7 @@ import os
 import shlex
 import sys
 
+from sglang.srt.lora.utils import _KNOWN_LORA_TARGET_MODULES as KNOWN_LORA_TARGET_MODULES
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils.common import LORA_TARGET_ALL_MODULES, SUPPORTED_LORA_TARGET_MODULES
 
@@ -222,8 +223,18 @@ def _compute_lora_target_modules(args) -> list[str]:
 
     hf_modules = convert_target_modules_to_hf(args.target_modules)
     unspellable = sorted(set(hf_modules) - set(SUPPORTED_LORA_TARGET_MODULES))
-    if unspellable:
-        logger.info(f"Asking SGLang to auto-detect LoRA targets: {unspellable} have no command-line spelling")
-        return [LORA_TARGET_ALL_MODULES]
+    if not unspellable:
+        return hf_modules
 
-    return hf_modules
+    # Auto-detection targets every module the base model exposes, so it is only worth its
+    # cost for names the LoRA runtime really does support. Anything else is a typo or an
+    # unmapped Megatron path, which must keep aborting the launch instead of silently
+    # training adapters the trainer never fills.
+    unsupported = sorted(set(unspellable) - KNOWN_LORA_TARGET_MODULES)
+    assert not unsupported, (
+        f"LoRA target modules {unsupported} are neither spellable on SGLang's command line nor "
+        f"supported by its LoRA runtime; check --target-modules"
+    )
+
+    logger.info(f"Asking SGLang to auto-detect LoRA targets: {unspellable} have no command-line spelling")
+    return [LORA_TARGET_ALL_MODULES]
