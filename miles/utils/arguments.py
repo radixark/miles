@@ -90,12 +90,6 @@ def reset_arg(parser, name, **kwargs):
 
 _FT_CHOICES = ["rollout", "train"]
 
-VERIFIERS_ROLLOUT_FUNCTION_PATH = (
-    "miles.rollout.verifiers_rollout.VerifiersRolloutFn"
-    if enable_experimental_rollout_refactor()
-    else "miles.rollout.verifiers_rollout.generate_rollout"
-)
-
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
@@ -467,15 +461,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "(see `miles.rollout.sglang_rollout.generate_rollout` for the default impl). "
                     "Within each output sample, set at least `tokens`, `response_length`, `reward`, "
                     "and `truncated`."
-                ),
-            )
-            parser.add_argument(
-                "--verifiers-config",
-                type=str,
-                default=None,
-                help=(
-                    "Path to a Verifiers EnvConfig TOML file. Setting this uses the built-in Verifiers "
-                    "rollout and disables Miles prompt-data loading."
                 ),
             )
             parser.add_argument(
@@ -2699,48 +2684,6 @@ def miles_validate_args(args):
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
 
-    if getattr(args, "verifiers_config", None) is not None:
-        if args.rollout_function_path is not None:
-            raise ValueError(
-                "--verifiers-config selects the Verifiers rollout function and cannot be combined "
-                f"with a custom --rollout-function-path ({args.rollout_function_path})."
-            )
-        if args.fully_async:
-            raise ValueError("--verifiers-config and --fully-async each select a rollout function; pass only one.")
-        if args.multi_lora_n_adapters:
-            raise ValueError(
-                "--verifiers-config is not supported with --multi-lora-n-adapters: multi-LoRA "
-                "requires the global prompt dataset and its own rollout function, both of which "
-                "Verifiers replaces."
-            )
-        args.rollout_function_path = VERIFIERS_ROLLOUT_FUNCTION_PATH
-        args.rollout_global_dataset = False
-
-        if args.partial_rollout:
-            raise ValueError(
-                "--partial-rollout is not supported for Verifiers because an episode "
-                "cannot be resumed from partially executed environment state."
-            )
-        if args.multimodal_keys is not None:
-            raise ValueError(
-                "--multimodal-keys is not supported with --verifiers-config. "
-                "The Verifiers transport supports text-only renderer inputs."
-            )
-        unsupported = [
-            flag
-            for enabled, flag in (
-                (args.use_opd, "--use-opd"),
-                (args.use_rollout_routing_replay, "--use-rollout-routing-replay"),
-                (args.use_rollout_indexer_replay, "--use-rollout-indexer-replay"),
-            )
-            if enabled
-        ]
-        if unsupported:
-            raise ValueError(
-                f"{', '.join(unsupported)} is not supported with --verifiers-config because "
-                "the Verifiers SGLang transport does not preserve its additional token metadata."
-            )
-
     if args.mini_ft_controller_enable and args.control_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
 
@@ -2835,12 +2778,6 @@ def miles_validate_args(args):
         if not os.path.isfile(args.chat_template_path):
             raise FileNotFoundError(f"--chat-template-path file not found: {args.chat_template_path}")
         args.sglang_chat_template = args.chat_template_path
-        if args.verifiers_config is not None:
-            raise ValueError(
-                "--chat-template-path is not supported with --verifiers-config because renderers "
-                "does not accept a custom Jinja template. Use the checkpoint's template and "
-                "--apply-chat-template-kwargs."
-            )
 
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):
@@ -2922,7 +2859,7 @@ def miles_validate_args(args):
                 args.ckpt_step = args.ref_ckpt_step
             args.start_rollout_id = 0
 
-    if args.eval_interval is not None and args.verifiers_config is None:
+    if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
 
     if args.eval_num_gpus > 0:

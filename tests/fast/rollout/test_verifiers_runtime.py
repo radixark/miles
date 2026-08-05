@@ -10,12 +10,11 @@ if sys.version_info < (3, 11):
 pytest.importorskip("verifiers", minversion="0.2.0")
 pytest.importorskip("renderers", minversion="0.1.8")
 
+from examples.experimental.verifiers.verifiers_rollout import MilesSGLangTransport
 from verifiers.v1.clients.train import TrainClient
 from verifiers.v1.dialects import ChatDialect, ResponsesDialect
 from verifiers.v1.env import EnvConfig, Environment
 from verifiers.v1.types import SamplingConfig
-
-from miles.rollout.verifiers_rollout import MilesSGLangTransport
 
 
 def _args(**overrides):

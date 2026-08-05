@@ -1,7 +1,18 @@
+"""Verifiers V1 rollout adapter: Verifiers owns grouped episode execution and
+reward computation, Miles owns everything around it.
+
+Wire it up with ``--rollout-function-path verifiers_rollout.VerifiersRolloutFn``
+(or ``.generate_rollout`` without ``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR``) plus
+``--disable-rollout-global-dataset``, and point ``VERIFIERS_CONFIG`` at a
+Verifiers ``EnvConfig`` TOML file. ``run.py`` in this directory does all of
+that; see README.md.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import sys
 import uuid
@@ -36,6 +47,7 @@ _MIN_VERIFIERS_VERSION = Version("0.2.0")
 _MAX_VERIFIERS_VERSION = Version("0.2.1")
 _MIN_RENDERERS_VERSION = Version("0.1.8")
 _UNSUPPORTED_ERROR_PREFIX = "Miles' Verifiers adapter does not support"
+_CONFIG_ENV_VAR = "VERIFIERS_CONFIG"
 
 
 def _load_config_data(path: str) -> dict[str, Any]:
@@ -239,7 +251,7 @@ def _finish_reason(output: dict[str, Any]) -> str:
 
 
 class MilesSGLangTransport:
-    """Translate Renderers' vLLM generate wire format to Miles' SGLang endpoint."""
+    """Translate Renderers' /inference/v1/generate wire format to Miles' SGLang endpoint."""
 
     def __init__(self, args: Namespace, *, router_args: Namespace | None = None):
         self.args = args
@@ -254,8 +266,9 @@ class MilesSGLangTransport:
         return f"{_generate_url(self.router_args, '').rstrip('/')}/v1"
 
     async def get(self, _path: str, **_kwargs) -> dict[str, list[Any]]:
-        # Renderers can discover a vLLM context cap here. Miles owns separate
-        # prompt and response limits, so the transport enforces them at POST time.
+        # Renderers probes this endpoint for an engine context cap (max_model_len).
+        # Miles owns separate prompt and response limits, so the transport
+        # enforces them at POST time.
         return {"data": []}
 
     def _sampling_params(self, raw: dict[str, Any], prompt_len: int) -> dict[str, Any]:
@@ -519,12 +532,66 @@ def _make_eval_args(args: Namespace) -> Namespace:
     return eval_args
 
 
+def _config_path() -> str:
+    path = os.environ.get(_CONFIG_ENV_VAR)
+    if not path:
+        raise ValueError(
+            f"Verifiers rollouts need {_CONFIG_ENV_VAR} set to a Verifiers EnvConfig TOML file. "
+            "Launch through run.py in this directory, or forward the variable yourself "
+            "(Ray runtime_env for a hand-rolled command)."
+        )
+    return path
+
+
+def _validate_args(args: Namespace) -> None:
+    """Reject the Miles options this adapter cannot honor.
+
+    run.py never builds these combinations; this catches a hand-rolled command
+    before an episode runs and produces silently wrong training data.
+    """
+    if getattr(args, "rollout_global_dataset", False):
+        raise ValueError(
+            "Verifiers rollouts replace Miles prompt data with the configured taskset; "
+            "pass --disable-rollout-global-dataset."
+        )
+    if args.partial_rollout:
+        raise ValueError(
+            "--partial-rollout is not supported for Verifiers because an episode "
+            "cannot be resumed from partially executed environment state."
+        )
+    if args.multimodal_keys is not None:
+        raise ValueError(
+            "--multimodal-keys is not supported by the Verifiers transport, which "
+            "handles text-only renderer inputs."
+        )
+    if args.chat_template_path is not None:
+        raise ValueError(
+            "--chat-template-path is not supported because renderers does not accept a custom "
+            "Jinja template. Use the checkpoint's template and --apply-chat-template-kwargs."
+        )
+    unsupported = [
+        flag
+        for enabled, flag in (
+            (args.use_opd, "--use-opd"),
+            (args.use_rollout_routing_replay, "--use-rollout-routing-replay"),
+            (getattr(args, "use_rollout_indexer_replay", False), "--use-rollout-indexer-replay"),
+        )
+        if enabled
+    ]
+    if unsupported:
+        raise ValueError(
+            f"{', '.join(unsupported)} is not supported by the Verifiers SGLang transport, "
+            "which does not preserve its additional token metadata."
+        )
+
+
 class VerifiersRolloutFn:
     def __init__(self, input: RolloutFnConstructorInput):
         runtime = _import_verifiers()
         self.args = input.args
         self.data_source = input.data_source
-        self.config = runtime.EnvConfig.model_validate(_load_config_data(self.args.verifiers_config))
+        _validate_args(self.args)
+        self.config = runtime.EnvConfig.model_validate(_load_config_data(_config_path()))
         if self.config.is_legacy:
             raise ValueError("Miles' Verifiers integration supports V1 environment configs only.")
         if self.config.harness.id == "codex":

@@ -9,10 +9,10 @@ requires OpenAI 2.9 or newer, while SGLang 0.5.15 pins OpenAI 2.6.1.
 
 ## Install
 
-Install the optional dependencies with Miles and install the Prime CLI:
+Install the adapter's dependencies and the Prime CLI:
 
 ```bash
-pip install -e '.[verifiers]'
+pip install -r examples/experimental/verifiers/requirements.txt
 uv tool install prime
 ```
 
@@ -54,16 +54,21 @@ configs are rejected during startup.
 
 ## Run
 
-Add one option to a normal Miles training command:
+The integration is a rollout function under
+[`examples/experimental/verifiers`](https://github.com/radixark/miles/tree/main/examples/experimental/verifiers);
+its launcher wires everything up:
 
 ```bash
---verifiers-config /path/to/verifiers.toml
+python examples/experimental/verifiers/run.py --verifiers-config /path/to/verifiers.toml
 ```
 
-This uses the configured taskset instead of Miles prompt data. Environment behavior
-comes from the Verifiers config, while Miles continues to own the model, sampling,
-batching, concurrency, reward hooks, and optimizer settings. The Renderers library
-formats environment messages with Miles' model and tokenizer settings.
+The launcher selects the adapter with `--rollout-function-path`, turns off Miles
+prompt-data loading with `--disable-rollout-global-dataset`, and points
+`VERIFIERS_CONFIG` at the file. This uses the configured taskset instead of Miles
+prompt data. Environment behavior comes from the Verifiers config, while Miles
+continues to own the model, sampling, batching, concurrency, reward hooks, and
+optimizer settings. The Renderers library formats environment messages with Miles'
+model and tokenizer settings.
 
 The standard Miles rollout options keep their existing meaning:
 
@@ -94,17 +99,23 @@ Verifiers group rewards apply during both training and evaluation. Miles
 
 ## Limitations
 
+`--eval-interval` works through the launcher, which evaluates the whole taskset at
+that interval. Miles asserts that eval datasets are configured whenever the flag is
+set, so the launcher passes a placeholder `--eval-prompt-data` naming the taskset and
+pointing at its EnvConfig; the adapter serves evaluation, so the built-in loader never
+opens that path.
+
 `--partial-rollout` is not supported. A Verifiers episode owns live harness and
-environment state and has no contract for resuming a partially executed episode. Miles
-rejects this combination during argument validation.
+environment state and has no contract for resuming a partially executed episode. The
+adapter rejects this combination when it is constructed, before any episode runs.
 
 `--chat-template-path` is also rejected because Renderers owns message formatting for
 Verifiers environments. Use the checkpoint's native template and
 `--apply-chat-template-kwargs` instead.
 
 Streaming model requests, Responses and Anthropic dialects, multimodal inputs, OPD,
-routing replay, and indexer replay are not supported by the transport. Miles
-rejects the corresponding CLI options when they can be detected during startup.
+routing replay, and indexer replay are not supported by the transport. The adapter
+rejects the corresponding CLI options at startup.
 
 Traces with multiple graph branches, including compaction, are rejected. Miles does
 not currently preserve a trace's rollout-group boundary when it flattens multiple

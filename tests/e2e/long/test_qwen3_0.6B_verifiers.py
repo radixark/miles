@@ -20,12 +20,15 @@ MODEL_DIR = Path(os.environ.get("MILES_E2E_MODEL_DIR", "/root/models"))
 MEGATRON_PATH = Path(os.environ.get("MILES_E2E_MEGATRON_PATH", "/root/Megatron-LM"))
 RUN_DIR = Path(os.environ.get("MILES_E2E_RUN_DIR", "/tmp/miles-verifiers-e2e"))
 VERIFIERS_DIR = Path("/tmp/verifiers-v0.2.0")
+ADAPTER_DIR = Path(U.repo_base_dir) / "examples" / "experimental" / "verifiers"
 
 
 def prepare():
     U.exec_command(f"mkdir -p {MODEL_DIR} {RUN_DIR}")
     U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
-    U.exec_command(f"{sys.executable} -m pip install -e '{U.repo_base_dir}[verifiers]'")
+    U.exec_command(
+        f"{sys.executable} -m pip install -r {U.repo_base_dir}/examples/experimental/verifiers/requirements.txt"
+    )
     U.exec_command("uv tool install 'prime==0.6.19'")
     if not VERIFIERS_DIR.exists():
         U.exec_command(
@@ -58,7 +61,8 @@ def execute():
             f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}",
             "--sglang-tokenizer-path Qwen/Qwen3-0.6B",
             f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist",
-            f"--verifiers-config {config_path}",
+            "--rollout-function-path verifiers_rollout.generate_rollout",
+            "--disable-rollout-global-dataset",
             "--num-rollout 1",
             "--rollout-batch-size 3",
             "--n-samples-per-prompt 4",
@@ -99,7 +103,11 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "0"},
+        extra_env_vars={
+            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "0",
+            "PYTHONPATH": f"{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}",
+            "VERIFIERS_CONFIG": str(config_path),
+        },
         megatron_path=str(MEGATRON_PATH),
     )
     verify(dump_dir)

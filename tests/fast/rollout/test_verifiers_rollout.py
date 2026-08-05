@@ -10,10 +10,11 @@ from packaging.version import Version
 if sys.version_info < (3, 11):
     pytest.skip("Verifiers requires Python 3.11+", allow_module_level=True)
 
-from miles.rollout.verifiers_rollout import (
+from examples.experimental.verifiers.verifiers_rollout import (
     MilesSGLangTransport,
     VerifiersRolloutFn,
     _check_version,
+    _config_path,
     _finish_reason,
     _load_config_data,
     _make_eval_args,
@@ -21,10 +22,12 @@ from miles.rollout.verifiers_rollout import (
     _renderer_identity,
     _trace_eval_reward,
     _train_client,
+    _validate_args,
     _validate_group_reward_sample_counts,
     trace_to_sample,
     trace_to_samples,
 )
+
 from miles.utils.types import Sample
 
 
@@ -75,6 +78,54 @@ def _trace(**overrides):
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def _wiring_args(**overrides) -> Namespace:
+    values = {
+        "rollout_global_dataset": False,
+        "partial_rollout": False,
+        "multimodal_keys": None,
+        "chat_template_path": None,
+        "use_opd": False,
+        "use_rollout_routing_replay": False,
+        "use_rollout_indexer_replay": False,
+    }
+    values.update(overrides)
+    return Namespace(**values)
+
+
+def test_supported_wiring_passes_validation():
+    _validate_args(_wiring_args())
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"rollout_global_dataset": True}, "--disable-rollout-global-dataset"),
+        ({"partial_rollout": True}, "cannot be resumed"),
+        ({"multimodal_keys": {"image": "image"}}, "text-only renderer inputs"),
+        ({"chat_template_path": "/tmp/custom.jinja"}, "custom\n?\s*Jinja template"),
+        ({"use_opd": True}, "--use-opd"),
+        ({"use_rollout_routing_replay": True}, "--use-rollout-routing-replay"),
+        ({"use_rollout_indexer_replay": True}, "--use-rollout-indexer-replay"),
+    ],
+)
+def test_unsupported_wiring_fails_before_any_episode_runs(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        _validate_args(_wiring_args(**overrides))
+
+
+def test_config_path_comes_from_the_environment(monkeypatch):
+    monkeypatch.setenv("VERIFIERS_CONFIG", "/tmp/vf.toml")
+
+    assert _config_path() == "/tmp/vf.toml"
+
+
+def test_missing_config_env_var_names_the_variable(monkeypatch):
+    monkeypatch.delenv("VERIFIERS_CONFIG", raising=False)
+
+    with pytest.raises(ValueError, match="VERIFIERS_CONFIG"):
+        _config_path()
 
 
 def test_config_loader_uses_verifiers_toml_format(tmp_path):

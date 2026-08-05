@@ -52,12 +52,6 @@ setup(
         "mlflow": [
             "mlflow>=2.0",
         ],
-        "verifiers": [
-            "verifiers>=0.2.0,<0.2.1",
-            "renderers>=0.1.8",
-            # SGLang 0.5.15 pins OpenAI 2.6.1; newer Verifiers and Agents require a newer SDK.
-            "openai-agents<0.5",
-        ],
         # standalone offline serving; the training image already has these via
         # sglang, and polars is a base requirement (used by the collector)
         "dashboard": [

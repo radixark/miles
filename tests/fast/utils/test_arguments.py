@@ -9,7 +9,6 @@ import pytest
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
-    VERIFIERS_ROLLOUT_FUNCTION_PATH,
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
     get_miles_extra_args_provider,
@@ -163,95 +162,6 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
 
     assert args.recompute_logprobs_via_prefill is True
-
-
-def test_verifiers_config_is_parsed():
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
-
-    args = parser.parse_args(["--verifiers-config", "vf.toml"] + REQUIRED_ARGS)
-
-    assert args.verifiers_config == "vf.toml"
-    assert VERIFIERS_ROLLOUT_FUNCTION_PATH.startswith("miles.rollout.verifiers_rollout.")
-
-
-def _parse_verifiers_args(*extra: str):
-    parser = argparse.ArgumentParser()
-    get_miles_extra_args_provider()(parser)
-    return parser.parse_args(
-        [
-            "--verifiers-config",
-            "vf.toml",
-            "--num-rollout",
-            "1",
-            *extra,
-        ]
-        + REQUIRED_ARGS
-    )
-
-
-def test_verifiers_validation_selects_adapter_and_disables_prompt_dataset():
-    args = _parse_verifiers_args("--hf-checkpoint", "test/model")
-
-    miles_validate_args(args)
-
-    assert args.rollout_function_path == VERIFIERS_ROLLOUT_FUNCTION_PATH
-    assert args.rollout_global_dataset is False
-
-
-def test_verifiers_validation_rejects_partial_rollout():
-    args = _parse_verifiers_args("--partial-rollout")
-
-    with pytest.raises(ValueError, match="cannot be resumed"):
-        miles_validate_args(args)
-
-
-@pytest.mark.parametrize(
-    "flag",
-    ["--use-opd", "--use-rollout-routing-replay", "--use-rollout-indexer-replay"],
-)
-def test_verifiers_validation_rejects_unpreserved_token_metadata(flag):
-    args = _parse_verifiers_args(flag)
-
-    with pytest.raises(ValueError, match="additional token metadata"):
-        miles_validate_args(args)
-
-
-def test_verifiers_validation_rejects_multimodal_dataset_mapping():
-    args = _parse_verifiers_args("--multimodal-keys", '{"image": "image"}')
-
-    with pytest.raises(ValueError, match="text-only renderer inputs"):
-        miles_validate_args(args)
-
-
-def test_verifiers_validation_rejects_custom_chat_template(tmp_path):
-    template = tmp_path / "custom.jinja"
-    template.write_text("{{ messages }}")
-    args = _parse_verifiers_args("--chat-template-path", str(template))
-
-    with pytest.raises(ValueError, match="renderers does not accept a custom Jinja template"):
-        miles_validate_args(args)
-
-
-def test_verifiers_validation_rejects_custom_rollout_function():
-    args = _parse_verifiers_args("--rollout-function-path", "my_module.generate_rollout")
-
-    with pytest.raises(ValueError, match="custom --rollout-function-path"):
-        miles_validate_args(args)
-
-
-def test_verifiers_validation_rejects_fully_async():
-    args = _parse_verifiers_args("--fully-async")
-
-    with pytest.raises(ValueError, match="each select a rollout function"):
-        miles_validate_args(args)
-
-
-def test_verifiers_validation_rejects_multi_lora():
-    args = _parse_verifiers_args("--multi-lora-n-adapters", "2")
-
-    with pytest.raises(ValueError, match="multi-LoRA"):
-        miles_validate_args(args)
 
 
 def test_sglang_parallel_sizes_keep_server_args_destinations():
