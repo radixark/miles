@@ -269,10 +269,6 @@ class UpdateWeightFromTensor:
                 refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
                 results = ray.get(refs)
                 _check_weight_sync_results(results, is_lora=False)
-                # Reap CUDA-IPC pending frees; under torch_memory_saver
-                # offload nothing else triggers the lazy reap (leaks ~full
-                # export size per round otherwise).
-                torch.cuda.ipc_collect()
                 del long_lived_tensors
 
             mm_tower_tensors = self._mm_tower_named_tensors()
@@ -309,8 +305,6 @@ class UpdateWeightFromTensor:
             _check_weight_sync_results(results, is_lora=True)
             del long_lived_tensors
             del accumulated_named_tensors
-            # Reap CUDA-IPC pending frees; under torch_memory_saver
-            # offload nothing else triggers the lazy reap.
             torch.cuda.ipc_collect()
             torch.cuda.empty_cache()
 
