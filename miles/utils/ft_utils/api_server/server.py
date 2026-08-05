@@ -41,7 +41,7 @@ def start_api_server(
             )
         )
 
-    if "rollout" in ft_components:
+    if "rollout" in ft_components and not args.debug_train_only:
         handlers.append(
             _CellHandler(
                 cell_type="rollout",

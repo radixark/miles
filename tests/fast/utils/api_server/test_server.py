@@ -236,6 +236,7 @@ class TestStartApiServerRegistration:
         ft_components: list[str],
         cell_ids: list[str],
         actor_cells: list[MockTrainerCell] | None = None,
+        debug_train_only: bool = False,
     ) -> _CellRegistry:
         manager = MockWorkerManager(make_cell_summaries(*cell_ids))
         registries: list[_CellRegistry] = []
@@ -244,7 +245,7 @@ class TestStartApiServerRegistration:
         monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
 
         server.start_api_server(
-            args=SimpleNamespace(),
+            args=SimpleNamespace(debug_train_only=debug_train_only),
             actor_model=make_mock_controller(actor_cells if actor_cells is not None else []),
             inference_controller=MockInferenceController(
                 {cell_id: compute_pending_rollout_cell_status() for cell_id in cell_ids}
@@ -299,6 +300,20 @@ class TestStartApiServerRegistration:
         registry = self._start(monkeypatch, ft_components=["train", "rollout"], cell_ids=["inference-engine-0-0-0"])
 
         assert [handler.cell_type for handler in registry._handlers] == ["actor", "rollout"]
+
+    @pytest.mark.asyncio
+    async def test_no_rollout_handler_exists_when_only_training_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Train-only launches no engine specs, so enumerating them would assert in the manager."""
+        registry = self._start(
+            monkeypatch,
+            ft_components=["rollout"],
+            cell_ids=["inference-engine-0-0-0"],
+            debug_train_only=True,
+        )
+
+        assert await registry.list_cells() == []
 
 
 class TestDynamicCells:
