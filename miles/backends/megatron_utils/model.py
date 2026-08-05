@@ -537,11 +537,7 @@ def train_one_step(
             }
 
             if args.enable_mtp_training:
-                # Megatron-core's MTP loss expects next-token-shifted labels
-                # (labels[i] == token[i+1]); it rolls -1 once more per MTP depth.
-                # Raw tokens would make the MTP target off-by-one and blow up
-                # mtp_loss against the pretrained MTP head, so pre-shift here.
-                forward_kwargs["mtp_kwargs"] = {"mtp_labels": torch.roll(batch["tokens"], shifts=-1, dims=-1)}
+                forward_kwargs["mtp_kwargs"] = {"mtp_labels": batch["tokens"]}
 
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
