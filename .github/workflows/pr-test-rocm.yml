@@ -3,7 +3,17 @@ name: PR Test (ROCm)
 
 # ROCm counterpart to pr-test.yml. Same structure, different GPU stage:
 # calls _run-ci-rocm.yml instead of _run-ci.yml, using the ROCm container
-# with HIP/CUDA compatibility to run the same CUDA-registered test suites.
+# with HIP/CUDA compatibility.
+#
+# Test selection is explicit rather than inherited from the CUDA suites:
+# the stage dispatches --hw rocm --suite stage-c-4-gpu-mi300x, so a test
+# runs here only if it carries a matching register_rocm_ci() call. Every
+# such registration also carries the `amd` label, so --labels amd
+# --match-all-labels selects exactly the AMD set.
+#
+# The MI300X host is split into two 4-GPU runners, so this stage is 4-GPU.
+# CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
+# own 4-GPU CaseConfig rather than an IS_HIP branch in the original.
 #
 # Currently workflow_dispatch-only while the MI300x runner is being
 # stabilized. Before adding `pull_request:` or `schedule:` triggers, gate
@@ -52,15 +62,15 @@ jobs:
           echo "container_image=rocm/sgl-dev:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
 
-  stage-c-8-gpu-mi300x:
+  stage-c-4-gpu-mi300x:
     needs: [resolve-ci-image]
     if: github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
-      runs_on: '["self-hosted", "rocm", "mi300x", "8gpu"]'
+      runs_on: '["self-hosted", "amd", "mi300x", "4gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: >-
-        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
-        --match-all-labels
+        python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi300x
+        --labels amd --match-all-labels
         --enable-retry --max-attempts 2
     secrets: inherit

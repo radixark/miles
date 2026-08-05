@@ -15,7 +15,7 @@ The mapping is kept in sync by hand on both sides:
 - A `suite=` with no matching job never runs.
 - A stage job whose suite no test uses runs zero tests and exits 0 (intended during incremental migration).
 
-Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e.g. `stage-a-cpu`): `tier ∈ {a, b, c}` classifies cost/role, `gpus` is the GPU count the test needs, `hw ∈ {cpu, h100, h200}` is the hardware class.
+Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e.g. `stage-a-cpu`): `tier ∈ {a, b, c}` classifies cost/role, `gpus` is the GPU count the test needs, `hw ∈ {cpu, h100, h200, mi300x, mi350}` is the hardware class.
 
 ## Stage roster
 
@@ -61,10 +61,16 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 ## ROCm mirror (dispatch-only)
 
-`pr-test-rocm.yml` is a `workflow_dispatch`-only mirror of the GPU path for AMD MI300X runners: its `resolve-ci-image` (image family `rocm/sgl-dev:<tag>`) feeds one stage, `stage-c-8-gpu-mi300x`, which calls `_run-ci-rocm.yml` — the ROCm counterpart of `_run-ci.yml` (ROCm device flags, `rocm-smi` GPU-ready wait, no CPU job). It runs the CUDA-registered `stage-c-8-gpu-h100` suite via HIP/CUDA compatibility, unsharded — the one deliberate exception to the 1:1 suite ↔ stage mapping — and is not part of PR gating. SGLang / Megatron-LM versions come baked into the ROCm image (`skip_dependency_install` defaults to `true` in `_run-ci-rocm.yml`), so the dispatch has no dependency-override inputs.
+`pr-test-rocm.yml` is a `workflow_dispatch`-only mirror of the GPU path for AMD MI300X runners: its `resolve-ci-image` (image family `rocm/sgl-dev:<tag>`) feeds one stage, `stage-c-4-gpu-mi300x`, which calls `_run-ci-rocm.yml` — the ROCm counterpart of `_run-ci.yml` (ROCm device flags, `rocm-smi` GPU-ready wait, no CPU job). It runs unsharded and is not part of PR gating. SGLang / Megatron-LM versions come baked into the ROCm image (`skip_dependency_install` defaults to `true` in `_run-ci-rocm.yml`), so the dispatch has no dependency-override inputs.
+
+**Selection is explicit.** A test runs on MI300X only if it carries `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)`; nothing is inherited from the CUDA roster. Enabling or disabling a test there is a one-line change in the test file, independent of its CUDA registration. Every ROCm registration also carries the `amd` label, so `--labels amd --match-all-labels` selects exactly the AMD set.
+
+**The stage is 4-GPU, not 8.** The MI300X host is split into two 4-GPU runners (`svr08-mi300x-4gpu-0` / `-1`) so two jobs run concurrently; MI300X's 192 GB per GPU means 4 of them carry more HBM than the 8×80 GB H100 node many of these cases were tuned for. A CUDA test that needs 8 GPUs therefore cannot be registered here directly. Instead it gets a **standalone `test_amd_<name>.py`** beside the original, carrying its own 4-GPU `CaseConfig`. The original CUDA test is never branched on `IS_HIP` — the AMD variant is a separate file with a separate registration, so neither side constrains the other.
+
+**GPU partitioning.** `_run-ci-rocm.yml` passes `--device=/dev/dri`, so the job container sees all 8 GPUs regardless of which render nodes the runner container holds; the split is enforced at the HIP layer instead. Each runner sets `HIP_VISIBLE_DEVICES` to its half (`0,1,2,3` / `4,5,6,7`) and `_run-ci-rocm.yml` carries a bare `--env HIP_VISIBLE_DEVICES` to forward it into the job container — the ROCm analogue of `--env CUDA_VISIBLE_DEVICES` in `_run-ci.yml`. miles honours it (`miles/ray/train_actor.py`, `miles/backends/sglang_utils/sglang_engine.py` read `CUDA_VISIBLE_DEVICES` or `HIP_VISIBLE_DEVICES`). Without that forwarding both concurrent jobs would claim all 8 GPUs.
 
 ## Assumptions
 
-- Suite ↔ stage stays 1:1 and is kept in sync manually across `run_suite.py` and `pr-test.yml` (the ROCm mirror above deliberately reuses `stage-c-8-gpu-h100`).
+- Suite ↔ stage stays 1:1 and is kept in sync manually across `run_suite.py`, `pr-test.yml`, and `pr-test-rocm.yml`. The `stage-c-*-mi350` suites are the standing exception: they are declared in `CI_SUITES` but have no stage job in any workflow, so nothing dispatches them today.
 - Runner placement assumes the live fleet actually carries the requested `runs_on` labels for each GPU class and count.
 - `est_time` only affects shard balancing and per-file timeout, never pass/fail.
