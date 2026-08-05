@@ -23,7 +23,7 @@ def test_qwen3_script_true_on_policy_single_knob_expands_to_megatron_contract(mo
     assert args.sglang_rl_on_policy_target is None
     assert args.use_sequence_parallel is False
 
-    run_qwen3_4b.execute(args)
+    run_qwen3_4b._execute_train(args)
 
     train_args = captured["train_args"]
     env_vars = captured["extra_env_vars"]
@@ -71,7 +71,7 @@ def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatc
     assert args.sglang_rl_on_policy_target is None
     assert args.use_sequence_parallel is False
 
-    run_qwen3_4b.execute(args)
+    run_qwen3_4b._execute_train(args)
 
     train_args = captured["train_args"]
     env_vars = captured["extra_env_vars"]
@@ -115,7 +115,7 @@ def test_qwen3_script_off_policy_does_not_emit_true_on_policy_contract(monkeypat
         use_kl_loss=False,
     )
 
-    run_qwen3_4b.execute(args)
+    run_qwen3_4b._execute_train(args)
 
     train_args = captured["train_args"]
     env_vars = captured["extra_env_vars"]

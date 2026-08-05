@@ -13,6 +13,7 @@ def _values() -> dict[str, Any]:
             "image": "miles:dev",
             "sharedStorage": {"claimName": "cluster-storage"},
         },
+        "adhoc": {"enabled": False, "name": "", "completions": 1},
         "run": {
             "id": "260101-000000-000",
             "orchestrator": {"command": ["python", "train.py", "--x", "1"]},
@@ -104,6 +105,18 @@ class TestRefusals:
         )
 
         assert diff.changed == ["infra.sharedStorage.claimName"]
+
+    def test_refuses_an_adhoc_section_that_woke_up(self):
+        """An upgrade rendering an adhoc Job would run that adhoc command against a run already training."""
+        diff = elastic.diff_values(_values(), _mutated(lambda values: values["adhoc"].update(enabled=True)))
+
+        assert diff.changed == ["adhoc.enabled"]
+
+    def test_refuses_a_changed_adhoc_detail(self):
+        """Everything outside the two replica counts is part of what the run already is."""
+        diff = elastic.diff_values(_values(), _mutated(lambda values: values["adhoc"].update(completions=4)))
+
+        assert not diff.is_allowed
 
     def test_refuses_a_changed_run_id(self):
         """A different id is a different run, and upgrading in place would hide that entirely."""

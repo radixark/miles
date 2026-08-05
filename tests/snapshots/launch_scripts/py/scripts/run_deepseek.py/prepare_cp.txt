@@ -1,0 +1,7 @@
+### 0
+[multi_node num_nodes=None] mkdir -p /root/local_data/DeepSeek-V3_torch_dist && rsync -a
+  --info=progress2 /root/models/DeepSeek-V3_torch_dist/ /root/local_data/DeepSeek-V3_torch_dist
+
+### 1
+[multi_node num_nodes=None] mkdir -p /root/local_data/DeepSeek-V3 && rsync -a
+  --info=progress2 /root/models/DeepSeek-V3/ /root/local_data/DeepSeek-V3

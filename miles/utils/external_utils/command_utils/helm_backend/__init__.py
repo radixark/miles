@@ -7,13 +7,12 @@ from typing import Any
 
 from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.arguments import parse_args_from_argv
-from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend, ExecuteTrainRequest
+from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend, ExecuteTrainRequest, use_backend
 from miles.utils.external_utils.command_utils.common import repo_base_dir
-from miles.utils.external_utils.command_utils.helm_backend import launcher
+from miles.utils.external_utils.command_utils.helm_backend import adhoc, helm, launcher
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.run_uuid import RUN_UUID_LENGTH
 from miles.utils.workers.types import ClusterBackend
-
 
 _RUN_ID_PATTERN = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?")
 
@@ -21,9 +20,22 @@ CLUSTER_BACKEND_FLAG = "--cluster-backend"
 
 
 class KubernetesCommandBackend(BaseCommandBackend):
+    def __init__(self) -> None:
+        self._adhoc_context: adhoc.AdhocContext | None = None
+
+    def prepare_for(self, config: Any) -> None:
+        assert config.namespace, "set ExecuteTrainConfig.namespace to install the run somewhere"
+        self._adhoc_context = adhoc.AdhocContext(
+            namespace=config.namespace,
+            chart_dir=str(helm.chart_dir(repo_base_dir)),
+            infra_values_files=tuple(config.infra_values),
+        )
+
     def execute_train(self, request: ExecuteTrainRequest) -> None:
         config = request.config
-        assert config.namespace, "set ExecuteTrainConfig.namespace to install the run somewhere"
+        self.prepare_for(config)
+        self._adhoc_context = self._context().model_copy(update={"gpus_per_node": request.num_gpus_per_node})
+        use_backend(self)
 
         run_id = stable_run_id(config)
         train_argv = with_run_uuid(
@@ -56,6 +68,32 @@ class KubernetesCommandBackend(BaseCommandBackend):
         exit_code = launcher.follow_until_finished(run)
         if exit_code != 0:
             raise SystemExit(exit_code)
+
+    def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None:
+        return adhoc.run_locally(cmd, capture_output=capture_output)
+
+    def exec_command_gpu(self, cmd: str, capture_output: bool = False) -> str | None:
+        return adhoc.run_on_one_gpu_node(self._context(), cmd, capture_output=capture_output)
+
+    def exec_command_multi_node(
+        self, cmd: str, capture_output: bool = False, num_nodes: int | None = None
+    ) -> list[str | None]:
+        context = self._context()
+        return adhoc.run_on_nodes(
+            context,
+            cmd,
+            capture_output=capture_output,
+            completions=num_nodes or 1,
+            gpus_per_pod=context.gpus_per_node,
+            step="step",
+        )
+
+    def _context(self) -> adhoc.AdhocContext:
+        assert self._adhoc_context is not None, (
+            "the Kubernetes backend runs adhoc commands as Jobs on the namespace of the run it is "
+            "launching, so execute_train has to have chosen that namespace first"
+        )
+        return self._adhoc_context
 
 
 def stable_run_id(config: Any) -> str:

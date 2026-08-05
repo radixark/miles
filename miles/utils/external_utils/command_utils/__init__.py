@@ -7,6 +7,10 @@ from miles.utils.external_utils.command_utils.base_backend import (
     BaseCommandBackend,
     ExecuteTrainConfig,
     ExecuteTrainRequest,
+    exec_command_cpu,
+    exec_command_gpu,
+    exec_command_multi_node,
+    use_backend,
 )
 from miles.utils.external_utils.command_utils.common import (
     GENERATION_HARDWARE,
@@ -31,11 +35,10 @@ from miles.utils.external_utils.command_utils.common import (
     rsync_simple,
     start_mooncake_master,
 )
-from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.http_utils import wait_for_server_ready
-from miles.utils.typer_utils import dataclass_cli
+from miles.utils.typer_utils import dataclass_cli, register_post_init_hook
 from miles.utils.workers.types import ClusterBackend
 
 __all__ = [
@@ -71,6 +74,8 @@ __all__ = [
     "rsync_simple",
     "shell_safe_model_args",
     "start_mooncake_master",
+    "install_cluster_backend",
+    "use_backend",
     "wait_for_server_ready",
     "_is_tcp_server_ready",
 ]
@@ -104,6 +109,18 @@ def _resolve_backend(cluster_backend: str, *, train_args: str) -> BaseCommandBac
 
     assert cluster_backend in _BACKEND_CLASS_NAMES, f"unknown cluster backend {cluster_backend!r}"
     return __getattr__(_BACKEND_CLASS_NAMES[cluster_backend])()
+
+
+def install_cluster_backend(config: object) -> None:
+    if not isinstance(config, ExecuteTrainConfig):
+        return
+    backend = __getattr__(_BACKEND_CLASS_NAMES[config.cluster_backend])()
+    if hasattr(backend, "prepare_for"):
+        backend.prepare_for(config)
+    use_backend(backend)
+
+
+register_post_init_hook(install_cluster_backend)
 
 
 def execute_train(

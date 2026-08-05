@@ -3,6 +3,7 @@ from tests.fast.charts.utils import (
     RUN_ID,
     RUN_RELEASE_NAME,
     named_object,
+    objects_of_kind,
     only_container_of,
     pod_spec_of,
     render_run,
@@ -71,6 +72,10 @@ class TestOrchestrator:
     def test_refuses_a_run_with_nowhere_to_write_its_outcome(self):
         """The launcher learns the outcome by reading the exit file, which needs a shared volume."""
         assert "sharedStorage" in render_run_error("--set", "infra.sharedStorage.type=none")
+
+    def test_ships_no_job_in_a_normal_install(self):
+        """Adhoc jobs are applied on their own; installing one with a run would rerun it on every upgrade."""
+        assert objects_of_kind(render_run(), "Job") == []
 
 
 @requires_helm

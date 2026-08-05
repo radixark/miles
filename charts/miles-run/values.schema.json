@@ -152,6 +152,29 @@
         "inferenceEngines": {"type": "array", "items": {"$ref": "#/definitions/pool"}},
         "trainers": {"type": "array", "items": {"$ref": "#/definitions/pool"}}
       }
+    },
+    "adhoc": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "name": {"type": "string", "maxLength": 40, "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"},
+        "objectName": {"type": "string", "maxLength": 63, "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"},
+        "command": {"type": "array", "items": {"type": "string"}},
+        "completions": {"type": "integer", "minimum": 1},
+        "gpusPerPod": {"type": "integer", "minimum": 0},
+        "activeDeadlineSeconds": {"type": "integer", "minimum": 1},
+        "ttlSecondsAfterFinished": {"type": "integer", "minimum": 0}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+          "then": {
+            "required": ["name", "objectName", "command"],
+            "properties": {"name": {"minLength": 1}, "objectName": {"minLength": 1}, "command": {"minItems": 1}}
+          }
+        }
+      ]
     }
   },
   "definitions": {
