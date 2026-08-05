@@ -80,3 +80,23 @@ class TestComputeEngineLaunchCmd:
         cmd = _cmd(args=make_engine_args(sglang_api_key="secret"))
         parsed = parse_server_args_argv(shlex.split(cmd)[3:])
         assert parsed.api_key == "secret"
+
+
+class TestLoraTargetModules:
+    @staticmethod
+    def _parsed_lora_targets(target_modules: list[str]):
+        args = make_engine_args(lora_rank=16, target_modules=target_modules)
+        return parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
+
+    def test_spellable_targets_are_named_one_by_one(self):
+        """Naming the exact modules keeps SGLang from allocating adapter buffers for the rest."""
+        targets = self._parsed_lora_targets(["layers.*.self_attention.linear_qkv"])
+
+        assert sorted(targets) == ["k_proj", "q_proj", "v_proj"]
+
+    def test_targets_the_cli_cannot_spell_fall_back_to_auto_detection(self):
+        """GDN attention maps to names outside SGLang's CLI whitelist, and naming one anyway
+        makes the engine's own argument parser reject the whole launch command."""
+        targets = self._parsed_lora_targets(["layers.*.self_attention.in_proj"])
+
+        assert targets == ["all"]
