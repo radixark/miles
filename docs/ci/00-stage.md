@@ -61,16 +61,16 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 ## ROCm mirror (dispatch-only)
 
-`pr-test-rocm.yml` is a `workflow_dispatch`-only mirror of the GPU path for AMD MI300X runners: its `resolve-ci-image` (image family `rocm/sgl-dev:<tag>`) feeds one stage, `stage-c-4-gpu-mi300x`, which calls `_run-ci-rocm.yml` — the ROCm counterpart of `_run-ci.yml` (ROCm device flags, `rocm-smi` GPU-ready wait, no CPU job). It runs in 2 shards — one per 4-GPU runner, so the pair works the suite in parallel — and is not part of PR gating. SGLang / Megatron-LM versions come baked into the ROCm image (`skip_dependency_install` defaults to `true` in `_run-ci-rocm.yml`), so the dispatch has no dependency-override inputs.
+`pr-test-rocm.yml` manually runs `stage-c-4-gpu-mi300x` on two 4-GPU MI300X runners. The stage uses `_run-ci-rocm.yml`, resolves `rocm/sgl-dev:<tag>`, and splits tests into two `est_time`-balanced shards. It runs no CPU tests and does not gate PRs. SGLang and Megatron-LM come from the image, so the dispatch exposes no dependency-ref inputs.
 
-**Selection is explicit.** A test runs on MI300X only if it carries `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)`; nothing is inherited from the CUDA roster. Enabling or disabling a test there is a one-line change in the test file, independent of its CUDA registration. Every ROCm registration also carries the `amd` label, so `--labels amd --match-all-labels` selects exactly the AMD set.
+Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)` run; CUDA registrations are not inherited. An 8-GPU CUDA case needs a separate 4-GPU `test_amd_<name>.py` variant rather than an `IS_HIP` branch in the original test.
 
-**The stage is 4-GPU, not 8.** The MI300X host is split into two 4-GPU runners (`svr08-mi300x-4gpu-0` / `-1`), and the stage carries a matching `partition_id: [0, 1]` matrix so each runner takes one shard, balanced by `est_time`; MI300X's 192 GB per GPU means 4 of them carry more HBM than the 8×80 GB H100 node many of these cases were tuned for. A CUDA test that needs 8 GPUs therefore cannot be registered here directly. Instead it gets a **standalone `test_amd_<name>.py`** beside the original, carrying its own 4-GPU `CaseConfig`. The original CUDA test is never branched on `IS_HIP` — the AMD variant is a separate file with a separate registration, so neither side constrains the other.
+Both runner containers can see all eight host GPUs through `/dev/dri`. Each runner restricts itself to four GPUs with `HIP_VISIBLE_DEVICES`, which `_run-ci-rocm.yml` forwards into the container.
 
-**GPU partitioning.** `_run-ci-rocm.yml` passes `--device=/dev/dri`, so the job container sees all 8 GPUs regardless of which render nodes the runner container holds; the split is enforced at the HIP layer instead. Each runner sets `HIP_VISIBLE_DEVICES` to its half (`0,1,2,3` / `4,5,6,7`) and `_run-ci-rocm.yml` carries a bare `--env HIP_VISIBLE_DEVICES` to forward it into the job container — the ROCm analogue of `--env CUDA_VISIBLE_DEVICES` in `_run-ci.yml`. miles honours it (`miles/ray/train_actor.py`, `miles/backends/sglang_utils/sglang_engine.py` read `CUDA_VISIBLE_DEVICES` or `HIP_VISIBLE_DEVICES`). Without that forwarding both concurrent jobs would claim all 8 GPUs.
+**External MI350 nightly.** Miles declares `stage-c-2-gpu-mi350`, `stage-c-4-gpu-mi350`, and `stage-c-8-gpu-mi350` in `CI_SUITES`, but does not schedule them in its own workflows. All three are run by the external [`sgl-project/sglang` ROCm 7.2 nightly workflow](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm720.yml).
 
 ## Assumptions
 
-- Suite ↔ stage stays 1:1 and is kept in sync manually across `run_suite.py`, `pr-test.yml`, and `pr-test-rocm.yml`. The `stage-c-*-mi350` suites are the standing exception: they are declared in `CI_SUITES` but have no stage job in any workflow, so nothing dispatches them today.
+- Suite-to-stage mappings are maintained manually across `run_suite.py`, the Miles workflows, and the external MI350 nightly workflow.
 - Runner placement assumes the live fleet actually carries the requested `runs_on` labels for each GPU class and count.
 - `est_time` only affects shard balancing and per-file timeout, never pass/fail.
