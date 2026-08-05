@@ -13,13 +13,13 @@ class TestClose:
         server = MockSGLangHttpServer()
         connection = http.client.HTTPConnection(server.host, server.port, timeout=5)
         connection.request("GET", "/before")
-        assert connection.getresponse().status == 200
+        first = connection.getresponse()
+        assert first.status == 200
+        first.read()
 
         server.close()
 
-        # A severed connection surfaces either as a socket error or as the client
-        # library refusing to read a response it never got.
-        with pytest.raises((OSError, http.client.HTTPException)):
+        with pytest.raises(OSError):
             connection.request("GET", "/after")
             connection.getresponse().read()
         assert server.paths == ["/before"]
