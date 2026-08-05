@@ -393,6 +393,7 @@ def run_unittest_files(
     gate_store=None,
     gate_nightly: bool = False,
     gate_provenance: RunProvenance | None = None,
+    reap_leftovers: bool = False,
 ):
     """
     Run a list of test files.
@@ -412,6 +413,9 @@ def run_unittest_files(
                     False for an ordinary PR run, which only logs a shadow verdict.
         gate_provenance: RunProvenance for the gate write; defaults to
                     `gate_provenance_from_env()` when None.
+        reap_leftovers: If True, kill leftover engine and ray processes before every
+                    attempt. Off by default because reaping is process-wide: it would
+                    also reach the caller when this function runs inside a test.
     """
     tic = time.perf_counter()
     success = True
@@ -484,7 +488,8 @@ def run_unittest_files(
         passing_record_path: str | None = None
 
         while attempt <= (max_attempts if enable_retry else 1):
-            reap_leaked_accelerator_processes()
+            if reap_leftovers:
+                reap_leaked_accelerator_processes()
 
             if attempt > 1:
                 logger.info(f"\n[CI Retry] Attempt {attempt}/{max_attempts} for {filename}\n")

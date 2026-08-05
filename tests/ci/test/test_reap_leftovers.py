@@ -40,6 +40,21 @@ class TestReapLeakedAcceleratorProcesses:
         for pattern in patterns:
             assert pattern.endswith("::")
 
+    def test_running_test_files_does_not_reap_unless_asked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reaping is process-wide, so a run_unittest_files caller that is itself a test would be
+        killed by its own reaper; only the CUDA suite runner opts in."""
+        called = False
+
+        def fake_reap() -> None:
+            nonlocal called
+            called = True
+
+        monkeypatch.setattr(ci_utils, "reap_leaked_accelerator_processes", fake_reap)
+
+        ci_utils.run_unittest_files([], timeout_per_file=1)
+
+        assert not called
+
     def test_a_missing_reaper_binary_does_not_abort_the_suite(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Reaping is best-effort housekeeping; letting OSError escape would fail every test file
         on a machine without pkill."""
