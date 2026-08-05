@@ -177,17 +177,16 @@ jobs:
           echo "Resolved CI image: radixark/miles:${CI_IMAGE_TAG}"
 
   # Stage A: CPU-only fast tests (always runs on PR)
-  # Runs on GitHub-hosted ubuntu-latest (cpu_runner: true) to avoid
-  # occupying GPU-fleet runner slots.
+  # Uses the CPU-only reusable workflow on GitHub-hosted ubuntu-latest, so
+  # fast tests do not occupy GPU-fleet runner slots.
   stage-a-cpu:
     needs: [resolve-ci-policy, resolve-ci-image]
     strategy:
       fail-fast: false
       matrix:
         partition_id: [0, 1, 2, 3]
-    uses: ./.github/workflows/_run-ci.yml
+    uses: ./.github/workflows/_run-cpu-ci.yml
     with:
-      cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
@@ -199,9 +198,8 @@ jobs:
   # fast budget. Always runs on PR; an empty suite still exits 0 in run_suite.py.
   stage-b-cpu:
     needs: [resolve-ci-policy, resolve-ci-image]
-    uses: ./.github/workflows/_run-ci.yml
+    uses: ./.github/workflows/_run-cpu-ci.yml
     with:
-      cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
