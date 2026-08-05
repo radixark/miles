@@ -48,8 +48,7 @@ WEIGHT_VERSION_QUERY_TIMEOUT_SECS = 2.0
 # returns multiple samples per trajectory (e.g. multi-agent).
 Group = list[Sample | list[Sample]]
 
-# A finished group next to the prompt group that produced it, kept together so a
-# recycled group can be resubmitted.
+# prompt + sample group for this prompt. used for group resubmission
 BufferEntry = tuple[list[Sample], Group]
 
 
@@ -91,10 +90,10 @@ class GroupBuffer:
 
     Without ``max_groups`` this is the legacy bounded queue: the producer blocks
     once ``OUTPUT_QUEUE_MAX_GROUPS`` groups wait. With ``max_groups`` set the
-    producer never blocks; an overflow evicts to ``on_evict`` (recycling the
-    prompts into the data source) — first every group already beyond
-    ``max_staleness`` (when configured and the engine version is known), then
-    one group at a time by ``_eviction_key``, ties broken oldest-arrival-first.
+    producer never blocks; an overflow evicts stalest-first to ``on_evict``
+    (recycling the prompts into the data source) until nothing is beyond
+    ``max_staleness`` (when configured and the engine version is known) and the
+    buffer is back within capacity. Ties broken oldest-arrival-first.
 
     ``order`` picks the consumption end: ``"fifo"`` serves the oldest group,
     ``"lifo"`` the freshest. LIFO keeps training near on-policy without
@@ -127,13 +126,15 @@ class GroupBuffer:
 
     async def put(self, entry: BufferEntry, *, current_version: int | None = None) -> None:
         async with self._cond:
-            if not self._evict_on_overflow:
+            if self._evict_on_overflow:
+                self._entries.append(entry)
+                if len(self._entries) > self._capacity:
+                    self._evict_overflow(current_version)
+            else:
                 while len(self._entries) >= self._capacity:
                     await self._cond.wait()
-            self._entries.append(entry)
+                self._entries.append(entry)
             self.entered_groups += 1
-            if self._evict_on_overflow and len(self._entries) > self._capacity:
-                self._evict_overflow(current_version)
             self._cond.notify_all()
 
     async def get(self) -> BufferEntry:
@@ -145,22 +146,22 @@ class GroupBuffer:
             return entry
 
     def _evict_overflow(self, current_version: int | None) -> None:
-        if self._max_staleness is not None and current_version is not None:
-            fresh: list[BufferEntry] = []
-            stale: list[BufferEntry] = []
-            for entry in self._entries:
-                oldest = group_oldest_weight_version(entry[1])
-                too_stale = oldest is not None and current_version - oldest > self._max_staleness
-                (stale if too_stale else fresh).append(entry)
-            if stale:
-                self._entries = fresh
-                self.evicted_stale_groups += len(stale)
-                for prompt_group, _ in stale:
-                    self._on_evict(prompt_group)
-        while len(self._entries) > self._capacity:
+        """Evict stalest-first until nothing is beyond ``max_staleness`` and the buffer fits."""
+        while self._entries:
             keys = [_eviction_key(group) for _, group in self._entries]
             index = keys.index(min(keys))
-            self.evicted_overflow_groups += 1
+            # keys[index][0] is the stalest group's oldest weight version (inf when unrecorded).
+            beyond_threshold = (
+                self._max_staleness is not None
+                and current_version is not None
+                and current_version - keys[index][0] > self._max_staleness
+            )
+            if not beyond_threshold and len(self._entries) <= self._capacity:
+                return
+            if beyond_threshold:
+                self.evicted_stale_groups += 1
+            else:
+                self.evicted_overflow_groups += 1
             self._on_evict(self._entries.pop(index)[0])
 
     def staleness_stats(self, current_version: int | None) -> tuple[float, int] | None:
