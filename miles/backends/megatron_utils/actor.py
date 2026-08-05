@@ -745,7 +745,6 @@ class MegatronTrainRayActor(TrainRayActor):
         with torch_memory_saver.disable() if self.args.offload_train else nullcontext():
             print_memory("before update_weights")
             self.weight_updater.update_weights()
-            torch.cuda.ipc_collect()
             print_memory("after update_weights")
 
             if is_multi_lora_enabled(self.args):
