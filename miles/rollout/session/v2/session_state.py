@@ -101,7 +101,7 @@ def prepare_pretokenized(
         )
 
     stored = state.active_messages()
-    _validate_suffix_roles(request_messages[len(stored) :], tito_tokenizer, assistant_exempt=True)
+    _validate_suffix_roles(request_messages[len(stored) :], tito_tokenizer)
     return tito_tokenizer.merge_tokens(
         old_messages=stored,
         new_messages=request_messages,
@@ -113,14 +113,8 @@ def prepare_pretokenized(
 def _validate_suffix_roles(
     suffix: list[dict[str, Any]],
     tito_tokenizer: TITOTokenizer,
-    *,
-    assistant_exempt: bool,
 ) -> None:
-    """Carried assistants are prompt material for branches; ``assistant_exempt``
-    keeps them outside the template's append-role gate."""
     allowed = set(tito_tokenizer.allowed_append_roles)
-    if assistant_exempt:
-        allowed |= {"assistant"}
     for message in suffix:
         role = message.get("role")
         if role not in allowed:

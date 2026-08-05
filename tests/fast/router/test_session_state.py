@@ -483,7 +483,7 @@ class TestCarriedAssistant:
     inherit the attach node's snapshot like any other suffix."""
 
     def test_carried_assistant_before_user_allowed(self):
-        mock_tito = _make_mock_tito(_MockTITOTokenizer, ["tool", "user"])
+        mock_tito = _make_mock_tito(_MockTITOTokenizer, ["tool", "user", "assistant"])
         registry = SessionRegistryV2(SimpleNamespace(), tokenizer=None, tito_tokenizer=mock_tito)
         sid = registry.create_session()
         session = registry.get_session(sid)
@@ -497,6 +497,21 @@ class TestCarriedAssistant:
         # return the first-turn sentinel) and the view stayed on the parent.
         assert result == [1, 2, 3, 10]
         assert session.active_leaf is session.tree.nodes[0]
+
+    def test_carried_assistant_rejected_without_template_support(self, registry_with_user):
+        sid = registry_with_user.create_session()
+        session = registry_with_user.get_session(sid)
+        _commit(session, [SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10], max_trim_tokens=0)
+
+        carried = {"role": "assistant", "content": "carried summary"}
+        messages = [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, carried, {"role": "user", "content": "next"}]
+        with pytest.raises(MessageValidationError, match="role='assistant'.*allowed="):
+            prepare_pretokenized(
+                session,
+                messages,
+                tools=None,
+                tito_tokenizer=registry_with_user.tito_tokenizer,
+            )
 
 
 class TestRollback:
