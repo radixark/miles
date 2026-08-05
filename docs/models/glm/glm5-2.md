@@ -4,7 +4,7 @@ description: Launch recipe for GLM-5.2 (744 B / 40 B active) — FP8 KV cache, T
 ---
 ## 1. Model Introduction
 
-[GLM-5.2](https://huggingface.co/zai-org/GLM-5.2) is the successor to GLM-5 / GLM-5.1 in Zhipu AI's GLM series. It keeps the same 744 B-parameter (40 B active) `glm_moe_dsa` architecture — MoE plus DeepSeek Sparse Attention (DSA) with cross-layer index sharing — and differs from GLM-5 in the checkpoint it loads, the Megatron model args (`--rotary-base 8000000`), and the rollout recipe (FP8 KV cache, `flashmla_kv` decode, EAGLE speculative decoding).
+[GLM-5.2](https://huggingface.co/zai-org/GLM-5.2) is the successor to GLM-5 / GLM-5.1 in Zhipu AI's GLM series. It keeps the same 744 B-parameter (40 B active) `glm_moe_dsa` architecture — MoE plus DeepSeek Sparse Attention (DSA) with cross-layer index sharing — and differs from GLM-5 in the checkpoint it loads, the Megatron model args (`--rotary-base 8000000`), and the rollout recipe (FP8 KV cache, `flashmla_kv` decode, optional EAGLE speculative decoding).
 
 **Key highlights:**
 
@@ -69,7 +69,7 @@ python scripts/run_glm5_2_744b_a40b.py prepare-cp --model-name GLM-5.2 --num-nod
 python scripts/run_glm5_2_744b_a40b.py train      --model-name GLM-5.2 --num-nodes <N>
 ```
 
-The launcher's docstring says it's tested on **H200 / B200 / GB300**; the dataclass restricts `--hardware` to `{H200, B200, GB300}`.
+The recipe is tested on **H200 / B200 / GB300**; the `--hardware` flag accepts exactly these three values.
 
 ## 5. Recipe Configuration
 

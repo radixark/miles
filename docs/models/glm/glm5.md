@@ -57,7 +57,7 @@ python scripts/run_glm5_744b_a40b.py prepare-cp --model-name GLM-5 --num-nodes <
 python scripts/run_glm5_744b_a40b.py train      --model-name GLM-5 --num-nodes <N>
 ```
 
-The launcher's docstring says it's tested on **H200 / B200 / GB300**; the dataclass restricts `--hardware` to `{H200, B200, GB300}`.
+The recipe is tested on **H200 / B200 / GB300**; the `--hardware` flag accepts exactly these three values.
 
 ## 5. Recipe Configuration
 
