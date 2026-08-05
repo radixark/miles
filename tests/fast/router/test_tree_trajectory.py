@@ -3,6 +3,8 @@
 Pure model level (no serving wiring).
 """
 
+import sys
+
 import pytest
 
 from miles.rollout.session.types import SessionRecord
@@ -135,6 +137,22 @@ class TestAttachPoint:
         tree.find_attach_point([SYS, U1, A1, T1, A2])
         assert [(n.seq, len(n.children)) for n in tree.nodes] == before
 
+    def test_search_handles_depth_beyond_recursion_limit(self):
+        tree = SessionTree()
+        parent = None
+        for _ in range(tree_trajectory.MAX_NODES):
+            parent = _commit(tree, parent, [U1])
+
+        original_limit = sys.getrecursionlimit()
+        try:
+            sys.setrecursionlimit(tree_trajectory.MAX_NODES // 2)
+            ap = tree.find_attach_point([U1] * tree_trajectory.MAX_NODES)
+        finally:
+            sys.setrecursionlimit(original_limit)
+
+        assert ap.node is parent
+        assert ap.matched_messages == tree_trajectory.MAX_NODES
+
 
 class TestModel:
     def test_case10_concurrent_commits_become_siblings(self, linear_tree):
@@ -149,6 +167,23 @@ class TestModel:
         assert n2.token_ids[: len(n1.token_ids)] == n1.token_ids  # snapshot inherits prefix
         assert n2.path_nodes() == [n0, n1, n2]
         assert n2.path_messages() == [SYS, U1, A1, T1, A2, T2, A3]
+
+    def test_token_snapshot_copies_input(self, linear_tree):
+        tree, n0, _, _ = linear_tree
+        token_ids = n0.token_ids + [999]
+        node = tree.create_node(
+            n0,
+            delta_messages=[T1, A2],
+            token_ids=token_ids,
+            completion_span=(len(n0.token_ids), len(token_ids)),
+            committed_at=3.0,
+            response_id="resp-copy",
+            record=n0.record,
+            finish_reason="stop",
+        )
+
+        token_ids.append(1000)
+        assert node.token_ids == n0.token_ids + [999]
 
     def test_case7_truncated_is_derived_from_finish_reason(self):
         tree = SessionTree()

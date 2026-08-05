@@ -85,7 +85,7 @@ class SessionTree:
             )
         node = TrajectoryNode(
             delta_messages=list(delta_messages),
-            token_ids=token_ids,
+            token_ids=list(token_ids),
             completion_span=completion_span,
             seq=len(self.nodes),
             committed_at=committed_at,
@@ -112,8 +112,9 @@ class SessionTree:
         best_matched = -1
         best_overlap = 0
 
-        def visit(node: TrajectoryNode, offset: int) -> None:
-            nonlocal best, best_matched, best_overlap
+        stack = [(root, 0) for root in reversed(self.roots)]
+        while stack:
+            node, offset = stack.pop()
             delta = node.delta_messages
             i = 0
             while (
@@ -124,15 +125,11 @@ class SessionTree:
                 i += 1
             best_overlap = max(best_overlap, offset + i)
             if i < len(delta):
-                return  # partial delta: this node (and its subtree) is not a candidate
+                continue  # partial delta: this node (and its subtree) is not a candidate
             matched = offset + len(delta)
             if matched > best_matched or (matched == best_matched and best is not None and node.seq > best.seq):
                 best, best_matched = node, matched
-            for child in node.children:
-                visit(child, matched)
-
-        for root in self.roots:
-            visit(root, 0)
+            stack.extend((child, matched) for child in reversed(node.children))
 
         if best is None:
             return AttachPoint(node=None, matched_messages=0, best_overlap=best_overlap)
