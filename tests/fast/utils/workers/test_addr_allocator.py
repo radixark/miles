@@ -2,7 +2,22 @@ from __future__ import annotations
 
 from tests.fast.ray.rollout.conftest import fake_engine
 
-from miles.utils.workers.addr_allocator import BASE_PORT, PortAllocator
+from miles.utils.workers.addr_allocator import BASE_PORT, TRAIN_MASTER_PORT_RANGE, PortAllocator
+
+
+class TestPortBands:
+    def test_the_base_port_clears_rays_worker_port_range(self):
+        """Ray hands its own workers 10002-19999, and a reserved port stays unbound long
+        enough for ray to give it away, so the allocator must start above that range."""
+        assert BASE_PORT > 19999
+        assert BASE_PORT < 32768
+
+    def test_the_trainer_master_port_band_is_clear_of_the_allocator(self):
+        """The trainer probes for a free master port instead of reserving one, so its band
+        must stay clear of the ports this allocator hands out before anyone binds them."""
+        low, high = TRAIN_MASTER_PORT_RANGE
+        assert low > BASE_PORT
+        assert high < 32768
 
 
 class TestPortAllocator:

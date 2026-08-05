@@ -12,6 +12,11 @@ logger = logging.getLogger(__name__)
 # would otherwise be handed to a ray worker long before its owner claims it.
 BASE_PORT = 20000
 
+# The trainer picks its torch-distributed master port by probing for a free one rather
+# than reserving it here, so it has to sit far enough above BASE_PORT that this
+# allocator cannot walk into a port the trainer is about to bind.
+TRAIN_MASTER_PORT_RANGE = (30000, 31000)
+
 
 @dataclass
 class PortAllocator:

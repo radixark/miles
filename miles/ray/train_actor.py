@@ -20,6 +20,7 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
+from miles.utils.workers.addr_allocator import TRAIN_MASTER_PORT_RANGE
 
 if TYPE_CHECKING:
     from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -69,7 +70,7 @@ class TrainRayActor(NodeProbeMixin):
         object_store.init_instance(args)
 
     def propose_master_addr_and_port(self) -> tuple[str, int]:
-        return get_current_node_ip(), get_free_port(start_port=random.randint(20000, 21000))
+        return get_current_node_ip(), get_free_port(start_port=random.randint(*TRAIN_MASTER_PORT_RANGE))
 
     def configure_master_addr_and_port(self, *, master_addr: str, master_port: int) -> None:
         os.environ["MASTER_ADDR"] = master_addr
