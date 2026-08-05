@@ -134,13 +134,13 @@ class TestConcurrencyGroups:
         """A heartbeat queued behind a train step reads as a dead cell."""
         (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
 
-        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
 
     def test_the_groups_do_not_depend_on_fault_tolerance(self):
         """The actor class declares the groups statically, so the spec cannot drop them."""
         (spec,) = specs_trainer(_make_args())
 
-        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
 
     def test_the_isolated_methods_are_annotated_on_the_actor(self):
         """Dropping a @ray.method annotation would silently queue that call behind a train step."""

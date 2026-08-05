@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
@@ -179,12 +181,27 @@ class TestPdDisaggregation:
 
 
 class TestRolloutExternalPath:
-    async def test_starting_engines_in_external_mode_is_not_implemented(self):
-        """The external allocator was removed; starting engines must fail loudly until the replacement lands."""
-        from miles.ray.rollout.server_cell import ServerCell
+    @pytest.mark.asyncio
+    async def test_initializing_a_cell_in_external_mode_is_not_implemented(self):
+        """The external allocator was removed; bringing a cell up must fail loudly until the replacement lands."""
+        from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 
         cell = ServerCell(
-            args=make_args(num_gpus_per_node=8, rollout_external=True), worker_type="regular", cell_id="cell-0"
+            args=make_args(num_gpus_per_node=8, rollout_external=True),
+            meta=ServerCellMetadata(
+                model_id="default",
+                worker_type="regular",
+                cell_id="inference-engine-0-0-0",
+                num_gpus_per_engine=1,
+                gpu_offset=0,
+                sglang_api_key=None,
+                worker_name="inference-engine-0-0-0-0",
+                needs_offload=False,
+                update_weights=True,
+                workers_hash="pseudo-hash-0",
+            ),
+            router_api_client=MagicMock(),
         )
+
         with pytest.raises(NotImplementedError):
-            await cell.start_engines()
+            await cell.init()

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.cell_state import StateUnknown
+from miles.ray.rollout.cell_state import CellAddrInfo, StateDisposed, StatePendingWeights
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 
 
@@ -38,31 +38,37 @@ def _make_router_api_client(*, remove_worker_side_effect: BaseException | None =
     return client
 
 
+def _mark_pending_weights(cell: ServerCell, *, server_url: str, bootstrap_port: int | None) -> None:
+    cell._state = StatePendingWeights(
+        addr_info=CellAddrInfo(server_url=server_url, bootstrap_port=bootstrap_port, gate_url=f"{server_url}/gate")
+    )
+
+
 class TestServerCellDispose:
     @pytest.mark.asyncio
     async def test_disposing_a_pending_weights_cell_unregisters_it_from_the_router(self) -> None:
         """A cell whose add_worker outcome is unknown must still be removed, or the router keeps a ghost worker."""
         client = _make_router_api_client()
         cell = _make_cell(router_api_client=client)
-        cell._mark_pending_weights(server_url="http://10.0.0.1:30000", bootstrap_port=None)
+        _mark_pending_weights(cell, server_url="http://10.0.0.1:30000", bootstrap_port=None)
 
         await cell.dispose()
 
         client.remove_worker.assert_awaited_once_with(worker_url="http://10.0.0.1:30000", use_legacy_api=False)
-        assert isinstance(cell._state, StateUnknown)
+        assert isinstance(cell._state, StateDisposed)
 
     @pytest.mark.asyncio
     async def test_disposing_a_serving_cell_unregisters_it_from_the_router(self) -> None:
         """The serving path keeps unregistering the url it published."""
         client = _make_router_api_client()
         cell = _make_cell(router_api_client=client)
-        cell._mark_pending_weights(server_url="http://10.0.0.2:30000", bootstrap_port=None)
+        _mark_pending_weights(cell, server_url="http://10.0.0.2:30000", bootstrap_port=None)
         cell._mark_serving()
 
         await cell.dispose()
 
         client.remove_worker.assert_awaited_once_with(worker_url="http://10.0.0.2:30000", use_legacy_api=False)
-        assert isinstance(cell._state, StateUnknown)
+        assert isinstance(cell._state, StateDisposed)
 
     @pytest.mark.asyncio
     async def test_disposing_an_unknown_cell_never_touches_the_router(self) -> None:
@@ -73,26 +79,26 @@ class TestServerCellDispose:
         await cell.dispose()
 
         client.remove_worker.assert_not_awaited()
-        assert isinstance(cell._state, StateUnknown)
+        assert isinstance(cell._state, StateDisposed)
 
     @pytest.mark.asyncio
     async def test_a_failing_unregister_of_a_pending_cell_still_tears_the_cell_down(self) -> None:
         """Unregistering is idempotent cleanup, so its failure must not block disposal."""
         client = _make_router_api_client(remove_worker_side_effect=RuntimeError("injected remove failure"))
         cell = _make_cell(router_api_client=client)
-        cell._mark_pending_weights(server_url="http://10.0.0.3:30000", bootstrap_port=None)
+        _mark_pending_weights(cell, server_url="http://10.0.0.3:30000", bootstrap_port=None)
 
         await cell.dispose()
 
         client.remove_worker.assert_awaited_once()
-        assert isinstance(cell._state, StateUnknown)
+        assert isinstance(cell._state, StateDisposed)
 
     @pytest.mark.asyncio
     async def test_use_miles_router_pins_the_legacy_api_when_disposing_a_pending_cell(self) -> None:
         """--use-miles-router selects the query-string API on the pending-weights unregister too."""
         client = _make_router_api_client()
         cell = _make_cell(router_api_client=client, use_miles_router=True)
-        cell._mark_pending_weights(server_url="http://10.0.0.4:30000", bootstrap_port=9000)
+        _mark_pending_weights(cell, server_url="http://10.0.0.4:30000", bootstrap_port=9000)
 
         await cell.dispose()
 
