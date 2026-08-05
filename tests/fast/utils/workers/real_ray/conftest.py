@@ -206,6 +206,14 @@ def placement_group_factory(ray_local_mode) -> Callable[..., Any]:
     def _make(*, num_bundles: int, first_gpu_id: int = 0):
         from miles.ray.placement_group import PlacementGroupInfo
 
+        # ray_local_mode only declares logical GPUs when it starts its own cluster. Under
+        # RAY_ADDRESS it joins an existing one, and a GPU-less cluster leaves pg.ready()
+        # waiting forever, which reads as the whole suite hanging rather than as a skip.
+        available_gpus = ray.cluster_resources().get("GPU", 0)
+        needed_gpus = 0.5 * num_bundles
+        if available_gpus < needed_gpus:
+            pytest.skip(f"placement group needs {needed_gpus} logical GPUs, cluster has {available_gpus}")
+
         pg = ray.util.placement_group([{"CPU": 0.4, "GPU": 0.5} for _ in range(num_bundles)], strategy="PACK")
         ray.get(pg.ready())
         created.append(pg)
