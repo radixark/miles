@@ -1,4 +1,4 @@
-"""Unit tests for SessionRegistryV2 and LinearTrajectory.
+"""Unit tests for SessionRegistryV2 and SessionStateV2.
 
 Tests the session registry CRUD and the trajectory pretokenized state management
 logic in isolation (no HTTP server, no real tokenizer).
