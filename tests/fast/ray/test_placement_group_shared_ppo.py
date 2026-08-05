@@ -75,11 +75,20 @@ async def _fake_set_rollout_executor(self: TrainerController) -> None:
     return None
 
 
+async def _fake_wait_expected_num_cells(self: TrainerController) -> None:
+    """The startup barrier waits for the provider to report cells, and this provider reports none.
+
+    The subject here is which args each role is created with, not the barrier, so it is stubbed
+    out like init and set_rollout_executor above."""
+    return None
+
+
 async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypatch):
     """Both training groups go through the real create(), and only the critic args are rewritten."""
     provider = _RecordingWorkerProvider()
     monkeypatch.setattr(TrainerController, "init", _fake_init)
     monkeypatch.setattr(TrainerController, "set_rollout_executor", _fake_set_rollout_executor)
+    monkeypatch.setattr(TrainerController, "_wait_expected_num_cells", _fake_wait_expected_num_cells)
 
     args = Namespace(
         actor_num_nodes=1,
