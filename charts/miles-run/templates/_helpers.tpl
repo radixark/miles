@@ -47,6 +47,25 @@ affinity:
 {{- end }}
 {{- end }}
 
+{{- define "miles-run.podDefaultsWithAntiAffinity" -}}
+{{- $context := .context -}}
+{{- $scheduling := $context.Values.infra.scheduling | default dict -}}
+enableServiceLinks: false
+{{- with include "miles-common.imagePullSecrets" $context }}
+{{ . }}
+{{- end }}
+{{- with $scheduling.nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $scheduling.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+affinity:
+  {{- toYaml (merge (dict "podAntiAffinity" .podAntiAffinity) (deepCopy ($scheduling.affinity | default dict))) | nindent 2 }}
+{{- end }}
+
 {{- define "miles-run.env" -}}
 {{- $base := include "miles-common.envBase" .context | fromYaml -}}
 {{- $run := deepCopy (.context.Values.run.env | default dict) -}}

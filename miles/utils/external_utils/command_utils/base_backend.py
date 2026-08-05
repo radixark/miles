@@ -44,3 +44,43 @@ class ExecuteTrainRequest(FrozenStrictBaseModel):
 class BaseCommandBackend(ABC):
     @abstractmethod
     def execute_train(self, request: ExecuteTrainRequest) -> None: ...
+
+    @abstractmethod
+    def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None: ...
+
+    @abstractmethod
+    def exec_command_gpu(self, cmd: str, capture_output: bool = False) -> str | None: ...
+
+    @abstractmethod
+    def exec_command_multi_node(
+        self, cmd: str, capture_output: bool = False, num_nodes: int | None = None
+    ) -> list[str | None]: ...
+
+
+_active_backend: BaseCommandBackend | None = None
+
+
+def use_backend(backend: BaseCommandBackend) -> None:
+    global _active_backend
+    _active_backend = backend
+
+
+def active_backend() -> BaseCommandBackend:
+    global _active_backend
+    if _active_backend is None:
+        from miles.utils.external_utils.command_utils.ray_backend import RayCommandBackend
+
+        _active_backend = RayCommandBackend()
+    return _active_backend
+
+
+def exec_command_cpu(cmd: str, capture_output: bool = False) -> str | None:
+    return active_backend().exec_command_cpu(cmd, capture_output=capture_output)
+
+
+def exec_command_gpu(cmd: str, capture_output: bool = False) -> str | None:
+    return active_backend().exec_command_gpu(cmd, capture_output=capture_output)
+
+
+def exec_command_multi_node(cmd: str, capture_output: bool = False, num_nodes: int | None = None) -> list[str | None]:
+    return active_backend().exec_command_multi_node(cmd, capture_output=capture_output, num_nodes=num_nodes)

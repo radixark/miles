@@ -46,3 +46,12 @@ run:
         cpu: "2"
         memory: 16Gi
       limits: {}
+
+adhoc:
+  enabled: false
+  name: ""
+  command: []
+  completions: 1
+  gpusPerPod: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 3600

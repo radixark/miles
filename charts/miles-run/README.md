@@ -17,8 +17,9 @@ The three top level keys never overlap.
 | --- | --- | --- |
 | `infra` | The user, once per cluster | Image, shared storage, site path conventions, scheduling, cluster-wide env |
 | `run` | The launcher, per run | The whole run, rendered from the miles specs |
+| `adhoc` | Only `--set`, never installed | One off Job rendered with `--show-only` |
 
-`values.yaml` carries defaults for both, so a bare `helm lint` renders:
+`values.yaml` carries defaults for all three, so a bare `helm lint` renders:
 
 ```yaml
 infra:
@@ -45,6 +46,15 @@ run:
     rpcPort: 50051
     metricsPort: 50052
     resources: {requests: {cpu: "2", memory: 16Gi}, limits: {}}
+
+adhoc:
+  enabled: false
+  name: ""
+  command: []
+  completions: 1
+  gpusPerPod: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 3600
 ```
 
 - `run.env` is the runtime environment both backends give the training processes; it carries
@@ -186,6 +196,7 @@ constructor arguments the driver would have passed under Ray.
 
 - A `train` subcommand must only start training, with no preparation step.
     - Preparation stays in `prepare`, and `prepare_cp` where a script needs it.
+    - A Kubernetes run prepares its data through adhoc Jobs rather than inside the run.
 - `full_train` chains preparation and training and is the one-shot Ray entry point. A script
   whose only entry point is that chain cannot use `--cluster-backend kubernetes`.
 
@@ -194,7 +205,21 @@ constructor arguments the driver would have passed under Ray.
 Relaunching the same run id upgrades the release in place, which is how a run grows or
 shrinks. Kubernetes restarts a pod whose template changed, so the upgrade is checked first:
 
-- `infra` must be identical to the installed release.
+- `infra` and `adhoc` must be identical to the installed release.
 - `run` may differ only in `inferenceEngines[].replicas`, `trainers[].replicas`, and the ConfigMap
   contents derived from them.
 - Anything else is refused.
+
+## Adhoc work
+
+Checkpoint conversion, downloads, rsync fan-outs and the Kubernetes backend's own
+`exec_command` are Jobs rather than part of a run.
+
+- The template lives in this chart but stays disabled.
+- The launcher renders it alone and applies it directly.
+- `backoffLimit: 0` and `restartPolicy: Never` mean a failure is reported, not silently
+  retried.
+
+```bash
+helm template --show-only templates/adhoc-job.yaml --set adhoc.enabled=true
+```

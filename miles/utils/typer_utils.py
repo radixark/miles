@@ -9,6 +9,12 @@ import typer
 
 _F = TypeVar("_F", bound=Callable[..., object])
 
+_post_init_hooks: list[Callable[[object], None]] = []
+
+
+def register_post_init_hook(hook: Callable[[object], None]) -> None:
+    _post_init_hooks.append(hook)
+
 
 @overload
 def dataclass_cli(func: _F) -> _F: ...
@@ -90,6 +96,8 @@ def _wrap(func: _F, *, env_var_prefix: str) -> _F:
 
     def wrapped(**kwargs: object) -> object:
         data: object = dataclass_cls(**kwargs)
+        for hook in _post_init_hooks:
+            hook(data)
         fields = dataclasses.fields(data)
         max_key_len = max(len(f.name) for f in fields)
         sep = "+" + "-" * (max_key_len + 2) + "+" + "-" * 52 + "+"

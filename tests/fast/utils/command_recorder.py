@@ -1,8 +1,8 @@
 import miles.utils.external_utils.command_utils as command_utils
 from miles.utils.external_utils import exec_command
-from miles.utils.external_utils.command_utils import common, ray_backend
+from miles.utils.external_utils.command_utils import base_backend, common, ray_backend
 
-_MODULES_DEFINING_HELPERS = (exec_command, common, ray_backend, command_utils)
+_MODULES_DEFINING_HELPERS = (exec_command, base_backend, common, ray_backend, command_utils)
 
 
 def patch_helper(monkeypatch, name: str, replacement) -> None:

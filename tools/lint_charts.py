@@ -31,6 +31,7 @@ VARIANTS: dict[str, list[list[str]]] = {
             'run.staticWorkers=[{"name":"router","command":["python","-m","router"],'
             '"ports":[{"name":"http","port":30000}]}]',
         ],
+        ["--set", "adhoc.enabled=true", "--set", "adhoc.name=convert", "--set-json", 'adhoc.command=["bash"]'],
         [
             "--set-json",
             'run.inferenceEngines=[{"name":"engine","replicas":2,"size":4,"command":["python","-m","sglang.launch_server"],'

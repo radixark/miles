@@ -12,4 +12,4 @@ export PYTORCH_NPU_ALLOC_CONF=expandable_segments:True
 export MASTER_PORT=$(shuf -i 20000-65000 -n 1)  # or any free port
 
 
-python run_qwen3_4b.py
+python run_qwen3_4b.py full_train

@@ -310,11 +310,31 @@ def _execute_train(args: ScriptArgs):
 
 @app.command()
 @U.dataclass_cli
-def train(args: ScriptArgs):
+def full_train(args: ScriptArgs) -> None:
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
     _prepare_megatron_ckpt(args)
     _prepare_cp(args)
+    _execute_train(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare(args: ScriptArgs) -> None:
+    _prepare_download(args)
+    _prepare_bf16_ckpt(args)
+    _prepare_megatron_ckpt(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare_cp(args: ScriptArgs) -> None:
+    _prepare_cp(args)
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs) -> None:
     _execute_train(args)
 
 

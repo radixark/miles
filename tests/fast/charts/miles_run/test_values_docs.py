@@ -9,7 +9,7 @@ CHART_VALUES = REPO_ROOT / "charts" / "miles-run" / "values.yaml"
 PLATFORM_DOC = REPO_ROOT / "charts" / "miles-run" / "README.md"
 
 _YAML_BLOCK = re.compile(r"```yaml\n(.*?)```", re.DOTALL)
-_DEFAULTS_BLOCK_KEYS = {"infra", "run"}
+_DEFAULTS_BLOCK_KEYS = {"infra", "run", "adhoc"}
 
 
 def documented_chart_defaults(doc: Path) -> dict[str, Any]:

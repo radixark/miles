@@ -146,6 +146,20 @@ class TestDiscovery:
         with pytest.raises(ImportError, match="execute_train_npu"):
             import_launch_script(REPO_ROOT / rel)
 
+    def test_every_discovered_entrypoint_has_a_golden_and_vice_versa(self):
+        """A removed entrypoint leaves its golden behind, and a new one would otherwise go unrecorded."""
+        expected = {f"{rel}/{entrypoint}.txt" for rel, entrypoint in _CASES}
+        recorded = {path.relative_to(_SNAPSHOT_DIR).as_posix() for path in _SNAPSHOT_DIR.rglob("*.txt")}
+
+        assert expected == recorded
+
+    def test_the_snapshot_tree_holds_nothing_outside_the_three_recorded_families(self):
+        """A whole orphan directory would sit under tests/snapshots/launch_scripts with nobody checking it."""
+        root = _SNAPSHOT_DIR.parent
+        families = {root / name for name in ("py", "sh", "self_executing")}
+
+        assert set(root.iterdir()) == families
+
     def test_every_environment_knob_a_model_script_reads_is_frozen(self):
         """The snapshots now pin expanded model args, so a developer's exported override would fail them."""
         knobs = set()

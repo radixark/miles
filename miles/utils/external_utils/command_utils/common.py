@@ -5,11 +5,12 @@ import os
 import random
 import shlex
 import socket
+import subprocess
 from functools import partial
 from pathlib import Path
 
+from miles.utils.external_utils.command_utils import base_backend
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainRequest
-from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.http_utils import wait_for_server_ready
@@ -52,9 +53,9 @@ def convert_checkpoint(
         )
 
     if multinode:
-        fn = partial(exec_command_multi_node, num_nodes=num_nodes)
+        fn = partial(base_backend.exec_command_multi_node, num_nodes=num_nodes)
     else:
-        fn = exec_command_gpu
+        fn = base_backend.exec_command_gpu
     pythonpath = shlex.quote(_pythonpath_with_sources(megatron_path))
     fn(
         f"PYTHONPATH={pythonpath} "
@@ -70,7 +71,7 @@ def convert_checkpoint(
 
 
 def rsync_simple(path_src: str, path_dst: str, num_nodes: int | None = None):
-    exec_command_multi_node(rsync_command(path_src=path_src, path_dst=path_dst), num_nodes=num_nodes)
+    base_backend.exec_command_multi_node(rsync_command(path_src=path_src, path_dst=path_dst), num_nodes=num_nodes)
 
 
 def rsync_command(*, path_src: str, path_dst: str, lock_path: str | None = None) -> str:
@@ -83,7 +84,7 @@ def rsync_command(*, path_src: str, path_dst: str, lock_path: str | None = None)
 
 def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
     _, partial_name = full_name.split("/")
-    exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
+    base_backend.exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 
 
 def fp8_cast_bf16(path_src, path_dst):
@@ -92,7 +93,7 @@ def fp8_cast_bf16(path_src, path_dst):
         print(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
         return
 
-    exec_command_gpu(
+    base_backend.exec_command_gpu(
         f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
         f"--input-fp8-hf-path {path_src} "
         f"--output-bf16-hf-path {path_dst} "
@@ -136,7 +137,9 @@ def _parse_extra_env_vars(text: str):
 
 
 def check_has_nvlink():
-    output = exec_command_gpu("nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True)
+    output = base_backend.exec_command_gpu(
+        "nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True
+    )
     return int(output) > 0
 
 
@@ -230,7 +233,7 @@ def start_mooncake_master(
 
     log_path = Path(log_path)
     quoted_log_path = shlex.quote(str(log_path))
-    exec_command_cpu(
+    base_backend.exec_command_cpu(
         "pkill -x mooncake_master >/dev/null 2>&1 || true; "
         f"(setsid mooncake_master --rpc_port {rpc_port} --metrics_port {metrics_port} "
         f"> {quoted_log_path} 2>&1 &)"
@@ -238,7 +241,7 @@ def start_mooncake_master(
     try:
         wait_for_server_ready(host, rpc_port, timeout=timeout)
     except RuntimeError as exc:
-        exec_command_cpu("pkill -x mooncake_master >/dev/null 2>&1 || true")
+        base_backend.exec_command_cpu("pkill -x mooncake_master >/dev/null 2>&1 || true")
         try:
             log_lines = log_path.read_text(errors="replace").splitlines()
             log_tail = "\n".join(log_lines[-100:]) or "<empty>"
@@ -267,3 +270,40 @@ GENERATION_HARDWARE = {
     "GB200": "Blackwell",
     "GB300": "Blackwell",
 }
+
+
+_PLACEHOLDERS = ("{{node_rank}}", "{{nnodes}}", "{{master_addr}}", "{{node_ip}}")
+
+
+def run_shell_command(cmd: str, capture_output: bool = False) -> str | None:
+    print(f"EXEC: {cmd}", flush=True)
+
+    try:
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            shell=False,
+            check=True,
+            capture_output=capture_output,
+            **(dict(text=True) if capture_output else {}),
+        )
+    except subprocess.CalledProcessError as e:
+        if capture_output:
+            print(f"{e.stdout=} {e.stderr=}")
+        raise
+
+    if capture_output:
+        print(f"Captured stdout={result.stdout} stderr={result.stderr}")
+        return result.stdout
+    return None
+
+
+def substitute_placeholders(cmd: str, *, node_rank: str, nnodes: str, master_addr: str, node_ip: str) -> str:
+    values = {
+        "{{node_rank}}": node_rank,
+        "{{nnodes}}": nnodes,
+        "{{master_addr}}": master_addr,
+        "{{node_ip}}": node_ip,
+    }
+    for placeholder in _PLACEHOLDERS:
+        cmd = cmd.replace(placeholder, values[placeholder])
+    return cmd
