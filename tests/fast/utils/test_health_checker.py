@@ -566,7 +566,7 @@ class TestFailureThresholdDebounce:
         checker.stop()
 
 
-class TestCancelInflightProbe:
+class TestDiscardingStaleProbeResults:
     def _hanging_check_fn(self, started: asyncio.Event):
         async def check_fn() -> None:
             started.set()
@@ -574,51 +574,83 @@ class TestCancelInflightProbe:
 
         return check_fn
 
-    async def test_a_cancelled_probe_publishes_no_result(self):
+    def _gated_check_fn(self, started: asyncio.Event, release: asyncio.Event):
+        async def check_fn() -> None:
+            started.set()
+            await release.wait()
+            raise RuntimeError("boom")
+
+        return check_fn
+
+    async def test_a_probe_that_lands_after_a_pause_publishes_no_result(self):
         """A probe that outlives its window would report a failure about an engine nobody was watching."""
         results: list[bool] = []
         started = asyncio.Event()
-        checker, _ = _make_checker(
-            check_fn=self._hanging_check_fn(started), on_result=lambda s: results.append(s), interval=5.0
+        release = asyncio.Event()
+        activeness = _Activeness()
+        checker, clock = _make_checker(
+            check_fn=self._gated_check_fn(started, release),
+            on_result=lambda s: results.append(s),
+            interval=5.0,
+            activeness=activeness,
         )
         checker.start()
         await asyncio.wait_for(started.wait(), timeout=1)
 
-        await checker.cancel_inflight_probe()
+        activeness.active = False
+        release.set()
+        await _settle(clock)
 
         assert results == []
+        assert checker._consecutive_failures == 0
         assert checker.status == TriState.UNKNOWN
         checker.stop()
 
-    async def test_it_returns_only_after_the_probe_task_is_gone(self):
-        """Returning while the probe is still running is exactly the race a barrier has to close."""
+    async def test_a_probe_that_spans_a_whole_pause_resume_window_publishes_no_result(self):
+        """Activeness is back to True when the probe lands, so only the epoch tells the result is stale."""
+        results: list[bool] = []
         started = asyncio.Event()
-        checker, _ = _make_checker(check_fn=self._hanging_check_fn(started), interval=5.0)
+        release = asyncio.Event()
+        activeness = _Activeness()
+        checker, clock = _make_checker(
+            check_fn=self._gated_check_fn(started, release),
+            on_result=lambda s: results.append(s),
+            interval=5.0,
+            activeness=activeness,
+        )
         checker.start()
         await asyncio.wait_for(started.wait(), timeout=1)
-        probe_task = checker._probe_task
 
-        await checker.cancel_inflight_probe()
+        activeness.active = False
+        activeness.active = True
+        release.set()
+        await _settle(clock)
 
-        assert probe_task.cancelled()
+        assert results == []
+        assert checker._consecutive_failures == 0
         checker.stop()
 
-    async def test_the_loop_keeps_polling_after_its_probe_was_cancelled(self):
-        """Cancelling one probe must not silently kill the checker for the rest of the run."""
+    async def test_the_loop_keeps_polling_after_a_discarded_result(self):
+        """Discarding one result must not silently kill the checker for the rest of the run."""
         call_count = 0
         started = asyncio.Event()
+        release = asyncio.Event()
 
         async def check_fn() -> None:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 started.set()
-                await asyncio.sleep(3600)
+                await release.wait()
 
-        checker, clock = _make_checker(check_fn=check_fn, interval=5.0)
+        activeness = _Activeness()
+        checker, clock = _make_checker(check_fn=check_fn, interval=5.0, activeness=activeness)
         checker.start()
         await asyncio.wait_for(started.wait(), timeout=1)
-        await checker.cancel_inflight_probe()
+
+        activeness.active = False
+        activeness.active = True
+        release.set()
         await _settle(clock)
 
         await clock.elapse(5.0)
@@ -626,13 +658,22 @@ class TestCancelInflightProbe:
         assert call_count == 2
         checker.stop()
 
-    async def test_cancelling_while_nothing_is_in_flight_is_a_noop(self):
-        """The controller pauses whether or not a probe happens to be running right then."""
-        checker, _ = _make_checker(interval=5.0)
+    async def test_a_probe_that_lands_inside_its_own_window_is_published(self):
+        """Discarding is for stale results only; an undisturbed window must still publish its verdict."""
+        results: list[bool] = []
+        started = asyncio.Event()
+        release = asyncio.Event()
+        checker, clock = _make_checker(
+            check_fn=self._gated_check_fn(started, release), on_result=lambda s: results.append(s), interval=5.0
+        )
+        checker.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
 
-        await checker.cancel_inflight_probe()
+        release.set()
+        await _settle(clock)
 
-        assert checker._probe_task is None
+        assert results == [False]
+        checker.stop()
 
     async def test_stopping_also_kills_a_probe_still_in_flight(self):
         """A probe left running after stop() outlives the cell and keeps dialing a dead engine."""
