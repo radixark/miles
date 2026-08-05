@@ -176,7 +176,8 @@ class TestRolloutCellHandler:
 
     @pytest.mark.asyncio
     async def test_suspension_comes_from_the_controller_status(self) -> None:
-        """The controller is the only status source, so suspension is read off its document too."""
+        """Suspension is read off the worker manager, so a cell with no controller document still
+        reports Suspended rather than falling through to pending."""
         handler = _make_rollout_handler(suspended=True)
 
         cell = await handler.get_cell(ENGINE_CELL_ID)

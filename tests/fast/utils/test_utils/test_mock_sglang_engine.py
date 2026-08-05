@@ -33,6 +33,10 @@ def _comparable_params(func) -> list[tuple[str, str, bool]]:
     ]
 
 
+# Helpers the mock exposes for tests to drive it; the real actor has no reason to carry them.
+_MOCK_ONLY_METHODS: set[str] = set()
+
+
 # ----------------------------- contract tests -----------------------------
 
 
@@ -44,6 +48,15 @@ class TestApiContractMatchesRealEngine:
         assert missing == set(), (
             f"MockSGLangEngine cannot stand in for CommandActor: {sorted(missing)}. "
             f"Add stub implementations to mock_sglang_engine.py."
+        )
+
+    def test_the_mock_invents_no_method_the_real_actor_lacks(self) -> None:
+        """A stub with no counterpart lets a mock-driven test go green on a call that
+        AttributeErrors in production."""
+        invented = _public_methods(MockSGLangEngine) - _public_methods(CommandActor) - _MOCK_ONLY_METHODS
+        assert invented == set(), (
+            f"MockSGLangEngine exposes methods CommandActor does not: {sorted(invented)}. "
+            f"Either add them to CommandActor or list them in _MOCK_ONLY_METHODS."
         )
 
     def test_signature_compat_for_run(self) -> None:

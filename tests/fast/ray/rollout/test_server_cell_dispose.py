@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.cell_state import CellAddrInfo, StateDisposed, StateServing
+from miles.ray.rollout.cell_state import CellAddrInfo, StateDisposed, StatePendingWeights, StateServing
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 
 
@@ -45,6 +45,13 @@ def _mark_serving(cell: ServerCell, *, server_url: str, bootstrap_port: int | No
     observed in StatePendingWeights was never added to the router and has nothing to remove.
     """
     cell._state = StateServing(
+        addr_info=CellAddrInfo(server_url=server_url, bootstrap_port=bootstrap_port, gate_url=f"{server_url}/gate")
+    )
+
+
+def _mark_pending_weights(cell: ServerCell, *, server_url: str, bootstrap_port: int | None) -> None:
+    """A cell whose add_worker was awaited, or whose add_worker failed, sits here holding a url."""
+    cell._state = StatePendingWeights(
         addr_info=CellAddrInfo(server_url=server_url, bootstrap_port=bootstrap_port, gate_url=f"{server_url}/gate")
     )
 
@@ -95,3 +102,16 @@ class TestServerCellDispose:
         await cell.dispose()
 
         assert client.remove_worker.await_args.kwargs["use_legacy_api"] is True
+
+    @pytest.mark.asyncio
+    async def test_disposing_a_pending_weights_cell_unregisters_it_from_the_router(self) -> None:
+        """mark_weights_ready awaits add_worker while the cell is still pending, and a cell whose
+        add_worker failed stays pending on purpose, so the router can already hold its url."""
+        client = _make_router_api_client()
+        cell = _make_cell(router_api_client=client)
+        _mark_pending_weights(cell, server_url="http://10.0.0.1:30000", bootstrap_port=None)
+
+        await cell.dispose()
+
+        client.remove_worker.assert_awaited_once_with(worker_url="http://10.0.0.1:30000", use_legacy_api=False)
+        assert isinstance(cell._state, StateDisposed)

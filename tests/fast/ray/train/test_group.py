@@ -799,8 +799,8 @@ class TestCheckTrainOneAttempt:
         ],
     )
     def test_raises_when_all_cells_errored(self, results):
-        """Every cell failing this attempt still leaves live cells to retry on, so the group must
-        raise the retryable error rather than the one that ends the run."""
+        """Every cell failing this attempt still leaves an unstarted cell that can be healed into
+        the next one, so the group must raise the retryable error rather than the fatal one."""
         with pytest.raises(RuntimeError, match="All cells failed"):
             _make_group(num_cells=1)._check_train_one_attempt(_alive_cells_for(results), results)
 

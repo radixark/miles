@@ -198,9 +198,16 @@ class ServerCell:
         self._health_checker.stop()
 
         match self._state:
-            case StateServing():
+            # Registration is awaited while the cell is still initializing (the
+            # serve-without-weight-update path) or pending weights (mark_weights_ready),
+            # and a cell whose add_worker failed deliberately stays pending so it can be
+            # retried. Any of those can therefore hold a live router entry, and skipping
+            # the unregister leaves the router dialing an engine that is gone. Removing a
+            # url the router never had is harmless: _unregister_from_router logs and
+            # swallows everything.
+            case StateServing() | StatePendingWeights() | StateInitializing():
                 await self._unregister_from_router()
-            case StateUninitialized() | StateInitializing() | StatePendingWeights() | StateDisposed():
+            case StateUninitialized() | StateDisposed():
                 pass
             case _:
                 raise ValueError(f"{self._state=}")

@@ -212,7 +212,13 @@ def placement_group_factory(ray_local_mode) -> Callable[..., Any]:
         available_gpus = ray.cluster_resources().get("GPU", 0)
         needed_gpus = 0.5 * num_bundles
         if available_gpus < needed_gpus:
-            pytest.skip(f"placement group needs {needed_gpus} logical GPUs, cluster has {available_gpus}")
+            # Only a cluster we did not start is allowed to be GPU-less. Skipping on our own
+            # would silently drop this coverage the moment someone lowers num_gpus.
+            assert os.environ.get("RAY_ADDRESS"), (
+                f"the local test cluster must declare at least {needed_gpus} logical GPUs; "
+                f"tests/conftest.py sets num_gpus=8"
+            )
+            pytest.skip(f"joined cluster has {available_gpus} logical GPUs, need {needed_gpus}")
 
         pg = ray.util.placement_group([{"CPU": 0.4, "GPU": 0.5} for _ in range(num_bundles)], strategy="PACK")
         ray.get(pg.ready())

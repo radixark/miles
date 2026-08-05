@@ -75,12 +75,15 @@ async def _fake_set_rollout_executor(self: TrainerController) -> None:
     return None
 
 
+_waited_roles: list[str] = []
+
+
 async def _fake_wait_expected_num_cells(self: TrainerController) -> None:
     """The startup barrier waits for the provider to report cells, and this provider reports none.
 
-    The subject here is which args each role is created with, not the barrier, so it is stubbed
-    out like init and set_rollout_executor above."""
-    return None
+    Recording the role keeps create()'s call to the barrier under test: deleting that await
+    would otherwise go unnoticed, since nothing else drives create() end to end."""
+    _waited_roles.append(self._role)
 
 
 async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypatch):
@@ -89,6 +92,7 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
     monkeypatch.setattr(TrainerController, "init", _fake_init)
     monkeypatch.setattr(TrainerController, "set_rollout_executor", _fake_set_rollout_executor)
     monkeypatch.setattr(TrainerController, "_wait_expected_num_cells", _fake_wait_expected_num_cells)
+    _waited_roles.clear()
 
     args = Namespace(
         actor_num_nodes=1,
@@ -115,6 +119,7 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
         )
 
     assert provider.watched_spec_names == [["trainer-actor"], ["trainer-critic"]]
+    assert _waited_roles == ["actor", "critic"]
 
     assert actor._role == "actor"
     assert actor.args is args
