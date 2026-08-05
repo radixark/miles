@@ -70,21 +70,6 @@ def group_oldest_weight_version(group: Group) -> int | None:
     return min(versions) if versions else None
 
 
-def _eviction_key(group: Group) -> tuple[float, float]:
-    """Sort key ranking groups stalest-first for eviction.
-
-    Ranking by (min weight version, summed weight versions) equals ranking by
-    (largest per-sample staleness, largest summed staleness): with equal group
-    sizes the current engine version is a constant offset that cancels out.
-    Groups with no recorded versions rank freshest — never evicted while a
-    versioned group is available.
-    """
-    versions = [v for s in _iter_samples(group) if (v := s.oldest_weight_version) is not None]
-    if not versions:
-        return (float("inf"), float("inf"))
-    return (min(versions), sum(versions))
-
-
 class DataBuffer:
     """Finished groups waiting between the producer worker and the training consumer.
 
@@ -146,10 +131,18 @@ class DataBuffer:
             self._cond.notify_all()
             return entry
 
+    @staticmethod
+    def _eviction_key(group: Group) -> tuple[float, float]:
+        """Stalest-first sort key: (min, sum) of weight versions; versionless groups rank freshest."""
+        versions = [v for s in _iter_samples(group) if (v := s.oldest_weight_version) is not None]
+        if not versions:
+            return (float("inf"), float("inf"))
+        return (min(versions), sum(versions))
+
     def _evict_overflow(self, current_version: int | None) -> None:
         """Evict stalest-first until nothing is beyond ``max_staleness`` and the buffer fits."""
         while self._entries:
-            keys = [_eviction_key(group) for _, group in self._entries]
+            keys = [self._eviction_key(group) for _, group in self._entries]
             index = keys.index(min(keys))
             # keys[index][0] is the stalest group's oldest weight version (inf when unrecorded).
             if_exceed_staleness = (
