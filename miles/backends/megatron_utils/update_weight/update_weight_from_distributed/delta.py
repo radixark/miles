@@ -175,6 +175,13 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 self.args.hf_checkpoint,
             )
 
+        # Only rank 0 publishes the engine weight version above, and every rank runs the
+        # ci_test version check right after update_weights returns. Without this the other
+        # ranks read the engine while rank 0 is still mid-request and see sglang's initial
+        # "default", which surfaces as "Weight version mismatch! Engine: default, Updater: 0".
+        # The distributed paths already close their rank-0 engine work the same way.
+        dist.barrier(group=get_gloo_group())
+
     def _for_each_hf_bucket(self, bucket_func: Callable[[list[tuple[str, torch.Tensor]], tqdm | None], None]) -> None:
         """Feed every gathered HF bucket through ``bucket_func``: the base-class TP pass then the
         EP pass. All ranks join the gathers; ``bucket_func`` only runs on source ranks."""
