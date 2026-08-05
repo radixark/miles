@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import TypeAdapter
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.workers.naming import compute_cell_id, parse_cell_id
+from miles.utils.workers.naming import parse_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 if TYPE_CHECKING:
@@ -17,13 +17,9 @@ logger = logging.getLogger(__name__)
 class FTTestAction(FrozenStrictBaseModel):
     at_rollout: int
     action: Literal["stop_cell_at_end", "start_cell_at_end", "crash_before_allreduce"]
-    cell_index: int = -1  # -1 = last cell
+    cell_id: str
     rank: int = 0  # for actor-level actions: which rank within the cell
     attempt: int = 0  # for actor-level actions: which attempt (0 = first try)
-
-    def resolve_cell_id(self, *, pool_id: str, num_cells: int) -> str:
-        cell_index = self.cell_index if self.cell_index >= 0 else num_cells + self.cell_index
-        return compute_cell_id(pool_id=pool_id, cell_index=cell_index)
 
 
 _ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestAction])
@@ -37,6 +33,13 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
     if not raw:
         return []
     all_actions = _ACTION_LIST_ADAPTER.validate_json(raw)
+
+    for action in all_actions:
+        try:
+            parse_cell_id(action.cell_id)
+        except ValueError as e:
+            raise ValueError(f"FT test action has malformed cell_id {action.cell_id!r} (action={action})") from e
+
     actions = [a for a in all_actions if a.action in action_filter]
     if actions:
         logger.info("FT test actions activated: %d actions (%s)", len(actions), action_filter)
@@ -55,23 +58,31 @@ class FTTestActionControllerExecutor:
     async def run_after_step(self, rollout_id: int) -> None:
         for action in self._actions:
             if action.at_rollout == rollout_id:
-                cell_id = action.resolve_cell_id(
-                    pool_id=self._controller.pool_id, num_cells=self._controller.expected_num_cells
-                )
-                logger.info("FT test action: %s cell %s after rollout %d", action.action, cell_id, rollout_id)
+                self._check_action_target(action)
+                logger.info("FT test action: %s cell %s after rollout %d", action.action, action.cell_id, rollout_id)
 
                 worker_manager = RayWorkerManager.get_handle()
                 if action.action == "stop_cell_at_end":
-                    await worker_manager.stop_cells.remote([cell_id])
+                    await worker_manager.stop_cells.remote([action.cell_id])
                 elif action.action == "start_cell_at_end":
-                    await worker_manager.start_cells.remote([cell_id])
+                    await worker_manager.start_cells.remote([action.cell_id])
+
+    def _check_action_target(self, action: FTTestAction) -> None:
+        parsed = parse_cell_id(action.cell_id)
+        assert parsed.pool_id == self._controller.pool_id, (
+            f"FT test action targets pool_id {parsed.pool_id!r} but this controller drives {self._controller.pool_id!r} "
+            f"(action={action})"
+        )
+        assert parsed.cell_index < self._controller.expected_num_cells, (
+            f"FT test action targets cell index {parsed.cell_index} but the pool only has "
+            f"{self._controller.expected_num_cells} cells (action={action})"
+        )
 
 
 class FTTestActionActorExecutor:
-    def __init__(self, *, actions: list[FTTestAction], cell_id: str, cell_ids: list[str], rank: int) -> None:
+    def __init__(self, *, actions: list[FTTestAction], cell_id: str, rank: int) -> None:
         self._actions = actions
         self._cell_id = cell_id
-        self._cell_ids = cell_ids
         self._rank = rank
 
     @staticmethod
@@ -79,13 +90,11 @@ class FTTestActionActorExecutor:
         args: object,
         *,
         cell_id: str,
-        cell_ids: list[str],
         rank: int,
     ) -> "FTTestActionActorExecutor":
         return FTTestActionActorExecutor(
             actions=_load_actions(args, _ACTOR_ACTIONS),
             cell_id=cell_id,
-            cell_ids=cell_ids,
             rank=rank,
         )
 
@@ -94,10 +103,7 @@ class FTTestActionActorExecutor:
             if (
                 action.at_rollout == rollout_id
                 and action.attempt == attempt
-                and action.resolve_cell_id(
-                    pool_id=parse_cell_id(self._cell_id).pool_id, num_cells=len(self._cell_ids)
-                )
-                == self._cell_id
+                and action.cell_id == self._cell_id
                 and action.rank == self._rank
             ):
                 msg = (

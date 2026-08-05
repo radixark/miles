@@ -102,10 +102,10 @@ JSON per rank under `iter_<iteration>/model_hash_tp*_pp*_dp*_cp*.json`. Layer gr
 is deliberate: a mismatch names the layer instead of just saying the model differs.
 
 **Fault injection.** `--ci-ft-test-actions` takes a JSON array of actions such as
-`{"at_rollout": 3, "action": "stop_cell_at_end", "cell_index": -1}`, with
-`stop_cell_at_end`, `start_cell_at_end` and `crash_before_allreduce` available and
-`cell_index: -1` meaning the last cell. It is how the fault-tolerance suite kills things on
-purpose. See [Fault Tolerance](/advanced/fault-tolerance).
+`{"at_rollout": 3, "action": "stop_cell_at_end", "cell_id": "trainer-actor-0"}`, with
+`stop_cell_at_end`, `start_cell_at_end` and `crash_before_allreduce` available and `cell_id`
+naming the target cell. It is how the fault-tolerance suite kills things on purpose. See
+[Fault Tolerance](/advanced/fault-tolerance).
 
 ## Aligning precision
 
