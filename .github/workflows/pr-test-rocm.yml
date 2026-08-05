@@ -65,12 +65,20 @@ jobs:
   stage-c-4-gpu-mi300x:
     needs: [resolve-ci-image]
     if: github.event_name == 'workflow_dispatch'
+    # One shard per 4-GPU runner, so the pair works the suite in parallel.
+    # run_suite.py balances the shards by est_time. fail-fast: false so one
+    # shard's failure does not cancel the other mid-run.
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
       runs_on: '["self-hosted", "amd", "mi300x", "4gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi300x
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --labels amd --match-all-labels
         --enable-retry --max-attempts 2
     secrets: inherit
