@@ -64,3 +64,12 @@ class TestComputeSpecs:
         specs = compute_specs(args)
 
         assert [spec.name for spec in specs if spec.name.startswith("inference-engine")] == []
+
+    def test_train_only_lists_no_rollout_component(self):
+        """--debug-train-only reserves no rollout GPUs, so resolving a rollout spec would
+        fail on the unset rollout_num_gpus long before the manager launches anything."""
+        args = make_args(debug_train_only=True, rollout_num_gpus=None)
+
+        specs = compute_specs(args)
+
+        assert [spec.name for spec in specs] == ["trainer-actor"]
