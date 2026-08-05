@@ -274,13 +274,6 @@ class InferenceController:
     @requires_lock
     async def _health_monitoring_pause(self) -> None:
         self._health_checker_activeness.bump_active(False)
-        await asyncio.gather(
-            *[
-                cell.cancel_inflight_health_probe()
-                for srv in self.servers.values()
-                for cell in srv.server_cells.values()
-            ]
-        )
 
     @requires_lock
     async def _health_monitoring_resume(self) -> None:
