@@ -1,7 +1,7 @@
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_both_versions
 
-register_cuda_ci(est_time=500, suite="stage-c-4-gpu-h200", labels=["sglang"])
+register_cuda_ci(est_time=500, suite="stage-c-2-gpu-h200", labels=["sglang"])
 
 
 CONFIG = ModelConfig(
@@ -9,7 +9,9 @@ CONFIG = ModelConfig(
     reasoning_parser="glm45",
     tool_call_parser="glm47",
     tito_model="glm47",
-    tp_size=4,
+    num_gpus=2,
+    tp_size=1,
+    enable_spec=True,
     # Lenient template: tool message is rendered without validating that the
     # preceding assistant carries a matching tool_call.id, so the APPEND_TOOL
     # sentinel ("tool_call_id": "none") roundtrips cleanly.
