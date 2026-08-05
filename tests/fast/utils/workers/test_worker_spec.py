@@ -124,7 +124,8 @@ class TestCommandWorkerSpec:
 
         def launch_command(ctx: LaunchCommandContext) -> str:
             calls.append(ctx)
-            return f"serve --host {ctx.host} --port {ctx.ports['http']}"
+            http = ctx.self_addrs["http"]
+            return f"serve --host {http.host} --port {http.port}"
 
         spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=launch_command)
         assert calls == []
