@@ -387,6 +387,28 @@ def test_gate_defaults_within_capture_whitelist_and_valid(tmp_path):
     assert len(specs) == len(GATE_DEFAULTS)
 
 
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_session_tito_gate_default_is_loose(version):
+    metric_key = f"rollout/tito_session_mismatch_rate/{version}/assistant_text"
+    assert GATE_DEFAULTS[metric_key] == {
+        "steps": "last",
+        "constraint": {"rel_up": 1.0, "abs_floor_up": 0.1, "rel_down": 1.0},
+    }
+
+
+def test_normal_session_e2e_declares_both_tito_history_gates():
+    case_dir = Path(__file__).parents[2] / "e2e/sglang/test_session_server_multi_role"
+    required = {
+        "rollout/tito_session_mismatch_rate/v1/assistant_text",
+        "rollout/tito_session_mismatch_rate/v2/assistant_text",
+    }
+    case_files = sorted(case_dir.glob("test_*.py"))
+    assert case_files
+    for case_file in case_files:
+        declared = {spec.metric_key for spec in parse_ci_gate_specs(str(case_file))}
+        assert required <= declared, case_file
+
+
 def test_one_liner_runtime_is_noop():
     # The Python signature must accept the one-liner form at import time; the
     # parser, not the signature, decides validity.

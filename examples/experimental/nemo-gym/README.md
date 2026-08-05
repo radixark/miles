@@ -62,7 +62,7 @@ Two known limitations from the smoke run:
   GRPO then has zero advantage (`rollout/zero_std` fires). That's a model
   capability floor, not a pipeline defect; expect the same until you use a
   stronger policy or an easier task pool.
-- `rollout/tito_session_mismatch_rate` reads 1.0 with this model: Qwen3
+- `rollout/tito_session_mismatch_rate/v1` reads 1.0 with this model: Qwen3
   chat templates insert an empty `<think></think>` skeleton when re-rendering
   assistant history, which the engine's actual output never contains. It is a
   soft diagnostic — training tokens and loss masks come from the engine's
