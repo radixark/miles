@@ -648,29 +648,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--async-buffer-max-groups",
+                "--async-data-buffer-max-batches",
                 type=int,
-                default=None,
+                default=2,
                 help=(
-                    "Capacity of the finished-group buffer between rollout production and training "
-                    "consumption in fully async mode, in prompt groups. When production outruns "
-                    "consumption past this bound, the stalest groups are evicted and their prompts "
-                    "recycled for regeneration (groups beyond --max-weight-staleness first), so the "
-                    "producer never blocks and queued data stays fresh. None (default) keeps the "
-                    "legacy behavior: a large bound that blocks the producer when full."
+                    "Capacity of the finished-group data buffer between rollout production and "
+                    "training consumption in fully async mode, in multiples of rollout_batch_size. "
+                    "When production outruns consumption past this bound, the stalest groups are "
+                    "evicted and their prompts recycled for regeneration (groups beyond "
+                    "--max-weight-staleness first), so the producer never blocks and queued data "
+                    "stays fresh. 0 disables the cap and restores the legacy behavior: a large "
+                    "bound that blocks the producer when full."
                 ),
             )
             parser.add_argument(
-                "--async-buffer-order",
+                "--async-data-buffer-order",
                 type=str,
                 choices=["fifo", "lifo"],
                 default="fifo",
                 help=(
-                    "Consumption order of the fully async finished-group buffer. fifo (default) "
+                    "Consumption order of the fully async finished-group data buffer. fifo (default) "
                     "trains on the oldest finished group first; lifo trains on the freshest, "
                     "keeping updates closer to on-policy at the cost of letting old groups sink — "
-                    "pair lifo with --async-buffer-max-groups / --max-weight-staleness so sunk "
-                    "groups are evicted rather than eventually trained on."
+                    "pair lifo with --async-data-buffer-max-batches / --max-weight-staleness so "
+                    "sunk groups are evicted rather than eventually trained on."
                 ),
             )
             parser.add_argument(

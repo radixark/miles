@@ -74,8 +74,8 @@ def make_args(**overrides) -> Namespace:
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
-        async_buffer_max_groups=None,
-        async_buffer_order="fifo",
+        async_data_buffer_max_batches=0,
+        async_data_buffer_order="fifo",
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
@@ -397,14 +397,14 @@ async def test_weight_version_throttles_failed_queries(monkeypatch):
     assert len(calls) == 2
 
 
-# ── GroupBuffer: staleness-bounded buffering ─────────────────────────
+# ── DataBuffer: staleness-bounded buffering ─────────────────────────
 
 
 def make_buffer(**overrides):
     evicted = []
     defaults = dict(order="fifo", max_groups=None, max_staleness=None, on_evict=evicted.append)
     defaults.update(overrides)
-    return fully_async.GroupBuffer(**defaults), evicted
+    return fully_async.DataBuffer(**defaults), evicted
 
 
 async def put_group(buffer, group, **kwargs):
@@ -474,11 +474,11 @@ async def test_buffer_staleness_stats():
 
 
 async def test_drain_reports_eviction_metrics(monkeypatch):
-    fn = make_fn(monkeypatch, make_args(async_buffer_max_groups=8), FakeDataSource())
+    fn = make_fn(monkeypatch, make_args(async_data_buffer_max_batches=4), FakeDataSource())
     await fn(RolloutFnTrainInput(rollout_id=0))
 
     # Evictions land in the buffer counters between drains; the racy overflow
-    # path itself is covered by the GroupBuffer tests above.
+    # path itself is covered by the DataBuffer tests above.
     assert fn._output._on_evict == fn._recycle
     fn._output.entered_groups += 8
     fn._output.evicted_stale_groups = 1

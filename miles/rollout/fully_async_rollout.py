@@ -85,7 +85,7 @@ def _eviction_key(group: Group) -> tuple[float, float]:
     return (min(versions), sum(versions))
 
 
-class GroupBuffer:
+class DataBuffer:
     """Finished groups waiting between the producer worker and the training consumer.
 
     Without ``max_groups`` this is the legacy bounded queue: the producer blocks
@@ -110,6 +110,7 @@ class GroupBuffer:
         on_evict: Callable[[list[Sample]], None],
     ):
         assert order in ("fifo", "lifo"), f"unknown buffer order: {order}"
+        assert max_groups is None or max_groups > 0, f"non-positive buffer capacity: {max_groups}"
         self._order = order
         self._capacity = max_groups if max_groups is not None else OUTPUT_QUEUE_MAX_GROUPS
         self._evict_on_overflow = max_groups is not None
@@ -151,14 +152,14 @@ class GroupBuffer:
             keys = [_eviction_key(group) for _, group in self._entries]
             index = keys.index(min(keys))
             # keys[index][0] is the stalest group's oldest weight version (inf when unrecorded).
-            beyond_threshold = (
+            if_exceed_staleness = (
                 self._max_staleness is not None
                 and current_version is not None
                 and current_version - keys[index][0] > self._max_staleness
             )
-            if not beyond_threshold and len(self._entries) <= self._capacity:
+            if not if_exceed_staleness and len(self._entries) <= self._capacity:
                 return
-            if beyond_threshold:
+            if if_exceed_staleness:
                 self.evicted_stale_groups += 1
             else:
                 self.evicted_overflow_groups += 1
@@ -229,15 +230,16 @@ class FullyAsyncRolloutFn:
         self._eval_prompt_dataset_cache: dict = {}
         self._producer_resumed = asyncio.Event()
         self._producer_resumed.set()
-        self._output: GroupBuffer | None = None
+        self._output: DataBuffer | None = None
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
         if input.evaluation:
             return await self._call_eval(input)
         if self._worker is None:
-            self._output = GroupBuffer(
-                order=self.args.async_buffer_order,
-                max_groups=self.args.async_buffer_max_groups,
+            max_batches = self.args.async_data_buffer_max_batches
+            self._output = DataBuffer(
+                order=self.args.async_data_buffer_order,
+                max_groups=max_batches * self.args.rollout_batch_size if max_batches else None,
                 max_staleness=self.args.max_weight_staleness,
                 on_evict=self._recycle,
             )
@@ -296,7 +298,7 @@ class FullyAsyncRolloutFn:
             for task in done:
                 # Without a capacity this blocks when the queue is full, pausing
                 # submission instead of growing the queue unboundedly; with
-                # --async-buffer-max-groups the buffer evicts by staleness instead.
+                # --async-data-buffer-max-batches the buffer evicts by staleness instead.
                 version = await self._weight_version.get(self.args)
                 await self._output.put(task.result(), current_version=version)
 
