@@ -29,6 +29,7 @@ def _patch_worker_backends():
         ),
     ):
         yield
+    fake_worker_manager.kill_all_actors()
 
 
 @pytest.fixture(scope="module", autouse=True)

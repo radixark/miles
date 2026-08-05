@@ -1,5 +1,7 @@
 """In-process stand-in for the RayWorkerManager actor handle used by trainer cells."""
 
+import logging
+
 import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
@@ -9,6 +11,8 @@ from miles.utils.workers.ray_worker_manager import WorkerInfo
 from miles.utils.workers.worker_handle import RayWorkerHandle
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import HostAndPort
+
+logger = logging.getLogger(__name__)
 
 
 class _FakeRemoteMethod:
@@ -71,5 +75,20 @@ class FakeWorkerManager:
     def _stop_cells(self, cell_ids: list[str]) -> None:
         self.stopped_cell_ids.append(cell_ids)
         for cell_id in cell_ids:
-            for handle in self._handles.pop(cell_id, []):
+            self._kill(self._handles.pop(cell_id, []))
+
+    def kill_all_actors(self) -> None:
+        for handles in self._handles.values():
+            self._kill(handles)
+        self._handles.clear()
+
+    @staticmethod
+    def _kill(handles: list) -> None:
+        # The real manager kills the actor when it stops a cell. Dropping the handle
+        # instead leaves the actor alive for as long as a cell still references it,
+        # which accumulates one process per cell across a module.
+        for handle in handles:
+            try:
                 ray.kill(handle)
+            except Exception:
+                logger.warning(f"Failed to kill {handle}", exc_info=True)
