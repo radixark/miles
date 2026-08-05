@@ -1,9 +1,16 @@
-"""Paces prompt-group submission for the rollout drivers (--rollout-submission-granularity)."""
+"""Paces prompt-group submission for the rollout drivers (--rollout-submission-granularity).
+
+The driver owns the pending group tasks and passes their count in as ``pending_groups``;
+the scheduler only accounts samples in flight.
+"""
 
 import asyncio
+import logging
 from argparse import Namespace
 
 from miles.utils.types import Sample
+
+logger = logging.getLogger(__name__)
 
 
 class GroupLevelSubmission:
@@ -35,8 +42,9 @@ class SampleBackfillSubmission:
 
     def has_capacity(self, *, pending_groups: int, group_budget: int) -> bool:
         """A False return arms the sample wakeup: only later completions wake ``wait_for_progress``."""
-        if pending_groups == 0:
-            # nothing in flight: drop orphaned credits from groups that never spawned sample tasks
+        if pending_groups == 0 and self.samples_in_flight:
+            # a group returned without spawning its sample tasks, or a stub skipped the callback
+            logger.warning(f"samples_in_flight={self.samples_in_flight} with no pending groups; resetting to 0")
             self.samples_in_flight = 0
         if self.samples_in_flight + self.group_size <= group_budget * self.group_size:
             return True

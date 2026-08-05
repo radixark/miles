@@ -150,7 +150,15 @@ async def generate_and_rm_group(
             task.add_done_callback(lambda _task: sample_done_callback())
         tasks.append(task)
 
-    group = await asyncio.gather(*tasks)
+    try:
+        group = await asyncio.gather(*tasks)
+    except BaseException:
+        # cancel siblings and let them settle: the group returns only after every
+        # sample task is done, so no orphan generation or in-flight credit outlives it
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     logger.debug(f"{log_prefix} [group] All {len(group)} samples completed")
     if state.aborted:
         return group

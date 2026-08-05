@@ -25,6 +25,7 @@ def make_args(**overrides) -> Namespace:
         n_samples_per_prompt=GROUP_SIZE,
         over_sampling_batch_size=1,
         rollout_submission_granularity=None,
+        sglang_router_policy="round_robin",
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
         rollout_all_samples_process_path=None,
@@ -178,6 +179,27 @@ async def test_backfill_does_not_oversubmit_below_one_group(monkeypatch):
     harness.finish_group(1)
     output, _ = await task
     assert len(output.samples) == 2
+
+
+async def test_failed_sample_cancels_siblings_and_conserves_credits(monkeypatch):
+    """One sample raising must not leave siblings running or credits unreturned."""
+    from miles.rollout.inference_rollout import inference_rollout_common as common
+
+    async def fake_generate_and_rm(state, sample, sampling_params, evaluation=False):
+        if sample.index == 10:  # first sample of make_group(1)
+            raise RuntimeError("sample failed")
+        await asyncio.Event().wait()  # runs until cancelled
+
+    monkeypatch.setattr(common, "generate_and_rm", fake_generate_and_rm)
+
+    fired = []
+    state = FakeGenerateState(make_args())
+    with pytest.raises(RuntimeError, match="sample failed"):
+        await common.generate_and_rm_group(
+            state, make_group(1), sampling_params={}, sample_done_callback=lambda: fired.append(1)
+        )
+    # every sample task settled (cancelled included) before the group raised
+    assert len(fired) == GROUP_SIZE
 
 
 class TestSubmissionSchedulers:
