@@ -6,7 +6,16 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
-from miles.utils.test_utils.ft_test_actions import _ACTOR_ACTIONS, _CONTROLLER_ACTIONS, FTTestAction, _load_actions
+from miles.utils.test_utils.ft_test_actions import (
+    _ACTOR_ACTIONS,
+    _CONTROLLER_ACTIONS,
+    FTTestAction,
+    FTTestActionActorExecutor,
+    FTTestActionControllerExecutor,
+    _load_actions,
+)
+
+_POOL_ID = "trainer-actor"
 
 
 def _args(ci_ft_test_actions: object) -> SimpleNamespace:
@@ -30,14 +39,14 @@ def test_load_actions_returns_empty_when_attr_missing() -> None:
 
 def test_load_actions_parses_single_crash_action_with_defaults() -> None:
     """A single crash_before_allreduce action loads with the model's default fields."""
-    raw = json.dumps([{"at_rollout": 3, "action": "crash_before_allreduce"}])
+    raw = json.dumps([{"at_rollout": 3, "action": "crash_before_allreduce", "cell_id": "trainer-actor-2"}])
     actions = _load_actions(_args(raw), _ACTOR_ACTIONS)
     assert len(actions) == 1
     action = actions[0]
     assert isinstance(action, FTTestAction)
     assert action.at_rollout == 3
     assert action.action == "crash_before_allreduce"
-    assert action.cell_index == -1
+    assert action.cell_id == "trainer-actor-2"
     assert action.rank == 0
     assert action.attempt == 0
 
@@ -46,9 +55,9 @@ def test_load_actions_filters_to_only_matching_actions() -> None:
     """Mixed actions are filtered down to those whose action is in the filter set."""
     raw = json.dumps(
         [
-            {"at_rollout": 1, "action": "stop_cell_at_end"},
-            {"at_rollout": 2, "action": "crash_before_allreduce"},
-            {"at_rollout": 3, "action": "start_cell_at_end"},
+            {"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-actor-0"},
+            {"at_rollout": 2, "action": "crash_before_allreduce", "cell_id": "trainer-actor-1"},
+            {"at_rollout": 3, "action": "start_cell_at_end", "cell_id": "trainer-actor-0"},
         ]
     )
     group_actions = _load_actions(_args(raw), _CONTROLLER_ACTIONS)
@@ -59,35 +68,63 @@ def test_load_actions_filters_to_only_matching_actions() -> None:
 
 def test_load_actions_returns_empty_when_no_action_matches_filter() -> None:
     """Valid actions that fall outside the filter set produce an empty result."""
-    raw = json.dumps([{"at_rollout": 1, "action": "crash_before_allreduce"}])
+    raw = json.dumps([{"at_rollout": 1, "action": "crash_before_allreduce", "cell_id": "trainer-actor-1"}])
     assert _load_actions(_args(raw), _CONTROLLER_ACTIONS) == []
 
 
 def test_load_actions_rejects_extra_field() -> None:
     """An unexpected JSON field is rejected because the model forbids extras."""
-    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "bogus": 5}])
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-actor-0", "bogus": 5}])
     with pytest.raises(ValidationError):
         _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_rejects_invalid_action_literal() -> None:
     """An action string outside the allowed Literal set raises a validation error."""
-    raw = json.dumps([{"at_rollout": 1, "action": "not_a_real_action"}])
+    raw = json.dumps([{"at_rollout": 1, "action": "not_a_real_action", "cell_id": "trainer-actor-0"}])
     with pytest.raises(ValidationError):
         _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
-from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor, FTTestActionControllerExecutor
+def test_load_actions_rejects_missing_cell_id() -> None:
+    """cell_id is required, so an action that omits it fails to load instead of guessing a target."""
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end"}])
+    with pytest.raises(ValidationError):
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
-_POOL_ID = "trainer-actor"
-_CELL_IDS = ["trainer-actor-0", "trainer-actor-1", "trainer-actor-2"]
+
+def test_load_actions_rejects_legacy_cell_index_field() -> None:
+    """The retired cell_index field is an extra field now, so stale JSON fails loudly."""
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_index": -1}])
+    with pytest.raises(ValidationError):
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
+
+
+def test_load_actions_rejects_cell_id_without_index_suffix() -> None:
+    """A cell_id that carries no trailing index cannot be parsed and is rejected at load time."""
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "traineractor"}])
+    with pytest.raises(ValueError):
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
+
+
+def test_load_actions_rejects_cell_id_with_non_numeric_index() -> None:
+    """A cell_id whose suffix is not an integer is rejected at load time."""
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-actor-last"}])
+    with pytest.raises(ValueError):
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
+
+
+def test_load_actions_validates_cell_id_of_actions_outside_the_filter() -> None:
+    """Validation runs over every action, so a typo in another executor's action still fails here."""
+    raw = json.dumps([{"at_rollout": 1, "action": "crash_before_allreduce", "cell_id": "bogus"}])
+    with pytest.raises(ValueError):
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 class FakeController:
-    def __init__(self, num_cells: int, *, alive_cell_ids: list[str] | None = None) -> None:
-        self.pool_id = _POOL_ID
+    def __init__(self, num_cells: int, *, pool_id: str = _POOL_ID) -> None:
+        self.pool_id = pool_id
         self.expected_num_cells = num_cells
-        self.cell_ids = _CELL_IDS[:num_cells] if alive_cell_ids is None else alive_cell_ids
 
 
 class FakeRemoteMethod:
@@ -106,34 +143,20 @@ class FakeWorkerManager:
         self.start_cells = FakeRemoteMethod(self.started)
 
 
-class TestResolveCellId:
-    def test_non_negative_index_selects_that_cell(self):
-        """resolve_cell_id names the cell whose stable cell_index the action asked for."""
-        action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        assert action.resolve_cell_id(pool_id=_POOL_ID, num_cells=3) == "trainer-actor-1"
-
-    def test_negative_index_resolves_to_last_cell(self):
-        """resolve_cell_id maps the default -1 to the last cell of the configured pool."""
-        action = FTTestAction(at_rollout=5, action="start_cell_at_end", cell_index=-1)
-        assert action.resolve_cell_id(pool_id=_POOL_ID, num_cells=3) == "trainer-actor-2"
-
-    def test_omitted_cell_index_resolves_to_last_cell(self):
-        """An action that never spells cell_index falls back to the model default and hits the last cell."""
-        action = FTTestAction(at_rollout=0, action="stop_cell_at_end")
-        assert action.resolve_cell_id(_CELL_IDS) == "trainer-actor-2"
+async def _run(executor: FTTestActionControllerExecutor, manager: FakeWorkerManager, rollout_id: int) -> None:
+    with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
+        await executor.run_after_step(rollout_id)
 
 
 class TestRunAfterStep:
     @pytest.mark.asyncio
     async def test_stop_cell_fires_on_matching_rollout(self):
-        """stop_cell_at_end triggers the worker manager with the resolved cell id on its rollout."""
-        controller = FakeController(num_cells=3)
+        """stop_cell_at_end hands the action's cell_id to the worker manager on its rollout."""
         manager = FakeWorkerManager()
-        action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
+        action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-actor-1")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(5)
+        await _run(executor, manager, 5)
 
         assert manager.stopped == ["trainer-actor-1"]
         assert manager.started == []
@@ -141,69 +164,50 @@ class TestRunAfterStep:
     @pytest.mark.asyncio
     async def test_no_action_on_non_matching_rollout(self):
         """run_after_step does nothing when no action's at_rollout matches the given rollout."""
-        controller = FakeController(num_cells=3)
         manager = FakeWorkerManager()
-        action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
+        action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-actor-1")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(4)
+        await _run(executor, manager, 4)
 
         assert manager.stopped == []
         assert manager.started == []
 
     @pytest.mark.asyncio
-    async def test_start_cell_with_default_index_resolves_to_last_cell(self):
-        """start_cell_at_end with cell_index -1 calls the worker manager on the last cell."""
-        controller = FakeController(num_cells=3)
+    async def test_start_cell_targets_the_named_cell(self):
+        """start_cell_at_end calls the worker manager with exactly the cell_id the action names."""
         manager = FakeWorkerManager()
-        action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_index=-1)
-        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
+        action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_id="trainer-actor-2")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(2)
+        await _run(executor, manager, 2)
 
         assert manager.started == ["trainer-actor-2"]
         assert manager.stopped == []
 
     @pytest.mark.asyncio
-    async def test_start_cell_after_a_stopped_cell_was_dropped_still_targets_that_cell(self):
-        """A cell removed by _remove_cell shrinks the live list, but cell_index -1 must still name it."""
-        controller = FakeController(num_cells=2, alive_cell_ids=["trainer-actor-0"])
+    async def test_start_cell_after_that_cell_was_dropped_still_targets_it(self):
+        """A stopped cell no longer being live does not change the cell_id the action names."""
         manager = FakeWorkerManager()
-        action = FTTestAction(at_rollout=3, action="start_cell_at_end", cell_index=-1)
-        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
+        action = FTTestAction(at_rollout=3, action="start_cell_at_end", cell_id="trainer-actor-1")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=2))
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(3)
+        await _run(executor, manager, 3)
 
         assert manager.started == ["trainer-actor-1"]
         assert manager.stopped == []
 
     @pytest.mark.asyncio
-    async def test_start_cell_on_a_single_cell_group_whose_only_cell_was_dropped(self):
-        """With every cell dropped the live list is empty, and positional lookup would raise IndexError."""
-        controller = FakeController(num_cells=1, alive_cell_ids=[])
-        manager = FakeWorkerManager()
-        action = FTTestAction(at_rollout=1, action="start_cell_at_end", cell_index=-1)
-        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
-
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(1)
-
-        assert manager.started == ["trainer-actor-0"]
-
-    @pytest.mark.asyncio
     async def test_two_actions_same_rollout_both_fire(self):
         """Two actions sharing the same rollout both dispatch to their respective controller methods."""
-        controller = FakeController(num_cells=3)
         manager = FakeWorkerManager()
-        stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_index=0)
-        start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_index=2)
-        executor = FTTestActionControllerExecutor(actions=[stop_action, start_action], controller=controller)
+        stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_id="trainer-actor-0")
+        start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_id="trainer-actor-2")
+        executor = FTTestActionControllerExecutor(
+            actions=[stop_action, start_action], controller=FakeController(num_cells=3)
+        )
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(7)
+        await _run(executor, manager, 7)
 
         assert manager.stopped == ["trainer-actor-0"]
         assert manager.started == ["trainer-actor-2"]
@@ -211,24 +215,46 @@ class TestRunAfterStep:
     @pytest.mark.asyncio
     async def test_empty_actions_is_noop(self):
         """An executor with no actions performs no controller calls."""
-        controller = FakeController(num_cells=3)
         manager = FakeWorkerManager()
-        executor = FTTestActionControllerExecutor(actions=[], controller=controller)
+        executor = FTTestActionControllerExecutor(actions=[], controller=FakeController(num_cells=3))
 
-        with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-            await executor.run_after_step(5)
+        await _run(executor, manager, 5)
 
         assert manager.stopped == []
         assert manager.started == []
 
+    @pytest.mark.asyncio
+    async def test_action_naming_another_spec_raises(self):
+        """An action aimed at a different spec is a misconfiguration and must fail, not silently no-op."""
+        manager = FakeWorkerManager()
+        action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="rollout-engine-0")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
 
-_TWO_CELL_IDS = _CELL_IDS[:2]
+        with pytest.raises(AssertionError):
+            await _run(executor, manager, 1)
 
-_CRASH_ACTION = FTTestAction(at_rollout=4, action="crash_before_allreduce", cell_index=1, rank=0, attempt=0)
+        assert manager.stopped == []
+
+    @pytest.mark.asyncio
+    async def test_action_index_beyond_expected_num_cells_raises(self):
+        """A cell index the group can never have is a misconfiguration and must fail at dispatch."""
+        manager = FakeWorkerManager()
+        action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="trainer-actor-9")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
+
+        with pytest.raises(AssertionError):
+            await _run(executor, manager, 1)
+
+        assert manager.stopped == []
+
+
+_CRASH_ACTION = FTTestAction(
+    at_rollout=4, action="crash_before_allreduce", cell_id="trainer-actor-1", rank=0, attempt=0
+)
 
 
 def _make_actor_executor(*, cell_id: str, rank: int) -> FTTestActionActorExecutor:
-    return FTTestActionActorExecutor(actions=[_CRASH_ACTION], cell_id=cell_id, cell_ids=_TWO_CELL_IDS, rank=rank)
+    return FTTestActionActorExecutor(actions=[_CRASH_ACTION], cell_id=cell_id, rank=rank)
 
 
 @pytest.fixture
@@ -250,6 +276,14 @@ class TestMaybeCrash:
     def test_other_cell_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
         """A worker in a cell the action does not name keeps running."""
         executor = _make_actor_executor(cell_id="trainer-actor-0", rank=0)
+
+        executor.maybe_crash(rollout_id=4, attempt=0)
+
+        assert recorded_exit_codes == []
+
+    def test_cell_of_another_spec_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
+        """Matching is exact string equality, so a same-index cell of another spec survives."""
+        executor = _make_actor_executor(cell_id="rollout-engine-1", rank=0)
 
         executor.maybe_crash(rollout_id=4, attempt=0)
 
@@ -279,14 +313,10 @@ class TestMaybeCrash:
 
         assert recorded_exit_codes == []
 
-    def test_default_cell_index_targets_the_last_cell(self, recorded_exit_codes: list[int]) -> None:
-        """With the default cell_index the last cell crashes and the first one survives."""
-        action = FTTestAction(at_rollout=4, action="crash_before_allreduce")
-        last = FTTestActionActorExecutor(actions=[action], cell_id="trainer-actor-1", cell_ids=_TWO_CELL_IDS, rank=0)
-        first = FTTestActionActorExecutor(actions=[action], cell_id="trainer-actor-0", cell_ids=_TWO_CELL_IDS, rank=0)
+    def test_no_actions_never_exits(self, recorded_exit_codes: list[int]) -> None:
+        """An actor executor with no actions never crashes its worker."""
+        executor = FTTestActionActorExecutor(actions=[], cell_id="trainer-actor-1", rank=0)
 
-        first.maybe_crash(rollout_id=4, attempt=0)
+        executor.maybe_crash(rollout_id=4, attempt=0)
+
         assert recorded_exit_codes == []
-
-        last.maybe_crash(rollout_id=4, attempt=0)
-        assert recorded_exit_codes == [1]

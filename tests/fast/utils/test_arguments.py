@@ -1261,7 +1261,66 @@ class TestRolloutHealthCheckArguments:
         """At a 30s interval the shared three-failure debounce would hide a dead engine for 90s."""
         assert self._parse([]).rollout_health_check_failure_threshold == 1
 
+    def test_a_tuned_rollout_debounce_reaches_the_shared_config(self):
+        """The failure threshold is what debounces transient blips, so the flag must reach the checker's config."""
+        config = SimpleHealthCheckerConfig.from_args(
+            self._parse(["--rollout-health-check-failure-threshold", "7"]), prefix="rollout_health_check"
+        )
+
+        assert config.failure_threshold == 7
+
     def test_the_trainer_heartbeat_keeps_its_own_debounce(self):
         """The rollout default must not be pushed down into the shared config: a trainer heartbeat
         shares an RPC channel with the train step, so one slow reply is a blip, not a dead cell."""
         assert self._parse([]).trainer_heartbeat_checker_failure_threshold == 3
+
+
+class TestMiniFtControllerArguments:
+    def _validate(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        miles_validate_args(args)
+        return args
+
+    def test_fault_tolerance_alone_turns_the_healing_loop_on(self):
+        """Asking for fault tolerance heals on its own, so the loop must come up without a second flag."""
+        assert self._validate(["--use-fault-tolerance"]).mini_ft_controller_enable is True
+
+    def test_the_negative_flag_turns_the_healing_loop_back_off(self):
+        """A run that drives healing from outside needs a way to keep the health reporting without the loop."""
+        args = self._validate(["--use-fault-tolerance", "--no-mini-ft-controller-enable"])
+
+        assert args.mini_ft_controller_enable is False
+
+    def test_asking_for_the_loop_without_a_port_is_rejected_at_launch(self):
+        """The loop drives cells over the api server port, so a disabled port would fail every poll instead."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            ["--mini-ft-controller-enable", "--api-server-port", "0", "--num-rollout", "1"] + REQUIRED_ARGS
+        )
+
+        with pytest.raises(ValueError, match="requires --api-server-port to be set"):
+            miles_validate_args(args)
+
+
+class TestSessionServerArguments:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + REQUIRED_ARGS)
+
+    def test_the_instance_count_and_base_port_come_from_the_flags(self):
+        """A network policy whitelists a known range, so the base port is one scalar the instances offset from."""
+        args = self._parse(["--session-server-workers", "3", "--session-server-port", "41000"])
+
+        assert args.session_server_workers == 3
+        assert args.session_server_port == 41000
+
+    def test_an_unset_base_port_leaves_the_default_instances_dynamically_placed(self):
+        """Without the flag the port stays unset so the placement allocates one, and the instance count is the default."""
+        args = self._parse([])
+
+        assert args.session_server_workers == 32
+        assert args.session_server_port is None
