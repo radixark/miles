@@ -53,7 +53,7 @@ class TestKillWorkers:
         cell = make_cell(actor_count=2)
         wrapped_handles = cell._get_worker_handles()
 
-        await cell.stop()
+        await cell._kill_workers_and_confirm_dead()
 
         for wrapped in wrapped_handles:
             await asyncio.wait_for(wrapped.wait_dead(timeout=30.0), timeout=35.0)

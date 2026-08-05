@@ -5,7 +5,7 @@ import pytest
 from tests.fast.ray.train import conftest as train_conftest
 
 from miles.ray.specs.train import compute_trainer_spec_name
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
@@ -58,9 +58,9 @@ def provider(monkeypatch) -> _RecordingWorkerProvider:
     return recording_provider
 
 
-async def _create_group(*, num_cells: int) -> RayTrainGroup:
+async def _create_group(*, num_cells: int) -> TrainerController:
     train_conftest.fake_worker_manager.num_cells = num_cells
-    return await RayTrainGroup.create(
+    return await TrainerController.create(
         _make_args(num_cells=num_cells),
         role="actor",
         with_ref=False,

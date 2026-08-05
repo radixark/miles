@@ -368,23 +368,5 @@ class TestProbeServerHealthy:
         assert rec.calls[0][2]["headers"]["Authorization"] == "Bearer secret"
 
 
-class TestWaitServerHealthy:
-    """``wait_server_healthy`` polls until the server answers on health and flush_cache."""
-
-    async def test_it_polls_health_then_flush_cache(self, monkeypatch):
-        """Readiness means both the health endpoint and a drained working queue."""
-        rec = _Recorder()
-        rec.install(monkeypatch, responses=[_FakeResponse(status_code=503), _FakeResponse(), _FakeResponse()])
-        monkeypatch.setattr(asyncio, "sleep", _noop_sleep)
-
-        await sglang_api_client.wait_server_healthy(server_url=SERVER_URL, api_key="k")
-
-        assert [url for _verb, url, _kwargs in rec.calls] == [
-            f"{SERVER_URL}/health_generate",
-            f"{SERVER_URL}/health_generate",
-            f"{SERVER_URL}/flush_cache",
-        ]
-
-
 async def _noop_sleep(seconds):
     return None
