@@ -116,6 +116,10 @@ class ServerGroup:
                 }.items()
             }
             env_vars.update(dumper_utils.get_sglang_env(self.args))
+            if self.args.rollout_top_p < 1.0:
+                env_vars["SGLANG_DISAGGREGATION_SAMPLING_MASK_MAX_TOKENS"] = str(
+                    self.args.sglang_disaggregation_sampling_mask_max_tokens
+                )
 
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,

@@ -8,6 +8,10 @@ from typing import Any
 import numpy as np
 import pybase64
 
+from miles.rollout.generate_utils.sampling_mask import (
+    append_sampling_metadata,
+    should_return_sampling_mask,
+)
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
@@ -68,6 +72,7 @@ def compute_request_payload(
         "return_logprob": True,
         "return_routed_experts": args.use_rollout_routing_replay,
         "return_indexer_topk": args.use_rollout_indexer_replay,
+        "return_sampling_mask": should_return_sampling_mask(args, sampling_params),
     }
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
@@ -89,6 +94,9 @@ async def update_sample_from_response(
         new_response_log_probs = [item[0] for item in x]
     else:
         new_response_tokens, new_response_log_probs = [], []
+
+    if payload.get("return_sampling_mask", False):
+        new_response_log_probs = append_sampling_metadata(sample, new_response_tokens, output["meta_info"])
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens

@@ -120,6 +120,33 @@ class TestConvertSamplesToTrainData:
         )
         assert out["rollout_log_probs"][0] == [-0.1, -0.2, -0.3, -0.4]
 
+    def test_top_p_sampling_mask_passed_through(self):
+        args = make_args(rewards_normalization=False, rollout_top_p=0.95)
+        s = make_sample()
+        s.rollout_sampling_mask_ids = [0, 7, 1, 8, 2, 9, 3, 10]
+        s.rollout_sampling_mask_offsets = [0, 2, 4, 6, 8]
+        out = convert_samples_to_train_data(
+            args,
+            [s],
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        assert out["rollout_sampling_mask_ids"][0] == s.rollout_sampling_mask_ids
+        assert out["rollout_sampling_mask_offsets"][0] == s.rollout_sampling_mask_offsets
+
+    def test_top_p_requires_sampling_mask_for_every_sample(self):
+        args = make_args(rewards_normalization=False, rollout_top_p=0.95)
+
+        with pytest.raises(ValueError, match="requires sampling-mask data for every training sample"):
+            convert_samples_to_train_data(
+                args,
+                [make_sample()],
+                metadata={},
+                custom_convert_samples_to_train_data_func=None,
+                custom_reward_post_process_func=None,
+            )
+
     def test_optional_field_round_number_from_metadata(self):
         args = make_args(rewards_normalization=False)
         s = make_sample()
