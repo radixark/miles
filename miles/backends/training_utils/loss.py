@@ -3,7 +3,7 @@ from argparse import Namespace
 import torch
 from torch.utils.checkpoint import checkpoint
 
-from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
+from miles.backends.training_utils.cp_utils import get_local_response_loss_masks, get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
 from miles.backends.training_utils.loss_hub.losses import get_loss_function
@@ -28,14 +28,15 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     data-parallel group using masked statistics.
 
     Early returns if both `log_probs` and `values` are None (intermediate
-    pipeline stages).
+    pipeline stages), unless the actor log-probs pass was intentionally skipped
+    on the last pipeline stage.
 
     Args:
         args: Configuration specifying estimator type, KL coefficient,
             normalization settings, and other hyperparameters.
-        rollout_data: Dict containing input lists ("log_probs", "ref_log_probs",
-            "rewards", "values", "response_lengths", "loss_masks",
-            "total_lengths"). Modified in-place to add "advantages" and
+        rollout_data: Dict containing input lists ("rewards", "response_lengths",
+            "loss_masks", "total_lengths"), plus optional "log_probs",
+            "ref_log_probs", and "values". Modified in-place to add "advantages" and
             "returns" keys, each mapping to lists of tensors per sample.
     """
     log_probs: list[torch.Tensor] = rollout_data.get("rollout_log_probs" if args.use_rollout_logprobs else "log_probs")
@@ -47,11 +48,14 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     total_lengths: list[int] = rollout_data.get("total_lengths")
     max_seq_lens: list[int] | None = rollout_data.get("max_seq_lens", None)
 
-    # return when not the last pp stage.
     if log_probs is None and values is None:
-        return
-
-    if args.kl_coef == 0 or not log_probs:
+        if not (getattr(args, "skip_actor_logprobs_forward", False) and get_parallel_state().is_pp_last_stage):
+            return
+        local_masks = get_local_response_loss_masks(
+            total_lengths, response_lengths, loss_masks, args.qkv_format, max_seq_lens
+        )
+        kl = [torch.zeros_like(mask, dtype=torch.float32) for mask in local_masks]
+    elif args.kl_coef == 0 or not log_probs:
         # when kl_coef is 0, we won't compute ref_log_prob
         xs = log_probs if log_probs is not None else values
         kl = [torch.zeros_like(x, dtype=torch.float32, device=x.device) for x in xs]

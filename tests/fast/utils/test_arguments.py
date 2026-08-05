@@ -15,6 +15,7 @@ from miles.utils.arguments import (
     miles_validate_args,
     resolve_rollout_function_paths,
     validate_async_off_policy_correction,
+    validate_skip_actor_logprobs_forward,
 )
 from miles.utils.misc import function_registry
 
@@ -642,3 +643,104 @@ class TestValidateAsyncOffPolicyCorrection:
 
     def test_non_ppo_estimators_are_unaffected(self):
         validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))
+
+
+def test_skip_actor_logprobs_forward_flag_is_parsed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(["--skip-actor-logprobs-forward"] + REQUIRED_ARGS)
+
+    assert args.skip_actor_logprobs_forward is True
+
+
+def _make_skip_actor_logprobs_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        attention_dropout=0.0,
+        compute_advantages_and_returns=True,
+        custom_megatron_before_log_prob_hook_path=None,
+        custom_megatron_before_train_step_hook_path=None,
+        custom_model_provider_path=None,
+        dump_details=None,
+        dumper_enable=False,
+        get_mismatch_metrics=False,
+        global_batch_size=64,
+        hidden_dropout=0.0,
+        keep_old_actor=False,
+        kl_coef=0.0,
+        log_correct_samples=False,
+        lora_dropout=0.0,
+        loss_type="policy_loss",
+        moe_input_jitter_eps=None,
+        moe_router_force_biased=None,
+        moe_router_force_load_balancing=False,
+        multi_lora=False,
+        n_samples_per_prompt=8,
+        rollout_batch_size=8,
+        rollout_data_postprocess_path=None,
+        train_backend="megatron",
+        true_on_policy_mode=False,
+        use_dynamic_global_batch_size=False,
+        use_indexer_replay=False,
+        use_opd=False,
+        use_rollout_entropy=False,
+        use_rollout_indexer_replay=False,
+        use_rollout_logprobs=False,
+        use_rollout_routing_replay=False,
+        use_routing_replay=False,
+        use_tis=False,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class TestValidateSkipActorLogprobsForward:
+    def test_single_step_policy_loss_passes(self):
+        validate_skip_actor_logprobs_forward(_make_skip_actor_logprobs_args())
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            dict(train_backend="fsdp"),
+            dict(loss_type="custom_loss"),
+            dict(compute_advantages_and_returns=False),
+            dict(custom_model_provider_path="pkg.model_provider"),
+            dict(use_rollout_logprobs=True),
+            dict(use_tis=True),
+            dict(get_mismatch_metrics=True),
+            dict(use_opd=True),
+            dict(keep_old_actor=True),
+            dict(kl_coef=0.1),
+            dict(use_rollout_entropy=True),
+            dict(true_on_policy_mode=True),
+            dict(log_correct_samples=True),
+            dict(dumper_enable=True),
+            dict(use_routing_replay=True),
+            dict(use_indexer_replay=True),
+            dict(use_rollout_routing_replay=True),
+            dict(use_rollout_indexer_replay=True),
+            dict(custom_megatron_before_log_prob_hook_path="pkg.hook"),
+            dict(custom_megatron_before_train_step_hook_path="pkg.hook"),
+            dict(rollout_data_postprocess_path="pkg.hook"),
+            dict(dump_details="/tmp/details"),
+            dict(attention_dropout=0.1),
+            dict(hidden_dropout=0.1),
+            dict(lora_dropout=0.1),
+            dict(moe_input_jitter_eps=0.1),
+            dict(moe_router_force_load_balancing=True),
+            dict(moe_router_force_biased=0.1),
+            dict(global_batch_size=32),
+            dict(rollout_batch_size=9),
+        ],
+    )
+    def test_incompatible_configuration_is_rejected(self, overrides):
+        with pytest.raises(ValueError):
+            validate_skip_actor_logprobs_forward(_make_skip_actor_logprobs_args(**overrides))
+
+    def test_dynamic_global_batch_size_defers_step_count_to_runtime(self):
+        validate_skip_actor_logprobs_forward(
+            _make_skip_actor_logprobs_args(
+                global_batch_size=32,
+                use_dynamic_global_batch_size=True,
+            )
+        )

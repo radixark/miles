@@ -234,3 +234,251 @@ def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
 
     assert saver.resume.call_count == 1
     assert worker._asleep is False
+
+
+def _actor_train_worker(actor_module, *, skip_actor_logprobs_forward):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        compute_advantages_and_returns=True,
+        get_mismatch_metrics=False,
+        global_batch_size=3,
+        keep_old_actor=False,
+        micro_batch_size=1,
+        ref_update_interval=None,
+        skip_actor_logprobs_forward=skip_actor_logprobs_forward,
+        use_critic=False,
+        use_dynamic_batch_size=False,
+        use_dynamic_global_batch_size=False,
+        use_rollout_logprobs=False,
+    )
+    worker.model = [object()]
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker.weights_backuper = Mock(backup_tags=set())
+    worker._active_model_tag = "actor"
+    worker._switch_model = Mock()
+    worker._set_replay_stage = Mock()
+    worker.compute_log_prob = Mock(return_value={"log_probs": [object()]})
+    worker.rollout_data_postprocess = None
+    worker.prof = Mock()
+    worker._ft_test_action_executor = None
+    worker.weight_updater = Mock()
+    worker.weight_updater.pop_metrics.return_value = {}
+    worker._heartbeat = Mock()
+    return worker
+
+
+def _patch_actor_train_dependencies(
+    actor_module,
+    monkeypatch,
+    num_microbatches,
+    replay_managers=(),
+    *,
+    micro_batch_indices=None,
+    micro_batch_size=1,
+):
+    @contextmanager
+    def passthrough_timer(_name):
+        yield
+
+    monkeypatch.setattr(actor_module, "all_replay_managers", list(replay_managers))
+    monkeypatch.setattr(
+        actor_module,
+        "get_model_config",
+        lambda _model: Namespace(
+            attention_dropout=0.0,
+            hidden_dropout=0.0,
+            moe_input_jitter_eps=None,
+            moe_router_force_biased=None,
+            moe_router_force_load_balancing=False,
+        ),
+    )
+    data_iterator = Namespace(
+        micro_batch_indices=micro_batch_indices,
+        micro_batch_size=micro_batch_size,
+    )
+    monkeypatch.setattr(actor_module, "get_data_iterator", lambda *_args: ([data_iterator], num_microbatches))
+    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: Namespace(effective_dp=Namespace(size=1)))
+    monkeypatch.setattr(actor_module, "compute_advantages_and_returns", Mock())
+    monkeypatch.setattr(actor_module, "log_train_advantage_computation_event", Mock())
+    monkeypatch.setattr(actor_module, "log_rollout_data", Mock())
+    monkeypatch.setattr(actor_module, "log_perf_data", Mock())
+    monkeypatch.setattr(actor_module.train_dump_utils, "save_debug_train_data", Mock())
+    monkeypatch.setattr(actor_module, "inverse_timer", passthrough_timer)
+    monkeypatch.setattr(actor_module, "timer", passthrough_timer)
+    monkeypatch.setattr(
+        actor_module,
+        "train",
+        Mock(return_value=actor_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY),
+    )
+
+
+@pytest.mark.parametrize(
+    ("skip_actor_logprobs_forward", "expected_standalone_calls"),
+    [(False, 1), (True, 0)],
+)
+def test_single_optimizer_step_skips_only_the_standalone_actor_logprobs_forward(
+    actor_module,
+    monkeypatch,
+    skip_actor_logprobs_forward,
+    expected_standalone_calls,
+):
+    worker = _actor_train_worker(
+        actor_module,
+        skip_actor_logprobs_forward=skip_actor_logprobs_forward,
+    )
+    _patch_actor_train_dependencies(actor_module, monkeypatch, num_microbatches=[3])
+
+    worker.train_actor(7, {"total_lengths": [1, 1, 1]}, witness_info=None, attempt=0)
+
+    assert worker.compute_log_prob.call_count == expected_standalone_calls
+    actor_module.train.assert_called_once()
+
+
+def test_single_optimizer_step_accepts_multiple_training_samples_per_rollout(
+    actor_module,
+    monkeypatch,
+):
+    worker = _actor_train_worker(actor_module, skip_actor_logprobs_forward=True)
+    micro_batch_indices = [[0, 1], [2]]
+    _patch_actor_train_dependencies(
+        actor_module,
+        monkeypatch,
+        num_microbatches=[2],
+        micro_batch_indices=micro_batch_indices,
+        micro_batch_size=None,
+    )
+    rollout_data = {
+        "micro_batch_indices": micro_batch_indices,
+        "num_rollouts": [1],
+        "total_lengths": [1, 1, 1],
+    }
+
+    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.train.assert_called_once()
+    assert actor_module.train.call_args.args[6] == [1]
+
+
+def test_skip_actor_logprobs_forward_rejects_multiple_optimizer_steps_before_forward(
+    actor_module,
+    monkeypatch,
+):
+    worker = _actor_train_worker(actor_module, skip_actor_logprobs_forward=True)
+    _patch_actor_train_dependencies(actor_module, monkeypatch, num_microbatches=[2, 2])
+
+    with pytest.raises(ValueError, match="exactly one optimizer step"):
+        worker.train_actor(7, {"total_lengths": [1, 1, 1, 1]}, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.train.assert_not_called()
+
+
+def test_skip_actor_logprobs_forward_rejects_partial_rollout_coverage(
+    actor_module,
+    monkeypatch,
+):
+    worker = _actor_train_worker(actor_module, skip_actor_logprobs_forward=True)
+    _patch_actor_train_dependencies(actor_module, monkeypatch, num_microbatches=[3])
+
+    with pytest.raises(ValueError, match="consume every local training sample exactly once"):
+        worker.train_actor(7, {"total_lengths": [1, 1, 1, 1]}, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.train.assert_not_called()
+
+
+def test_skip_actor_logprobs_forward_rejects_dynamic_gbs_with_incomplete_fixed_microbatch_schedule(
+    actor_module,
+    monkeypatch,
+):
+    worker = _actor_train_worker(actor_module, skip_actor_logprobs_forward=True)
+    worker.args.global_batch_size = 64
+    worker.args.micro_batch_size = 2
+    worker.args.use_dynamic_global_batch_size = True
+    _patch_actor_train_dependencies(actor_module, monkeypatch, num_microbatches=[1])
+
+    with pytest.raises(ValueError, match="consume every local training sample exactly once"):
+        worker.train_actor(
+            7,
+            {"dynamic_global_batch_size": 3, "total_lengths": [1, 1, 1]},
+            witness_info=None,
+            attempt=0,
+        )
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.train.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "micro_batch_indices",
+    [
+        [[0], [2]],
+        [[0, 1], [1, 2]],
+        [[0], [1], [2]],
+    ],
+)
+def test_skip_actor_logprobs_forward_rejects_incomplete_explicit_schedule(
+    actor_module,
+    monkeypatch,
+    micro_batch_indices,
+):
+    worker = _actor_train_worker(actor_module, skip_actor_logprobs_forward=True)
+    _patch_actor_train_dependencies(
+        actor_module,
+        monkeypatch,
+        num_microbatches=[2],
+        micro_batch_indices=micro_batch_indices,
+        micro_batch_size=None,
+    )
+    rollout_data = {
+        "micro_batch_indices": micro_batch_indices,
+        "num_rollouts": [1],
+        "total_lengths": [1, 1, 1],
+    }
+
+    with pytest.raises(ValueError, match="consume every local training sample exactly once"):
+        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.train.assert_not_called()
+
+
+def test_skip_actor_logprobs_forward_rejects_stochastic_actual_model_config(
+    actor_module,
+    monkeypatch,
+):
+    worker = _actor_train_worker(actor_module, skip_actor_logprobs_forward=True)
+    _patch_actor_train_dependencies(actor_module, monkeypatch, num_microbatches=[3])
+    monkeypatch.setattr(
+        actor_module,
+        "get_model_config",
+        lambda _model: Namespace(moe_input_jitter_eps=0.1),
+    )
+
+    with pytest.raises(ValueError, match="deterministic policy forwards"):
+        worker.train_actor(7, {"total_lengths": [1, 1, 1]}, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.train.assert_not_called()
+
+
+def test_skip_actor_logprobs_forward_rejects_enabled_replay_before_forward(
+    actor_module,
+    monkeypatch,
+):
+    worker = _actor_train_worker(actor_module, skip_actor_logprobs_forward=True)
+    replay_manager = Namespace(enabled=True, name="routing")
+    _patch_actor_train_dependencies(
+        actor_module,
+        monkeypatch,
+        num_microbatches=[3],
+        replay_managers=[replay_manager],
+    )
+
+    with pytest.raises(ValueError, match="replay managers"):
+        worker.train_actor(7, {"total_lengths": [1, 1, 1]}, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.train.assert_not_called()

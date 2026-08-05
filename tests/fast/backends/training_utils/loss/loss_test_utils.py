@@ -72,6 +72,7 @@ _ARGS_DEFAULTS = dict(
     # compute_advantages_and_returns
     advantage_estimator="grpo",
     use_rollout_logprobs=False,
+    skip_actor_logprobs_forward=False,
     kl_coef=0.1,
     kl_loss_type="k1",
     gamma=1.0,
@@ -86,6 +87,7 @@ _ARGS_DEFAULTS = dict(
     eps_clip=0.2,
     eps_clip_high=0.2,
     entropy_coef=0.01,
+    observe_training_entropy=False,
     use_kl_loss=False,
     kl_loss_coef=0.0,
     use_unbiased_kl=False,

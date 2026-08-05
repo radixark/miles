@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import ray
 import torch
 import torch.distributed as dist
+from megatron.core.utils import get_model_config
 from torch_memory_saver import torch_memory_saver
 
 from miles.dashboard import hooks as dashboard_hooks
@@ -461,8 +462,72 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None,
         attempt: int,
     ) -> TrainStepOutcome:
+        if self.args.skip_actor_logprobs_forward:
+            model_config = get_model_config(self.model[0])
+            unsafe_model_settings = []
+            if getattr(model_config, "attention_dropout", 0.0) != 0.0:
+                unsafe_model_settings.append("attention_dropout")
+            if getattr(model_config, "hidden_dropout", 0.0) != 0.0:
+                unsafe_model_settings.append("hidden_dropout")
+            if getattr(model_config, "moe_input_jitter_eps", None) is not None:
+                unsafe_model_settings.append("moe_input_jitter_eps")
+            if getattr(model_config, "moe_router_force_load_balancing", False):
+                unsafe_model_settings.append("moe_router_force_load_balancing")
+            if getattr(model_config, "moe_router_force_biased", None) is not None:
+                unsafe_model_settings.append("moe_router_force_biased")
+            if unsafe_model_settings:
+                raise ValueError(
+                    "--skip-actor-logprobs-forward requires deterministic policy forwards; "
+                    f"model config enables {unsafe_model_settings}"
+                )
+
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+        num_rollouts = get_num_rollouts(self.args, rollout_data, len(num_microbatches))
+
+        if self.args.skip_actor_logprobs_forward:
+            if len(num_microbatches) != 1 or len(num_rollouts) != 1:
+                raise ValueError(
+                    "--skip-actor-logprobs-forward requires exactly one optimizer step per rollout; "
+                    f"got {len(num_microbatches)=} and {len(num_rollouts)=}"
+                )
+
+            num_local_samples = len(rollout_data["total_lengths"])
+            iterator = data_iterator[0]
+            if iterator.micro_batch_indices is None:
+                scheduled_samples = num_microbatches[0] * iterator.micro_batch_size
+                schedule_covers_all_samples = scheduled_samples == num_local_samples
+            else:
+                scheduled_microbatches = iterator.micro_batch_indices
+                scheduled_indices = [
+                    sample_index for micro_batch in scheduled_microbatches for sample_index in micro_batch
+                ]
+                schedule_covers_all_samples = len(scheduled_microbatches) == num_microbatches[0] and sorted(
+                    scheduled_indices
+                ) == list(range(num_local_samples))
+
+            if not schedule_covers_all_samples:
+                if iterator.micro_batch_indices is None:
+                    raise ValueError(
+                        "--skip-actor-logprobs-forward requires the single optimizer step's schedule "
+                        "to consume every local training sample exactly once; "
+                        f"{num_local_samples=}, {scheduled_samples=}"
+                    )
+                raise ValueError(
+                    "--skip-actor-logprobs-forward requires the single optimizer step's schedule "
+                    "to consume every local training sample exactly once; "
+                    f"got {len(scheduled_indices)} scheduled positions covering "
+                    f"{len(set(scheduled_indices))} unique indices in {len(scheduled_microbatches)} "
+                    f"microbatches, expected {num_microbatches[0]} microbatches and "
+                    f"{num_local_samples} samples"
+                )
+
+            enabled_replays = [manager.name for manager in all_replay_managers if manager.enabled]
+            if enabled_replays:
+                raise ValueError(
+                    "--skip-actor-logprobs-forward cannot skip the actor pass while replay managers "
+                    f"are enabled: {enabled_replays}"
+                )
 
         for m in all_replay_managers:
             if self._use_rollout_replay(m):
@@ -505,7 +570,9 @@ class MegatronTrainRayActor(TrainRayActor):
                         )
                     )
                 self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
-                if not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics:
+                if not self.args.skip_actor_logprobs_forward and (
+                    not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics
+                ):
                     for m in all_replay_managers:
                         if m.enabled:
                             if self._use_rollout_replay(m):
@@ -558,7 +625,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.opt_param_scheduler,
                     data_iterator,
                     num_microbatches,
-                    get_num_rollouts(self.args, rollout_data, len(num_microbatches)),
+                    num_rollouts,
                     witness_info=witness_info,
                     attempt=attempt,
                     ft_test_action_executor=self._ft_test_action_executor,
