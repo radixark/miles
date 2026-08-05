@@ -182,6 +182,17 @@ class TestEnvironmentVariables:
         ]
         assert directories == ["/tmp/offload/cell1_rank0", "/tmp/offload/cell1_rank1"]
 
+    def test_a_library_without_the_disk_backend_is_rejected(self, monkeypatch):
+        """Launching disk offload against a library that cannot write to disk would
+        silently lose the offloaded weights."""
+        _install_fake_torch_memory_saver(monkeypatch, MagicMock(return_value=Path("/opt/tms.so")))
+        monkeypatch.setattr(Path, "read_bytes", lambda self: b"built without the disk backend")
+
+        (spec,) = specs_trainer(_make_args(offload_train=True, offload_train_target="disk"))
+
+        with pytest.raises(AssertionError, match="has no disk backend"):
+            spec.env_var(_make_context())
+
     def test_no_disk_directory_without_disk_offload(self):
         """The cpu backup path must not be told to write to disk."""
         (spec,) = specs_trainer(_make_args(offload_train=False))
