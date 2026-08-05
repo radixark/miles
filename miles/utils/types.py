@@ -6,12 +6,31 @@ import numpy
 import torch
 
 
+@dataclass(frozen=True)
+class AdapterRef:
+    """Which LoRA adapter a sample is bound to (training slot routing, inference lora_path); ``None`` = no adapter."""
+
+    name: str
+    slot: int
+
+
+@dataclass(frozen=True)
+class RewardSpec:
+    """Per-sample spec of how the response is scored; intentionally decoupled from adapter routing."""
+
+    rm_type: str | None = None
+    custom_rm_path: str | None = None
+
+
 @dataclass
 class Sample:
     """The sample generated"""
 
     group_index: int | None = None
     index: int | None = None
+    # Rollout execution id; None falls back to ``index``. Compact / subagent
+    # siblings must share it so the rollout is counted once.
+    rollout_id: int | None = None
     # prompt
     prompt: str | list[dict[str, str]] = ""
     tokens: list[int] = field(default_factory=list)
@@ -51,6 +70,11 @@ class Sample:
     generate_function_path: str | None = None
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
+
+    # MultiLoRA: which adapter this sample trains/infers with
+    adapter: AdapterRef | None = None
+    # Per-sample reward dispatch override (e.g., per-adapter RM in multi-LoRA)
+    reward_spec: RewardSpec | None = None
 
     # Per-sample routing key for the router's consistent_hashing policy (sent as X-SMG-Routing-Key)
     routing_key: str | None = None
@@ -181,7 +205,14 @@ class Sample:
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
-            assert actual == expect, f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
+            mm = self.multimodal_train_inputs or {}
+            extra = sum(
+                int(c) - 1 for key in ("mm_vision_num_patches", "mm_audio_num_tokens") for c in list(mm.get(key) or [])
+            )
+            assert actual in (expect, expect + extra), (
+                f"rollout_routed_experts length ({actual}) != len(tokens) - 1 ({expect})"
+                f" or media-expanded ({expect + extra})"
+            )
         if self.rollout_indexer_topk is not None:
             actual = len(self.rollout_indexer_topk)
             expect = len(self.tokens) - 1

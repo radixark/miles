@@ -4,6 +4,8 @@ HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each 
 
 - ``chat_completions`` strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) from the client reply copy-on-write; the ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
+- ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
+- ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
 """
 
 import json
@@ -13,6 +15,7 @@ from dataclasses import dataclass
 
 from starlette.responses import Response
 
+from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.errors import (
     MessageValidationError,
     SessionNotFoundError,
@@ -20,15 +23,21 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.samples.codec import encode_samples
+from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 
 logger = logging.getLogger(__name__)
 
 JSON_MEDIA_TYPE = "application/json"
 
 # Hop-by-hop / length-framing headers dropped from the upstream response so the
-# transport layer recomputes them from the body we actually send.
-_DROP_RESPONSE_HEADERS = ("content-length", "transfer-encoding", "content-encoding")
+# transport layer recomputes them from the body we actually send. "server" and
+# "date" are dropped because our own ASGI server always emits them, so echoing
+# upstream's copy puts two of each on the wire; aiohttp's parser rejects that
+# outright with "Duplicate 'Server' header found" instead of reading the body.
+_DROP_RESPONSE_HEADERS = ("content-length", "transfer-encoding", "content-encoding", "server", "date")
 
 
 @dataclass
@@ -42,6 +51,11 @@ class ProxyRequest:
 def _render_json(payload) -> bytes:
     """Encode like Starlette's JSONResponse (compact, non-ASCII preserved)."""
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+
+
+def _samples_response(payload: bytes) -> Response:
+    """The samples-op reply: one safetensors binary payload."""
+    return Response(content=payload, status_code=200, media_type="application/octet-stream")
 
 
 _CLIENT_STRIPPED_META_KEYS = ("routed_experts", "indexer_topk")
@@ -58,7 +72,47 @@ def _strip_replay_payloads(response: dict) -> dict:
     return {**response, "choices": stripped_choices}
 
 
-def _chat_client_response(result: dict, response: dict) -> Response:
+def _response_to_stream_chunk(response: dict) -> dict:
+    """Synthesize the single ``chat.completion.chunk`` for a fake stream.
+
+    Adapted from NVIDIA-NeMo/ProRL-Agent-Server (``gateway/server.py::_response_to_stream_chunk``)
+    and THUDM/slime (``agent/adapters/openai.py::_render_stream``).
+
+    One big delta is protocol-legal (streaming deltas concatenate). All
+    tool_calls ride in this one chunk with their ``index`` set: some clients
+    mis-assemble arguments fragmented across chunks. The chunk carries no
+    ``meta_info``; the training path reads ``GET /sessions/{id}`` instead.
+    """
+    choice = response.get("choices", [{}])[0]
+    message = choice.get("message") or {}
+    delta = {"role": message.get("role", "assistant"), "content": message.get("content")}
+    if message.get("reasoning_content") is not None:
+        delta["reasoning_content"] = message["reasoning_content"]
+    if message.get("tool_calls"):
+        delta["tool_calls"] = [{**tool_call, "index": i} for i, tool_call in enumerate(message["tool_calls"])]
+    chunk = {
+        "id": response.get("id"),
+        "object": "chat.completion.chunk",
+        "created": response.get("created"),
+        "model": response.get("model"),
+        "choices": [{"index": 0, "delta": delta, "finish_reason": choice.get("finish_reason")}],
+    }
+    if response.get("usage") is not None:
+        chunk["usage"] = response["usage"]
+    return chunk
+
+
+def _chat_client_response(result: dict, response: dict, client_stream: bool) -> Response:
+    if client_stream:
+        sse = b"data: " + _render_json(_response_to_stream_chunk(response)) + b"\n\ndata: [DONE]\n\n"
+        # Fresh headers: upstream's headers describe its JSON body, not this SSE body.
+        # X-Accel-Buffering keeps reverse proxies from buffering the stream.
+        return Response(
+            content=sse,
+            status_code=result["status_code"],
+            headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+            media_type="text/event-stream",
+        )
     headers = {k: v for k, v in result["headers"].items() if k.lower() not in _DROP_RESPONSE_HEADERS}
     return Response(
         content=_render_json(_strip_replay_payloads(response)),
@@ -107,8 +161,10 @@ class SessionCore:
         session_id = self.registry.create_session()
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 
-    async def get_session(self, session_id: str) -> Response:
-        session = self.registry.get_session(session_id)
+    def _session_metadata(self, session_id: str, session) -> dict:
+        """The per-session assembly/inspection metadata dict, shared by
+        `get_session` (records debug dump) and `collect_samples` (samples op)
+        so the two can never drift."""
         metadata: dict = {}
         try:
             mismatch = self.registry.compute_session_mismatch(session)
@@ -119,10 +175,42 @@ class SessionCore:
             metadata["tito_session_mismatch"] = mismatch
         metadata["accumulated_token_ids"] = session.token_ids
         metadata["max_trim_tokens"] = self.registry.tito_tokenizer.max_trim_tokens
+        return metadata
+
+    async def get_session(self, session_id: str) -> Response:
+        session = self.registry.get_session(session_id)
+        metadata = self._session_metadata(session_id, session)
         payload = GetSessionResponse(session_id=session_id, records=session.records, metadata=metadata)
         return Response(
             content=_render_json(payload.model_dump(mode="json")), status_code=200, media_type=JSON_MEDIA_TYPE
         )
+
+    async def collect_samples(self, session_id: str, *, max_seq_len: int | None) -> Response:
+        """Assemble training Samples from this session's records.
+
+        Validation failures return 422; unexpected errors propagate.
+        """
+        session = self.registry.get_session(session_id)
+        metadata = self._session_metadata(session_id, session)
+        tokenizer = self.registry.tokenizer
+        if not session.records:
+            return _samples_response(encode_samples([], metadata, empty_reason="no_records"))
+        try:
+            samples = compute_samples_from_openai_records(
+                self.args,
+                session.records,
+                tokenizer,
+                accumulated_token_ids=metadata.get("accumulated_token_ids"),
+                max_trim_tokens=metadata.get("max_trim_tokens", 0),
+            )
+            if max_seq_len is not None:
+                samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
+            if not samples:
+                return _samples_response(encode_samples([], metadata, empty_reason="all_truncated"))
+            samples = [merge_samples(samples, tokenizer)]
+        except (AssertionError, ValueError) as exc:
+            return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
+        return _samples_response(encode_samples(samples, metadata))
 
     async def delete_session(self, session_id: str) -> Response:
         session = self.registry.get_session(session_id)
@@ -147,6 +235,7 @@ class SessionCore:
         append record (lock held briefly). The lock is NOT held during the slow
         proxy call so DELETE/other ops are not blocked if the agent disconnects.
         """
+        request_timestamp = time.time()
         session = self.registry.get_session(session_id)
         if session.closing:
             raise SessionNotFoundError(f"session not found: session_id={session_id}")
@@ -161,6 +250,13 @@ class SessionCore:
             except json.JSONDecodeError as e:
                 raise MessageValidationError(f"invalid JSON body: {e}") from e
 
+            # Fake streaming: the backend must stay non-streaming (TITO needs the
+            # complete message + meta_info, and sglang rejects return_meta_info
+            # with stream=true), so pop the client's intent here and honor it
+            # when rendering the client response.
+            client_stream = bool(request_body.pop("stream", False))
+            request_body.pop("stream_options", None)
+
             # TITO token tracking needs Miles-owned input_ids plus SGLang output
             # metadata: logprobs=True populates meta_info.output_token_logprobs and
             # return_meta_info wraps it in choice.meta_info. Hardcoded (not
@@ -174,20 +270,31 @@ class SessionCore:
             # Must be False so stop-token text is trimmed from assistant content;
             # token IDs still come from logprobs below.
             request_body["no_stop_trim"] = False
-            # Chat template kwargs should also be forwarded to sglang to make sure
-            # parsers work correctly.
-            server_ctk = self.registry.tito_tokenizer.chat_template_kwargs
-            if server_ctk:
-                request_body["chat_template_kwargs"] = {
-                    **server_ctk,
-                    **(request_body.get("chat_template_kwargs") or {}),
-                }
+            # Without this the engine serves the base weights, so the adapter being
+            # trained would never shape the trajectories it is scored on.
+            if is_lora_enabled(self.args):
+                request_body["lora_path"] = LORA_ADAPTER_NAME
+            # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
+            # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.
+            request_ctk = request_body.get("chat_template_kwargs")
+            if request_ctk is not None and not isinstance(request_ctk, dict):
+                raise MessageValidationError("chat_template_kwargs must be an object")
+            tito_tokenizer = self.registry.tito_tokenizer
+            if request_ctk:
+                try:
+                    tito_tokenizer = tito_tokenizer.clone_with_chat_template_kwargs(request_ctk)
+                except ValueError as e:
+                    raise MessageValidationError(str(e)) from e
+            if tito_tokenizer.chat_template_kwargs:
+                request_body["chat_template_kwargs"] = dict(tito_tokenizer.chat_template_kwargs)
+            else:
+                request_body.pop("chat_template_kwargs", None)
 
             request_messages = request_body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(
                 request_messages,
                 tools=request_body.get("tools"),
-                tito_tokenizer=self.registry.tito_tokenizer,
+                tito_tokenizer=tito_tokenizer,
             )
             request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
@@ -240,7 +347,7 @@ class SessionCore:
         async with session.lock:
             if session.closing:
                 logger.warning(f"Session {session_id} closed during proxy, skipping state update")
-                return _chat_client_response(result, response)
+                return _chat_client_response(result, response, client_stream)
 
             if session.num_assistant != expected_num_assistant:
                 logger.warning(
@@ -248,7 +355,7 @@ class SessionCore:
                     f"(expected num_assistant={expected_num_assistant}, "
                     f"got {session.num_assistant}), skipping state update"
                 )
-                return _chat_client_response(result, response)
+                return _chat_client_response(result, response, client_stream)
 
             session.update_pretokenized_state(
                 request_messages,
@@ -260,6 +367,7 @@ class SessionCore:
 
             record = SessionRecord(
                 timestamp=time.time(),
+                request_timestamp=request_timestamp,
                 method=method,
                 path="/v1/chat/completions",
                 status_code=result["status_code"],
@@ -269,7 +377,7 @@ class SessionCore:
             session.append_record(record)
         # --- lock released ---
 
-        return _chat_client_response(result, response)
+        return _chat_client_response(result, response, client_stream)
 
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes

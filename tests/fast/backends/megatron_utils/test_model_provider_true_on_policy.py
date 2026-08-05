@@ -27,7 +27,7 @@ def _make_args():
     )
 
 
-def test_local_model_provider_passes_true_on_policy_spec_flags(monkeypatch):
+def _patch_local_model_provider(monkeypatch):
     from miles.backends.megatron_utils import model_provider as provider_module
 
     captured = {}
@@ -35,6 +35,7 @@ def test_local_model_provider_passes_true_on_policy_spec_flags(monkeypatch):
     def fake_core_transformer_config_from_args(_args):
         return SimpleNamespace(
             hidden_size=2560,
+            sequence_parallel=False,
             use_kitchen=False,
             true_on_policy_contract="qwen3_dense_true_on_policy_v1",
             use_kitchen_attention=False,
@@ -48,6 +49,8 @@ def test_local_model_provider_passes_true_on_policy_spec_flags(monkeypatch):
     class FakeGPTModel:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            self.config = kwargs["config"]
+            self.share_embeddings_and_output_weights = kwargs["share_embeddings_and_output_weights"]
 
     monkeypatch.setattr(
         provider_module,
@@ -61,12 +64,29 @@ def test_local_model_provider_passes_true_on_policy_spec_flags(monkeypatch):
     )
     monkeypatch.setattr(provider_module, "GPTModel", FakeGPTModel)
 
+    return provider_module, captured
+
+
+def test_local_model_provider_passes_true_on_policy_spec_flags(monkeypatch):
+    provider_module, captured = _patch_local_model_provider(monkeypatch)
+
     provider = provider_module.get_model_provider_func(_make_args())
     model = provider()
 
     assert model.kwargs["transformer_layer_spec"] == "layer-spec"
+    assert model.share_embeddings_and_output_weights is True
     assert captured["normalization"] == "RMSNorm"
     assert captured["use_true_on_policy_backend"] is True
     assert captured["use_kitchen"] is False
     assert captured["use_kitchen_attention"] is False
     assert captured["kitchen_attention_backend"] == "sdpa"
+
+
+def test_critic_provider_builds_untied_scalar_output_head(monkeypatch):
+    provider_module, _ = _patch_local_model_provider(monkeypatch)
+
+    provider = provider_module.get_model_provider_func(_make_args(), role="critic")
+    model = provider(pre_process=False, post_process=True)
+
+    assert model.share_embeddings_and_output_weights is False
+    assert tuple(model.output_layer.weight.shape) == (1, 2560)

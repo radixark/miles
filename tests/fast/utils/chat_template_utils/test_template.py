@@ -27,7 +27,12 @@ from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 from transformers import AutoTokenizer
 
-from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer, resolve_fixed_chat_template
+from miles.utils.chat_template_utils import (
+    TITOTokenizerType,
+    get_tito_tokenizer,
+    message_matches,
+    resolve_fixed_chat_template,
+)
 from miles.utils.chat_template_utils.template import apply_chat_template
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.chat_template_verify import (
@@ -62,6 +67,11 @@ def _make_serving(tokenizer) -> OpenAIServingChat:
     serving.is_gemma4 = False
     serving.tool_call_parser = None
     serving.reasoning_parser = None
+    # sglang v0.5.16 added server-level default chat-template kwargs, merged into
+    # the request's chat_template_kwargs at the top of _process_messages.
+    # __init__ always sets it (to `... or {}`); mirror the empty default so the
+    # request's own kwargs are the only ones applied.
+    serving.default_chat_template_kwargs = {}
     # sglang v0.5.13 probes whether the tokenizer auto-adds special tokens
     # (encode("") non-empty) to decide add_special_tokens at the chat-template
     # encode site. __init__ always sets this; mirror it here so _process_messages
@@ -175,7 +185,7 @@ def _load_fixed_or_none(tito_model: TITOTokenizerType | None) -> str | None:
     """Return the bundled fixed chat-template content for *tito_model*, or ``None``."""
     if tito_model is None:
         return None
-    path, _kwargs = resolve_fixed_chat_template(tito_model, ["tool"])
+    path, _kwargs = resolve_fixed_chat_template(tito_model)
     if path is None:
         return None
     with open(path) as f:
@@ -400,7 +410,7 @@ class TestDeepSeekV32TITOAlignWithSGLang:
     V3.2 ships no jinja chat_template; the ``DEEPSEEKV32`` TITO family rides
     miles' ``apply_chat_template`` -> ``chat_template_utils.deepseek`` bridge,
     which mirrors sglang's ``chat_encoding_spec == "dsv32"`` branch.  These pin
-    that ``get_tito_tokenizer(...).render_messages`` produces identical
+    that ``get_tito_tokenizer(...).apply_chat_template`` produces identical
     prompt_ids to sglang for the tool surface actually used in training, with
     thinking on/off.  ``thinking`` is the sglang request knob; ``enable_thinking``
     is the equivalent miles chat-template kwarg — both map to the encoder's
@@ -433,7 +443,7 @@ class TestDeepSeekV32TITOAlignWithSGLang:
             tokenizer_type=TITOTokenizerType.DEEPSEEKV32,
             chat_template_kwargs={"enable_thinking": thinking},
         )
-        actual = tito.render_messages(messages, add_generation_prompt=True, tools=self._TOOLS, tokenize=True)
+        actual = tito.apply_chat_template(messages, add_generation_prompt=True, tools=self._TOOLS, tokenize=True)
         assert actual == expected
 
     def test_absent_enable_thinking_defaults_to_thinking(self):
@@ -448,7 +458,7 @@ class TestDeepSeekV32TITOAlignWithSGLang:
             tokenizer_type=TITOTokenizerType.DEEPSEEKV32,
             chat_template_kwargs={},
         )
-        actual = tito.render_messages(messages, add_generation_prompt=True, tools=self._TOOLS, tokenize=True)
+        actual = tito.apply_chat_template(messages, add_generation_prompt=True, tools=self._TOOLS, tokenize=True)
         assert actual == expected
 
     @pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
@@ -476,7 +486,7 @@ class TestDeepSeekV32TITOAlignWithSGLang:
             tokenizer_type=TITOTokenizerType.DEEPSEEKV32,
             chat_template_kwargs={"enable_thinking": thinking},
         )
-        actual = tito.render_messages(messages, add_generation_prompt=True, tools=self._TOOLS, tokenize=True)
+        actual = tito.apply_chat_template(messages, add_generation_prompt=True, tools=self._TOOLS, tokenize=True)
         assert actual == expected
 
 
@@ -510,7 +520,7 @@ class TestDeepSeekV4TITOAlignWithSGLang:
             chat_template_kwargs={"enable_thinking": thinking},
         )
 
-        actual = tito.render_messages(messages, add_generation_prompt=True, tools=tools, tokenize=True)
+        actual = tito.apply_chat_template(messages, add_generation_prompt=True, tools=tools, tokenize=True)
         assert actual == expected
 
     @pytest.mark.parametrize("thinking", [False, True], ids=["chat", "thinking"])
@@ -557,5 +567,62 @@ class TestDeepSeekV4TITOAlignWithSGLang:
             chat_template_kwargs={"enable_thinking": thinking},
         )
 
-        actual = tito.render_messages(messages, add_generation_prompt=True, tools=tools, tokenize=True)
+        actual = tito.apply_chat_template(messages, add_generation_prompt=True, tools=tools, tokenize=True)
         assert actual == expected
+
+
+class TestMessageMatches:
+    """message_matches compares template-relevant content, not wire idiosyncrasies."""
+
+    STORED_SGLANG_WIRE = {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": None,
+        "tool_calls": [
+            {
+                "id": "call_abc",
+                "index": 0,
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+            }
+        ],
+    }
+
+    def _rebuilt(self, **tool_call_overrides):
+        tool_call = {
+            "id": "call_abc",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": '{"city": "Paris"}'},
+            **tool_call_overrides,
+        }
+        return {"role": "assistant", "content": "", "tool_calls": [tool_call]}
+
+    @pytest.mark.parametrize("index_value", [0, 7, None], ids=["int", "other-int", "null"])
+    def test_stream_rebuilt_replay_matches_sglang_wire(self, index_value):
+        stored = copy.deepcopy(self.STORED_SGLANG_WIRE)
+        stored["tool_calls"][0]["index"] = index_value
+        assert message_matches(stored, self._rebuilt())
+
+    def test_null_index_matches_absent_index(self):
+        assert message_matches(self.STORED_SGLANG_WIRE, self._rebuilt(index=None))
+
+    def test_null_tool_call_id_does_not_match_absent_id(self):
+        stored = copy.deepcopy(self.STORED_SGLANG_WIRE)
+        stored["tool_calls"][0]["id"] = None
+        rebuilt = self._rebuilt()
+        del rebuilt["tool_calls"][0]["id"]
+        assert not message_matches(stored, rebuilt)
+
+    def test_different_arguments_still_mismatch(self):
+        rebuilt = self._rebuilt()
+        rebuilt["tool_calls"][0]["function"] = {"name": "get_weather", "arguments": '{"city": "Rome"}'}
+        assert not message_matches(self.STORED_SGLANG_WIRE, rebuilt)
+
+    def test_different_tool_call_id_still_mismatches(self):
+        rebuilt = self._rebuilt(id="call_zzz")
+        assert not message_matches(self.STORED_SGLANG_WIRE, rebuilt)
+
+    def test_content_mismatch_still_detected(self):
+        rebuilt = self._rebuilt()
+        rebuilt["content"] = "different"
+        assert not message_matches(self.STORED_SGLANG_WIRE, rebuilt)

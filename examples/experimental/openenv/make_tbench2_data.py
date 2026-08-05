@@ -24,18 +24,10 @@ task_ids are the top-level task directory names in the TB2 repo checkout
 import json
 from pathlib import Path
 
+# The agent contract (one ```bash block per turn; TASK_COMPLETE to stop) is
+# defined by the adapter, next to the code that parses it.
+from openenv_agent_function import TB2_AGENT_SYSTEM_PROMPT
 from tap import Tap
-
-# The agent contract must match openenv_agent_function._multi_turn: one shell
-# command per turn inside a single ```bash block; TASK_COMPLETE to stop.
-_SYSTEM = (
-    "You are an autonomous terminal agent solving a Terminal-Bench task. You will "
-    "be given the task instruction, then interact with a real Linux shell. On each "
-    "turn respond with EXACTLY ONE shell command inside a single ```bash code block "
-    "and nothing else. Inspect the environment, make the required changes, and "
-    "verify your work. When you are confident the task is fully complete, reply with "
-    "TASK_COMPLETE (with no code block)."
-)
 
 
 class Args(Tap):
@@ -67,7 +59,7 @@ def main() -> None:
     with open(args.output, "w") as f:
         for tid in task_ids:
             row = {
-                "prompt": [{"role": "system", "content": _SYSTEM}],
+                "prompt": [{"role": "system", "content": TB2_AGENT_SYSTEM_PROMPT}],
                 "metadata": {"task_id": tid},
             }
             f.write(json.dumps(row) + "\n")

@@ -73,14 +73,6 @@ class RayTrainCell:
         await self.health_checker.start()
         return results
 
-    async def connect_actor_critic(self, critic_cell: "RayTrainCell") -> list:
-        critic_handles = critic_cell._get_actor_handles()
-        return await self._execute_raw(
-            "connect_actor_critic",
-            compute_args=lambda i: (critic_handles[i],),
-            compute_kwargs=lambda _: {},
-        )
-
     async def set_rollout_manager(self):
         if (m := self.rollout_manager) is not None:
             return await self.execute("set_rollout_manager", m)

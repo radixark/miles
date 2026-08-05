@@ -17,10 +17,12 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from miles.utils.chat_template_utils import TITOTokenizerType
 from miles.utils.chat_template_utils.template import apply_chat_template_from_str
+from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES
 
 if TYPE_CHECKING:
-    from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer, TITOTokenizerType
+    from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 
 def simulate_pretokenized_path(
@@ -137,9 +139,12 @@ def verify_append_only(
 # Trajectories expose two class attributes used for verify-layer filtering:
 #
 #   * ``APPEND_ROLES: frozenset[str]`` — non-assistant roles that appear after
-#     the first assistant message.  Drives ``--tito-allowed-append-roles``.
+#     the first assistant message.  Compared with FixedTemplate capability.
 #   * ``IS_THINKING: bool`` — any assistant carries ``reasoning_content``.
 #     Drives ``--thinking`` and whether ``enable_thinking`` kwarg is passed.
+#
+# This shared verifier intentionally covers only non-assistant append trajectories;
+# dedicated family CPU tests and the session verifier cover injected assistant input.
 #
 # Both are declared on the trajectory class (mock_trajectories.py), alongside
 # ``TOOLS`` / ``PRETOKENIZE_POSITIONS`` / ``MESSAGES``.  This file only lists
@@ -316,9 +321,8 @@ def check_coverage(
 ) -> CoverageReport:
     """Enumerate ``thinking × append-role-subset`` combinations and report gaps.
 
-    Used as a sanity check that every meaningful combination of
-    ``--tito-allowed-append-roles`` and ``--thinking`` is backed by at least
-    one trajectory — otherwise certain CLI settings would be no-ops.
+    Used as a sanity check that every meaningful append-role and thinking
+    combination is backed by at least one trajectory.
     """
     if cases is None:
         cases = ALL_CASES
@@ -355,8 +359,8 @@ def run_all_checks(
 ) -> list[VerifyResult]:
     """Run verification cases filtered by *allowed_append_roles* and *thinking*.
 
-    ``allowed_append_roles`` is the role surface the session may append after
-    an assistant turn; defaults to ``{"tool"}`` for the agentic baseline.
+    ``allowed_append_roles`` is the role surface the template may append after
+    an assistant turn; defaults to the maximal four-role surface.
     Trajectories whose ``append_roles`` are not a subset are skipped.  Caller
     must include ``"tool"`` explicitly when relevant — there is no implicit
     union.
@@ -372,7 +376,7 @@ def run_all_checks(
     through the CLI.
     """
     if allowed_append_roles is None:
-        allowed_append_roles = {"tool"}
+        allowed_append_roles = ALL_APPEND_ROLES
     if thinking not in THINKING_MODES:
         raise ValueError(f"thinking must be one of {THINKING_MODES}; got {thinking!r}")
     extra = extra_template_kwargs or {}
@@ -407,8 +411,8 @@ def run_all_checks(
 # layer.  This is necessary but not sufficient for production correctness —
 # production runs ``get_tito_tokenizer(...)`` and exercises ``merge_tokens``
 # (model-specific token-level boundary patches) plus
-# ``tokenize_additional_non_assistant`` (renders appended segments under a
-# synthetic ``[_DUMMY_SYSTEM, ...]`` context, not the real history).
+# ``tokenize_additional_messages`` (renders the complete appendix under a
+# synthetic ``[_DUMMY_SYSTEM, dummy_assistant]`` context, not the real history).
 #
 # The primitive below mirrors the production path: it instantiates the actual
 # TITO subclass + HF tokenizer, runs ``merge_tokens`` against the encoded
@@ -434,10 +438,9 @@ def verify_append_only_via_tito_instance(
     :func:`verify_append_only_via_tito`.
     """
     try:
-        # TITO's incremental path requires the appendix to be all non-assistant.
-        # From the pretokenized boundary N, greedily extend M forward over the
-        # maximal non-assistant run — that's the chunk production would call
-        # merge_tokens for (between two assistant generations, or up to end).
+        # This shared verifier checks the maximal non-assistant run after boundary N.
+        # Production also accepts injected assistant input; dedicated family CPU
+        # tests and the session verifier cover that surface.
         n = pretokenized_num_message
         m = n
         while m < len(messages) and messages[m].get("role") != "assistant":
@@ -456,12 +459,12 @@ def verify_append_only_via_tito_instance(
         prefix_msgs = deepcopy(messages[:n])
         full_msgs = deepcopy(messages[:m])
 
-        prefix_text = tito.render_messages(
+        prefix_text = tito.apply_chat_template(
             prefix_msgs,
             tools=tools,
             add_generation_prompt=False,
         )
-        full_text = tito.render_messages(
+        full_text = tito.apply_chat_template(
             full_msgs,
             tools=tools,
             add_generation_prompt=True,
@@ -509,7 +512,6 @@ def verify_append_only_via_tito_instance(
 def verify_append_only_via_tito(
     tokenizer: Any,
     tito_model: TITOTokenizerType | str,
-    allowed_append_roles: list[str],
     messages: list[dict],
     pretokenized_num_message: int,
     tools: list[dict] | None = None,
@@ -520,7 +522,7 @@ def verify_append_only_via_tito(
 
     Matches the production wiring at ``miles/rollout/session/sessions.py:35`` —
     the same ``get_tito_tokenizer`` factory call, with ``chat_template_kwargs``
-    threaded through so ``merge_tokens`` and the dummy-context segment renders
+    threaded through so ``merge_tokens`` and the dummy-context appendix render
     use the same kwargs as the reference full render.
     """
     from miles.utils.chat_template_utils import get_tito_tokenizer
@@ -529,7 +531,6 @@ def verify_append_only_via_tito(
         tokenizer,
         tokenizer_type=tito_model,
         chat_template_kwargs=dict(template_kwargs),
-        allowed_append_roles=list(allowed_append_roles),
     )
     return verify_append_only_via_tito_instance(
         tito,
@@ -546,7 +547,6 @@ def run_all_checks_via_tito(
     tokenizer: Any,
     tito_model: TITOTokenizerType | str,
     *,
-    allowed_append_roles: set[str] | frozenset[str] | None = None,
     thinking: str = "off",
     extra_template_kwargs: dict | None = None,
 ) -> list[VerifyResult]:
@@ -554,32 +554,33 @@ def run_all_checks_via_tito(
 
     Per-case TITO rebuild: each (case, ``enable_thinking`` variant) gets a fresh
     TITO instance constructed with the merged kwargs, so the dummy-context
-    segment renders inside ``tokenize_additional_non_assistant`` see the same
+    appendix render inside ``tokenize_additional_messages`` sees the same
     ``enable_thinking`` value as the reference render.  Construction is
     millisecond-level and runs ~50 times per CLI invocation; cheap.
 
     The caller is responsible for setting ``tokenizer.chat_template`` (e.g. via
     ``resolve_fixed_chat_template`` lookup or ``--template`` override) before
-    calling this — this function does not consult ``SUPPORTED_TEMPLATES``.
+    calling this — this function does not consult ``FIXED_TEMPLATE``.
     """
-    if allowed_append_roles is None:
-        allowed_append_roles = {"tool"}
     if thinking not in THINKING_MODES:
         raise ValueError(f"thinking must be one of {THINKING_MODES}; got {thinking!r}")
     extra = extra_template_kwargs or {}
 
+    if isinstance(tito_model, str):
+        tito_model = TITOTokenizerType(tito_model)
+    fixed_template = TITOTokenizerType.get_tokenizer_class(tito_model).FIXED_TEMPLATE
     is_thinking_filter = {"off": False, "on": True, "both": None}[thinking]
-    selected = select_cases(allowed_append_roles=allowed_append_roles, is_thinking=is_thinking_filter)
+    selected = select_cases(
+        allowed_append_roles=fixed_template.allowed_append_roles,
+        is_thinking=is_thinking_filter,
+    )
     variants = enable_thinking_variants(thinking)
-    roles_list = sorted(allowed_append_roles)
 
     results: list[VerifyResult] = []
     for case in selected:
-        # TITO incremental requires a non-empty non-assistant appendix at the
-        # boundary.  Trajectories that end at the assistant turn (e.g. plain
-        # ``[sys, user, assistant]``) have no appendix to verify and are
-        # silently skipped here — the string-based primitive still covers
-        # them at the text-prefix layer.
+        # This shared verifier requires a non-empty non-assistant appendix. Cases
+        # ending at an assistant remain covered at the text-prefix layer; dedicated
+        # family CPU tests and the session verifier cover injected assistant input.
         msgs = case.traj_cls.MESSAGES
         n = case.pretokenize_n
         if n >= len(msgs) or msgs[n].get("role") == "assistant":
@@ -590,7 +591,6 @@ def run_all_checks_via_tito(
                 verify_append_only_via_tito(
                     tokenizer,
                     tito_model,
-                    roles_list,
                     deepcopy(case.traj_cls.MESSAGES),
                     case.pretokenize_n,
                     tools=case.tools,

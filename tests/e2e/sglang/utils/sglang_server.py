@@ -87,7 +87,11 @@ def start_sglang_server(
     process = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, env=env)
     server = SGLangServer(process=process, host=host, port=port, log_path=log_path, _log_file=log_file)
 
-    _wait_for_ready(server, timeout_secs=startup_timeout_secs)
+    try:
+        _wait_for_ready(server, timeout_secs=startup_timeout_secs)
+    except (RuntimeError, TimeoutError):
+        server.stop()
+        raise
     return server
 
 

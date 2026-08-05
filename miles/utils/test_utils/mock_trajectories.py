@@ -9,8 +9,7 @@ Class attributes consumed by chat_template_verify:
 
 - ``APPEND_ROLES: frozenset[str]`` — non-assistant roles that appear *after*
   the first assistant message (``tool`` / ``user`` / ``system``).  These are
-  the roles the session must allow to be appended on top of an assistant-
-  stopped prefix; drives ``--tito-allowed-append-roles`` filtering.
+  compared with the selected FixedTemplate's append capability.
 - ``IS_THINKING: bool`` — ``True`` iff at least one assistant message carries
   ``reasoning_content``.  Drives ``--thinking`` filtering and whether the
   ``enable_thinking`` chat-template kwarg is passed.
@@ -430,9 +429,8 @@ class RetrySystemTrajectory:
 class MultiUserToolChainTrajectory:
     """sys, user1, ass(tool), tool, ass, user2, ass(tool), tool, ass(tool:date), tool
 
-    NOTE: LinearTrajectory can carry multiple user messages when
-    ``allowed_append_roles`` includes ``"user"``; this trajectory exercises
-    that path.  The distribution may still deviate from the chat template
+    NOTE: This trajectory exercises multiple user messages after a generated
+    assistant.  The distribution may still deviate from the chat template
     behavior, causing high tito_session_mismatch_rate.
     """
 
@@ -982,7 +980,7 @@ class MultiRoleSequenceTrajectory:
     """sys, user, asst+tool, tool, user2, asst+tool, system_reminder, tool, asst-final.
 
     Fills the {thinking=False, append_roles={tool, user, system}} matrix cell
-    that GLM47's tool+user+system SUPPORTED_TEMPLATES row otherwise has no
+    that GLM47's tool+user+system append configuration otherwise has no
     fixture for. Cuts exercise three boundaries: tool-append (N=3), user-after-tool
     (N=4), system-after-asst (N=6). Cuts at N=5/N=7/N=8 are intentionally not
     listed — they only exercise generation-prompt-only or repeat tool-append

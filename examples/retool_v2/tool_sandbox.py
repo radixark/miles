@@ -1,7 +1,3 @@
-"""
-copied from examples/retool/tool_sandbox.py
-"""
-
 import asyncio
 import gc
 import os

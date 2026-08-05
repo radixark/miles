@@ -299,7 +299,12 @@ class TestChatCompletionsEndpoint:
                     "role": "assistant",
                     "content": "Let me check for you.",
                     "tool_calls": [
-                        {"id": "call00000", "type": "function", "function": {"name": "get_year", "arguments": "{}"}}
+                        {
+                            "id": "call00000",
+                            "index": 0,
+                            "type": "function",
+                            "function": {"name": "get_year", "arguments": "{}"},
+                        }
                     ],
                 },
                 "logprobs": {"content": expected_logprobs(server.tokenizer, tool_call_response)},
@@ -375,9 +380,15 @@ class TestChatCompletionsEndpoint:
                     "role": "assistant",
                     "content": "I will get year and temperature.",
                     "tool_calls": [
-                        {"id": "call00000", "type": "function", "function": {"name": "get_year", "arguments": "{}"}},
+                        {
+                            "id": "call00000",
+                            "index": 0,
+                            "type": "function",
+                            "function": {"name": "get_year", "arguments": "{}"},
+                        },
                         {
                             "id": "call00001",
+                            "index": 1,
                             "type": "function",
                             "function": {"name": "get_temperature", "arguments": '{"location": "Shanghai"}'},
                         },
@@ -420,7 +431,7 @@ class TestMultiTurnToolCallProcessFn:
             pytest.param(
                 TwoTurnStub.OPENAI_MESSAGES_FIRST_TURN,
                 TwoTurnStub.FIRST_RESPONSE_CONTENT,
-                TwoTurnStub.FIRST_TOOL_CALLS_OPENAI_FORMAT,
+                TwoTurnStub.FIRST_TOOL_CALLS_SGLANG_WIRE,
                 "tool_calls",
                 id="first_turn",
             ),

@@ -297,18 +297,6 @@ class RayTrainGroup:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
-    async def connect(self, critic_group: "RayTrainGroup"):
-        assert len(self._cells) == len(critic_group._cells), (
-            f"Actor and critic must have the same number of cells: "
-            f"actor has {len(self._cells)}, critic has {len(critic_group._cells)}"
-        )
-        await asyncio.gather(
-            *[
-                cell.connect_actor_critic(critic_cell)
-                for cell, critic_cell in zip(self._cells, critic_group._cells, strict=True)
-            ]
-        )
-
     async def set_rollout_manager(self):
         await asyncio.gather(*[cell.set_rollout_manager() for cell in self._cells])
 

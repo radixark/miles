@@ -1,17 +1,37 @@
 """Integration tests for session HTTP routes (create / get / delete / proxy)."""
 
+import asyncio
+import json
 import re
+import socket
 import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 import pytest
 import requests
+from fastapi.responses import JSONResponse
 
 from miles.rollout.session.server import SessionServer
+from miles.utils.chat_template_utils import message_matches
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
+from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
+
+
+def _create_session(url: str) -> str:
+    return requests.post(f"{url}/sessions", timeout=5.0).json()["session_id"]
+
+
+def _post_chat(url: str, session_id: str, payload: dict) -> requests.Response:
+    return requests.post(f"{url}/sessions/{session_id}/v1/chat/completions", json=payload, timeout=10.0)
+
+
+def _parse_sse(body: str) -> list[str]:
+    """Return the data payload of each SSE event, in order."""
+    return [block[len("data: ") :] for block in body.split("\n\n") if block.startswith("data: ")]
 
 
 @pytest.fixture(scope="class")
@@ -48,7 +68,6 @@ def router_env():
                 chat_template_path=None,
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
-                tito_allowed_append_roles=["tool"],
                 trajectory_manager="linear_trajectory",
                 session_server_instance_id=uuid.uuid4().hex,
             )
@@ -143,6 +162,36 @@ class TestSessionProxy:
         assert record["path"] == "/v1/chat/completions"
         assert record["status_code"] == 200
 
+    def test_proxy_chat_response_has_no_duplicate_server_or_date_header(self, router_env):
+        # Both the backend and this server run under uvicorn, so each emits its own
+        # server/date. Echoing upstream's copy puts two of each on the wire, and
+        # aiohttp (the transport litellm uses) then refuses to read the body at all.
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        host, port = router_env.url.removeprefix("http://").split(":")
+        body = json.dumps({"messages": [{"role": "user", "content": "hi"}], "return_logprob": True})
+        request = (
+            f"POST /sessions/{session_id}/v1/chat/completions HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: close\r\n\r\n"
+            f"{body}"
+        )
+
+        with socket.create_connection((host, int(port)), timeout=10.0) as sock:
+            sock.sendall(request.encode())
+            raw = b""
+            while b"\r\n\r\n" not in raw:
+                chunk = sock.recv(4096)
+                assert chunk, "connection closed before response headers were complete"
+                raw += chunk
+
+        head = raw.split(b"\r\n\r\n", 1)[0].decode()
+        assert head.splitlines()[0].endswith("200 OK")
+        names = [line.split(":", 1)[0].lower() for line in head.splitlines()[1:]]
+        assert names.count("server") == 1
+        assert names.count("date") == 1
+
     def test_chat_malformed_json_body_returns_400(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
 
@@ -154,6 +203,33 @@ class TestSessionProxy:
         )
         assert resp.status_code == 400
         assert resp.json()["error"].startswith("invalid JSON body:")
+
+    def test_chat_template_kwargs_override_reaches_render_and_backend(self, router_env):
+        """A request response-mode kwarg wins over the launch default in both
+        the locally rendered input_ids and the outbound backend request."""
+        default_session = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        resp = requests.post(
+            f"{router_env.url}/sessions/{default_session}/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
+        default_payload = router_env.backend.request_log[-1]
+        assert default_payload["chat_template_kwargs"] == {"enable_thinking": False}
+
+        override_session = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        resp = requests.post(
+            f"{router_env.url}/sessions/{override_session}/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "chat_template_kwargs": {"enable_thinking": True},
+            },
+            timeout=10.0,
+        )
+        assert resp.status_code == 200
+        override_payload = router_env.backend.request_log[-1]
+        assert override_payload["chat_template_kwargs"] == {"enable_thinking": True}
+        assert override_payload["input_ids"] != default_payload["input_ids"]
 
     def test_chat_upstream_null_message_returns_502(self, router_env):
         session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
@@ -197,3 +273,303 @@ class TestSessionProxy:
         record_meta = record["response"]["choices"][0]["meta_info"]
         assert record_meta["routed_experts"] == [[0, 1], [2, 3]]
         assert record_meta["indexer_topk"] == [[4], [5]]
+
+
+class TestChatFakeStreaming:
+    """``stream: true`` is fake streaming: non-streaming backend call, single SSE chunk."""
+
+    MESSAGES = [{"role": "user", "content": "What is 1+2?"}]
+
+    def test_stream_single_chunk_matches_non_stream(self, router_env):
+        non_stream_sid = _create_session(router_env.url)
+        stream_sid = _create_session(router_env.url)
+
+        non_stream = _post_chat(router_env.url, non_stream_sid, {"messages": self.MESSAGES}).json()
+
+        resp = _post_chat(
+            router_env.url,
+            stream_sid,
+            {"messages": self.MESSAGES, "stream": True, "stream_options": {"include_usage": True}},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+
+        events = _parse_sse(resp.text)
+        assert len(events) == 2
+        assert events[1] == "[DONE]"
+
+        chunk = json.loads(events[0])
+        assert chunk["object"] == "chat.completion.chunk"
+        assert chunk["model"] == "mock-model"
+        [chunk_choice] = chunk["choices"]
+        expected_choice = non_stream["choices"][0]
+        assert chunk_choice["delta"]["role"] == "assistant"
+        assert chunk_choice["delta"]["content"] == expected_choice["message"]["content"]
+        assert chunk_choice["finish_reason"] == expected_choice["finish_reason"] == "stop"
+        # Training payloads never reach the chunk; they live on the session record.
+        assert "meta_info" not in chunk_choice
+        assert "routed_experts" not in resp.text
+        assert "indexer_topk" not in resp.text
+
+        # Neither the backend nor the record sees the stream flags.
+        backend_payload = router_env.backend.request_log[-1]
+        assert "stream" not in backend_payload
+        assert "stream_options" not in backend_payload
+
+        stream_record = requests.get(f"{router_env.url}/sessions/{stream_sid}", timeout=5.0).json()["records"][0]
+        non_stream_record = requests.get(f"{router_env.url}/sessions/{non_stream_sid}", timeout=5.0).json()["records"][
+            0
+        ]
+        assert stream_record["request"] == non_stream_record["request"]
+        assert (
+            stream_record["response"]["choices"][0]["message"]
+            == non_stream_record["response"]["choices"][0]["message"]
+        )
+        assert (
+            stream_record["response"]["choices"][0]["meta_info"]
+            == non_stream_record["response"]["choices"][0]["meta_info"]
+        )
+
+    def test_stream_tool_calls_single_chunk_with_index(self, router_env):
+        session_id = _create_session(router_env.url)
+
+        def tool_call_process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(
+                text=(
+                    '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Beijing"}}\n</tool_call>\n<tool_call>\n{"name": "get_time", "arguments": {"timezone": "UTC"}}\n</tool_call>'
+                )
+            )
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_time",
+                    "parameters": {"type": "object", "properties": {"timezone": {"type": "string"}}},
+                },
+            },
+        ]
+
+        with patch.object(router_env.backend, "process_fn", new=tool_call_process_fn):
+            resp = _post_chat(router_env.url, session_id, {"messages": self.MESSAGES, "tools": tools, "stream": True})
+
+        assert resp.status_code == 200
+        chunk = json.loads(_parse_sse(resp.text)[0])
+        [chunk_choice] = chunk["choices"]
+        assert chunk_choice["finish_reason"] == "tool_calls"
+        tool_calls = chunk_choice["delta"]["tool_calls"]
+        assert [tool_call["index"] for tool_call in tool_calls] == [0, 1]
+        assert [tool_call["function"]["name"] for tool_call in tool_calls] == ["get_weather", "get_time"]
+        for tool_call in tool_calls:
+            json.loads(tool_call["function"]["arguments"])
+
+    def test_stream_passes_through_usage_and_length_finish_reason(self, router_env):
+        session_id = _create_session(router_env.url)
+        fixture_response = MockSGLangServer._compute_chat_completions_response
+
+        def length_with_usage(self, payload: dict) -> dict:
+            response = fixture_response(self, payload)
+            response["choices"][0]["finish_reason"] = "length"
+            response["usage"] = {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}
+            return response
+
+        with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=length_with_usage):
+            resp = _post_chat(router_env.url, session_id, {"messages": self.MESSAGES, "stream": True})
+
+        assert resp.status_code == 200
+        chunk = json.loads(_parse_sse(resp.text)[0])
+        assert chunk["choices"][0]["finish_reason"] == "length"
+        assert chunk["usage"] == {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}
+
+    def test_stream_backend_error_passes_through_json(self, router_env):
+        session_id = _create_session(router_env.url)
+
+        async def reject(self, request, compute_fn):
+            return JSONResponse(content={"error": "context too long"}, status_code=400)
+
+        with patch.object(MockSGLangServer, "_handle_generate_like_request", new=reject):
+            resp = _post_chat(router_env.url, session_id, {"messages": self.MESSAGES, "stream": True})
+
+        assert resp.status_code == 400
+        assert resp.headers["content-type"].startswith("application/json")
+        assert resp.json() == {"error": "context too long"}
+        records = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
+        assert records == []
+
+    def test_stream_false_keeps_json_response(self, router_env):
+        session_id = _create_session(router_env.url)
+        resp = _post_chat(router_env.url, session_id, {"messages": self.MESSAGES, "stream": False})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
+        assert resp.json()["choices"][0]["message"]["content"]
+
+    def test_streaming_client_multi_turn_passes_prefix_check(self, router_env):
+        """The rebuilt assistant message must survive the next turn's TITO prefix check."""
+        session_id = _create_session(router_env.url)
+        url = f"{router_env.url}/sessions/{session_id}/v1/chat/completions"
+
+        async def run():
+            async with httpx.AsyncClient(timeout=10) as client:
+                first = await stream_chat_completions(client, url, {"messages": self.MESSAGES}, label="turn 1")
+                messages = [
+                    *self.MESSAGES,
+                    first["choices"][0]["message"],
+                    {"role": "tool", "content": "ok", "tool_call_id": "t0"},
+                ]
+                second = await stream_chat_completions(client, url, {"messages": messages}, label="turn 2")
+                return first, second
+
+        first, second = asyncio.run(run())
+        assert first["choices"][0]["message"]["content"]
+        assert second["choices"][0]["message"]["content"]
+        # Turn 2 extended (not rolled back) the session: both records are kept.
+        records = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
+        assert len(records) == 2
+
+    def test_streaming_client_rebuilt_tool_calls_match_stored(self, router_env):
+        """Rebuilt tool_calls must match the stored assistant under message_matches.
+
+        The stored message keeps SGLang's wire shape (tool_calls carry
+        ``index``); a protocol-faithful streaming client drops that
+        streaming-only key when rebuilding.  The server's own comparison
+        (``message_matches``) must treat the two as equal — dict equality is
+        deliberately NOT the contract."""
+        session_id = _create_session(router_env.url)
+        url = f"{router_env.url}/sessions/{session_id}/v1/chat/completions"
+
+        def tool_call_process_fn(prompt: str) -> ProcessResult:
+            return ProcessResult(
+                text=(
+                    '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Beijing"}}\n</tool_call>\n'
+                    '<tool_call>\n{"name": "get_time", "arguments": {"timezone": "UTC"}}\n</tool_call>'
+                )
+            )
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_time",
+                    "parameters": {"type": "object", "properties": {"timezone": {"type": "string"}}},
+                },
+            },
+        ]
+
+        async def run():
+            async with httpx.AsyncClient(timeout=10) as client:
+                return await stream_chat_completions(
+                    client, url, {"messages": self.MESSAGES, "tools": tools}, label="tool turn"
+                )
+
+        with patch.object(router_env.backend, "process_fn", new=tool_call_process_fn):
+            response = asyncio.run(run())
+
+        rebuilt_message = response["choices"][0]["message"]
+        record = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"][0]
+        stored_message = record["response"]["choices"][0]["message"]
+        # Mock fidelity guard: the stored wire shape carries index, the rebuilt drops it.
+        assert all("index" in tool_call for tool_call in stored_message["tool_calls"])
+        assert all("index" not in tool_call for tool_call in rebuilt_message["tool_calls"])
+        assert message_matches(stored_message, rebuilt_message)
+        # Template-relevant substance survives the round-trip exactly.
+        assert [tool_call["function"] for tool_call in rebuilt_message["tool_calls"]] == [
+            tool_call["function"] for tool_call in stored_message["tool_calls"]
+        ]
+        assert [tool_call["id"] for tool_call in rebuilt_message["tool_calls"]] == [
+            tool_call["id"] for tool_call in stored_message["tool_calls"]
+        ]
+
+    def test_streaming_client_tool_call_turn_then_tool_result_continues(self, router_env):
+        """Regression: a streamed tool-call turn must not roll back the next turn.
+
+        This is the CPU incarnation of the stage-c multi-role e2e failure: the
+        stored assistant carries SGLang-shaped tool_calls (with ``index``), the
+        client replays the SSE-rebuilt message (without it), and the follow-up
+        tool_result request must extend the session instead of dying with
+        HTTP 400 ``rollback failed``."""
+        session_id = _create_session(router_env.url)
+        url = f"{router_env.url}/sessions/{session_id}/v1/chat/completions"
+
+        def tool_then_text_process_fn(prompt: str) -> ProcessResult:
+            if "TOOL_SENTINEL_42" in prompt:
+                return ProcessResult(text="Final answer after tool.")
+            return ProcessResult(
+                text='<tool_call>\n{"name": "get_weather", "arguments": {"city": "Beijing"}}\n</tool_call>'
+            )
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                },
+            },
+        ]
+
+        async def run():
+            async with httpx.AsyncClient(timeout=10) as client:
+                first = await stream_chat_completions(
+                    client, url, {"messages": self.MESSAGES, "tools": tools}, label="tool turn"
+                )
+                assistant = first["choices"][0]["message"]
+                messages = [
+                    *self.MESSAGES,
+                    assistant,
+                    {
+                        "role": "tool",
+                        "content": "TOOL_SENTINEL_42",
+                        "tool_call_id": assistant["tool_calls"][0]["id"],
+                    },
+                ]
+                second = await stream_chat_completions(
+                    client, url, {"messages": messages, "tools": tools}, label="tool_result turn"
+                )
+                return first, second
+
+        with patch.object(router_env.backend, "process_fn", new=tool_then_text_process_fn):
+            first, second = asyncio.run(run())
+
+        assert first["choices"][0]["finish_reason"] == "tool_calls"
+        assert second["choices"][0]["message"]["content"] == "Final answer after tool."
+        # Turn 2 extended (not rolled back) the session: both records are kept.
+        records = requests.get(f"{router_env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
+        assert len(records) == 2
+
+    def test_openai_sdk_accumulates_fake_stream(self, router_env):
+        openai = pytest.importorskip("openai")
+
+        non_stream_sid = _create_session(router_env.url)
+        stream_sid = _create_session(router_env.url)
+
+        expected = _post_chat(router_env.url, non_stream_sid, {"messages": self.MESSAGES}).json()
+        expected_content = expected["choices"][0]["message"]["content"]
+
+        client = openai.OpenAI(
+            base_url=f"{router_env.url}/sessions/{stream_sid}/v1", api_key="not-used", max_retries=0
+        )
+        stream = client.chat.completions.create(model="mock-model", messages=self.MESSAGES, stream=True)
+        content = ""
+        finish_reason = None
+        for chunk in stream:
+            [choice] = chunk.choices
+            if choice.delta.content:
+                content += choice.delta.content
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+        assert content == expected_content
+        assert finish_reason == "stop"

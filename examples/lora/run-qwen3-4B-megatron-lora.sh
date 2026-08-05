@@ -32,9 +32,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." &>/dev/null && pwd)"
 source "${REPO_ROOT}/miles/scripts/models/qwen3-4B.sh"
 
-# Store eval/delegate settings in a YAML config similar to examples/eval_multi_task.
-# EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/eval/scripts/multi_tasks.yaml"}
-EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/miles/examples/eval/scripts/multi_tasks.yaml"}
+# Store eval/delegate settings in a YAML config similar to examples/experimental/eval_multi_task.
+# EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/examples/experimental/eval/scripts/multi_tasks.yaml"}
+EVAL_CONFIG_PATH=${SKILLS_EVAL_CONFIG_PATH:-"${REPO_ROOT}/miles/examples/experimental/eval/scripts/multi_tasks.yaml"}
 
 
 CKPT_ARGS=(
@@ -80,7 +80,7 @@ ROLLOUT_ARGS=(
 # EVAL_ARGS=(
 #    --eval-interval 5
 #    --eval-config "${EVAL_CONFIG_PATH}"
-#    --eval-function-path examples.eval.eval_delegate_rollout.generate_rollout
+#    --eval-function-path examples.experimental.eval.eval_delegate_rollout.generate_rollout
 # )
 
 EVAL_ARGS=(

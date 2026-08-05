@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Collection
 from typing import Any, Literal
 
 from huggingface_hub import hf_hub_download
@@ -25,7 +26,7 @@ from pydantic import TypeAdapter
 from sglang.srt.entrypoints.openai.protocol import Tool
 from transformers.utils.chat_template_utils import render_jinja_template
 
-from miles.utils.chat_template_utils import deepseek
+from miles.utils.chat_template_utils import deepseek, inkling
 
 
 def load_hf_chat_template(model_id: str) -> str:
@@ -92,6 +93,21 @@ def extract_tool_dicts(tools: list[dict] | None) -> list[dict] | None:
     return [tool.model_dump() for tool in validated]
 
 
+def merge_chat_template_kwargs(
+    base: dict[str, Any],
+    overrides: dict[str, Any],
+    *,
+    alias_keys: Collection[str] = (),
+) -> dict[str, Any]:
+    """Merge one config layer, replacing base aliases as a group."""
+    merged = dict(base)
+    if any(key in overrides for key in alias_keys):
+        for key in alias_keys:
+            merged.pop(key, None)
+    merged.update(overrides)
+    return merged
+
+
 def apply_chat_template_from_str(
     chat_template: str,
     messages: list[dict],
@@ -134,6 +150,10 @@ def apply_chat_template_from_str(
 
 _TEMPLATE_RELEVANT_KEYS = ("role", "content", "reasoning_content", "tool_calls")
 
+# SGLang serializes `index` on non-streaming tool calls, while accumulated
+# streaming messages may omit or renumber it; no chat template reads it.
+_WIRE_ONLY_TOOL_CALL_KEYS = ("index",)
+
 
 def _normalize_value(value: Any) -> Any:
     """Normalize falsy sentinels that produce identical Jinja2 output.
@@ -151,6 +171,29 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
+def _normalize_tool_calls(value: Any) -> Any:
+    """Project tool_calls down to template-relevant content for comparison.
+
+    Only keys in `_WIRE_ONLY_TOOL_CALL_KEYS` are removed; all other values remain part of history matching.
+
+    Deliberately a comparison-time projection, NOT a repair of the incoming
+    message from stored state.  Matching only decides whether a replay is
+    the same history: on a match the prefix tokens come from stored
+    checkpoints and records keep the raw backend response (``index``
+    intact), so nothing downstream reads the replayed keys.  Filling
+    missing keys from stored would also presuppose the per-call
+    correspondence this comparison is itself establishing, and cannot
+    handle a client that replays a different ``index`` value rather than
+    none.
+    """
+    if not isinstance(value, list):
+        return value
+    return [
+        ({k: v for k, v in call.items() if k not in _WIRE_ONLY_TOOL_CALL_KEYS} if isinstance(call, dict) else call)
+        for call in value
+    ]
+
+
 def message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     """Compare only the fields that affect chat-template tokenization.
 
@@ -158,26 +201,28 @@ def message_matches(stored: dict[str, Any], new: dict[str, Any]) -> bool:
     ``provider_specific_fields`` into messages.  These have no effect on
     the Jinja2 chat template output, so we only compare the keys that
     templates actually read: role, content, reasoning_content, tool_calls.
+    Within tool_calls, wire-only keys such as `index` are ignored for the same reason.
     """
     for key in _TEMPLATE_RELEVANT_KEYS:
-        if _normalize_value(stored.get(key)) != _normalize_value(new.get(key)):
+        stored_value = _normalize_value(stored.get(key))
+        new_value = _normalize_value(new.get(key))
+        if key == "tool_calls":
+            stored_value = _normalize_tool_calls(stored_value)
+            new_value = _normalize_tool_calls(new_value)
+        if stored_value != new_value:
             return False
     return True
-
-
-_DEFAULT_APPEND_ROLES: list[str] = ["tool"]
 
 
 def assert_messages_append_only_with_allowed_role(
     stored_messages: list[dict[str, Any]],
     new_messages: list[dict[str, Any]],
-    allowed_append_roles: list[str] = _DEFAULT_APPEND_ROLES,
+    allowed_append_roles: Collection[str],
 ) -> None:
     """Assert *new_messages* is an append-only extension of *stored_messages*.
 
     The stored prefix must match exactly (compared by template-relevant keys),
-    and any appended messages must have a role in *allowed_append_roles*
-    (default: ``{'tool'}``).
+    and any appended messages must have a role in *allowed_append_roles*.
     """
     if not stored_messages:
         return
@@ -231,6 +276,19 @@ def apply_chat_template(
             tokenizer,
             tools=tools,
             tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            **kwargs,
+        )
+
+    if inkling.is_inkling(tokenizer):
+        # the fixed template needs parsed tool-call arguments and handles the
+        # thinking-effort line, tool_calls, and the end-sampling token itself
+        return tokenizer.apply_chat_template(
+            normalize_tool_arguments(messages, "dict"),
+            chat_template=inkling.fixed_chat_template(),
+            tokenize=tokenize,
+            tools=extract_tool_dicts(tools),
+            return_dict=False,
             add_generation_prompt=add_generation_prompt,
             **kwargs,
         )

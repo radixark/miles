@@ -99,8 +99,8 @@ Where to look:
 | Component | Path |
 |---|---|
 | Trainer stdout | wherever you redirected `ray job submit` |
-| SGLang | `/tmp/sglang/*.log` (or `--sglang-log-dir`) |
 | Ray workers | `~/.ray/session_latest/logs/worker-*.{out,err}` |
+| SGLang | inside the Ray worker logs; control verbosity with `--sglang-log-level` |
 | NCCL | `NCCL_DEBUG=INFO NCCL_DEBUG_FILE=/tmp/nccl_%h_%p.log` |
 
 `grep` for these signal phrases:

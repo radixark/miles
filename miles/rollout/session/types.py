@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 class SessionRecord(BaseModel):
     timestamp: float
+    request_timestamp: float | None = None
     method: str
     path: str
     request: dict

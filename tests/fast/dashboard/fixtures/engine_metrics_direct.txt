@@ -1,0 +1,9 @@
+# HELP sglang:num_running_reqs The number of running requests.
+# TYPE sglang:num_running_reqs gauge
+sglang:num_running_reqs{model_name="qwen3-30b"} 13.0
+# HELP sglang:cache_hit_rate The prefix cache hit rate.
+# TYPE sglang:cache_hit_rate gauge
+sglang:cache_hit_rate{model_name="qwen3-30b"} 0.71
+# HELP sglang:uptime_seconds Not whitelisted.
+# TYPE sglang:uptime_seconds gauge
+sglang:uptime_seconds{model_name="qwen3-30b"} 99.0

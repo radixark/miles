@@ -20,7 +20,7 @@ This is a Miles-friendly reproduction of the original
 ## Files
 
 ```text
-examples/search-r1/
+examples/experimental/search-r1/
 ├── generate_with_search.py       # custom rollout (multi-turn loop)
 ├── google_search_server.py       # serper.dev wrapper
 ├── local_search_server.py        # FastAPI server in front of FAISS index
@@ -66,7 +66,7 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 ### 4. Run
 
 ```bash
-bash examples/search-r1/run_qwen2.5_3B.sh
+bash examples/experimental/search-r1/run_qwen2.5_3B.sh
 ```
 
 ## Configuration
@@ -172,8 +172,8 @@ the search results came from a stochastic environment, not the model.
 ```bash
 GRPO_ARGS+=( --use-tis )
 CUSTOM_ARGS+=(
-   --custom-config-path examples/train_infer_mismatch_helper/mis.yaml
-   --custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp
+   --custom-config-path examples/infra_features/train_infer_mismatch_helper/mis.yaml
+   --custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp
 )
 ```
 
@@ -243,7 +243,7 @@ conda install faiss-gpu=1.8.0 -c pytorch -c nvidia -y
 
 # 2. Index + corpus (~135 GB)
 save_path=/root/Index
-python /root/miles/examples/search-r1/local_dense_retriever/download.py \
+python /root/miles/examples/experimental/search-r1/local_dense_retriever/download.py \
     --save_path $save_path
 cat $save_path/part_* > $save_path/e5_Flat.index
 gzip -d $save_path/wiki-18.jsonl.gz
@@ -253,7 +253,7 @@ gzip -d $save_path/wiki-18.jsonl.gz
 
 ```bash
 conda activate retriever
-python /root/miles/examples/search-r1/local_dense_retriever/retrieval_server.py \
+python /root/miles/examples/experimental/search-r1/local_dense_retriever/retrieval_server.py \
     --index_path /root/Index/e5_Flat.index \
     --corpus_path /root/Index/wiki-18.jsonl \
     --topk 3 \
@@ -270,5 +270,5 @@ restarts are 1–2 minutes.
 ```bash
 conda deactivate              # don't train inside the retriever env!
 cd /root/miles
-bash examples/search-r1/run_qwen2.5_3B.sh
+bash examples/experimental/search-r1/run_qwen2.5_3B.sh
 ```

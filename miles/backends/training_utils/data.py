@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.data import get_minimum_num_micro_batch_size
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
+from miles.utils.object_store import ObjectStoreGetResult
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.types import RolloutBatch
 
@@ -34,11 +35,11 @@ def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
     witness_info: WitnessInfo | None = None,
-) -> RolloutBatch:
+) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
     # Both first pp stage and the last pp stage will receive the data.
-    rollout_data = process_rollout_data(
+    rollout_data, store_get_result = process_rollout_data(
         args,
         rollout_data_ref,
         parallel_state.effective_dp.rank,
@@ -52,6 +53,10 @@ def get_rollout_data(
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
     ]
+    if "rollout_mask_sums" in rollout_data:
+        rollout_data["rollout_mask_sums"] = torch.tensor(
+            rollout_data["rollout_mask_sums"], dtype=torch.float32, device=torch.cuda.current_device()
+        )
     if args.enable_witness:
         seq_witness_ids = rollout_data.pop("seq_witness_ids")
         rollout_data["witness_ids"] = [
@@ -84,34 +89,36 @@ def get_rollout_data(
 
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
-    if "rollout_log_probs" in rollout_data:
-        rollout_logprob_dtype = _rollout_logprob_dtype(args)
-        rollout_data["rollout_log_probs"] = [
-            torch.tensor(
-                slice_log_prob_with_cp(
-                    log_prob,
-                    total_length,
-                    response_length,
-                    args.qkv_format,
-                    rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
-                ),
-                device=torch.cuda.current_device(),
-                dtype=rollout_logprob_dtype,
-            )
-            for i, (log_prob, total_length, response_length) in enumerate(
-                zip(
-                    rollout_data["rollout_log_probs"],
-                    rollout_data["total_lengths"],
-                    rollout_data["response_lengths"],
-                    strict=False,
+    # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
+    for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):
+        if key in rollout_data:
+            dtype = _rollout_logprob_dtype(args) if key == "rollout_log_probs" else torch.float32
+            rollout_data[key] = [
+                torch.as_tensor(
+                    slice_log_prob_with_cp(
+                        value,
+                        total_length,
+                        response_length,
+                        args.qkv_format,
+                        rollout_data["max_seq_lens"][i] if args.qkv_format == "bshd" else None,
+                    ),
+                    device=torch.cuda.current_device(),
+                    dtype=dtype,
                 )
-            )
-        ]
+                for i, (value, total_length, response_length) in enumerate(
+                    zip(
+                        rollout_data[key],
+                        rollout_data["total_lengths"],
+                        rollout_data["response_lengths"],
+                        strict=False,
+                    )
+                )
+            ]
     if "rollout_routed_experts" in rollout_data:
         rollout_data["rollout_routed_experts"] = [torch.from_numpy(r) for r in rollout_data["rollout_routed_experts"]]
     if "rollout_indexer_topk" in rollout_data:
         rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
-    return rollout_data
+    return rollout_data, store_get_result
 
 
 def get_batch(
@@ -128,7 +135,7 @@ def get_batch(
     Steps:
     - Fetch raw fields via iterator.
     - Save original token tensors under "unconcat_tokens".
-    - Slice tokens into two chunks for Context Parallelism (CP), concatenate, and pad to a configurable multiple.
+    - Slice tokens into two batches for Context Parallelism (CP), concatenate, and pad to a configurable multiple.
     - Build cu_seqlens and `PackedSeqParams` with T-H-D layout (T: sequence length, H: attention heads, D: head dimension).
 
     Args:
@@ -146,6 +153,10 @@ def get_batch(
     parallel_state = get_parallel_state()
 
     assert "tokens" in keys
+    # get_batch consumes adapter_slots itself (per-adapter token counts below);
+    # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
+    if "adapter_slots" not in keys:
+        keys = [*keys, "adapter_slots"]
     batch = data_iterator.get_next(keys)
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
@@ -167,7 +178,9 @@ def get_batch(
     if qkv_format == "bshd":
         max_seqlen = batch["max_seq_lens"][0]
         assert max([t.size(0) for t in tokens]) <= max_seqlen
+
         if allgather_cp:
+            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
             assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} not divisible by cp_size {cp_size}"
             local_len = max_seqlen // cp_size
             start = parallel_state.cp.rank * local_len
@@ -176,21 +189,23 @@ def get_batch(
             ]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format, max_seqlen) for t in tokens]
+        sample_token_lengths = [t.size(0) for t in tokens]
         tokens = torch.stack(tokens)
 
     elif qkv_format == "thd":
         cp_rank = parallel_state.cp.rank
 
         if allgather_cp:
+            assert batch.get("adapter_slots") is None, "allgather CP is currently not supported with multi-LoRA: "
             # DSA mode: concatenate all sequences first, then slice once with CP.
-            # We also pad the *global* concatenated stream to make per-rank chunks equal.
+            # We also pad the *global* concatenated stream to make per-rank batches equal.
             cu_seqlens_list: list[int] = [0]
             for t in tokens:
                 cu_seqlens_list.append(cu_seqlens_list[-1] + t.size(0))
 
             tokens = torch.cat(tokens, dim=0)
 
-            # Pad global stream so (1) divisible by cp_size (equal chunks),
+            # Pad global stream so (1) divisible by cp_size (equal batches),
             # (2) divisible by pad_size (reduce fragmentation).
             global_pad_size = cp_size * pad_size
             pad = (global_pad_size - tokens.size(0) % global_pad_size) % global_pad_size
@@ -202,6 +217,7 @@ def get_batch(
             tokens = tokens.chunk(cp_size, dim=0)[cp_rank]
         else:
             tokens = [slice_with_cp(t, pad_token_id, qkv_format) for t in tokens]
+            sample_token_lengths = [t.size(0) for t in tokens]
 
             cu_seqlens = [0]
             for t in tokens:
@@ -226,6 +242,21 @@ def get_batch(
         batch["max_seqlen"] = max_seqlen
     else:
         raise ValueError(f"Unsupported qkv_format: {qkv_format}")
+
+    # Multi-LoRA: compute per-adapter token counts from post-CP per-sample lengths.
+    # NOTE: allgather CP is currently not supported
+    adapter_slots = batch.get("adapter_slots")
+    if adapter_slots is not None:
+        assert all(
+            adapter_slots[i] <= adapter_slots[i + 1] for i in range(len(adapter_slots) - 1)
+        ), f"adapter_slots not sorted in micro-batch: {adapter_slots}"
+        n_adapters = data_iterator.rollout_data["n_adapters"]
+        total_tokens = tokens.numel()
+        counts = torch.zeros(n_adapters, dtype=torch.int32, device=torch.cuda.current_device())
+        for slot, length in zip(adapter_slots, sample_token_lengths, strict=True):
+            counts[slot] += length
+        counts[adapter_slots[-1]] += total_tokens - counts.sum().item()
+        batch["adapter_token_counts"] = counts
 
     batch["tokens"] = tokens
 
@@ -297,11 +328,16 @@ def get_batch(
     # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
     if multimodal_train_inputs is not None:
+        sample_offsets = [0]
+        for t in batch["unconcat_tokens"]:
+            sample_offsets.append(sample_offsets[-1] + t.size(0))
         multimodal_data = {}  # key -> concatenated tensor
         multimodal_num_items = {}  # key -> list of item counts per sequence
-        for mm_input_dict in multimodal_train_inputs:
+        for i, mm_input_dict in enumerate(multimodal_train_inputs):
             if mm_input_dict is not None:
                 for key, mm_tensor in mm_input_dict.items():
+                    if key.endswith("_positions"):
+                        mm_tensor = mm_tensor + sample_offsets[i]
                     if key not in multimodal_data:
                         multimodal_data[key] = mm_tensor
                         multimodal_num_items[key] = [mm_tensor.size(0)]
@@ -346,7 +382,7 @@ class DataIterator:
 
         - If `micro_batch_indices` is provided, selects rows according to the current
           index list for each requested key.
-        - Otherwise, slices a contiguous window of size `micro_batch_size` starting
+        - Otherwise, slices a contiguous adapter batch of size `micro_batch_size` starting
           at the current offset.
 
         Returns a dict mapping each key to a list subset (or None if absent).
@@ -378,6 +414,13 @@ class DataIterator:
         return self
 
 
+def get_num_rollouts(args: Namespace, rollout_data: RolloutBatch, num_steps: int) -> list[int]:
+    """Per-step rollout counts (total across DP); one entry per training step."""
+    if "num_rollouts" in rollout_data:
+        return rollout_data["num_rollouts"]
+    return [rollout_data.get("dynamic_global_batch_size", args.global_batch_size)] * num_steps
+
+
 def get_data_iterator(
     args: Namespace,
     model: torch.nn.Module | Sequence[torch.nn.Module],
@@ -400,6 +443,15 @@ def get_data_iterator(
     expand_multimodal_rollout_data_in_place(rollout_data, qkv_format=args.qkv_format)
 
     parallel_state = get_parallel_state()
+
+    if "micro_batch_indices" in rollout_data:
+        assert args.use_dynamic_global_batch_size == ("dynamic_global_batch_size" in rollout_data)
+        micro_batch_indices = rollout_data["micro_batch_indices"]
+        data_iterator = [
+            DataIterator(rollout_data, micro_batch_indices=micro_batch_indices) for _ in range(parallel_state.vpp_size)
+        ]
+        return data_iterator, rollout_data["num_microbatches"]
+
     dp_size = parallel_state.effective_dp.size
     dp_group = parallel_state.effective_dp.group
     vpp_size = parallel_state.vpp_size
@@ -426,6 +478,12 @@ def get_data_iterator(
         return data_iterator
 
     if not args.use_dynamic_batch_size:
+        if "adapter_slots" in rollout_data and num_local_gbs % args.micro_batch_size != 0:
+            raise ValueError(
+                "A multi-LoRA local batch must be divisible by --micro-batch-size; "
+                f"got local_batch_size={num_local_gbs}, micro_batch_size={args.micro_batch_size}. "
+                "Use --use-dynamic-batch-size or choose compatible adapter batch shapes."
+            )
         num_microbatches = [num_local_gbs // args.micro_batch_size for _ in range(num_steps_per_rollout)]
         data_iterator = _generate_data_iterator(rollout_data, args.micro_batch_size)
     else:
@@ -463,6 +521,10 @@ def get_data_iterator(
             for j in range(num_mbs):
                 for k in range(len(partitions[j])):
                     partitions[j][k] += start
+                # Multi-LoRA: microbatches must be contiguous-by-slot for the
+                # grouped GEMM's per-adapter token-count math.
+                if "adapter_slots" in rollout_data:
+                    partitions[j].sort(key=lambda index: rollout_data["adapter_slots"][index])
             micro_batch_indices.extend(partitions)
 
         assert len(set(sum(micro_batch_indices, []))) == num_local_samples
@@ -472,56 +534,4 @@ def get_data_iterator(
     return (
         data_iterator,
         num_microbatches,
-    )
-
-
-def sync_actor_critic_data(
-    args: Namespace,
-    rollout_data: RolloutBatch | None = None,
-    group: dist.ProcessGroup | None = None,
-) -> None:
-    """
-    Broadcast `values` (from critic) and optionally `log_probs`/`ref_log_probs`
-    (from actor) across PP ranks to align data dependencies.
-
-    - Values are broadcast from src=1.
-    - Log-probs and ref-log-probs are broadcast from src=0 when KL is used.
-    Updates `rollout_data` in place with the synchronized tensors.
-    """
-    log_probs_key = "log_probs" if not args.use_rollout_logprobs else "rollout_log_probs"
-    values, log_probs, ref_log_probs = map(rollout_data.get, ("values", log_probs_key, "ref_log_probs"))
-
-    # return when not the pp last stage
-    if not values and not log_probs:
-        return
-
-    handles = []
-
-    if not values:
-        values = [torch.empty_like(log_prob) for log_prob in log_probs]
-    for value in values:
-        handles.append(dist.broadcast(value, src=1, group=group, async_op=True))
-
-    if args.kl_coef != 0 or args.use_kl_loss:
-        if not log_probs:
-            log_probs = [torch.empty_like(value) for value in values]
-        if not ref_log_probs:
-            ref_log_probs = [torch.empty_like(value) for value in values]
-        for ref_log_prob, log_prob in zip(ref_log_probs, log_probs, strict=False):
-            handles.append(dist.broadcast(log_prob, src=0, group=group, async_op=True))
-            handles.append(dist.broadcast(ref_log_prob, src=0, group=group, async_op=True))
-
-    for handle in handles:
-        handle.wait()
-
-    rollout_data.update(
-        {
-            k: v
-            for k, v in {
-                "values": values,
-                log_probs_key: log_probs,
-                "ref_log_probs": ref_log_probs,
-            }.items()
-            if v is not None
-        }
     )

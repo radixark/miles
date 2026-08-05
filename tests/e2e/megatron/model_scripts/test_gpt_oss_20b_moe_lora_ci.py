@@ -94,7 +94,7 @@ def execute(shared_outer: bool, virtual_experts: bool):
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--qkv-format bshd "
-        "--attention-backend fused "
+        "--attention-backend auto "
         "--update-weight-buffer-size 536870912 "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {NUM_GPUS} "

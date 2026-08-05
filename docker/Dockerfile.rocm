@@ -8,7 +8,7 @@
 #    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
 #
 # 3. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X)
-#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.14-rocm720-mi35x-20260627
+#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.16-rocm720-mi35x-20260730
 
 ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
 ARG SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
@@ -39,6 +39,7 @@ ARG RCCL_TESTS_PATH=projects/rccl-tests
 
 ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
 ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
+ARG MOONCAKE_VERSION=0.3.12.post1
 
 # ======================================== Setup ================================================
 WORKDIR /root/
@@ -101,6 +102,11 @@ RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_to
     fi
 RUN pip install /tmp/wheels/flash_attn-*.whl
 
+# make install lays down mooncake's native modules but not its pure Python files.
+RUN pip install --no-deps --target=/tmp/mc "mooncake-transfer-engine-non-cuda==${MOONCAKE_VERSION}" && \
+    cp -n /tmp/mc/mooncake/*.py "$(python3 -c 'import mooncake, os; print(os.path.dirname(mooncake.__file__))')" && \
+    rm -rf /tmp/mc
+
 RUN pip install flash-linear-attention==0.4.2
 
 # Enable deepseek-ai/TileKernels on ROCm/gfx950 for mHC and FP8 QAT cast-back.
@@ -129,7 +135,7 @@ RUN cd /sgl-workspace/sglang && \
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
 
-RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@d64a639 --no-cache-dir --force-reinstall
+RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@74d68c5e4bedf2b6774f2c92ed0f81b7c8d91ed0 --no-cache-dir --force-reinstall
 
 # Fix the ROCm 7.2 ROCr VMM-pause leak.
 RUN if [ "$APPLY_ROCR_VMMFIX" = "1" ]; then \

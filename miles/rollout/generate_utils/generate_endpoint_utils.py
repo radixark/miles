@@ -8,8 +8,8 @@ from typing import Any
 import numpy as np
 import pybase64
 
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
-from miles.utils.processing_utils import encode_image_for_rollout_engine
+from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
 
 
@@ -22,9 +22,7 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
         prompt_ids = processor_output["input_ids"][0]
 
         # TODO shall we move it to other places? then can make this function immutable
-        sample.multimodal_train_inputs = {
-            k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
-        } or None
+        sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
 
         return prompt_ids
     else:
@@ -71,7 +69,7 @@ def compute_request_payload(
         "return_routed_experts": args.use_rollout_routing_replay,
         "return_indexer_topk": args.use_rollout_indexer_replay,
     }
-    if is_lora_enabled(args):
+    if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
     if image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
@@ -127,7 +125,7 @@ def get_routed_experts_from_response(args, output, sample):
     info = output["meta_info"].get("routed_experts")
     if info is None:
         return None
-    return _decode_topk_buffer(info, len(sample.tokens) - 1, args.num_layers, args.moe_router_topk)
+    return _decode_topk_buffer(info, len(sample.tokens) - 1, args.num_layers, -1)
 
 
 def get_indexer_topk_from_response(args, output, sample):

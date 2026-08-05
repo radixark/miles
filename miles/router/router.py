@@ -166,7 +166,11 @@ class MilesRouter:
         content = result["response_body"]
         status_code = result["status_code"]
         headers = result["headers"]
-        headers = {k: v for k, v in headers.items() if k.lower() not in ("content-length", "transfer-encoding")}
+        headers = {
+            k: v
+            for k, v in headers.items()
+            if k.lower() not in ("content-length", "transfer-encoding", "server", "date")
+        }
         content_type = headers.get("content-type", "")
         try:
             data = json.loads(content)

@@ -176,9 +176,13 @@ class MockSGLangServer:
             message_content, parsed_calls = parser.parse_non_stream(process_result.text)
             if parsed_calls:
                 finish_reason = "tool_calls"
+                # Mirror SGLang's non-streaming wire shape: ToolCall always
+                # serializes ``index`` (the tool's position in the tools list,
+                # via ToolCallItem.tool_index; -1 when unknown).
                 tool_calls = [
                     {
                         "id": f"call{i:05d}",
+                        "index": call.tool_index,
                         "type": "function",
                         "function": {"name": call.name, "arguments": call.parameters or "{}"},
                     }

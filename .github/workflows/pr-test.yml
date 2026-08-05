@@ -6,7 +6,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   schedule:
-    # Nightly CI on main runs every enabled tag except ft-long, with fast-fail disabled.
+    # Nightly CI on main runs every enabled tag except long and ft-long, with fast-fail disabled.
     # 15:00 UTC = 08:00 PDT / 07:00 PST (cron is UTC, no DST).
     - cron: '0 15 * * *'
   workflow_dispatch:
@@ -70,7 +70,85 @@ jobs:
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: python -m tests.ci.ci_policy
 
+  docker-paths:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          # Cron and manual runs have no PR diff and never build a PR image.
+          if [ -z "$BASE_SHA" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Compare the PR merge commit with its current base (HEAD^1) rather than
+          # the recorded base.sha, which can lag main and pull in unrelated changes.
+          # Dockerfile.rocm doesn't feed the cu13 multi-arch build this pipeline produces.
+          if git diff --name-only HEAD^1 HEAD \
+              | grep -qE '^(docker/(Dockerfile|build\.py|verify_transformer_engine\.py)|requirements\.txt)$|^docker/patch/'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Docker PRs: build the multi-arch image first and run every suite inside it.
+  # Always runs: with nothing to build every step is a no-op and it stays off the
+  # GPU fleet.
+  docker-build:
+    needs: [docker-paths]
+    if: always() && !cancelled()
+    runs-on: ${{ fromJSON((needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository) && '["h200", "2gpu"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 180
+    outputs:
+      built: ${{ steps.build.outputs.built || 'false' }}
+    env:
+      # Forks cannot push to the registry, so they keep the released image.
+      BUILD: ${{ needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - name: Checkout repository
+        if: env.BUILD == 'true'
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        if: env.BUILD == 'true'
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+      - name: Install Python + dependencies
+        if: env.BUILD == 'true'
+        run: |
+          apt-get update && apt-get install -y python3 python3-pip
+          pip3 install --break-system-packages typer
+      - name: Login to Docker Hub
+        if: env.BUILD == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push PR tag
+        id: build
+        if: env.BUILD == 'true'
+        run: |
+          python3 docker/build.py --variant cu13 --image-tag custom \
+            --custom-tag pr-${{ github.event.pull_request.number }} --push
+          echo "built=true" >> "$GITHUB_OUTPUT"
+      - name: Nothing to build
+        if: env.BUILD != 'true'
+        run: echo "No docker-relevant changes; suites use the released image."
+
+  # No `if:` guard: a real build failure must stop the suites rather than run them
+  # against a stale image.
   resolve-ci-image:
+    needs: [docker-build]
     runs-on: ubuntu-latest
     outputs:
       container_image: ${{ steps.resolve.outputs.container_image }}
@@ -81,8 +159,11 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body || '' }}
           INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+          DOCKER_BUILT: ${{ needs.docker-build.outputs.built }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
           CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
+          [ -z "$CI_IMAGE_TAG" ] && [ "$DOCKER_BUILT" = "true" ] && CI_IMAGE_TAG="pr-${PR_NUMBER}"
           if [ -n "$PR_BODY" ]; then
             PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
             [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"

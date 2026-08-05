@@ -63,6 +63,10 @@ Cadence is independent of labels: `nightly=True` makes a registration nightly-on
 
 So if your test is gated and you don't see it run, add the matching `run-ci-<label>` label to your PR. To force the full suite regardless of labels, a maintainer can add `run-ci-all`. Valid labels live in `tests/ci/labels.py`; using one outside that list is a hard error at collection time.
 
+### First PR from a fork: CI waits for approval
+
+Until your first PR merges, GitHub holds every CI run of your fork PR behind a maintainer's "Approve and run" — after **every** push. There is no separate trust flag: any `run-ci-*` label a maintainer adds (the same labels that select tests) also approves the held runs, for that push and each one after. Removing the labels restores manual approval.
+
 ## When CI fails: yours or the infra?
 
 Open the failing job and read the log first. Most failures fall cleanly into one of two buckets.

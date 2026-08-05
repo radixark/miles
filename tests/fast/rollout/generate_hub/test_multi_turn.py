@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -8,7 +10,6 @@ import pybase64
 import pytest
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
-
 
 from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
@@ -22,7 +23,7 @@ _ = generation_env, SAMPLE_TOOLS, TwoTurnStub, ThreeTurnStub
 
 
 def is_agentic_variant(variant: str) -> bool:
-    return variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples")
+    return variant == "agentic_tool_call"
 
 
 # ------------------------------------ fixtures and consts ----------------------------------------
@@ -33,14 +34,7 @@ DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 TOKENIZER = load_tokenizer(MODEL_NAME, trust_remote_code=True)
 
 
-@pytest.fixture(
-    params=[
-        "multi_turn_single_sample",
-        "multi_turn_multi_samples",
-        "agentic_tool_call_single_sample",
-        "agentic_tool_call_multi_samples",
-    ]
-)
+@pytest.fixture(params=["multi_turn", "agentic_tool_call"])
 def variant(request):
     return request.param
 
@@ -127,9 +121,9 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
         # Session server populates diagnostic metadata (token IDs,
-        # trim config, mismatch analysis) that varies with mock setup.
-        # Strip these before comparing sample structure.
-        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens"):
+        # trim config, mismatch analysis, dashboard lifecycle timing) that
+        # varies with mock setup. Strip these before comparing structure.
+        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens", "lifecycle"):
             actual_partial.metadata.pop(key, None)
         assert actual_partial == expected_item.partial_sample
 
@@ -163,6 +157,7 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "logprobs": True,
         "return_meta_info": True,
         "no_stop_trim": False,
+        "chat_template_kwargs": {"clear_thinking": False},
         **extra,
     }
 
@@ -233,45 +228,45 @@ class TestBasicMultiTurn:
                 expected_request(S.FIRST_PROMPT_TOKEN_IDS),
                 expected_request(S.SECOND_PROMPT_TOKEN_IDS),
             ]
-        if variant in ("multi_turn_single_sample", "agentic_tool_call_single_sample"):
-            full_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE + S.SECOND_RESPONSE
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[
-                        expected_chunk(S.FIRST_RESPONSE, 1),
-                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
-                        expected_chunk(S.SECOND_RESPONSE, 1),
-                    ],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=full_response,
-                        response_length=token_len(full_response),
-                    ),
+        full_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE + S.SECOND_RESPONSE
+        expected = [
+            ExpectedSampleInfo(
+                chunks=[
+                    expected_chunk(S.FIRST_RESPONSE, 1),
+                    expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                    expected_chunk(S.SECOND_RESPONSE, 1),
+                ],
+                partial_sample=expected_partial_sample(
+                    prompt=S.PROMPT,
+                    response=full_response,
+                    response_length=token_len(full_response),
                 ),
-            ]
-        else:
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.FIRST_RESPONSE,
-                        response_length=token_len(S.FIRST_RESPONSE),
-                    ),
-                ),
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.SECOND_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.SECOND_RESPONSE,
-                        response_length=token_len(S.SECOND_RESPONSE),
-                    ),
-                ),
-            ]
+            ),
+        ]
         verify_samples(result.sample, expected)
 
 
 class TestExitConditions:
+    @pytest.mark.parametrize(
+        "generation_env",
+        [{"args_kwargs": {"extra_argv": ["--save-debug-trajectory-data", "/unused/{rollout_id}.jsonl"]}}],
+        indirect=True,
+    )
+    def test_conversation_metadata_records_turns(self, variant, generation_env):
+        if variant != "multi_turn":
+            pytest.skip("conversation recording asserted once, on the engine multi-turn path")
+        generation_env.mock_server.process_fn = TwoTurnStub.process_fn
+
+        S = TwoTurnStub
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        messages = result.sample.metadata["messages"]
+        # prompt message + turn-1 assistant + its two tool results + turn-2 assistant
+        assert [m["role"] for m in messages] == ["user", "assistant", "tool", "tool", "assistant"]
+        assert messages[1]["content"] == S.FIRST_RESPONSE
+        assert {m["name"] for m in messages[2:4]} == {"get_year", "get_temperature"}
+        assert messages[4]["content"] == S.SECOND_RESPONSE
+
     def test_partial_rollout_not_supported(self, variant, generation_env):
         if is_agentic_variant(variant):
             pytest.skip("agentic_tool_call does not check partial_rollout flag")
@@ -347,7 +342,7 @@ class TestExitConditions:
             assert _strip_pretokenized(result.requests) == [expected_openai_request(S.OPENAI_MESSAGES_FIRST_TURN)]
         else:
             assert result.requests == [expected_request(S.FIRST_PROMPT_TOKEN_IDS)]
-        if variant == "multi_turn_single_sample":
+        if variant == "multi_turn":
             expected = [
                 ExpectedSampleInfo(
                     chunks=[
@@ -384,17 +379,14 @@ class TestRespectMaxContextLen:
             pytest.skip("TODO: implement")
         result = _run_generate(variant, generation_env, make_sample(prompt=SINGLE_TURN_PROMPT))
         assert result.requests == []
-        if variant == "multi_turn_single_sample":
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[],
-                    partial_sample=expected_partial_sample(
-                        prompt=SINGLE_TURN_PROMPT, response="", response_length=0, status=Sample.Status.TRUNCATED
-                    ),
-                )
-            ]
-        else:
-            expected = []
+        expected = [
+            ExpectedSampleInfo(
+                chunks=[],
+                partial_sample=expected_partial_sample(
+                    prompt=SINGLE_TURN_PROMPT, response="", response_length=0, status=Sample.Status.TRUNCATED
+                ),
+            )
+        ]
         verify_samples(result.sample, expected)
 
     @pytest.mark.parametrize(
@@ -419,34 +411,21 @@ class TestRespectMaxContextLen:
         result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
 
         assert result.requests == [expected_request(S.FIRST_PROMPT_TOKEN_IDS)]
-        if variant == "multi_turn_single_sample":
-            partial_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[
-                        expected_chunk(S.FIRST_RESPONSE, 1),
-                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
-                    ],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=partial_response,
-                        response_length=token_len(partial_response),
-                        status=Sample.Status.TRUNCATED,
-                    ),
+        partial_response = S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE
+        expected = [
+            ExpectedSampleInfo(
+                chunks=[
+                    expected_chunk(S.FIRST_RESPONSE, 1),
+                    expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                ],
+                partial_sample=expected_partial_sample(
+                    prompt=S.PROMPT,
+                    response=partial_response,
+                    response_length=token_len(partial_response),
+                    status=Sample.Status.TRUNCATED,
                 ),
-            ]
-        else:
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.FIRST_RESPONSE,
-                        response_length=token_len(S.FIRST_RESPONSE),
-                        status=Sample.Status.TRUNCATED,
-                    ),
-                ),
-            ]
+            ),
+        ]
         verify_samples(result.sample, expected)
 
     @pytest.mark.parametrize(
@@ -497,57 +476,25 @@ class TestThreeTurn:
                 expected_request(S.SECOND_PROMPT_TOKEN_IDS),
                 expected_request(S.THIRD_PROMPT_TOKEN_IDS),
             ]
-        if variant in ("multi_turn_single_sample", "agentic_tool_call_single_sample"):
-            full_response = (
-                S.FIRST_RESPONSE
-                + S.FIRST_TOOL_RESPONSE
-                + S.SECOND_RESPONSE
-                + S.SECOND_TOOL_RESPONSE
-                + S.THIRD_RESPONSE
-            )
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[
-                        expected_chunk(S.FIRST_RESPONSE, 1),
-                        expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
-                        expected_chunk(S.SECOND_RESPONSE, 1),
-                        expected_chunk(S.SECOND_TOOL_RESPONSE, 0),
-                        expected_chunk(S.THIRD_RESPONSE, 1),
-                    ],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=full_response,
-                        response_length=token_len(full_response),
-                    ),
+        full_response = (
+            S.FIRST_RESPONSE + S.FIRST_TOOL_RESPONSE + S.SECOND_RESPONSE + S.SECOND_TOOL_RESPONSE + S.THIRD_RESPONSE
+        )
+        expected = [
+            ExpectedSampleInfo(
+                chunks=[
+                    expected_chunk(S.FIRST_RESPONSE, 1),
+                    expected_chunk(S.FIRST_TOOL_RESPONSE, 0),
+                    expected_chunk(S.SECOND_RESPONSE, 1),
+                    expected_chunk(S.SECOND_TOOL_RESPONSE, 0),
+                    expected_chunk(S.THIRD_RESPONSE, 1),
+                ],
+                partial_sample=expected_partial_sample(
+                    prompt=S.PROMPT,
+                    response=full_response,
+                    response_length=token_len(full_response),
                 ),
-            ]
-        else:
-            expected = [
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.FIRST_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.FIRST_RESPONSE,
-                        response_length=token_len(S.FIRST_RESPONSE),
-                    ),
-                ),
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.SECOND_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.SECOND_RESPONSE,
-                        response_length=token_len(S.SECOND_RESPONSE),
-                    ),
-                ),
-                ExpectedSampleInfo(
-                    chunks=[expected_chunk(S.THIRD_RESPONSE, 1)],
-                    partial_sample=expected_partial_sample(
-                        prompt=S.PROMPT,
-                        response=S.THIRD_RESPONSE,
-                        response_length=token_len(S.THIRD_RESPONSE),
-                    ),
-                ),
-            ]
+            ),
+        ]
         verify_samples(result.sample, expected)
 
 
@@ -558,6 +505,10 @@ class TestRoutedExpertsMultiTurn:
             {
                 "args_kwargs": {
                     "use_rollout_routing_replay": True,
+                    # Must be in args BEFORE the session server starts: the R3
+                    # decode now runs inside the worker during sample assembly.
+                    "num_layers": 2,
+                    "moe_router_topk": 4,
                 }
             }
         ],
@@ -565,23 +516,20 @@ class TestRoutedExpertsMultiTurn:
     )
     def test_two_turns_routed_experts(self, variant, generation_env):
         S = TwoTurnStub
-        num_layers, moe_router_topk = 2, 4
-        generation_env.args.num_layers = num_layers
-        generation_env.args.moe_router_topk = moe_router_topk
+        num_layers, moe_router_topk = generation_env.args.num_layers, generation_env.args.moe_router_topk
         if is_agentic_variant(variant):
             tito = get_tito_tokenizer(
                 TOKENIZER,
                 # Note: tokenizer_type needs to match MODEL_NAME
                 tokenizer_type=TITOTokenizerType.QWEN3,
-                allowed_append_roles=["tool"],
             )
-            first_prompt_token_ids = tito.render_messages(
+            first_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_FIRST_TURN,
                 tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
                 tokenize=True,
             )
-            second_prompt_token_ids = tito.render_messages(
+            second_prompt_token_ids = tito.apply_chat_template(
                 S.OPENAI_MESSAGES_SECOND_TURN_FROM_CLIENT,
                 tools=SAMPLE_TOOLS,
                 add_generation_prompt=True,
@@ -645,7 +593,7 @@ class TestRoutedExpertsMultiTurn:
         assert len(sample.tokens) - 1 == second_routed_experts.shape[0]
 
 
-_AGENTIC_VARIANTS = ["agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"]
+_AGENTIC_VARIANTS = ["agentic_tool_call"]
 _AGENT_METADATA = {"reward": 1.0, "exit_status": "Submitted", "eval_report": {"passed": True}}
 
 
@@ -721,6 +669,37 @@ class TestAgentMetadata:
             assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
 
 
+class TestAgentCollectionFailure:
+    @pytest.fixture(params=_AGENTIC_VARIANTS)
+    def variant(self, request):
+        return request.param
+
+    def test_collect_timeout_aborts_sample_but_other_errors_propagate(
+        self, variant, generation_env, monkeypatch, caplog
+    ):
+        collect_error = asyncio.TimeoutError()
+
+        async def fail_collect(_tracer, _input_sample, *, max_seq_len):
+            raise collect_error
+
+        monkeypatch.setattr(
+            "miles.rollout.generate_utils.openai_endpoint_utils.OpenAIEndpointTracer.collect_samples",
+            fail_collect,
+        )
+        input_sample = make_sample(prompt=TwoTurnStub.PROMPT)
+        with caplog.at_level(logging.WARNING):
+            result = _run_generate(variant, generation_env, input_sample)
+
+        assert isinstance(result.sample, Sample)
+        assert result.sample.status == Sample.Status.ABORTED
+        assert input_sample.status == Sample.Status.PENDING
+        assert "Timed out collecting samples" in caplog.text
+
+        collect_error = RuntimeError("assembly failed")
+        with pytest.raises(RuntimeError, match="assembly failed"):
+            _run_generate(variant, generation_env, make_sample(prompt=TwoTurnStub.PROMPT))
+
+
 class TestAgentNoRecords:
     """When agent makes no model calls, generate should return an ABORTED sample."""
 
@@ -760,6 +739,5 @@ class TestAgentNoRecords:
 
         SingletonMeta.clear_all_instances()
 
-        samples = listify(result.sample)
-        assert len(samples) == 1
-        assert samples[0].status == Sample.Status.ABORTED
+        assert isinstance(result.sample, Sample)
+        assert result.sample.status == Sample.Status.ABORTED

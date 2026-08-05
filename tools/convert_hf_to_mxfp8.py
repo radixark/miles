@@ -11,11 +11,9 @@ Supported input checkpoint types:
 import argparse
 import gc
 import json
-import logging
 import os
 import re
 import shutil
-from functools import partial
 
 
 import safetensors
@@ -24,16 +22,8 @@ import torch
 from sglang.srt.layers.quantization.fp8_utils import block_quant_dequant
 from tqdm import tqdm
 
-try:
-    from flashinfer import mxfp8_quantize as flashinfer_mxfp8_quantize
-
-    mxfp8_quantize = partial(flashinfer_mxfp8_quantize, is_sf_swizzled_layout=False)
-except ImportError:
-    logger = logging.getLogger(__name__)
-    logger.warning("FlashInfer mxfp8_quantize not available; falling back to Triton.")
-    from sglang.srt.layers.quantization.fp8_utils import mxfp8_group_quantize
-
-    mxfp8_quantize = mxfp8_group_quantize
+from miles.utils.mxfp8 import MXFP8_GROUP_SIZE
+from miles.utils.mxfp8 import mxfp8_quantize as quantize_mxfp8
 
 
 SKIP_WEIGHT_SUBSTRINGS = (
@@ -45,10 +35,14 @@ SKIP_WEIGHT_SUBSTRINGS = (
     "lm_head",
     "eh_proj",
     "weights_proj",
+    "head.",
+    "wo_a",
+    "ffn.gate.",
+    "compressor.",
 )
 
 SOURCE_FP8_BLOCK_SIZE = [128, 128]
-TARGET_MXFP8_BLOCK_SIZE = [1, 32]
+TARGET_MXFP8_BLOCK_SIZE = [1, MXFP8_GROUP_SIZE]
 SOURCE_FP8_SCALE_KEY_SUFFIX = ".weight_scale_inv"
 SOURCE_FP8_DTYPES = (torch.float8_e4m3fn,) + ((torch.float8_e4m3fnuz,) if hasattr(torch, "float8_e4m3fnuz") else ())
 
@@ -144,25 +138,6 @@ def should_quantize(
     if weight.shape[-1] % 32 != 0:
         return False
     return True
-
-
-def quantize_mxfp8(weight: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Mirror sglang _quantize_and_swizzle_with_triton_kernel but do not swizzle scales.
-    Returns:
-      qweight: same shape as input, dtype float8_e4m3fn
-      scale:  shape = (*weight.shape[:-1], weight.shape[-1] // 32), dtype uint8
-    """
-    weight = weight.contiguous()
-    k = weight.shape[-1]
-    if k % 32 != 0:
-        raise ValueError(f"Last dim {k} must be divisible by 32 for MXFP8.")
-
-    weight_flat = weight.view(-1, k).contiguous()
-    qweight, scale = mxfp8_quantize(weight_flat)
-    qweight = qweight.view_as(weight)
-    scale = scale.view(*weight.shape[:-1], k // 32).contiguous()
-    return qweight, scale
 
 
 class ConversionResult:

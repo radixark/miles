@@ -77,10 +77,13 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
     test runs iff it is cadence-eligible and declares no labels (always-run)
     or any of its labels is in the effective include set.
 
-    Broad scopes are large include sets: `run-ci-all` includes every registered
-    label, nightly cadence everything except `ft-long`, and `run-ci-image`
-    everything except `long`, `ft-short`, and `ft-long`. Branch order encodes
-    the precedence `run-ci-all` > nightly > `run-ci-image`.
+    Broad scopes are large include sets:
+
+    - `run-ci-all` includes every registered label.
+    - Nightly cadence excludes `long` and `ft-long`.
+    - `run-ci-image` excludes `long`, `ft-short`, and `ft-long`.
+
+    Branch order encodes the precedence `run-ci-all` > nightly > `run-ci-image`.
 
     Explicitly requested `run-ci-<x>` labels are unioned in last, so an
     explicit request always wins over a scope subtraction. A subtraction is
@@ -96,7 +99,7 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
     if "run-ci-all" in raw_labels:
         scope = set(KNOWN_LABELS)
     elif cadence == NIGHTLY_CADENCE:
-        scope = set(KNOWN_LABELS) - {"ft-long"}
+        scope = set(KNOWN_LABELS) - {"long", "ft-long"}
     elif "run-ci-image" in raw_labels:
         scope = set(KNOWN_LABELS) - {"long", "ft-short", "ft-long"}
     else:

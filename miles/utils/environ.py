@@ -14,6 +14,20 @@ def enable_experimental_rollout_refactor() -> bool:
     return result
 
 
+def default_fp8_block_scaling_fp32_scales() -> str:
+    """Default for NVTE_FP8_BLOCK_SCALING_FP32_SCALES, decided by hardware.
+
+    On Blackwell (SM100+), TE emulates the blockwise FP8 recipe with MXFP8,
+    which requires power-of-two scales, so FP32 scales must stay disabled.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return "1"
+    major, _minor = torch.cuda.get_device_capability()
+    return "0" if major >= 10 else "1"
+
+
 _printed_experimental_ft_trainer = False
 
 

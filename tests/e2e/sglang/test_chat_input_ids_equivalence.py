@@ -3,20 +3,30 @@ import os
 
 import pytest
 import requests
+from huggingface_hub import snapshot_download
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.sglang.utils.sglang_server import start_sglang_server
 from transformers import AutoTokenizer
 
 register_cuda_ci(est_time=120, suite="stage-c-4-gpu-h200", labels=["sglang"])
 
-MODEL_PATH = os.environ.get("SGLANG_E2E_MODEL_PATH", "Qwen/Qwen3-0.6B")
+DEFAULT_MODEL_ID = "Qwen/Qwen3-0.6B"
+DEFAULT_MODEL_PATH = "/root/models/Qwen3-0.6B"
+MODEL_PATH_OVERRIDE = os.environ.get("SGLANG_E2E_MODEL_PATH")
+MODEL_PATH = MODEL_PATH_OVERRIDE if MODEL_PATH_OVERRIDE is not None else DEFAULT_MODEL_PATH
 SEED = 1234
 MAX_NEW_TOKENS = 100
 LOGPROB_TOL = 1e-6
 
 
+def _prepare_model() -> None:
+    if MODEL_PATH_OVERRIDE is None:
+        snapshot_download(DEFAULT_MODEL_ID, local_dir=DEFAULT_MODEL_PATH)
+
+
 @pytest.fixture(scope="module")
 def sglang_server():
+    _prepare_model()
     server = start_sglang_server(model_path=MODEL_PATH)
     try:
         yield server
@@ -108,4 +118,4 @@ def _post_chat(base_url: str, messages: list[dict]) -> dict:
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    raise SystemExit(pytest.main([__file__, "-v"]))

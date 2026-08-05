@@ -4,8 +4,8 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"])
-register_rocm_ci(est_time=360, suite="stage-c-8-gpu-mi350", labels=["short"])
+register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "mooncake"])
+register_rocm_ci(est_time=360, suite="stage-c-8-gpu-mi350", labels=["short", "mooncake"])
 
 FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 
@@ -103,6 +103,7 @@ def execute():
 
     train_args = (
         f"{ckpt_args} "
+        f"{U.get_mooncake_object_store_args()} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
@@ -119,6 +120,7 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
+        before_ray_job_submit=U.start_mooncake_master,
         extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 

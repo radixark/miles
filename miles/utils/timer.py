@@ -16,16 +16,26 @@ class Timer(metaclass=SingletonMeta):
     def __init__(self):
         self.timers = {}
         self.start_time = {}
+        # observers called sink(name, t0, t1) on end(); an optional
+        # sink.begin(name, t0) also hears starts. Registered by the dashboard.
+        self.event_sinks = []
 
     def start(self, name):
         assert name not in self.start_time, f"Timer {name} already started."
         self.start_time[name] = time()
+        for sink in self.event_sinks:
+            begin = getattr(sink, "begin", None)
+            if callable(begin):
+                begin(name, self.start_time[name])
         if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
             logger.info(f"Timer {name} start")
 
     def end(self, name):
         assert name in self.start_time, f"Timer {name} not started."
-        elapsed_time = time() - self.start_time[name]
+        start_time = self.start_time[name]
+        elapsed_time = time() - start_time
+        for sink in self.event_sinks:
+            sink(name, start_time, start_time + elapsed_time)
         self.add(name, elapsed_time)
         del self.start_time[name]
         if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:

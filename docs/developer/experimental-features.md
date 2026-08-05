@@ -63,15 +63,12 @@ Most RL-level flags carry over unchanged. Backend-specific differences:
 ```bash
 export WANDB_API_KEY=<key>
 
-# Model + data
-hf download Qwen/Qwen3-4B                                       --local-dir /root/Qwen3-4B
-hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024              --local-dir /root/aime-2024
-
 # Code
 git clone https://github.com/radixark/miles.git && cd miles
 pip install -e . --no-deps
 
-# Launch — no conversion step
-bash scripts/run-qwen3-4B-fsdp.sh
+# Launch — downloads model + datasets itself, no conversion step
+python3 scripts/run_qwen3_0_6b_fsdp.py
 ```
+
+Per-model launchers with the same recipe shape: `scripts/run_qwen3_0_6b_fsdp.py`, `scripts/run_nemotron_3_nano_4b_fsdp.py`, `scripts/run_qwen3_30b_a3b_fsdp.py`.

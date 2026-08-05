@@ -6,13 +6,12 @@ import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(
     est_time=600,
-    suite="stage-c-8-gpu-h100",
+    suite="stage-c-2-gpu-h200",
     labels=["fsdp"],
-    disabled="FSDP backend has known issues, not actively maintained",
 )
 
 ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
-NUM_GPUS = 8
+NUM_GPUS = 2
 
 MODEL_NAME = "Qwen3-4B"
 
@@ -76,7 +75,7 @@ def execute():
         "--sglang-decode-log-interval 1000 "
         "--sglang-enable-metrics "
         "--sglang-enable-deterministic-inference "
-        "--sglang-rl-on-policy-target fsdp "
+        "--sglang-true-on-policy-contract qwen3_dense_true_on_policy_v1 "
         "--sglang-attention-backend fa3 "
         "--attn-implementation flash_attention_3 "
         "--deterministic-mode "

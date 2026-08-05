@@ -43,15 +43,14 @@ def make_router_env(
     hf_checkpoint: str,
     chat_template_path: str | None,
     tito_model: str,
-    allowed_append_roles: list[str],
 ):
     args = SimpleNamespace(
         miles_router_timeout=30,
         hf_checkpoint=hf_checkpoint,
         chat_template_path=chat_template_path,
         tito_model=tito_model,
-        tito_allowed_append_roles=allowed_append_roles,
         use_rollout_routing_replay=False,
+        sglang_speculative_algorithm=None,
     )
     session_server = SessionServer(args, backend_url=backend.url)
 
@@ -81,7 +80,6 @@ def compute_local_session_mismatch(
     tokenizer,
     *,
     tito_model: str,
-    allowed_append_roles: list[str],
     messages: list[dict[str, Any]],
     accumulated_token_ids: list[int],
     tools: list[dict[str, Any]] | None,
@@ -89,7 +87,6 @@ def compute_local_session_mismatch(
     comparator = get_tito_tokenizer(
         tokenizer,
         tokenizer_type=tito_model,
-        allowed_append_roles=allowed_append_roles,
     ).create_comparator()
     expected_ids = apply_chat_template(
         messages,

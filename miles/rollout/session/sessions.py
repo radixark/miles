@@ -4,6 +4,7 @@ Thin layer: converts each HTTP request to primitive inputs, calls
 ``SessionCore``. All session/TITO logic lives in ``core``.
 """
 
+import json
 import logging
 
 from fastapi import Request
@@ -34,7 +35,6 @@ def setup_session_routes(app, backend, args):
         tokenizer,
         tokenizer_type=getattr(args, "tito_model", "default"),
         chat_template_kwargs=getattr(args, "apply_chat_template_kwargs", None),
-        allowed_append_roles=getattr(args, "tito_allowed_append_roles", None),
     )
 
     registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
@@ -69,6 +69,17 @@ def setup_session_routes(app, backend, args):
             query=request.url.query,
             headers=dict(request.headers),
             body=body,
+        )
+
+    @app.post("/sessions/{session_id}/samples")
+    async def collect_samples(request: Request, session_id: str):
+        # Starlette matches routes in registration order; keep this before session_proxy.
+        # Parse here so malformed input is not reported as an assembly error (422).
+        body = await request.body()
+        params = json.loads(body) if body else {}
+        return await core.collect_samples(
+            session_id,
+            max_seq_len=params.get("max_seq_len"),
         )
 
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])

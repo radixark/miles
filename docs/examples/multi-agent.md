@@ -26,7 +26,7 @@ you can hack on it without pulling in MrlX's full dependency tree.
 ## Files
 
 ```text
-examples/multi_agent/
+examples/experimental/multi_agent/
 ├── agent_system.py                       # the agent state machine
 ├── prompts.py                            # role / system prompts
 ├── rollout_with_multi_agents.py          # custom rollout (calls agent_system)
@@ -37,7 +37,7 @@ examples/multi_agent/
 
 ```bash
 cd /root/miles
-bash examples/multi_agent/run-qwen3-30B-A3B-multi-agent.sh
+bash examples/experimental/multi_agent/run-qwen3-30B-A3B-multi-agent.sh
 ```
 
 ## Configuration
@@ -45,7 +45,7 @@ bash examples/multi_agent/run-qwen3-30B-A3B-multi-agent.sh
 ```python
 MULTI_AGENT_CONFIGS = {
     "custom_multi_agent_function_path":
-        "examples.multi_agent.agent_system.run_agent_system",
+        "examples.experimental.multi_agent.agent_system.run_agent_system",
     "num_parallel": 5,                  # parallel agent runs per prompt
     "incorrect_reward_weight": 0.8,     # weight on agent A's reward when wrong
     "correct_reward_weight": 1.2,       # weight on agent A's reward when right
@@ -60,7 +60,7 @@ trajectories, which empirically stabilizes early training when most attempts fai
 ```bash
 ROLLOUT_ARGS=(
    --custom-generate-function-path \
-       examples.multi_agent.rollout_with_multi_agents.generate_with_multi_agents
+       examples.experimental.multi_agent.rollout_with_multi_agents.generate_with_multi_agents
    --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt --label-key label
    --apply-chat-template --rollout-shuffle

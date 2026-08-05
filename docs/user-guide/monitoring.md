@@ -5,6 +5,9 @@ description: wandb, structured logs, profiling, and what to look at when somethi
 Miles emits per-rollout metrics to stdout and (optionally) Weights & Biases. SGLang and
 Ray write their own logs to their default directories.
 
+For per-GPU phase timelines and token level trajectory inspection, see the
+[Miles Dashboard](/user-guide/dashboard).
+
 ## What gets logged by default
 
 Each rollout iteration emits a structured row to stdout (illustrative shape — exact

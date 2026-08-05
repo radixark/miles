@@ -147,10 +147,7 @@ patches:
         append: |
           dumper.dump('pre_mlp_residual', residual, dims='t h # tp:replicated dp:=attn_dp')
           dumper.dump('pre_mlp_layernorm_output', hidden_states, dims='t h # tp:replicated')
-      - match: |
-          hidden_states = self.mlp(
-              hidden_states, forward_batch, should_allreduce_fusion, use_reduce_scatter
-          )
+      - match: "hidden_states = self.mlp(hidden_states, forward_batch)"
         append: "dumper.dump('mlp_output', hidden_states, dims='t h # tp:replicated')"
 
   # --- attention internals ---

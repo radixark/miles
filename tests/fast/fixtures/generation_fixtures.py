@@ -31,10 +31,8 @@ DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 VARIANT_TO_GENERATE_FN_PATH = {
     "old_sglang_rollout": "miles.rollout.sglang_rollout.generate",
     "single_turn": "miles.rollout.generate_hub.single_turn.generate",
-    "multi_turn_single_sample": "miles.rollout.generate_hub.multi_turn.generate",
-    "multi_turn_multi_samples": "miles.rollout.generate_hub.multi_turn.generate",
-    "agentic_tool_call_single_sample": "miles.rollout.generate_hub.agentic_tool_call.generate",
-    "agentic_tool_call_multi_samples": "miles.rollout.generate_hub.agentic_tool_call.generate",
+    "multi_turn": "miles.rollout.generate_hub.multi_turn.generate",
+    "agentic_tool_call": "miles.rollout.generate_hub.agentic_tool_call.generate",
 }
 
 
@@ -53,7 +51,7 @@ def extra_argv_for_variant(
         custom_generate_function_path or VARIANT_TO_GENERATE_FN_PATH[variant],
     ]
 
-    if variant in ("multi_turn_single_sample", "multi_turn_multi_samples"):
+    if variant == "multi_turn":
         argv += [
             "--generate-max-turns",
             str(generate_max_turns),
@@ -63,13 +61,9 @@ def extra_argv_for_variant(
             generate_execute_tool_function_path,
         ]
         argv += ["--generate-tool-call-parser", generate_tool_call_parser]
-        if variant == "multi_turn_multi_samples":
-            argv.append("--generate-multi-samples")
-    elif variant in ("agentic_tool_call_single_sample", "agentic_tool_call_multi_samples"):
+    elif variant == "agentic_tool_call":
         argv += ["--custom-agent-function-path", custom_agent_function_path]
-        argv += ["--use-session-server", "--tito-model", "qwen3", "--tito-allowed-append-roles", "tool"]
-        if variant == "agentic_tool_call_multi_samples":
-            argv.append("--generate-multi-samples")
+        argv += ["--use-session-server", "--tito-model", "qwen3"]
 
     return argv
 
@@ -157,6 +151,8 @@ def make_args(
     generate_execute_tool_function_path: str = "miles.utils.test_utils.mock_tools.execute_tool_call",
     rollout_max_context_len: int | None = None,
     chat_template_path: str | None = None,
+    num_layers: int | None = None,
+    moe_router_topk: int | None = None,
 ) -> Namespace:
     argv = [
         "pytest",
@@ -212,6 +208,14 @@ def make_args(
     with patch("sys.argv", argv):
         args = parse_args()
 
+    # R3 decode shape overrides — not CLI flags (derived from the model config
+    # in production). Applied here, before with_session_server copies args into
+    # the worker namespace, because sample assembly runs inside the worker.
+    if num_layers is not None:
+        args.num_layers = num_layers
+    if moe_router_topk is not None:
+        args.moe_router_topk = moe_router_topk
+
     init_http_client(args)
     return args
 
@@ -238,8 +242,14 @@ def with_session_server(
         hf_checkpoint=args.hf_checkpoint,
         chat_template_path=args.chat_template_path,
         tito_model=args.tito_model,
-        tito_allowed_append_roles=args.tito_allowed_append_roles,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
+        sglang_speculative_algorithm=args.sglang_speculative_algorithm,
+        # Sample assembly runs inside the server, so the R3 decode shape args
+        # must reach the server namespace (set them via args_kwargs BEFORE the
+        # server starts; assigning to the driver args afterwards has no effect).
+        num_layers=getattr(args, "num_layers", None),
+        moe_router_topk=getattr(args, "moe_router_topk", None),
+        save_debug_trajectory_data=getattr(args, "save_debug_trajectory_data", None),
         session_server_instance_id=instance_id,
     )
     session_server = SessionServer(server_args, backend_url=backend_url)

@@ -22,10 +22,11 @@ logger = logging.getLogger(__name__)
 class AtomicUpdateGroup:
     key: str
     suffixes: tuple[str, ...]
+    optional: bool = False
 
 
 def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
-    model_groups = _get_model_atomic_update_groups(model_name)
+    model_groups = _get_model_atomic_update_groups(args, model_name)
     if model_groups:
         return model_groups
     return _get_q_lora_atomic_update_groups(args)
@@ -46,8 +47,12 @@ def _get_q_lora_atomic_update_groups(args) -> list[AtomicUpdateGroup]:
     ]
 
 
-def _get_model_atomic_update_groups(model_name) -> list[AtomicUpdateGroup]:
+def _get_model_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
     model_name = model_name.lower()
+    if "inkling" in model_name:
+        from ..megatron_to_hf.inkling import get_inkling_atomic_update_groups
+
+        return get_inkling_atomic_update_groups(args)
     if "deepseekv4" in model_name:
         from ..megatron_to_hf.deepseekv4 import get_deepseek_v4_atomic_update_groups
 
@@ -103,7 +108,7 @@ def get_named_update_units(param_names: Sequence[str], atomic_update_groups) -> 
 
     for group in atomic_update_groups:
         assert (
-            group.key in matched_group_keys
+            group.optional or group.key in matched_group_keys
         ), f"Atomic update group {group.key} references no params matching suffixes {group.suffixes}"
 
     for (prefix, key), names in pending_groups.items():
@@ -138,6 +143,29 @@ def _gather_with_stride(
     return torch.cat(interleaved, dim=partition_dim)
 
 
+def is_routed_expert_param(name: str) -> bool:
+    """Whether a Megatron param name belongs to the routed (expert-parallel) experts.
+
+    Routed experts live under ".experts.", but shared experts may nest an inner
+    ModuleList (e.g. Inkling's "mlp.shared_experts.experts.N.") whose params are
+    regular-TP sharded and EP-replicated, so they must not match.
+    """
+    return ".experts." in name and ".shared_experts." not in name
+
+
+def _is_unmarked_grouped_expert_weight(name: str, param: torch.nn.Parameter) -> bool:
+    """TEGroupedLinear never marks its per-expert weight0..weightN, so Megatron fills in
+    the defaults (tensor_model_parallel=False, partition_dim=-1) and the tensor claims to
+    be unsharded. It is expert-TP sharded whenever etp > 1, so the gather must still run.
+    """
+    return (
+        is_routed_expert_param(name)
+        and ("linear_fc1.weight" in name or "linear_fc2.weight" in name)
+        and not param.tensor_model_parallel
+        and get_parallel_state().etp.size > 1
+    )
+
+
 def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, partition_dim: int) -> tuple[int, int]:
     """Validate partition_stride values for known parameter patterns.
 
@@ -147,9 +175,11 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
     """
     if "linear_fc1.weight" in name and args.swiglu:
         partition_stride = 2
+        if partition_dim < 0:
+            partition_dim = 0
     elif "linear_fc2.weight" in name:
         assert partition_stride == 1, f"Expected partition_stride=1 for {name}, got {partition_stride}"
-        if partition_dim == 0:
+        if partition_dim <= 0:
             partition_dim = 1
     else:
         assert partition_stride == 1, f"Expected partition_stride=1 for {name}, got {partition_stride}"
@@ -159,21 +189,27 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
 def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> torch.Tensor:
     """
     All-gather TP-sharded param to full tensor. expert_bias→param, non-TP/duplicated→param.data.
-    Uses expert-TP for ".experts.", else regular-TP. Handles strided partitioning via partition_stride.
+    Uses expert-TP for routed ".experts." (but NOT ".shared_experts." — those are split on the
+    REGULAR TP group like attention), else regular-TP. Handles strided partitioning via partition_stride.
     """
     if "expert_bias" in name:
         return param
 
     assert hasattr(param, "tensor_model_parallel"), f"{name} does not have tensor_model_parallel attribute"
-    if not param.tensor_model_parallel or getattr(param, "parallel_mode", None) == "duplicated":
+    if getattr(param, "parallel_mode", None) == "duplicated":
+        return param.data
+    if not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(name, param):
         return param.data
 
-    if ".experts." in name:
+    if is_routed_expert_param(name):
         tp_size = get_parallel_state().etp.size
         tp_group = get_parallel_state().etp.group
     else:
         tp_size = get_parallel_state().tp.size
         tp_group = get_parallel_state().tp.group
+
+    if tp_size <= 1:
+        return param.data
 
     param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
     dist.all_gather(param_partitions, param.data, group=tp_group)
@@ -203,17 +239,24 @@ def all_gather_params_async(
         if "expert_bias" in info.name:
             gather_tasks.append((info, param, None, None, None, None))
             handles.append(None)
-        elif not param.tensor_model_parallel or getattr(param, "parallel_mode", None) == "duplicated":
+        elif getattr(param, "parallel_mode", None) == "duplicated" or (
+            not param.tensor_model_parallel and not _is_unmarked_grouped_expert_weight(info.name, param)
+        ):
             gather_tasks.append((info, param.data, None, None, None, None))
             handles.append(None)
         else:
             # Start async all_gather
-            if ".experts." in info.name:
+            if is_routed_expert_param(info.name):
                 tp_size = get_parallel_state().etp.size
                 tp_group = get_parallel_state().etp.group
             else:
                 tp_size = get_parallel_state().tp.size
                 tp_group = get_parallel_state().tp.group
+
+            if tp_size <= 1:
+                gather_tasks.append((info, param.data, None, None, None, None))
+                handles.append(None)
+                continue
 
             param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
             handle = dist.all_gather(param_partitions, param.data, group=tp_group, async_op=True)
@@ -383,13 +426,24 @@ def collect_named_tensors_for_weight_transfer(
         convert_to_global_name,
         translate_gpu_to_cpu,
     ):
-        if is_expert is None or is_expert == (".experts." in name):
+        if is_expert is None or is_expert == is_routed_expert_param(name):
             yield name, tensor
 
 
-def begin_weight_update(rollout_engines: Sequence[ActorHandle]):
-    """Open a weight-update session on all rollout engines (restore packed weights)."""
-    ray.get([engine.begin_weight_update.remote() for engine in rollout_engines])
+def begin_weight_update(rollout_engines: Sequence[ActorHandle], selector: str = "all"):
+    """Open a weight-update session on the selected rollout engines (restore packed weights)."""
+    ray.get([engine.begin_weight_update.remote(selector=selector) for engine in rollout_engines])
+
+
+def weight_update_selector(args) -> str:
+    """Exclude the draft only when the trainer provably has no MTP block to send it."""
+    if (
+        getattr(args, "sglang_speculative_algorithm", None)
+        and not getattr(args, "mtp_num_layers", None)
+        and getattr(args, "megatron_to_hf_mode", "raw") != "bridge"
+    ):
+        return "target"
+    return "all"
 
 
 def end_weight_update(rollout_engines: Sequence[ActorHandle]):

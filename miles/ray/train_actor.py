@@ -11,6 +11,7 @@ import torch.distributed as dist
 
 import miles.utils.eval_config
 from miles.ray.ray_actor import RayActor
+from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.env_report import collect_and_print_node_env_report
@@ -71,6 +72,8 @@ class TrainRayActor(RayActor):
         # os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         # os.environ["LOCAL_RANK"] = str(ray.get_gpu_ids()[0])
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
+
+        object_store.init_instance(args)
 
     # TODO mv the args into ctor
     def init(self, args, role, with_ref=False, with_opd_teacher=False):
@@ -156,19 +159,19 @@ class TrainRayActor(RayActor):
         raise NotImplementedError
 
     @abc.abstractmethod
-    def train(self, rollout_id, rollout_data_ref):
+    def train(self, rollout_id, rollout_data_ref, external_data=None):
         raise NotImplementedError
 
     @abc.abstractmethod
     def save_model(self, rollout_id, force_sync=False):
         raise NotImplementedError
 
-    @abc.abstractmethod
-    def update_weights(self, info: "EnginesAndLock") -> None:
-        raise NotImplementedError
+    def export_hf(self, rollout_id: int, path: str) -> None:
+        """Export current weights as an HF checkpoint to ``path`` (eval snapshots)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 
     @abc.abstractmethod
-    def connect_actor_critic(self, critic_group):
+    def update_weights(self, info: "EnginesAndLock") -> None:
         raise NotImplementedError
 
     @abc.abstractmethod

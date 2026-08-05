@@ -53,7 +53,7 @@ Point `--hf-checkpoint` at it; SGLang autodetects the quantization at load time.
 
 QAT is currently driven by environment variables passed through Ray's runtime
 env rather than CLI flags. The canonical recipe is
-[`examples/low_precision/run-qwen3-30B-A3B-int4.sh`](https://github.com/radixark/miles/blob/main/examples/low_precision/run-qwen3-30B-A3B-int4.sh):
+[`examples/infra_features/low_precision/run-qwen3-30B-A3B-int4.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-30B-A3B-int4.sh):
 
 ```bash
 RUNTIME_ENV_JSON='{

@@ -287,12 +287,12 @@ Async rollout turns the cadence into two concurrent loops. A background worker k
 into a queue; the trainer drains the queue, steps, and syncs weights. Per-iteration
 wall time drops to roughly `max(rollout_time, train_time)`.
 
-Enable it with two changes to the launch script:
+Enable it with three changes to the launch script:
 
 ```diff
 - python3 train.py ...
-+ python3 train_async.py ...
-+   --rollout-function-path fully_async_rollout.generate_rollout_fully_async
++ MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 python3 train_async.py ...
++   --fully-async
 ```
 
 | Mode | Per-iteration latency | Throughput | When to use |

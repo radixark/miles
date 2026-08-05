@@ -9,7 +9,6 @@ CONFIG = ModelConfig(
     reasoning_parser="glm45",
     tool_call_parser="glm47",
     tito_model="glm47",
-    allowed_append_roles=("tool", "user", "system"),
     tp_size=4,
     # Lenient template: tool message is rendered without validating that the
     # preceding assistant carries a matching tool_call.id, so the APPEND_TOOL
