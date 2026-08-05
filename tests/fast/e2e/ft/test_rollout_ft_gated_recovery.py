@@ -45,9 +45,6 @@ class _FakeHealthChecker:
         self.status: TriState = TriState.TRUE
         self.started: bool = False
 
-    async def cancel_inflight_probe(self) -> None:
-        return None
-
     def start(self) -> None:
         self.started = True
 

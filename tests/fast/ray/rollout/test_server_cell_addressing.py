@@ -4,7 +4,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
 from miles.ray.rollout import server_cell as server_cell_module
-from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata, compute_nodes_per_engine
 from miles.utils.workers.worker_spec import HostAndPort
 
 pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
@@ -122,3 +122,14 @@ class TestComputeAddrInfo:
 
         assert addr_info.server_url == "http://[fd00::1]:30000"
         assert addr_info.gate_url == "http://[fd00::1]:13000"
+
+
+class TestComputeNodesPerEngine:
+    def test_an_engine_that_fits_inside_one_node_still_occupies_a_whole_node(self):
+        """Plain integer division would report zero nodes for every engine smaller than a node."""
+        assert compute_nodes_per_engine(num_gpus_per_engine=1, num_gpus_per_node=8) == 1
+        assert compute_nodes_per_engine(num_gpus_per_engine=8, num_gpus_per_node=8) == 1
+
+    def test_an_engine_spanning_several_nodes_reports_how_many_it_spans(self):
+        """A multi-node engine is launched once per node it covers, so the count must scale with it."""
+        assert compute_nodes_per_engine(num_gpus_per_engine=32, num_gpus_per_node=8) == 4

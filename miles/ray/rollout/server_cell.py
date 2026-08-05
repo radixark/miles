@@ -81,9 +81,6 @@ class ServerCell:
             "every cell must be disposed so its health checker task is stopped"
         )
 
-    async def cancel_inflight_health_probe(self) -> None:
-        await self._health_checker.cancel_inflight_probe()
-
     def cell_status(self) -> CellStatus:
         match self._state:
             case StateUninitialized() | StateInitializing():
