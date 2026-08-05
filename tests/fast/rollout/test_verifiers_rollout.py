@@ -169,6 +169,8 @@ def test_train_client_uses_local_tokenizer_with_inferred_renderer_identity(monke
 
 @pytest.mark.asyncio
 async def test_train_client_reports_unsupported_tool_renderer_as_configuration_error():
+    pytest.importorskip("renderers", minversion="0.1.8")
+
     class ProviderError(Exception):
         def __init__(self, message, *, status_code):
             super().__init__(message)
@@ -192,6 +194,8 @@ async def test_train_client_reports_unsupported_tool_renderer_as_configuration_e
 
 @pytest.mark.asyncio
 async def test_train_client_reports_unsupported_dialect_as_configuration_error():
+    pytest.importorskip("renderers", minversion="0.1.8")
+
     class ProviderError(Exception):
         def __init__(self, message, *, status_code):
             super().__init__(message)
@@ -216,6 +220,8 @@ async def test_train_client_reports_unsupported_dialect_as_configuration_error()
 @pytest.mark.parametrize(("method", "message"), [("relay", "streaming"), ("relay_aux", "auxiliary")])
 @pytest.mark.asyncio
 async def test_train_client_reports_unsupported_relay_paths_as_configuration_errors(method, message):
+    pytest.importorskip("renderers", minversion="0.1.8")
+
     class ProviderError(Exception):
         def __init__(self, text, *, status_code):
             super().__init__(text)
@@ -394,6 +400,8 @@ def test_group_reward_train_count_is_ignored_for_eval_only_runs():
 
 @pytest.mark.asyncio
 async def test_verifiers_episode_owns_group_reward_computation():
+    pytest.importorskip("verifiers", minversion="0.2.0")
+    pytest.importorskip("renderers", minversion="0.1.8")
     traces = [_trace(id="a", reward=0.0), _trace(id="b", reward=0.0)]
 
     class Episode:

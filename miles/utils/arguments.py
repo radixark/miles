@@ -2699,7 +2699,20 @@ def miles_validate_args(args):
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
 
-    if args.verifiers_config is not None:
+    if getattr(args, "verifiers_config", None) is not None:
+        if args.rollout_function_path is not None:
+            raise ValueError(
+                "--verifiers-config selects the Verifiers rollout function and cannot be combined "
+                f"with a custom --rollout-function-path ({args.rollout_function_path})."
+            )
+        if args.fully_async:
+            raise ValueError("--verifiers-config and --fully-async each select a rollout function; pass only one.")
+        if args.multi_lora_n_adapters:
+            raise ValueError(
+                "--verifiers-config is not supported with --multi-lora-n-adapters: multi-LoRA "
+                "requires the global prompt dataset and its own rollout function, both of which "
+                "Verifiers replaces."
+            )
         args.rollout_function_path = VERIFIERS_ROLLOUT_FUNCTION_PATH
         args.rollout_global_dataset = False
 

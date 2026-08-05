@@ -171,7 +171,6 @@
        "user-guide/dashboard",
        "user-guide/customization",
        "user-guide/rollout-endpoints",
-       "user-guide/verifiers",
        "user-guide/fully-async",
        "user-guide/agentic-chat-template",
        "user-guide/cli-reference"
@@ -183,7 +182,8 @@
       "pages": [
        "user-guide/harbor",
        "user-guide/openenv",
-       "user-guide/nemo-gym"
+       "user-guide/nemo-gym",
+       "user-guide/verifiers"
       ]
      }
     ]

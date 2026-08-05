@@ -23,6 +23,7 @@ where the environment itself comes from:
 | [NeMo-Gym](/user-guide/nemo-gym) | agent function |
 | [Strands Agents](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang) | generate function |
 | [τ-bench](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench) | generate function |
+| [Verifiers (Prime Intellect)](/user-guide/verifiers) | rollout function |
 
 Sandbox providers are a different axis: they provision the task containers
 *inside* a connector rather than occupying a rollout layer.

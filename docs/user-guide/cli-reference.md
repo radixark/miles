@@ -191,7 +191,7 @@ Sections mirror the launch-script argument groups.
 | `--rollout-stop` | str+ | – | Stop strings. |
 | `--rollout-stop-token-ids` | int+ | – | Stop token IDs. |
 
-### Rollout: Verifiers
+### Environment Integrations
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|

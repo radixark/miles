@@ -1,6 +1,6 @@
 ---
-title: Verifiers
-description: Train on Verifiers environments with Miles.
+title: Verifiers (Prime Intellect)
+description: Train on Prime Intellect Verifiers environments with Miles.
 ---
 
 Miles can train on a Verifiers environment in place of a prompt dataset. The

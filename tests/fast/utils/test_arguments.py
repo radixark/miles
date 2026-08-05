@@ -233,6 +233,27 @@ def test_verifiers_validation_rejects_custom_chat_template(tmp_path):
         miles_validate_args(args)
 
 
+def test_verifiers_validation_rejects_custom_rollout_function():
+    args = _parse_verifiers_args("--rollout-function-path", "my_module.generate_rollout")
+
+    with pytest.raises(ValueError, match="custom --rollout-function-path"):
+        miles_validate_args(args)
+
+
+def test_verifiers_validation_rejects_fully_async():
+    args = _parse_verifiers_args("--fully-async")
+
+    with pytest.raises(ValueError, match="each select a rollout function"):
+        miles_validate_args(args)
+
+
+def test_verifiers_validation_rejects_multi_lora():
+    args = _parse_verifiers_args("--multi-lora-n-adapters", "2")
+
+    with pytest.raises(ValueError, match="multi-LoRA"):
+        miles_validate_args(args)
+
+
 def test_sglang_parallel_sizes_keep_server_args_destinations():
     parser = add_sglang_arguments(argparse.ArgumentParser())
     args = parser.parse_args(
