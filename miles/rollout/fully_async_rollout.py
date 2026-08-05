@@ -18,7 +18,6 @@ rollout engines, pausing producer submissions for the duration of the
 
 import asyncio
 import logging
-import random
 import time
 from collections.abc import Callable, Iterator
 
@@ -95,7 +94,7 @@ class GroupBuffer:
     producer never blocks; an overflow evicts to ``on_evict`` (recycling the
     prompts into the data source) — first every group already beyond
     ``max_staleness`` (when configured and the engine version is known), then
-    one group at a time by ``_eviction_key``, ties broken randomly.
+    one group at a time by ``_eviction_key``, ties broken oldest-arrival-first.
 
     ``order`` picks the consumption end: ``"fifo"`` serves the oldest group,
     ``"lifo"`` the freshest. LIFO keeps training near on-policy without
@@ -122,11 +121,6 @@ class GroupBuffer:
         self.entered_groups = 0
         self.evicted_stale_groups = 0
         self.evicted_overflow_groups = 0
-
-    @property
-    def wants_weight_version(self) -> bool:
-        """Whether ``put`` can use ``current_version`` (threshold eviction active)."""
-        return self._evict_on_overflow and self._max_staleness is not None
 
     def qsize(self) -> int:
         return len(self._entries)
@@ -165,8 +159,7 @@ class GroupBuffer:
                     self._on_evict(prompt_group)
         while len(self._entries) > self._capacity:
             keys = [_eviction_key(group) for _, group in self._entries]
-            stalest = min(keys)
-            index = random.choice([i for i, key in enumerate(keys) if key == stalest])
+            index = keys.index(min(keys))
             self.evicted_overflow_groups += 1
             self._on_evict(self._entries.pop(index)[0])
 
@@ -277,7 +270,7 @@ class FullyAsyncRolloutFn:
         [prompt_group] = self.data_source.get_samples(1)
         return asyncio.create_task(self._generate_group(prompt_group))
 
-    async def _generate_group(self, prompt_group: list[Sample]) -> tuple[list[Sample], Group]:
+    async def _generate_group(self, prompt_group: list[Sample]) -> BufferEntry:
         """Return the submitted prompt group next to its result.
 
         A retry has to resubmit the prompt group: a generate function may expand one
@@ -303,7 +296,7 @@ class FullyAsyncRolloutFn:
                 # Without a capacity this blocks when the queue is full, pausing
                 # submission instead of growing the queue unboundedly; with
                 # --async-buffer-max-groups the buffer evicts by staleness instead.
-                version = await self._weight_version.get(self.args) if self._output.wants_weight_version else None
+                version = await self._weight_version.get(self.args)
                 await self._output.put(task.result(), current_version=version)
 
     # -------------------------- consumer --------------------------
@@ -411,10 +404,9 @@ class FullyAsyncRolloutFn:
             metrics["rollout/fully_async/avg_staleness"] = sum(staleness_values) / len(staleness_values)
             metrics["rollout/fully_async/max_staleness"] = max(staleness_values)
         if (stats := buffer.staleness_stats(await self._weight_version.get(args))) is not None:
-            (
-                metrics["rollout/fully_async/buffer_avg_staleness"],
-                metrics["rollout/fully_async/buffer_max_staleness"],
-            ) = stats
+            avg, worst = stats
+            metrics["rollout/fully_async/buffer_avg_staleness"] = avg
+            metrics["rollout/fully_async/buffer_max_staleness"] = worst
 
         return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
