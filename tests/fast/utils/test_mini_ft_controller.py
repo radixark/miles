@@ -9,14 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from miles.utils.ft_utils.control_server.models import (
-    Cell,
-    CellCondition,
-    CellMetadata,
-    CellSpec,
-    CellStatus,
-    TriState,
-)
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.ft_utils.mini_ft_controller import (
     CellHealthStatus,
     _CellSnapshot,
@@ -120,7 +113,7 @@ def _build_cell_list_json(cells: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _create_runner() -> _MiniFTControllerRunner:
     return _MiniFTControllerRunner(
-        control_server_url="http://127.0.0.1:8080",
+        api_server_url="http://127.0.0.1:8080",
         poll_interval=10.0,
         resume_delay=5.0,
     )
@@ -655,13 +648,13 @@ class TestRunnerPatchCell:
 
 
 class TestArgumentValidation:
-    def test_requires_control_server_port(self) -> None:
-        """mini_ft_controller_enable=True + control_server_port=0 → error."""
+    def test_requires_api_server_port(self) -> None:
+        """mini_ft_controller_enable=True + api_server_port=0 → error."""
         from miles.utils.arguments import miles_validate_args
 
         args = argparse.Namespace(
             mini_ft_controller_enable=True,
-            control_server_port=0,
+            api_server_port=0,
             use_fault_tolerance=False,
             ft_components=None,
             eval_datasets=None,
@@ -672,5 +665,5 @@ class TestArgumentValidation:
             run_uuid=None,
         )
 
-        with pytest.raises(ValueError, match="--mini-ft-controller-enable requires --control-server-port"):
+        with pytest.raises(ValueError, match="--mini-ft-controller-enable requires --api-server-port"):
             miles_validate_args(args)

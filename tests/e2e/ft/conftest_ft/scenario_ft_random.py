@@ -14,7 +14,7 @@ from tests.e2e.ft.conftest_ft.execution import (
     prepare,
     run_training,
 )
-from tests.e2e.ft.conftest_ft.fault_injection import CONTROL_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
+from tests.e2e.ft.conftest_ft.fault_injection import API_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
 from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigure_events
@@ -34,7 +34,7 @@ def run_ci(
     """Random failure soak test.
 
     Starts a background thread that injects faults at random intervals via the
-    control server HTTP API. The mini FT controller auto-recovers; the test passes
+    api server HTTP API. The mini FT controller auto-recovers; the test passes
     if training completes without hanging.
 
     Doubles as the per-mode CI entry point: a CI file calls ``run_ci(mode)`` (defaults);
@@ -54,7 +54,7 @@ def run_ci(
             ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=debug_rollout_data_dir
         )
         + get_ft_args(ft_mode)
-        + f"--control-server-port {CONTROL_SERVER_PORT} "
+        + f"--api-server-port {API_SERVER_PORT} "
         + "--mini-ft-controller-enable "
     )
 
