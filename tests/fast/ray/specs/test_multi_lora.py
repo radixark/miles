@@ -6,6 +6,7 @@ from miles.ray.multi_lora.controller import MultiLoRAController
 from miles.ray.specs.multi_lora import (
     MULTI_LORA_CONTROLLER_POOL_ID,
     MULTI_LORA_CONTROLLER_WORKER_CLASS,
+    create_multi_lora_controller_handle,
     multi_lora_controller_cell_id,
     multi_lora_controller_worker_name,
     spec_multi_lora_controller,
@@ -17,6 +18,42 @@ from miles.utils.workers.ray_worker_manager import bootstrapped_worker_class
 
 def _args(multi_lora: bool) -> SimpleNamespace:
     return SimpleNamespace(multi_lora=multi_lora)
+
+
+class _FakeProvider:
+    def __init__(self, *, is_controller_pool: bool, expected_handle: object, other_handle: object) -> None:
+        self.is_controller_pool = is_controller_pool
+        self.expected_handle = expected_handle
+        self.other_handle = other_handle
+
+    def get_handle(self, worker_name: str) -> object:
+        if self.is_controller_pool and worker_name == multi_lora_controller_worker_name():
+            return self.expected_handle
+        return self.other_handle
+
+
+class _FakeCapability:
+    def __init__(self, *, expected_handle: object, other_handle: object) -> None:
+        self.expected_handle = expected_handle
+        self.other_handle = other_handle
+
+    def static_worker_provider(self, *, pool_id: str) -> _FakeProvider:
+        return _FakeProvider(
+            is_controller_pool=pool_id == MULTI_LORA_CONTROLLER_POOL_ID,
+            expected_handle=self.expected_handle,
+            other_handle=self.other_handle,
+        )
+
+
+class TestMultiLoraControllerHandle:
+    def test_the_handle_is_resolved_from_the_controller_pool_and_worker_name(self) -> None:
+        """The controller handle is resolved through its declared pool and stable worker name."""
+        expected_handle = object()
+        capability = _FakeCapability(expected_handle=expected_handle, other_handle=object())
+
+        handle = create_multi_lora_controller_handle(capability=capability)
+
+        assert handle is expected_handle
 
 
 class TestMultiLoraControllerSpec:

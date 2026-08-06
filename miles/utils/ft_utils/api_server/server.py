@@ -14,8 +14,7 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
-from miles.utils.workers.cell_operations.ray import RayCellOperations
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -35,10 +34,9 @@ def start_api_server(
     host: str = "127.0.0.1",
     port: int,
     ft_components: list[str],
+    cell_operations: BaseCellOperations,
 ) -> None:
     handlers: list[_CellHandler] = []
-    # TODO inject instead of building the ray flavour here
-    cell_operations = RayCellOperations(worker_manager_handle=RayWorkerManager.get_handle())
 
     if "train" in ft_components:
         handlers.append(

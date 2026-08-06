@@ -10,6 +10,7 @@ from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
 from miles.utils import dumper_utils
 from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
+from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -24,6 +25,7 @@ from miles.utils.workers.worker_spec import (
 logger = logging.getLogger(__name__)
 
 INFERENCE_CONTROLLER_POOL_ID = "inference-controller"
+SESSION_SERVER_POOL_ID = "session-server"
 INFERENCE_CONTROLLER_WORKER_CLASS = "miles.ray.rollout.inference_controller.InferenceController"
 
 
@@ -40,15 +42,22 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
             pin_to_head=args.pin_rollout_manager_to_head,
         ),
         worker_class=INFERENCE_CONTROLLER_WORKER_CLASS,
-        ctor_kwargs=lambda _ctx: dict(args=args),
+        ctor_kwargs=lambda ctx: dict(
+            args=args,
+            engine_provider=ctx.capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args)),
+            router_provider=ctx.capability.static_worker_provider(pool_id=compute_router_pool_id(0)),
+        ),
     )
 
 
-def create_inference_controller_handle() -> BaseWorkerHandle:
-    from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+def create_inference_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
+    worker_name = inference_controller_worker_name()
+    provider = capability.static_worker_provider(pool_id=INFERENCE_CONTROLLER_POOL_ID)
+    return provider.get_handle(worker_name)
 
-    provider = RayWorkerProvider.create()  # TODO inject instance
-    return provider.get_handle(inference_controller_worker_name())
+
+def session_server_worker_name(cell_index: int) -> str:
+    return compute_worker_name(pool_id=SESSION_SERVER_POOL_ID, cell_index=cell_index)
 
 
 def inference_controller_worker_name() -> str:
@@ -141,7 +150,7 @@ def spec_session_server(args) -> CommandWorkerSpec:
         return shlex.join(launch_argv)
 
     return CommandWorkerSpec(
-        name="session-server",
+        name=SESSION_SERVER_POOL_ID,
         port_infos=[
             _compute_session_server_primary_port_info(args),
         ],
