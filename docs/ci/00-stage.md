@@ -42,7 +42,7 @@ In `pr-test.yml`, `tier a` (CPU fast) gates the NVIDIA GPU fleet after both reso
 - Each Miles PR workflow passes trigger facts to `tests/ci/ci_policy.py` and publishes its `cadence`, `raw_labels`, and `bypass_fastfail` outputs. That module owns trigger adaptation and the shared `resolve_policy` consumed by `run_suite.py`.
 - A PR `nightly` label maps to nightly cadence.
 - A scheduled run maps its exact `github.event.schedule` cron: the current `0 15 * * *` entry maps to nightly, an unknown cron fails, and a future weekly entry must add its own mapping.
-- A manual dispatch keeps regular cadence and has no PR labels. `pr-test.yml` therefore runs the ordinary always-on selection, while the dedicated ROCm dispatch adds `--match-all-labels` to preserve its full regular MI300X scope. Disabled registrations remain skipped.
+- A manual dispatch keeps regular cadence and has no PR labels. `pr-test.yml` therefore runs the ordinary always-on selection, while the dedicated ROCm dispatch adds `--match-all-labels` to preserve its full regular MI300X run.
 
 A **nightly** policy selects every enabled tag except `long` and `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. Regular cadence admits only regular registrations. Both cadences use the same stage inventory.
 
@@ -64,7 +64,7 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 `pr-test-rocm.yml` has PR-level, exact nightly cron, and `workflow_dispatch` entry points. Its `pull_request_target` entry keeps the workflow and authorization code on the trusted base branch, while adapting the event to the same `resolve-ci-policy` path as `pr-test.yml`. It runs `stage-c-4-gpu-mi300x` through `_run-ci-rocm.yml` on two 4-GPU MI300X runners, resolves `rocm/sgl-dev:<tag>`, and splits tests into two `est_time`-balanced shards. It runs no CPU tests. SGLang and Megatron-LM come from the image, so manual dispatch exposes no dependency-ref inputs.
 
-Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)` belong to this stage; CUDA registrations are not inherited. Every current MI300X registration is individually marked `disabled="Disable due to failure"`, so `run_suite.py` reports selected registrations as skipped and exits successfully without executing their test files. The workflow job itself remains active and may still occupy a runner while it prepares and lists the empty executable set. PR and nightly runs continue to consume the shared cadence and label policy, while manual dispatch adds `--match-all-labels` for the full regular scope.
+Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)` run; CUDA registrations are not inherited. PR and nightly runs consume the shared cadence and label policy: `run-ci-amd` selects the full MI300X set, other `run-ci-*` labels can select matching subsets, and nightly cadence admits regular plus nightly-only registrations. Manual dispatch adds `--match-all-labels` and runs the full regular suite.
 
 For fork PRs, a base-branch authorization step admits the privileged MI300X stage only when the event carries a canonical `run-ci-*` label. The reusable workflow then checks out `refs/pull/<number>/merge` explicitly, so it tests the PR merge result without trusting workflow or gate code from the fork. Fork jobs receive no `WANDB_API_KEY`; same-repository PRs, schedules, and manual dispatches do not need the label gate.
 
