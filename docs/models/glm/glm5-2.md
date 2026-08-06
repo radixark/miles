@@ -71,6 +71,16 @@ python scripts/run_glm5_2_744b_a40b.py train      --model-name GLM-5.2 --num-nod
 
 The recipe is tested on **H200 / B200 / GB300**; the `--hardware` flag accepts exactly these three values.
 
+### 4.2 Agentic RL: terminal-bench-2 in Daytona sandboxes (experimental)
+
+Beyond the math recipe above, [`examples/experimental/openenv/glm52_tbench2/`](https://github.com/radixark/miles/tree/main/examples/experimental/openenv/glm52_tbench2) trains GLM-5.2 with fully-async agentic RL on terminal-bench-2: 16 GB300 nodes (4 GPUs each) split into 8 training nodes (TP2 / CP4 / PP4 / EP8, optimizer state streamed to node-local disk) and 8 inference nodes (one 4-GPU dp-attention FP8 SGLang engine per node). Every episode is a multi-turn terminal agent solving one terminal-bench-2 task inside its own Daytona cloud sandbox built from that task's official image; scoring is the task's canonical `tests/test.sh`.
+
+```bash
+python3 examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py train --num-nodes 16
+```
+
+The recipe's defaults are the reference configuration (100 rollout steps in ~21 h, ~6.5 min/step including evals). See the example's README for the container, Megatron, OpenEnv, and Daytona prerequisites.
+
 ## 5. Recipe Configuration
 
 ### 5.1 Parallelism
@@ -136,3 +146,4 @@ The launcher exposes these as flags:
 - [Low Precision RL](/advanced/fp8-low-precision) — opt-in via `--fp8-rollout`.
 - [Speculative Decoding](/advanced/speculative-decoding) — opt-in via `--enable-mtp`.
 - [LoRA](/advanced/lora) — via `scripts/run_glm5_2_744b_a40b_lora.py`.
+- [Fully Async Rollout](/examples/fully-async) — the terminal-bench-2 agentic example (§4.2) runs fully async.
