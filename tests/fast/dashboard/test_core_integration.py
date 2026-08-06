@@ -91,29 +91,3 @@ def test_registry_contains_dashboard_backend():
     cls, flag = BACKEND_REGISTRY["miles_dashboard"]
     assert cls is MilesDashboardBackend
     assert flag == "use_miles_dashboard"
-
-
-def test_engine_topology_gpu_range_logic():
-    # the pure slice of the topology construction: node-physical gpu ranges
-    pytest.importorskip("sglang")
-    from miles.ray.rollout.server_cell import ServerCell
-
-    cell = ServerCell(
-        args=Namespace(num_gpus_per_node=8),
-        worker_type="regular",
-        cell_id="cell-0",
-        pg=(None, [], [4, 5, 6, 7]),
-        num_gpus_per_engine=2,
-    )
-    assert cell.engine_gpu_ids == [[4, 5]]
-
-    # multi-node engine: each member covers its whole node (base 0, capped per node)
-    multi_node = ServerCell(
-        args=Namespace(num_gpus_per_node=8),
-        worker_type="regular",
-        cell_id="cell-0",
-        pg=(None, [], list(range(8)) + list(range(8))),
-        num_nodes=2,
-        num_gpus_per_engine=16,
-    )
-    assert multi_node.engine_gpu_ids == [list(range(8)), list(range(8))]

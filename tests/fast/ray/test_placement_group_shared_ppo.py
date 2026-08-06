@@ -1,7 +1,7 @@
 from argparse import Namespace
-from unittest.mock import patch
 
 import pytest
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _get_placement_group_layout
@@ -45,15 +45,16 @@ class _RecordingRolloutExecutor:
         self.train_parallel_config = None
         self.loaded_rollout_id = None
 
-    async def set_train_parallel_config(self, config):
+    async def set_train_parallel_config(self, *, config):
         self.train_parallel_config = config
 
-    async def load(self, rollout_id):
+    async def load(self, *, rollout_id):
         self.loaded_rollout_id = rollout_id
 
 
 def _patch_train_controller_handles(monkeypatch) -> list:
     handles = []
+    monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: FakeBackendCapability())
 
     class _Handle:
         def __init__(self, role):
@@ -70,7 +71,9 @@ def _patch_train_controller_handles(monkeypatch) -> list:
         async def get_train_parallel_config(self):
             return {"dp_size": 2 if self.role == "actor" else 99}
 
-    monkeypatch.setattr(placement_group_module, "create_trainer_controller_handle", lambda *, role: _Handle(role))
+    monkeypatch.setattr(
+        placement_group_module, "create_trainer_controller_handle", lambda *, capability, role: _Handle(role)
+    )
     return handles
 
 

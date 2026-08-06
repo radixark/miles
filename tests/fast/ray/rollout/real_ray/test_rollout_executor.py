@@ -30,7 +30,7 @@ def http_client_calls(monkeypatch) -> list[str]:
 def patch_low_level(monkeypatch, http_client_calls):
     import miles.ray.rollout.rollout_executor as rexec
 
-    async def _no_addrs(args):
+    async def _no_addrs(args, **kwargs):
         return {}
 
     monkeypatch.setattr(rexec, "resolve_router_addrs", _no_addrs)
@@ -44,8 +44,13 @@ def patch_low_level(monkeypatch, http_client_calls):
     monkeypatch.setattr(rexec, "save_debug_rollout_data", lambda *a, **kw: None)
 
 
+class _NeverUsedProvider:
+    async def get_addrs(self, worker_name: str):
+        raise AssertionError("the stubbed resolution must not ask the provider for an address")
+
+
 async def _make_executor(args):
-    executor = RolloutExecutor(args=args)
+    executor = RolloutExecutor(args=args, router_provider=_NeverUsedProvider(), session_server_provider=None)
     await executor.init()
     return executor
 

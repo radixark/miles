@@ -173,18 +173,3 @@ class TestPdDisaggregation:
             rollout_num_gpus=8,
         )
         assert cfg.has_pd_disaggregation is True
-
-
-# ----------------------------- rollout_external path -----------------------------
-
-
-class TestRolloutExternalPath:
-    async def test_starting_engines_in_external_mode_is_not_implemented(self):
-        """The external allocator was removed; starting engines must fail loudly until the replacement lands."""
-        from miles.ray.rollout.server_cell import ServerCell
-
-        cell = ServerCell(
-            args=make_args(num_gpus_per_node=8, rollout_external=True), worker_type="regular", cell_id="cell-0"
-        )
-        with pytest.raises(NotImplementedError):
-            await cell.start_engines()

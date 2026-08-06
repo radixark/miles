@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
-
 from miles.utils.ft_utils.api_server import server
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.cell_operations.ray import RayCellOperations
 
 from .conftest import (
     MockHandler,
@@ -240,7 +241,7 @@ class TestStartApiServerRegistration:
         manager = MockWorkerManager(make_cell_summaries(*cell_ids))
         registries: list[_CellRegistry] = []
 
-        monkeypatch.setattr(server, "RayWorkerManager", SimpleNamespace(get_handle=lambda: manager))
+        monkeypatch.setattr(server, "compute_engine_spec_names", lambda args: ["inference-engine-0-0"])
         monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
 
         server.start_api_server(
@@ -251,6 +252,7 @@ class TestStartApiServerRegistration:
             ),
             port=0,
             ft_components=ft_components,
+            cell_operations=RayCellOperations(worker_manager_handle=manager),
         )
 
         (registry,) = registries
@@ -352,3 +354,33 @@ class TestInjectFault:
         resp = await async_client.post("/api/v1/cells/actor-0/inject-fault", json={"mode": "sigkill"})
 
         assert resp.status_code == 400
+
+
+class TestOperationsSelection:
+    def test_every_handler_gets_the_operations_of_the_process_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Under Kubernetes the api server must act on pods, not on a Ray worker manager."""
+        operations = object()
+        registries: list[_CellRegistry] = []
+        monkeypatch.setattr(server, "compute_trainer_spec_name", lambda role: f"trainer-{role}")
+        monkeypatch.setattr(server, "compute_engine_spec_names", lambda args: ["engine"])
+        monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
+
+        server.start_api_server(
+            args=SimpleNamespace(),
+            actor_model=make_mock_controller([]),
+            inference_controller=MockInferenceController(),
+            port=1234,
+            ft_components=["train", "rollout"],
+            cell_operations=operations,
+        )
+
+        handlers = registries[0]._handlers
+        assert len(handlers) == 2
+        assert [handler._operations for handler in handlers] == [operations, operations]
+
+    def test_the_api_server_names_no_ray_worker_manager(self) -> None:
+        """Naming it would make the Kubernetes assembly pointless for the half that heals cells."""
+        source = Path(server.__file__).read_text()
+
+        assert "RayWorkerManager" not in source
+        assert "cell_operations: BaseCellOperations" in source
