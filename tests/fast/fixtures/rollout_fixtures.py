@@ -118,8 +118,7 @@ def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornT
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
     try:
         server.start()
-        args.session_server_ip = "127.0.0.1"
-        args.session_server_ports = [port]
+        args.session_server_addrs = [f"127.0.0.1:{port}"]
         yield server
     finally:
         server.stop()
