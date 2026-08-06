@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+
 from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.ray.specs.rollout import (
     ROLLOUT_EXECUTOR_POOL_ID,
@@ -13,10 +15,15 @@ from miles.ray.specs.rollout import (
 from miles.utils.function_registry import load_function
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.workers.ray_worker_manager import bootstrapped_worker_class
+from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
-def _args() -> SimpleNamespace:
-    return SimpleNamespace(pin_rollout_manager_to_head=False)
+def _args(*, debug_train_only: bool = False, use_session_server: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        pin_rollout_manager_to_head=False,
+        debug_train_only=debug_train_only,
+        use_session_server=use_session_server,
+    )
 
 
 class TestRolloutExecutorSpec:
@@ -39,11 +46,26 @@ class TestRolloutExecutorSpec:
         assert issubclass(bootstrapped, RolloutExecutor)
         assert issubclass(bootstrapped, NodeProbeMixin)
 
-    def test_the_ctor_kwargs_carry_only_args(self):
-        """The executor resolves its own addresses in init(), so nothing else has to be injected."""
-        spec = spec_rollout_executor(_args())
+    def test_the_ctor_kwargs_hand_the_worker_the_providers_it_resolves_with(self):
+        """The executor resolves its own addresses in init(), so its spec names exactly what that takes."""
+        capability = FakeBackendCapability(static_provider=object())
+        context = WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
 
-        assert list(spec.ctor_kwargs(None)) == ["args"]
+        kwargs = spec_rollout_executor(_args(use_session_server=True)).ctor_kwargs(context)
+
+        assert sorted(kwargs) == ["args", "router_provider", "session_server_provider"]
+        assert kwargs["router_provider"] is capability.static_provider
+        assert kwargs["session_server_provider"] is capability.static_provider
+        assert capability.requested_static_pool_ids == ["inference-router-0", "session-server"]
+
+    def test_a_run_without_session_servers_is_given_no_session_provider(self):
+        """Nothing is deployed to wait for, and a provider would make the executor wait for it anyway."""
+        capability = FakeBackendCapability(static_provider=object())
+        context = WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+
+        kwargs = spec_rollout_executor(_args(use_session_server=False)).ctor_kwargs(context)
+
+        assert kwargs["session_server_provider"] is None
 
     def test_the_worker_and_cell_names_are_stable(self):
         """The driver looks the executor up by name, so these names are part of the release's contract."""

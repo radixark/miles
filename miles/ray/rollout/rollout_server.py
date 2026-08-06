@@ -11,6 +11,7 @@ from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch
 from miles.utils.retry_utils import retry_until_deadline
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ async def create_rollout_servers(
     context_lock: ContextLock,
     global_health_checker_activeness: Callable[[], ActiveAndEpoch],
     *,
+    engine_provider: BaseWorkerProvider,
     router_addrs: dict[str, HostAndPort],
 ) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
@@ -38,6 +40,7 @@ async def create_rollout_servers(
             server_cells={},
             args=args,
             context_lock=context_lock,
+            engine_provider=engine_provider,
             router_ip=router_addr.host,
             router_port=router_addr.port,
             model_name=model_cfg.name,
@@ -60,6 +63,7 @@ class RolloutServer:
     server_cells: dict[str, ServerCell]
     args: Any
     context_lock: ContextLock
+    engine_provider: BaseWorkerProvider
     router_ip: str | None = None
     router_port: int | None = None
     model_name: str = "default"
@@ -98,6 +102,7 @@ class RolloutServer:
             args=self.args,
             router_api_client=self._router_api_client,
             meta=cell_meta,
+            provider=self.engine_provider,
             global_health_checker_activeness=self.global_health_checker_activeness,
         )
         self.server_cells[cell_id] = cell

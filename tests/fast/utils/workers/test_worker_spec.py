@@ -24,18 +24,6 @@ def _make_launch_context(**overrides) -> WorkerLaunchContext:
     return WorkerLaunchContext(**kwargs)
 
 
-def _make_ctor_context(**overrides) -> WorkerCtorContext:
-    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=FakeBackendCapability())
-    kwargs.update(overrides)
-    return WorkerCtorContext(**kwargs)
-
-
-def _make_port_info(**overrides) -> PortInfo:
-    kwargs = dict(name="http", static_port=8000, mode="per_worker", allow_dynamic=False)
-    kwargs.update(overrides)
-    return PortInfo(**kwargs)
-
-
 def _make_launch_command_context(**overrides) -> LaunchCommandContext:
     kwargs = dict(
         cell_index=0,
@@ -47,6 +35,18 @@ def _make_launch_command_context(**overrides) -> LaunchCommandContext:
     )
     kwargs.update(overrides)
     return LaunchCommandContext(**kwargs)
+
+
+def _make_ctor_context(**overrides) -> WorkerCtorContext:
+    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=FakeBackendCapability())
+    kwargs.update(overrides)
+    return WorkerCtorContext(**kwargs)
+
+
+def _make_port_info(**overrides) -> PortInfo:
+    kwargs = dict(name="http", static_port=8000, mode="per_worker", allow_dynamic=False)
+    kwargs.update(overrides)
+    return PortInfo(**kwargs)
 
 
 def _make_base_kwargs(**overrides) -> dict:

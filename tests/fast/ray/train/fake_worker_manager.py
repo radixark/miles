@@ -5,12 +5,11 @@ import logging
 import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
-from miles.ray.specs.train import MASTER_PORT_NAME
 from miles.utils.workers.naming import compute_cell_id, parse_cell_id
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
-from miles.utils.workers.worker_spec import HostAndPort
+from miles.utils.workers.worker_spec import MASTER_PORT_NAME, HostAndPort
 
 logger = logging.getLogger(__name__)
 

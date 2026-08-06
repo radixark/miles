@@ -1,4 +1,6 @@
+from miles.ray.specs.inference import compute_router_pool_id
 from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
@@ -21,15 +23,17 @@ def spec_multi_lora_controller(args) -> ServeWorkerSpec:
             pin_to_head=True,
         ),
         worker_class=MULTI_LORA_CONTROLLER_WORKER_CLASS,
-        ctor_kwargs=lambda _ctx: dict(args=args),
+        ctor_kwargs=lambda ctx: dict(
+            args=args,
+            router_provider=ctx.capability.static_worker_provider(pool_id=compute_router_pool_id(0)),
+        ),
     )
 
 
-def create_multi_lora_controller_handle() -> BaseWorkerHandle:
-    from miles.utils.workers.worker_provider.ray import RayWorkerProvider
-
-    provider = RayWorkerProvider.create()  # TODO inject instance
-    return provider.get_handle(multi_lora_controller_worker_name())
+def create_multi_lora_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
+    worker_name = multi_lora_controller_worker_name()
+    provider = capability.static_worker_provider(pool_id=MULTI_LORA_CONTROLLER_POOL_ID)
+    return provider.get_handle(worker_name)
 
 
 def multi_lora_controller_worker_name() -> str:

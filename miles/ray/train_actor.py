@@ -27,13 +27,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
-TRAINER_METHOD_CONCURRENCY_GROUPS = {
-    "get_heartbeat_status": "heartbeat_status",
-    "inject_fault": "fault_injector",
-    "kill_self": "kill_self",
-}
-
 
 def get_local_gpu_id():
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")

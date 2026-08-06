@@ -7,11 +7,16 @@ from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
-from miles.ray.specs.inference import create_inference_controller_handle
+from miles.ray.specs.inference import (
+    SESSION_SERVER_POOL_ID,
+    compute_router_pool_id,
+    create_inference_controller_handle,
+)
 from miles.ray.specs.rollout import create_rollout_executor_handle
 from miles.ray.specs.train import compute_critic_args, create_trainer_controller_handle
+from miles.ray.wiring import get_backend_capability
+from miles.utils.ft_utils.api_server.server import start_api_server
 from miles.utils.workers.worker_handle import BaseWorkerHandle
-
 
 logger = logging.getLogger(__name__)
 
@@ -125,12 +130,17 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     return ans
 
 
-async def create_training_models(args, rollout_executor) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
-    actor_model = create_trainer_controller_handle(role="actor")
+# TODO: move (when reorganizing files)
+async def create_training_models(
+    args, rollout_executor: BaseWorkerHandle
+) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
+    capability = get_backend_capability(args)
+
+    actor_model = create_trainer_controller_handle(capability=capability, role="actor")
     actor_start_rollout_ids = await actor_model.init(args)
 
     if args.use_critic:
-        critic_model = create_trainer_controller_handle(role="critic")
+        critic_model = create_trainer_controller_handle(capability=capability, role="critic")
         critic_start_rollout_ids = await critic_model.init(compute_critic_args(args))
     else:
         critic_model = None
@@ -147,9 +157,26 @@ async def create_training_models(args, rollout_executor) -> tuple[BaseWorkerHand
     return actor_model, critic_model
 
 
+# TODO: move (when reorganizing files)
 async def update_weights(actor_model, rollout_executor, *, rollout_id: int | None = None) -> None:
     if (weight_version := await actor_model.update_weights(rollout_id=rollout_id)) is not None:
         await rollout_executor.set_weight_version(weight_version)
+
+
+# TODO: move (when reorganizing files)
+def maybe_start_api_server(args, *, actor_model: BaseWorkerHandle, inference_controller: BaseWorkerHandle) -> None:
+    if not args.api_server_port:
+        return
+
+    start_api_server(
+        args=args,
+        actor_model=actor_model,
+        inference_controller=inference_controller,
+        host=args.api_server_host,
+        port=args.api_server_port,
+        ft_components=args.ft_components,
+        cell_operations=get_backend_capability(args).cell_operations(),
+    )
 
 
 class RolloutComponents(NamedTuple):
@@ -158,15 +185,22 @@ class RolloutComponents(NamedTuple):
     num_rollout_per_epoch: int | None
 
 
+# TODO: move (when reorganizing files)
 async def create_rollout_components(args) -> RolloutComponents:
-    if not args.debug_train_only:
-        await resolve_router_addrs(args)
-        await wait_session_server_ready(args)
+    capability = get_backend_capability(args)
 
-    inference_controller = create_inference_controller_handle()
+    if not args.debug_train_only:
+        await resolve_router_addrs(args, provider=capability.static_worker_provider(pool_id=compute_router_pool_id(0)))
+
+        session_server_provider = (
+            capability.static_worker_provider(pool_id=SESSION_SERVER_POOL_ID) if args.use_session_server else None
+        )
+        await wait_session_server_ready(args, provider=session_server_provider)
+
+    inference_controller = create_inference_controller_handle(capability=capability)
     await inference_controller.init()
 
-    rollout_executor = create_rollout_executor_handle()
+    rollout_executor = create_rollout_executor_handle(capability=capability)
     await rollout_executor.init()
 
     # calculate num_rollout from num_epoch
