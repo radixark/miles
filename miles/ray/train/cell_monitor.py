@@ -6,7 +6,6 @@ from miles.ray.train.cell_state import (
     StateAllocatedAlive,
     StateAllocatedErrored,
     StateAllocatedUninitialized,
-    StatePending,
 )
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch, SimpleHealthChecker, SimpleHealthCheckerConfig
@@ -67,9 +66,6 @@ def compute_cell_status(state: CellState, health_checker_status: TriState) -> Ce
                     CellCondition.healthy(TriState.FALSE, reason="ExecutionErrored"),
                 ],
             )
-
-        case StatePending():
-            return CellStatus(phase="Pending", conditions=[CellCondition.allocated(TriState.FALSE)])
 
         case _:
             raise NotImplementedError(f"Unknown state: {state}")
