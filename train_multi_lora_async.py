@@ -83,7 +83,7 @@ async def main(args):
 
         try:
             await inference_controller.prepare_rollout(rollout_id)
-            rollout_data = await rollout_executor.get.remote(rollout_id)
+            rollout_data = await rollout_executor.get(rollout_id)
         except ray.exceptions.RayTaskError as e:
             if _is_empty_batch_timeout(e):
                 logger.warning(f"Generate timed out with no trainable groups; retrying reconcile/update. {e}")
@@ -98,7 +98,7 @@ async def main(args):
 
         rollout_id += 1
 
-    await rollout_executor.dispose.remote()
+    await rollout_executor.dispose()
     await inference_controller.dispose()
     await actor_model.dispose()
     await controller.stop.remote()
