@@ -9,7 +9,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
-from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
+from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_spec_names
 from miles.utils.context_lock import (
@@ -68,7 +68,6 @@ class InferenceController:
         self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
 
         dashboard_hooks.register_router(self.args)
-        await wait_session_server_ready(self.args)
 
         await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
 
