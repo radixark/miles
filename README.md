@@ -9,6 +9,6 @@
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
 [![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](https://slack.sglang.ai)
 
-[**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Advanced Features**](https://miles.radixark.com/docs/advanced) | [**Documentation**](https://miles.radixark.com/docs)
+[**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Advanced Features**](https://miles.radixark.com/docs/advanced) | [**Developer Guide**](https://miles.radixark.com/docs/developer) | [**Documentation**](https://miles.radixark.com/docs)
 
 </div>
