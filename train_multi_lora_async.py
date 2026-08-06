@@ -36,9 +36,9 @@ async def main(args):
 
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
+    init_tracking(args)
     _worker_manager = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)
-    init_tracking(args)
     inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(args)
 
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
@@ -83,7 +83,7 @@ async def main(args):
 
         try:
             await inference_controller.prepare_rollout(rollout_id)
-            rollout_data = await rollout_executor.get.remote(rollout_id)
+            rollout_data = await rollout_executor.get(rollout_id)
         except ray.exceptions.RayTaskError as e:
             if _is_empty_batch_timeout(e):
                 logger.warning(f"Generate timed out with no trainable groups; retrying reconcile/update. {e}")
@@ -98,7 +98,7 @@ async def main(args):
 
         rollout_id += 1
 
-    await rollout_executor.dispose.remote()
+    await rollout_executor.dispose()
     await inference_controller.dispose()
     await actor_model.dispose()
     await controller.stop.remote()
