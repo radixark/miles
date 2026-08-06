@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from typing import Any
 
 import ray
 
@@ -81,7 +82,7 @@ class RolloutExecutor:
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
 
-    def dispose(self):
+    def dispose(self) -> None:
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
@@ -90,7 +91,7 @@ class RolloutExecutor:
 
     # -------------------------- data generation -----------------------------
 
-    async def get(self, rollout_id):
+    async def get(self, rollout_id: int) -> dict[str, Any]:
         start_time = time.time()
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
@@ -112,7 +113,7 @@ class RolloutExecutor:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
         return dict(sample_indices=sample_indices, data_ref=data_ref)
 
-    async def eval(self, rollout_id):
+    async def eval(self, rollout_id: int) -> None:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
@@ -169,22 +170,22 @@ class RolloutExecutor:
     # -------------------------- checkpointing -----------------------------
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
-    def save(self, rollout_id):
+    def save(self, rollout_id: int) -> None:
         self.data_source.save(rollout_id)
         if self.use_experimental_refactor:
             self.generate_rollout.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
-    def load(self, rollout_id=None):
+    def load(self, rollout_id: int | None = None) -> None:
         self.data_source.load(rollout_id)
         if self.use_experimental_refactor:
             self.generate_rollout.load(rollout_id)
 
     # -------------------------- misc APIs -----------------------------
 
-    def get_num_rollout_per_epoch(self):
+    def get_num_rollout_per_epoch(self) -> int:
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
-    def set_train_parallel_config(self, config: dict):
+    def set_train_parallel_config(self, config: dict[str, Any]) -> None:
         self.train_parallel_config = config
