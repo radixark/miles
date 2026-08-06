@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.fast.utils.workers.worker_provider.kubernetes.test_assembly import install_workers
 
 from miles.ray import wiring
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
@@ -51,6 +52,28 @@ class TestGetBackendCapability:
 
         assert wiring.get_backend_capability(args) is sentinel
         assert installed == [args]
+
+
+class TestCreateWorkerBackendCapability:
+    def test_a_worker_process_builds_its_capability_only_when_something_asks_for_a_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every served worker builds this context, and most specs never look at it."""
+        attached: list[int] = []
+
+        def _install(args):
+            attached.append(args.rollout_num_gpus)
+            return install_workers(deleted=[])
+
+        monkeypatch.setattr(wiring, "_create_backend_capability", _install)
+
+        capability = wiring.create_worker_backend_capability(worker_argv=["--rollout-num-gpus", "8"])
+        assert attached == []
+
+        capability.dynamic_worker_provider(pool_ids=["engine"])
+        capability.dynamic_worker_provider(pool_ids=["engine"])
+
+        assert attached == [8]
 
 
 def _refuse_ray(args: Any) -> None:
