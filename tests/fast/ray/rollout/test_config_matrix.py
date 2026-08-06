@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
@@ -167,20 +165,20 @@ class TestPdDisaggregation:
 
 
 class TestRolloutExternalPath:
-    def test_external_addrs_consumed_in_allocator(self):
-        from miles.ray.rollout.addr_allocator import allocate_rollout_engine_addr_and_ports_external
+    def test_starting_engines_in_external_mode_is_not_implemented(self):
+        """The external allocator was removed; starting engines must fail loudly until the replacement lands."""
+        from miles.ray.rollout.addr_allocator import PortAllocator
+        from miles.ray.rollout.server_cell import ServerCell
+        from miles.ray.rollout.server_engine import ServerEngine
+        from miles.ray.rollout.server_group import ServerGroup
 
-        args = make_args(
-            rollout_external_engine_addrs=[
-                "10.0.0.1:30000",
-                "10.0.0.2:30001",
-                "10.0.0.3:30002",
-            ]
+        args = make_args(num_gpus_per_node=8, rollout_external=True)
+        group = ServerGroup(
+            args=args,
+            pg=None,
+            cells=[ServerCell(engines=[ServerEngine()])],
+            num_gpus_per_engine=1,
+            has_new_engines=False,
         )
-        engines = [(rank, MagicMock()) for rank in range(3)]
-        result = allocate_rollout_engine_addr_and_ports_external(args=args, rollout_engines=engines)
-        assert len(result) == 3
-        # Verify the addr/port roundtrip is consistent
-        for rank in range(3):
-            assert result[rank]["dist_init_addr"].startswith(f"10.0.0.{rank+1}")
-            assert result[rank]["nccl_port"] is None  # no nccl in external mode
+        with pytest.raises(NotImplementedError):
+            group.start_engines(PortAllocator.empty())

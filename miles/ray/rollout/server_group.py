@@ -7,11 +7,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
-from miles.ray.rollout.addr_allocator import (
-    PortAllocator,
-    allocate_rollout_engine_addr_and_ports_external,
-    allocate_rollout_engine_addr_and_ports_normal,
-)
+from miles.ray.rollout.addr_allocator import PortAllocator, allocate_rollout_engine_addr_and_ports_normal
 from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, flatten_cells, launch_sglang_ray_actor
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.utils import async_utils
@@ -77,6 +73,11 @@ class ServerGroup:
             self.has_new_engines = False
             return [], []
 
+        if self.args.rollout_external:
+            raise NotImplementedError(
+                "external rollout address allocation was removed and a new implementation is coming"
+            )
+
         num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
 
         start_indices = (
@@ -116,19 +117,14 @@ class ServerGroup:
         if curr_num_new_engines == 0:
             return [], []
 
-        if self.args.rollout_external:
-            addr_and_ports = allocate_rollout_engine_addr_and_ports_external(
-                args=self.args, rollout_engines=new_engines
-            )
-        else:
-            addr_and_ports = allocate_rollout_engine_addr_and_ports_normal(
-                args=self.args,
-                port_allocator=port_allocator,
-                rollout_engines=new_engines,
-                worker_type=self.worker_type,
-                num_gpus_per_engine=self.num_gpus_per_engine,
-                rank_offset=self.rank_offset,
-            )
+        addr_and_ports = allocate_rollout_engine_addr_and_ports_normal(
+            args=self.args,
+            port_allocator=port_allocator,
+            rollout_engines=new_engines,
+            worker_type=self.worker_type,
+            num_gpus_per_engine=self.num_gpus_per_engine,
+            rank_offset=self.rank_offset,
+        )
 
         for index, _ in new_engines:
             engine_addr_and_ports = addr_and_ports[index]
