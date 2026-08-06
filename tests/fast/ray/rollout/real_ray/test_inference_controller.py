@@ -416,22 +416,3 @@ class TestCheckWeights:
         for cell in frozen_cells:
             paths = ray.get(cell.primary_actor_handle.get_http_paths.remote())
             assert "/weights_checker" not in paths, f"frozen engine {cell.addr_info.server_url} must not be checked"
-
-
-@pytest.mark.asyncio
-class TestRolloutFaultToleranceIsUnsupported:
-    async def test_fault_injection_refuses_to_run(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """The injector depended on the deleted monitor to observe the crash."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
-
-        with pytest.raises(NotImplementedError):
-            await controller._try_ci_fault_injection()

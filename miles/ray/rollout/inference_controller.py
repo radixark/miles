@@ -75,8 +75,6 @@ class InferenceController:
     @with_lock
     async def prepare_rollout(self, rollout_id):
         await self._health_monitoring_resume()
-        if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
-            await self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
 
     @with_lock
@@ -266,18 +264,6 @@ class InferenceController:
     @requires_lock
     async def _health_monitoring_resume(self) -> None:
         self._health_checker_activeness.bump_active(True)
-
-    @property
-    @requires_lock
-    def _server(self) -> RolloutServer | None:
-        """Default server (first model).  For backward compatibility."""
-        if not self.servers:
-            return None
-        return next(iter(self.servers.values()))
-
-    @requires_lock
-    async def _try_ci_fault_injection(self):
-        raise NotImplementedError("rollout fault injection is being rebuilt with rollout fault tolerance")
 
 
 @dataclass(frozen=True)
