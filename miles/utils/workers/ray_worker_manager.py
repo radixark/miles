@@ -15,6 +15,8 @@ from miles.utils.http_utils import _wrap_ipv6
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
+from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
+from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
@@ -27,6 +29,7 @@ from miles.utils.workers.worker_spec import (
     LaunchCommandContext,
     NamedHostAndPorts,
     ServeWorkerSpec,
+    WorkerCtorContext,
     WorkerLaunchContext,
     WorkerMetaContext,
 )
@@ -417,14 +420,27 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
 
     class BootstrappedWorker(worker_class, NodeProbeMixin):
         def __init__(
-            self, *, ctor_kwargs: Callable[[WorkerLaunchContext], dict[str, Any]], context: WorkerLaunchContext
+            self, *, ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]], context: WorkerLaunchContext
         ) -> None:
-            super().__init__(**ctor_kwargs(context))
+            super().__init__(**ctor_kwargs(_ctor_context(context)))
 
     BootstrappedWorker.__name__ = worker_class.__name__
     BootstrappedWorker.__qualname__ = worker_class.__qualname__
     BootstrappedWorker.__module__ = worker_class.__module__
     return BootstrappedWorker
+
+
+def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
+    return WorkerCtorContext(
+        cell_index=launch_context.cell_index,
+        worker_in_cell_index=launch_context.worker_in_cell_index,
+        gpu_ids=launch_context.gpu_ids,
+        capability=DeferredBackendCapability(create=_create_ray_backend_capability),
+    )
+
+
+def _create_ray_backend_capability() -> BackendCapability:
+    return RayBackendCapability(worker_manager_handle=RayWorkerManager.get_handle())
 
 
 async def _gather_or_raise(coros: list[Coroutine[Any, Any, None]]) -> None:
