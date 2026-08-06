@@ -100,6 +100,7 @@ async def main(args):
 
     await rollout_executor.dispose.remote()
     await inference_controller.dispose()
+    await actor_model.dispose()
     await controller.stop.remote()
 
 

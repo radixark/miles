@@ -6,6 +6,7 @@ from tests.fast.ray.train.dummy_actor import DummyTrainActor
 from miles.ray.specs.train import MASTER_PORT_NAME
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.ray_worker_manager import WorkerInfo
+from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -34,8 +35,20 @@ class FakeWorkerManager:
     def fail_init_for_cell(self, cell_index: int) -> None:
         self._cell_indices_failing_init.add(cell_index)
 
-    def _get_cell_infos(self, *, spec_names: list[str]) -> dict:
-        return {compute_cell_id(spec_name=spec_names[0], cell_index=index): None for index in range(self.num_cells)}
+    def _get_cell_infos(self, *, spec_names: list[str]) -> dict[str, CellInfo]:
+        infos: dict[str, CellInfo] = {}
+        for spec_name in spec_names:
+            for cell_index in range(self.num_cells):
+                cell_id = compute_cell_id(spec_name=spec_name, cell_index=cell_index)
+                infos[cell_id] = CellInfo(
+                    cell_id=cell_id,
+                    spec_name=spec_name,
+                    alive=True,
+                    worker_names=[f"{cell_id}-{worker_index}" for worker_index in range(self.actor_count_per_cell)],
+                    workers_hash=f"pseudo-hash-{1 + len(self.started_cell_ids)}",
+                    meta={"cell_index": cell_index},
+                )
+        return infos
 
     def _get_worker_infos(self, spec_name: str, cell_index: int) -> list[WorkerInfo]:
         cell_id = compute_cell_id(spec_name=spec_name, cell_index=cell_index)

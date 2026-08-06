@@ -1,10 +1,14 @@
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _get_placement_group_layout
+from miles.ray.train.group import RayTrainGroup
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
 def _layout_args(**overrides):
@@ -44,22 +48,39 @@ async def _noop_remote(*_args, **_kwargs):
     return None
 
 
+async def _stop_watch() -> None:
+    return None
+
+
+class _RecordingWorkerProvider(BaseWorkerProvider):
+    def __init__(self) -> None:
+        self.watched_spec_names: list[list[str]] = []
+
+    async def get_addr(self, worker_name: str) -> HostAndPort:
+        raise NotImplementedError
+
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise NotImplementedError
+
+    async def watch_cells(self, reconcile: ReconcileFn, *, spec_names: list[str]) -> StopWatchFn:
+        self.watched_spec_names.append(list(spec_names))
+        return _stop_watch
+
+
+async def _fake_init(self: RayTrainGroup) -> list[int]:
+    return [0]
+
+
+async def _fake_set_rollout_executor(self: RayTrainGroup) -> None:
+    return None
+
+
 async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypatch):
-    groups = []
+    """Both training groups go through the real create(), and only the critic args are rewritten."""
+    provider = _RecordingWorkerProvider()
+    monkeypatch.setattr(RayTrainGroup, "init", _fake_init)
+    monkeypatch.setattr(RayTrainGroup, "set_rollout_executor", _fake_set_rollout_executor)
 
-    class _Group:
-        def __init__(self, *, args, role, **_kwargs):
-            self.args = args
-            self.role = role
-            groups.append(self)
-
-        async def init(self):
-            return [0]
-
-        async def set_rollout_executor(self):
-            return None
-
-    monkeypatch.setattr(placement_group_module, "RayTrainGroup", _Group)
     args = Namespace(
         actor_num_nodes=1,
         actor_num_gpus_per_node=2,
@@ -73,20 +94,24 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
         disable_param_buffers_cpu_backup=True,
         start_rollout_id=None,
         rollout_global_dataset=False,
+        indep_dp=False,
+        enable_witness=False,
     )
 
-    await placement_group_module.create_training_models(
-        args,
-        inference_controller=object(),
-        rollout_executor=SimpleNamespace(load=SimpleNamespace(remote=_noop_remote)),
-    )
+    with patch("miles.utils.workers.worker_provider.ray.RayWorkerProvider.create", lambda: provider):
+        actor, critic = await placement_group_module.create_training_models(
+            args,
+            inference_controller=object(),
+            rollout_executor=SimpleNamespace(load=SimpleNamespace(remote=_noop_remote)),
+        )
 
-    actor, critic = groups
-    assert actor.role == "actor"
+    assert provider.watched_spec_names == [["trainer-actor"], ["trainer-critic"]]
+
+    assert actor._role == "actor"
     assert actor.args is args
     assert actor.args.kl_coef == 0.1
 
-    assert critic.role == "critic"
+    assert critic._role == "critic"
     assert critic.args is not args
     assert critic.args.kl_coef == 0
     assert critic.args.use_opd is False
