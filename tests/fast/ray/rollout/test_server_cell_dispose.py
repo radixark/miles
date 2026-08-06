@@ -125,6 +125,19 @@ class TestServerCellDispose:
         client.remove_worker.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_failed_unregister_is_retried_by_a_later_dispose(self) -> None:
+        """A removal the router never confirmed may still be pending there, so dropping the url
+        on failure would leave the entry behind with nothing left to take it out."""
+        client = _make_router_api_client(remove_worker_side_effect=RuntimeError("injected remove failure"))
+        cell = _make_cell(router_api_client=client)
+        await _register(cell, state=StateServing, server_url="http://10.0.0.7:30000", bootstrap_port=None)
+
+        await cell.dispose()
+        await cell.dispose()
+
+        assert client.remove_worker.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_disposing_an_initializing_cell_unregisters_it_from_the_router(self) -> None:
         """A cell serving without weight updates is registered while still initializing, so the
         router can hold its url before the state advances."""

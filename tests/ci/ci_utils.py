@@ -668,6 +668,9 @@ def reap_leaked_accelerator_processes() -> None:
     # exits, and they keep holding accelerator memory. The next test file in the same job then
     # starts on a dirty device and fails while initializing NCCL, which reads as that test
     # being broken. The workflow only reaps once per job, before the first file.
+    #
+    # The kill is process-wide. That is safe only because every accelerator stage runs in its
+    # own container with its own pid namespace, so nothing outside this job is reachable.
     for argv in (
         ["ray", "stop", "--force"],
         ["pkill", "-9", "-f", "sglang::"],

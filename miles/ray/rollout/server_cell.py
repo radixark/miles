@@ -225,11 +225,14 @@ class ServerCell:
                 timeout=SHUTDOWN_TIMEOUT,
             )
         except Exception as e:
+            # Deliberately not dropping the url here: the router may still hold the entry, and
+            # teardown paths overlap, so a later dispose is the only chance to take it out.
             logger.warning(f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})")
-        finally:
-            # Teardown paths overlap, so dispose can run twice; the url is dropped either way
-            # because a second remove_worker would be aimed at an entry already taken out.
-            self._registered_worker_url = None
+            return
+
+        # Teardown paths overlap, so dispose can run twice; after a removal the router
+        # confirmed, a second one would be aimed at an entry that is already gone.
+        self._registered_worker_url = None
 
     async def _compute_addr_info(self) -> CellAddrInfo:
         provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
