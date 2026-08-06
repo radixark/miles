@@ -3,6 +3,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
@@ -27,6 +28,9 @@ class BaseWorkerProvider(abc.ABC):
 
     @abc.abstractmethod
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts: ...
+
+    @abc.abstractmethod
+    def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]: ...
 
     @abc.abstractmethod
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn: ...

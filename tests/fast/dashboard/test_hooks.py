@@ -9,8 +9,9 @@ from miles.dashboard.hooks import BATCH_MAX_EVENTS, BATCH_MAX_SECONDS, _Identity
 from miles.dashboard.store import Role
 from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.utils.timer import Timer
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, WorkerInfo
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_spec import HostAndPort
 
 

@@ -7,6 +7,7 @@ import pytest
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _get_placement_group_layout
 from miles.ray.train.group import TrainerController
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
@@ -71,6 +72,9 @@ class _RecordingWorkerProvider(BaseWorkerProvider):
         raise NotImplementedError
 
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise NotImplementedError
+
+    def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         raise NotImplementedError
 
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
