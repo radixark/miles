@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -11,9 +12,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CHARTS_DIR = REPO_ROOT / "charts"
 CHART_DIR = CHARTS_DIR / "miles-workbench"
 SHARED_INFRA_SCHEMA_PATH = CHARTS_DIR / "shared-infra.schema.json"
+CLI_PATH = CHART_DIR / "cli.py"
 
 RELEASE_NAME = "miles-workbench-alice"
 NAMESPACE = "rl"
+LWS_RESOURCE = "leaderworkersets.leaderworkerset.x-k8s.io"
 
 requires_helm = pytest.mark.skipif(
     shutil.which("helm") is None and not os.environ.get("CI"),
@@ -43,6 +46,22 @@ def render_error(*args: str) -> str:
     result = run_helm_template(*args)
     assert result.returncode != 0, result.stdout
     return result.stderr
+
+
+def cli_module():
+    spec = importlib.util.spec_from_file_location("miles_workbench_cli", CLI_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def can_i_queries(rules: dict[str, tuple[str, ...]]) -> set[str]:
+    queries = set()
+    for resource, verbs in rules.items():
+        target, _, subresource = resource.partition("/")
+        for verb in verbs:
+            queries.add(f"{verb} {target} --subresource={subresource}" if subresource else f"{verb} {target}")
+    return queries
 
 
 def chart_directories() -> list[Path]:

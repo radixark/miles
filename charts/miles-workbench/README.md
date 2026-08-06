@@ -11,16 +11,17 @@ OS, same image, same paths as the training pods.
   namespace `admin` role never includes them.
 - Local `kubectl` and `helm`, and a kubeconfig for the namespace.
 
-## Install
+## Use
 
 ```bash
-# the library chart is a file:// dependency, so vendor it first
-helm dependency build ./charts/miles-workbench
+# check whether your identity may install the chart and use the workbench
+./charts/miles-workbench/cli.py doctor -n <ns> -r <release>
 
-helm install <release> ./charts/miles-workbench -n <ns> -f my-cluster.yaml
+# doctor with matching options, vendor the library chart, then helm upgrade --install
+./charts/miles-workbench/cli.py install -n <ns> -r <release> --image-tag <tag> -f my-cluster.yaml
 
-# the StatefulSet is named after the release; NOTES.txt prints the exact command
-kubectl exec -it statefulset/<name from NOTES.txt> -n <ns> -- bash
+# shell into the pod, or run any command in it
+./charts/miles-workbench/cli.py exec -n <ns> -r <release>
 ```
 
 ## Values
@@ -53,7 +54,7 @@ kubectl exec -it statefulset/<name from NOTES.txt> -n <ns> -- bash
 | Step | Who | What |
 | --- | --- | --- |
 | 1, once | Admin | Install LWS CRDs and controller; grant users LeaderWorkerSet rights. |
-| 2, per namespace | You | `helm install`. Needs every rule in the Role, or `escalate` (creating the Role) **and** `bind` (creating the RoleBinding) on roles. |
+| 2, per namespace | You | `helm install`. Needs every rule in the Role, or both `escalate` and `bind` on roles — either cluster-wide or restricted to this release's Role by name. |
 | 3, daily | The pod | Installs and uninstalls `miles-run` releases as its ServiceAccount. |
 
 - The Role carries what `miles-run` is made of — ConfigMaps, Secrets, Services,
