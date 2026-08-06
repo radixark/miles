@@ -34,7 +34,13 @@ def _comparable_params(func) -> list[tuple[str, str, bool]]:
 
 
 # Helpers the mock exposes for tests to drive it; the real actor has no reason to carry them.
-_MOCK_ONLY_METHODS: set[str] = set()
+_MOCK_ONLY_METHODS: set[str] = {
+    "get_calls",
+    "get_http_paths",
+    "get_http_payloads_of",
+    "get_server_args",
+    "set_fault",
+}
 
 
 # ----------------------------- contract tests -----------------------------

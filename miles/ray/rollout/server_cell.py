@@ -58,6 +58,7 @@ class ServerCell:
     global_health_checker_activeness: Callable[[], ActiveAndEpoch] = lambda: ActiveAndEpoch(active=True, epoch=0)
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
+    _registered_worker_url: str | None = dataclasses.field(default=None)
 
     def __post_init__(self) -> None:
         self._health_checker = create_rollout_cell_health_checker(
@@ -187,6 +188,9 @@ class ServerCell:
         self._mark_serving()
 
     async def _register_with_router(self, addr_info: CellAddrInfo) -> None:
+        # Recorded before the call, not after: a failed add_worker may still have reached the
+        # router, and the cell deliberately stays in its current state so it can be retried.
+        self._registered_worker_url = addr_info.server_url
         await self.router_api_client.add_worker(
             worker_url=addr_info.server_url,
             worker_type=self.meta.worker_type,
@@ -197,20 +201,12 @@ class ServerCell:
     async def dispose(self) -> None:
         self._health_checker.stop()
 
-        match self._state:
-            # Registration is awaited while the cell is still initializing (the
-            # serve-without-weight-update path) or pending weights (mark_weights_ready),
-            # and a cell whose add_worker failed deliberately stays pending so it can be
-            # retried. Any of those can therefore hold a live router entry, and skipping
-            # the unregister leaves the router dialing an engine that is gone. Removing a
-            # url the router never had is harmless: _unregister_from_router logs and
-            # swallows everything.
-            case StateServing() | StatePendingWeights() | StateInitializing():
-                await self._unregister_from_router()
-            case StateUninitialized() | StateDisposed():
-                pass
-            case _:
-                raise ValueError(f"{self._state=}")
+        # Whether the router may hold this cell's url is not a function of the state: both
+        # registration sites await add_worker before the state advances, so a cell can own a
+        # live router entry while still initializing or pending weights, and a cell can reach
+        # either of those states having never registered at all.
+        if self._registered_worker_url is not None:
+            await self._unregister_from_router()
 
         self._change_state(
             "dispose",
@@ -219,10 +215,11 @@ class ServerCell:
         )
 
     async def _unregister_from_router(self) -> None:
+        assert self._registered_worker_url is not None
         try:
             await asyncio.wait_for(
                 self.router_api_client.remove_worker(
-                    worker_url=self.server_url,
+                    worker_url=self._registered_worker_url,
                     use_legacy_api=use_legacy_router_api(self.args),
                 ),
                 timeout=SHUTDOWN_TIMEOUT,

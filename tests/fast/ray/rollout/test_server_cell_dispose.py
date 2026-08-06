@@ -40,29 +40,15 @@ def _make_cell(*, router_api_client: MagicMock, **args_overrides: object) -> Ser
 
 def _make_router_api_client(*, remove_worker_side_effect: BaseException | None = None) -> MagicMock:
     client = MagicMock()
+    client.add_worker = AsyncMock()
     client.remove_worker = AsyncMock(side_effect=remove_worker_side_effect)
     return client
 
 
-def _mark_serving(cell: ServerCell, *, server_url: str, bootstrap_port: int | None) -> None:
-    """The steady state a cell reaches once its registration has been accepted."""
-    cell._state = StateServing(
-        addr_info=CellAddrInfo(server_url=server_url, bootstrap_port=bootstrap_port, gate_url=f"{server_url}/gate")
-    )
-
-
-def _mark_pending_weights(cell: ServerCell, *, server_url: str, bootstrap_port: int | None) -> None:
-    """A cell whose add_worker was awaited, or whose add_worker failed, sits here holding a url."""
-    cell._state = StatePendingWeights(
-        addr_info=CellAddrInfo(server_url=server_url, bootstrap_port=bootstrap_port, gate_url=f"{server_url}/gate")
-    )
-
-
-def _mark_initializing(cell: ServerCell, *, server_url: str, bootstrap_port: int | None) -> None:
-    """The serve-without-weight-update path registers the cell before it leaves this state."""
-    cell._state = StateInitializing(
-        addr_info=CellAddrInfo(server_url=server_url, bootstrap_port=bootstrap_port, gate_url=f"{server_url}/gate")
-    )
+async def _register(cell: ServerCell, *, state: type, server_url: str, bootstrap_port: int | None) -> None:
+    addr_info = CellAddrInfo(server_url=server_url, bootstrap_port=bootstrap_port, gate_url=f"{server_url}/gate")
+    await cell._register_with_router(addr_info=addr_info)
+    cell._state = state(addr_info=addr_info)
 
 
 class TestServerCellDispose:
@@ -71,7 +57,7 @@ class TestServerCellDispose:
         """Leaving the url behind makes the router keep dialing a worker that no longer exists."""
         client = _make_router_api_client()
         cell = _make_cell(router_api_client=client)
-        _mark_serving(cell, server_url="http://10.0.0.2:30000", bootstrap_port=None)
+        await _register(cell, state=StateServing, server_url="http://10.0.0.2:30000", bootstrap_port=None)
 
         await cell.dispose()
 
@@ -94,7 +80,7 @@ class TestServerCellDispose:
         """Unregistering is idempotent cleanup, so its failure must not block disposal."""
         client = _make_router_api_client(remove_worker_side_effect=RuntimeError("injected remove failure"))
         cell = _make_cell(router_api_client=client)
-        _mark_serving(cell, server_url="http://10.0.0.3:30000", bootstrap_port=None)
+        await _register(cell, state=StateServing, server_url="http://10.0.0.3:30000", bootstrap_port=None)
 
         await cell.dispose()
 
@@ -106,7 +92,7 @@ class TestServerCellDispose:
         """--use-miles-router selects the query-string API on the dispose-time unregister too."""
         client = _make_router_api_client()
         cell = _make_cell(router_api_client=client, use_miles_router=True)
-        _mark_serving(cell, server_url="http://10.0.0.4:30000", bootstrap_port=9000)
+        await _register(cell, state=StateServing, server_url="http://10.0.0.4:30000", bootstrap_port=9000)
 
         await cell.dispose()
 
@@ -118,7 +104,7 @@ class TestServerCellDispose:
         add_worker failed stays pending on purpose, so the router can already hold its url."""
         client = _make_router_api_client()
         cell = _make_cell(router_api_client=client)
-        _mark_pending_weights(cell, server_url="http://10.0.0.1:30000", bootstrap_port=None)
+        await _register(cell, state=StatePendingWeights, server_url="http://10.0.0.1:30000", bootstrap_port=None)
 
         await cell.dispose()
 
@@ -131,7 +117,7 @@ class TestServerCellDispose:
         router can hold its url before the state advances."""
         client = _make_router_api_client()
         cell = _make_cell(router_api_client=client)
-        _mark_initializing(cell, server_url="http://10.0.0.5:30000", bootstrap_port=None)
+        await _register(cell, state=StateInitializing, server_url="http://10.0.0.5:30000", bootstrap_port=None)
 
         await cell.dispose()
 
