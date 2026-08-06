@@ -193,9 +193,7 @@ class TestInitLaunchesWorkers:
         manager = RayWorkerManager()
         with pytest.raises(RuntimeError, match="no ports"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(
-                    "miles.utils.workers.ray_worker_manager._CommandActorManager.alloc_ports", failing_alloc
-                )
+                patched.setattr(ray_worker_manager._CommandActorManager, "alloc_ports", failing_alloc)
                 await manager.init([spec], {})
 
         assert len(fake_ray_cluster.handles) == 2
@@ -584,7 +582,8 @@ class TestPinToHead:
     ):
         """Pinning adds the head-affinity strategy without dropping the other actor options."""
         monkeypatch.setattr(
-            "miles.utils.workers.ray_worker_manager.compute_ray_pin_head_options",
+            ray_worker_manager,
+            "compute_ray_pin_head_options",
             lambda: {"scheduling_strategy": "head-affinity"},
         )
         await _launch([_make_spec("router", pin_to_head=True, env_var={"A": "1"})])
@@ -602,7 +601,7 @@ class TestPinToHead:
         def _fail() -> dict:
             raise AssertionError("the head node must not be resolved for unpinned workers")
 
-        monkeypatch.setattr("miles.utils.workers.ray_worker_manager.compute_ray_pin_head_options", _fail)
+        monkeypatch.setattr(ray_worker_manager, "compute_ray_pin_head_options", _fail)
         await _launch([_make_spec("router")])
 
         assert "scheduling_strategy" not in fake_ray_cluster.handles[0].options
@@ -1591,9 +1590,7 @@ class TestStartCellsRollback:
 
         with pytest.raises(RuntimeError, match="no ports"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(
-                    "miles.utils.workers.ray_worker_manager._CommandActorManager.alloc_ports", failing_alloc
-                )
+                patched.setattr(ray_worker_manager._CommandActorManager, "alloc_ports", failing_alloc)
                 await manager.start_cells(["engine-0"])
 
         assert not manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
@@ -1608,9 +1605,7 @@ class TestStartCellsRollback:
 
         with pytest.raises(RuntimeError, match="cannot render"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(
-                    "miles.utils.workers.ray_worker_manager._CommandActorManager.post_setup", failing_post_setup
-                )
+                patched.setattr(ray_worker_manager._CommandActorManager, "post_setup", failing_post_setup)
                 await manager.start_cells(["engine-0"])
 
         assert [handle.killed for handle in fake_ray_cluster.handles] == [True, True]
@@ -1625,9 +1620,7 @@ class TestStartCellsRollback:
 
         with pytest.raises(RuntimeError, match="no ports"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(
-                    "miles.utils.workers.ray_worker_manager._CommandActorManager.alloc_ports", failing_alloc
-                )
+                patched.setattr(ray_worker_manager._CommandActorManager, "alloc_ports", failing_alloc)
                 await manager.start_cells(["engine-0"])
 
         await manager.start_cells(["engine-0"])
@@ -1670,9 +1663,7 @@ class TestStartCellsRollback:
         manager = RayWorkerManager()
         with pytest.raises(RuntimeError, match="cannot render"):
             with pytest.MonkeyPatch.context() as patched:
-                patched.setattr(
-                    "miles.utils.workers.ray_worker_manager._CommandActorManager.post_setup", failing_post_setup
-                )
+                patched.setattr(ray_worker_manager._CommandActorManager, "post_setup", failing_post_setup)
                 await manager.init([spec], {})
 
         assert not any(info.alive for info in manager.get_cell_infos(pool_ids=["engine"]).values())
