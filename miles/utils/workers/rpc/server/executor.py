@@ -47,6 +47,10 @@ class RpcCallExecutor:
             log_structured(
                 logger.debug, phase="end", ok=True, **log_fields, elapsed_s=round(time.monotonic() - started_at, 3)
             )
+        except asyncio.CancelledError as e:
+            log_structured(logger.warning, phase="end", ok=False, cancelled=True, **log_fields)
+            finish(outcome=CallStatusResponse(status="failed", error=repr(e)))
+            raise
         except Exception as e:
             log_structured(logger.error, phase="end", ok=False, **log_fields, exc_info=True)
             outcome = CallStatusResponse(status="failed", error="".join(traceback.format_exception(e)))
