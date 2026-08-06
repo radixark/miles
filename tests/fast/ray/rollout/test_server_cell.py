@@ -47,6 +47,59 @@ class TestServerCellPrimaryEngine:
         )
 
 
+def _addressed_cell(
+    *, worker_type: str = "regular", bootstrap_port: int | None = None, **args_overrides
+) -> ServerCell:
+    engines = [ServerEngine(), ServerEngine()]
+    for index, engine in enumerate(engines):
+        engine.mark_allocated_uninitialized(fake_actor_handle())
+        engine.set_addressing(
+            AddrInfo(server_url=f"http://10.0.0.{index + 1}:3000{index}", bootstrap_port=bootstrap_port)
+        )
+        engine.mark_alive()
+    return ServerCell(args=make_args(num_gpus_per_node=8, **args_overrides), worker_type=worker_type, engines=engines)
+
+
+class TestServerCellRouterMembership:
+    async def test_register_publishes_the_primary_engine_url_and_worker_type(self):
+        """The router routes to the cell through its node-0 engine only."""
+        client = MagicMock()
+        client.add_worker = AsyncMock()
+        await _addressed_cell().register(client)
+        client.add_worker.assert_awaited_once_with(
+            worker_url="http://10.0.0.1:30000",
+            worker_type="regular",
+            use_legacy_api=False,
+            bootstrap_port=None,
+        )
+
+    async def test_register_passes_the_bootstrap_port_of_a_prefill_worker(self):
+        """PD disaggregation needs the decode side to dial this port."""
+        client = MagicMock()
+        client.add_worker = AsyncMock()
+        await _addressed_cell(worker_type="prefill", bootstrap_port=8998).register(client)
+        assert client.add_worker.await_args.kwargs["worker_type"] == "prefill"
+        assert client.add_worker.await_args.kwargs["bootstrap_port"] == 8998
+
+    async def test_unregister_removes_the_same_url_register_published(self):
+        """A mismatch would leave the router routing to a dead worker."""
+        client = MagicMock()
+        client.remove_worker = AsyncMock()
+        await _addressed_cell().unregister(client)
+        client.remove_worker.assert_awaited_once_with(worker_url="http://10.0.0.1:30000", use_legacy_api=False)
+
+    async def test_use_miles_router_pins_the_legacy_api_on_both_calls(self):
+        """--use-miles-router selects the query-string API for register and unregister alike."""
+        client = MagicMock()
+        client.add_worker = AsyncMock()
+        client.remove_worker = AsyncMock()
+        cell = _addressed_cell(use_miles_router=True)
+        await cell.register(client)
+        await cell.unregister(client)
+        assert client.add_worker.await_args.kwargs["use_legacy_api"] is True
+        assert client.remove_worker.await_args.kwargs["use_legacy_api"] is True
+
+
 def _build_servers(
     *, num_servers: int = 1, groups_per_server: int = 1, engines_per_group: int = 2, num_gpus_per_engine: int = 1
 ) -> dict[str, RolloutServer]:
