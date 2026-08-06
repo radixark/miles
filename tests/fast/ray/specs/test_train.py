@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from miles.ray.specs.train import compute_trainer_spec_name, specs_trainer
+from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TrainRayActor
 from miles.utils.workers.worker_spec import WorkerLaunchContext
 
 
@@ -129,17 +130,37 @@ class TestConstructorArguments:
 
 
 class TestConcurrencyGroups:
-    def test_fault_tolerance_isolates_the_heartbeat_rpc(self):
+    def test_the_heartbeat_rpc_is_always_isolated(self):
         """A heartbeat queued behind a train step reads as a dead cell."""
         (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
 
         assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
 
-    def test_no_groups_without_fault_tolerance(self):
-        """Runs without fault tolerance keep ray's default scheduling."""
+    def test_the_groups_do_not_depend_on_fault_tolerance(self):
+        """The actor class declares the groups statically, so the spec cannot drop them."""
         (spec,) = specs_trainer(_make_args())
 
-        assert spec.concurrency_groups is None
+        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+
+    def test_the_isolated_methods_are_annotated_on_the_actor(self):
+        """Dropping a @ray.method annotation would silently queue that call behind a train step."""
+        annotations: dict[str, str | None] = {
+            name: getattr(getattr(TrainRayActor, name), "__ray_concurrency_group__", None)
+            for name in ("get_heartbeat_status", "inject_fault")
+        }
+
+        assert annotations == {"get_heartbeat_status": "heartbeat_status", "inject_fault": "fault_injector"}
+
+    def test_every_annotated_group_is_declared(self):
+        """Ray rejects an actor whose method names a concurrency group the class never declares."""
+        annotated_groups: set[str] = {
+            group
+            for member in vars(TrainRayActor).values()
+            if (group := getattr(member, "__ray_concurrency_group__", None)) is not None
+        }
+
+        assert annotated_groups
+        assert annotated_groups <= set(TRAINER_CONCURRENCY_GROUPS)
 
 
 class TestEnvironmentVariables:

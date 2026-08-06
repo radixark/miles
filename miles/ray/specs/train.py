@@ -2,6 +2,7 @@ import copy
 import os
 from pathlib import Path
 
+from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.ft_utils.indep_dp import create_tcp_store
@@ -98,9 +99,7 @@ def _compute_spec_trainer(
             role=role,
             cell_index=ctx.cell_index,
         ),
-        concurrency_groups=(
-            {"heartbeat_status": 1, "default": 1, "fault_injector": 1} if args.use_fault_tolerance else None
-        ),
+        concurrency_groups=TRAINER_CONCURRENCY_GROUPS,
         meta=lambda ctx: dict(role=role, cell_index=ctx.cell_index),
     )
 
