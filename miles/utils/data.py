@@ -4,12 +4,17 @@ import logging
 import os
 import random
 import re
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
 from miles.utils import object_store
 from .audit_utils.witness.allocator import WitnessInfo
+
+if TYPE_CHECKING:
+    from miles.backends.megatron_utils.ft.types import TrainStepOutput
 
 try:
     import pyarrow.parquet as pq
@@ -18,7 +23,6 @@ except ImportError:
 
 from miles.utils import chat_template_utils
 from miles.utils.types import MultimodalTypes, Sample
-
 
 __all__ = ["Dataset"]
 
@@ -320,3 +324,10 @@ def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:
     data_ref = rollout_data_pack["data_ref"]
     for ref in data_ref if isinstance(data_ref, list) else [data_ref]:
         store.remove(ref)
+
+
+def remove_train_output_refs(train_outputs: Sequence["TrainStepOutput"]) -> None:
+    store = object_store.get_instance()
+    for train_output in train_outputs:
+        if (ref := train_output.values) is not None:
+            store.remove(ref)
