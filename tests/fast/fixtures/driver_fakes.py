@@ -3,6 +3,9 @@ from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
 
+from miles.utils.object_store import BaseObjectStore, ObjectStoreGetResult, StoreObjectRef, ValueSpec
+from miles.utils.ray_utils import Box
+
 
 class FakeRemoteMethod:
     def __init__(self, fn: Callable[..., Any]) -> None:
@@ -80,13 +83,19 @@ class FakeTrainingModel:
         self.role = role
         self.trained: list[int] = []
         self.saved: list[int] = []
+        self.external_data: dict[int, Any] = {}
+        self.train_outputs: dict[int, Any] = {}
         self.train_started: dict[int, asyncio.Event] = defaultdict(asyncio.Event)
+        self.consume_external_data: Callable[[Any], None] | None = None
 
-    async def train(self, rollout_id: int, rollout_data: Any, external_data: Any = None) -> str:
+    async def train(self, rollout_id: int, rollout_data: Any, external_data: Any = None) -> Any:
         self.events.append(f"{self.role}_train:{rollout_id}")
         self.trained.append(rollout_id)
+        self.external_data[rollout_id] = external_data
+        if (consume := self.consume_external_data) is not None:
+            consume(external_data)
         self.train_started[rollout_id].set()
-        return f"{self.role}-values-{rollout_id}"
+        return self.train_outputs.get(rollout_id, f"{self.role}-values-{rollout_id}")
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         self.events.append(f"{self.role}_save:{rollout_id}")
@@ -109,3 +118,25 @@ class FakeTrainingModel:
 
     async def dispose(self) -> None:
         self.events.append(f"{self.role}_dispose")
+
+
+class FakeObjectStore(BaseObjectStore):
+    def __init__(self) -> None:
+        self._values: dict[StoreObjectRef, Any] = {}
+        self.consumed: list[StoreObjectRef] = []
+
+    def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
+        ref = Box(f"fake-object-{len(self._values)}")
+        self._values[ref] = value
+        return ref
+
+    def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
+        value = self._values[ref]
+        self.consumed.append(ref)
+        return ObjectStoreGetResult(value=value, release_fn=lambda _value: None)
+
+    def remove(self, ref: StoreObjectRef) -> None:
+        del self._values[ref]
+
+    def contains(self, ref: StoreObjectRef) -> bool:
+        return ref in self._values
