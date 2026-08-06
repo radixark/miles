@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -62,15 +62,41 @@ class RayWorkerManager:
         self._group_infos = {spec.name: _GroupManager.initial(spec, self) for spec in specs}
         assert len(self._group_infos) == len(specs)
 
-        await self._for_all_cells(lambda a: a.launch_actors())
-        await self._for_all_cells(lambda a: a.alloc_ports())
-        await self._for_all_cells(lambda a: a.post_setup())
+        await self.start_cells([c.cell_id for c in self._all_cells()])
+
+    async def start_cells(self, cell_ids: list[str]) -> None:
+        cells = [cell for cell_id in cell_ids if (cell := self._find_cell(cell_id)).actors is None]
+        phases: list[Callable[[_CellManager], Awaitable[None]]] = [
+            lambda c: c.launch_actors(),
+            lambda c: c.alloc_ports(),
+            lambda c: c.post_setup(),
+        ]
+
+        errors: list[BaseException] = []
+        for phase in phases:
+            outcomes = await asyncio.gather(*[phase(c) for c in cells], return_exceptions=True)
+            failed = [c for c, outcome in zip(cells, outcomes, strict=True) if isinstance(outcome, BaseException)]
+            errors += [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
+            if failed:
+                logger.warning(f"Rolling back cells that failed to start ({[c.cell_id for c in failed]}) ({errors=})")
+                await asyncio.gather(*[c.stop() for c in failed], return_exceptions=True)
+                cells = [
+                    c for c, outcome in zip(cells, outcomes, strict=True) if not isinstance(outcome, BaseException)
+                ]
+
+        if errors:
+            raise errors[0]
+
+    async def stop_cells(self, cell_ids: list[str]) -> None:
+        await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
 
     def get_worker_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return self._find_actor(worker_name).self_addrs
 
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
-        return {name: [a.self_addrs for c in g.cells for a in c.actors] for name, g in self._group_infos.items()}
+        return {
+            name: [a.self_addrs for c in g.cells if c.alive for a in c.actors] for name, g in self._group_infos.items()
+        }
 
     def get_worker_infos(self, spec_name: str, cell_index: int) -> list[WorkerInfo]:
         cell = self._group_infos[spec_name].cells[cell_index]
@@ -93,12 +119,17 @@ class RayWorkerManager:
         return {info.cell_id: info for info in infos}
 
     def _find_actor(self, worker_name: str) -> _BaseActorManager:
-        matches = [a for g in self._group_infos.values() for c in g.cells for a in c.actors if a.name == worker_name]
+        matches = [a for c in self._all_cells() if c.alive for a in c.actors if a.name == worker_name]
         assert len(matches) == 1, f"{matches=}"
         return matches[0]
 
-    async def _for_all_cells(self, fn: Callable[[_CellManager], Any]):
-        await asyncio.gather(*[fn(c) for g in self._group_infos.values() for c in g.cells])
+    def _find_cell(self, cell_id: str) -> _CellManager:
+        matches = [c for c in self._all_cells() if c.cell_id == cell_id]
+        assert len(matches) == 1, f"{cell_id=} {matches=}"
+        return matches[0]
+
+    def _all_cells(self) -> list[_CellManager]:
+        return [c for g in self._group_infos.values() for c in g.cells]
 
 
 @dataclass(kw_only=True)
@@ -164,6 +195,8 @@ class _CellManager(Generic[SpecT]):
         await self._for_all_actors(lambda a: a.post_setup())
 
     async def stop(self) -> None:
+        if self.actors is None:
+            return
         await self._for_all_actors(lambda a: a.stop())
         self.actors = None
 
@@ -212,8 +245,11 @@ class _BaseActorManager(Generic[SpecT]):
         raise NotImplementedError
 
     async def stop(self) -> None:
+        if self.actor_handle is None:
+            return
+
         try:
-            ray.get(self.actor_handle.shutdown.remote(), timeout=_SHUTDOWN_TIMEOUT)
+            await asyncio.wait_for(self.actor_handle.shutdown.remote(), timeout=_SHUTDOWN_TIMEOUT)
         except Exception as e:
             logger.warning(f"Graceful shutdown of {self=} failed ({e})")
 
