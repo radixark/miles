@@ -236,32 +236,20 @@ def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
     assert worker._asleep is False
 
 
-def _reuse_eligibility_args(**overrides):
+def _actor_train_args(**overrides):
     defaults = dict(
-        loss_type="policy_loss",
         compute_advantages_and_returns=True,
         use_rollout_logprobs=False,
         keep_old_actor=False,
-        kl_coef=0.0,
-        use_opd=False,
-        use_tis=False,
         get_mismatch_metrics=False,
-        use_rollout_entropy=False,
-        true_on_policy_mode=False,
-        log_correct_samples=False,
-        custom_megatron_before_log_prob_hook_path=None,
-        custom_megatron_before_train_step_hook_path=None,
-        custom_model_provider_path=None,
-        dumper_enable=False,
-        dumper_fwd_only=None,
-        save_debug_train_data=None,
+        skip_forward_only=False,
     )
     return Namespace(**(defaults | overrides))
 
 
 def _actor_reuse_worker(actor_module, **args_overrides):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = _reuse_eligibility_args(use_critic=False, **args_overrides)
+    worker.args = _actor_train_args(use_critic=False, **args_overrides)
     worker.model = [object()]
     worker.optimizer = object()
     worker.opt_param_scheduler = object()
@@ -279,12 +267,12 @@ def _actor_reuse_worker(actor_module, **args_overrides):
     return worker
 
 
-def _patch_actor_reuse_dependencies(actor_module, monkeypatch, *, num_microbatches, managers=()):
+def _patch_actor_reuse_dependencies(actor_module, monkeypatch, *, num_microbatches):
     @contextmanager
     def passthrough_timer(_name):
         yield
 
-    monkeypatch.setattr(actor_module, "all_replay_managers", list(managers))
+    monkeypatch.setattr(actor_module, "all_replay_managers", [])
     monkeypatch.setattr(
         actor_module,
         "get_data_iterator",
@@ -305,17 +293,20 @@ def _patch_actor_reuse_dependencies(actor_module, monkeypatch, *, num_microbatch
 
 
 @pytest.mark.parametrize(
-    ("num_microbatches", "allow_training_logprob_reuse"),
+    ("skip_forward_only", "num_microbatches"),
     [
-        ([1], True),
-        ([2], True),
-        ([1, 1], False),
+        (False, [1]),
+        (True, [1]),
+        (True, [2]),
     ],
 )
-def test_actor_reuses_training_logprobs_for_one_optimizer_step(
-    actor_module, monkeypatch, num_microbatches, allow_training_logprob_reuse
+def test_actor_logprob_forward_is_explicit_single_step_opt_in(
+    actor_module, monkeypatch, skip_forward_only, num_microbatches
 ):
-    worker = _actor_reuse_worker(actor_module)
+    worker = _actor_reuse_worker(
+        actor_module,
+        skip_forward_only=skip_forward_only,
+    )
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=num_microbatches)
     rollout_data = {
         "num_rollouts": [1] * len(num_microbatches),
@@ -324,89 +315,38 @@ def test_actor_reuses_training_logprobs_for_one_optimizer_step(
 
     worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert worker.compute_log_prob.call_count == int(not allow_training_logprob_reuse)
+    assert worker.compute_log_prob.call_count == int(not skip_forward_only)
     assert (
         actor_module.compute_advantages_and_returns.call_args.kwargs["allow_training_logprob_reuse"]
-        is allow_training_logprob_reuse
+        is skip_forward_only
     )
     train_call = actor_module.train.call_args
     assert train_call.args[6] is rollout_data["num_rollouts"]
-    assert train_call.kwargs["allow_training_logprob_reuse"] is allow_training_logprob_reuse
+    assert train_call.kwargs["allow_training_logprob_reuse"] is skip_forward_only
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("keep_old_actor", True),
-        ("kl_coef", 0.1),
-        ("use_opd", True),
-        ("use_tis", True),
-        ("get_mismatch_metrics", True),
-        ("use_rollout_entropy", True),
-        ("true_on_policy_mode", True),
-        ("log_correct_samples", True),
-        ("custom_megatron_before_log_prob_hook_path", "hook.py:f"),
-        ("custom_megatron_before_train_step_hook_path", "hook.py:f"),
-        ("custom_model_provider_path", "provider.py:f"),
-        ("dumper_enable", True),
-        ("dumper_fwd_only", "enable=true"),
-        ("save_debug_train_data", "train-{rollout_id}.pt"),
-    ],
-)
-def test_actor_training_logprob_reuse_preserves_standalone_forward_consumers(actor_module, monkeypatch, field, value):
-    worker = _actor_reuse_worker(actor_module, **{field: value})
+def test_skip_forward_only_rejects_multiple_optimizer_steps(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, skip_forward_only=True)
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1, 1])
+    rollout_data = {"num_rollouts": [1, 1], "total_lengths": [1, 1]}
+
+    with pytest.raises(AssertionError, match="requires 1 optimizer step"):
+        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.compute_advantages_and_returns.assert_not_called()
+    actor_module.train.assert_not_called()
+
+
+def test_skip_forward_only_rejects_existing_actor_log_probs(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, skip_forward_only=True)
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
     rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
+    rollout_data["log_probs"] = [object()]
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    with pytest.raises(AssertionError, match="without actor log probs"):
+        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_called_once()
-    assert actor_module.compute_advantages_and_returns.call_args.kwargs["allow_training_logprob_reuse"] is False
-    assert actor_module.train.call_args.kwargs["allow_training_logprob_reuse"] is False
-
-
-@pytest.mark.parametrize(
-    ("args_overrides", "rollout_overrides"),
-    [
-        ({"loss_type": "value_loss"}, {}),
-        ({"compute_advantages_and_returns": False}, {}),
-        ({"use_rollout_logprobs": True}, {}),
-        ({}, {"log_probs": [object()]}),
-    ],
-)
-def test_actor_training_logprob_reuse_requires_the_policy_path_without_old_logprobs(
-    actor_module, monkeypatch, args_overrides, rollout_overrides
-):
-    worker = _actor_reuse_worker(actor_module, **args_overrides)
-    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
-    rollout_data = {"num_rollouts": [1], "total_lengths": [1], **rollout_overrides}
-
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
-
-    assert actor_module.train.call_args.kwargs["allow_training_logprob_reuse"] is False
-
-
-@pytest.mark.parametrize("consumer", ["postprocess", "replay"])
-def test_actor_training_logprob_reuse_preserves_opaque_consumers(actor_module, monkeypatch, consumer):
-    worker = _actor_reuse_worker(actor_module)
-    managers = []
-    if consumer == "postprocess":
-        worker.rollout_data_postprocess = Mock()
-    else:
-        manager = Mock()
-        manager.enabled = True
-        manager.name = "test"
-        managers.append(manager)
-    _patch_actor_reuse_dependencies(
-        actor_module,
-        monkeypatch,
-        num_microbatches=[1],
-        managers=managers,
-    )
-    rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
-
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
-
-    worker.compute_log_prob.assert_called_once()
-    assert actor_module.compute_advantages_and_returns.call_args.kwargs["allow_training_logprob_reuse"] is False
-    assert actor_module.train.call_args.kwargs["allow_training_logprob_reuse"] is False
+    worker.compute_log_prob.assert_not_called()
+    actor_module.compute_advantages_and_returns.assert_not_called()
+    actor_module.train.assert_not_called()

@@ -1453,6 +1453,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "If not set, we will use the logprobs from the actor model."
                 ),
             )
+            parser.add_argument(
+                "--skip-forward-only",
+                action="store_true",
+                default=False,
+                help=(
+                    "Skip the standalone Megatron actor log-probs forward and use detached log probs "
+                    "from the single training optimizer step as the old-policy baseline. This makes "
+                    "the actor importance log-ratio exactly 0. The skipped pass's rollout/log_probs "
+                    "metric is not emitted."
+                ),
+            )
             # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
             parser.add_argument(
                 "--use-tis",
@@ -3318,7 +3329,67 @@ def miles_validate_args(args):
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
+    if args.skip_forward_only:
+        validate_skip_forward_only(args)
+
     _maybe_apply_dumper_overrides(args)
+
+
+def validate_skip_forward_only(args) -> None:
+    option = "--skip-forward-only"
+    assert args.train_backend == "megatron", f"{option} only supports --train-backend megatron"
+    assert args.loss_type == "policy_loss", f"{option} only supports --loss-type policy_loss"
+    assert args.compute_advantages_and_returns, f"{option} requires actor advantage computation"
+
+    incompatible_options = [
+        name
+        for name, enabled in (
+            ("--use-rollout-logprobs", args.use_rollout_logprobs),
+            ("--keep-old-actor", args.keep_old_actor),
+            ("--kl-coef", args.kl_coef != 0),
+            ("--use-opd", args.use_opd),
+            ("--use-tis", args.use_tis),
+            ("--get-mismatch-metrics", args.get_mismatch_metrics),
+            ("--use-rollout-entropy", args.use_rollout_entropy),
+            ("--true-on-policy-mode", args.true_on_policy_mode),
+            ("--log-correct-samples", args.log_correct_samples),
+            ("--rollout-data-postprocess-path", args.rollout_data_postprocess_path is not None),
+            (
+                "--custom-megatron-before-log-prob-hook-path",
+                args.custom_megatron_before_log_prob_hook_path is not None,
+            ),
+            (
+                "--custom-megatron-before-train-step-hook-path",
+                args.custom_megatron_before_train_step_hook_path is not None,
+            ),
+            ("--custom-model-provider-path", args.custom_model_provider_path is not None),
+            ("--dumper-enable", args.dumper_enable),
+            ("--dumper-fwd-only", args.dumper_fwd_only is not None),
+            (
+                "--dumper-source-patcher-config-train",
+                args.dumper_source_patcher_config_train is not None,
+            ),
+            ("--dump-details", args.dump_details is not None),
+            ("--save-debug-train-data", args.save_debug_train_data is not None and args.dump_details is None),
+            ("--use-routing-replay", args.use_routing_replay),
+            ("--use-indexer-replay", args.use_indexer_replay),
+            ("--use-rollout-routing-replay", args.use_rollout_routing_replay),
+            ("--use-rollout-indexer-replay", args.use_rollout_indexer_replay),
+        )
+        if enabled
+    ]
+    assert not incompatible_options, f"{option} is incompatible with: {', '.join(incompatible_options)}"
+
+    assert args.num_steps_per_rollout in (None, 1), (
+        f"{option} requires exactly one optimizer step per rollout; "
+        f"got --num-steps-per-rollout {args.num_steps_per_rollout}"
+    )
+    if not args.use_dynamic_global_batch_size and not args.multi_lora:
+        samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
+        assert args.global_batch_size == samples_per_rollout, (
+            f"{option} requires exactly one optimizer step for {samples_per_rollout} rollout samples; "
+            f"got --global-batch-size {args.global_batch_size}"
+        )
 
 
 def validate_async_off_policy_correction(args) -> None:

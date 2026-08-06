@@ -463,35 +463,13 @@ class MegatronTrainRayActor(TrainRayActor):
     ) -> TrainStepOutcome:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
-        num_rollouts = get_num_rollouts(self.args, rollout_data, len(num_microbatches))
-        single_optimizer_step = len(num_microbatches) == 1
-        requires_standalone_forward = any(
-            (
-                self.args.keep_old_actor,
-                self.args.kl_coef != 0,
-                self.args.use_opd,
-                self.args.use_tis,
-                self.args.get_mismatch_metrics,
-                self.args.use_rollout_entropy,
-                self.args.true_on_policy_mode,
-                self.args.log_correct_samples,
-                self.rollout_data_postprocess is not None,
-                self.args.custom_megatron_before_log_prob_hook_path is not None,
-                self.args.custom_megatron_before_train_step_hook_path is not None,
-                self.args.custom_model_provider_path is not None,
-                self.args.dumper_enable or self.args.dumper_fwd_only is not None,
-                self.args.save_debug_train_data is not None,
-                any(manager.enabled for manager in all_replay_managers),
-            )
-        )
-        allow_training_logprob_reuse = (
-            single_optimizer_step
-            and self.args.loss_type == "policy_loss"
-            and self.args.compute_advantages_and_returns
-            and not self.args.use_rollout_logprobs
-            and rollout_data.get("log_probs") is None
-            and not requires_standalone_forward
-        )
+        num_optimizer_steps = len(num_microbatches)
+        num_rollouts = get_num_rollouts(self.args, rollout_data, num_optimizer_steps)
+        allow_training_logprob_reuse = self.args.skip_forward_only
+        if allow_training_logprob_reuse:
+            option = "--skip-forward-only"
+            assert num_optimizer_steps == 1, f"{option} requires 1 optimizer step, got {num_optimizer_steps}"
+            assert rollout_data.get("log_probs") is None, f"{option} requires rollout data without actor log probs"
 
         for m in all_replay_managers:
             if self._use_rollout_replay(m):
@@ -585,7 +563,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             # Train
             if not allow_training_logprob_reuse:
-                num_rollouts = get_num_rollouts(self.args, rollout_data, len(num_microbatches))
+                num_rollouts = get_num_rollouts(self.args, rollout_data, num_optimizer_steps)
             self._set_replay_stage("replay_backward")
             with timer("actor_train"):
                 train_step_outcome = train(
