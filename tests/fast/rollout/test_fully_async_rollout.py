@@ -435,7 +435,9 @@ def make_buffer(max_groups=None, max_staleness=None, stale_handler="retry"):
         max_weight_staleness=max_staleness,
         async_stale_samples_handler=stale_handler,
     )
-    buffer = data_buffer.DefaultDataBuffer(data_buffer.DataBufferConstructorInput(args=args, recycle=recycled.append))
+    buffer = data_buffer.DefaultDataBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, recycle_fn=recycled.append)
+    )
     return buffer, recycled
 
 
@@ -516,7 +518,7 @@ async def test_drain_reports_eviction_metrics(monkeypatch):
 
     # Evictions land in the buffer counters between drains; the racy overflow
     # path itself is covered by the DataBuffer tests above.
-    assert fn._output._recycle == fn._recycle
+    assert fn._output._recycle_fn == fn._recycle
     fn._output._metric_entered_groups += 8
     fn._output._metric_evicted_stale_groups = 1
     fn._output._metric_evicted_overflow_groups = 2
@@ -547,7 +549,7 @@ async def test_custom_data_buffer_path_replaces_default(monkeypatch):
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
     assert type(fn._output) is RecordingBuffer
-    assert RecordingBuffer.constructed_with.recycle == fn._recycle
+    assert RecordingBuffer.constructed_with.recycle_fn == fn._recycle
     assert len(output.samples) == 2
 
 

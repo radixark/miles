@@ -111,7 +111,7 @@ class FullyAsyncRolloutFn:
             return await self._call_eval(input)
         if self._worker is None:
             buffer_cls = load_function(self.args.custom_async_data_buffer_path) or DefaultDataBuffer
-            self._output = buffer_cls(DataBufferConstructorInput(args=self.args, recycle=self._recycle))
+            self._output = buffer_cls(DataBufferConstructorInput(args=self.args, recycle_fn=self._recycle))
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
         return await self._drain(input.rollout_id)

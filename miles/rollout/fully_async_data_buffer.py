@@ -40,7 +40,7 @@ def group_oldest_weight_version(group: Group) -> int | None:
 @dataclass(frozen=True)
 class DataBufferConstructorInput:
     args: Namespace
-    recycle: Callable[[list[Sample]], None]  # resets prompts and returns them to the data source
+    recycle_fn: Callable[[list[Sample]], None]  # resets prompts and returns them to the data source
 
 
 @dataclass
@@ -95,8 +95,9 @@ class DefaultDataBuffer(DataBuffer):
         self._evict_on_overflow = max_batches > 0
         self._capacity = max_batches * args.rollout_batch_size if max_batches else OUTPUT_QUEUE_MAX_GROUPS
         self._max_staleness = args.max_weight_staleness
-        self._stale_handler = stale_handler
-        self._recycle = input.recycle
+        self._recycle_fn = input.recycle_fn
+        # "drop" discards stale groups instead of recycling them
+        self._stale_handler_fn = input.recycle_fn if stale_handler == "retry" else (lambda prompt_group: None)
         self._entries: list[DataBufferInput] = []
         self._cond = asyncio.Condition()
         self._latest_weight_version: int | None = None
@@ -174,8 +175,7 @@ class DefaultDataBuffer(DataBuffer):
             entry = self._entries.pop(index)
             if if_exceed_staleness:
                 self._metric_evicted_stale_groups += 1
-                if self._stale_handler == "retry":
-                    self._recycle(entry.prompt_group)
+                self._stale_handler_fn(entry.prompt_group)
             else:
                 self._metric_evicted_overflow_groups += 1
-                self._recycle(entry.prompt_group)
+                self._recycle_fn(entry.prompt_group)
