@@ -2,7 +2,12 @@ import asyncio
 import logging
 import os
 
-from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
+from miles.ray.placement_group import (
+    create_rollout_components,
+    create_training_models,
+    maybe_start_api_server,
+    update_weights,
+)
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
 from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
@@ -11,7 +16,6 @@ from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
-from miles.utils.ft_utils.api_server.server import start_api_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
@@ -37,15 +41,7 @@ async def train(args):
     # create the actor and critic models
     actor_model, critic_model = await create_training_models(args, rollout_executor)
 
-    if args.api_server_port:
-        start_api_server(
-            args=args,
-            actor_model=actor_model,
-            inference_controller=inference_controller,
-            host=args.api_server_host,
-            port=args.api_server_port,
-            ft_components=args.ft_components,
-        )
+    maybe_start_api_server(args, actor_model=actor_model, inference_controller=inference_controller)
 
     maybe_start_mini_ft_controller(args)
 

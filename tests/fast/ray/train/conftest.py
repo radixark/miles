@@ -14,6 +14,7 @@ from miles.utils.ft_utils.health_checker import BaseHealthChecker, NoopHealthChe
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import retry
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 fake_worker_manager: FakeWorkerManager | None = None
@@ -29,11 +30,6 @@ def _patch_worker_backends(monkeypatch: pytest.MonkeyPatch):
     global fake_worker_manager
     fake_worker_manager = FakeWorkerManager()
     monkeypatch.setattr(RayWorkerManager, "get_handle", lambda: fake_worker_manager)
-    monkeypatch.setattr(
-        RayWorkerProvider,
-        "create",
-        lambda *, pool_ids=None: RayWorkerProvider(worker_manager_handle=fake_worker_manager, pool_ids=pool_ids),
-    )
     yield
     fake_worker_manager.kill_all_actors()
 
@@ -81,6 +77,8 @@ class RecordingHealthChecker(BaseHealthChecker):
 
     async def _run(self) -> None:
         self.task_started = True
+def make_provider() -> BaseWorkerProvider:
+    return RayWorkerProvider(worker_manager_handle=fake_worker_manager)
 
 
 def get_raw_actor_handles(cell: TrainerCell) -> list[ray.actor.ActorHandle]:
@@ -120,6 +118,7 @@ def make_cell(
         cell_index=cell_index,
         workers_hash="pseudo-hash-1",
         health_checker=health_checker if health_checker is not None else NoopHealthChecker(),
+        provider=make_provider(),
     )
 
 

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import ray
 from tests.fast.ray.train import conftest as train_conftest
-from tests.fast.ray.train.conftest import get_raw_actor_handles
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_provider
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
@@ -70,6 +70,8 @@ def _make_controller(
         role="actor",
         with_ref=with_ref,
         with_opd_teacher=with_opd_teacher,
+        cell_provider=make_provider(),
+        cell_operations=AsyncMock(),
         inference_controller=inference_controller,
     )
     group.args = _make_mock_args(

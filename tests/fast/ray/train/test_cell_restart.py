@@ -6,11 +6,12 @@ from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_cell
 
 from miles.ray.train import cell as cell_module
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 pytestmark = pytest.mark.asyncio
 
 
-class _HangingKillSelfHandle:
+class _HangingKillSelfHandle(BaseWorkerHandle):
     """A worker handle whose kill_self never returns, so _kill_worker has to time it out."""
 
     def __init__(self) -> None:
@@ -21,8 +22,14 @@ class _HangingKillSelfHandle:
         self.kill_self_call_count += 1
         await asyncio.Event().wait()
 
+    async def wait_ready(self, *, timeout: float) -> None:
+        raise NotImplementedError
+
     async def wait_dead(self, *, timeout: float) -> None:
         self.wait_dead_call_count += 1
+
+    async def _probe_is_dead(self) -> bool:
+        raise NotImplementedError
 
 
 class TestCellKillAndRestart:
@@ -76,6 +83,7 @@ class TestKillRpcTimeout:
 
         await asyncio.wait_for(cell._kill_workers_and_confirm_dead(), timeout=10.0)
 
+        assert [handle.wait_dead_call_count for handle in hanging_handles] == [1, 1]
         assert [handle.kill_self_call_count for handle in hanging_handles] == [1, 1]
         assert [handle.wait_dead_call_count for handle in hanging_handles] == [1, 1]
 

@@ -3,16 +3,27 @@ import os
 from pathlib import Path
 
 from miles.ray.specs.inference import create_inference_controller_handle
-from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TRAINER_METHOD_CONCURRENCY_GROUPS
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.ft_utils.indep_dp import create_tcp_store
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
+from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec, WorkerLaunchContext
+from miles.utils.workers.worker_spec import (
+    MASTER_PORT_NAME,
+    PortInfo,
+    SchedulingSpec,
+    ServeWorkerSpec,
+    WorkerLaunchContext,
+)
 
-MASTER_PORT_NAME = "master"
+TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
+TRAINER_METHOD_CONCURRENCY_GROUPS = {
+    "get_heartbeat_status": "heartbeat_status",
+    "inject_fault": "fault_injector",
+    "kill_self": "kill_self",
+}
 
 TRAINER_CONTROLLER_WORKER_CLASS = "miles.ray.train.group.TrainerController"
 
@@ -44,11 +55,10 @@ def spec_trainer_controller_critic(args) -> ServeWorkerSpec:
     )
 
 
-def create_trainer_controller_handle(*, role: str) -> BaseWorkerHandle:
-    from miles.utils.workers.worker_provider.ray import RayWorkerProvider
-
-    provider = RayWorkerProvider.create()  # TODO inject instance
-    return provider.get_handle(trainer_controller_worker_name(role))
+def create_trainer_controller_handle(*, capability: BackendCapability, role: str) -> BaseWorkerHandle:
+    worker_name = trainer_controller_worker_name(role)
+    provider = capability.static_worker_provider(pool_id=compute_trainer_controller_pool_id(role))
+    return provider.get_handle(worker_name)
 
 
 def compute_trainer_controller_pool_id(role: str) -> str:
@@ -81,11 +91,15 @@ def _compute_spec_trainer_controller(
             num_cpus_per_worker=1,
         ),
         worker_class=TRAINER_CONTROLLER_WORKER_CLASS,
-        ctor_kwargs=lambda _ctx: dict(
+        ctor_kwargs=lambda ctx: dict(
             role=role,
             with_ref=with_ref,
             with_opd_teacher=with_opd_teacher,
-            inference_controller=create_inference_controller_handle() if drives_inference else None,
+            cell_provider=ctx.capability.dynamic_worker_provider(pool_ids=[compute_trainer_pool_id(role)]),
+            cell_operations=ctx.capability.cell_operations(),
+            inference_controller=(
+                create_inference_controller_handle(capability=ctx.capability) if drives_inference else None
+            ),
         ),
     )
 

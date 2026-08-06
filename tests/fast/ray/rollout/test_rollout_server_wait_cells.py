@@ -8,6 +8,7 @@ import pytest
 from miles.ray.rollout import rollout_server as rollout_server_module
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.utils.context_lock import ContextLock
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 
 @pytest.fixture(autouse=True)
@@ -26,11 +27,17 @@ class _FakeCell:
         return self.ready
 
 
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise AssertionError(f"no cell in this module is ever addressed ({worker_name=})")
+
+
 def _make_server(*, colocate: bool, expected_num_cells: int, cells: dict | None = None) -> RolloutServer:
     return RolloutServer(
         server_cells=cells if cells is not None else {},
         args=SimpleNamespace(colocate=colocate),
         context_lock=ContextLock("InferenceController"),
+        engine_provider=_StubProvider(),
         expected_num_cells=expected_num_cells,
     )
 

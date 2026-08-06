@@ -149,13 +149,36 @@ class _RecordingEvalFleet:
         self.router_host = router_host
         self.router_port = router_port
 
+    async def dispose(self) -> None:
+        return None
 
-def _make_controller(servers: dict) -> InferenceController:
+
+class _FakeWorkerProvider:
+    def __init__(self, cell_infos: list[CellInfo], *, pool_ids: list[str] | None = None) -> None:
+        self._cell_infos = cell_infos
+        self._pools = pool_ids or []
+        self.watched_pool_ids: list[str] | None = None
+
+    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+        self.watched_pool_ids = list(self._pools)
+        for info in self._cell_infos:
+            if info.pool_id in self._pools:
+                await reconcile(info.cell_id, info)
+
+        async def _stop_watch() -> None:
+            return None
+
+        return _stop_watch
+
+
+def _make_controller(servers: dict, *, engine_provider: _FakeWorkerProvider | None = None) -> InferenceController:
     controller = InferenceController.__new__(InferenceController)
     controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False, ci_test=False, colocate=False)
     controller.servers = servers
     controller.context_lock = ContextLock("InferenceController")
     controller._health_checker_activeness = ActivenessTracker(active=True)
+    controller._engine_provider = engine_provider if engine_provider is not None else _FakeWorkerProvider([])
+    controller._router_provider = _FakeWorkerProvider([])
     return controller
 
 
@@ -194,18 +217,19 @@ class TestHealthCheckerActiveness:
     @pytest.mark.asyncio
     async def test_preparing_a_rollout_awaits_the_dashboard_engine_registration(self, monkeypatch):
         """The dashboard hook is a coroutine, so prepare_rollout must await it instead of leaving it unscheduled."""
-        awaited: list[dict] = []
+        awaited: list[tuple[dict, _FakeWorkerProvider]] = []
 
-        async def _record(servers: dict) -> None:
-            awaited.append(servers)
+        async def _record(servers: dict, *, provider: _FakeWorkerProvider) -> None:
+            awaited.append((servers, provider))
 
         monkeypatch.setattr(dashboard_hooks, "register_engines", _record)
         servers = {"default": _RecordingServer()}
-        controller = _make_controller(servers)
+        engine_provider = _FakeWorkerProvider([])
+        controller = _make_controller(servers, engine_provider=engine_provider)
 
         await controller.prepare_rollout(rollout_id=0)
 
-        assert awaited == [servers]
+        assert awaited == [(servers, engine_provider)]
 
     @pytest.mark.asyncio
     async def test_preparing_an_eval_resumes_probing(self):
@@ -304,33 +328,7 @@ class TestReconcile:
         assert servers["model-b"].calls == []
 
 
-class _FakeWorkerProvider:
-    def __init__(self, cell_infos: list[CellInfo]) -> None:
-        self._cell_infos = cell_infos
-        self._pools: list[str] = []
-        self.watched_pool_ids: list[str] | None = None
-        self.stop_watch_calls = 0
-
-    def created_with(self, pool_ids: list[str]) -> "_FakeWorkerProvider":
-        self._pools = list(pool_ids)
-        return self
-
-    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
-        pool_ids = self._pools
-        self.watched_pool_ids = list(pool_ids)
-        for info in self._cell_infos:
-            if info.pool_id in pool_ids:
-                await reconcile(info.cell_id, info)
-
-        async def _stop_watch() -> None:
-            self.stop_watch_calls += 1
-
-        return _stop_watch
-
-
-def _patch_init(
-    monkeypatch: pytest.MonkeyPatch, *, provider: _FakeWorkerProvider, servers: dict[str, _RecordingServer]
-) -> None:
+def _patch_init(monkeypatch: pytest.MonkeyPatch, *, servers: dict[str, _RecordingServer]) -> None:
     async def _fake_create_rollout_servers(args: Namespace, **kwargs: Any) -> dict[str, _RecordingServer]:
         return servers
 
@@ -339,12 +337,25 @@ def _patch_init(
 
     monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
     monkeypatch.setattr(inference_controller_module, "resolve_router_addrs", _fake_resolve_router_addrs)
-    monkeypatch.setattr(
-        inference_controller_module,
-        "RayWorkerProvider",
-        SimpleNamespace(create=lambda *, pool_ids: provider.created_with(pool_ids)),
-        raising=True,
-    )
+
+
+class _RefusingWorkerProvider(_FakeWorkerProvider):
+    """A provider a run must never touch, so touching it is the failure."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+
+    async def init(self) -> None:
+        raise AssertionError("debug_train_only must not init any worker provider")
+
+    async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
+        raise AssertionError("debug_train_only must not watch cells")
+
+
+async def _init_controller(args: Namespace, *, engine_provider: _FakeWorkerProvider) -> None:
+    controller = InferenceController(args, engine_provider=engine_provider, router_provider=_FakeWorkerProvider([]))
+    await controller.init()
+    await controller.dispose()
 
 
 class TestReconcileAfterAFailedInit:
@@ -365,6 +376,7 @@ class TestReconcileAfterAFailedInit:
             server_cells={},
             args=SimpleNamespace(colocate=False, ft_components=[]),
             context_lock=controller.context_lock,
+            engine_provider=_FakeWorkerProvider([]),
         )
         controller.servers = {"model-a": srv}
         info = _make_cell_info()
@@ -389,6 +401,7 @@ class TestReconcileAfterAFailedInit:
             server_cells={},
             args=SimpleNamespace(colocate=False, ft_components=[]),
             context_lock=controller.context_lock,
+            engine_provider=_FakeWorkerProvider([]),
         )
         controller.servers = {"model-a": srv}
         info = _make_cell_info()
@@ -429,13 +442,13 @@ class TestGlobalHealthCheckerActiveness:
 
 class TestInitSubscription:
     @pytest.mark.asyncio
-    async def test_init_watches_exactly_the_engine_specs(self, monkeypatch: pytest.MonkeyPatch):
-        """init must subscribe to engine specs only; a router spec here is reconciled as an engine."""
+    async def test_init_watches_the_engine_provider_it_was_handed(self, monkeypatch: pytest.MonkeyPatch):
+        """The pools are the provider's own, so the controller may only open a watch on what it was given."""
         args = make_args()
-        provider = _FakeWorkerProvider([])
-        _patch_init(monkeypatch, provider=provider, servers={"default": _RecordingServer()})
+        provider = _FakeWorkerProvider([], pool_ids=compute_engine_pool_ids(args))
+        _patch_init(monkeypatch, servers={"default": _RecordingServer()})
 
-        await InferenceController(args).init()
+        await _init_controller(args, engine_provider=provider)
 
         assert provider.watched_pool_ids == compute_engine_pool_ids(args)
         assert compute_router_pool_id(0) not in provider.watched_pool_ids
@@ -453,12 +466,12 @@ class TestInitSubscription:
             workers_hash="pseudo-hash-router",
             meta={},
         )
-        engine_info = _make_cell_info(model_id="default")
-        provider = _FakeWorkerProvider([router_info, engine_info])
+        engine_info = _make_cell_info(model_id="default", pool_id=compute_engine_pool_ids(args)[0])
+        provider = _FakeWorkerProvider([router_info, engine_info], pool_ids=compute_engine_pool_ids(args))
         srv = _RecordingServer()
-        _patch_init(monkeypatch, provider=provider, servers={"default": srv})
+        _patch_init(monkeypatch, servers={"default": srv})
 
-        await InferenceController(args).init()
+        await _init_controller(args, engine_provider=provider)
 
         assert srv.calls == [("add", engine_info.cell_id)]
 
@@ -540,7 +553,12 @@ class TestServersShareTheControllerLock:
     async def test_reconcile_can_drive_the_server_it_owns(self):
         """The controller lock is the very lock its servers require, so reconcile works end to end."""
         controller = _make_controller({})
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace(), context_lock=controller.context_lock)
+        srv = RolloutServer(
+            server_cells={},
+            args=SimpleNamespace(),
+            context_lock=controller.context_lock,
+            engine_provider=_FakeWorkerProvider([]),
+        )
         controller.servers = {"default": srv}
         info = _make_cell_info()
 
@@ -551,7 +569,12 @@ class TestServersShareTheControllerLock:
     async def test_a_server_holding_a_foreign_lock_is_rejected(self):
         """A server wired up with its own lock instead of the controller's is a wiring bug."""
         controller = _make_controller({})
-        srv = RolloutServer(server_cells={}, args=SimpleNamespace(), context_lock=ContextLock("InferenceController"))
+        srv = RolloutServer(
+            server_cells={},
+            args=SimpleNamespace(),
+            context_lock=ContextLock("InferenceController"),
+            engine_provider=_FakeWorkerProvider([]),
+        )
         controller.servers = {"default": srv}
 
         with pytest.raises(AssertionError, match="must be called with"):
