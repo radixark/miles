@@ -60,7 +60,7 @@ async def train(args):
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
         await inference_controller.prepare_eval()
-        await rollout_executor.eval.remote(0)
+        await rollout_executor.eval(rollout_id=0)
 
     async def save_training_model(model, rollout_id, force_sync):
         if args.use_critic and args.offload_train:
@@ -71,7 +71,7 @@ async def train(args):
 
     async def prepare_and_generate(rollout_id):
         await inference_controller.prepare_rollout(rollout_id)
-        return await rollout_executor.get.remote(rollout_id)
+        return await rollout_executor.get(rollout_id)
 
     # async train loop.
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
@@ -105,7 +105,7 @@ async def train(args):
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
-            await rollout_executor.save.remote(rollout_id)
+            await rollout_executor.save(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
@@ -117,7 +117,7 @@ async def train(args):
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await inference_controller.prepare_eval()
-            await rollout_executor.eval.remote(rollout_id)
+            await rollout_executor.eval(rollout_id)
 
         if (
             args.debug_exit_after_rollout is not None
@@ -130,7 +130,7 @@ async def train(args):
             )
             break
 
-    await rollout_executor.dispose.remote()
+    await rollout_executor.dispose()
     await inference_controller.dispose()
     await actor_model.dispose()
     if critic_model is not None:
