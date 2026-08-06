@@ -11,6 +11,15 @@ from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_serve
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_spec_names
+from miles.utils.context_lock import (
+    ContextLock,
+    acquires_lock,
+    enforce_lock_discipline,
+    lock_exempt,
+    releases_lock,
+    requires_lock,
+    with_lock,
+)
 from miles.utils.misc import SimpleTicker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -23,12 +32,14 @@ CELLS_READY_POLL_INTERVAL_SECONDS = 2.0
 CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
+@enforce_lock_discipline
 class InferenceController:
     @staticmethod
+    @lock_exempt
     async def create(args) -> "InferenceController":
         controller = InferenceController(args)
         if not args.debug_train_only:
-            controller.servers = await create_rollout_servers(args)
+            controller.servers = await create_rollout_servers(args, context_lock=controller.context_lock)
 
             # TODO: may change to InferenceController.init(engine_provider, ...) later
             provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
@@ -44,8 +55,10 @@ class InferenceController:
 
         return controller
 
+    @lock_exempt
     def __init__(self, args):
         self.args = args
+        self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
         self.rollout_id = -1
         self._watcher_disposers: list[StopWatchFn] = []
@@ -53,6 +66,7 @@ class InferenceController:
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
+    @with_lock
     async def prepare_rollout(self, rollout_id):
         self.rollout_id = rollout_id
         await self._health_monitoring_resume()
@@ -60,9 +74,11 @@ class InferenceController:
             await self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
 
+    @with_lock
     async def prepare_eval(self):
         await self._health_monitoring_resume()
 
+    @with_lock
     async def dispose(self):
         if (ticker := self._ticker) is not None:
             self._ticker = None
@@ -75,23 +91,32 @@ class InferenceController:
     # -------------------------- offload/onload -----------------------------
 
     # TODO may parallelly execute offload/onload across services
+    @with_lock
     async def offload(self, tags: list[str] | None = None):
         await self._health_monitoring_pause()
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
+    @with_lock
     async def onload(self, tags: list[str] | None = None):
+        await self._onload(tags=tags)
+
+    @with_lock
+    async def onload_weights(self):
+        await self._onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+
+    @with_lock
+    async def onload_kv(self):
+        await self._onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+
+    @requires_lock
+    async def _onload(self, tags: list[str] | None):
         for srv in self.servers.values():
             await srv.onload(tags)
 
-    async def onload_weights(self):
-        await self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
-
-    async def onload_kv(self):
-        await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
-
     # -------------------------- engine management -----------------------------
 
+    @acquires_lock
     async def start_update_weights(self) -> "UpdatableEngines":
         """Return engines eligible for weight updates."""
         await self._health_monitoring_pause()
@@ -113,6 +138,7 @@ class InferenceController:
             snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
         )
 
+    @releases_lock
     async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]):
         await asyncio.gather(
             *[
@@ -125,6 +151,7 @@ class InferenceController:
             ]
         )
 
+    @requires_lock
     async def _ensure_cells_ready(self) -> None:
         deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
         while True:
@@ -140,11 +167,14 @@ class InferenceController:
                     f"{len(pending)}/{len(cells)} cells to become ready"
                 )
             logger.info(f"Waiting for {len(pending)}/{len(cells)} cells to become ready...")
-            await asyncio.sleep(CELLS_READY_POLL_INTERVAL_SECONDS)
+            async with self.context_lock.with_released():
+                await asyncio.sleep(CELLS_READY_POLL_INTERVAL_SECONDS)
 
+    @with_lock
     async def recover_updatable_engines(self) -> None:
         raise NotImplementedError("new ft to be implemented")
 
+    @requires_lock
     def _get_updatable_server(self) -> RolloutServer | None:
         updatable = [srv for srv in self.servers.values() if srv.update_weights]
         match updatable:
@@ -160,6 +190,7 @@ class InferenceController:
 
     # -------------------------- misc APIs -----------------------------
 
+    @with_lock
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
     ):
@@ -173,6 +204,7 @@ class InferenceController:
 
     # -------------------------- tick -----------------------------
 
+    @with_lock
     async def _tick_cells(self) -> None:
         cells = [cell for srv in list(self.servers.values()) for cell in list(srv.server_cells.values())]
         results = await asyncio.gather(
@@ -185,6 +217,7 @@ class InferenceController:
 
     # -------------------------- reconcile -----------------------------
 
+    @with_lock
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
         observed_cell_meta: ServerCellMetadata | None = (
             _compute_server_cell_meta_from_info(observed) if observed is not None else None
@@ -211,12 +244,15 @@ class InferenceController:
 
     # -------------------------- utils -----------------------------
 
+    @requires_lock
     async def _health_monitoring_pause(self) -> None:
         self._assert_rollout_fault_tolerance_is_unsupported()
 
+    @requires_lock
     async def _health_monitoring_resume(self) -> None:
         self._assert_rollout_fault_tolerance_is_unsupported()
 
+    @requires_lock
     def _assert_rollout_fault_tolerance_is_unsupported(self) -> None:
         if not self.args.debug_train_only and self.args.use_fault_tolerance:
             raise NotImplementedError(
@@ -225,12 +261,14 @@ class InferenceController:
             )
 
     @property
+    @requires_lock
     def _server(self) -> RolloutServer | None:
         """Default server (first model).  For backward compatibility."""
         if not self.servers:
             return None
         return next(iter(self.servers.values()))
 
+    @requires_lock
     async def _try_ci_fault_injection(self):
         raise NotImplementedError("rollout fault injection is being rebuilt with rollout fault tolerance")
 

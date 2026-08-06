@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Callable
 from types import TracebackType
-from typing import Any
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +21,21 @@ _DISCIPLINE_OWNER_ATTRIBUTE_NAME: str = "_context_lock_discipline_owner"
 # the annotation machinery (PEP 649) plants these in the class dict; they are not methods of the class
 _ANNOTATION_MEMBER_NAMES: frozenset[str] = frozenset({"__annotate__", "__annotate_func__"})
 
-_held_lock: contextvars.ContextVar["ContextLock | None"] = contextvars.ContextVar("held_context_lock", default=None)
+
+class _LockGrant(NamedTuple):
+    lock: "ContextLock"
+    generation: int
+
+
+_held_lock: contextvars.ContextVar["_LockGrant | None"] = contextvars.ContextVar("held_context_lock", default=None)
 
 
 class ContextLock:
     def __init__(self, name: str) -> None:
         self._name = name
         self._lock = asyncio.Lock()
+        self._generation_counter: int = 0
+        self._active_generation: int | None = None
         self._detached = False
 
     @property
@@ -40,7 +48,10 @@ class ContextLock:
 
     @property
     def held_in_current_context(self) -> bool:
-        return _held_lock.get() is self
+        if self._active_generation is None:
+            return False
+        grant = _held_lock.get()
+        return grant is not None and grant.lock is self and grant.generation == self._active_generation
 
     async def __aenter__(self) -> "ContextLock":
         await self.acquire()
@@ -55,16 +66,17 @@ class ContextLock:
         self.release()
 
     async def acquire(self) -> None:
-        assert _held_lock.get() is None, f"Cannot acquire lock {self._name!r}: a context lock is already held"
+        self._assert_no_live_grant("acquire")
         wait_reminder = asyncio.ensure_future(self._remind_while_waiting())
         try:
             await self._lock.acquire()
         finally:
             wait_reminder.cancel()
-        _held_lock.set(self)
+        _held_lock.set(_LockGrant(lock=self, generation=self._issue_generation()))
 
     def release(self) -> None:
         self._assert_held_in_current_context()
+        self._active_generation = None
         _held_lock.set(None)
         self._lock.release()
 
@@ -79,16 +91,29 @@ class ContextLock:
     def detach(self) -> None:
         self._assert_held_in_current_context()
         self._detached = True
+        self._active_generation = None
         _held_lock.set(None)
 
     def reattach(self) -> None:
         assert self._detached, f"Cannot reattach lock {self._name!r}: it was not detached"
-        assert _held_lock.get() is None, f"Cannot reattach lock {self._name!r}: a context lock is already held"
+        assert self._lock.locked(), f"Cannot reattach lock {self._name!r}: it is no longer locked"
+        self._assert_no_live_grant("reattach")
         self._detached = False
-        _held_lock.set(self)
+        _held_lock.set(_LockGrant(lock=self, generation=self._issue_generation()))
+
+    def _issue_generation(self) -> int:
+        self._generation_counter += 1
+        self._active_generation = self._generation_counter
+        return self._generation_counter
+
+    def _assert_no_live_grant(self, action: str) -> None:
+        grant = _held_lock.get()
+        assert (
+            grant is None or not grant.lock.held_in_current_context
+        ), f"Cannot {action} lock {self._name!r}: a context lock is already held"
 
     def _assert_held_in_current_context(self) -> None:
-        assert _held_lock.get() is self, f"Lock {self._name!r} must be held by the current context"
+        assert self.held_in_current_context, f"Lock {self._name!r} must be held by the current context"
 
     async def _remind_while_waiting(self) -> None:
         wait_start_time = time.monotonic()

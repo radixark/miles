@@ -16,6 +16,7 @@ from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+from miles.utils.context_lock import ContextLock
 
 _CELL_MODULE = "miles.ray.rollout.server_cell"
 
@@ -68,6 +69,7 @@ def _build_server(
     srv = RolloutServer(
         server_cells={cell.cell_id: cell for cell in cells},
         args=args,
+        context_lock=ContextLock("InferenceController"),
         router_ip=router_ip,
         router_port=router_port,
     )
