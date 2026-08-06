@@ -97,11 +97,11 @@ def _compute_server_args(
     host,
     port,
     worker_type: str = "regular",
-    disaggregation_bootstrap_port: int | None = None,
+    disaggregation_bootstrap_port: int | None,
     base_gpu_id: int,
-    engine_info_bootstrap_port: int | None = None,
-    sglang_overrides: dict | None = None,
-    num_gpus_per_engine: int | None = None,
+    engine_info_bootstrap_port: int | None,
+    sglang_overrides: dict | None,
+    num_gpus_per_engine: int | None,
 ):
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
