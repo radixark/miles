@@ -6,7 +6,7 @@ from miles.ray.specs.entrypoint import compute_specs
 
 
 class TestComputeSpecs:
-    def test_launches_routers_then_the_session_server_then_every_real_engine_group(self, tmp_path):
+    def test_launches_the_controller_then_routers_then_the_session_server_then_every_engine(self, tmp_path):
         """The manager's whole inventory comes from here, so every component must be listed exactly once."""
         config_path = tmp_path / "sglang.yaml"
         config_path.write_text(
@@ -23,6 +23,7 @@ class TestComputeSpecs:
         specs = compute_specs(args)
 
         assert [spec.name for spec in specs] == [
+            "inference-controller",
             "inference-router-0",
             "session-server",
             "inference-engine-0-0",

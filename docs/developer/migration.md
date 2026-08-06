@@ -76,7 +76,7 @@ Same pattern applies to `offload`, `onload` and `clear_memory`.
 
 | | Owns | Lives in |
 |---|---|---|
-| `InferenceController` | sglang servers, router, engine lock, health monitors | the driver, as a plain object |
+| `InferenceController` | sglang servers, router, engine lock, health monitors | its own Ray actor |
 | `RolloutExecutor` | data source, rollout functions, data conversion | its own Ray actor |
 
 ```diff
@@ -93,14 +93,16 @@ Same pattern applies to `offload`, `onload` and `clear_memory`.
 + await inference_controller.onload_weights()
 ```
 
-The controller is not a Ray actor, so nothing inside another actor may call it. Train
-actors no longer hold the executor handle: the driver reads `get_train_parallel_config()`
-off the trainer and writes it into the executor, and the trainer group — which runs in the
-driver — brackets the weight update with `start_update_weights` / `end_update_weights`
-instead of rank 0 doing it. Whether the
-trainer must reconnect is derived from the cell snapshot those calls carry, not from a
-hand-maintained flag. `start_api_server` (formerly `start_control_server`) takes
-`inference_controller=`.
+- Both halves are workers of the run, and the driver only ever holds handles to them. The
+  controller is constructed inside its own process from the providers its spec names, and
+  the driver starts it with `await inference_controller.init()`; every later call is rpc.
+- Train actors no longer hold the executor handle. The driver reads
+  `get_train_parallel_config()` off the trainer and writes it into the executor.
+- The trainer group, which runs in the driver, brackets the weight update with
+  `start_update_weights` / `end_update_weights` instead of rank 0 doing it.
+- Whether the trainer must reconnect is derived from the cell snapshot those calls carry,
+  not from a hand-maintained flag.
+- `start_api_server` (formerly `start_control_server`) takes `inference_controller=`.
 
 `RolloutExecutor.generate` is now `RolloutExecutor.get`: the executor hands over data
 the rollout already produced, it does not itself generate.
