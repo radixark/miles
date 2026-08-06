@@ -45,6 +45,8 @@ RETRYABLE_ERRORS = (httpx.TransportError, TimeoutError, asyncio.TimeoutError, Re
 
 NEVER_REACHED_SERVER_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
+WORKER_IS_GONE_ERRORS = (httpx.ConnectError,)
+
 
 class RpcTransport:
     def __init__(self, *, server_url: str, http_client: httpx.AsyncClient | None, boot_uuid_pin: BootUuidPin) -> None:
