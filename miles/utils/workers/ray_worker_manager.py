@@ -12,6 +12,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import _wrap_ipv6
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
@@ -381,11 +382,12 @@ class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
     async def launch_actor(self) -> None:
         self.actor_handle = self._create_actor(
             self._compute_actor_class(),
-            **self.spec.ctor_kwargs(self.launch_context),
+            ctor_kwargs=self.spec.ctor_kwargs,
+            context=self.launch_context,
         )
 
     def _compute_actor_class(self) -> type:
-        actor_class = load_function(self.spec.worker_class)
+        actor_class = bootstrapped_worker_class(self.spec.worker_class)
         if (method_groups := self.spec.method_concurrency_groups) is None:
             return actor_class
         return type(
@@ -407,6 +409,22 @@ def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Calla
         return method(self, *args, **kwargs)
 
     return ray.method(concurrency_group=group)(routed)
+
+
+@functools.cache
+def bootstrapped_worker_class(worker_class_path: str) -> type:
+    worker_class = load_function(worker_class_path)
+
+    class BootstrappedWorker(worker_class, NodeProbeMixin):
+        def __init__(
+            self, *, ctor_kwargs: Callable[[WorkerLaunchContext], dict[str, Any]], context: WorkerLaunchContext
+        ) -> None:
+            super().__init__(**ctor_kwargs(context))
+
+    BootstrappedWorker.__name__ = worker_class.__name__
+    BootstrappedWorker.__qualname__ = worker_class.__qualname__
+    BootstrappedWorker.__module__ = worker_class.__module__
+    return BootstrappedWorker
 
 
 async def _gather_or_raise(coros: list[Coroutine[Any, Any, None]]) -> None:
