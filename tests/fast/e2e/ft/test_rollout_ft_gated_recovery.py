@@ -21,10 +21,17 @@ from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.ft_utils.mini_ft_controller import _compute_cell_snapshot, _MiniFTController
+from miles.utils.workers.cell_operations.ray import RayCellOperations
 from miles.utils.workers.worker_provider.base import CellInfo
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 _SPEC_NAME = "inference-engine-0"
 _CELL_IDS = ["inference-engine-0-0-0", "inference-engine-0-0-1"]
+
+
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise AssertionError(f"this module addresses cells through a patched _compute_addr_info ({worker_name=})")
 
 
 class _FakeRouter:
@@ -165,6 +172,7 @@ class _Harness:
                 server_cells={},
                 args=self.args,
                 context_lock=self.controller.context_lock,
+                engine_provider=_StubProvider(),
                 router_ip="10.0.0.9",
                 router_port=20000,
                 model_name="default",
@@ -175,7 +183,7 @@ class _Harness:
         self.worker_manager = _FakeWorkerManager(cell_ids=_CELL_IDS, reconcile=self.controller._reconcile)
         self.handler = _CellHandler(
             cell_type="rollout",
-            worker_manager=self.worker_manager,
+            operations=RayCellOperations(worker_manager_handle=self.worker_manager),
             controller=self.controller,
             spec_names=[_SPEC_NAME],
         )

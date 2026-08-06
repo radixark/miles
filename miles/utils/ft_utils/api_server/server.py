@@ -12,6 +12,7 @@ from miles.ray.specs.train import compute_trainer_spec_name
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
+from miles.utils.workers.cell_operations.ray import RayCellOperations
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
@@ -30,12 +31,14 @@ def start_api_server(
     ft_components: list[str],
 ) -> None:
     handlers: list[_CellHandler] = []
+    # TODO inject instead of building the ray flavour here
+    cell_operations = RayCellOperations(worker_manager_handle=RayWorkerManager.get_handle())
 
     if "train" in ft_components:
         handlers.append(
             _CellHandler(
                 cell_type="actor",
-                worker_manager=RayWorkerManager.get_handle(),
+                operations=cell_operations,
                 controller=actor_model,
                 spec_names=[compute_trainer_spec_name("actor")],
             )
@@ -45,7 +48,7 @@ def start_api_server(
         handlers.append(
             _CellHandler(
                 cell_type="rollout",
-                worker_manager=RayWorkerManager.get_handle(),
+                operations=cell_operations,
                 controller=inference_controller,
                 spec_names=compute_engine_spec_names(args),
             )
