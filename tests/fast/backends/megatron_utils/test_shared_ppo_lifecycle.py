@@ -12,6 +12,7 @@ import torch
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.utils import object_store
 from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 
@@ -472,6 +473,8 @@ def _noop_timer(_name: str) -> Iterator[None]:
 
 def _patch_shared_train_helpers(actor_module: Any, monkeypatch: pytest.MonkeyPatch, fake_ray: _FakeRay) -> None:
     monkeypatch.setattr(actor_module, "ray", fake_ray)
+    monkeypatch.setattr(object_store, "ray", fake_ray)
+    monkeypatch.setattr(object_store, "_INSTANCE", object_store.RayObjectStore())
     monkeypatch.setattr(actor_module, "all_replay_managers", [])
     monkeypatch.setattr(actor_module, "get_data_iterator", lambda *_args, **_kwargs: (object(), [1]))
     monkeypatch.setattr(actor_module, "compute_advantages_and_returns", lambda *_args, **_kwargs: None)
