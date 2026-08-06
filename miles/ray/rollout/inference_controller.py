@@ -66,7 +66,6 @@ class InferenceController:
         self.args = args
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
-        self.rollout_id = -1
         self._watcher_disposers: list[StopWatchFn] = []
         self._health_checker_activeness = ActivenessTracker(active=True)
         self._ticker: SimpleTicker | None = None
@@ -75,7 +74,6 @@ class InferenceController:
 
     @with_lock
     async def prepare_rollout(self, rollout_id):
-        self.rollout_id = rollout_id
         await self._health_monitoring_resume()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             await self._try_ci_fault_injection()
@@ -179,10 +177,6 @@ class InferenceController:
             logger.info(f"Waiting for {len(pending)}/{len(cells)} cells to become ready...")
             async with self.context_lock.with_released():
                 await asyncio.sleep(CELLS_READY_POLL_INTERVAL_SECONDS)
-
-    @with_lock
-    async def recover_updatable_engines(self) -> None:
-        raise NotImplementedError("new ft to be implemented")
 
     @requires_lock
     def _get_updatable_server(self) -> RolloutServer | None:
