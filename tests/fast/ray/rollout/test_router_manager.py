@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.router_manager import start_session_server, wait_router_ready
+from miles.ray.rollout.router_manager import wait_router_ready, wait_session_server_ready
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -36,17 +36,17 @@ class TestWaitRouterReady:
         assert addr == HostAndPort(host="10.0.0.9", port=12345)
 
 
-class TestStartSessionServer:
+class TestWaitSessionServerReady:
     async def test_disabled_returns_silently(self):
         """Happy no-op: ``use_session_server=False`` returns without touching any other config."""
         args = make_args(use_session_server=False)
-        await start_session_server(args)
+        await wait_session_server_ready(args)
 
     async def test_enabled_without_hf_checkpoint_raises(self):
         """Enabling the session server without a tokenizer source fails fast."""
         args = make_args(use_session_server=True, hf_checkpoint=None)
         with pytest.raises(ValueError, match="hf-checkpoint"):
-            await start_session_server(args)
+            await wait_session_server_ready(args)
 
     async def test_publishes_the_manager_addrs_and_instance_ids(self, monkeypatch):
         """The driver-side contract (ip, ports, instance ids) comes from the worker manager addrs."""
@@ -73,7 +73,7 @@ class TestStartSessionServer:
             num_session_servers=2,
             run_uuid="00112233445566aa",
         )
-        await start_session_server(args)
+        await wait_session_server_ready(args)
 
         assert requested == ["session-server-0-0", "session-server-1-0"]
         assert args.session_server_addrs == ["10.0.0.9:5005", "10.0.0.9:5006"]
@@ -101,4 +101,4 @@ class TestStartSessionServer:
 
         args = make_args(use_session_server=True, hf_checkpoint="/fake/model", num_session_servers=2)
         with pytest.raises(AssertionError):
-            await start_session_server(args)
+            await wait_session_server_ready(args)

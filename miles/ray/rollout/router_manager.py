@@ -20,12 +20,12 @@ async def wait_router_ready(model_idx: int) -> HostAndPort:
     return router_addr
 
 
-async def start_session_server(args):
-    """Start the standalone session servers when ``--use-session-server`` is set.
+async def wait_session_server_ready(args):
+    """Wait for the standalone session servers when ``--use-session-server`` is set.
 
     One independent single-process server per resolved port; the rollout side
     picks one per session and its URL carries the affinity from then on.
-    Always started standalone regardless of whether ``--use-miles-router`` is
+    Always runs standalone regardless of whether ``--use-miles-router`` is
     active.
     """
     if not getattr(args, "use_session_server", False):
@@ -54,4 +54,4 @@ async def start_session_server(args):
     args.session_server_instance_ids = instance_ids
     for addr in addrs:
         wait_tcp_ready(addr.host, addr.port, timeout=30)
-    logger.info(f"Session servers launched at {args.session_server_addrs} ({len(addrs)} instances)")
+    logger.info(f"Session servers ready at {args.session_server_addrs} ({len(addrs)} instances)")
