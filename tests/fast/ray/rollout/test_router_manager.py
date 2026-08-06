@@ -99,9 +99,11 @@ class TestWaitSessionServerReady:
         await wait_session_server_ready(args)
 
         assert requested == ["session-server-0-0", "session-server-1-0"]
-        assert args.session_server_ip == "10.0.0.9"
-        assert args.session_server_ports == [5005, 5006]
-        assert args.session_server_instance_ids == {5005: "00112233445566aa-0", 5006: "00112233445566aa-1"}
+        assert args.session_server_addrs == ["10.0.0.9:5005", "10.0.0.9:5006"]
+        assert args.session_server_instance_ids == {
+            "10.0.0.9:5005": "00112233445566aa-0",
+            "10.0.0.9:5006": "00112233445566aa-1",
+        }
         assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
 
     async def test_servers_on_different_hosts_are_each_addressed_in_full(self, monkeypatch):

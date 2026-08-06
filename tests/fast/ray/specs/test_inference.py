@@ -139,6 +139,13 @@ class TestComputeSpecSessionServer:
         assert config.port == 5006
         assert config.instance_id == f"{args.run_uuid}-1"
 
+    def test_it_reserves_no_cpu_on_the_head_node(self):
+        """Pinned to the head unconditionally, a CPU reservation would leave it pending forever on a head started with --num-cpus=0."""
+        spec = spec_session_server(_make_session_server_args())
+
+        assert spec.scheduling.pin_to_head is True
+        assert spec.scheduling.num_cpus_per_worker == 0
+
     def test_disabled_schedules_zero_cells(self):
         """Disabling the session server removes its cells instead of launching idle servers."""
         args = make_args(use_session_server=False)
@@ -147,31 +154,44 @@ class TestComputeSpecSessionServer:
 
 class TestInferenceSpecPinToHead:
     @pytest.mark.parametrize("pinned", [False, True])
-    def test_router_and_session_specs_follow_the_rollout_manager_flag(self, pinned: bool):
-        """Both driver-adjacent specs are pinned exactly when the rollout manager is."""
-        from miles.ray.specs.inference import _compute_spec_router, spec_session_server
+    def test_the_router_spec_follows_the_rollout_manager_flag(self, pinned: bool):
+        """The router is pinned to the head node exactly when the rollout manager is."""
+        from miles.ray.specs.inference import _compute_spec_router
 
-        args = make_args(
-            pin_rollout_manager_to_head=pinned,
-            use_miles_router=False,
-            use_session_server=True,
-            hf_checkpoint="/fake/model",
-            session_server_workers=1,
-            chat_template_path=None,
-            tito_model="default",
-            apply_chat_template_kwargs=None,
-            use_rollout_indexer_replay=False,
-            sglang_speculative_algorithm=None,
-            num_layers=None,
-            moe_router_topk=None,
-            save_debug_trajectory_data=None,
-            lora_rank=0,
-            lora_adapter_path=None,
-            miles_router_timeout=None,
-        )
+        args = _make_pin_args(pinned=pinned)
 
         router = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
-        session = spec_session_server(args)
 
         assert router.scheduling.pin_to_head is pinned
-        assert session.scheduling.pin_to_head is pinned
+
+    @pytest.mark.parametrize("pinned", [False, True])
+    def test_the_session_servers_are_always_pinned_to_the_head_node(self, pinned: bool):
+        """Session servers live on the driver host whatever the rollout manager flag says, as on main."""
+        from miles.ray.specs.inference import spec_session_server
+
+        args = _make_pin_args(pinned=pinned)
+
+        session = spec_session_server(args)
+
+        assert session.scheduling.pin_to_head is True
+
+
+def _make_pin_args(*, pinned: bool):
+    return make_args(
+        pin_rollout_manager_to_head=pinned,
+        use_miles_router=False,
+        use_session_server=True,
+        hf_checkpoint="/fake/model",
+        session_server_workers=1,
+        chat_template_path=None,
+        tito_model="default",
+        apply_chat_template_kwargs=None,
+        use_rollout_indexer_replay=False,
+        sglang_speculative_algorithm=None,
+        num_layers=None,
+        moe_router_topk=None,
+        save_debug_trajectory_data=None,
+        lora_rank=0,
+        lora_adapter_path=None,
+        miles_router_timeout=None,
+    )
