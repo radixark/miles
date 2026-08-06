@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import ray
 from tests.fast.ray.train import conftest as train_conftest
-from tests.fast.ray.train.conftest import get_raw_actor_handles
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_provider
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController
@@ -65,6 +65,8 @@ def _make_group(
         args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell, num_cells=num_cells),
         role="actor",
         with_ref=False,
+        cell_provider=make_provider(),
+        cell_operations=MagicMock(),
         inference_controller=inference_controller,
     )
     for cell_index in range(num_cells):

@@ -2,7 +2,6 @@ import asyncio
 import logging
 import time
 
-from miles.ray.specs.train import MASTER_PORT_NAME
 from miles.ray.train.cell_monitor import compute_cell_status
 from miles.ray.train.cell_state import (
     CellState,
@@ -17,8 +16,8 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
-from miles.utils.workers.worker_spec import HostAndPort
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_spec import MASTER_PORT_NAME, HostAndPort
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +37,7 @@ class TrainerCell:
         cell_index: int,
         workers_hash: str,
         health_checker: BaseHealthChecker,
+        provider: BaseWorkerProvider,
     ) -> None:
         self.args = args
         self.cell_id = cell_id
@@ -48,7 +48,7 @@ class TrainerCell:
         self.with_opd_teacher = with_opd_teacher
         self.health_checker = health_checker
 
-        (worker_infos,) = RayWorkerProvider.create().get_worker_infos(cell_ids=[cell_id])
+        (worker_infos,) = provider.get_worker_infos(cell_ids=[cell_id])
         self._master_addr: HostAndPort = worker_infos[0].self_addrs[MASTER_PORT_NAME]
 
         # NOTE: do *NOT* directly modify `self._state`, but instead use `self._change_state`

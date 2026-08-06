@@ -5,6 +5,7 @@ import sys
 from argparse import Namespace
 
 import pytest
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
@@ -24,7 +25,7 @@ from miles.ray.specs.inference import (
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
 from miles.utils.workers.argv_utils import parse_config_argv
-from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerMetaContext
+from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerCtorContext, WorkerMetaContext
 
 
 def _make_model_cfg(*worker_types: str) -> ModelConfig:
@@ -452,6 +453,9 @@ class TestSpecInferenceController:
         )
         return make_args(sglang_config=str(config_path), rollout_num_gpus=8, **overrides)
 
+    def _ctor_context(self, capability: FakeBackendCapability) -> WorkerCtorContext:
+        return WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+
     def test_every_run_gets_exactly_one_gpuless_controller(self, tmp_path):
         """It is a control-plane worker on both backends; a gpu request would reserve a whole node for it."""
         spec = spec_inference_controller(self._args(tmp_path))
@@ -471,3 +475,31 @@ class TestSpecInferenceController:
         """The driver looks the controller up by name, so these names are part of the release's contract."""
         assert inference_controller_worker_name() == "inference-controller-0-0"
         assert inference_controller_cell_id() == "inference-controller-0"
+
+    def test_it_asks_for_a_provider_over_the_engine_fleets_it_will_observe(self, tmp_path):
+        """The controller never learns which backend reports those cells, only which fleets it wants reported."""
+        args = self._args(tmp_path)
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert capability.requested_spec_names == [compute_engine_spec_names(args)]
+        assert kwargs["engine_provider"] is capability.cells_provider
+
+    def test_it_asks_for_a_provider_that_can_address_the_router(self, tmp_path):
+        """A router is addressed rather than observed, and only the backend knows how to redeem that name."""
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        kwargs = spec_inference_controller(self._args(tmp_path)).ctor_kwargs(self._ctor_context(capability))
+
+        assert capability.requested_static_spec_names == [compute_router_spec_name(0)]
+        assert kwargs["router_provider"] is capability.static_provider
+
+    def test_a_train_only_run_builds_a_controller_over_an_empty_fleet(self, tmp_path):
+        """--debug-train-only deploys no engines, so the controller observes a fleet of nothing."""
+        args = self._args(tmp_path, debug_train_only=True)
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert capability.requested_spec_names == [[]]

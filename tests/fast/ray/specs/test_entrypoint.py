@@ -30,6 +30,7 @@ class TestComputeSpecs:
             "session-server",
             "inference-engine-0-0",
             "inference-engine-0-2",
+            "rollout-executor",
             "trainer-controller-actor",
             "trainer-actor",
         ]

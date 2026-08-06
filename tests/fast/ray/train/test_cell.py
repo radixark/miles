@@ -48,12 +48,12 @@ class TestKillWorkers:
 
         assert train_conftest.fake_worker_manager.stopped_cell_ids == []
 
-    async def test_stop_kills_the_underlying_workers(self):
-        """Stopping a cell really kills its workers, so every handle is confirmed dead and rejects new calls."""
+    async def test_teardown_leaves_every_worker_handle_confirmed_dead(self):
+        """Teardown really kills its workers, so every handle is confirmed dead and rejects new calls."""
         cell = make_cell(actor_count=2)
         wrapped_handles = cell._get_worker_handles()
 
-        await cell.stop()
+        await cell._kill_workers_and_confirm_dead()
 
         for wrapped in wrapped_handles:
             await asyncio.wait_for(wrapped.wait_dead(timeout=30.0), timeout=35.0)
@@ -170,6 +170,7 @@ class TestErroredCellTeardown:
 
 class TestAsyncInit:
     async def test_dispatches_init_and_marks_alive(self):
+        """Init configures the rendezvous address on every worker before dispatching init itself."""
         cell = make_cell(actor_count=2)
         info = make_indep_dp_info()
 
@@ -181,9 +182,9 @@ class TestAsyncInit:
 
         for handle in get_raw_actor_handles(cell):
             calls = ray.get(handle.get_calls.remote())
-            assert len(calls) == 1
-            assert calls[0][0] == "init"
-            kwargs = calls[0][2]
+            assert [call[0] for call in calls] == ["configure_master_addr_and_port", "init"]
+            assert calls[0][2] == {"master_addr": "10.0.0.1", "master_port": 20000}
+            kwargs = calls[1][2]
             assert kwargs["indep_dp_info"] == info
             assert kwargs["recv_ckpt_src_rank"] is None
 

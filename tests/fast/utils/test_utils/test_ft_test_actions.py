@@ -1,7 +1,6 @@
 import json
 import os
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -127,123 +126,128 @@ class FakeGroup:
         self.expected_num_cells = num_cells
 
 
-class FakeRemoteMethod:
-    def __init__(self, sink: list[str]) -> None:
-        self._sink = sink
-
-    async def remote(self, cell_ids: list[str]) -> None:
-        self._sink.extend(cell_ids)
-
-
-class FakeWorkerManager:
+class FakeCellOperations:
     def __init__(self) -> None:
         self.stopped: list[str] = []
         self.started: list[str] = []
-        self.stop_cells = FakeRemoteMethod(self.stopped)
-        self.start_cells = FakeRemoteMethod(self.started)
 
+    async def suspend(self, cell_id: str) -> None:
+        self.stopped.append(cell_id)
 
-async def _run(executor: FTTestActionGroupExecutor, manager: FakeWorkerManager, rollout_id: int) -> None:
-    with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-        await executor.run_after_step(rollout_id)
+    async def resume(self, cell_id: str) -> None:
+        self.started.append(cell_id)
 
 
 class TestRunAfterStep:
     @pytest.mark.asyncio
     async def test_stop_cell_fires_on_matching_rollout(self):
-        """stop_cell_at_end hands the action's cell_id to the worker manager on its rollout."""
-        manager = FakeWorkerManager()
+        """stop_cell_at_end suspends the action's cell_id through the backend's operations."""
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-actor-1")
-        executor = FTTestActionGroupExecutor(actions=[action], group=FakeGroup(num_cells=3))
+        executor = FTTestActionGroupExecutor(
+            actions=[action], group=FakeGroup(num_cells=3), cell_operations=operations
+        )
 
-        await _run(executor, manager, 5)
+        await executor.run_after_step(5)
 
-        assert manager.stopped == ["trainer-actor-1"]
-        assert manager.started == []
+        assert operations.stopped == ["trainer-actor-1"]
+        assert operations.started == []
 
     @pytest.mark.asyncio
     async def test_no_action_on_non_matching_rollout(self):
         """run_after_step does nothing when no action's at_rollout matches the given rollout."""
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-actor-1")
-        executor = FTTestActionGroupExecutor(actions=[action], group=FakeGroup(num_cells=3))
+        executor = FTTestActionGroupExecutor(
+            actions=[action], group=FakeGroup(num_cells=3), cell_operations=operations
+        )
 
-        await _run(executor, manager, 4)
+        await executor.run_after_step(4)
 
-        assert manager.stopped == []
-        assert manager.started == []
+        assert operations.stopped == []
+        assert operations.started == []
 
     @pytest.mark.asyncio
     async def test_start_cell_targets_the_named_cell(self):
-        """start_cell_at_end calls the worker manager with exactly the cell_id the action names."""
-        manager = FakeWorkerManager()
+        """start_cell_at_end resumes exactly the cell_id the action names."""
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_id="trainer-actor-2")
-        executor = FTTestActionGroupExecutor(actions=[action], group=FakeGroup(num_cells=3))
+        executor = FTTestActionGroupExecutor(
+            actions=[action], group=FakeGroup(num_cells=3), cell_operations=operations
+        )
 
-        await _run(executor, manager, 2)
+        await executor.run_after_step(2)
 
-        assert manager.started == ["trainer-actor-2"]
-        assert manager.stopped == []
+        assert operations.started == ["trainer-actor-2"]
+        assert operations.stopped == []
 
     @pytest.mark.asyncio
     async def test_start_cell_after_that_cell_was_dropped_still_targets_it(self):
         """A stopped cell no longer being live does not change the cell_id the action names."""
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=3, action="start_cell_at_end", cell_id="trainer-actor-1")
-        executor = FTTestActionGroupExecutor(actions=[action], group=FakeGroup(num_cells=2))
+        executor = FTTestActionGroupExecutor(
+            actions=[action], group=FakeGroup(num_cells=2), cell_operations=operations
+        )
 
-        await _run(executor, manager, 3)
+        await executor.run_after_step(3)
 
-        assert manager.started == ["trainer-actor-1"]
-        assert manager.stopped == []
+        assert operations.started == ["trainer-actor-1"]
+        assert operations.stopped == []
 
     @pytest.mark.asyncio
     async def test_two_actions_same_rollout_both_fire(self):
-        """Two actions sharing the same rollout both dispatch to their respective group methods."""
-        manager = FakeWorkerManager()
+        """Two actions sharing the same rollout both dispatch to their respective cell operations."""
+        operations = FakeCellOperations()
         stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_id="trainer-actor-0")
         start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_id="trainer-actor-2")
-        executor = FTTestActionGroupExecutor(actions=[stop_action, start_action], group=FakeGroup(num_cells=3))
+        executor = FTTestActionGroupExecutor(
+            actions=[stop_action, start_action], group=FakeGroup(num_cells=3), cell_operations=operations
+        )
 
-        await _run(executor, manager, 7)
+        await executor.run_after_step(7)
 
-        assert manager.stopped == ["trainer-actor-0"]
-        assert manager.started == ["trainer-actor-2"]
+        assert operations.stopped == ["trainer-actor-0"]
+        assert operations.started == ["trainer-actor-2"]
 
     @pytest.mark.asyncio
     async def test_empty_actions_is_noop(self):
-        """An executor with no actions performs no group calls."""
-        manager = FakeWorkerManager()
-        executor = FTTestActionGroupExecutor(actions=[], group=FakeGroup(num_cells=3))
+        """An executor with no actions performs no cell operations."""
+        operations = FakeCellOperations()
+        executor = FTTestActionGroupExecutor(actions=[], group=FakeGroup(num_cells=3), cell_operations=operations)
 
-        await _run(executor, manager, 5)
+        await executor.run_after_step(5)
 
-        assert manager.stopped == []
-        assert manager.started == []
+        assert operations.stopped == []
+        assert operations.started == []
 
     @pytest.mark.asyncio
     async def test_action_naming_another_spec_raises(self):
         """An action aimed at a different spec is a misconfiguration and must fail, not silently no-op."""
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="rollout-engine-0")
-        executor = FTTestActionGroupExecutor(actions=[action], group=FakeGroup(num_cells=3))
+        executor = FTTestActionGroupExecutor(
+            actions=[action], group=FakeGroup(num_cells=3), cell_operations=operations
+        )
 
         with pytest.raises(AssertionError):
-            await _run(executor, manager, 1)
+            await executor.run_after_step(1)
 
-        assert manager.stopped == []
+        assert operations.stopped == []
 
     @pytest.mark.asyncio
     async def test_action_index_beyond_expected_num_cells_raises(self):
         """A cell index the group can never have is a misconfiguration and must fail at dispatch."""
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="trainer-actor-9")
-        executor = FTTestActionGroupExecutor(actions=[action], group=FakeGroup(num_cells=3))
+        executor = FTTestActionGroupExecutor(
+            actions=[action], group=FakeGroup(num_cells=3), cell_operations=operations
+        )
 
         with pytest.raises(AssertionError):
-            await _run(executor, manager, 1)
+            await executor.run_after_step(1)
 
-        assert manager.stopped == []
+        assert operations.stopped == []
 
 
 _CRASH_ACTION = FTTestAction(
