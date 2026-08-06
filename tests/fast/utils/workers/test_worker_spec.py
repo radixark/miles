@@ -8,6 +8,7 @@ from miles.utils.workers.worker_spec import (
     RPC_PORT_NAME,
     BaseWorkerSpec,
     CommandWorkerSpec,
+    HostAndPort,
     LaunchCommandContext,
     PortInfo,
     SchedulingSpec,
@@ -21,6 +22,18 @@ def _make_launch_context(**overrides) -> WorkerLaunchContext:
     kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[])
     kwargs.update(overrides)
     return WorkerLaunchContext(**kwargs)
+
+
+def _make_launch_command_context(**overrides) -> LaunchCommandContext:
+    kwargs = dict(
+        cell_index=0,
+        worker_in_cell_index=0,
+        gpu_ids=[],
+        self_addrs={"http": HostAndPort(host="127.0.0.1", port=8000)},
+        spec_addrs={},
+    )
+    kwargs.update(overrides)
+    return LaunchCommandContext(**kwargs)
 
 
 def _make_ctor_context(**overrides) -> WorkerCtorContext:
@@ -110,7 +123,7 @@ class TestCommandWorkerSpec:
     def test_constructs_with_launch_command(self):
         """A command spec carries the launch command callable besides base fields."""
         spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "python -m sglang.launch_server")
-        ctx = LaunchCommandContext(host="127.0.0.1", ports={"http": 8000})
+        ctx = _make_launch_command_context()
         assert spec.launch_command(ctx) == "python -m sglang.launch_server"
         assert isinstance(spec, BaseWorkerSpec)
 
@@ -120,12 +133,13 @@ class TestCommandWorkerSpec:
 
         def launch_command(ctx: LaunchCommandContext) -> str:
             calls.append(ctx)
-            return f"serve --host {ctx.host} --port {ctx.ports['http']}"
+            http = ctx.self_addrs["http"]
+            return f"serve --host {http.host} --port {http.port}"
 
         spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=launch_command)
         assert calls == []
 
-        ctx = LaunchCommandContext(host="10.0.0.1", ports={"http": 9001})
+        ctx = _make_launch_command_context(self_addrs={"http": HostAndPort(host="10.0.0.1", port=9001)})
         assert spec.launch_command(ctx) == "serve --host 10.0.0.1 --port 9001"
         assert calls == [ctx]
 

@@ -13,6 +13,7 @@ from miles.ray.rollout.cell_state import (
     StateUninitialized,
 )
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils.workers.worker_spec import HostAndPort
 
 pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
 
@@ -39,6 +40,14 @@ def _make_meta(**overrides) -> ServerCellMetadata:
             **overrides,
         }
     )
+
+
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> dict[str, HostAndPort]:
+        return dict(
+            primary=HostAndPort(host="10.0.0.1", port=30000),
+            gate=HostAndPort(host="10.0.0.1", port=13000),
+        )
 
 
 class _RecordingRouterApiClient:
@@ -103,6 +112,7 @@ def _make_cell(
             args=make_args(**(args_overrides or {})),
             meta=_make_meta(**meta_overrides),
             router_api_client=router or _RecordingRouterApiClient(),
+            provider=_StubProvider(),
         )
     )
 

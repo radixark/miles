@@ -4,8 +4,10 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
 from miles.ray.specs.train import (
+    TRAINER_CONCURRENCY_GROUPS,
     TRAINER_CONTROLLER_WORKER_CLASS,
     compute_trainer_controller_spec_name,
     compute_trainer_spec_name,
@@ -15,8 +17,8 @@ from miles.ray.specs.train import (
     trainer_controller_cell_id,
     trainer_controller_worker_name,
 )
-from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TrainRayActor
-from miles.utils.workers.worker_spec import WorkerLaunchContext
+from miles.ray.train_actor import TrainRayActor
+from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
 def _make_args(**overrides) -> SimpleNamespace:
@@ -45,10 +47,10 @@ def _make_args(**overrides) -> SimpleNamespace:
     return args
 
 
-def _make_context(**overrides) -> WorkerLaunchContext:
-    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[0])
+def _make_context(**overrides) -> WorkerCtorContext:
+    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[0], capability=FakeBackendCapability())
     kwargs.update(overrides)
-    return WorkerLaunchContext(**kwargs)
+    return WorkerCtorContext(**kwargs)
 
 
 def _install_fake_torch_memory_saver(monkeypatch, get_binary_path: MagicMock) -> MagicMock:
@@ -143,13 +145,13 @@ class TestConcurrencyGroups:
         """A heartbeat queued behind a train step reads as a dead cell."""
         (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
 
-        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
 
     def test_the_groups_do_not_depend_on_fault_tolerance(self):
         """The actor class declares the groups statically, so the spec cannot drop them."""
         (spec,) = specs_trainer(_make_args())
 
-        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
 
     def test_the_isolated_methods_are_annotated_on_the_actor(self):
         """Dropping a @ray.method annotation would silently queue that call behind a train step."""
@@ -237,8 +239,23 @@ def test_the_spec_name_encodes_the_role(role):
     assert compute_trainer_spec_name(role) == f"trainer-{role}"
 
 
-def _controller_context() -> WorkerLaunchContext:
-    return WorkerLaunchContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[])
+class _FakeStaticProvider:
+    def __init__(self) -> None:
+        self.handles: list[str] = []
+
+    def get_handle(self, worker_name: str) -> object:
+        self.handles.append(worker_name)
+        return self
+
+
+def _controller_context(capability: FakeBackendCapability) -> WorkerCtorContext:
+    return WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+
+
+def _controller_providers() -> FakeBackendCapability:
+    return FakeBackendCapability(
+        cells_provider=object(), static_provider=_FakeStaticProvider(), cell_operations=object()
+    )
 
 
 class TestSpecTrainerController:
@@ -266,10 +283,45 @@ class TestSpecTrainerController:
         assert trainer_controller_worker_name("actor") == "trainer-controller-actor-0-0"
         assert trainer_controller_cell_id("actor") == "trainer-controller-actor-0"
 
+    def test_it_asks_for_a_provider_over_its_own_trainer_fleet(self):
+        """A controller that watched both fleets would try to heal the other role's cells."""
+        capability = _controller_providers()
+
+        args = _make_args(use_critic=True)
+        specs = [spec_trainer_controller_actor(args), spec_trainer_controller_critic(args)]
+        kwargs = [spec.ctor_kwargs(_controller_context(capability)) for spec in specs]
+
+        assert capability.requested_spec_names == [["trainer-actor"], ["trainer-critic"]]
+        assert [entry["cell_provider"] for entry in kwargs] == [capability.cells_provider] * 2
+
+    def test_only_the_actor_controller_drives_the_inference_controller(self):
+        """Weight updates flow from the actor; a critic asking for engines would fight it."""
+        capability = _controller_providers()
+
+        args = _make_args(use_critic=True)
+        actor_spec, critic_spec = spec_trainer_controller_actor(args), spec_trainer_controller_critic(args)
+        actor_kwargs = actor_spec.ctor_kwargs(_controller_context(capability))
+        critic_kwargs = critic_spec.ctor_kwargs(_controller_context(capability))
+
+        assert capability.requested_static_spec_names == ["inference-controller"]
+        assert actor_kwargs["inference_controller"] is capability.static_provider
+        assert critic_kwargs["inference_controller"] is None
+
+    def test_the_run_shape_flags_are_resolved_by_the_spec(self):
+        """These are functions of args, so the worker can answer them from the argv it parses itself."""
+        capability = _controller_providers()
+
+        spec = spec_trainer_controller_actor(_make_args(kl_coef=0.1, use_opd=True, opd_type="megatron"))
+        kwargs = spec.ctor_kwargs(_controller_context(capability))
+
+        assert (kwargs["role"], kwargs["with_ref"], kwargs["with_opd_teacher"]) == ("actor", True, True)
+
     def test_the_critic_args_are_neutralized(self):
         """A critic controller must not hand its cells the actor's KL settings."""
+        capability = _controller_providers()
+
         spec = spec_trainer_controller_critic(_make_args(use_critic=True, kl_coef=0.1, use_kl_loss=True, use_opd=True))
-        critic_kwargs = spec.ctor_kwargs(_controller_context())
+        critic_kwargs = spec.ctor_kwargs(_controller_context(capability))
 
         assert (critic_kwargs["args"].kl_coef, critic_kwargs["args"].use_opd) == (0, False)
         assert (critic_kwargs["with_ref"], critic_kwargs["with_opd_teacher"]) == (False, False)

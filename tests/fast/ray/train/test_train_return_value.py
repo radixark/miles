@@ -67,7 +67,7 @@ class TestTrainReturnValue:
     async def test_a_failed_cell_contributes_no_result(self):
         """A raw exception object in the returned list would be fed straight into the next train call."""
         cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
-        ray.get(cells[0]._get_actor_handles()[0].set_fail_methods.remote(["train"]))
+        ray.get(get_raw_actor_handles(cells[0])[0].set_fail_methods.remote(["train"]))
         _set_train_return_value(cells[1], TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("ok")))
         group = _make_group(cells)
 
@@ -123,7 +123,7 @@ class TestWorkerResultShape:
     async def test_a_discarded_outcome_makes_the_group_retry_the_step(self):
         """A worker asking for a retry must cost a whole extra train attempt, not be silently accepted."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             ray.get(
                 handle.set_train_return_values_per_attempt.remote(
                     [

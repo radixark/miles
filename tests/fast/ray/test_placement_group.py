@@ -4,6 +4,7 @@ from argparse import Namespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
 from miles.ray.placement_group import create_rollout_components
 
@@ -13,14 +14,12 @@ pytestmark = pytest.mark.asyncio
 def _make_args(**overrides) -> Namespace:
     defaults = dict(
         pin_rollout_manager_to_head=False,
-        debug_train_only=False,
         num_rollout=None,
         num_epoch=2,
-        check_weight_update_equal=False,
-        check_weight_update_skip_list=[],
-        offload_rollout=False,
         sglang_router_ip=None,
         sglang_router_port=None,
+        cluster_backend="ray",
+        debug_train_only=False,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -28,43 +27,58 @@ def _make_args(**overrides) -> Namespace:
 
 @pytest.fixture
 def fake_components():
-    controller = MagicMock(name="inference_controller")
-    controller.init = AsyncMock()
-    controller.check_weights = AsyncMock()
-    controller.offload = AsyncMock()
+    controller_handle = MagicMock(name="inference_controller")
+    controller_handle.init = AsyncMock(return_value=None)
 
-    async def fake_resolve_router_addrs(args):
+    async def resolve_router_addrs(args, *, provider) -> dict:
         args.sglang_router_ip = "10.0.0.1"
         args.sglang_router_port = 4321
+        return {}
 
     executor_handle = MagicMock(name="rollout_executor")
-    executor_handle.init = AsyncMock()
+    executor_handle.init = AsyncMock(return_value=None)
     executor_handle.get_num_rollout_per_epoch = AsyncMock(return_value=5)
-    executor_handle.check_weights = AsyncMock()
 
-    with patch("miles.ray.placement_group.create_inference_controller_handle", lambda: controller), patch(
-        "miles.ray.placement_group.create_rollout_executor_handle", lambda: executor_handle
-    ), patch("miles.ray.placement_group.resolve_router_addrs", fake_resolve_router_addrs):
-        yield Namespace(controller=controller, executor_handle=executor_handle)
+    capability = FakeBackendCapability(static_provider=object())
+
+    with patch(
+        "miles.ray.placement_group.create_inference_controller_handle", lambda *, capability: controller_handle
+    ), patch("miles.ray.placement_group.resolve_router_addrs", resolve_router_addrs), patch(
+        "miles.ray.placement_group.wait_session_server_ready", AsyncMock(return_value=None)
+    ), patch(
+        "miles.ray.placement_group.create_rollout_executor_handle", lambda *, capability: executor_handle
+    ), patch(
+        "miles.ray.placement_group.get_backend_capability", lambda args: capability
+    ):
+        yield Namespace(controller_handle=controller_handle, executor_handle=executor_handle, capability=capability)
 
 
 class TestCreateRolloutComponents:
-    async def test_the_executor_is_initialized_through_its_handle(self, fake_components):
-        """The executor is a worker of its own now, and only its init() builds the heavy state."""
-        args = _make_args(num_rollout=1)
-
-        await create_rollout_components(args)
-
-        fake_components.executor_handle.init.assert_awaited_once()
-
-    async def test_returns_the_controller_and_executor_handles(self, fake_components):
-        """The driver only ever holds handles; neither component lives in its process."""
+    async def test_returns_two_worker_handles(self, fake_components):
+        """Both halves of rollout are independent workers, so the driver only ever holds handles."""
         args = _make_args(num_rollout=1)
 
         controller, executor, _ = await create_rollout_components(args)
 
-        assert controller is fake_components.controller
+        assert controller is fake_components.controller_handle
         assert executor is fake_components.executor_handle
+
+    async def test_both_workers_are_told_to_init(self, fake_components):
+        """Their constructors cannot await anything, so nothing runs until the driver starts them."""
+        args = _make_args(num_rollout=1)
+
+        await create_rollout_components(args)
+
+        fake_components.controller_handle.init.assert_awaited_once_with()
+        fake_components.executor_handle.init.assert_awaited_once_with()
+
+    async def test_the_router_addresses_are_resolved_before_the_workers_are_initialized(self, fake_components):
+        """The driver's args copy must carry the contract before anything downstream reads it."""
+        args = _make_args(num_rollout=1)
+
+        await create_rollout_components(args)
+
+        assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.1", 4321)
 
     async def test_num_rollout_derived_from_executor_epoch_length(self, fake_components):
         """num_rollout comes from the dataset, which the executor owns."""
@@ -72,7 +86,7 @@ class TestCreateRolloutComponents:
 
         _, _, num_rollout_per_epoch = await create_rollout_components(args)
 
-        fake_components.executor_handle.get_num_rollout_per_epoch.assert_awaited_once()
+        fake_components.executor_handle.get_num_rollout_per_epoch.assert_awaited_once_with()
         assert num_rollout_per_epoch == 5
         assert args.num_rollout == 10
 
@@ -86,24 +100,14 @@ class TestCreateRolloutComponents:
         assert num_rollout_per_epoch is None
         assert args.num_rollout == 3
 
-    async def test_engine_startup_steps_are_left_to_the_cells(self, fake_components):
-        """Wiring the components must touch no engine; each cell primes and offloads itself when it comes up."""
-        args = _make_args(num_rollout=1, check_weight_update_equal=True, offload_rollout=True)
+    async def test_a_train_only_run_resolves_no_inference_addresses(self, fake_components):
+        """--debug-train-only deploys no routers or session servers, so nothing can be waited on."""
+        args = _make_args(num_rollout=1, debug_train_only=True)
 
         await create_rollout_components(args)
 
-        fake_components.controller.check_weights.assert_not_awaited()
-        fake_components.controller.offload.assert_not_awaited()
-        fake_components.executor_handle.check_weights.assert_not_awaited()
-
-    async def test_the_baseline_snapshot_is_not_taken_after_the_engines_are_up(self, fake_components):
-        """Snapshotting here would baseline the remapped weight storage, not the checkpoint."""
-        args = _make_args(num_rollout=1, check_weight_update_equal=True, offload_rollout=True)
-
-        await create_rollout_components(args)
-
-        actions = [call.kwargs["action"] for call in fake_components.controller.check_weights.await_args_list]
-        assert "snapshot" not in actions
+        assert fake_components.capability.requested_static_spec_names == []
+        assert args.sglang_router_ip is None
 
 
 class TestCreatePlacementGroups:
@@ -126,6 +130,7 @@ class TestCreatePlacementGroups:
 
     @staticmethod
     def _patched(monkeypatch, requested: list[int]):
+        from miles.ray import placement_group as placement_group_module
         from miles.ray.placement_group import PlacementGroupInfo
 
         def _fake_create(num_gpus):
@@ -136,7 +141,7 @@ class TestCreatePlacementGroups:
                 pg_reordered_gpu_ids=[100 + index for index in range(num_gpus)],
             )
 
-        monkeypatch.setattr("miles.ray.placement_group._create_placement_group", _fake_create)
+        monkeypatch.setattr(placement_group_module, "_create_placement_group", _fake_create)
 
     def test_each_role_views_the_shared_pg_from_its_own_offset(self, monkeypatch):
         """Roles share one placement group; the critic reuses the actor slice and rollout starts after it."""
