@@ -8,6 +8,7 @@ from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
 import miles.ray.rollout.server_group as server_group_module
 from miles.ray.rollout.addr_allocator import PortCursors
+from miles.ray.rollout.server_cell import flatten_cells
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
 
@@ -50,20 +51,20 @@ class TestTeardownIsTerminal:
         group = _build_group(pg_tuple=placement_group_factory(1))
         handles, _ = group.start_engines(PortCursors.empty())
         ray.get(handles)
-        actor_handle = group.all_engines[0].actor_handle
+        actor_handle = flatten_cells(group.cells)[0].actor_handle
         ray.get(actor_handle.set_fault.remote("shutdown", RuntimeError("shutdown blew up")))
 
         group.stop_engines(engine_indices=[0])
 
         assert _is_dead(actor_handle)
-        assert not group.all_engines[0].is_allocated
+        assert not flatten_cells(group.cells)[0].is_allocated
 
     def test_a_hanging_shutdown_does_not_block_teardown(self, monkeypatch, ray_local_mode):
         """A wedged engine must not stall teardown forever, since teardown is how a wedged engine is reclaimed."""
         monkeypatch.setattr(server_group_module, "_SHUTDOWN_TIMEOUT", 0.5)
         group = _build_group(pg_tuple=(None, [], []))
         actor_handle = _HangingEngine.remote()
-        group.all_engines[0].mark_allocated_uninitialized(actor_handle)
+        flatten_cells(group.cells)[0].mark_allocated_uninitialized(actor_handle)
 
         finished = threading.Event()
         thread = threading.Thread(target=lambda: (group.stop_engines(engine_indices=[0]), finished.set()), daemon=True)
@@ -72,4 +73,4 @@ class TestTeardownIsTerminal:
 
         assert finished.is_set(), "stop_engines waited on a shutdown that never returns"
         assert _is_dead(actor_handle)
-        assert not group.all_engines[0].is_allocated
+        assert not flatten_cells(group.cells)[0].is_allocated
