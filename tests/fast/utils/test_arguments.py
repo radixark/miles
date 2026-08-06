@@ -15,7 +15,7 @@ from miles.utils.arguments import (
     miles_validate_args,
     validate_async_off_policy_correction,
 )
-from miles.utils.misc import function_registry
+from miles.utils.function_registry import function_registry
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]

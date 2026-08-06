@@ -1,6 +1,6 @@
 import random
 
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
 

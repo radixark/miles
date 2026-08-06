@@ -24,8 +24,8 @@ import httpx
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnInput, RolloutFnOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
+from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get
-from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
