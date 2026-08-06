@@ -10,10 +10,14 @@ from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_serve
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_spec_names
+from miles.utils.misc import SimpleTicker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 logger = logging.getLogger(__name__)
+
+TICK_INTERVAL_SECONDS = 5.0
+CELL_TICK_TIMEOUT_SECONDS = 120.0
 
 
 class InferenceController:
@@ -28,6 +32,7 @@ class InferenceController:
             controller._watcher_disposers.append(
                 await provider.watch_cells(controller._reconcile, spec_names=compute_engine_spec_names(args))
             )
+            controller._ticker = SimpleTicker(controller._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
 
             dashboard_hooks.register_router(args)
             await start_session_server(args)
@@ -39,6 +44,7 @@ class InferenceController:
         self.servers: dict[str, RolloutServer] = {}
         self.rollout_id = -1
         self._watcher_disposers: list[StopWatchFn] = []
+        self._ticker: SimpleTicker | None = None
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
@@ -53,6 +59,10 @@ class InferenceController:
         await self._health_monitoring_resume()
 
     async def dispose(self):
+        if (ticker := self._ticker) is not None:
+            self._ticker = None
+            await ticker.dispose()
+
         for disposer in self._watcher_disposers:
             await disposer()
         self._watcher_disposers = []
@@ -138,6 +148,18 @@ class InferenceController:
         return await srv.check_weights(
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
         )
+
+    # -------------------------- tick -----------------------------
+
+    async def _tick_cells(self) -> None:
+        cells = [cell for srv in list(self.servers.values()) for cell in list(srv.server_cells.values())]
+        results = await asyncio.gather(
+            *[asyncio.wait_for(cell.tick(), timeout=CELL_TICK_TIMEOUT_SECONDS) for cell in cells],
+            return_exceptions=True,
+        )
+        for cell, result in zip(cells, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.error(f"Ticking cell {cell.meta.cell_id} failed", exc_info=result)
 
     # -------------------------- reconcile -----------------------------
 
