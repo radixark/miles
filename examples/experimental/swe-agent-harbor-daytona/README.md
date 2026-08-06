@@ -6,7 +6,7 @@ Docker. Miles runs synchronous GRPO and serves the policy through its session
 server; a Harbor agent server drives the agent and returns verifier rewards.
 It is meant to run on a single node of 8 H200 GPUs.
 
-It is the `examples/swe-agent` pipeline with two changes:
+It is the `examples/swe-agent-harbor-docker` pipeline with two changes:
 
 - **Daytona sandboxes.** The agent-server host needs outbound HTTPS but no
   Docker daemon, no local image builds, and no local disk for task images. This
@@ -17,8 +17,8 @@ It is the `examples/swe-agent` pipeline with two changes:
   must be reachable from the agent-server host.
 
 Everything else — TITO, the session server, GRPO, the reward path — is identical
-to `examples/swe-agent`, and so is the trainer side: this example has no
-launcher of its own and runs `examples/swe-agent/run.py` unchanged. Daytona is
+to `examples/swe-agent-harbor-docker`, and so is the trainer side: this example has no
+launcher of its own and runs `examples/swe-agent-harbor-docker/run.py` unchanged. Daytona is
 selected entirely by the agent server's environment, which the trainer never
 sees.
 
@@ -73,11 +73,11 @@ Verify `http://<agent-server>:11000/health` before launching Miles.
 
 ## 3. Prepare data
 
-`examples/swe-agent/download_and_process_data.py` converts a local JSONL into
+`examples/swe-agent-harbor-docker/download_and_process_data.py` converts a local JSONL into
 Miles format. For terminus-2, set the agent name accordingly:
 
 ```bash
-python examples/swe-agent/download_and_process_data.py \
+python examples/swe-agent-harbor-docker/download_and_process_data.py \
     --input /path/to/terminal-bench.jsonl \
     --output /path/to/tb2_train.jsonl \
     --agent-name terminus-2 \
@@ -92,7 +92,7 @@ server colocated on the same host as the trainer:
 ```bash
 export WANDB_API_KEY=<your-wandb-key>
 
-python examples/swe-agent/run.py \
+python examples/swe-agent-harbor-docker/run.py \
     --num-nodes 1 \
     --num-gpus-per-node 8 \
     --skip-prepare \
@@ -141,7 +141,7 @@ against the cap, and keep `AGENT_MAX_INPUT_TOKENS` above the largest observed
 context.
 `--max-seq-len 65536` leaves plenty of headroom to raise both.
 
-`examples/swe-agent/run.py` hardcodes `--rollout-max-response-len 8192`, so raise
+`examples/swe-agent-harbor-docker/run.py` hardcodes `--rollout-max-response-len 8192`, so raise
 it there; `AGENT_MAX_OUTPUT_TOKENS` is an environment variable on the agent
 server and is set in `launch_agent_server.sh`. Raise the two together — leaving
 either one behind reintroduces the aborts.
