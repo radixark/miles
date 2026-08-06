@@ -83,8 +83,9 @@ class TestStartSessionServer:
         }
         assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
 
-    async def test_servers_on_different_hosts_raise(self, monkeypatch):
-        """A session server fleet spread across hosts violates the single-ip contract."""
+    async def test_servers_on_different_hosts_are_each_addressed_in_full(self, monkeypatch):
+        """Placement may spread the fleet across hosts, so no instance may be addressed by a
+        port under a host borrowed from another one."""
 
         class _FakeProvider:
             def __init__(self):
@@ -94,11 +95,27 @@ class TestStartSessionServer:
                 self._counter += 1
                 return HostAndPort(host=f"10.0.0.{self._counter}", port=5005)
 
+        waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.RayWorkerProvider",
             SimpleNamespace(create=lambda: _FakeProvider()),
         )
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_tcp_ready",
+            lambda host, port, timeout: waited.append((host, port)),
+        )
 
-        args = make_args(use_session_server=True, hf_checkpoint="/fake/model", num_session_servers=2)
-        with pytest.raises(AssertionError):
-            await start_session_server(args)
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            num_session_servers=2,
+            run_uuid="00112233445566aa",
+        )
+        await start_session_server(args)
+
+        assert args.session_server_addrs == ["10.0.0.1:5005", "10.0.0.2:5005"]
+        assert args.session_server_instance_ids == {
+            "10.0.0.1:5005": "00112233445566aa-0",
+            "10.0.0.2:5005": "00112233445566aa-1",
+        }
+        assert waited == [("10.0.0.1", 5005), ("10.0.0.2", 5005)]
