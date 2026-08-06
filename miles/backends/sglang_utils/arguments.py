@@ -21,6 +21,7 @@ def add_sglang_router_arguments(parser):
         default=None,
         help="Port of the SGLang router",
     )
+    parser.set_defaults(sglang_model_routers=None)
     parser.add_argument(
         "--sglang-router-policy",
         type=str,
