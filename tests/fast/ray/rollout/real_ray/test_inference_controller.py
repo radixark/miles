@@ -477,41 +477,6 @@ class TestRecoverUpdatableEngines:
 
 @pytest.mark.asyncio
 class TestRolloutFaultToleranceIsUnsupported:
-    async def test_health_monitoring_hooks_are_noops_without_fault_tolerance(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """A plain run never asked for fault tolerance, so the hooks stay out of its way."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
-
-        await controller.health_monitoring_pause()
-        await controller.health_monitoring_resume()
-
-    async def test_health_monitoring_hooks_refuse_to_run_under_fault_tolerance(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-    ):
-        """Asking for fault tolerance must fail loudly, not run unmonitored."""
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        pg = placement_group_factory(2)
-
-        controller = await InferenceController.create(args, pg)
-        controller.args.use_fault_tolerance = True
-
-        with pytest.raises(NotImplementedError):
-            await controller.health_monitoring_pause()
-        with pytest.raises(NotImplementedError):
-            await controller.health_monitoring_resume()
-
     async def test_fault_injection_refuses_to_run(
         self,
         ray_local_mode,

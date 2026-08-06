@@ -2,7 +2,7 @@ import asyncio
 
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import (
-    ActivenessState,
+    ActiveAndEpoch,
     ActivenessTracker,
     NoopHealthChecker,
     SimpleHealthChecker,
@@ -62,7 +62,7 @@ class _Activeness:
     def active(self, value: bool) -> None:
         self._tracker.bump_active(value)
 
-    def __call__(self) -> ActivenessState:
+    def __call__(self) -> ActiveAndEpoch:
         return self._tracker.get()
 
 
@@ -561,6 +561,88 @@ class TestFailureThresholdDebounce:
         await clock.elapse(100.0)
         assert call_count == 2
         checker.stop()
+
+
+class TestCancelInflightProbe:
+    def _hanging_check_fn(self, started: asyncio.Event):
+        async def check_fn() -> None:
+            started.set()
+            await asyncio.sleep(3600)
+
+        return check_fn
+
+    async def test_a_cancelled_probe_publishes_no_result(self):
+        """A probe that outlives its window would report a failure about an engine nobody was watching."""
+        results: list[bool] = []
+        started = asyncio.Event()
+        checker, _ = _make_checker(
+            check_fn=self._hanging_check_fn(started), on_result=lambda s: results.append(s), interval=5.0
+        )
+        checker.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        await checker.cancel_inflight_probe()
+
+        assert results == []
+        assert checker.status == TriState.UNKNOWN
+        checker.stop()
+
+    async def test_it_returns_only_after_the_probe_task_is_gone(self):
+        """Returning while the probe is still running is exactly the race a barrier has to close."""
+        started = asyncio.Event()
+        checker, _ = _make_checker(check_fn=self._hanging_check_fn(started), interval=5.0)
+        checker.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+        probe_task = checker._probe_task
+
+        await checker.cancel_inflight_probe()
+
+        assert probe_task.cancelled()
+        checker.stop()
+
+    async def test_the_loop_keeps_polling_after_its_probe_was_cancelled(self):
+        """Cancelling one probe must not silently kill the checker for the rest of the run."""
+        call_count = 0
+        started = asyncio.Event()
+
+        async def check_fn() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                started.set()
+                await asyncio.sleep(3600)
+
+        checker, clock = _make_checker(check_fn=check_fn, interval=5.0)
+        checker.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await checker.cancel_inflight_probe()
+        await _settle(clock)
+
+        await clock.elapse(5.0)
+
+        assert call_count == 2
+        checker.stop()
+
+    async def test_cancelling_while_nothing_is_in_flight_is_a_noop(self):
+        """The controller pauses whether or not a probe happens to be running right then."""
+        checker, _ = _make_checker(interval=5.0)
+
+        await checker.cancel_inflight_probe()
+
+        assert checker._probe_task is None
+
+    async def test_stopping_also_kills_a_probe_still_in_flight(self):
+        """A probe left running after stop() outlives the cell and keeps dialing a dead engine."""
+        started = asyncio.Event()
+        checker, _ = _make_checker(check_fn=self._hanging_check_fn(started), interval=5.0)
+        checker.start()
+        await asyncio.wait_for(started.wait(), timeout=1)
+        probe_task = checker._probe_task
+
+        checker.stop()
+        await asyncio.sleep(0)
+
+        assert probe_task.cancelled()
 
 
 class TestNoopHealthChecker:

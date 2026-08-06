@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import textwrap
 from argparse import ArgumentParser, Namespace
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
@@ -109,8 +110,11 @@ def make_args(**overrides: Any) -> Namespace:
         # offload / fault tolerance
         offload_rollout=False,
         use_fault_tolerance=False,
-        rollout_health_check_interval=10.0,
+        ft_components=[],
+        rollout_health_check_interval=30.0,
         rollout_health_check_timeout=30.0,
+        rollout_health_check_first_wait=0.0,
+        rollout_health_check_failure_threshold=3,
         # engine launch command
         seed=42,
         fp16=False,
@@ -226,6 +230,27 @@ def make_sglang_config_yaml(
         if "num_gpus_per_engine" in g:
             lines.append(f"        num_gpus_per_engine: {g['num_gpus_per_engine']}")
     return "\n".join(lines) + "\n"
+
+
+# --------------------------- server cell fixtures ---------------------------
+
+_tracked_server_cells: list[Any] = []
+
+
+def track_server_cell(cell: Any) -> Any:
+    """Register a cell for teardown. ``ServerCell.__del__`` asserts that every cell was disposed."""
+    _tracked_server_cells.append(cell)
+    return cell
+
+
+@pytest.fixture
+async def dispose_tracked_server_cells() -> AsyncIterator[None]:
+    """Dispose every cell registered through ``track_server_cell`` during the test."""
+    _tracked_server_cells.clear()
+    yield
+    for cell in _tracked_server_cells:
+        await cell.dispose()
+    _tracked_server_cells.clear()
 
 
 # --------------------------- ray fixtures ---------------------------
