@@ -18,8 +18,8 @@ def recorded_argvs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
     def fake_run(argv, **kwargs):
         argvs.append(list(argv))
-        # pgrep exits 1 when it matches nothing, i.e. the reap worked.
-        return subprocess.CompletedProcess(argv, 1 if argv[0] == "pgrep" else 0)
+        # An empty ps listing is what a reap that worked looks like.
+        return subprocess.CompletedProcess(argv, 0, stdout="")
 
     monkeypatch.setattr(ci_utils.subprocess, "run", fake_run)
     monkeypatch.setattr(ci_utils, "_REAP_SETTLE_SECONDS", 0.0)
@@ -74,8 +74,7 @@ class TestReapLeakedAcceleratorProcesses:
         about it is what makes the infrastructure failure read as that test being broken."""
 
         def fake_run(argv, **kwargs):
-            # pgrep exit 0 means the pattern still matches something.
-            return subprocess.CompletedProcess(argv, 0)
+            return subprocess.CompletedProcess(argv, 0, stdout="Sl   ray::MegatronTrainRayActor.train()\n")
 
         monkeypatch.setattr(ci_utils.subprocess, "run", fake_run)
         monkeypatch.setattr(ci_utils, "_REAP_SETTLE_SECONDS", 0.0)
@@ -86,12 +85,32 @@ class TestReapLeakedAcceleratorProcesses:
 
         assert any("still alive" in record.message for record in caplog.records)
 
+    def test_a_killed_process_awaiting_its_parent_is_not_mistaken_for_a_survivor(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """SIGKILL leaves the entry in the table until the parent reaps it, and the job's pid 1
+        never will, so counting those reports every successful reap as a failure."""
+
+        def fake_run(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, stdout="Z    ray::MegatronTrainRayActor.train() <defunct>\n")
+
+        monkeypatch.setattr(ci_utils.subprocess, "run", fake_run)
+        monkeypatch.setattr(ci_utils, "_REAP_SETTLE_SECONDS", 0.0)
+        monkeypatch.setattr(ci_utils, "_REAP_POLL_SECONDS", 0.0)
+
+        with caplog.at_level(logging.WARNING):
+            ci_utils.reap_leaked_accelerator_processes()
+
+        assert not [record for record in caplog.records if "still alive" in record.message]
+
     def test_the_settle_window_is_spent_even_when_nothing_survives(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The driver frees the memory after its holders are gone, so an empty process table is
         not yet a clean device; polling exists to tell whether the kill worked, not to cut the
         wait short."""
         slept: list[float] = []
-        monkeypatch.setattr(ci_utils.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 1))
+        monkeypatch.setattr(
+            ci_utils.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="")
+        )
         monkeypatch.setattr(ci_utils.time, "sleep", slept.append)
         monkeypatch.setattr(ci_utils, "_REAP_SETTLE_SECONDS", 4.0)
 
@@ -107,7 +126,7 @@ class TestReapLeakedAcceleratorProcesses:
         with caplog.at_level(logging.WARNING):
             ci_utils.reap_leaked_accelerator_processes()
 
-        assert any(argv[0] == "pgrep" for argv in recorded_argvs)
+        assert any(argv[0] == "ps" for argv in recorded_argvs)
         assert not [record for record in caplog.records if "still alive" in record.message]
 
     def test_running_test_files_does_not_reap_unless_asked(

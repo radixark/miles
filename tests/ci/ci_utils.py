@@ -32,6 +32,7 @@ _REAP_POLL_SECONDS = 1.0
 # Both patterns end in "::" on purpose: a test path under tests/e2e/sglang/ contains
 # "sglang", so a bare pattern would make the reaper kill the process it is preparing for.
 _LEFTOVER_PATTERNS = ("sglang::", "ray::")
+_LEFTOVER_COMMAND_CHARS = 120
 
 
 def _sanitize_for_path(name: str) -> str:
@@ -693,7 +694,7 @@ def _wait_until_reaped() -> None:
     # Checked at least once even with no time budget left: the point is to know, not to wait.
     deadline = time.monotonic() + _REAP_SETTLE_SECONDS
     while True:
-        survivors = _surviving_leftover_patterns()
+        survivors = _surviving_leftover_processes()
         if not survivors or time.monotonic() >= deadline:
             break
         time.sleep(_REAP_POLL_SECONDS)
@@ -712,16 +713,21 @@ def _wait_until_reaped() -> None:
         )
 
 
-def _surviving_leftover_patterns() -> list[str]:
+def _surviving_leftover_processes() -> list[str]:
+    # Deliberately not pgrep: a process killed with SIGKILL stays in the table as a zombie
+    # until its parent reaps it, and the job's pid 1 is a shell that never will. pgrep counts
+    # those, so it reports every reap as having failed. Read the state column and skip them.
+    try:
+        listing = subprocess.run(["ps", "-eo", "stat=,args="], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning(f"Listing processes to check the reap failed: {type(e).__name__}: {e}")
+        return []
+
     alive = []
-    for pattern in _LEFTOVER_PATTERNS:
-        try:
-            found = subprocess.run(
-                ["pgrep", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30
-            )
-        except (OSError, subprocess.SubprocessError) as e:
-            logger.warning(f"Checking leftovers for {pattern!r} failed: {type(e).__name__}: {e}")
+    for line in listing.stdout.splitlines():
+        state, _, command = line.strip().partition(" ")
+        if state.startswith("Z"):
             continue
-        if found.returncode == 0:
-            alive.append(pattern)
+        if any(pattern in command for pattern in _LEFTOVER_PATTERNS):
+            alive.append(command[:_LEFTOVER_COMMAND_CHARS])
     return alive
