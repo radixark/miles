@@ -3,6 +3,7 @@ cu_seqlens to fla chunk/recurrent_gated_delta_rule and seq_idx to causal_conv1d_
 Patches the DecoderLayer/GatedDeltaNet class forwards; kernel logic lives in ``models/qwen3_5.py``."""
 
 from ..packing.registry import PackingPatch, register_packing_patch
+from ..routing_replay import RoutingReplayAdapter, register_routing_replay_adapter
 
 
 def _applies(hf_config) -> bool:
@@ -22,3 +23,27 @@ def _apply():
 
 
 register_packing_patch(PackingPatch("gated_deltanet_packing", _applies, "config", _apply))
+
+
+def _is_qwen3_5_moe(hf_config) -> bool:
+    """Qwen3.5 MoE. The text-only checkpoint reports model_type qwen3_5_moe_text."""
+    if hf_config is None:
+        return False
+    model_type = str(getattr(hf_config, "model_type", "") or "")
+    return "qwen3_5" in model_type and "moe" in model_type
+
+
+def _install_routing_replay(module) -> None:
+    from ...models.routing_replay_qwen3 import install_qwen3_topk_router_replay
+
+    install_qwen3_topk_router_replay(module)
+
+
+register_routing_replay_adapter(
+    RoutingReplayAdapter(
+        name="qwen3_5_moe",
+        applies_to=_is_qwen3_5_moe,
+        module_cls_name="Qwen3_5MoeTopKRouter",
+        install=_install_routing_replay,
+    )
+)
