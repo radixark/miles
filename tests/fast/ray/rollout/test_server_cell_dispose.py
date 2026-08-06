@@ -112,6 +112,19 @@ class TestServerCellDispose:
         assert isinstance(cell._state, StateDisposed)
 
     @pytest.mark.asyncio
+    async def test_disposing_a_registered_cell_twice_unregisters_it_once(self) -> None:
+        """Teardown paths overlap, so a second dispose must not aim a removal at an entry the
+        first one already took out."""
+        client = _make_router_api_client()
+        cell = _make_cell(router_api_client=client)
+        await _register(cell, state=StateServing, server_url="http://10.0.0.6:30000", bootstrap_port=None)
+
+        await cell.dispose()
+        await cell.dispose()
+
+        client.remove_worker.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_disposing_an_initializing_cell_unregisters_it_from_the_router(self) -> None:
         """A cell serving without weight updates is registered while still initializing, so the
         router can hold its url before the state advances."""

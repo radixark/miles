@@ -226,6 +226,10 @@ class ServerCell:
             )
         except Exception as e:
             logger.warning(f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})")
+        finally:
+            # Teardown paths overlap, so dispose can run twice; the url is dropped either way
+            # because a second remove_worker would be aimed at an entry already taken out.
+            self._registered_worker_url = None
 
     async def _compute_addr_info(self) -> CellAddrInfo:
         provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
