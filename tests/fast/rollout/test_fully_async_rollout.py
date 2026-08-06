@@ -513,12 +513,14 @@ async def test_buffer_staleness_metrics():
 
 
 async def test_drain_reports_eviction_metrics(monkeypatch):
-    fn = make_fn(monkeypatch, make_args(async_data_buffer_max_batches=4), FakeDataSource())
+    fn = make_fn(
+        monkeypatch, make_args(async_data_buffer_max_batches=4, async_stale_samples_handler="retry"), FakeDataSource()
+    )
     await fn(RolloutFnTrainInput(rollout_id=0))
 
     # Evictions land in the buffer counters between drains; the racy overflow
     # path itself is covered by the DataBuffer tests above.
-    assert fn._output._recycle_fn == fn._recycle
+    assert fn._output._stale_handler_fn == fn._recycle
     fn._output._metric_entered_groups += 8
     fn._output._metric_evicted_stale_groups = 1
     fn._output._metric_evicted_overflow_groups = 2

@@ -78,10 +78,9 @@ class DefaultDataBuffer(DataBuffer):
         of the buffer, in multiples of rollout_batch_size. On overflow the most
         stale groups are evicted; 0 disables eviction and blocks the producer
         when the buffer is full.
-    (2) stale handling: ``--async-stale-samples-handler`` decides what happens
-        to an evicted group beyond ``--max-weight-staleness``: drop discards
-        it, retry recycles its prompts for regeneration. Groups evicted purely
-        by capacity are always recycled.
+    (2) eviction handling: ``--async-stale-samples-handler`` decides what
+        happens to an evicted group: drop discards it, retry recycles its
+        prompts for regeneration.
     """
 
     def __init__(self, input: DataBufferConstructorInput):
@@ -94,12 +93,11 @@ class DefaultDataBuffer(DataBuffer):
             if args.async_data_buffer_max_batches
             else 1000  # legacy blocking bound
         )
-        self._recycle_fn = input.recycle_fn
-        # "drop" discards stale groups instead of recycling them
+        # "drop" discards evicted groups instead of recycling them
         self._stale_handler_fn = (
             input.recycle_fn if args.async_stale_samples_handler == "retry" else (lambda prompt_group: None)
         )
-        self._entries: list[DataBufferInput] = []
+        self._buffer: list[DataBufferInput] = []
         self._cond = asyncio.Condition()
         self._latest_weight_version: int | None = None
         self._metric_entered_groups = 0
@@ -112,27 +110,27 @@ class DefaultDataBuffer(DataBuffer):
                 self._latest_weight_version = input.weight_version
         async with self._cond:
             if self._args.async_data_buffer_max_batches > 0:
-                self._entries.append(input)
-                if len(self._entries) > self._capacity:
+                self._buffer.append(input)
+                if len(self._buffer) > self._capacity:
                     self._evict_overflow()
             else:
-                while len(self._entries) >= self._capacity:
+                while len(self._buffer) >= self._capacity:
                     await self._cond.wait()
-                self._entries.append(input)
+                self._buffer.append(input)
             self._metric_entered_groups += 1
             self._cond.notify_all()
 
     async def get(self) -> DataBufferInput:
         async with self._cond:
-            while not self._entries:
+            while not self._buffer:
                 await self._cond.wait()
-            entry = self._entries.pop(0)
+            entry = self._buffer.pop(0)
             self._cond.notify_all()
             return entry
 
     def get_metrics(self) -> dict[str, float]:
         metrics = {
-            "queue_size": len(self._entries),
+            "queue_size": len(self._buffer),
             "evicted_stale_groups": self._metric_evicted_stale_groups,
             "evicted_overflow_groups": self._metric_evicted_overflow_groups,
         }
@@ -142,7 +140,7 @@ class DefaultDataBuffer(DataBuffer):
         if self._latest_weight_version is not None:
             staleness = [
                 self._latest_weight_version - oldest
-                for entry in self._entries
+                for entry in self._buffer
                 if (oldest := group_oldest_weight_version(entry.group)) is not None
             ]
             if staleness:
@@ -161,22 +159,21 @@ class DefaultDataBuffer(DataBuffer):
 
     def _evict_overflow(self) -> None:
         """Evict stalest-first until nothing is beyond ``max_staleness`` and the buffer fits."""
-        while self._entries:
-            keys = [self._eviction_key(entry.group) for entry in self._entries]
+        while self._buffer:
+            keys = [self._eviction_key(entry.group) for entry in self._buffer]
             index = keys.index(min(keys))
-            oldest = group_oldest_weight_version(self._entries[index].group)
+            oldest = group_oldest_weight_version(self._buffer[index].group)
             if_exceed_staleness = (
                 self._args.max_weight_staleness is not None
                 and self._latest_weight_version is not None
                 and oldest is not None
                 and self._latest_weight_version - oldest > self._args.max_weight_staleness
             )
-            if not if_exceed_staleness and len(self._entries) <= self._capacity:
+            if not if_exceed_staleness and len(self._buffer) <= self._capacity:
                 return
-            entry = self._entries.pop(index)
+            entry = self._buffer.pop(index)
             if if_exceed_staleness:
                 self._metric_evicted_stale_groups += 1
-                self._stale_handler_fn(entry.prompt_group)
             else:
                 self._metric_evicted_overflow_groups += 1
-                self._recycle_fn(entry.prompt_group)
+            self._stale_handler_fn(entry.prompt_group)
