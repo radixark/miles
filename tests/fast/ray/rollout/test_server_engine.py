@@ -3,7 +3,8 @@ from unittest.mock import MagicMock
 import pytest
 import ray
 
-from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
+from miles.ray.rollout.cell_state import AddrInfo
+from miles.ray.rollout.server_engine import ServerEngine
 
 
 def _fake_actor_handle() -> MagicMock:
