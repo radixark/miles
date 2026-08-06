@@ -2609,6 +2609,9 @@ def parse_args(add_custom_arguments=None):
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
+        if args.hf_checkpoint:
+            args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
+
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
 
     # On iff the CI harness injected MILES_CI_GATE_RECORD_DIR (the same env var
@@ -3424,6 +3427,25 @@ def _maybe_apply_dumper_overrides(args) -> None:
     args.save = None
     args.save_interval = None
     args.save_retain_interval = None
+
+
+def resolve_fsdp_num_layers(hf_config) -> int | None:
+    """Decoder-layer count for the FSDP path.
+
+    ``num_layers`` is supplied by the Megatron parser, but it is read on backend-agnostic
+    code: ``sglang_rollout`` reshapes the R3 routing buffer as
+    ``[num_tokens, num_layers, topk]`` regardless of training backend. Multimodal and
+    text-split configs (Qwen3.5) carry the decoder depth only under ``text_config``, and a
+    top-level ``num_hidden_layers`` there can describe the vision tower instead, so the
+    text config wins whenever it has one.
+    """
+    getter = getattr(hf_config, "get_text_config", None)
+    text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
+
+    num_layers = getattr(text_config, "num_hidden_layers", None)
+    if num_layers is None:
+        num_layers = getattr(hf_config, "num_hidden_layers", None)
+    return num_layers
 
 
 def hf_validate_args(args, hf_config):

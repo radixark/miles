@@ -119,7 +119,9 @@ def fill_replay_data(
                 if pad != 0:
                     replay_data = pad_func(replay_data, pad)
 
-        if args.sequence_parallel and if_sp_region:
+        # sequence_parallel is a Megatron-only arg; the FSDP backend has tp_size == 1, so
+        # this slice would be a no-op there even if the arg existed.
+        if getattr(args, "sequence_parallel", False) and if_sp_region:
             seqlen = replay_data.size(0)
             assert seqlen % tp_size == 0
             start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
