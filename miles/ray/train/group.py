@@ -23,6 +23,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_p
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
@@ -38,7 +39,7 @@ _RETRY_MAX_ATTEMPTS = 30
 _CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
-class TrainerController:
+class TrainerController(NodeProbeMixin):
     def __init__(
         self,
         args,

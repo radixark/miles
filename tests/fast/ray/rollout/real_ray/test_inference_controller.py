@@ -79,7 +79,7 @@ def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
 
 
 def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
-    """Build args that drive ``InferenceController.init`` →
+    """Build args that drive ``InferenceController`` construction →
     ``start_rollout_servers`` → N model servers each with 1 group of 2 mock
     engines."""
     cfg = _write_sglang_config(tmp_path, models=models)
@@ -96,6 +96,13 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
         use_distributed_post=False,
         sglang_server_concurrency=1,
     )
+
+
+async def _init_controller(args) -> InferenceController:
+    """Build the controller the way its spec's ctor_kwargs would, then run the async init step."""
+    controller = InferenceController(args)
+    await controller.init()
+    return controller
 
 
 def _cells(controller, model: str = "actor"):
@@ -125,15 +132,14 @@ class TestInferenceControllerInit:
         tmp_path,
         patch_low_level,
     ):
-        """End-to-end smoke: production ``init`` + ``start_rollout_servers``
+        """End-to-end smoke: production construction + ``start_rollout_servers``
         runs against MockSGLangEngine; the resulting engines are addressable over
         http via the public ``get_updatable_engines``, and their launcher
         actors are reachable through the engine slots."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         placement_group_factory(2)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         updatable = await controller.get_updatable_engines()
         assert len(updatable.rollout_engines) == 2
         for api_client in updatable.rollout_engines:
@@ -156,8 +162,7 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         placement_group_factory(2)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         await controller.get_updatable_engines()
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
@@ -178,8 +183,7 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         placement_group_factory(2)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         updatable_before = await controller.get_updatable_engines()
         actor0_before = _cells(controller)[0].primary_actor_handle
         url_before = updatable_before.rollout_engines[0].server_url
@@ -207,8 +211,7 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         placement_group_factory(2)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         await controller.get_updatable_engines()
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
@@ -229,8 +232,7 @@ class TestStartStopCell:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         placement_group_factory(2)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         await controller.get_updatable_engines()  # ensure engines are alive
 
         await controller.stop_cell("actor-0")
@@ -252,8 +254,7 @@ class TestCellDispatchAcrossModels:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         placement_group_factory(4)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         actor_handles = [cell.primary_actor_handle for cell in _cells(controller, "actor")]
         ref_handles = [cell.primary_actor_handle for cell in _cells(controller, "ref")]
 
@@ -281,8 +282,7 @@ class TestGetUpdatableEngines:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         placement_group_factory(4)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         updatable = await controller.get_updatable_engines()
         assert len(updatable.rollout_engines) == 2  # actor's 2, not ref's 2
         assert updatable.engine_gpu_counts == [1, 1]
@@ -301,8 +301,7 @@ class TestGetUpdatableEngines:
         args = _make_test_args(tmp_path, models=[("ref", False)])
         placement_group_factory(2)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         updatable = await controller.get_updatable_engines()
         assert updatable.rollout_engines == []
         assert updatable.engine_gpu_counts == []
@@ -321,8 +320,7 @@ class TestGetUpdatableEngines:
         args = _make_test_args(tmp_path, models=[("actor", True)])
         placement_group_factory(2)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         eal_init = await controller.get_updatable_engines()
         assert eal_init.has_new_engines is True
 
@@ -347,8 +345,7 @@ class TestGetUpdatableEngines:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         placement_group_factory(4)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         # Force ref's flag True so we can detect any erroneous clear.
         controller.servers["ref"].has_new_engines = True
 
@@ -369,8 +366,7 @@ class TestGetUpdatableEngines:
         args = _make_test_args(tmp_path, models=[("actor1", True), ("actor2", True)])
         placement_group_factory(4)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         with pytest.raises(ValueError, match="Multiple servers"):
             await controller.get_updatable_engines()
 
@@ -390,8 +386,7 @@ class TestCheckWeights:
         args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
         placement_group_factory(4)
 
-        controller = InferenceController(args)
-        await controller.init()
+        controller = await _init_controller(args)
         await controller.get_updatable_engines()  # wait for engines to be alive
 
         results = await controller.check_weights(action="pre_update")

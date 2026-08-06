@@ -69,7 +69,7 @@ Same pattern applies to `offload`, `onload` and `clear_memory`.
 
 ```diff
 - actor, critic = create_training_models(args, pgs, rollout_manager)
-+ actor, critic = await create_training_models(args, pgs, inference_controller, rollout_executor)
++ actor, critic = await create_training_models(args, rollout_executor)
 ```
 
 ## `RolloutManager` split into `InferenceController` + `RolloutExecutor`
@@ -98,14 +98,32 @@ Same pattern applies to `offload`, `onload` and `clear_memory`.
   the driver starts it with `await inference_controller.init()`; every later call is rpc.
 - Train actors no longer hold the executor handle. The driver reads
   `get_train_parallel_config()` off the trainer and writes it into the executor.
-- The trainer group, which runs in the driver, brackets the weight update with
-  `start_update_weights` / `end_update_weights` instead of rank 0 doing it.
+- The trainer controller brackets the weight update with `start_update_weights` /
+  `end_update_weights` instead of rank 0 doing it.
 - Whether the trainer must reconnect is derived from the cell snapshot those calls carry,
   not from a hand-maintained flag.
 - `start_api_server` (formerly `start_control_server`) takes `inference_controller=`.
 
 `RolloutExecutor.generate` is now `RolloutExecutor.get`: the executor hands over data
 the rollout already produced, it does not itself generate.
+
+## `TrainerController` is a worker too
+
+The controller that owns the trainer cells no longer runs in the driver process. Each
+trainer role gets its own zero-gpu worker — `trainer-controller-actor`, plus
+`trainer-controller-critic` under `--use-critic` — and the driver holds handles:
+
+```diff
+- actor = TrainerController(args, role="actor", ...)
++ actor = create_trainer_controller_handle(role="actor")
+  await actor.init()
+```
+
+- `create_training_models` no longer takes `inference_controller`: the actor controller's
+  spec injects that handle into the controller process, which is the only place it is used.
+- The critic's `values` payload rides `miles.utils.object_store` instead of a bare
+  `ray.put`; the driver releases the refs with `remove_train_output_refs` after the actor
+  step that consumes them.
 
 ## Class-based rollout functions must subclass `BaseRolloutFn`
 
