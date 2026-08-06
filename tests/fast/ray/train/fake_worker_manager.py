@@ -6,6 +6,7 @@ from tests.fast.ray.train.dummy_actor import DummyTrainActor
 from miles.ray.specs.train import MASTER_PORT_NAME
 from miles.utils.workers.naming import compute_cell_id, parse_cell_id
 from miles.utils.workers.ray_worker_manager import WorkerInfo
+from miles.utils.workers.worker_handle import RayWorkerHandle
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -62,7 +63,7 @@ class FakeWorkerManager:
                 generation=1 + len(self.started_cell_ids),
                 self_addrs={MASTER_PORT_NAME: HostAndPort(host="10.0.0.1", port=20000)},
                 gpu_ids=[worker_index],
-                actor_handle=handle,
+                handle=RayWorkerHandle(handle),
             )
             for worker_index, handle in enumerate(self._handles[cell_id])
         ]

@@ -840,7 +840,7 @@ class TestGetWorkerInfos:
         assert [info.generation for info in infos] == [1, 1]
         assert [info.gpu_ids for info in infos] == [[4, 5], [6, 7]]
         assert [info.self_addrs for info in infos] == manager.get_addrs()["engine"][2:]
-        assert [info.actor_handle for info in infos] == fake_ray_cluster.handles[2:]
+        assert [info.handle._actor_handle for info in infos] == fake_ray_cluster.handles[2:]
 
 
 class TestGetWorkerInfosErrors:
