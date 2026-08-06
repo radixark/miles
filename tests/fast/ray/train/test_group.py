@@ -64,6 +64,7 @@ def _make_group(
     group = TrainerController(
         args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell, num_cells=num_cells),
         role="actor",
+        with_ref=False,
         inference_controller=inference_controller,
     )
     for cell_index in range(num_cells):
@@ -207,7 +208,7 @@ class TestExecuteFirstAlive:
 class TestGetTrainParallelConfig:
     @staticmethod
     def _set_configs(cell, configs: list[dict]) -> None:
-        handles = cell._get_actor_handles()
+        handles = get_raw_actor_handles(cell)
         ray.get(
             [handle.set_train_parallel_config.remote(config) for handle, config in zip(handles, configs, strict=True)]
         )
@@ -222,8 +223,8 @@ class TestGetTrainParallelConfig:
     async def test_skips_stopped_cells(self):
         """A stopped cell 0 must not be asked; the next alive cell answers instead."""
         group = await _make_alive_group(num_cells=2)
-        self._set_configs(group._cells[1], [{"dp_size": 2}])
-        await group._cells[0].stop()
+        self._set_configs(_cell(group, 1), [{"dp_size": 2}])
+        await _stop_cell(group, 0)
 
         assert await group.get_train_parallel_config() == {"dp_size": 2}
 
@@ -804,9 +805,13 @@ class TestCheckTrainOneAttempt:
         ],
     )
     def test_raises_when_all_cells_errored(self, results):
-        """A freshly built group has no alive or pending cell, so an all-errored attempt is non-retryable."""
+        """With every cell errored there is nothing left to heal, so an all-errored attempt is non-retryable."""
+        group = _make_group(num_cells=1)
+        for cell in group._cells:
+            cell._mark_as_errored()
+
         with pytest.raises(NonRetryableError, match="All cells failed"):
-            _make_group(num_cells=1)._check_train_one_attempt(_alive_cells_for(results), results)
+            group._check_train_one_attempt(_alive_cells_for(results), results)
 
     def test_compute_attempt_outcomes_buckets_cells_by_index(self):
         """_compute_attempt_outcomes buckets each alive cell into errored / discarded / normal by index."""
@@ -829,7 +834,7 @@ async def _set_all_train_return(group: TrainerController, value: TrainStepOutput
 
 async def _set_all_train_returns_per_attempt(group: TrainerController, values: list[TrainStepOutput]) -> None:
     for cell in group._cells:
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_train_return_values_per_attempt.remote(values))
 
 
@@ -1038,7 +1043,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
 
             await group._maybe_log_inference_engine_weight_checksums(rollout_id=3)
 
-        inference_ctl.check_weights.assert_awaited_once_with("checksum")
+        inference_ctl.check_weights.assert_awaited_once_with(action="checksum")
         mock_logger.log.assert_called_once()
         logged = mock_logger.log.call_args.args[1]
         assert logged == dict(rollout_id=3, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}])
