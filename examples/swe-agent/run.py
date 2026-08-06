@@ -162,7 +162,6 @@ def execute(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.7 "
         "--sglang-tool-call-parser glm47 "
         "--sglang-reasoning-parser glm45 "
-        "--sglang-router-port 31000 "
     )
 
     agent_args = (
