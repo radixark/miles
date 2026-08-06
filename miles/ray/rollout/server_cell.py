@@ -159,7 +159,7 @@ class ServerCell:
         plans = {
             rank: compute_engine_launch_plan(
                 self.args,
-                rank=rank,
+                node_rank=local_index,
                 worker_type=self.worker_type,
                 base_gpu_id=self.engine_gpu_ids[local_index][0],
                 sglang_overrides=self.sglang_overrides,
