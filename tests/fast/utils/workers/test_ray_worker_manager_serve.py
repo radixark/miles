@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
 import pytest
+from ray import cloudpickle
 from tests.fast.utils.workers.fake_ray import EVENT_KILL, FakeRayCluster
 
 from miles.ray.placement_group import PlacementGroupInfo
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.ray_worker_manager import RayWorkerManager, bootstrapped_worker_class
+from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec, WorkerLaunchContext
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,6 +31,21 @@ class DemoServeWorker:
 
 
 _WORKER_CLASS_PATH = f"{DemoServeWorker.__module__}.{DemoServeWorker.__qualname__}"
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+
+_REBUILD_IN_CHILD = """
+import json
+import sys
+
+from ray import cloudpickle
+
+from tests.fast.utils.workers.test_ray_worker_manager_serve import DemoServeWorker
+
+actor_class, ctor_kwargs, context = cloudpickle.loads(sys.stdin.buffer.read())
+worker = actor_class(ctor_kwargs=ctor_kwargs, context=context)
+print(json.dumps(dict(**worker.kwargs, rebuilt=actor_class is not DemoServeWorker, name=actor_class.__name__)))
+"""
 
 
 def _make_spec(
@@ -58,6 +82,19 @@ def _make_spec(
     )
 
 
+@dataclass
+class _CtorKwargsProbe:
+    contexts: list[Any] = field(default_factory=list)
+
+    def __call__(self, context: Any) -> dict[str, Any]:
+        self.contexts.append(context)
+        return dict(rank=context.worker_in_cell_index, role="actor")
+
+
+def _launch_context(*, worker_in_cell_index: int = 0) -> WorkerLaunchContext:
+    return WorkerLaunchContext(cell_index=0, worker_in_cell_index=worker_in_cell_index, gpu_ids=[])
+
+
 def _make_pgs(num_slots: int = 8) -> dict[str, PlacementGroupInfo]:
     return {
         "actor": PlacementGroupInfo(
@@ -87,7 +124,7 @@ class TestServeWorkersAreLaunched:
         """A serve spec names its worker class instead of running a shell command."""
         await _launch([_make_spec(num_workers_per_cell=2)])
 
-        assert _actor_classes(fake_ray_cluster) == [DemoServeWorker, DemoServeWorker]
+        assert [issubclass(cls, DemoServeWorker) for cls in _actor_classes(fake_ray_cluster)] == [True, True]
 
     async def test_no_launch_command_is_ever_sent(self, fake_ray_cluster: FakeRayCluster):
         """Serve workers start with their constructor, so post_setup must stay silent."""
@@ -95,25 +132,39 @@ class TestServeWorkersAreLaunched:
 
         assert fake_ray_cluster.calls_of("run") == []
 
-    async def test_each_worker_is_constructed_with_its_own_kwargs(self, fake_ray_cluster: FakeRayCluster):
-        """Every rank needs its own identity, which is what the launch context carries."""
-        await _launch([_make_spec(num_workers_per_cell=3, ctor_kwargs=lambda ctx: {"rank": ctx.worker_in_cell_index})])
+    async def test_the_manager_never_evaluates_the_ctor_kwargs_of_a_spec(self, fake_ray_cluster: FakeRayCluster):
+        """ctor kwargs may hold a live provider, which cannot be shipped from here to the actor."""
 
-        assert [kwargs["rank"] for kwargs in fake_ray_cluster.ctor_kwargs] == [0, 1, 2]
+        def explode(_ctx) -> dict:
+            raise AssertionError("ctor kwargs were computed in the manager process")
 
-    async def test_gpu_ids_reach_the_constructor(self, fake_ray_cluster: FakeRayCluster):
+        await _launch([_make_spec(num_workers_per_cell=2, ctor_kwargs=explode)])
+
+        assert len(fake_ray_cluster.handles) == 2
+
+    async def test_each_worker_is_handed_the_spec_s_ctor_kwargs_fn_and_its_own_launch_context(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """What ships is the recipe and the rank's identity; the evaluated kwargs never leave the actor."""
+        probe = _CtorKwargsProbe()
+        await _launch([_make_spec(num_workers_per_cell=3, ctor_kwargs=probe)])
+
+        assert [list(kwargs) for kwargs in fake_ray_cluster.ctor_kwargs] == [["ctor_kwargs", "context"]] * 3
+        assert all(kwargs["ctor_kwargs"] is probe for kwargs in fake_ray_cluster.ctor_kwargs)
+        assert [kwargs["context"].worker_in_cell_index for kwargs in fake_ray_cluster.ctor_kwargs] == [0, 1, 2]
+
+    async def test_gpu_ids_reach_the_actor(self, fake_ray_cluster: FakeRayCluster):
         """A serve worker cannot ask ray for its slot, so the manager must tell it."""
         spec = _make_spec(
             num_workers_per_cell=2,
             num_gpu_slots_per_worker=1,
             num_gpus_per_worker=0.4,
             pg_name="actor",
-            ctor_kwargs=lambda ctx: {"gpu_ids": ctx.gpu_ids},
         )
 
         await _launch([spec], _make_pgs())
 
-        assert [kwargs["gpu_ids"] for kwargs in fake_ray_cluster.ctor_kwargs] == [[0], [1]]
+        assert [kwargs["context"].gpu_ids for kwargs in fake_ray_cluster.ctor_kwargs] == [[0], [1]]
 
     async def test_env_vars_are_computed_per_worker(self, fake_ray_cluster: FakeRayCluster):
         """Per-rank paths such as the offload directory live in the runtime env."""
@@ -262,3 +313,60 @@ class TestServeAndCommandSpecsCoexist:
         addrs = manager.get_addrs()["trainer"]
         assert "master" in addrs[0]
         assert "master" not in addrs[1]
+
+
+class TestTheBootstrappedClass:
+    async def test_evaluates_the_handed_ctor_kwargs_with_the_handed_context(self):
+        """The class captures nothing: the recipe and the identity both arrive as constructor arguments."""
+        probe = _CtorKwargsProbe()
+        actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
+
+        actor_class(ctor_kwargs=probe, context=_launch_context(worker_in_cell_index=2))
+
+        assert probe.contexts[0].worker_in_cell_index == 2
+
+    async def test_passes_the_computed_keywords_to_the_wrapped_constructor(self):
+        """The worker class is keyword-only, exactly as it is when a pod builds it in serve_inner."""
+        actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
+
+        worker = actor_class(ctor_kwargs=_CtorKwargsProbe(), context=_launch_context(worker_in_cell_index=2))
+
+        assert worker.kwargs == dict(rank=2, role="actor")
+
+    async def test_keeps_the_name_of_the_class_it_wraps(self):
+        """Ray names actors and their errors after the class, and 'BootstrappedWorker' would name them all alike."""
+        assert bootstrapped_worker_class(_WORKER_CLASS_PATH).__name__ == DemoServeWorker.__name__
+        assert bootstrapped_worker_class(_WORKER_CLASS_PATH).__module__ == DemoServeWorker.__module__
+
+    async def test_survives_cloudpickle_together_with_the_spec_s_ctor_kwargs(self):
+        """Ray ships the class and the constructor arguments to the actor process, recipe included."""
+        actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
+
+        rebuilt_class, rebuilt_probe = cloudpickle.loads(cloudpickle.dumps((actor_class, _CtorKwargsProbe())))
+        worker = rebuilt_class(ctor_kwargs=rebuilt_probe, context=_launch_context(worker_in_cell_index=1))
+
+        assert worker.kwargs == dict(rank=1, role="actor")
+
+    async def test_a_fresh_interpreter_rebuilds_the_class_and_still_evaluates_the_recipe(self):
+        """Unpickling in this process hands back the very same class, so only another interpreter rebuilds it."""
+        payload = cloudpickle.dumps(
+            (
+                bootstrapped_worker_class(_WORKER_CLASS_PATH),
+                _CtorKwargsProbe(),
+                _launch_context(worker_in_cell_index=1),
+            )
+        )
+
+        completed = subprocess.run(
+            [sys.executable, "-c", _REBUILD_IN_CHILD],
+            input=payload,
+            capture_output=True,
+            env=dict(
+                os.environ,
+                PYTHONPATH=os.pathsep.join(filter(None, [str(_REPO_ROOT), os.environ.get("PYTHONPATH", "")])),
+            ),
+        )
+
+        assert completed.returncode == 0, completed.stderr.decode()
+        rebuilt = json.loads(completed.stdout.decode().strip().splitlines()[-1])
+        assert rebuilt == dict(rank=1, role="actor", rebuilt=True, name="DemoServeWorker")
