@@ -30,7 +30,7 @@ async def test_v1_pauses_health_checks_before_snapshotting_the_engines():
 
     await group.update_weights()
 
-    assert order[:2] == ["health_monitoring_pause", "get_updatable_engines_and_lock"]
+    assert order[:2] == ["health_monitoring_pause", "get_updatable_engines"]
     group._broadcast.assert_awaited_once()
 
 
@@ -48,7 +48,7 @@ async def test_v2_pauses_health_checks_before_snapshotting_the_engines():
 
     await group.update_weights()
 
-    assert order[:2] == ["health_monitoring_pause", "get_updatable_engines_and_lock"]
+    assert order[:2] == ["health_monitoring_pause", "get_updatable_engines"]
 
 
 def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
