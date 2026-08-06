@@ -182,7 +182,7 @@ class TestGetCellStatuses:
     def _controller(self, servers: dict[str, SimpleNamespace]) -> SimpleNamespace:
         return SimpleNamespace(servers=servers)
 
-    def test_every_cell_of_every_server_is_reported(self):
+    async def test_every_cell_of_every_server_is_reported(self):
         """The api server renders one row per cell, so a missing model means missing rows."""
         cell_a = _make_cell(StateServing(addr_info=_ADDR_INFO))
         cell_b = _make_cell(StateUninitialized())
@@ -193,14 +193,14 @@ class TestGetCellStatuses:
             }
         )
 
-        statuses = InferenceController.get_cell_statuses(controller)
+        statuses = await InferenceController.get_cell_statuses(controller)
 
         assert {cell_id: status.phase for cell_id, status in statuses.items()} == {
             "engine-0": "Running",
             "engine-1": "Pending",
         }
 
-    def test_each_status_carries_the_generation_it_describes(self):
+    async def test_each_status_carries_the_generation_it_describes(self):
         """A status without its generation is indistinguishable from one about the process it replaced."""
         controller = self._controller(
             {
@@ -210,15 +210,15 @@ class TestGetCellStatuses:
             }
         )
 
-        statuses = InferenceController.get_cell_statuses(controller)
+        statuses = await InferenceController.get_cell_statuses(controller)
 
         assert statuses["engine-0"].workers_hash == "hash-7"
 
-    def test_a_controller_without_servers_reports_nothing(self):
+    async def test_a_controller_without_servers_reports_nothing(self):
         """debug-train-only runs have no rollout cells, and must not fabricate any."""
-        assert InferenceController.get_cell_statuses(self._controller({})) == {}
+        assert await InferenceController.get_cell_statuses(self._controller({})) == {}
 
-    def test_each_pending_cell_gets_its_own_status_object(self):
+    async def test_each_pending_cell_gets_its_own_status_object(self):
         """A shared status instance would let one cell's mutation rewrite every other pending cell."""
         controller = self._controller(
             {
@@ -231,6 +231,6 @@ class TestGetCellStatuses:
             }
         )
 
-        statuses = InferenceController.get_cell_statuses(controller)
+        statuses = await InferenceController.get_cell_statuses(controller)
 
         assert statuses["engine-0"] is not statuses["engine-1"]
