@@ -69,81 +69,6 @@ logging.getLogger("megatron").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def _single_step_covers_rollout(
-    data_iterator: list[DataIterator],
-    num_microbatches: list[int],
-    num_rollouts: list[int],
-    num_local_samples: int,
-) -> bool:
-    if (
-        not data_iterator
-        or len(num_microbatches) != 1
-        or len(num_rollouts) != 1
-        or num_microbatches[0] <= 0
-        or num_local_samples <= 0
-    ):
-        return False
-
-    iterator = data_iterator[0]
-    if iterator.micro_batch_indices is None:
-        return (
-            iterator.micro_batch_size is not None
-            and iterator.micro_batch_size > 0
-            and num_microbatches[0] * iterator.micro_batch_size == num_local_samples
-        )
-
-    scheduled_microbatches = iterator.micro_batch_indices
-    scheduled_indices = [index for microbatch in scheduled_microbatches for index in microbatch]
-    return (
-        len(scheduled_microbatches) == num_microbatches[0]
-        and all(scheduled_microbatches)
-        and sorted(scheduled_indices) == list(range(num_local_samples))
-    )
-
-
-def _can_reuse_training_log_probs(
-    args: Namespace,
-    rollout_data: RolloutBatch,
-    data_iterator: list[DataIterator],
-    num_microbatches: list[int],
-    num_rollouts: list[int],
-    *,
-    has_rollout_data_postprocess: bool,
-) -> bool:
-    requires_standalone_forward = any(
-        (
-            args.keep_old_actor,
-            args.kl_coef != 0,
-            args.use_opd,
-            args.use_tis,
-            args.get_mismatch_metrics,
-            args.use_rollout_entropy,
-            args.true_on_policy_mode,
-            args.log_correct_samples,
-            has_rollout_data_postprocess,
-            args.custom_megatron_before_log_prob_hook_path is not None,
-            args.custom_megatron_before_train_step_hook_path is not None,
-            args.custom_model_provider_path is not None,
-            args.dumper_enable or args.dumper_fwd_only is not None,
-            args.save_debug_train_data is not None,
-            any(manager.enabled for manager in all_replay_managers),
-        )
-    )
-    return (
-        args.loss_type == "policy_loss"
-        and args.compute_advantages_and_returns
-        and not args.use_rollout_logprobs
-        and rollout_data.get("log_probs") is None
-        and not requires_standalone_forward
-        and _single_step_covers_rollout(
-            data_iterator,
-            num_microbatches,
-            num_rollouts,
-            len(rollout_data["total_lengths"]),
-        )
-    )
-
-
 def _setup_disk_offload_reclaim(disk_dir: str) -> None:
     """Wipe this rank's train disk-offload dir on startup and re-arm the atexit wipe.
 
@@ -539,13 +464,33 @@ class MegatronTrainRayActor(TrainRayActor):
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         num_rollouts = get_num_rollouts(self.args, rollout_data, len(num_microbatches))
-        allow_training_logprob_reuse = _can_reuse_training_log_probs(
-            self.args,
-            rollout_data,
-            data_iterator,
-            num_microbatches,
-            num_rollouts,
-            has_rollout_data_postprocess=self.rollout_data_postprocess is not None,
+        single_optimizer_step = len(num_microbatches) == 1
+        requires_standalone_forward = any(
+            (
+                self.args.keep_old_actor,
+                self.args.kl_coef != 0,
+                self.args.use_opd,
+                self.args.use_tis,
+                self.args.get_mismatch_metrics,
+                self.args.use_rollout_entropy,
+                self.args.true_on_policy_mode,
+                self.args.log_correct_samples,
+                self.rollout_data_postprocess is not None,
+                self.args.custom_megatron_before_log_prob_hook_path is not None,
+                self.args.custom_megatron_before_train_step_hook_path is not None,
+                self.args.custom_model_provider_path is not None,
+                self.args.dumper_enable or self.args.dumper_fwd_only is not None,
+                self.args.save_debug_train_data is not None,
+                any(manager.enabled for manager in all_replay_managers),
+            )
+        )
+        allow_training_logprob_reuse = (
+            single_optimizer_step
+            and self.args.loss_type == "policy_loss"
+            and self.args.compute_advantages_and_returns
+            and not self.args.use_rollout_logprobs
+            and rollout_data.get("log_probs") is None
+            and not requires_standalone_forward
         )
 
         for m in all_replay_managers:
