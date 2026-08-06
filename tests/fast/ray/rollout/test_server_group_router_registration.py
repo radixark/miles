@@ -4,7 +4,7 @@ import asyncio
 from unittest.mock import patch
 
 import pytest
-from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
+from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, fake_actor_handle, make_args
 
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
@@ -54,7 +54,7 @@ def _build_group(
     group = ServerGroup(
         args=args,
         pg=(None, [], []),
-        all_engines=engines,
+        cells=chunk_engines_into_cells(engines, num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8),
         num_gpus_per_engine=num_gpus_per_engine,
         has_new_engines=False,
         worker_type=worker_type,

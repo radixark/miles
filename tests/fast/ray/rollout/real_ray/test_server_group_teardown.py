@@ -4,7 +4,7 @@ import threading
 import time
 
 import ray
-from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
 import miles.ray.rollout.server_group as server_group_module
 from miles.ray.rollout.addr_allocator import PortCursors
@@ -22,7 +22,9 @@ def _build_group(*, pg_tuple: tuple, num_engines: int = 1) -> ServerGroup:
     return ServerGroup(
         args=make_args(num_gpus_per_node=8),
         pg=pg_tuple,
-        all_engines=[ServerEngine() for _ in range(num_engines)],
+        cells=chunk_engines_into_cells(
+            [ServerEngine() for _ in range(num_engines)], num_gpus_per_engine=1, num_gpus_per_node=8
+        ),
         num_gpus_per_engine=1,
         has_new_engines=False,
         worker_type="regular",
