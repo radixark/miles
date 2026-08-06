@@ -6,20 +6,19 @@ name: PR Test (ROCm)
 # with HIP/CUDA compatibility.
 #
 # Test selection is explicit rather than inherited from the CUDA suites. The
-# shared CI policy selects matching register_rocm_ci() labels for PR/nightly
-# runs; manual dispatch keeps the full regular MI300X suite.
+# shared CI policy still resolves matching register_rocm_ci() labels, but the
+# MI300X runner stage is disabled for every trigger.
 #
 # The MI300X host is split into two 4-GPU runners, so this stage is 4-GPU.
 # CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
 # own 4-GPU CaseConfig rather than an IS_HIP branch in the original.
 #
 # pull_request_target keeps the workflow and fork authorization on the trusted
-# base branch. A fork reaches the privileged self-hosted stage only after a
-# maintainer adds a canonical `run-ci-*` label.
+# base branch. The authorization check remains in place, but the disabled
+# MI300X runner stage never starts.
 #
-# The reusable job then checks out the PR merge ref explicitly. Fork PR jobs
-# receive no repository secrets; the accepted label still authorizes their
-# code to run against the MI300X host mounts.
+# The reusable job retains explicit PR merge-ref checkout and empty fork
+# secrets. Those paths take effect only if the stage is re-enabled.
 #
 # SGLang / Megatron-LM versions are baked into the ROCm image
 # (_run-ci-rocm.yml defaults skip_dependency_install to true), so unlike
@@ -106,7 +105,7 @@ jobs:
 
   stage-c-4-gpu-mi300x:
     needs: [resolve-ci-policy, resolve-ci-image]
-    if: needs.resolve-ci-policy.outputs.allow_self_hosted == 'true'
+    if: ${{ false }}
     # One shard per 4-GPU runner, so the pair works the suite in parallel.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
     # shard's failure does not cancel the other mid-run.

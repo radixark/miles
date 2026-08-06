@@ -327,13 +327,13 @@ class TestRocmWorkflowScopeSeam:
         assert "run: python -m tests.ci.ci_policy" in policy_block
         assert "github.event.schedule || github.run_id" in workflow
 
-    def test_stage_consumes_policy_and_preserves_manual_full_scope(self):
+    def test_stage_is_disabled_and_preserves_configuration(self):
         workflow = self._workflow()
         stage = workflow.split("  stage-c-4-gpu-mi300x:", 1)[1]
         command = stage.split("execute_command:", 1)[1].split("secrets:", 1)[0]
 
         assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
-        assert "if: needs.resolve-ci-policy.outputs.allow_self_hosted == 'true'" in stage
+        assert "if: ${{ false }}" in stage
         assert "partition_id: [0, 1]" in stage
         assert "--auto-partition-size 2" in command
         assert "format('refs/pull/{0}/merge', github.event.pull_request.number)" in stage

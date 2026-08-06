@@ -9,7 +9,7 @@ A *stage* is one CI job in a Miles CI workflow. A *suite* is the `suite=` value 
 
 ## Suite → stage mapping
 
-The canonical suite list is `CI_SUITES` in `tests/ci/run_suite.py`, grouped by hardware backend (CPU / CUDA / ROCm). Cadence does not change this inventory: regular and nightly runs use the same stages. Every CPU and CUDA entry has one matching job in `pr-test.yml`; `stage-c-4-gpu-mi300x` has its matching job in `pr-test-rocm.yml`, while the MI350 suites are owned by the external nightly described below. A test picks its stage purely by `suite=`; the stage job runs `run_suite.py --suite <name>`, which collects exactly the tests carrying that suite.
+The canonical suite list is `CI_SUITES` in `tests/ci/run_suite.py`, grouped by hardware backend (CPU / CUDA / ROCm). Cadence does not change this inventory: regular and nightly runs use the same stages. Every CPU and CUDA entry has one matching job in `pr-test.yml`; `stage-c-4-gpu-mi300x` remains mapped to a matching job in `pr-test-rocm.yml`, but that job is disabled by a constant-false gate. The MI350 suites are owned by the external nightly described below. A test picks its stage purely by `suite=`; an enabled stage job runs `run_suite.py --suite <name>`, which collects exactly the tests carrying that suite.
 
 The mapping is kept in sync by hand on both sides:
 - A `suite=` with no matching job never runs.
@@ -28,9 +28,9 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 3 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 2 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 2 | both resolvers, `stage-a-cpu` |
-| `stage-c-4-gpu-mi300x` | 4× MI300X | `["self-hosted","amd","mi300x","4gpu"]` | 2 | both resolvers |
+| `stage-c-4-gpu-mi300x` | 4× MI300X | `["self-hosted","amd","mi300x","4gpu"]` | 2 | disabled by its job gate |
 
-In `pr-test.yml`, `tier a` (CPU fast) gates the NVIDIA GPU fleet after both resolvers; its GPU stages (`b` / `c`) all depend on both resolvers and `stage-a-cpu`, and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline. The MI300X stage has no CPU-test gate.
+In `pr-test.yml`, `tier a` (CPU fast) gates the NVIDIA GPU fleet after both resolvers; its GPU stages (`b` / `c`) all depend on both resolvers and `stage-a-cpu`, and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline. The retained MI300X configuration has no CPU-test dependency, but its constant-false job gate prevents every matrix shard from being scheduled.
 
 ## What each stage does
 
@@ -42,7 +42,7 @@ In `pr-test.yml`, `tier a` (CPU fast) gates the NVIDIA GPU fleet after both reso
 - Each Miles PR workflow passes trigger facts to `tests/ci/ci_policy.py` and publishes its `cadence`, `raw_labels`, and `bypass_fastfail` outputs. That module owns trigger adaptation and the shared `resolve_policy` consumed by `run_suite.py`.
 - A PR `nightly` label maps to nightly cadence.
 - A scheduled run maps its exact `github.event.schedule` cron: the current `0 15 * * *` entry maps to nightly, an unknown cron fails, and a future weekly entry must add its own mapping.
-- A manual dispatch keeps regular cadence and has no PR labels. `pr-test.yml` therefore runs the ordinary always-on selection, while the dedicated ROCm dispatch adds `--match-all-labels` to preserve its full regular MI300X run.
+- A manual dispatch keeps regular cadence and has no PR labels. `pr-test.yml` therefore runs the ordinary always-on selection. The dedicated ROCm dispatch still resolves the full regular MI300X scope with `--match-all-labels`, but its runner job remains disabled.
 
 A **nightly** policy selects every enabled tag except `long` and `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. Regular cadence admits only regular registrations. Both cadences use the same stage inventory.
 
@@ -52,7 +52,7 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 **Runner selection.** GPU stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages set `cpu_runner: true` and run on GitHub-hosted `ubuntu-latest` instead, so they don't occupy GPU-fleet slots.
 
-**Dependency boundary.** CUDA stages start from dependencies baked into `radixark/miles`, reconcile Miles runtime dependencies from `requirements.txt`, update the SGLang and Megatron-LM checkouts to the selected refs, and expose all three source trees through `PYTHONPATH`; they do not rebuild or install the Miles, SGLang, or Megatron-LM source trees after the container starts. The hosted CPU stages install dependencies from `requirements.txt` and the fully pinned `tests/ci/requirements-ci-cpu.txt`, then expose the Miles, SGLang, and Megatron-LM source trees through `PYTHONPATH` without editable installs or inline package lists. The ROCm stage instead uses the SGLang and Megatron-LM versions baked into `rocm/sgl-dev`.
+**Dependency boundary.** CUDA stages start from dependencies baked into `radixark/miles`, reconcile Miles runtime dependencies from `requirements.txt`, update the SGLang and Megatron-LM checkouts to the selected refs, and expose all three source trees through `PYTHONPATH`; they do not rebuild or install the Miles, SGLang, or Megatron-LM source trees after the container starts. The hosted CPU stages install dependencies from `requirements.txt` and the fully pinned `tests/ci/requirements-ci-cpu.txt`, then expose the Miles, SGLang, and Megatron-LM source trees through `PYTHONPATH` without editable installs or inline package lists. If re-enabled, the ROCm stage would instead use the SGLang and Megatron-LM versions baked into `rocm/sgl-dev`.
 
 **Launch.** Every CPU/CUDA stage is a thin caller of the reusable workflow `_run-ci.yml` (`uses: ./.github/workflows/_run-ci.yml`). The stage passes only `execute_command`, `runs_on`, `container_image`, and `cpu_runner`; `_run-ci.yml` owns the rest — starting the container, waiting for the GPU to be ready, reconciling Miles requirements and synchronizing external source refs for GPU jobs or installing the hosted CPU requirements, verifying source resolution, then running `execute_command` twice (once `--list-only` to print the plan, then for real). The stage itself holds no test logic; it is purely "which runner, which image, which command".
 
@@ -62,15 +62,15 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 ## ROCm PR/nightly mirror
 
-`pr-test-rocm.yml` has PR-level, exact nightly cron, and `workflow_dispatch` entry points. Its `pull_request_target` entry keeps the workflow and authorization code on the trusted base branch, while adapting the event to the same `resolve-ci-policy` path as `pr-test.yml`. It runs `stage-c-4-gpu-mi300x` through `_run-ci-rocm.yml` on two 4-GPU MI300X runners, resolves `rocm/sgl-dev:<tag>`, and splits tests into two `est_time`-balanced shards. It runs no CPU tests. SGLang and Megatron-LM come from the image, so manual dispatch exposes no dependency-ref inputs.
+`pr-test-rocm.yml` retains PR-level, exact nightly cron, and `workflow_dispatch` entry points, but `stage-c-4-gpu-mi300x` has a constant-false job gate. Events may run its hosted policy and image resolvers, but no MI300X runner or matrix shard is scheduled. The dormant stage configuration still calls `_run-ci-rocm.yml`, resolves `rocm/sgl-dev:<tag>`, splits tests into two `est_time`-balanced shards, and exposes no dependency-ref inputs.
 
-Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)` run; CUDA registrations are not inherited. PR and nightly runs consume the shared cadence and label policy: `run-ci-amd` selects the full MI300X set, other `run-ci-*` labels can select matching subsets, and nightly cadence admits regular plus nightly-only registrations. Manual dispatch adds `--match-all-labels` and runs the full regular suite.
+The ROCm registry still contains tests declared with `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)`, and CUDA registrations are not inherited. While the job gate is false, none of these tests run in Miles GitHub Actions. If the stage is re-enabled, PR and nightly runs consume the shared cadence and label policy, while manual dispatch adds `--match-all-labels` for the full regular suite.
 
-For fork PRs, a base-branch authorization step admits the privileged MI300X stage only when the event carries a canonical `run-ci-*` label. The reusable workflow then checks out `refs/pull/<number>/merge` explicitly, so it tests the PR merge result without trusting workflow or gate code from the fork. Fork jobs receive no `WANDB_API_KEY`; same-repository PRs, schedules, and manual dispatches do not need the label gate.
+For fork PRs, the base-branch authorization step still computes whether a canonical `run-ci-*` label would permit self-hosted execution, but the constant-false job gate prevents the MI300X stage regardless of that output. The retained reusable workflow would check out `refs/pull/<number>/merge` explicitly and withhold `WANDB_API_KEY` from fork jobs if the stage were re-enabled.
 
 An 8-GPU CUDA case needs a separate 4-GPU `test_amd_<name>.py` variant rather than an `IS_HIP` branch in the original test.
 
-Both runner containers can see all eight host GPUs through `/dev/dri`. Each runner restricts itself to four GPUs with `HIP_VISIBLE_DEVICES`, which `_run-ci-rocm.yml` forwards into the container.
+If the stage is re-enabled, both runner containers can see all eight host GPUs through `/dev/dri`. Each runner restricts itself to four GPUs with `HIP_VISIBLE_DEVICES`, which `_run-ci-rocm.yml` forwards into the container.
 
 **External MI350 nightly.** Miles declares `stage-c-2-gpu-mi350`, `stage-c-4-gpu-mi350`, and `stage-c-8-gpu-mi350` in `CI_SUITES`, but does not schedule them in its own workflows. All three are run by the external [`sgl-project/sglang` ROCm 7.2 nightly workflow](https://github.com/sgl-project/sglang/blob/main/.github/workflows/nightly-test-amd-miles-rocm720.yml).
 
