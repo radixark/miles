@@ -1,24 +1,20 @@
 import asyncio
 import dataclasses
 import logging
-import os
 from typing import Any
 
-import ray
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url
+from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.addr_allocator import (
     PortCursors,
     allocate_rollout_engine_addr_and_ports_external,
     allocate_rollout_engine_addr_and_ports_normal,
 )
-from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, flatten_cells
+from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, flatten_cells, launch_sglang_ray_actor
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
-from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
-from miles.utils import async_utils, dumper_utils
+from miles.utils import async_utils
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +79,6 @@ class ServerGroup:
 
         num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
 
-        pg, reordered_bundle_indices, reordered_gpu_ids = self.pg
-
-        RolloutRayActor = ray.remote(SGLangEngine)
-
         all_engines = flatten_cells(self.cells)
 
         new_engines = []
@@ -98,51 +90,12 @@ class ServerGroup:
                 continue
 
             global_rank = self.rank_offset + i
-            num_gpus = 0.2
-            num_cpus = num_gpus
-
-            gpu_index = self.gpu_offset + i * num_gpu_per_engine
-            base_gpu_id = int(reordered_gpu_ids[gpu_index])
-
-            scheduling_strategy = PlacementGroupSchedulingStrategy(
-                placement_group=pg,
-                placement_group_capture_child_tasks=True,
-                placement_group_bundle_index=reordered_bundle_indices[gpu_index],
-            )
-
-            env_vars = {name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST} | {
-                key: os.environ.get(key, default_val)
-                for key, default_val in {
-                    # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
-                    "NVSHMEM_DISABLE_NCCL": "1",
-                    "SGLANG_JIT_DEEPGEMM_PRECOMPILE": "false",
-                    # TODO: this is hacky. Use env var SGLANG_DG_CACHE_DIR_PER_PROCESS=1
-                    # to enable this isolation.
-                    "SGLANG_DG_CACHE_DIR": f"/tmp/sglang_deep_gemm/{self.worker_type}_rank_{global_rank}",
-                    "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
-                    "SGLANG_MEMORY_SAVER_CUDA_GRAPH": "true",
-                    "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2": (
-                        "0" if self.args.colocate and self.args.rollout_num_gpus_per_engine > 1 else "1"
-                    ),
-                    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
-                    "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
-                    "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
-                }.items()
-            }
-            env_vars.update(dumper_utils.get_sglang_env(self.args))
-
-            rollout_engine = RolloutRayActor.options(
-                num_cpus=num_cpus,
-                num_gpus=num_gpus,
-                scheduling_strategy=scheduling_strategy,
-                runtime_env={
-                    "env_vars": env_vars,
-                },
-            ).remote(
-                self.args,
-                rank=global_rank,
+            rollout_engine = launch_sglang_ray_actor(
+                args=self.args,
+                pg=self.pg,
+                global_rank=global_rank,
+                gpu_index=self.gpu_offset + i * num_gpu_per_engine,
                 worker_type=self.worker_type,
-                base_gpu_id=base_gpu_id,
                 sglang_overrides=self.sglang_overrides,
                 num_gpus_per_engine=self.num_gpus_per_engine,
             )
