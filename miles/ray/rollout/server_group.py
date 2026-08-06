@@ -1,13 +1,15 @@
 import asyncio
 import dataclasses
+import functools
 import logging
 from typing import Any
 
+import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
-from miles.ray.rollout.addr_allocator import PortAllocator, allocate_rollout_engine_addr_and_ports_normal
+from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, flatten_cells, launch_sglang_ray_actor
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.utils import async_utils
@@ -117,14 +119,27 @@ class ServerGroup:
         if curr_num_new_engines == 0:
             return [], []
 
-        addr_and_ports = allocate_rollout_engine_addr_and_ports_normal(
-            args=self.args,
-            port_allocator=port_allocator,
-            rollout_engines=new_engines,
-            worker_type=self.worker_type,
-            num_gpus_per_engine=self.num_gpus_per_engine,
-            rank_offset=self.rank_offset,
-        )
+        addr_and_ports: dict[int, dict[str, Any]] = {}
+        for cell_index in sorted({index // self.nodes_per_engine for index in new_engine_indices}):
+            dist_init_addr = None
+            for engine_in_cell_index in range(self.nodes_per_engine):
+                actor = self.cells[cell_index].engines[engine_in_cell_index].actor_handle
+                node_ip, _ = ray.get(actor._get_current_node_ip_and_free_port.remote())
+                alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
+
+                if engine_in_cell_index == 0:
+                    dist_init_addr = f"{node_ip}:{alloc(consecutive=30 + self.args.sglang_dp_size)}"
+
+                rank = self.rank_offset + cell_index * self.nodes_per_engine + engine_in_cell_index
+                addr_and_ports[rank] = dict(
+                    host=node_ip,
+                    port=alloc(),
+                    nccl_port=alloc(),
+                    engine_info_bootstrap_port=alloc(),
+                    dist_init_addr=dist_init_addr,
+                )
+                if self.worker_type == "prefill":
+                    addr_and_ports[rank]["disaggregation_bootstrap_port"] = alloc()
 
         for index, _ in new_engines:
             engine_addr_and_ports = addr_and_ports[index]
