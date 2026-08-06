@@ -119,9 +119,6 @@ class RolloutServer:
         return [cell.gpu_offset for cell in self.server_cells.values()]
 
     async def start_all_cells(self):
-        if self.args.debug_train_only:
-            return
-
         cell_ids = [cell_id for cell_id, cell in self.server_cells.items() if not cell.is_allocated]
         await asyncio.gather(*[self.server_cells[cell_id].start(self._router_api_client) for cell_id in cell_ids])
         self.has_new_engines |= bool(cell_ids)
