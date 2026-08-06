@@ -21,8 +21,8 @@ class _HangingEngine:
 
 def _build_server(*, pg_tuple: tuple) -> RolloutServer:
     args = make_args(num_gpus_per_node=8)
-    cell = ServerCell(args=args, worker_type="regular", pg=pg_tuple, num_gpus_per_engine=1)
-    return RolloutServer(server_cells=[cell], args=args)
+    cell = ServerCell(args=args, worker_type="regular", cell_id="cell-0", pg=pg_tuple, num_gpus_per_engine=1)
+    return RolloutServer(server_cells={"cell-0": cell}, args=args)
 
 
 def _is_dead(actor_handle, *, timeout: float = 60.0) -> bool:
@@ -42,26 +42,26 @@ class TestTeardownIsTerminal:
     async def test_a_failing_shutdown_still_kills_the_actor(self, patched_sglang_engine, placement_group_factory):
         """A graceful shutdown that raises must not leave the actor and its server process behind."""
         srv = _build_server(pg_tuple=placement_group_factory(1))
-        await srv.server_cells[0].start_engines(PortAllocator())
-        actor_handle = srv.server_cells[0].primary_actor_handle
+        await srv.server_cells["cell-0"].start_engines(PortAllocator())
+        actor_handle = srv.server_cells["cell-0"].primary_actor_handle
         ray.get(actor_handle.set_fault.remote("shutdown", RuntimeError("shutdown blew up")))
 
-        await srv.stop_cells([0])
+        await srv.stop_cells(["cell-0"])
 
         assert _is_dead(actor_handle)
-        assert not srv.server_cells[0].is_allocated
+        assert not srv.server_cells["cell-0"].is_allocated
 
     def test_a_hanging_shutdown_does_not_block_teardown(self, monkeypatch, ray_local_mode):
         """A wedged engine must not stall teardown forever, since teardown is how a wedged engine is reclaimed."""
         monkeypatch.setattr(server_cell_module, "SHUTDOWN_TIMEOUT", 0.5)
         srv = _build_server(pg_tuple=(None, [], []))
         actor_handle = _HangingEngine.remote()
-        srv.server_cells[0]._mark_allocated_uninitialized([actor_handle])
+        srv.server_cells["cell-0"]._mark_allocated_uninitialized([actor_handle])
 
         finished = threading.Event()
 
         def _teardown():
-            asyncio.run(srv.stop_cells([0]))
+            asyncio.run(srv.stop_cells(["cell-0"]))
             finished.set()
 
         thread = threading.Thread(target=_teardown, daemon=True)
@@ -70,4 +70,4 @@ class TestTeardownIsTerminal:
 
         assert finished.is_set(), "stop_cells waited on a shutdown that never returns"
         assert _is_dead(actor_handle)
-        assert not srv.server_cells[0].is_allocated
+        assert not srv.server_cells["cell-0"].is_allocated
