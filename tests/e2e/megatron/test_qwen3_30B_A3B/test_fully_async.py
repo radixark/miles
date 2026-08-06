@@ -41,3 +41,5 @@ if __name__ == "__main__":
         os.environ.pop(proxy_var, None)
     prepare(CASE, need_fp8=CASE.use_fp8_rollout, need_int4=CASE.use_int4_rollout, all_bridge=CASE.use_bridge)
     execute(CASE, wandb_file=__file__)
+
+# CI probe: does test_fully_async fail on an unmodified main? Do not merge.
