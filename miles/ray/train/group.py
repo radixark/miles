@@ -3,6 +3,7 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
@@ -159,7 +160,9 @@ class TrainerController:
 
     # ------------------------ API :: train ------------------------
 
-    async def train(self, rollout_id: int, rollout_data_pack, external_data: list | None = None) -> list:
+    async def train(
+        self, rollout_id: int, rollout_data_pack: dict[str, Any], external_data: list[Any] | None = None
+    ) -> list[Any]:
         """Do one rollout training"""
 
         assert (
@@ -168,7 +171,7 @@ class TrainerController:
 
         event_analyzer.run_analysis_from_args(self.args)
 
-        async def _fn(attempt: int) -> list:
+        async def _fn(attempt: int) -> list[Any]:
             witness_info = self._allocate_witness_info(
                 rollout_id=rollout_id,
                 attempt=attempt,
@@ -293,7 +296,7 @@ class TrainerController:
 
     # ------------------------ API :: others ------------------------
 
-    async def init(self):
+    async def init(self) -> list[Any]:
         """
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
@@ -316,7 +319,7 @@ class TrainerController:
         )
         return [item for sublist in cell_results for item in sublist]
 
-    async def save_model(self, rollout_id: int, force_sync: bool = False):
+    async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
@@ -324,7 +327,7 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def export_hf(self, rollout_id: int, path: str):
+    async def export_hf(self, rollout_id: int, path: str) -> None:
         """Export current weights as an HF checkpoint. Only cell 0 exports to avoid file write conflicts."""
         await retry(
             lambda _: self._execute_first_alive("export_hf", rollout_id=rollout_id, path=path),
@@ -362,7 +365,7 @@ class TrainerController:
             dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
         )
 
-    async def onload(self):
+    async def onload(self) -> None:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("wake_up")
         self._health_checker_activeness.bump_active(True)
@@ -375,12 +378,12 @@ class TrainerController:
         finally:
             self._health_checker_activeness.bump_active(True)
 
-    async def offload(self):
+    async def offload(self) -> None:
         self._health_checker_activeness.bump_active(False)
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("sleep")
 
-    async def clear_memory(self):
+    async def clear_memory(self) -> None:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
@@ -422,7 +425,7 @@ class TrainerController:
     async def unload_slot(self, slot: int) -> list:
         return await self._execute_slots("unload_slot", slot=slot)
 
-    async def get_train_parallel_config(self) -> dict:
+    async def get_train_parallel_config(self) -> dict[str, Any]:
         return (await self._execute_first_alive("get_train_parallel_config"))[0]
 
     def get_cell_statuses(self) -> dict[str, CellStatus]:
