@@ -253,6 +253,12 @@ class SGLangEngine(RayActor):
     def _init_normal(self, server_args_dict):
         use_rdt = self.args.update_weight_transfer_mode == "rdt"
         if use_rdt:
+            if self.node_rank != 0:
+                # For a multi-node engine, the node-0 server's RayEngine spawns
+                # the SchedulerActors of ALL ranks (placed cross-node via the
+                # placement group), so non-zero node ranks launch nothing.
+                self.process = None
+                return
             server_args_dict["use_ray"] = True
             server_args_dict["enable_rdt_weight_sync"] = True
             # The mp.Process child loses the PG context and would auto-create a
@@ -474,6 +480,9 @@ class SGLangEngine(RayActor):
 
     def shutdown(self):
         if self.args.rollout_external:
+            return
+        if getattr(self, "process", None) is None:
+            # Non-zero node ranks of an RDT multi-node engine launch no server.
             return
 
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
