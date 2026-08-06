@@ -9,6 +9,7 @@ import ray
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
+from miles.utils.misc import get_free_port
 from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
 # tests/fast/utils/test_utils/test_mock_sglang_engine.py → 4 levels up → repo root
@@ -106,7 +107,7 @@ class TestRealRayActorLifecycle:
             num_gpus_per_engine=1,
         )
         try:
-            ray.get(actor.init.remote(host="127.0.0.1", port=20000))
+            ray.get(actor.init.remote(host="127.0.0.1", port=get_free_port(start_port=20000)))
             ray.get(actor._get_current_node_ip_and_free_port.remote(start_port=20100))
             ray.get(actor.simulate_crash.remote())
 

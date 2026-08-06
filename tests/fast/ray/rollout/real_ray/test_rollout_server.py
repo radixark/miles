@@ -55,7 +55,6 @@ class TestCheckWeightsAggregation:
         self,
         patched_sglang_engine,
         placement_group_factory,
-        mock_engine_http_servers,
     ):
         """Drives RolloutServer.check_weights through real ``asyncio.gather``
         over real HTTP requests. Verifies every engine in every group was
@@ -78,13 +77,8 @@ class TestCheckWeightsAggregation:
             assert len(results[0]) == 2 and len(results[1]) == 3
 
             all_engines = [e for g in (a, b) for e in g.engines]
-            url_to_server = {
-                mock_engine_http_servers.for_rank(rank).url: mock_engine_http_servers.for_rank(rank)
-                for rank in range(5)
-            }
             for engine in all_engines:
-                server = url_to_server[engine.addr_info.server_url]
-                payloads = server.payloads_of("/weights_checker")
+                payloads = ray.get(engine.actor_handle.get_http_payloads_of.remote("/weights_checker"))
                 assert payloads == [{"action": "report", "allow_quant_error": False, "selector": "all"}]
         finally:
             _kill_group(a)
@@ -100,7 +94,6 @@ class TestOffloadOnloadAggregation:
         self,
         patched_sglang_engine,
         placement_group_factory,
-        mock_engine_http_servers,
     ):
         """Both fan out across groups and return one flat result per engine."""
         pg_a = placement_group_factory(2)
@@ -120,14 +113,18 @@ class TestOffloadOnloadAggregation:
             assert len(offload_results) == 5
             assert len(onload_results) == 5
 
-            for rank in range(5):
-                server = mock_engine_http_servers.for_rank(rank)
-                assert [path for path in server.paths if path.endswith("_memory_occupation")] == [
+            for engine in flatten_cells(a.cells) + flatten_cells(b.cells):
+                paths = ray.get(engine.actor_handle.get_http_paths.remote())
+                assert [path for path in paths if path.endswith("_memory_occupation")] == [
                     "/release_memory_occupation",
                     "/resume_memory_occupation",
                 ]
-                assert server.payloads_of("/release_memory_occupation") == [{"tags": ["weights"]}]
-                assert server.payloads_of("/resume_memory_occupation") == [{"tags": ["weights"]}]
+                assert ray.get(engine.actor_handle.get_http_payloads_of.remote("/release_memory_occupation")) == [
+                    {"tags": ["weights"]}
+                ]
+                assert ray.get(engine.actor_handle.get_http_payloads_of.remote("/resume_memory_occupation")) == [
+                    {"tags": ["weights"]}
+                ]
 
             for engine in flatten_cells(a.cells) + flatten_cells(b.cells):
                 method_names = {name for name, _args, _kwargs in ray.get(engine.actor_handle.get_calls.remote())}
@@ -140,7 +137,6 @@ class TestOffloadOnloadAggregation:
         self,
         patched_sglang_engine,
         placement_group_factory,
-        mock_engine_http_servers,
     ):
         """Only the groups colocated with megatron give their memory back."""
         pg_a = placement_group_factory(2)
@@ -156,8 +152,8 @@ class TestOffloadOnloadAggregation:
         try:
             assert len(await srv.offload(tags=None)) == 2
 
-            for rank in (2, 3):
-                assert "/release_memory_occupation" not in mock_engine_http_servers.for_rank(rank).paths
+            for engine in flatten_cells(resident.cells):
+                assert "/release_memory_occupation" not in ray.get(engine.actor_handle.get_http_paths.remote())
         finally:
             _kill_group(offloading)
             _kill_group(resident)
@@ -166,7 +162,6 @@ class TestOffloadOnloadAggregation:
         self,
         patched_sglang_engine,
         placement_group_factory,
-        mock_engine_http_servers,
     ):
         """Offload must not block forever on an engine the group already gave up on."""
         pg = placement_group_factory(2)
