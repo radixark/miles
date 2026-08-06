@@ -9,8 +9,10 @@ from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
+from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
+    INFERENCE_CONTROLLER_POOL_ID,
     _compute_router_primary_port_info,
     _compute_session_server_primary_port_info,
     _compute_spec_router,
@@ -18,12 +20,15 @@ from miles.ray.specs.inference import (
     compute_engine_pool_ids,
     compute_inference_engine_env_vars,
     compute_router_pool_id,
+    inference_controller_worker_name,
+    spec_inference_controller,
     spec_session_server,
     specs_inference_engine,
     specs_router,
 )
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
+from miles.utils.function_registry import load_function
 from miles.utils.workers.argv_utils import parse_config_argv
 from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerMetaContext
 
@@ -1032,3 +1037,33 @@ class TestRouterInterpreterFlags:
         argv = shlex.split(spec.launch_command(_make_router_ctx()))
 
         assert argv[:6] == [sys.executable, "-O", "-X", "faulthandler", "-m", module]
+
+
+class TestSpecInferenceController:
+    def _args(self, tmp_path, **overrides) -> Namespace:
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 4}]
+            )
+        )
+        return make_args(sglang_config=str(config_path), rollout_num_gpus=8, **overrides)
+
+    def test_every_run_gets_exactly_one_gpuless_controller(self, tmp_path):
+        """It is a control-plane worker on both backends; a gpu request would reserve a whole node for it."""
+        spec = spec_inference_controller(self._args(tmp_path))
+
+        assert spec.name == INFERENCE_CONTROLLER_POOL_ID
+        assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (1, 1)
+        assert spec.scheduling.num_gpus_per_worker == 0
+        assert spec.scheduling.num_gpu_slots_per_worker == 0
+
+    def test_the_worker_class_is_the_controller_itself(self, tmp_path):
+        """The spec names the class a pod or actor constructs, so it must be the real implementation."""
+        spec = spec_inference_controller(self._args(tmp_path))
+
+        assert load_function(spec.worker_class) is InferenceController
+
+    def test_the_worker_name_is_stable(self):
+        """The driver looks the controller up by name, so this name is part of the release's contract."""
+        assert inference_controller_worker_name() == "inference-controller-0-0"
