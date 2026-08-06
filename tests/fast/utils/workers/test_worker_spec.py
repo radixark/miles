@@ -1,5 +1,6 @@
 import pytest
 from pydantic import ValidationError
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
 from miles.utils.workers.serving import serve_inner
 from miles.utils.workers.worker_spec import (
@@ -12,6 +13,7 @@ from miles.utils.workers.worker_spec import (
     PortInfo,
     SchedulingSpec,
     ServeWorkerSpec,
+    WorkerCtorContext,
     WorkerLaunchContext,
 )
 
@@ -20,6 +22,12 @@ def _make_launch_context(**overrides) -> WorkerLaunchContext:
     kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[])
     kwargs.update(overrides)
     return WorkerLaunchContext(**kwargs)
+
+
+def _make_ctor_context(**overrides) -> WorkerCtorContext:
+    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=FakeBackendCapability())
+    kwargs.update(overrides)
+    return WorkerCtorContext(**kwargs)
 
 
 def _make_port_info(**overrides) -> PortInfo:
@@ -190,7 +198,7 @@ class TestServeWorkerSpec:
             ctor_kwargs=ctor_kwargs,
         )
         assert calls == []
-        assert spec.ctor_kwargs(_make_launch_context()) == {"x": 1}
+        assert spec.ctor_kwargs(_make_ctor_context()) == {"x": 1}
 
 
 class TestServeWorkerSpecRpcPortInjection:
@@ -349,7 +357,7 @@ class TestServeWorkerSpecExtraScheduling:
             ctor_kwargs=lambda ctx: {"rank": ctx.worker_in_cell_index, "gpu_ids": ctx.gpu_ids},
         )
 
-        kwargs = spec.ctor_kwargs(_make_launch_context(worker_in_cell_index=3, gpu_ids=[2]))
+        kwargs = spec.ctor_kwargs(_make_ctor_context(worker_in_cell_index=3, gpu_ids=[2]))
 
         assert kwargs == {"rank": 3, "gpu_ids": [2]}
 
