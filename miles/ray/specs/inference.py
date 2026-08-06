@@ -12,9 +12,52 @@ from miles.router.config import compute_miles_router_config
 from miles.utils import dumper_utils
 from miles.utils.workers.argv_utils import config_to_argv
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
-from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
+from miles.utils.workers.naming import compute_cell_id, compute_worker_name
+from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_spec import (
+    CommandWorkerSpec,
+    LaunchCommandContext,
+    PortInfo,
+    SchedulingSpec,
+    ServeWorkerSpec,
+)
 
 logger = logging.getLogger(__name__)
+
+INFERENCE_CONTROLLER_SPEC_NAME = "inference-controller"
+INFERENCE_CONTROLLER_WORKER_CLASS = "miles.ray.rollout.inference_controller.InferenceController"
+
+
+def spec_inference_controller(args) -> ServeWorkerSpec:
+    return ServeWorkerSpec(
+        name=INFERENCE_CONTROLLER_SPEC_NAME,
+        port_infos=[],
+        env_var=lambda _ctx: {},
+        scheduling=SchedulingSpec(
+            num_cells=1,
+            num_workers_per_cell=1,
+            num_gpus_per_worker=0,
+            num_cpus_per_worker=1,
+            pin_to_head=args.pin_rollout_manager_to_head,
+        ),
+        worker_class=INFERENCE_CONTROLLER_WORKER_CLASS,
+        ctor_kwargs=lambda _ctx: dict(args=args),
+    )
+
+
+def create_inference_controller_handle() -> BaseWorkerHandle:
+    from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+
+    provider = RayWorkerProvider.create()  # TODO inject instance
+    return provider.get_handle(inference_controller_worker_name())
+
+
+def inference_controller_worker_name() -> str:
+    return compute_worker_name(spec_name=INFERENCE_CONTROLLER_SPEC_NAME)
+
+
+def inference_controller_cell_id() -> str:
+    return compute_cell_id(spec_name=INFERENCE_CONTROLLER_SPEC_NAME, cell_index=0)
 
 
 def specs_router(args) -> list[CommandWorkerSpec]:
@@ -27,6 +70,10 @@ def specs_router(args) -> list[CommandWorkerSpec]:
 
 def compute_router_spec_name(model_idx: int) -> str:
     return f"inference-router-{model_idx}"
+
+
+def compute_router_worker_name(model_idx: int) -> str:
+    return compute_worker_name(spec_name=compute_router_spec_name(model_idx))
 
 
 def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> CommandWorkerSpec:

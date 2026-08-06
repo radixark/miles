@@ -43,14 +43,9 @@ class _FakeExecutorClass:
 @pytest.fixture
 def fake_components():
     controller = MagicMock(name="inference_controller")
+    controller.init = AsyncMock()
     controller.check_weights = AsyncMock()
     controller.offload = AsyncMock()
-
-    def construct_controller(args):
-        controller.init = AsyncMock()
-        return controller
-
-    controller_cls = MagicMock(name="InferenceController", side_effect=construct_controller)
 
     async def fake_resolve_router_addrs(args):
         args.sglang_router_ip = "10.0.0.1"
@@ -59,7 +54,7 @@ def fake_components():
     executor_handle = MagicMock(name="rollout_executor")
     executor_cls = _FakeExecutorClass(executor_handle)
 
-    with patch("miles.ray.placement_group.InferenceController", controller_cls), patch(
+    with patch("miles.ray.placement_group.create_inference_controller_handle", lambda: controller), patch(
         "miles.ray.placement_group.RolloutExecutor", executor_cls
     ), patch("miles.ray.placement_group.resolve_router_addrs", fake_resolve_router_addrs), patch(
         "miles.ray.placement_group.ray.get", return_value=5
@@ -78,8 +73,8 @@ class TestCreateRolloutComponents:
         assert executor_args.sglang_router_ip == "10.0.0.1"
         assert executor_args.sglang_router_port == 4321
 
-    async def test_returns_a_plain_controller_and_an_actor_handle(self, fake_components):
-        """The controller stays in the driver; only the executor becomes a Ray actor."""
+    async def test_returns_the_controller_handle_and_the_executor_actor(self, fake_components):
+        """The driver only ever holds a handle to the controller; the executor is still a Ray actor."""
         args = _make_args(num_rollout=1)
 
         controller, executor, _ = await create_rollout_components(args)
