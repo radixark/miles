@@ -22,9 +22,7 @@ class TestPortBands:
 
 
 class TestTrainMasterBandIsEnforced:
-    def test_a_cursor_that_reaches_the_trainer_band_fails_instead_of_handing_out_the_port(
-        self, patch_ray_get
-    ) -> None:
+    def test_a_cursor_that_reaches_the_trainer_band_fails_instead_of_handing_out_the_port(self, patch_ray_get) -> None:
         """The bands are only far apart, not partitioned: the cursor only moves up, so a long
         run that keeps reconfiguring can walk into the band the trainer probes. Two owners
         agreeing on one port surfaces much later and much worse than failing here."""
