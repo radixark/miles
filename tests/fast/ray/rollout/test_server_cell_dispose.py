@@ -5,7 +5,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.cell_state import CellAddrInfo, StateDisposed, StatePendingWeights, StateServing
+from miles.ray.rollout.cell_state import (
+    CellAddrInfo,
+    StateDisposed,
+    StateInitializing,
+    StatePendingWeights,
+    StateServing,
+)
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 
 
@@ -39,11 +45,7 @@ def _make_router_api_client(*, remove_worker_side_effect: BaseException | None =
 
 
 def _mark_serving(cell: ServerCell, *, server_url: str, bootstrap_port: int | None) -> None:
-    """Serving is the only state in which the router holds the cell's url.
-
-    Both registration sites in ServerCell mark the cell serving in the same breath, so a cell
-    observed in StatePendingWeights was never added to the router and has nothing to remove.
-    """
+    """The steady state a cell reaches once its registration has been accepted."""
     cell._state = StateServing(
         addr_info=CellAddrInfo(server_url=server_url, bootstrap_port=bootstrap_port, gate_url=f"{server_url}/gate")
     )
@@ -52,6 +54,13 @@ def _mark_serving(cell: ServerCell, *, server_url: str, bootstrap_port: int | No
 def _mark_pending_weights(cell: ServerCell, *, server_url: str, bootstrap_port: int | None) -> None:
     """A cell whose add_worker was awaited, or whose add_worker failed, sits here holding a url."""
     cell._state = StatePendingWeights(
+        addr_info=CellAddrInfo(server_url=server_url, bootstrap_port=bootstrap_port, gate_url=f"{server_url}/gate")
+    )
+
+
+def _mark_initializing(cell: ServerCell, *, server_url: str, bootstrap_port: int | None) -> None:
+    """The serve-without-weight-update path registers the cell before it leaves this state."""
+    cell._state = StateInitializing(
         addr_info=CellAddrInfo(server_url=server_url, bootstrap_port=bootstrap_port, gate_url=f"{server_url}/gate")
     )
 
@@ -114,4 +123,17 @@ class TestServerCellDispose:
         await cell.dispose()
 
         client.remove_worker.assert_awaited_once_with(worker_url="http://10.0.0.1:30000", use_legacy_api=False)
+        assert isinstance(cell._state, StateDisposed)
+
+    @pytest.mark.asyncio
+    async def test_disposing_an_initializing_cell_unregisters_it_from_the_router(self) -> None:
+        """A cell serving without weight updates is registered while still initializing, so the
+        router can hold its url before the state advances."""
+        client = _make_router_api_client()
+        cell = _make_cell(router_api_client=client)
+        _mark_initializing(cell, server_url="http://10.0.0.5:30000", bootstrap_port=None)
+
+        await cell.dispose()
+
+        client.remove_worker.assert_awaited_once_with(worker_url="http://10.0.0.5:30000", use_legacy_api=False)
         assert isinstance(cell._state, StateDisposed)
