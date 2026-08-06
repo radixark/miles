@@ -45,19 +45,17 @@ class OpenAIEndpointTracer:
 
     @staticmethod
     async def create(args: Namespace):
-        session_ip = getattr(args, "session_server_ip", None)
-        session_ports = getattr(args, "session_server_ports", None)
-        if not session_ip or not session_ports:
+        session_addrs = getattr(args, "session_server_addrs", None)
+        if not session_addrs:
             raise RuntimeError(
-                "session_server_ip/session_server_ports are not set. "
-                "Pass --use-session-server to start the session server."
+                "session_server_addrs is not set. Pass --use-session-server to start the session server."
             )
         # The only routing decision in the system: pick the owning instance once
         # per session; every later touch of the session reuses this URL.
-        session_port = random.choice(session_ports)
-        session_url = f"http://{session_ip}:{session_port}"
+        session_addr = random.choice(session_addrs)
+        session_url = f"http://{session_addr}"
         instance_ids = getattr(args, "session_server_instance_ids", None) or {}
-        session_server_instance_id = instance_ids.get(session_port)
+        session_server_instance_id = instance_ids.get(session_addr)
         response = await post(f"{session_url}/sessions", {}, action="post")
         session_id = response["session_id"]
         use_v2 = getattr(args, "use_session_server", None) == "v2"
