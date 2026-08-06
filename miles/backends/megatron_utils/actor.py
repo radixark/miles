@@ -118,9 +118,6 @@ class MegatronTrainRayActor(TrainRayActor):
         self._ft_test_action_executor = FTTestActionActorExecutor.from_args(
             args,
             cell_id=compute_cell_id(spec_name=trainer_spec_name, cell_index=indep_dp_info.cell_index),
-            cell_ids=[
-                compute_cell_id(spec_name=trainer_spec_name, cell_index=i) for i in range(indep_dp_info.num_cells)
-            ],
             rank=self._rank,
         )
 
