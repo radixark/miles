@@ -3,7 +3,9 @@ from types import SimpleNamespace
 
 import torch
 
+from miles.backends.experimental.fsdp_utils import actor as actor_module
 from miles.backends.experimental.fsdp_utils import update_weight_utils
+from miles.backends.training_utils.conn_status import ConnStatusManager
 
 
 class _SessionEngine:
@@ -145,3 +147,51 @@ def test_fsdp_weight_sync_casts_to_rollout_contract_dtypes(monkeypatch):
     assert torch.equal(synced["fp32_weight"], fp32_value)
     assert synced["bf16_weight"].dtype is torch.bfloat16
     assert not torch.equal(synced["bf16_weight"].to(torch.float32), fp32_value)
+
+
+class _RecordingWeightUpdater:
+    def __init__(self) -> None:
+        self.conn_status: ConnStatusManager = ConnStatusManager()
+        self.connect_calls: list[list[object]] = []
+        self.update_weights_calls: int = 0
+
+    def connect_rollout_engines(
+        self,
+        rollout_engines: list[object],
+        engine_gpu_counts: list[int] | None = None,
+        engine_gpu_offsets: list[int] | None = None,
+    ) -> None:
+        self.connect_calls.append(list(rollout_engines))
+
+    def update_weights(self) -> None:
+        self.update_weights_calls += 1
+
+
+def _make_updatable_engines(rollout_engines: list[object], *, has_new_engines: bool) -> SimpleNamespace:
+    return SimpleNamespace(
+        rollout_engines=rollout_engines,
+        has_new_engines=has_new_engines,
+        engine_gpu_counts=[1] * len(rollout_engines),
+        engine_gpu_offsets=list(range(len(rollout_engines))),
+        snapshot_cell_id_to_hashes={},
+    )
+
+
+def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch):
+    """Two weight-update windows over a stable engine set connect the rollout engines exactly once."""
+    actor = object.__new__(actor_module.FSDPTrainRayActor)
+    actor.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, ci_test=False)
+    updater = _RecordingWeightUpdater()
+    actor.weight_updater = updater
+    engines: list[object] = [object(), object()]
+
+    monkeypatch.setattr(actor_module.dist, "barrier", lambda **_kwargs: None)
+    monkeypatch.setattr(actor_module, "get_gloo_group", lambda: object())
+    monkeypatch.setattr(actor_module, "clear_memory", lambda: None)
+
+    actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
+    actor.update_weights(_make_updatable_engines(engines, has_new_engines=False))
+
+    assert updater.connect_calls == [engines]
+    assert updater.update_weights_calls == 2
+    assert not updater.conn_status.needs_reconnect()
