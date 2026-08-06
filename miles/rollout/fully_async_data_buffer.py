@@ -86,16 +86,20 @@ class DefaultDataBuffer(DataBuffer):
 
     def __init__(self, input: DataBufferConstructorInput):
         args = input.args
-        max_batches = args.async_data_buffer_max_batches
-        stale_handler = args.async_stale_samples_handler
-        assert max_batches >= 0, f"negative buffer capacity: {max_batches}"
-        assert stale_handler in ("retry", "drop"), f"unknown stale samples handler: {stale_handler}"
-        self._evict_on_overflow = max_batches > 0
-        self._capacity = max_batches * args.rollout_batch_size if max_batches else 1000  # legacy blocking bound
+        assert args.async_data_buffer_max_batches >= 0
+        assert args.async_stale_samples_handler in ("retry", "drop")
+        self._args = args
+        self._capacity = (
+            args.async_data_buffer_max_batches * args.rollout_batch_size
+            if args.async_data_buffer_max_batches
+            else 1000  # legacy blocking bound
+        )
         self._max_staleness = args.max_weight_staleness
         self._recycle_fn = input.recycle_fn
         # "drop" discards stale groups instead of recycling them
-        self._stale_handler_fn = input.recycle_fn if stale_handler == "retry" else (lambda prompt_group: None)
+        self._stale_handler_fn = (
+            input.recycle_fn if args.async_stale_samples_handler == "retry" else (lambda prompt_group: None)
+        )
         self._entries: list[DataBufferInput] = []
         self._cond = asyncio.Condition()
         self._latest_weight_version: int | None = None
@@ -108,7 +112,7 @@ class DefaultDataBuffer(DataBuffer):
             if self._latest_weight_version is None or input.weight_version > self._latest_weight_version:
                 self._latest_weight_version = input.weight_version
         async with self._cond:
-            if self._evict_on_overflow:
+            if self._args.async_data_buffer_max_batches > 0:
                 self._entries.append(input)
                 if len(self._entries) > self._capacity:
                     self._evict_overflow()
