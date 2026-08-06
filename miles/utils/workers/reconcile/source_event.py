@@ -21,6 +21,11 @@ class DeleteEvent:
     last_obj: Any
 
 
-SourceEvent = UpsertEvent | DeleteEvent
+@dataclass(frozen=True)
+class ReplaceEvent:
+    objects: dict[ObjectKey, Any]
+
+
+SourceEvent = UpsertEvent | DeleteEvent | ReplaceEvent
 
 SourceWatchFn = Callable[[], AsyncGenerator[SourceEvent, None]]
