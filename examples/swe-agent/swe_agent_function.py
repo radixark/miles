@@ -23,7 +23,15 @@ from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
 
+# Backstop for an unreachable agent server; its own --agent-timeout should fire first.
+_DEFAULT_AGENT_TRIAL_TIMEOUT_S = 7200
+
 _agent_server_client: httpx.AsyncClient | None = None
+
+
+def _agent_trial_timeout_s() -> int:
+    """Per-trial ceiling for the agent-server call, overridable via AGENT_TRIAL_TIMEOUT."""
+    return int(os.environ.get("AGENT_TRIAL_TIMEOUT", _DEFAULT_AGENT_TRIAL_TIMEOUT_S))
 
 
 def _get_agent_server_client() -> httpx.AsyncClient:
@@ -102,13 +110,14 @@ async def run(
     if session_server_instance_id is not None:
         request["session_server_instance_id"] = session_server_instance_id
 
+    trial_timeout_s = _agent_trial_timeout_s()
     try:
         response = await asyncio.wait_for(
             _post_agent_server(f"{agent_server_url}/run", request),
-            timeout=3600,  # 1 hour max per trial
+            timeout=trial_timeout_s,
         )
     except asyncio.TimeoutError:
-        logger.error("Agent server call timed out after 3600s")
+        logger.error(f"Agent server call timed out after {trial_timeout_s}s")
         return None
     except asyncio.CancelledError:
         logger.warning("Agent server call cancelled (sibling task failure?)")

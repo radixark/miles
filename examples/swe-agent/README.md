@@ -48,6 +48,19 @@ generous — agentic trials routinely run past an hour, and a short timeout kill
 them mid-episode. Verify `http://<agent-server>:30000/health` before launching
 Miles.
 
+The two per-trial timeouts must be ordered. `--agent-timeout` is the authoritative
+one: when it fires, the agent server ends the trial and frees its sandbox. The
+rollout client applies a second ceiling, `AGENT_TRIAL_TIMEOUT` (default 7200
+seconds), which has to stay above `--agent-timeout`. If the client gives up first,
+the trial is recorded as aborted while the agent server keeps running it, so the
+sandbox and its `--max-concurrent` slot stay busy for the remaining difference, and
+the aborted sample takes its whole GRPO group down with it. Raise it through the
+launcher's generic env-var hook:
+
+```bash
+python examples/swe-agent/run.py ... --extra-env-vars 'AGENT_TRIAL_TIMEOUT=10800'
+```
+
 If the trainer reaches the agent server through a proxy or an in-cluster service
 rather than directly, point `--agent-server-url` at that stable name rather than
 an ephemeral pod address. The rollout client enables TCP keepalive probes so
