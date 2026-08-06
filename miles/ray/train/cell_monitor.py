@@ -43,14 +43,13 @@ def create_trainer_cell_health_checker(
 def compute_cell_status(state: CellState, health_checker_status: TriState) -> CellStatus:
     match state:
         case StateAllocatedAlive():
-            match health_checker_status:
-                case TriState.FALSE:
-                    healthy = CellCondition.healthy(TriState.FALSE, reason="HealthCheckFailed")
-                case TriState.UNKNOWN:
-                    healthy = CellCondition.healthy(TriState.UNKNOWN, reason="HealthCheckUnknown")
-                case TriState.TRUE:
-                    healthy = CellCondition.healthy(TriState.TRUE)
-            return CellStatus(phase="Running", conditions=[CellCondition.allocated(TriState.TRUE), healthy])
+            return CellStatus(
+                phase="Running",
+                conditions=[
+                    CellCondition.allocated(TriState.TRUE),
+                    CellCondition.from_health_checker_status(health_checker_status),
+                ],
+            )
 
         case StateAllocatedUninitialized():
             return CellStatus(
