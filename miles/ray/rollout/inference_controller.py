@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
@@ -41,7 +42,7 @@ CELLS_READY_TIMEOUT_SECONDS = 3600.0
 @enforce_lock_discipline
 class InferenceController:
     @lock_exempt
-    def __init__(self, args):
+    def __init__(self, args) -> None:
         self.args = args
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
@@ -87,16 +88,16 @@ class InferenceController:
     # -------------------------- rollout lifecycle hooks -----------------------------
 
     @with_lock
-    async def prepare_rollout(self, rollout_id):
+    async def prepare_rollout(self, rollout_id: int) -> None:
         await self._health_monitoring_resume()
         await dashboard_hooks.register_engines(self.servers)
 
     @with_lock
-    async def prepare_eval(self):
+    async def prepare_eval(self) -> None:
         await self._health_monitoring_resume()
 
     @with_lock
-    async def dispose(self):
+    async def dispose(self) -> None:
         if (ticker := self._ticker) is not None:
             self._ticker = None
             await ticker.dispose()
@@ -112,21 +113,21 @@ class InferenceController:
 
     # TODO may parallelly execute offload/onload across services
     @with_lock
-    async def offload(self, tags: list[str] | None = None):
+    async def offload(self, tags: list[str] | None = None) -> None:
         await self._health_monitoring_pause()
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
     @with_lock
-    async def onload(self, tags: list[str] | None = None):
+    async def onload(self, tags: list[str] | None = None) -> None:
         await self._onload(tags=tags)
 
     @with_lock
-    async def onload_weights(self):
+    async def onload_weights(self) -> None:
         await self._onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     @with_lock
-    async def onload_kv(self):
+    async def onload_kv(self) -> None:
         await self._onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
 
     @requires_lock
@@ -159,7 +160,7 @@ class InferenceController:
         )
 
     @releases_lock
-    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]):
+    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
         await asyncio.gather(
             *[
                 cell.mark_weights_ready()
@@ -234,7 +235,7 @@ class InferenceController:
     @with_lock
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
-    ):
+    ) -> list[Any]:
         # Only the updatable model is re-synced; a frozen model would always mismatch.
         srv = self._get_updatable_server()
         if srv is None:
