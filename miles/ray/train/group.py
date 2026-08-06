@@ -146,7 +146,7 @@ class RayTrainGroup:
                 sample_indices=rollout_data_pack["sample_indices"],
             )
 
-            log_structured(logger.info, op="train", phase="start", rollout=rollout_id, attempt=attempt)
+            log_structured(logger.info, tag="ft", op="train", phase="start", rollout=rollout_id, attempt=attempt)
             await self._refresh_cells(rollout_id=rollout_id)
             snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
                 "train",
@@ -201,17 +201,26 @@ class RayTrainGroup:
     def _check_train_one_attempt(snapshot_alive_cells, results):
         outcomes = RayTrainGroup._compute_attempt_outcomes(snapshot_alive_cells, results)
         if not outcomes["normal"] and not outcomes["discarded"]:
-            log_structured(logger.error, op="check", **outcomes, decision="retry", reason="all alive cells failed")
+            log_structured(
+                logger.error, tag="ft", op="check", **outcomes, decision="retry", reason="all alive cells failed"
+            )
             raise RuntimeError("All cells failed in this training attempt")
 
         # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
         #       This may happen when some cells fails *after* exchanging gradients w/ others
         if outcomes["discarded"]:
-            log_structured(logger.warning, op="check", **outcomes, decision="retry", reason="discarded_should_retry")
+            log_structured(
+                logger.warning, tag="ft", op="check", **outcomes, decision="retry", reason="discarded_should_retry"
+            )
             raise ValueError("Exists DISCARDED_SHOULD_RETRY, thus need retry")
 
         log_structured(
-            logger.info, op="check", **outcomes, decision="no_retry", reason="survivors normal, gradients valid"
+            logger.info,
+            tag="ft",
+            op="check",
+            **outcomes,
+            decision="no_retry",
+            reason="survivors normal, gradients valid",
         )
 
     @staticmethod
@@ -256,7 +265,7 @@ class RayTrainGroup:
 
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights to rollout engines."""
-        log_structured(logger.info, op="update_weights", phase="start", rollout=rollout_id)
+        log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set; the actor releases the lock itself.
@@ -339,6 +348,7 @@ class RayTrainGroup:
         all_states = [(c.cell_index, c.state_name) for c in self._cells]
         log_structured(
             logger.info,
+            tag="ft",
             op="refresh",
             phase="start",
             rollout=rollout_id,
@@ -360,6 +370,7 @@ class RayTrainGroup:
         if not needs_reconfigure:
             log_structured(
                 logger.info,
+                tag="ft",
                 op="refresh",
                 phase="decision",
                 rollout=rollout_id,
@@ -378,6 +389,7 @@ class RayTrainGroup:
         )
         log_structured(
             logger.info,
+            tag="ft",
             op="refresh",
             phase="decision",
             rollout=rollout_id,
@@ -432,6 +444,7 @@ class RayTrainGroup:
             assert [c.cell_index for c in self._cells if c.is_alive] == will_alive_indices
             log_structured(
                 logger.info,
+                tag="ft",
                 op="refresh",
                 phase="end",
                 rollout=rollout_id,
@@ -449,6 +462,7 @@ class RayTrainGroup:
         else:
             log_structured(
                 logger.error,
+                tag="ft",
                 op="refresh",
                 phase="end",
                 rollout=rollout_id,

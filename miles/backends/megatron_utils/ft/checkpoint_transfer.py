@@ -53,7 +53,13 @@ def send_ckpt(
 
     transport = _create_transport(indep_dp, timeout)
     log_structured(
-        logger.info, op="cross_cell", phase="start", kind="ckpt_send", iteration=iteration, to_alive_rank=dst_rank
+        logger.info,
+        tag="ft",
+        op="cross_cell",
+        phase="start",
+        kind="ckpt_send",
+        iteration=iteration,
+        to_alive_rank=dst_rank,
     )
     transport.send_checkpoint(
         dst_ranks=[dst_rank],
@@ -63,7 +69,13 @@ def send_ckpt(
     )
     transport.disallow_checkpoint()
     log_structured(
-        logger.info, op="cross_cell", phase="end", kind="ckpt_send", iteration=iteration, to_alive_rank=dst_rank
+        logger.info,
+        tag="ft",
+        op="cross_cell",
+        phase="end",
+        kind="ckpt_send",
+        iteration=iteration,
+        to_alive_rank=dst_rank,
     )
 
 
@@ -88,7 +100,7 @@ def recv_ckpt(
         initialize_model_and_optimizer to consume.
     """
     transport = _create_transport(indep_dp, timeout)
-    log_structured(logger.info, op="cross_cell", phase="start", kind="ckpt_recv", from_alive_rank=src_rank)
+    log_structured(logger.info, tag="ft", op="cross_cell", phase="start", kind="ckpt_recv", from_alive_rank=src_rank)
     payload = transport.recv_checkpoint(
         src_rank=src_rank,
         metadata=transport.metadata(),
@@ -98,7 +110,13 @@ def recv_ckpt(
 
     iteration, state_dict = _TransportCodec.decode(payload)
     log_structured(
-        logger.info, op="cross_cell", phase="end", kind="ckpt_recv", iteration=iteration, from_alive_rank=src_rank
+        logger.info,
+        tag="ft",
+        op="cross_cell",
+        phase="end",
+        kind="ckpt_recv",
+        iteration=iteration,
+        from_alive_rank=src_rank,
     )
 
     manager = InMemoryCheckpointManager()
