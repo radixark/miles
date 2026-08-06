@@ -20,6 +20,10 @@ class RolloutExecutorProcessIdentity(_ProcessIdentityBase):
     component: Literal["rollout_executor"] = "rollout_executor"
 
 
+class InferenceControllerProcessIdentity(_ProcessIdentityBase):
+    component: Literal["inference_controller"] = "inference_controller"
+
+
 class TrainProcessIdentity(_ProcessIdentityBase):
     component: Literal["actor", "critic"]
     cell_index: NonNegativeInt
@@ -30,6 +34,6 @@ class TrainProcessIdentity(_ProcessIdentityBase):
 
 
 ProcessIdentity = Annotated[
-    MainProcessIdentity | RolloutExecutorProcessIdentity | TrainProcessIdentity,
+    MainProcessIdentity | RolloutExecutorProcessIdentity | InferenceControllerProcessIdentity | TrainProcessIdentity,
     Discriminator("component"),
 ]

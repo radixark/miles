@@ -3,6 +3,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from miles.utils.workers.naming import compute_cell_id, parse_worker_name
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_spec import NamedHostAndPorts
 
@@ -31,3 +33,11 @@ class BaseWorkerProvider(abc.ABC):
 
     @abc.abstractmethod
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn: ...
+
+    def get_handle(self, worker_name: str) -> BaseWorkerHandle:
+        pool_id, cell_index, _worker_in_cell_index = parse_worker_name(worker_name)
+        cell_id = compute_cell_id(pool_id=pool_id, cell_index=cell_index)
+        (infos,) = self.get_worker_infos(cell_ids=[cell_id])
+        matches = [info for info in infos if info.name == worker_name]
+        assert len(matches) == 1, f"{worker_name=} matched {[info.name for info in matches]}"
+        return matches[0].handle
