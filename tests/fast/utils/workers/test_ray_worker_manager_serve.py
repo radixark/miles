@@ -13,6 +13,8 @@ from ray import cloudpickle
 from tests.fast.utils.workers.fake_ray import EVENT_KILL, FakeRayCluster
 
 from miles.ray.placement_group import PlacementGroupInfo
+from miles.utils.workers import ray_worker_manager as rwm
+from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, bootstrapped_worker_class
 from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec, WorkerLaunchContext
 
@@ -89,6 +91,24 @@ class _CtorKwargsProbe:
     def __call__(self, context: Any) -> dict[str, Any]:
         self.contexts.append(context)
         return dict(rank=context.worker_in_cell_index, role="actor")
+
+
+class _RecordingCapability(BackendCapability):
+    def __init__(self) -> None:
+        self.operations = object()
+        self.requested_pool_ids: list[list[str]] = []
+        self.requested_static_pool_ids: list[str] = []
+
+    def dynamic_worker_provider(self, *, pool_ids):
+        self.requested_pool_ids.append(list(pool_ids))
+        return object()
+
+    def static_worker_provider(self, *, pool_id: str):
+        self.requested_static_pool_ids.append(pool_id)
+        return object()
+
+    def cell_operations(self):
+        return self.operations
 
 
 def _launch_context(*, worker_in_cell_index: int = 0) -> WorkerLaunchContext:
@@ -324,6 +344,53 @@ class TestTheBootstrappedClass:
         actor_class(ctor_kwargs=probe, context=_launch_context(worker_in_cell_index=2))
 
         assert probe.contexts[0].worker_in_cell_index == 2
+
+    async def test_builds_the_context_with_a_backend_capability_of_its_own_process(self, monkeypatch):
+        """A spec that asks for its engines is answered by the backend this process sees, not the launcher's."""
+        built = _RecordingCapability()
+        monkeypatch.setattr(rwm, "_create_ray_backend_capability", lambda: built)
+        probe = _CtorKwargsProbe()
+        actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
+
+        actor_class(ctor_kwargs=probe, context=_launch_context())
+
+        assert probe.contexts[0].capability.cell_operations() is built.operations
+
+    async def test_the_capability_costs_nothing_until_the_spec_asks(self, monkeypatch):
+        """Reaching for the worker manager at construction time would make every gpu-less worker pay for it."""
+        creations: list[str] = []
+
+        def _create():
+            creations.append("created")
+            return _RecordingCapability()
+
+        monkeypatch.setattr(rwm, "_create_ray_backend_capability", _create)
+        probe = _CtorKwargsProbe()
+        actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
+
+        actor_class(ctor_kwargs=probe, context=_launch_context())
+        assert creations == []
+
+        capability = probe.contexts[0].capability
+        capability.cell_operations()
+        capability.dynamic_worker_provider(pool_ids=["trainer-actor"])
+
+        assert creations == ["created"]
+
+    async def test_the_capability_forwards_what_the_spec_asked_for(self, monkeypatch):
+        """The pool ids a spec names are the ones its provider must watch; dropping them would watch everything."""
+        built = _RecordingCapability()
+        monkeypatch.setattr(rwm, "_create_ray_backend_capability", lambda: built)
+        probe = _CtorKwargsProbe()
+        actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
+
+        actor_class(ctor_kwargs=probe, context=_launch_context())
+        capability = probe.contexts[0].capability
+        capability.dynamic_worker_provider(pool_ids=["trainer-actor"])
+        capability.static_worker_provider(pool_id="rollout-executor")
+
+        assert built.requested_pool_ids == [["trainer-actor"]]
+        assert built.requested_static_pool_ids == ["rollout-executor"]
 
     async def test_passes_the_computed_keywords_to_the_wrapped_constructor(self):
         """The worker class is keyword-only, exactly as it is when a pod builds it in serve_inner."""
