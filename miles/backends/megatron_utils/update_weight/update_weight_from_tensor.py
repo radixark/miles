@@ -1,6 +1,5 @@
 import hashlib
 import logging
-import math
 import os
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
@@ -16,6 +15,7 @@ from miles.backends.megatron_utils.lora_utils import (
     build_lora_sync_config,
     is_lora_weight_name,
     lora_base_cpu_backup_enabled,
+    pp_assemble_full_adapter,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.distributed_utils import get_gloo_group
@@ -32,46 +32,6 @@ from .update_weight_from_distributed.broadcast import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _pp_assemble_full_adapter(
-    hf_named_tensors: list[tuple[str, torch.Tensor]],
-) -> list[tuple[str, torch.Tensor]]:
-    """Assemble the complete adapter on every PP rank (exporter gathers TP/EP but not PP)."""
-    pp_group = get_parallel_state().pp.group
-    pp_size = dist.get_world_size(group=pp_group)
-    if pp_size == 1:
-        return hf_named_tensors
-    pp_rank = dist.get_rank(group=pp_group)
-    global_ranks = dist.get_process_group_ranks(pp_group)
-    device = torch.cuda.current_device()
-
-    local_meta = [(n, tuple(t.shape), t.dtype) for n, t in hf_named_tensors]
-    all_meta: list = [None] * pp_size
-    dist.all_gather_object(all_meta, local_meta, group=pp_group)
-
-    local_by_name = {n: t for n, t in hf_named_tensors}
-    merged: dict[str, torch.Tensor] = {}
-    for src_pp, meta in enumerate(all_meta):
-        by_dtype: dict = {}
-        for n, shape, dtype in meta:
-            by_dtype.setdefault(dtype, []).append((n, shape))
-        for dtype, entries in by_dtype.items():
-            numel = sum(math.prod(shape) for _, shape in entries)
-            flat = torch.empty(numel, dtype=dtype, device=device)
-            if src_pp == pp_rank:
-                off = 0
-                for n, shape in entries:
-                    k = math.prod(shape)
-                    flat[off : off + k].copy_(local_by_name[n].reshape(-1))
-                    off += k
-            dist.broadcast(flat, src=global_ranks[src_pp], group=pp_group)
-            off = 0
-            for n, shape in entries:
-                k = math.prod(shape)
-                merged[n] = flat[off : off + k].view(shape)
-                off += k
-    return sorted(merged.items())
 
 
 class UpdateWeightFromTensor:
@@ -298,7 +258,8 @@ class UpdateWeightFromTensor:
                     "the Megatron-Bridge or SGLang version is incompatible."
                 )
 
-            accumulated_named_tensors = _pp_assemble_full_adapter(accumulated_named_tensors)
+            if self.args.megatron_to_hf_mode != "bridge":
+                accumulated_named_tensors = pp_assemble_full_adapter(accumulated_named_tensors)
 
             refs, long_lived_tensors = self._send_lora_params(accumulated_named_tensors)
             results = ray.get(refs)
