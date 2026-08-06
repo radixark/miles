@@ -1,14 +1,14 @@
 """Standalone Terminal-Bench-2 eval: an OpenAI-compatible *API* as the policy,
-Daytona sandboxes as the env. No GPU, no miles training pipeline.
+per-episode sandboxes as the env. No GPU, no miles training pipeline.
 
 This reuses the exact agent-env loop miles runs during training
 (``openenv_agent_function._multi_turn``: reset -> {policy emits a shell command
 -> exec -> feed output back} -> canonical tests/test.sh -> binary reward) but
 swaps miles' session-server policy for a plain API client. The machine running
 this only orchestrates; the policy runs in the cloud (e.g. DeepSeek) and each
-episode runs in its own Daytona sandbox (the task's OFFICIAL image +
+episode runs in its own per-provider sandbox (the task's OFFICIAL image +
 env server layer — recipe in the sibling ``tb2_sandbox_recipe`` module,
-materialized by ``tb2_sandbox_daytona``), created
+materialized per provider), created
 before the episode and deleted after.
 
 Why a separate script and not ``run-openenv-tbench2.py``: those launchers always
@@ -22,8 +22,11 @@ Env vars:
   DEEPSEEK_API_KEY / POLICY_API_KEY   policy API key (required)
   POLICY_BASE_URL   OpenAI-compatible root (default https://api.deepseek.com)
   POLICY_MODEL      default deepseek-v4-flash
-  OPENENV_TB2_TASKS_DIR  Daytona sandbox mode (TB2 checkout path); with
-                    DAYTONA_API_KEY or a key file at ~/.config/daytona/api_key.
+  OPENENV_TB2_TASKS_DIR  per-episode sandbox mode (TB2 checkout path); with
+                    provider credentials go with it (Daytona: DAYTONA_API_KEY
+                    or ~/.config/daytona/api_key; e2b/agentenv likewise).
+  OPENENV_SANDBOX_BACKEND             required with the above: daytona / e2b /
+                    agentenv (an alias for e2b).
                     Otherwise OPENENV_ENV_URL is used.
   OPENENV_MAX_TURNS, OPENENV_MAX_ROLLOUT_TIME_SECONDS, ...   as in the adapter.
 
@@ -107,10 +110,19 @@ async def main() -> None:
     rows = _load_rows(args)
     tasks_dir = os.getenv("OPENENV_TB2_TASKS_DIR", "").strip()
     if tasks_dir:
-        import openenv_daytona_agent_function as odaf
+        import openenv_sandbox_common as sandbox_common
 
-        run_episode = odaf.run_episode
-        env_desc = f"daytona sandboxes (tasks_dir={tasks_dir})"
+        try:
+            backend = sandbox_common.resolve_backend(os.getenv("OPENENV_SANDBOX_BACKEND"))
+        except ValueError as e:
+            sys.exit(str(e))
+        if backend == "e2b":
+            import openenv_e2b_agent_function as sandbox_leg
+        else:
+            import openenv_daytona_agent_function as sandbox_leg
+
+        run_episode = sandbox_leg.run_episode
+        env_desc = f"{backend} sandboxes (tasks_dir={tasks_dir})"
     else:
         run_episode = oaf.run_episode
         env_desc = os.getenv("OPENENV_ENV_URL", oaf._DEFAULT_ENV_URL)
