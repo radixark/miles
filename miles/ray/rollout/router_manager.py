@@ -45,23 +45,18 @@ async def wait_session_server_ready(args):
         await provider.get_addr(worker_name=compute_worker_name(pool_id="session-server", cell_index=i))
         for i in range(args.num_session_servers)
     ]
-    ips = [x.host for x in addrs]
-    assert len(set(ips)) == 1, f"{ips=}"
-    ip = ips[0]
-    ports = [x.port for x in addrs]
-
-    # The canonical driver-side value; rollout code picks from this list.
-    args.session_server_ip = ip
-    args.session_server_ports = ports
+    # The canonical driver-side value; rollout code picks from this list. Instances may sit on
+    # different hosts, so each one is addressed in full rather than by a port under a shared ip.
+    args.session_server_addrs = [f"{x.host}:{x.port}" for x in addrs]
 
     # Spawn all children before waiting on any: each child pays the ~10s
     # transformers import, so N servers start in ~one import of wall-time.
-    instance_ids: dict[int, str] = {}
-    for instance_index, port in enumerate(ports):
-        instance_ids[port] = compute_session_server_instance_id(args, instance_index)
-    # The per-port map OpenAIEndpointTracer.create reads instance ids from,
+    instance_ids: dict[str, str] = {}
+    for instance_index, addr in enumerate(args.session_server_addrs):
+        instance_ids[addr] = compute_session_server_instance_id(args, instance_index)
+    # The per-address map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
-    for port in ports:
-        wait_tcp_ready(ip, port, timeout=_SERVER_READY_TIMEOUT_SECS)
-    logger.info(f"Session servers ready at {ip}, ports {ports} ({len(ports)} instances)")
+    for addr in addrs:
+        wait_tcp_ready(addr.host, addr.port, timeout=_SERVER_READY_TIMEOUT_SECS)
+    logger.info(f"Session servers ready at {args.session_server_addrs} ({len(addrs)} instances)")
