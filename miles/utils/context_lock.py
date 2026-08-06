@@ -19,6 +19,7 @@ class ContextLock:
     def __init__(self, name: str) -> None:
         self._name = name
         self._lock = asyncio.Lock()
+        self._detached = False
 
     @property
     def name(self) -> str:
@@ -50,9 +51,23 @@ class ContextLock:
         _held_lock.set(self)
 
     def release(self) -> None:
-        assert _held_lock.get() is self, f"Lock {self._name!r} must be held by the current context"
+        self._assert_held_in_current_context()
         _held_lock.set(None)
         self._lock.release()
+
+    def detach(self) -> None:
+        self._assert_held_in_current_context()
+        self._detached = True
+        _held_lock.set(None)
+
+    def reattach(self) -> None:
+        assert self._detached, f"Cannot reattach lock {self._name!r}: it was not detached"
+        assert _held_lock.get() is None, f"Cannot reattach lock {self._name!r}: a context lock is already held"
+        self._detached = False
+        _held_lock.set(self)
+
+    def _assert_held_in_current_context(self) -> None:
+        assert _held_lock.get() is self, f"Lock {self._name!r} must be held by the current context"
 
 
 def enforce_lock_discipline(cls: type) -> type:
@@ -76,6 +91,39 @@ def with_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
             return await fn(self, *args, **kwargs)
 
     return _mark(wrapper, "with_lock")
+
+
+def acquires_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
+    assert inspect.iscoroutinefunction(fn), f"{fn.__qualname__} must be async to use acquires_lock"
+
+    @functools.wraps(fn)
+    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        lock = _get_lock(self)
+        await lock.acquire()
+        try:
+            result = await fn(self, *args, **kwargs)
+        except BaseException:
+            lock.release()
+            raise
+        lock.detach()
+        return result
+
+    return _mark(wrapper, "acquires_lock")
+
+
+def releases_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
+    assert inspect.iscoroutinefunction(fn), f"{fn.__qualname__} must be async to use releases_lock"
+
+    @functools.wraps(fn)
+    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        lock = _get_lock(self)
+        lock.reattach()
+        try:
+            return await fn(self, *args, **kwargs)
+        finally:
+            lock.release()
+
+    return _mark(wrapper, "releases_lock")
 
 
 def requires_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
