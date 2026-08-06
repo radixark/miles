@@ -24,7 +24,7 @@ async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
-    _handle, pgs = launch_worker_manager(args)
+    _worker_manager = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
 
@@ -33,7 +33,7 @@ async def train(args):
     inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, pgs, inference_controller, rollout_executor)
+    actor_model, critic_model = await create_training_models(args, inference_controller, rollout_executor)
 
     if args.api_server_port:
         start_api_server(

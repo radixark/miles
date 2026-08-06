@@ -36,7 +36,7 @@ async def main(args):
 
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
-    _handle, pgs = launch_worker_manager(args)
+    _worker_manager = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
     inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(args)
@@ -48,7 +48,7 @@ async def main(args):
     api_port = await controller.api_port.remote()
     logger.info(f"Multi-LoRA control API listening on http://{host}:{api_port} (head node)")
 
-    actor_model, _ = await create_training_models(args, pgs, inference_controller, rollout_executor)
+    actor_model, _ = await create_training_models(args, inference_controller, rollout_executor)
 
     # CLI-registered adapters are loaded and pushed by the loop's first
     # reconcile + update_weights.
