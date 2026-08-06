@@ -23,7 +23,7 @@ from miles.utils.context_lock import (
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker
-from miles.utils.misc import SimpleTicker
+from miles.utils.misc import NodeProbeMixin, SimpleTicker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
@@ -37,7 +37,7 @@ CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
 @enforce_lock_discipline
-class InferenceController:
+class InferenceController(NodeProbeMixin):
     @lock_exempt
     def __init__(self, args) -> None:
         self.args = args
