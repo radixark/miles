@@ -212,7 +212,8 @@ class FullyAsyncRolloutFn:
             group = entry.group
             assert len(group) == args.n_samples_per_prompt
 
-            # A weight update paused generation mid-group: return it for re-sampling.
+            # Corner case (weight updates retract rather than abort): the generate
+            # function gave up on the group, e.g. an agentic collect timeout.
             if any(s.status == Sample.Status.ABORTED for s in iter_samples(group)):
                 self._recycle(entry.prompt_group)
                 aborted_groups_recycled += 1
