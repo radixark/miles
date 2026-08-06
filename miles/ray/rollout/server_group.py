@@ -304,16 +304,6 @@ class ServerGroup:
             *[engine.api_client.resume_memory_occupation(tags=tags) for engine in self.engines if engine.is_allocated]
         )
 
-    def onload_weights_from_disk(self):
-        """Reload weights from ``model_path`` for non-updatable groups."""
-        if not self.needs_offload or not self.model_path:
-            return []
-        return [
-            engine.actor_handle.update_weights_from_disk.remote(self.model_path)
-            for engine in self.engines
-            if engine.is_allocated
-        ]
-
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
     ):
