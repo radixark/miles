@@ -200,6 +200,15 @@ class TestTheBootstrappedClass:
 
         assert probe.contexts[0].worker_in_cell_index == 2
 
+    async def test_builds_the_context_with_a_backend_capability_of_its_own_process(self):
+        """A spec that asks for its engines is answered by the backend this process sees, not the launcher's."""
+        probe = _CtorKwargsProbe()
+        actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
+
+        actor_class(ctor_kwargs=probe, context=_launch_context())
+
+        assert probe.contexts[0].capability is not None
+
     async def test_passes_the_computed_keywords_to_the_wrapped_constructor(self):
         """The worker class is keyword-only, exactly as it is when a pod builds it in serve_inner."""
         actor_class = bootstrapped_worker_class(_WORKER_CLASS_PATH)
