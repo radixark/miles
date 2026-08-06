@@ -2,9 +2,7 @@
 
 import asyncio
 import json
-import re
 import socket
-import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -20,6 +18,9 @@ from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
+
+
+_INSTANCE_ID = "0123456789abcdef-0"
 
 
 def _create_session(url: str) -> str:
@@ -68,7 +69,7 @@ def router_env():
                 hf_checkpoint="Qwen/Qwen3-0.6B",
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
-                instance_id=uuid.uuid4().hex,
+                instance_id=_INSTANCE_ID,
             )
             server_obj = SessionServer(config)
 
@@ -95,7 +96,7 @@ class TestSessionRoutes:
         second_body = second.json()
         assert first_body["status"] == "ok"
         assert second_body["status"] == "ok"
-        assert re.fullmatch(r"[0-9a-f]{32}", first_body["session_server_instance_id"])
+        assert first_body["session_server_instance_id"] == _INSTANCE_ID
         assert second_body["session_server_instance_id"] == first_body["session_server_instance_id"]
 
     def test_create_session(self, router_env):

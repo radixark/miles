@@ -2,7 +2,6 @@
 Fixtures to test custom-generate-function
 """
 
-import uuid
 from argparse import Namespace
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -236,7 +235,7 @@ def with_session_server(
 ):
     # Mirror start_session_server (router_manager.py): the id is minted into the
     # caller's per-port map, where OpenAIEndpointTracer.create reads it from.
-    instance_id = uuid.uuid4().hex
+    instance_id = f"{args.run_uuid}-0"
     args.session_server_instance_ids = {port: instance_id}
     config = make_session_server_config(
         backend_url=backend_url,
