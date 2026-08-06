@@ -6,7 +6,7 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.ray.rollout.router_manager import resolve_router_addrs
+from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.train import compute_critic_args
 from miles.ray.train.group import TrainerController
 from ..utils.ray_utils import compute_ray_pin_head_options
@@ -172,6 +172,7 @@ class RolloutComponents(NamedTuple):
 async def create_rollout_components(args) -> RolloutComponents:
     if not args.debug_train_only:
         await resolve_router_addrs(args)
+        await wait_session_server_ready(args)
 
     inference_controller = InferenceController(args)
     await inference_controller.init()

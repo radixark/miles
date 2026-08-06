@@ -24,6 +24,7 @@ def _make_args(**overrides) -> Namespace:
         offload_rollout=False,
         sglang_router_ip=None,
         sglang_router_port=None,
+        use_session_server=False,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
@@ -63,6 +64,10 @@ def fake_components():
         args.sglang_router_ip = "10.0.0.1"
         args.sglang_router_port = 4321
 
+    async def fake_wait_session_server_ready(args):
+        args.session_server_addrs = ["10.0.0.2:5000"]
+        args.session_server_instance_ids = ["session-0"]
+
     executor_handle = MagicMock(name="rollout_executor")
     executor_handle.set_eval_fleet.remote = AsyncMock()
     executor_cls = _FakeExecutorClass(executor_handle)
@@ -70,6 +75,8 @@ def fake_components():
     with patch("miles.ray.placement_group.InferenceController", controller_cls), patch(
         "miles.ray.placement_group.RolloutExecutor", executor_cls
     ), patch("miles.ray.placement_group.resolve_router_addrs", fake_resolve_router_addrs), patch(
+        "miles.ray.placement_group.wait_session_server_ready", fake_wait_session_server_ready
+    ), patch(
         "miles.ray.placement_group.ray.get", return_value=5
     ):
         yield Namespace(
@@ -90,6 +97,16 @@ class TestCreateRolloutComponents:
         (executor_args,) = fake_components.executor_cls.arg_snapshots
         assert executor_args.sglang_router_ip == "10.0.0.1"
         assert executor_args.sglang_router_port == 4321
+
+    async def test_executor_is_built_after_the_session_servers_are_known(self, fake_components):
+        """The executor only ever sees the pickled copy, so the session contract must be written before it is built."""
+        args = _make_args(num_rollout=1, use_session_server=True)
+
+        await create_rollout_components(args)
+
+        (executor_args,) = fake_components.executor_cls.arg_snapshots
+        assert executor_args.session_server_addrs == ["10.0.0.2:5000"]
+        assert executor_args.session_server_instance_ids == ["session-0"]
 
     async def test_returns_a_plain_controller_and_an_actor_handle(self, fake_components):
         """The controller stays in the driver; only the executor becomes a Ray actor."""
