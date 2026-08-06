@@ -34,12 +34,12 @@ def _build_group(
             num_gpus_per_node=8,
             args=args,
             pg=pg_tuple,
+            needs_offload=needs_offload,
+            update_weights=update_weights,
+            model_path=model_path,
         ),
         num_gpus_per_engine=num_gpus_per_engine,
         has_new_engines=False,
-        needs_offload=needs_offload,
-        update_weights=update_weights,
-        model_path=model_path,
     )
 
 

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
@@ -34,6 +35,9 @@ class ServerCell:
     rank_offset: int = 0
     gpu_offset: int = 0
     sglang_overrides: dict = dataclasses.field(default_factory=dict)
+    needs_offload: bool = False
+    model_path: str | None = None
+    update_weights: bool = True
 
     @property
     def primary_engine(self) -> ServerEngine:
@@ -108,6 +112,22 @@ class ServerCell:
             init_handles.append(actor.init.remote(**addr_and_ports[global_rank]))
 
         await asyncio.gather(*init_handles)
+
+    async def recover(self, port_allocator: PortAllocator, router_api_client: SGLangRouterApiClient) -> None:
+        await self.start_engines(port_allocator)
+
+        if self.needs_offload:
+            await self.primary_engine.api_client.release_memory_occupation()
+            if self.update_weights or self.model_path:
+                await self.primary_engine.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+
+        self.mark_alive()
+
+        await self.register(router_api_client)
+
+    def mark_alive(self):
+        for engine in self.engines:
+            engine.mark_alive()
 
     def stop(self):
         for local_index, engine in enumerate(self.engines):

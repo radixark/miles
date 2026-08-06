@@ -32,11 +32,10 @@ def _build_group(
             pg=pg_tuple,
             rank_offset=rank_offset,
             gpu_offset=gpu_offset,
+            needs_offload=needs_offload,
         ),
         num_gpus_per_engine=num_gpus_per_engine,
         has_new_engines=False,
-        update_weights=True,
-        needs_offload=needs_offload,
     )
 
 
