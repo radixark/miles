@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import pytest
 import tests.ci.run_suite as run_suite_module
 from tests.ci.ci_policy import NIGHTLY_CADENCE, REGULAR_CADENCE, SCHEDULE_POLICIES, resolve_policy, strip_run_ci_prefix
-from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
+from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files, register_cpu_ci
 from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import CI_SUITES, build_cpu_pytest_cmd, filter_tests
 
@@ -327,13 +327,13 @@ class TestRocmWorkflowScopeSeam:
         assert "run: python -m tests.ci.ci_policy" in policy_block
         assert "github.event.schedule || github.run_id" in workflow
 
-    def test_stage_is_disabled_and_preserves_configuration(self):
+    def test_stage_consumes_policy_and_preserves_manual_full_scope(self):
         workflow = self._workflow()
         stage = workflow.split("  stage-c-4-gpu-mi300x:", 1)[1]
         command = stage.split("execute_command:", 1)[1].split("secrets:", 1)[0]
 
         assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
-        assert "if: ${{ false }}" in stage
+        assert "if: needs.resolve-ci-policy.outputs.allow_self_hosted == 'true'" in stage
         assert "partition_id: [0, 1]" in stage
         assert "--auto-partition-size 2" in command
         assert "format('refs/pull/{0}/merge', github.event.pull_request.number)" in stage
@@ -352,6 +352,21 @@ class TestRocmWorkflowScopeSeam:
         assert "checkout_ref:" in reusable
         assert "ref: ${{ inputs.checkout_ref }}" in reusable
         assert "persist-credentials: false" in reusable
+
+    def test_all_registered_mi300x_cases_are_disabled(self, monkeypatch):
+        repo_root = Path(__file__).resolve().parents[3]
+        monkeypatch.chdir(repo_root)
+        registries = collect_tests(discover_ci_files(), sanity_check=True)
+        mi300x_cases = [
+            registry
+            for registry in registries
+            if registry.backend == HWBackend.ROCM and registry.suite == "stage-c-4-gpu-mi300x"
+        ]
+
+        assert mi300x_cases, "stage-c-4-gpu-mi300x must retain its case registrations"
+        enabled = [registry.filename for registry in mi300x_cases if registry.disabled is None]
+        assert not enabled, f"MI300X case registrations must stay disabled: {enabled}"
+        assert {registry.disabled for registry in mi300x_cases} == {"Disable due to failure"}
 
 
 # --- CLI seam: local nightly alias and invalid-suite exit behavior -----------
