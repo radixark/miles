@@ -45,7 +45,7 @@ def fake_components():
     controller.check_weights = AsyncMock()
     controller.offload = AsyncMock()
 
-    async def build_controller(args, pg):
+    async def build_controller(args):
         args.sglang_router_ip = "10.0.0.1"
         args.sglang_router_port = 4321
         return controller
@@ -67,7 +67,7 @@ class TestCreateRolloutComponents:
         """Starting the engines fills the router address into args, and Ray pickles args at construction."""
         args = _make_args(num_rollout=1)
 
-        await create_rollout_components(args, pg=MagicMock())
+        await create_rollout_components(args)
 
         (executor_args,) = fake_components.executor_cls.arg_snapshots
         assert executor_args.sglang_router_ip == "10.0.0.1"
@@ -77,7 +77,7 @@ class TestCreateRolloutComponents:
         """The controller stays in the driver; only the executor becomes a Ray actor."""
         args = _make_args(num_rollout=1)
 
-        controller, executor, _ = await create_rollout_components(args, pg=MagicMock())
+        controller, executor, _ = await create_rollout_components(args)
 
         assert controller is fake_components.controller
         assert executor is fake_components.executor_handle
@@ -86,7 +86,7 @@ class TestCreateRolloutComponents:
         """num_rollout comes from the dataset, which the executor owns."""
         args = _make_args(num_rollout=None, num_epoch=2)
 
-        _, _, num_rollout_per_epoch = await create_rollout_components(args, pg=MagicMock())
+        _, _, num_rollout_per_epoch = await create_rollout_components(args)
 
         fake_components.executor_handle.get_num_rollout_per_epoch.remote.assert_called_once()
         assert num_rollout_per_epoch == 5
@@ -96,7 +96,7 @@ class TestCreateRolloutComponents:
         """An explicit --num-rollout skips asking the executor for the epoch length."""
         args = _make_args(num_rollout=3)
 
-        _, _, num_rollout_per_epoch = await create_rollout_components(args, pg=MagicMock())
+        _, _, num_rollout_per_epoch = await create_rollout_components(args)
 
         fake_components.executor_handle.get_num_rollout_per_epoch.remote.assert_not_called()
         assert num_rollout_per_epoch is None
@@ -106,7 +106,7 @@ class TestCreateRolloutComponents:
         """Engine-side startup steps go to the controller, never to the executor."""
         args = _make_args(num_rollout=1, check_weight_update_equal=True, offload_rollout=True)
 
-        await create_rollout_components(args, pg=MagicMock())
+        await create_rollout_components(args)
 
         actions = [call.kwargs["action"] for call in fake_components.controller.check_weights.await_args_list]
         assert actions == ["snapshot", "reset_tensors"]
