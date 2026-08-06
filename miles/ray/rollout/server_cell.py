@@ -31,7 +31,6 @@ from miles.utils.ft_utils.health_checker import (
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.launch_gate import GATE_PORT_NAME, activate_launch_gate
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +56,7 @@ class ServerCell:
     args: Any
     meta: ServerCellMetadata
     router_api_client: SGLangRouterApiClient
+    provider: BaseWorkerProvider
     global_health_checker_activeness: Callable[[], ActiveAndEpoch] = lambda: ActiveAndEpoch(active=True, epoch=0)
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
@@ -237,8 +237,7 @@ class ServerCell:
             logger.warning(f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})")
 
     async def _compute_addr_info(self) -> CellAddrInfo:
-        provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
-        master_addrs = await provider.get_addrs(worker_name=self.meta.worker_name)
+        master_addrs = await self.provider.get_addrs(worker_name=self.meta.worker_name)
         primary = master_addrs["primary"]
         gate = master_addrs[GATE_PORT_NAME]
         return CellAddrInfo(

@@ -2,11 +2,13 @@ from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 
 import pytest
+from tests.fast.ray.train.conftest import make_provider
 
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.group import TrainerController
 from miles.utils import retry_utils
 from miles.utils.ft_utils.api_server.models import CellStatus, TriState
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.workers.worker_provider.base import CellInfo
 
 pytestmark = pytest.mark.asyncio
@@ -30,7 +32,8 @@ def _make_controller(*, num_cells: int = 2, indep_dp: bool = False) -> TrainerCo
     group._with_opd_teacher = False
     group._pool_id = _POOL_ID
     group._health_checker_config = None
-    group._health_checker_activeness = True
+    group._health_checker_activeness = ActivenessTracker(active=True)
+    group._provider = make_provider()
     group._cells_by_id = {}
     return group
 

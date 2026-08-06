@@ -38,30 +38,6 @@ def _make_handle(*answers: dict[str, HostAndPort]) -> _FakeManagerHandle:
     return _FakeManagerHandle(get_worker_addrs=_FakeRemoteMethod(answers=list(answers)))
 
 
-class TestRayWorkerProviderCreate:
-    async def test_looks_addresses_up_through_the_named_manager_actor(self, monkeypatch: pytest.MonkeyPatch):
-        """The provider finds the manager by its well-known actor name and asks it for the address."""
-        import miles.utils.workers.ray_worker_manager as ray_worker_manager_mod
-
-        handle = _make_handle({"primary": HostAndPort(host="10.0.0.7", port=15000)})
-        looked_up: list[str] = []
-
-        class _FakeRay:
-            @staticmethod
-            def get_actor(name: str) -> _FakeManagerHandle:
-                looked_up.append(name)
-                return handle
-
-        monkeypatch.setattr(ray_worker_manager_mod, "ray", _FakeRay)
-
-        provider = RayWorkerProvider.create()
-        addr = (await provider.get_addrs(worker_name="router-0-0"))["primary"]
-
-        assert looked_up == ["ray_worker_manager"]
-        assert handle.get_worker_addrs.requested_names == ["router-0-0"]
-        assert addr == HostAndPort(host="10.0.0.7", port=15000)
-
-
 class TestRayWorkerProviderAddressLookup:
     async def test_every_lookup_asks_the_manager_again(self):
         """Addresses are never cached, so a relaunched worker is not answered with a stale endpoint."""
