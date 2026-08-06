@@ -791,18 +791,33 @@ class TestStop:
         await loop.stop()
         assert source.closed_count == 1
 
-    async def test_a_second_stop_is_rejected(self):
-        """stop() runs exactly once; a second call is a caller error, not a wait."""
-        loop, _, _, _ = await make_loop(initial=[])
+    async def test_a_second_stop_is_a_no_op(self):
+        """Teardown paths overlap, and a stop() that raises would replace whatever error is unwinding."""
+        loop, source, _, _ = await make_loop(initial=[])
         await loop.stop()
-        with pytest.raises(AssertionError):
-            await loop.stop()
+
+        await loop.stop()
+
+        assert source.closed_count == 1
 
     async def test_stop_before_start_is_rejected(self):
         """stop() has nothing to wait for before start(); calling it early is a caller error."""
         loop = ReconcileLoop(source=FakeSource(), reconcile=Recorder(), clock=FakeClock())
         with pytest.raises(AssertionError):
             await loop.stop()
+
+    async def test_stop_after_an_aborted_start_lets_the_real_failure_through(self):
+        """A caller unwinding a cancelled start() calls stop(); asserting there would hide the CancelledError."""
+        source = FakeSource()
+        loop = ReconcileLoop(source=source, reconcile=Recorder(), key_map=pod_cell, clock=FakeClock())
+        start_task = asyncio.create_task(loop.start())
+        await settle()
+        start_task.cancel()
+        await asyncio.gather(start_task, return_exceptions=True)
+
+        await loop.stop()
+
+        assert start_task.cancelled()
 
     async def test_start_twice_is_rejected(self):
         """start() is single-shot."""

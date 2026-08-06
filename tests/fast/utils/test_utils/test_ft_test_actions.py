@@ -1,7 +1,6 @@
 import json
 import os
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -122,162 +121,204 @@ def test_load_actions_validates_cell_id_of_actions_outside_the_filter() -> None:
 
 
 class FakeController:
-    def __init__(self, num_cells: int, *, pool_id: str = _POOL_ID) -> None:
+    def __init__(self, num_cells: int, *, pool_id: str = _POOL_ID, observed_after_reads: int = 0) -> None:
         self.pool_id = pool_id
         self.expected_num_cells = num_cells
+        self.cell_ids_reads = 0
+        self._observed_after_reads = observed_after_reads
+
+    @property
+    def cell_ids(self) -> list[str]:
+        self.cell_ids_reads += 1
+        if self.cell_ids_reads <= self._observed_after_reads:
+            return []
+        return [f"{self.pool_id}-{index}" for index in range(self.expected_num_cells)]
 
 
-class FakeRemoteMethod:
-    def __init__(self, sink: list[str]) -> None:
-        self._sink = sink
-        self.error: Exception | None = None
-
-    async def remote(self, cell_ids: list[str]) -> None:
-        if self.error is not None:
-            raise self.error
-        self._sink.extend(cell_ids)
-
-
-class FakeWorkerManager:
+class FakeCellOperations:
     def __init__(self) -> None:
         self.stopped: list[str] = []
         self.started: list[str] = []
-        self.stop_cells = FakeRemoteMethod(self.stopped)
-        self.start_cells = FakeRemoteMethod(self.started)
 
+    async def suspend(self, cell_id: str) -> None:
+        self.stopped.append(cell_id)
 
-async def _run(executor: FTTestActionControllerExecutor, manager: FakeWorkerManager, rollout_id: int) -> None:
-    with patch("miles.utils.test_utils.ft_test_actions.RayWorkerManager.get_handle", lambda: manager):
-        await executor.run_after_step(rollout_id)
+    async def resume(self, cell_id: str) -> None:
+        self.started.append(cell_id)
 
 
 class TestRunAfterStep:
     @pytest.mark.asyncio
     async def test_stop_cell_fires_on_matching_rollout(self):
-        """stop_cell_at_end hands the action's cell_id to the worker manager on its rollout."""
-        manager = FakeWorkerManager()
+        """stop_cell_at_end suspends the action's cell_id through the backend's operations."""
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-actor-1")
-        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
-        await _run(executor, manager, 5)
+        await executor.run_after_step(5)
 
-        assert manager.stopped == ["trainer-actor-1"]
-        assert manager.started == []
+        assert operations.stopped == ["trainer-actor-1"]
+        assert operations.started == []
 
     @pytest.mark.asyncio
     async def test_no_action_on_non_matching_rollout(self):
         """run_after_step does nothing when no action's at_rollout matches the given rollout."""
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-actor-1")
-        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
-        await _run(executor, manager, 4)
+        await executor.run_after_step(4)
 
-        assert manager.stopped == []
-        assert manager.started == []
+        assert operations.stopped == []
+        assert operations.started == []
 
     @pytest.mark.asyncio
     async def test_start_cell_targets_the_named_cell(self):
-        """start_cell_at_end calls the worker manager with exactly the cell_id the action names."""
-        manager = FakeWorkerManager()
+        """start_cell_at_end resumes exactly the cell_id the action names."""
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_id="trainer-actor-2")
-        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
-        await _run(executor, manager, 2)
+        await executor.run_after_step(2)
 
-        assert manager.started == ["trainer-actor-2"]
-        assert manager.stopped == []
+        assert operations.started == ["trainer-actor-2"]
+        assert operations.stopped == []
+
+    @pytest.mark.asyncio
+    async def test_start_cell_does_not_return_until_the_controller_observes_the_cell(self):
+        """The next step reconfigures against what is observed, so returning early races the heal."""
+        operations = FakeCellOperations()
+        controller = FakeController(num_cells=2, observed_after_reads=1)
+        action = FTTestAction(at_rollout=3, action="start_cell_at_end", cell_id="trainer-engine-actor-1")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=controller, cell_operations=operations)
+
+        await executor.run_after_step(3)
+
+        assert operations.started == ["trainer-engine-actor-1"]
+        assert controller.cell_ids_reads > 1, "the resume returned on the read that still lacked the cell"
+
+    @pytest.mark.asyncio
+    async def test_stop_cell_does_not_wait_for_anything_to_be_observed(self):
+        """Only the resume has a cell to wait for; making suspend wait would hang on the cell it removed."""
+        operations = FakeCellOperations()
+        controller = FakeController(num_cells=2)
+        action = FTTestAction(at_rollout=3, action="stop_cell_at_end", cell_id="trainer-engine-actor-1")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=controller, cell_operations=operations)
+
+        await executor.run_after_step(3)
+
+        assert operations.stopped == ["trainer-engine-actor-1"]
+        assert controller.cell_ids_reads == 0
 
     @pytest.mark.asyncio
     async def test_start_cell_after_that_cell_was_dropped_still_targets_it(self):
         """A stopped cell no longer being live does not change the cell_id the action names."""
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=3, action="start_cell_at_end", cell_id="trainer-actor-1")
-        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=2))
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=2), cell_operations=operations
+        )
 
-        await _run(executor, manager, 3)
+        await executor.run_after_step(3)
 
-        assert manager.started == ["trainer-actor-1"]
-        assert manager.stopped == []
+        assert operations.started == ["trainer-actor-1"]
+        assert operations.stopped == []
 
     @pytest.mark.asyncio
     async def test_two_actions_same_rollout_both_fire(self):
-        """Two actions sharing the same rollout both dispatch to their respective controller methods."""
-        manager = FakeWorkerManager()
+        """Two actions sharing the same rollout both dispatch to their respective cell operations."""
+        operations = FakeCellOperations()
         stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_id="trainer-actor-0")
         start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_id="trainer-actor-2")
         executor = FTTestActionControllerExecutor(
-            actions=[stop_action, start_action], controller=FakeController(num_cells=3)
+            actions=[stop_action, start_action], controller=FakeController(num_cells=3), cell_operations=operations
         )
 
-        await _run(executor, manager, 7)
+        await executor.run_after_step(7)
 
-        assert manager.stopped == ["trainer-actor-0"]
-        assert manager.started == ["trainer-actor-2"]
+        assert operations.stopped == ["trainer-actor-0"]
+        assert operations.started == ["trainer-actor-2"]
 
     @pytest.mark.asyncio
     async def test_empty_actions_is_noop(self):
-        """An executor with no actions performs no controller calls."""
-        manager = FakeWorkerManager()
-        executor = FTTestActionControllerExecutor(actions=[], controller=FakeController(num_cells=3))
+        """An executor with no actions performs no cell operations."""
+        operations = FakeCellOperations()
+        executor = FTTestActionControllerExecutor(
+            actions=[], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
-        await _run(executor, manager, 5)
+        await executor.run_after_step(5)
 
-        assert manager.stopped == []
-        assert manager.started == []
+        assert operations.stopped == []
+        assert operations.started == []
 
     @pytest.mark.asyncio
     async def test_action_naming_another_spec_raises(self):
         """An action aimed at a different spec is a misconfiguration and must fail, not silently no-op."""
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="rollout-engine-0")
-        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
         with pytest.raises(AssertionError):
-            await _run(executor, manager, 1)
+            await executor.run_after_step(1)
 
-        assert manager.stopped == []
+        assert operations.stopped == []
 
     @pytest.mark.asyncio
     async def test_action_index_beyond_expected_num_cells_raises(self):
         """A cell index the group can never have is a misconfiguration and must fail at dispatch."""
-        manager = FakeWorkerManager()
+        operations = FakeCellOperations()
         action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="trainer-actor-9")
-        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
         with pytest.raises(AssertionError):
-            await _run(executor, manager, 1)
+            await executor.run_after_step(1)
 
-        assert manager.stopped == []
+        assert operations.stopped == []
 
     @pytest.mark.asyncio
     async def test_the_index_one_past_the_last_cell_is_rejected(self):
         """Cell indices are half-open, so index N of an N-cell pool is the easiest off-by-one to write in CI config."""
-        manager = FakeWorkerManager()
-        action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="trainer-actor-3")
-        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
+        operations = FakeCellOperations()
+        action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="trainer-engine-actor-3")
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
         with pytest.raises(AssertionError):
-            await _run(executor, manager, 1)
+            await executor.run_after_step(1)
 
-        assert manager.stopped == []
+        assert operations.stopped == []
 
     @pytest.mark.asyncio
     async def test_a_rejected_stop_propagates_and_the_later_action_never_fires(self):
         """Carrying on after the requested transition failed turns a broken scenario into a green run."""
-        manager = FakeWorkerManager()
-        manager.stop_cells.error = RuntimeError("worker manager rejected the stop")
-        stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_id="trainer-actor-0")
-        start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_id="trainer-actor-2")
+        class _RejectingOperations(FakeCellOperations):
+            async def suspend(self, cell_id: str) -> None:
+                raise RuntimeError("worker manager rejected the stop")
+
+        operations = _RejectingOperations()
+        stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_id="trainer-engine-actor-0")
+        start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_id="trainer-engine-actor-2")
         executor = FTTestActionControllerExecutor(
-            actions=[stop_action, start_action], controller=FakeController(num_cells=3)
+            actions=[stop_action, start_action], controller=FakeController(num_cells=3), cell_operations=operations
         )
 
         with pytest.raises(RuntimeError, match="rejected the stop"):
-            await _run(executor, manager, 7)
+            await executor.run_after_step(7)
 
-        assert manager.stopped == []
-        assert manager.started == []
+        assert operations.stopped == []
+        assert operations.started == []
 
 
 _CRASH_ACTION = FTTestAction(
