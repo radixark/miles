@@ -15,7 +15,6 @@ import torch.distributed as dist
 from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.environ import enable_experimental_ft_trainer
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -64,8 +63,6 @@ async def configure_sglang(args: Namespace) -> None:
 
     engines_dir: Path = _get_dir(args) / "engines"
     _cleanup_dump_dir(engines_dir, indep_dp_rank=0)
-    if not enable_experimental_ft_trainer() and dist.is_initialized():
-        dist.barrier()
 
     coros = []
     for i, url in enumerate(worker_urls):
@@ -117,8 +114,7 @@ class DumperMegatronUtil:
         get_grad: Callable[[torch.nn.Parameter], torch.Tensor | None] | None = None
         if self.phase is DumperPhase.FWD_BWD and self.overrides.get("enable_model_grad"):
             _log_model_grad_coverage(extracted_model)
-            if enable_experimental_ft_trainer():
-                get_grad = _build_full_grad_getter(extracted_model)
+            get_grad = _build_full_grad_getter(extracted_model)
 
         # Weights/grads are a once-per-rollout end-state, so pin them to step 0 instead of
         # the running per-microbatch step. _configure already cleaned the scoped paths;

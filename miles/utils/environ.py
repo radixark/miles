@@ -26,18 +26,3 @@ def default_fp8_block_scaling_fp32_scales() -> str:
         return "1"
     major, _minor = torch.cuda.get_device_capability()
     return "0" if major >= 10 else "1"
-
-
-_printed_experimental_ft_trainer = False
-
-
-def enable_experimental_ft_trainer() -> bool:
-    raw = os.environ.get("MILES_EXPERIMENTAL_FT_TRAINER", "0").lower()
-    result = raw in ("1", "true", "on", "yes")
-
-    global _printed_experimental_ft_trainer
-    if result and not _printed_experimental_ft_trainer:
-        print("MILES_EXPERIMENTAL_FT_TRAINER=1 is enabled (experimental feature)")
-        _printed_experimental_ft_trainer = True
-
-    return result
