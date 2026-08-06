@@ -79,6 +79,7 @@ async def test_post_methods_hit_the_server_url_with_expected_payload(client, rec
         "serialized_named_tensors": ["a"],
         "load_format": "direct",
         "flush_cache": True,
+        "selector": "all",
     }
     assert recorder.calls[1][2]["json"] == {"new_version": "run-0001"}
 
@@ -264,7 +265,14 @@ _REMAINING_POST_CASES = [
             names=["w"], dtypes=["torch.bfloat16"], shapes=[[1]], group_name="g", flush_cache=True
         ),
         "update_weights_from_distributed",
-        {"names": ["w"], "dtypes": ["bfloat16"], "shapes": [[1]], "group_name": "g", "flush_cache": True},
+        {
+            "names": ["w"],
+            "dtypes": ["bfloat16"],
+            "shapes": [[1]],
+            "group_name": "g",
+            "flush_cache": True,
+            "selector": "all",
+        },
     ),
     (lambda c: c.pause_generation(mode="abort"), "pause_generation", {"mode": "abort"}),
     (lambda c: c.continue_generation(), "continue_generation", {}),
@@ -310,6 +318,54 @@ async def test_every_public_method_is_a_coroutine_function():
     non_async = [name for name in methods if not inspect.iscoroutinefunction(getattr(SGLangApiClient, name))]
 
     assert non_async == []
+
+
+class TestProbeServerHealthy:
+    """``probe_server_healthy`` is a single bounded shot, because it runs inside the locked tick sweep."""
+
+    async def test_a_healthy_server_probes_true(self, monkeypatch):
+        """A ready engine is what moves the cell out of the initializing state."""
+        rec = _Recorder()
+        rec.install(monkeypatch, responses=[_FakeResponse()])
+
+        assert await sglang_api_client.probe_server_healthy(server_url=SERVER_URL, api_key="k") is True
+        assert [url for _verb, url, _kwargs in rec.calls] == [f"{SERVER_URL}/health_generate"]
+
+    async def test_a_server_that_is_still_loading_probes_false(self, monkeypatch):
+        """A non-200 means not ready yet, not a failure to report upwards."""
+        rec = _Recorder()
+        rec.install(monkeypatch, responses=[_FakeResponse(status_code=503)])
+
+        assert await sglang_api_client.probe_server_healthy(server_url=SERVER_URL, api_key="k") is False
+
+    async def test_a_server_that_is_not_listening_probes_false(self, monkeypatch):
+        """The port only opens minutes after launch, so a refused connection is the normal case."""
+
+        class _Refusing:
+            async def get(self, url, **kwargs):
+                raise httpx.ConnectError("connection refused")
+
+        monkeypatch.setattr(GeneralHttpClientProvider, "client", lambda: _Refusing())
+
+        assert await sglang_api_client.probe_server_healthy(server_url=SERVER_URL, api_key="k") is False
+
+    async def test_the_probe_is_bounded_so_a_wedged_engine_cannot_stall_the_sweep(self, monkeypatch):
+        """The shared http client has no read timeout, so this call must carry its own."""
+        rec = _Recorder()
+        rec.install(monkeypatch, responses=[_FakeResponse()])
+
+        await sglang_api_client.probe_server_healthy(server_url=SERVER_URL, api_key="k")
+
+        assert rec.calls[0][2]["timeout"] == 5.0
+
+    async def test_it_authenticates_like_every_other_call(self, monkeypatch):
+        """A probe rejected for missing auth would look exactly like an engine that never starts."""
+        rec = _Recorder()
+        rec.install(monkeypatch, responses=[_FakeResponse()])
+
+        await sglang_api_client.probe_server_healthy(server_url=SERVER_URL, api_key="secret")
+
+        assert rec.calls[0][2]["headers"]["Authorization"] == "Bearer secret"
 
 
 class TestWaitServerHealthy:

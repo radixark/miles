@@ -223,9 +223,6 @@ async def create_rollout_components(args) -> RolloutComponents:
         args.num_rollout = num_rollout_per_epoch * args.num_epoch
         assert args.num_rollout > 0
 
-    if args.check_weight_update_equal:
-        await inference_controller.check_weights(action="reset_tensors", skip_list=args.check_weight_update_skip_list)
-
     return RolloutComponents(
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,
