@@ -70,7 +70,9 @@ class _CachedWeightVersion:
         url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/model_info"
         try:
             data = await asyncio.wait_for(get(url), timeout=WEIGHT_VERSION_QUERY_TIMEOUT_SECS)
-            self._value = int(data["weight_version"])
+            version = data["weight_version"]
+            # "default" until the first stamped weight update
+            self._value = int(version) if str(version).isdigit() else None
         except (httpx.HTTPError, asyncio.TimeoutError) as e:
             # Transient router unavailability; the staleness filter is best-effort.
             logger.debug(f"Failed to query engine weight version: {e}")

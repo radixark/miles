@@ -399,6 +399,17 @@ async def test_weight_version_throttles_failed_queries(monkeypatch):
     assert len(calls) == 2
 
 
+async def test_weight_version_maps_non_numeric_to_none(monkeypatch):
+    """Engines report weight_version="default" until the first stamped weight update."""
+
+    async def router(url):
+        return {"weight_version": "default"}
+
+    monkeypatch.setattr(fully_async, "get", router)
+
+    assert await fully_async._CachedWeightVersion(ttl=0.0).get(make_args()) is None
+
+
 # ── DataBuffer: staleness-bounded buffering ─────────────────────────
 
 
