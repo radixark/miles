@@ -42,6 +42,7 @@ def patch_low_level(monkeypatch):
     - ``wait_session_server_ready`` → no-op (the production default touches network)."""
     import miles.ray.rollout.inference_controller as ictl
     import miles.ray.rollout.rollout_server as rsrv
+    import miles.ray.rollout.router_manager as rmgr
     import miles.ray.rollout.server_cell as scell
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
@@ -52,7 +53,7 @@ def patch_low_level(monkeypatch):
     async def _fake_router_ready(*args, **kwargs):
         return HostAndPort(host="127.0.0.1", port=30000)
 
-    monkeypatch.setattr(rsrv, "wait_router_ready", _fake_router_ready)
+    monkeypatch.setattr(rmgr, "wait_router_ready", _fake_router_ready)
 
     monkeypatch.setattr(rsrv, "SGLangRouterApiClient", _NoopRouterApiClient)
 

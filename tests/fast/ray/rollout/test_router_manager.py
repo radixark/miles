@@ -5,8 +5,49 @@ from types import SimpleNamespace
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.router_manager import wait_router_ready, wait_session_server_ready
+from miles.ray.rollout.router_manager import resolve_router_addrs, wait_router_ready, wait_session_server_ready
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
+
+
+class TestResolveRouterAddrs:
+    async def test_records_every_models_router_on_args(self, monkeypatch):
+        """The driver-visible router contract (primary ip/port, per-model map) is written exactly once, here."""
+        args = make_args(sglang_router_ip=None, sglang_router_port=None, sglang_model_routers=None)
+
+        async def _fake_wait_router_ready(model_idx: int) -> HostAndPort:
+            return HostAndPort(host="10.0.0.9", port=30000 + model_idx)
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_router_ready", _fake_wait_router_ready)
+
+        router_addrs = await resolve_router_addrs(args)
+
+        assert router_addrs == {"default": HostAndPort(host="10.0.0.9", port=30000)}
+        assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.9", 30000)
+        assert args.sglang_model_routers == {"default": ("10.0.0.9", 30000)}
+
+    async def test_resolving_again_in_the_same_process_answers_from_the_record(self, monkeypatch):
+        """The driver and an in-process controller may both resolve; the second call must not re-wait."""
+        args = make_args(sglang_router_ip=None, sglang_router_port=None, sglang_model_routers=None)
+        waited: list[int] = []
+
+        async def _fake_wait_router_ready(model_idx: int) -> HostAndPort:
+            waited.append(model_idx)
+            return HostAndPort(host="10.0.0.9", port=30000 + model_idx)
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_router_ready", _fake_wait_router_ready)
+
+        first = await resolve_router_addrs(args)
+        second = await resolve_router_addrs(args)
+
+        assert second == first
+        assert waited == [0]
+
+    async def test_an_externally_configured_router_is_rejected(self):
+        """External router mode was removed, so a pre-set router address means a misconfigured run."""
+        args = make_args(sglang_router_ip="10.0.0.1", sglang_router_port=3000)
+
+        with pytest.raises(AssertionError, match="external router mode was removed"):
+            await resolve_router_addrs(args)
 
 
 class TestWaitRouterReady:
