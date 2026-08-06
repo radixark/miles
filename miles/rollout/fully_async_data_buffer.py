@@ -94,7 +94,6 @@ class DefaultDataBuffer(DataBuffer):
             if args.async_data_buffer_max_batches
             else 1000  # legacy blocking bound
         )
-        self._max_staleness = args.max_weight_staleness
         self._recycle_fn = input.recycle_fn
         # "drop" discards stale groups instead of recycling them
         self._stale_handler_fn = (
@@ -167,10 +166,10 @@ class DefaultDataBuffer(DataBuffer):
             index = keys.index(min(keys))
             oldest = group_oldest_weight_version(self._entries[index].group)
             if_exceed_staleness = (
-                self._max_staleness is not None
+                self._args.max_weight_staleness is not None
                 and self._latest_weight_version is not None
                 and oldest is not None
-                and self._latest_weight_version - oldest > self._max_staleness
+                and self._latest_weight_version - oldest > self._args.max_weight_staleness
             )
             if not if_exceed_staleness and len(self._entries) <= self._capacity:
                 return
