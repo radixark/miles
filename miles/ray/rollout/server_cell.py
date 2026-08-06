@@ -11,7 +11,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url
+from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url, format_v6_uri
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.cell_state import (
@@ -127,10 +127,10 @@ class ServerCell:
             alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
 
             if local_index == 0:
-                dist_init_addr = f"{node_ip}:{alloc(consecutive=30 + self.args.sglang_dp_size)}"
+                dist_init_addr = f"{format_v6_uri(node_ip)}:{alloc(consecutive=30 + self.args.sglang_dp_size)}"
 
             addr_and_ports[rank] = dict(
-                host=node_ip,
+                host=format_v6_uri(node_ip),
                 port=alloc(),
                 nccl_port=alloc(),
                 engine_info_bootstrap_port=alloc(),
