@@ -25,6 +25,16 @@ def _resolve(path: str, *, rollout_num_gpus: int, hf_checkpoint: str = "/path/to
         rollout_num_gpus=rollout_num_gpus,
         rollout_num_gpus_per_engine=1,
         hf_checkpoint=hf_checkpoint,
+        offload_rollout=False,
+        debug_train_only=False,
+        debug_rollout_only=False,
+        colocate=False,
+        actor_num_nodes=1,
+        actor_num_gpus_per_node=8,
+        critic_num_nodes=0,
+        critic_num_gpus_per_node=0,
+        use_critic=False,
+        critic_train_only=False,
     )
     return resolve_sglang_config(args)
 

@@ -4,11 +4,7 @@ import logging
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.backends.sglang_utils.sglang_config import (
-    _compute_megatron_num_gpus,
-    _compute_rollout_offset,
-    resolve_sglang_config,
-)
+from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
@@ -25,12 +21,8 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
     config = resolve_sglang_config(args)
 
     servers: dict[str, RolloutServer] = {}
-    gpu_offset = 0
     engine_offset = 0
     port_allocator = PortAllocator()
-
-    rollout_pg_offset = _compute_rollout_offset(args)
-    megatron_num_gpus = _compute_megatron_num_gpus(args)
 
     for model_idx, model_cfg in enumerate(config.models):
         has_pd = model_cfg.has_pd_disaggregation
@@ -49,15 +41,9 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             nodes_per_engine = compute_nodes_per_engine(
                 num_gpus_per_engine=gpus_per_engine, num_gpus_per_node=args.num_gpus_per_node
             )
-
-            group_abs_start = rollout_pg_offset + gpu_offset
-            needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
-            overrides = dict(group_cfg.overrides)
-            if args.offload_rollout and not needs_offload:
-                overrides.setdefault("enable_memory_saver", False)
             logger.info(
-                f"Engine group '{group_cfg.worker_type}' gpu_offset={gpu_offset} "
-                f"(abs={group_abs_start}): needs_offload={needs_offload}"
+                f"Engine group '{group_cfg.worker_type}' gpu_offset={group_cfg.gpu_offset}: "
+                f"needs_offload={group_cfg.needs_offload}"
             )
 
             if group_cfg.worker_type != "placeholder":
@@ -81,15 +67,14 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                         pg=pg,
                         num_gpus_per_engine=gpus_per_engine,
                         rank_offset=engine_offset + cell_start,
-                        gpu_offset=gpu_offset + cell_start * num_gpu_per_engine_local,
-                        sglang_overrides=overrides,
-                        needs_offload=needs_offload,
-                        model_path=overrides.get("model_path", args.hf_checkpoint),
+                        gpu_offset=group_cfg.gpu_offset + cell_start * num_gpu_per_engine_local,
+                        sglang_overrides=group_cfg.overrides,
+                        needs_offload=group_cfg.needs_offload,
+                        model_path=group_cfg.model_path,
                         update_weights=model_cfg.update_weights,
                     )
 
             engine_offset += num_engines
-            gpu_offset += group_cfg.num_gpus
 
         servers[model_cfg.name] = RolloutServer(
             server_cells=server_cells,
