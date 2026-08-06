@@ -48,7 +48,7 @@ class TrainerCell:
         self.with_opd_teacher = with_opd_teacher
         self.health_checker = health_checker
 
-        worker_infos = RayWorkerProvider.create().get_worker_infos(cell_id=cell_id)
+        (worker_infos,) = RayWorkerProvider.create().get_worker_infos(cell_ids=[cell_id])
         self._master_addr: HostAndPort = worker_infos[0].self_addrs[MASTER_PORT_NAME]
 
         # NOTE: do *NOT* directly modify `self._state`, but instead use `self._change_state`

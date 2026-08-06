@@ -16,7 +16,7 @@ from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
-from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
     BaseWorkerSpec,
@@ -37,15 +37,6 @@ if TYPE_CHECKING:
 
 # TODO: unique name, maybe with args.run_uuid
 _ACTOR_NAME = "ray_worker_manager"
-
-
-@dataclass(kw_only=True)
-class WorkerInfo:
-    name: str
-    generation: int
-    self_addrs: NamedHostAndPorts
-    gpu_ids: list[int]
-    handle: BaseWorkerHandle
 
 
 class RayWorkerManager:
