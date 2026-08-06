@@ -66,7 +66,7 @@ Miles supports a wide range of state-of-the-art architectures, with a special em
 | **Qwen** | **Qwen 2, 2.5, 3** |
 | **Llama** | **Llama 3, 3.1, 3.3, 4** |
 | **Gemma** | **Gemma 2, 3, 3N** |
-| **GLM** | **GLM-4.5, GLM-4.6, GLM-4.7** |
+| **GLM** | **GLM-4.5, GLM-4.6, GLM-4.7, GLM-5, GLM-5.1, GLM-5.2** |
 | **MiniMax** | **M2, M2.1** |
 | **Others** | **Mistral, Mixtral, Phi, gpt-oss and any model supported by SGLang and Megatron** |
 
