@@ -17,7 +17,7 @@ from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.misc import get_current_node_ip, get_free_port
+from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 
@@ -38,7 +38,7 @@ def get_local_gpu_id():
         return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
 
 
-class TrainRayActor:
+class TrainRayActor(NodeProbeMixin):
     def __init__(
         self,
         *,
