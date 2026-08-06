@@ -32,7 +32,26 @@ def http_client_calls(monkeypatch) -> list[str]:
 
 
 @pytest.fixture
-def patch_low_level(monkeypatch, http_client_calls):
+def own_args_resolutions(monkeypatch) -> list[tuple[str, object]]:
+    import miles.ray.rollout.rollout_executor as rexec
+
+    recorded: list[tuple[str, object]] = []
+
+    async def _record_router(args):
+        recorded.append(("resolve_router_addrs", args))
+        return {}
+
+    async def _record_session(args):
+        recorded.append(("wait_session_server_ready", args))
+        return {}
+
+    monkeypatch.setattr(rexec, "resolve_router_addrs", _record_router)
+    monkeypatch.setattr(rexec, "wait_session_server_ready", _record_session)
+    return recorded
+
+
+@pytest.fixture
+def patch_low_level(monkeypatch, http_client_calls, own_args_resolutions):
     import miles.ray.rollout.rollout_executor as rexec
 
     monkeypatch.setattr(rexec, "configure_logger", lambda *a, **kw: None)
@@ -44,8 +63,10 @@ def patch_low_level(monkeypatch, http_client_calls):
     monkeypatch.setattr(rexec, "save_debug_rollout_data", lambda *a, **kw: None)
 
 
-def _make_executor(args):
-    return RolloutExecutor.__ray_actor_class__(args=args)
+async def _make_executor(args):
+    executor = RolloutExecutor(args=args)
+    await executor.init()
+    return executor
 
 
 def _make_test_args(**overrides):
@@ -64,7 +85,7 @@ def _make_test_args(**overrides):
 class TestProcessSetup:
     async def test_initializes_the_http_client(self, ray_local_mode, patch_low_level, http_client_calls):
         """The rollout functions issue their HTTP from this actor, so the client is created here."""
-        _make_executor(_make_test_args())
+        await _make_executor(_make_test_args())
 
         assert http_client_calls == ["init_http_client"]
 
@@ -73,9 +94,31 @@ class TestProcessSetup:
         args = _make_test_args()
         args.debug_train_only = True
 
-        _make_executor(args)
+        await _make_executor(args)
 
         assert http_client_calls == []
+
+    async def test_it_resolves_the_router_and_session_servers_on_its_own_args(
+        self, ray_local_mode, patch_low_level, own_args_resolutions
+    ):
+        """The platform builds the executor before the driver resolves anything, so it must resolve for itself."""
+        args = _make_test_args()
+
+        executor = await _make_executor(args)
+
+        assert [name for name, _ in own_args_resolutions] == ["resolve_router_addrs", "wait_session_server_ready"]
+        assert all(seen is executor.args for _, seen in own_args_resolutions)
+
+    async def test_it_resolves_nothing_in_debug_train_only(
+        self, ray_local_mode, patch_low_level, own_args_resolutions
+    ):
+        """No engines and no session servers exist in this mode, so there is nothing to wait for."""
+        args = _make_test_args()
+        args.debug_train_only = True
+
+        await _make_executor(args)
+
+        assert own_args_resolutions == []
 
 
 @pytest.mark.asyncio
@@ -141,7 +184,7 @@ class TestGenerate:
         args = _make_test_args()
         args.global_batch_size = 8
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.set_train_parallel_config({"dp_size": 2})
 
         captured: list = []
@@ -175,7 +218,7 @@ class TestGenerate:
         args = _make_test_args()
         args.global_batch_size = 8
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.set_train_parallel_config({"dp_size": 2})
 
         samples = make_samples_grouped(n_groups=2, group_size=4)
@@ -223,7 +266,7 @@ class TestGenerate:
         args = _make_test_args()
         args.global_batch_size = 4
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.set_train_parallel_config({"dp_size": 1})
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
@@ -276,7 +319,7 @@ class TestCheckpointing:
         monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
         args = _make_test_args(rollout_global_dataset=False)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.use_legacy_rollout_v1 = False
         calls: list[tuple[str, str, object]] = []
         executor.generate_rollout = _RecordingRolloutFn("train", calls)
@@ -305,7 +348,7 @@ class TestCheckpointing:
         monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
         args = _make_test_args(rollout_global_dataset=True)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.use_legacy_rollout_v1 = False
         calls: list[tuple[str, str, object]] = []
         executor.generate_rollout = _RecordingRolloutFn("train", calls)
@@ -329,7 +372,7 @@ class TestCheckpointing:
         monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
         args = _make_test_args(rollout_global_dataset=False)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.use_legacy_rollout_v1 = False
         calls: list[tuple[str, str, object]] = []
         executor.generate_rollout = _RecordingRolloutFn("train", calls)
@@ -355,7 +398,7 @@ class TestCheckpointing:
         monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
         args = _make_test_args(rollout_global_dataset=False)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.use_legacy_rollout_v1 = True
         executor.generate_rollout = lambda *a, **kw: None
         executor.eval_generate_rollout = lambda *a, **kw: None
@@ -394,7 +437,7 @@ class TestCheckpointing:
 class TestEval:
     async def test_invokes_eval_fn_with_eval_input(self, ray_local_mode, patch_low_level):
         """eval passes an eval input carrying the rollout id."""
-        executor = _make_executor(_make_test_args())
+        executor = await _make_executor(_make_test_args())
 
         captured: list = []
 
@@ -415,7 +458,7 @@ class TestEval:
         args = _make_test_args()
         args.debug_train_only = True
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
 
         called: list = []
         executor.eval_generate_rollout = lambda inp: called.append(inp)
@@ -802,7 +845,9 @@ class TestNumRolloutPerEpoch:
 class TestCheckpointWithoutARolloutFunction:
     async def test_checkpointing_a_replay_run_touches_only_the_data_source(self, ray_local_mode, patch_low_level):
         """--load-debug-rollout-data replays recorded samples and builds no rollout function, so there is no rollout state to write or read back."""
-        executor = _make_executor(_make_test_args(load_debug_rollout_data="/nonexistent/rollout_{rollout_id}.pt"))
+        executor = await _make_executor(
+            _make_test_args(load_debug_rollout_data="/nonexistent/rollout_{rollout_id}.pt")
+        )
         executor.data_source = MagicMock()
 
         executor.save(3)
@@ -820,7 +865,9 @@ class TestCheckpointWithoutARolloutFunction:
     ):
         """Startup restores the executor before the first step, so the default rollout id must reach the data source."""
         monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
-        executor = _make_executor(_make_test_args(load_debug_rollout_data="/nonexistent/rollout_{rollout_id}.pt"))
+        executor = await _make_executor(
+            _make_test_args(load_debug_rollout_data="/nonexistent/rollout_{rollout_id}.pt")
+        )
         executor.data_source = MagicMock()
 
         executor.load()
@@ -841,7 +888,7 @@ class TestCheckpointWithoutARolloutFunction:
         monkeypatch.setattr(rexec, "event_logger_checkpoint", recorder)
         args = _make_test_args(load_debug_rollout_data="/nonexistent/rollout_{rollout_id}.pt")
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.data_source = MagicMock()
 
         executor.save(6)
@@ -860,7 +907,7 @@ class TestCheckpointWithoutARolloutFunction:
 
         monkeypatch.setattr(rexec, "event_logger_checkpoint", MagicMock())
 
-        executor = _make_executor(_make_test_args())
+        executor = await _make_executor(_make_test_args())
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = None
         calls: list[tuple[str, str, object]] = []
@@ -887,7 +934,7 @@ class _AlwaysEqualRolloutFn(_RecordingRolloutFn):
 class TestCheckpointOfADistinctEvalRolloutFunction:
     async def test_a_separate_eval_instance_is_checkpointed_on_its_own(self, ray_local_mode, patch_low_level):
         """A distinct --eval-function-path instance owns its own state, which restore would otherwise silently drop."""
-        executor = _make_executor(_make_test_args())
+        executor = await _make_executor(_make_test_args())
         executor.data_source = MagicMock()
         executor.generate_rollout = MagicMock()
         executor.eval_generate_rollout = MagicMock()
@@ -902,7 +949,7 @@ class TestCheckpointOfADistinctEvalRolloutFunction:
 
     async def test_a_shared_eval_instance_is_checkpointed_once(self, ray_local_mode, patch_low_level):
         """Train and eval reuse one instance when the paths match, so a second hook call would checkpoint it twice."""
-        executor = _make_executor(_make_test_args())
+        executor = await _make_executor(_make_test_args())
         executor.data_source = MagicMock()
         shared = MagicMock()
         executor.generate_rollout = shared
@@ -918,7 +965,7 @@ class TestCheckpointOfADistinctEvalRolloutFunction:
         self, ray_local_mode, patch_low_level
     ):
         """Two objects that compare equal still hold two independent states, so equality must not stand in for identity."""
-        executor = _make_executor(_make_test_args())
+        executor = await _make_executor(_make_test_args())
         executor.data_source = MagicMock()
         calls: list[tuple[str, str, object]] = []
         executor.generate_rollout = _AlwaysEqualRolloutFn("train", calls)
@@ -938,7 +985,7 @@ class TestCheckpointOfADistinctEvalRolloutFunction:
         self, ray_local_mode, patch_low_level
     ):
         """A restore of the latest checkpoint must reach the eval instance with the same unset rollout id."""
-        executor = _make_executor(_make_test_args())
+        executor = await _make_executor(_make_test_args())
         executor.data_source = MagicMock()
         calls: list[tuple[str, str, object]] = []
         executor.generate_rollout = _RecordingRolloutFn("train", calls)
@@ -955,7 +1002,7 @@ class TestCheckpointOfADistinctEvalRolloutFunction:
         self, ray_local_mode, patch_low_level
     ):
         """Legacy rollout functions are bare callables with no state, so neither instance is checkpointed."""
-        executor = _make_executor(_make_test_args())
+        executor = await _make_executor(_make_test_args())
         executor.use_legacy_rollout_v1 = True
         executor.data_source = MagicMock()
         calls: list[tuple[str, str, object]] = []
