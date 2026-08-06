@@ -226,7 +226,7 @@ class InferenceController:
     # -------------------------- misc APIs -----------------------------
 
     @lock_exempt
-    def get_cell_statuses(self) -> dict[str, CellStatus]:
+    async def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {
             cell_id: cell.cell_status()
             for srv in list(self.servers.values())

@@ -390,7 +390,7 @@ class TrainerController:
     async def get_train_parallel_config(self) -> dict[str, Any]:
         return (await self._execute_first_alive("get_train_parallel_config"))[0]
 
-    def get_cell_statuses(self) -> dict[str, CellStatus]:
+    async def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {cell_id: cell.cell_status() for cell_id, cell in list(self._cells_by_id.items())}
 
     # ------------------------ utils to forward calls to cells ------------------------
