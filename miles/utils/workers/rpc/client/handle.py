@@ -78,6 +78,9 @@ class RpcWorkerHandle(BaseWorkerHandle):
                 f"{self._worker_cls_name} rpc server not ready within {timeout}s: {e!r}"
             ) from e
 
+    async def wait_dead(self, *, timeout: float) -> None:
+        raise NotImplementedError("RpcWorkerHandle cannot confirm worker death yet")
+
     async def _perform_call(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> Any:
         call = RpcCall(
             spec=spec,
