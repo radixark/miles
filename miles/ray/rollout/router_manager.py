@@ -1,11 +1,13 @@
 import logging
 
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
-from miles.ray.specs.inference import compute_router_pool_id, compute_session_server_instance_id
+from miles.ray.specs.inference import (
+    compute_router_worker_name,
+    compute_session_server_instance_id,
+    session_server_worker_name,
+)
 from miles.utils.http_utils import wait_tcp_ready_async
-from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
@@ -16,7 +18,7 @@ logger = logging.getLogger(__name__)
 _SERVER_READY_TIMEOUT_SECS = 120
 
 
-async def resolve_router_addrs(args) -> dict[str, HostAndPort]:
+async def resolve_router_addrs(args, *, provider: BaseWorkerProvider) -> dict[str, HostAndPort]:
     """Wait for every model's router and record its address on ``args``, keyed by model name.
 
     A second call in the same process answers from the record, so the driver and an
@@ -31,7 +33,7 @@ async def resolve_router_addrs(args) -> dict[str, HostAndPort]:
 
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
     router_addrs = {
-        model_cfg.name: await wait_router_ready(model_idx=model_idx)
+        model_cfg.name: await wait_router_ready(model_idx=model_idx, provider=provider)
         for model_idx, model_cfg in enumerate(config.models)
     }
 
@@ -43,18 +45,17 @@ async def resolve_router_addrs(args) -> dict[str, HostAndPort]:
     return router_addrs
 
 
-async def wait_router_ready(model_idx: int) -> HostAndPort:
+async def wait_router_ready(*, model_idx: int, provider: BaseWorkerProvider) -> HostAndPort:
     """Wait until the model's router, launched by the platform, is reachable and return its address."""
-    provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
-    worker_name = compute_worker_name(pool_id=compute_router_pool_id(model_idx))
+    worker_name = compute_router_worker_name(model_idx)
     router_addr = (await provider.get_addrs(worker_name=worker_name))["primary"]
     await wait_tcp_ready_async(router_addr.host, router_addr.port, timeout=_SERVER_READY_TIMEOUT_SECS)
     logger.info(f"Router ready at {router_addr}")
     return router_addr
 
 
-async def wait_session_server_ready(args):
-    """Start the standalone session servers when ``--use-session-server`` is set.
+async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None):
+    """Wait for the standalone session servers when ``--use-session-server`` is set.
 
     One independent single-process server per resolved port; the rollout side
     picks one per session and its URL carries the affinity from then on.
@@ -71,10 +72,10 @@ async def wait_session_server_ready(args):
     if args.session_server_workers < 1:
         raise ValueError("--session-server-workers must be at least 1.")
 
-    provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
+    assert provider is not None
     addrs = [
-        (await provider.get_addrs(worker_name=compute_worker_name(pool_id="session-server", cell_index=i)))["primary"]
-        for i in range(args.session_server_workers)
+        (await provider.get_addrs(worker_name=session_server_worker_name(index)))["primary"]
+        for index in range(args.session_server_workers)
     ]
     # The canonical driver-side value; rollout code picks from this list. Instances may sit on
     # different hosts, so each one is addressed in full rather than by a port under a shared ip.

@@ -195,6 +195,21 @@ class MockWorkerManager:
             self._summaries[cell_id] = dataclasses.replace(previous, alive=not suspended)
 
 
+class MockStopCellController:
+    def __init__(self, worker_manager: MockWorkerManager) -> None:
+        self._worker_manager = worker_manager
+
+    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
+        await self._worker_manager.stop_cells.remote([cell_id])
+
+    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        await self._worker_manager.inject_fault.remote(
+            cell_id,
+            mode=mode.value,
+            worker_in_cell_index=sub_index,
+        )
+
+
 def make_cell_summaries(
     *cell_ids: str, suspended: bool = False, workers_hash: str = "pseudo-hash-0"
 ) -> dict[str, CellInfo]:

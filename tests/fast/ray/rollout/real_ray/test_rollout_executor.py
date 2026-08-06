@@ -37,11 +37,11 @@ def own_args_resolutions(monkeypatch) -> list[tuple[str, object]]:
 
     recorded: list[tuple[str, object]] = []
 
-    async def _record_router(args):
+    async def _record_router(args, **kwargs):
         recorded.append(("resolve_router_addrs", args))
         return {}
 
-    async def _record_session(args):
+    async def _record_session(args, **kwargs):
         recorded.append(("wait_session_server_ready", args))
         return {}
 
@@ -63,8 +63,13 @@ def patch_low_level(monkeypatch, http_client_calls, own_args_resolutions):
     monkeypatch.setattr(rexec, "save_debug_rollout_data", lambda *a, **kw: None)
 
 
+class _NeverUsedProvider:
+    async def get_addrs(self, worker_name: str):
+        raise AssertionError("the stubbed resolution must not ask the provider for an address")
+
+
 async def _make_executor(args):
-    executor = RolloutExecutor(args=args)
+    executor = RolloutExecutor(args=args, router_provider=_NeverUsedProvider(), session_server_provider=None)
     await executor.init()
     return executor
 

@@ -58,6 +58,7 @@ def make_args(**overrides: Any) -> Namespace:
         log_reward_category=None,
         log_passrate=False,
         pin_rollout_manager_to_head=False,
+        cluster_backend="ray",
         # placement / colocation
         debug_train_only=False,
         debug_rollout_only=False,
