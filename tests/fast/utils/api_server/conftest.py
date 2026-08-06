@@ -151,7 +151,7 @@ class MockInferenceController:
         self._statuses = dict(statuses or {})
         self.status_calls: int = 0
 
-    def get_cell_statuses(self) -> dict[str, CellStatus]:
+    async def get_cell_statuses(self) -> dict[str, CellStatus]:
         self.status_calls += 1
         return dict(self._statuses)
 
