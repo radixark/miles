@@ -31,6 +31,21 @@ class RpcMethodSpec:
     concurrency_group: str
     is_async: bool
     serializer: RpcSerializer
+    positional_parameter_names: tuple[str, ...]
+
+
+def canonicalize_method_arguments(
+    spec: RpcMethodSpec, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    if len(args) > len(spec.positional_parameter_names):
+        raise TypeError(
+            f"{spec.name}() takes at most {len(spec.positional_parameter_names)} positional arguments, "
+            f"got {len(args)}"
+        )
+    named = dict(zip(spec.positional_parameter_names, args))
+    if overlap := sorted(named.keys() & kwargs.keys()):
+        raise TypeError(f"{spec.name}() got multiple values for {overlap}")
+    return {**named, **kwargs}
 
 
 def collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
@@ -123,6 +138,9 @@ def _build_method_spec(*, worker_cls: type, name: str, attr: Callable[..., Any])
         name=name,
         concurrency_group=config.concurrency_group,
         is_async=is_async,
+        positional_parameter_names=tuple(
+            param.name for param in parameters[1:] if param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        ),
         serializer=RpcSerializer.create(
             query_model_name=f"{worker_cls.__name__}{name.title().replace('_', '')}Query",
             query_fields=query_fields,

@@ -23,9 +23,9 @@ class RayWorkerHandle(BaseWorkerHandle):
         if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
 
-        async def call(**kwargs: Any) -> Any:
+        async def call(*args: Any, **kwargs: Any) -> Any:
             try:
-                return await getattr(self._actor_handle, name).remote(**kwargs)
+                return await getattr(self._actor_handle, name).remote(*args, **kwargs)
             except ray.exceptions.RayActorError as e:
                 raise WorkerUnreachableError(f"Worker died or is unreachable when calling {name!r}: {e!r}") from e
 
