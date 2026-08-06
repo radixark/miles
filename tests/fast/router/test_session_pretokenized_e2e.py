@@ -144,6 +144,7 @@ def test_bundled_fixed_template_session_smoke(config: FixedTemplateSmokeConfig):
 
             session_payload = fetch_session_payload(env.url, session_id)
             metadata = session_payload["metadata"]
+            assert len(metadata["tree"]["nodes"]) == turn_idx + 1
             remote_mismatch = metadata.get("tito_session_mismatch", [])
             local_mismatch = compute_local_session_mismatch(
                 tokenizer,

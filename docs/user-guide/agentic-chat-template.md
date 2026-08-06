@@ -1,9 +1,9 @@
 ---
-title: Agentic Chat Templates (TITO)
+title: Agentic Rollout (TITO)
 description: How to turn on and verify Token-In-Token-Out (TITO) for multi-turn agentic rollout.
 ---
 
-# Agentic Chat Templates (TITO)
+# Agentic Rollout (TITO)
 
 Multi-turn agentic rollout in Miles runs on **TITO** (Token-In-Token-Out): each turn's token sequence is a bit-perfect prefix of the next, so the trainer sees exactly the tokens the engine produced — no re-tokenization, no drift. The *why* is in the blog ([No Token Left Behind](https://lmsys.org/blog/2026-05-13-no-token-left-behind/)); this page is *how*.
 

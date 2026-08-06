@@ -177,6 +177,56 @@ def get_seqlen_balanced_partitions(seqlen_list: list[int], k_partitions: int, eq
     return _check_and_sort_partitions(partitions)
 
 
+def first_fit_pack(total_lengths, max_tokens_per_bin):
+    """First-fit bin packing in arrival order; bins hold indices, oversized samples land alone."""
+    return _first_fit(range(len(total_lengths)), total_lengths, max_tokens_per_bin)
+
+
+def first_fit_decreasing_pack(total_lengths, max_tokens_per_bin):
+    """First-fit over indices sorted by length descending (FFD); never more bins than first-fit."""
+    order = sorted(range(len(total_lengths)), key=lambda i: -total_lengths[i])
+    return _first_fit(order, total_lengths, max_tokens_per_bin)
+
+
+def _first_fit(order, total_lengths, max_tokens_per_bin) -> list[list[int]]:
+    bins: list[list[int]] = []
+    bin_sums: list[int] = []
+    for idx in order:
+        length = total_lengths[idx]
+        for j in range(len(bins)):
+            if bin_sums[j] + length <= max_tokens_per_bin:
+                bins[j].append(idx)
+                bin_sums[j] += length
+                break
+        else:
+            bins.append([idx])
+            bin_sums.append(length)
+    return bins
+
+
+def _split_bin_by_tokens(bin_indices: list[int], lengths) -> list[list[int]]:
+    """Split a bin into two token-balanced halves (LPT)."""
+    halves: list[list[int]] = [[], []]
+    sums = [0, 0]
+    for idx in sorted(bin_indices, key=lambda i: -lengths[i]):
+        h = 0 if sums[0] <= sums[1] else 1
+        halves[h].append(idx)
+        sums[h] += lengths[idx]
+    return halves
+
+
+def expand_bins_by_splitting(bins: list[list[int]], target_count: int, lengths) -> None:
+    """Grow ``bins`` in place to ``target_count`` by splitting the largest bins."""
+    while len(bins) < target_count:
+        candidates = [(sum(lengths[i] for i in b), idx) for idx, b in enumerate(bins) if len(b) > 1]
+        if not candidates:
+            break
+        _, idx = max(candidates)
+        left, right = _split_bin_by_tokens(bins[idx], lengths)
+        bins[idx] = left
+        bins.append(right)
+
+
 def get_reverse_idx(idx_map):
     reverse_idx_map = copy.deepcopy(idx_map)
 

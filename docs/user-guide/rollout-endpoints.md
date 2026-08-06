@@ -181,6 +181,14 @@ remain a `messages` list. SGLang handles templating server-side.
 
 </Warning>
 
+<Warning>
+
+**Session server v2 output is a `list[Sample]`.** With `--use-session-server v2`, `agentic_tool_call.generate` returns one sample for each selected tree leaf. The v1 session server returns one scalar `Sample`.
+
+A custom reward model (`--custom-rm-path`) receives the v2 samples in batch form. `--group-rm`, `--partial-rollout`, and `--recompute-logprobs-via-prefill` are not supported with this v2 agentic output and are rejected explicitly.
+
+</Warning>
+
 ### Optional teardown: the `abort` hook
 
 The module named by `--custom-agent-function-path` may expose an optional `abort`
@@ -256,6 +264,6 @@ inherited across turns. Each request is tokenized independently.
 ## Next
 
 - [Customization](/user-guide/customization): the full catalog of `--*-path` hooks.
-- [Agentic Chat Templates](/user-guide/agentic-chat-template): verifying that a template is
+- [Agentic Rollout (TITO)](/user-guide/agentic-chat-template): verifying that a template is
   append-only across turns.
 - [Multi-agent example](/examples/multi-agent): full agentic walkthrough.

@@ -7,9 +7,10 @@ from typing import Any
 import yaml
 from sglang_router.launch_router import RouterArgs
 
-from miles.backends.sglang_utils.arguments import add_sglang_arguments
+from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
+from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_ft_trainer, enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
@@ -32,10 +33,10 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
     else:
         standard_path = "miles.rollout.sglang_rollout.generate_rollout"
     rollout_path = args.rollout_function_path or standard_path
-    # Resolved before the fully-async override: fully async does not serve eval.
-    eval_path = args.eval_function_path or rollout_path
     if args.fully_async:
         rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+    # Resolved after the override: shared-engine eval must reach the producer it pauses.
+    eval_path = args.eval_function_path or rollout_path
     return rollout_path, eval_path
 
 
@@ -59,7 +60,16 @@ def _resolve_rollout_functions(args) -> None:
             args.rollout_all_samples_process_path is None
         ), "--fully-async does not support --rollout-all-samples-process-path"
 
+    user_eval_path = args.eval_function_path
     args.rollout_function_path, args.eval_function_path = resolve_rollout_function_paths(args)
+    # An inherited eval path is the rollout fn serving eval itself, never a checkpoint
+    # backend: skip the resolve so custom rollout modules are not imported on the driver.
+    checkpoint_backend = user_eval_path is not None and is_checkpoint_eval_fn(args.eval_function_path)
+    assert not (args.eval_num_gpus > 0 and checkpoint_backend), (
+        "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
+        "backend; the fleet would boot and then hand the work to the other one."
+    )
+    args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
 def reset_arg(parser, name, **kwargs):
@@ -594,6 +604,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "You could use `miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std` as an example."
                 ),
             )
+            parser.add_argument(
+                "--rollout-submission-granularity",
+                type=str,
+                choices=["group", "sample"],
+                default=None,
+                help=(
+                    "Granularity at which a completed unit frees rollout submission capacity. "
+                    "`group` holds a slot until the whole prompt group returns; `sample` frees each "
+                    "slot as its own sample finishes, so a replacement group goes out once "
+                    "n_samples_per_prompt samples complete, whichever groups they came from. "
+                    "Prompt groups are submitted whole either way. Unset picks the driver default: "
+                    "`sample` under --fully-async, where groups completed beyond the batch are queued "
+                    "for later steps; `group` otherwise, where they are aborted at the end of the step "
+                    "and, without --partial-rollout, discarded."
+                ),
+            )
 
             # partial rollout
             parser.add_argument(
@@ -1028,6 +1054,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
 
             parser.add_argument(
+                "--balance-by-flops",
+                action="store_true",
+                default=False,
+                help=(
+                    "Use FLOPs-based workload estimation for micro-batch partitioning via "
+                    "Karmarkar-Karp instead of first-fit token packing, and distribute mbs "
+                    "across DP ranks by FLOPs. Captures the quadratic attention cost when "
+                    "sequence lengths vary widely. Requires --use-dynamic-batch-size. NOTE: "
+                    "FLOPs balancing does not enforce the per-mbs token cap."
+                ),
+            )
+            parser.add_argument(
+                "--allow-partial-train-step",
+                action="store_true",
+                default=False,
+                help=(
+                    "Train the trailing rollouts that don't fill a whole global_batch_size step as one "
+                    "smaller final step instead of dropping them (rollout-side schedule + dynamic batch "
+                    "size only). Loss normalization and the LR scheduler use the true per-step count."
+                ),
+            )
+            parser.add_argument(
                 "--use-dynamic-batch-size",
                 action="store_true",
                 default=False,
@@ -1066,8 +1114,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to the eval generation function."
-                    "If not set, we will use rollout_function_path as the default. "
+                    "Path to the eval fn. Two kinds fit here. A rollout fn generates against the "
+                    "engines the framework hands it: the training engines, or the dedicated fleet "
+                    "when --eval-num-gpus is set. A CheckpointEvalFn subclass gets the snapshot "
+                    "path instead and owns the rest itself — weight delivery, endpoint, generation. "
+                    "If not set, defaults to --rollout-function-path."
                 ),
             )
 
@@ -1118,6 +1169,64 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument("--eval-max-prompt-len", type=int, default=None)
             parser.add_argument("--eval-min-new-tokens", type=int, default=None)
             parser.add_argument("--eval-max-context-len", type=int, default=None)
+
+            parser.add_argument(
+                "--eval-num-gpus",
+                type=int,
+                default=0,
+                help=(
+                    "Number of GPUs for a dedicated eval engine fleet. When > 0, eval runs on "
+                    "its own engines behind its own router, synced by loading HF checkpoint "
+                    "snapshots (never by joining training weight updates). 0 disables the "
+                    "fleet and keeps today's shared-engine eval behavior. The fleet's engine "
+                    "settings inherit every --sglang-* value; override individually with "
+                    "--eval-sglang-* (e.g. --eval-sglang-mem-fraction-static 0.9)."
+                ),
+            )
+            parser.add_argument(
+                "--eval-num-gpus-per-engine",
+                type=int,
+                default=1,
+                help="GPUs per eval engine (TP size), independent of --rollout-num-gpus-per-engine.",
+            )
+            parser.add_argument(
+                "--eval-hf-dir",
+                type=str,
+                default=None,
+                help=(
+                    "Staging directory for per-eval HF snapshots (written to "
+                    "`{eval_hf_dir}/step_{rollout_id}`). Point at tmpfs (e.g. /dev/shm/...) to "
+                    "avoid disk. When unset and --save-hf is set, eval reuses the --save-hf "
+                    "checkpoints instead of exporting its own snapshots."
+                ),
+            )
+            parser.add_argument(
+                "--eval-max-in-flight",
+                type=int,
+                default=2,
+                help="Maximum number of concurrently pending async evals.",
+            )
+            parser.add_argument(
+                "--eval-overflow-policy",
+                type=str,
+                choices=["backpressure", "skip"],
+                default="backpressure",
+                help=(
+                    "What to do when an eval is due but --eval-max-in-flight evals are pending: "
+                    "'backpressure' awaits the oldest pending eval (deterministic curve, bounded "
+                    "stall); 'skip' drops the new eval point and logs eval/skipped_busy at that "
+                    "step (training cadence is never stalled)."
+                ),
+            )
+            parser.add_argument(
+                "--eval-keep-snapshots",
+                type=int,
+                default=2,
+                help=(
+                    "How many snapshot dirs to keep under --eval-hf-dir (consumed snapshots "
+                    "beyond this are deleted). --save-hf checkpoints are never deleted."
+                ),
+            )
 
             return parser
 
@@ -1578,6 +1687,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
                     "and skip per-step base sync. Trades host RAM for faster "
                     "onload/offload. Ignored unless --colocate and LoRA are both on."
+                ),
+            )
+            parser.add_argument(
+                "--lora-train-only",
+                action="store_true",
+                default=False,
+                help=(
+                    "Train LoRA adapters in Megatron but keep rollout engines on the frozen "
+                    "base policy: SGLang LoRA serving and adapter weight sync are disabled "
+                    "(only the base weights are synced). For models without SGLang LoRA "
+                    "support (e.g. Inkling native LoRA)."
                 ),
             )
             parser.add_argument(
@@ -2318,10 +2438,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         def add_session_arguments(parser):
             parser.add_argument(
                 "--use-session-server",
-                action="store_true",
+                nargs="?",
+                const=True,
                 default=False,
                 help="Start a standalone session server for TITO/session support. "
-                "Requires --hf-checkpoint and --chat-template-path to also be set.",
+                "Requires --hf-checkpoint and --chat-template-path to also be set. "
+                "Bare flag (or 'v1') selects the append-only linear v1 server; "
+                "'--use-session-server v2' selects the tree-serving v2 "
+                "(multi-lineage trajectories, always-branch).",
             )
             parser.add_argument(
                 "--session-server-ip",
@@ -2346,6 +2470,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="TITO tokenizer type for pretokenized prefix reuse. "
                 "Controls how token IDs are computed for messages appended after "
                 "the pretokenized prefix in multi-turn agentic sessions.",
+            )
+            parser.add_argument(
+                "--session-sample-picker-path",
+                type=str,
+                default="miles.rollout.session.v2.picker_hub.drop_retries",
+                help="v2 only. Import path of the sample-pick hook for the "
+                "session samples op: fn(leaf_samples, session_metadata) -> "
+                "list[Sample], a pure selection over the per-leaf raw samples. "
+                "Runs synchronously inside the session server process; long CPU "
+                "work stalls every session on the instance. Default: the "
+                "temporal-supersession retry trim.",
+            )
+            parser.add_argument(
+                "--session-sample-postprocessor-path",
+                type=str,
+                default="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
+                help="v2 only. Import path of the post-process hook for the "
+                "session samples op: fn(leaf_samples, session_metadata) -> "
+                "list[Sample], finalizing loss masks / rewards over the picked "
+                "samples. Runs synchronously inside the session server process. "
+                "Default: exactly-once completion masking + rewards keyed by "
+                "response id.",
             )
             return parser
 
@@ -2595,13 +2741,35 @@ def miles_validate_args(args):
     if args.recompute_logprobs_via_prefill:
         assert args.true_on_policy_mode, "--recompute-logprobs-via-prefill requires --true-on-policy-mode"
 
+    if args.use_session_server not in (False, True, "v1", "v2"):
+        raise ValueError(
+            f"--use-session-server={args.use_session_server!r} is not a known session server "
+            "version; pass it bare (or 'v1') for the append-only linear server, or 'v2' for "
+            "tree serving."
+        )
+
+    if args.use_session_server == "v2":
+        unsupported = [
+            flag
+            for enabled, flag in (
+                (args.group_rm, "--group-rm"),
+                (args.partial_rollout, "--partial-rollout"),
+                (args.recompute_logprobs_via_prefill, "--recompute-logprobs-via-prefill"),
+            )
+            if enabled
+        ]
+        if unsupported:
+            raise ValueError(
+                f"--use-session-server v2 does not support {', '.join(unsupported)}; v2 returns list[Sample]"
+            )
+
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
             f"--tito-model={args.tito_model} requires --use-session-server; "
             "this flag only configures the session-server TITO middleware."
         )
 
-    # DEFAULT uses the checkpoint's native or caller-provided template.  Its
+    # DEFAULT uses the checkpoint's native or caller-provided template. Its
     # maximal four-role surface is best-effort rather than a Miles-verified
     # FixedTemplate contract.
     if args.use_session_server and args.tito_model == TITOTokenizerType.DEFAULT.value:
@@ -2742,6 +2910,18 @@ def miles_validate_args(args):
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
 
+    if args.eval_num_gpus > 0:
+        assert args.eval_num_gpus % args.eval_num_gpus_per_engine == 0, (
+            f"eval_num_gpus ({args.eval_num_gpus}) must be divisible by "
+            f"eval_num_gpus_per_engine ({args.eval_num_gpus_per_engine})."
+        )
+    else:
+        overrides = collect_eval_sglang_overrides(args)
+        assert not overrides, (
+            f"--eval-sglang-* configures the dedicated eval fleet, which needs --eval-num-gpus > 0. "
+            f"Got {sorted(overrides)} with --eval-num-gpus 0."
+        )
+
     if args.save_interval is not None:
         assert args.save is not None, "'--save' is required when save_interval is set."
 
@@ -2781,10 +2961,10 @@ def miles_validate_args(args):
 
         # Training and serving must agree on shared-outer grouped-expert LoRA
         # (expert_dim=1 buffers in SGLang).
-        if args.experts_shared_outer_loras:
+        if args.experts_shared_outer_loras and hasattr(args, "sglang_experts_shared_outer_loras"):
             args.sglang_experts_shared_outer_loras = True
         assert args.experts_shared_outer_loras == bool(
-            args.sglang_experts_shared_outer_loras
+            getattr(args, "sglang_experts_shared_outer_loras", args.experts_shared_outer_loras)
         ), "experts_shared_outer_loras and sglang_experts_shared_outer_loras must agree"
 
         # the two MoE-expert adapter layouts are not checkpoint-compatible; say which one runs
@@ -2826,6 +3006,23 @@ def miles_validate_args(args):
         assert args.max_tokens_per_gpu is not None, "max_tokens_per_gpu must be set when use_dynamic_batch_size is set"
         if args.log_probs_max_tokens_per_gpu is None:
             args.log_probs_max_tokens_per_gpu = args.max_tokens_per_gpu
+
+    # --use-dynamic-global-batch-size has two motivations:
+    # 1. compaction/subagent rollouts: static micro-batching cannot guarantee alignment
+    #    when the physical sample count is data-dependent, so --use-dynamic-batch-size
+    #    is required.
+    # 2. multi-LoRA (auto-enabled, no compaction/subagent): the per-round sample count is
+    #    a config-shaped multiple of dp_size trained as exactly one step on the legacy
+    #    training-side schedule; static micro-batching stays valid there.
+    if args.use_dynamic_global_batch_size and not args.multi_lora:
+        assert args.use_dynamic_batch_size, (
+            "--use-dynamic-global-batch-size requires --use-dynamic-batch-size (with --max-tokens-per-gpu): "
+            "static micro-batching cannot guarantee dp_size * mb_group alignment when the physical sample count "
+            "is data-dependent; this configuration is not supported."
+        )
+
+    if getattr(args, "balance_by_flops", False):
+        assert args.use_dynamic_batch_size, "--balance-by-flops requires --use-dynamic-batch-size"
 
     if args.eps_clip_high is None:
         args.eps_clip_high = args.eps_clip
@@ -3056,6 +3253,28 @@ def miles_validate_args(args):
         )
 
     _resolve_rollout_functions(args)
+
+    # Both snapshot postures drive the same RolloutManager._eval_checkpoint path.
+    # (The fleet-vs-CheckpointEvalFn conflict is asserted where the posture is derived.)
+    if args.eval_uses_snapshots:
+        assert (
+            enable_experimental_rollout_refactor()
+        ), "Snapshot eval requires the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
+        assert args.eval_interval is not None, "Snapshot eval requires --eval-interval."
+        assert args.eval_hf_dir is not None or args.save_hf is not None, (
+            "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
+            "or --save-hf (reuse periodic HF checkpoints)."
+        )
+        assert not args.colocate, "Snapshot eval is not supported with --colocate."
+        assert (
+            not args.debug_train_only and not args.debug_rollout_only
+        ), "Snapshot eval is not supported with debug_train_only/debug_rollout_only."
+        if args.eval_hf_dir is None:
+            assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
+                "Reusing --save-hf checkpoints for eval requires eval_interval to be a "
+                f"multiple of save_interval (got eval_interval={args.eval_interval}, "
+                f"save_interval={args.save_interval}). Set --eval-hf-dir for independent snapshots."
+            )
 
     if args.num_steps_per_rollout is not None:
         global_batch_size = args.rollout_batch_size * args.n_samples_per_prompt // args.num_steps_per_rollout

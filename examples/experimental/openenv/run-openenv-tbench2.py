@@ -1,8 +1,9 @@
 """OpenEnv Terminal-Bench-2 (tbench2) learning launcher (GLM-4.7-Flash).
 
 Drives the OpenEnv tbench2 env via ``openenv_agent_function.run`` (shared env
-server) or ``openenv_daytona_agent_function.run`` (Daytona sandboxes;
-selected automatically when ``openenv_tb2_tasks_dir`` is set). tbench2 is
+server) or a per-episode sandbox agent function (set ``openenv_tb2_tasks_dir``
+plus ``--openenv-sandbox-backend daytona``, or ``e2b``/``agentenv`` for an
+E2B-compatible provider). tbench2 is
 *multi-turn*: the adapter runs an agentic loop (reset(task_id) -> {policy emits a
 shell command -> step(exec) -> feed output back} -> evaluate) and the reward is
 the binary pytest result (1.0 all tests pass, else 0.0).
@@ -89,7 +90,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # path). Only the file PATH is ever forwarded — a key value in ray
     # runtime_env would be logged in plaintext.
     openenv_tb2_tasks_dir: str = os.environ.get("OPENENV_TB2_TASKS_DIR", "")
+    # Which per-episode sandbox provider runs the tasks_dir episodes:
+    # "daytona", "e2b" (E2B Cloud), or "agentenv" (alias for e2b — a
+    # self-hosted AgentENV deployment reached via E2B_API_URL/E2B_SANDBOX_URL).
+    # Required whenever openenv_tb2_tasks_dir is set; there is no default.
+    openenv_sandbox_backend: str = os.environ.get("OPENENV_SANDBOX_BACKEND", "")
     daytona_api_key_file: str = os.environ.get("DAYTONA_API_KEY_FILE", "")
+    e2b_api_key_file: str = os.environ.get("E2B_API_KEY_FILE", "")
     # When set, miles dumps full per-episode agent trajectories (tokens, logprobs,
     # loss masks, reward, multi-turn messages) to <dir>/rollout_data/{rollout_id}.pt
     # for post-hoc inspection via miles.utils.debug_utils.display_debug_rollout_data.
@@ -165,7 +172,7 @@ def execute(args: ScriptArgs):
         "--sglang-router-port 31000 "
     )
 
-    agent_args = C.agent_args("glm47", daytona_sandboxes=bool(args.openenv_tb2_tasks_dir))
+    agent_args = C.agent_args("glm47", sandbox_backend=C.resolve_sandbox_backend(args))
 
     misc_args = (
         "--attention-dropout 0.0 "

@@ -37,6 +37,10 @@ class RolloutFnTrainInput(RolloutFnBaseInput):
 
 @dataclass(frozen=True)
 class RolloutFnEvalInput(RolloutFnBaseInput):
+    generate_state: GenerateState | None = None
+    weight_version: str | None = None
+    hf_dir: str | None = None
+
     @property
     def evaluation(self):
         return True

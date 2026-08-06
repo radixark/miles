@@ -277,9 +277,9 @@ def _get_parallel_config(args: ScriptArgs) -> str:
         )
 
     if actor_num_gpus_per_node == 8:
-        if total_gpus == 32:  # 4 nodes x 8 GPUs (MI355X, full Flash): TP8/PP4/EP8, 43 layers = 11+11+11+10
+        if total_gpus == 32:  # 4 nodes x 8 GPUs (MI355X, full Flash): TP4/PP4/EP8, 43 layers = 11+11+11+10
             return (
-                "--tensor-model-parallel-size 8 "
+                "--tensor-model-parallel-size 4 "
                 "--sequence-parallel "
                 "--pipeline-model-parallel-size 4 "
                 "--decoder-first-pipeline-num-layers 11 "
@@ -339,7 +339,7 @@ def _train(args: ScriptArgs):
             rollout_args += (
                 f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
                 "--input-key prompt "
-                f"--rollout-max-response-len 4096 "
+                f"--rollout-max-response-len 8192 "
                 """--apply-chat-template-kwargs '{"thinking_mode":"thinking"}' """
             )
             eval_args += (
@@ -392,7 +392,7 @@ def _train(args: ScriptArgs):
         )
         if args.actor_num_nodes == 4:
             # 4-node PP4 memory balance: partial optimizer offload (keep ~25% on GPU) + keep train
-            # weights on GPU; pair with --sglang-mem-fraction-static 0.6.
+            # weights on GPU; pair with --sglang-mem-fraction-static 0.5.
             optimizer_args += "--optimizer-offload-fraction 0.75 " "--no-offload-train "
 
     sglang_world_size = 4
@@ -411,9 +411,12 @@ def _train(args: ScriptArgs):
     extra_env_vars = {
         "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1",
         "SGLANG_DSV4_FP4_EXPERTS": "0",
-        "SGLANG_HACK_FLASHMLA_BACKEND": "triton",
+        "SGLANG_HACK_FLASHMLA_BACKEND": "unified_kv_triton",
+        # unified_kv lives in compressor_v2 only; on HIP the v1 path leaves
+        # compress_kv_pool unset and the memory pool asserts on it.
+        "SGLANG_OPT_USE_COMPRESSOR_V2": "true",
         "SGLANG_OPT_USE_TILELANG_INDEXER": "true",
-        "SGLANG_OPT_USE_JIT_NORM": "false",  # JIT norm+RoPE increases logprobdiff on ROCm
+        "SGLANG_OPT_USE_JIT_NORM": "true",
         "SGLANG_OPT_USE_FUSED_COMPRESS": "true",
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "AITER_BF16_FP8_MOE_BOUND": "0",
@@ -428,7 +431,7 @@ def _train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.actor_num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--train-memory-margin-bytes 3221225472 "
-        "--sglang-mem-fraction-static 0.7 "
+        "--sglang-mem-fraction-static 0.5 "
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load

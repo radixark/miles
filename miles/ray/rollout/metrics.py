@@ -59,6 +59,16 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
     return log_dict
 
 
+def log_eval_skip(rollout_id, args, reason: str):
+    """Log a skipped eval point at ``rollout_id`` so curve gaps are attributable."""
+    log_dict = {
+        f"eval/skipped_{reason}": 1,
+        "eval/step": compute_rollout_step(args, rollout_id),
+    }
+    logger.warning(f"eval {rollout_id} skipped: {reason}")
+    tracking.log(args, log_dict, step_key="eval/step")
+
+
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
