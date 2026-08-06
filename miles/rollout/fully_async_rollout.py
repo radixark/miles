@@ -19,9 +19,6 @@ rollout engines, pausing producer submissions for the duration of the
 import asyncio
 import logging
 import time
-from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass
 
 import httpx
 
@@ -34,6 +31,16 @@ from miles.rollout.base_types import (
     RolloutFnTrainOutput,
 )
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.fully_async_data_buffer import (
+    DataBuffer,
+    DataBufferConstructorInput,
+    DataBufferInput,
+    DefaultDataBuffer,
+    Group,
+    first_sample,
+    group_oldest_weight_version,
+    iter_samples,
+)
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.rollout.submission_scheduler import make_submission_scheduler
@@ -43,168 +50,8 @@ from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_QUEUE_MAX_GROUPS = 1000
 NO_PROGRESS_WARN_SECS = 30.0
 WEIGHT_VERSION_QUERY_TIMEOUT_SECS = 2.0
-
-# A finished group is list[Sample], or list[list[Sample]] when a generate function
-# returns multiple samples per trajectory (e.g. multi-agent).
-Group = list[Sample | list[Sample]]
-
-
-@dataclass
-class DataBufferInput:
-    prompt_group: list[Sample]  # resubmittable, for recycling
-    group: Group  # finished samples
-    weight_version: int | None  # engine version when the group finished
-
-
-def _iter_samples(group: Group) -> Iterator[Sample]:
-    for item in group:
-        if isinstance(item, list):
-            yield from item
-        else:
-            yield item
-
-
-def _first_sample(group: Group) -> Sample:
-    return group[0][0] if isinstance(group[0], list) else group[0]
-
-
-def group_oldest_weight_version(group: Group) -> int | None:
-    """Return the minimum weight version across all trajectories and turns in a group."""
-    versions = [v for s in _iter_samples(group) if (v := s.oldest_weight_version) is not None]
-    return min(versions) if versions else None
-
-
-class DataBuffer(ABC):
-    """Store for finished groups between rollout production and training consumption.
-
-    The producer puts each finished group as it completes; the consumer gets one
-    group at a time; get_metrics is collected once per training step. Storage,
-    ordering, and dropping are implementation details invisible to callers.
-    """
-
-    @abstractmethod
-    async def put(self, input: DataBufferInput) -> None:
-        """Accept a finished group; may store it, or evict data to make room."""
-
-    @abstractmethod
-    async def get(self) -> DataBufferInput:
-        """Return one group to train on, waiting until one is available."""
-
-    @abstractmethod
-    def get_metrics(self) -> dict[str, float]:
-        """Report metrics since the previous call (window counters reset on collection)."""
-
-
-class DefaultDataBuffer(DataBuffer):
-    """Finished groups waiting between rollout production and training consumption.
-
-    Supported dataflow/staleness control options:
-
-    (1) max groups: use ``--async-data-buffer-max-batches`` to set the max size
-        of the buffer, in multiples of rollout_batch_size. On overflow the most
-        stale groups are evicted and their prompts recycled for regeneration;
-        0 disables eviction and blocks the producer when the buffer is full.
-    (2) order: use ``--async-data-buffer-order`` to set the consumption order,
-        fifo (default) or lifo. lifo trains on the freshest group first — pair
-        it with (1) and/or ``--max-weight-staleness`` so sunk old groups are
-        evicted rather than eventually trained on.
-    """
-
-    def __init__(
-        self,
-        *,
-        order: str,
-        max_groups: int | None,
-        max_staleness: int | None,
-        on_evict: Callable[[list[Sample]], None],
-    ):
-        assert order in ("fifo", "lifo"), f"unknown buffer order: {order}"
-        assert max_groups is None or max_groups > 0, f"non-positive buffer capacity: {max_groups}"
-        self._order = order
-        self._capacity = max_groups if max_groups is not None else OUTPUT_QUEUE_MAX_GROUPS
-        self._evict_on_overflow = max_groups is not None
-        self._max_staleness = max_staleness
-        self._on_evict = on_evict
-        self._entries: list[DataBufferInput] = []
-        self._cond = asyncio.Condition()
-        self._latest_weight_version: int | None = None
-        self._entered_groups = 0
-        self._evicted_stale_groups = 0
-        self._evicted_overflow_groups = 0
-
-    async def put(self, input: DataBufferInput) -> None:
-        if input.weight_version is not None:
-            self._latest_weight_version = max(self._latest_weight_version or 0, input.weight_version)
-        async with self._cond:
-            if self._evict_on_overflow:
-                self._entries.append(input)
-                if len(self._entries) > self._capacity:
-                    self._evict_overflow()
-            else:
-                while len(self._entries) >= self._capacity:
-                    await self._cond.wait()
-                self._entries.append(input)
-            self._entered_groups += 1
-            self._cond.notify_all()
-
-    async def get(self) -> DataBufferInput:
-        async with self._cond:
-            while not self._entries:
-                await self._cond.wait()
-            entry = self._entries.pop() if self._order == "lifo" else self._entries.pop(0)
-            self._cond.notify_all()
-            return entry
-
-    def get_metrics(self) -> dict[str, float]:
-        metrics = {
-            "queue_size": len(self._entries),
-            "evicted_stale_groups": self._evicted_stale_groups,
-            "evicted_overflow_groups": self._evicted_overflow_groups,
-        }
-        if self._entered_groups:
-            evicted = self._evicted_stale_groups + self._evicted_overflow_groups
-            metrics["evict_rate"] = evicted / self._entered_groups
-        if self._latest_weight_version is not None:
-            staleness = [
-                self._latest_weight_version - oldest
-                for entry in self._entries
-                if (oldest := group_oldest_weight_version(entry.group)) is not None
-            ]
-            if staleness:
-                metrics["buffer_avg_staleness"] = sum(staleness) / len(staleness)
-                metrics["buffer_max_staleness"] = max(staleness)
-        self._entered_groups = self._evicted_stale_groups = self._evicted_overflow_groups = 0
-        return metrics
-
-    @staticmethod
-    def _eviction_key(group: Group) -> tuple[float, float]:
-        """Stalest-first sort key: (min, sum) of weight versions; versionless groups rank freshest."""
-        versions = [v for s in _iter_samples(group) if (v := s.oldest_weight_version) is not None]
-        if not versions:
-            return (float("inf"), float("inf"))
-        return (min(versions), sum(versions))
-
-    def _evict_overflow(self) -> None:
-        """Evict stalest-first until nothing is beyond ``max_staleness`` and the buffer fits."""
-        while self._entries:
-            keys = [self._eviction_key(entry.group) for entry in self._entries]
-            index = keys.index(min(keys))
-            # keys[index][0]: stalest group's oldest version, inf if unrecorded
-            if_exceed_staleness = (
-                self._max_staleness is not None
-                and self._latest_weight_version is not None
-                and self._latest_weight_version - keys[index][0] > self._max_staleness
-            )
-            if not if_exceed_staleness and len(self._entries) <= self._capacity:
-                return
-            if if_exceed_staleness:
-                self._evicted_stale_groups += 1
-            else:
-                self._evicted_overflow_groups += 1
-            self._on_evict(self._entries.pop(index).prompt_group)
 
 
 class _CachedWeightVersion:
@@ -261,13 +108,8 @@ class FullyAsyncRolloutFn:
         if input.evaluation:
             return await self._call_eval(input)
         if self._worker is None:
-            max_batches = self.args.async_data_buffer_max_batches
-            self._output = DefaultDataBuffer(
-                order=self.args.async_data_buffer_order,
-                max_groups=max_batches * self.args.rollout_batch_size if max_batches else None,
-                max_staleness=self.args.max_weight_staleness,
-                on_evict=self._recycle,
-            )
+            buffer_cls = load_function(self.args.custom_async_data_buffer_path) or DefaultDataBuffer
+            self._output = buffer_cls(DataBufferConstructorInput(args=self.args, on_evict=self._recycle))
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
         return await self._drain(input.rollout_id)
@@ -369,7 +211,7 @@ class FullyAsyncRolloutFn:
             assert len(group) == args.n_samples_per_prompt
 
             # A weight update paused generation mid-group: return it for re-sampling.
-            if any(s.status == Sample.Status.ABORTED for s in _iter_samples(group)):
+            if any(s.status == Sample.Status.ABORTED for s in iter_samples(group)):
                 self._recycle(entry.prompt_group)
                 aborted_groups_recycled += 1
                 continue
@@ -395,7 +237,7 @@ class FullyAsyncRolloutFn:
                 continue
 
             if do_print:
-                sample = _first_sample(group)
+                sample = first_sample(group)
                 logger.info(
                     f"First rollout sample: {[str(sample.prompt) + sample.response]}, "
                     f"label: {sample.label}, reward: {sample.reward}"
@@ -404,13 +246,13 @@ class FullyAsyncRolloutFn:
 
             data.append(group)
 
-        sample = _first_sample(data[-1])
+        sample = first_sample(data[-1])
         logger.info(
             f"Finish rollout: {[str(sample.prompt) + sample.response]}, "
             f"label: {sample.label}, reward: {sample.reward}"
         )
 
-        data.sort(key=lambda group: _first_sample(group).index)
+        data.sort(key=lambda group: first_sample(group).index)
 
         if self._sample_filter is not None:
             self._sample_filter(args, data)

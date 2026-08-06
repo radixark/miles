@@ -10,6 +10,7 @@ from dataclasses import replace
 import httpx
 import pytest
 
+import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
@@ -76,6 +77,7 @@ def make_args(**overrides) -> Namespace:
         async_max_concurrent_samples=None,
         async_data_buffer_max_batches=0,
         async_data_buffer_order="fifo",
+        custom_async_data_buffer_path=None,
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
@@ -305,7 +307,7 @@ async def test_worker_failure_beats_queued_groups(monkeypatch):
 
     fn._output = make_buffer()[0]
     group = make_group(1)
-    await fn._output.put(fully_async.DataBufferInput(prompt_group=group, group=group, weight_version=None))
+    await fn._output.put(data_buffer.DataBufferInput(prompt_group=group, group=group, weight_version=None))
     fn._worker = asyncio.create_task(boom())
     await asyncio.sleep(0)
 
@@ -401,16 +403,21 @@ async def test_weight_version_throttles_failed_queries(monkeypatch):
 # ── DataBuffer: staleness-bounded buffering ─────────────────────────
 
 
-def make_buffer(**overrides):
+def make_buffer(order="fifo", max_groups=None, max_staleness=None):
     evicted = []
-    defaults = dict(order="fifo", max_groups=None, max_staleness=None, on_evict=evicted.append)
-    defaults.update(overrides)
-    return fully_async.DefaultDataBuffer(**defaults), evicted
+    args = make_args(
+        rollout_batch_size=1,  # capacity is in batches; batch size 1 makes it count groups
+        async_data_buffer_order=order,
+        async_data_buffer_max_batches=max_groups or 0,
+        max_weight_staleness=max_staleness,
+    )
+    buffer = data_buffer.DefaultDataBuffer(data_buffer.DataBufferConstructorInput(args=args, on_evict=evicted.append))
+    return buffer, evicted
 
 
 async def put_group(buffer, group, weight_version=None):
     """These tests reuse one group as both the prompt group and the finished group."""
-    await buffer.put(fully_async.DataBufferInput(prompt_group=group, group=group, weight_version=weight_version))
+    await buffer.put(data_buffer.DataBufferInput(prompt_group=group, group=group, weight_version=weight_version))
 
 
 async def test_buffer_evicts_stalest_on_overflow():
@@ -497,6 +504,25 @@ async def test_drain_reports_eviction_metrics(monkeypatch):
 
     output2 = await fn(RolloutFnTrainInput(rollout_id=2))
     assert output2.metrics["rollout/fully_async/evicted_overflow_groups"] == 0
+
+
+class RecordingBuffer(data_buffer.DefaultDataBuffer):
+    constructed_with = None
+
+    def __init__(self, input):
+        super().__init__(input)
+        RecordingBuffer.constructed_with = input
+
+
+async def test_custom_data_buffer_path_replaces_default(monkeypatch):
+    path = f"{__name__}.RecordingBuffer"
+    fn = make_fn(monkeypatch, make_args(custom_async_data_buffer_path=path), FakeDataSource())
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert type(fn._output) is RecordingBuffer
+    assert RecordingBuffer.constructed_with.on_evict == fn._recycle
+    assert len(output.samples) == 2
 
 
 async def test_worker_defaults_to_sample_granularity(monkeypatch):
