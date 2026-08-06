@@ -52,7 +52,7 @@ while still letting `critic_model.train` proceed. That's hard to write with sync
 + await rollout_manager.generate.remote(rollout_id)
 ```
 
-Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
+Same pattern applies to `offload`, `onload`, `clear_memory` and
 `set_rollout_executor`.
 
 #### 3. Dispatch handles → eager tasks
@@ -62,9 +62,8 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 - ray.get(actor.async_train(...))
 - ray.get(handle)
 
-+ task = await eager_create_task(critic.train(...))
-+ await actor.train(...)
-+ await task
++ values = await critic.train(...)
++ await actor.train(..., external_data=values)
 ```
 
 #### 4. `create_training_models` is now async
@@ -97,9 +96,11 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 
 The controller is not a Ray actor, so nothing inside another actor may call it. Train
 actors receive only the executor handle (`set_rollout_manager` → `set_rollout_executor`),
-and the trainer group — which runs in the driver — clears `has_new_engines` after the
-weight update instead of rank 0 doing it. `start_api_server` (formerly
-`start_control_server`) takes `inference_controller=`.
+and the trainer group — which runs in the driver — brackets the weight update with
+`start_update_weights` / `end_update_weights` instead of rank 0 doing it. Whether the
+trainer must reconnect is derived from the cell snapshot those calls carry, not from a
+hand-maintained flag. `start_api_server` (formerly `start_control_server`) takes
+`inference_controller=`.
 
 `RolloutExecutor.generate` is now `RolloutExecutor.get`: the executor hands over data
 the rollout already produced, it does not itself generate.
