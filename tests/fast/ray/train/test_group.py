@@ -68,7 +68,8 @@ def _make_group(
         rollout_executor=rollout_executor,
     )
     for cell_index in range(num_cells):
-        group._cells_by_index[cell_index] = group._create_cell(cell_index)
+        cell = group._create_cell(f"{group._spec_name}-{cell_index}", cell_index=cell_index)
+        group._cells_by_id[cell.cell_id] = cell
     return group
 
 
@@ -131,16 +132,16 @@ class TestStopStartCell:
     async def test_stop_cell_transitions_to_stopped(self):
         group = await _make_alive_group(num_cells=2)
 
-        await group.stop_cell(1)
+        await group.stop_cell("trainer-actor-1")
 
         assert group._cells[1].is_stopped
         assert group._cells[0].is_alive
 
     async def test_start_cell_transitions_to_pending(self):
         group = await _make_alive_group(num_cells=2)
-        await group.stop_cell(1)
+        await group.stop_cell("trainer-actor-1")
 
-        group.start_cell(1)
+        group.start_cell("trainer-actor-1")
 
         assert group._cells[1].is_pending
 
@@ -216,7 +217,7 @@ class TestRefreshCellsReconfigure:
         group = await _make_alive_group(num_cells=3)
 
         # Step 1: Stop cell 1
-        await group.stop_cell(1)
+        await group.stop_cell("trainer-actor-1")
 
         # Step 2: Refresh
         await group._refresh_cells(rollout_id=0)
@@ -256,8 +257,8 @@ class TestRefreshCellsHealing:
         group = await _make_alive_group(num_cells=3)
 
         # Step 1: Stop cell 2, then start it (pending)
-        await group.stop_cell(2)
-        group.start_cell(2)
+        await group.stop_cell("trainer-actor-2")
+        group.start_cell("trainer-actor-2")
 
         # Step 2: Refresh heals the pending cell
         await group._refresh_cells(rollout_id=0)
@@ -285,10 +286,10 @@ class TestRefreshCellsHealing:
     async def test_multiple_pending_cells_healed(self):
         """Multiple pending cells healed simultaneously."""
         group = await _make_alive_group(num_cells=3)
-        await group.stop_cell(1)
-        await group.stop_cell(2)
-        group.start_cell(1)
-        group.start_cell(2)
+        await group.stop_cell("trainer-actor-1")
+        await group.stop_cell("trainer-actor-2")
+        group.start_cell("trainer-actor-1")
+        group.start_cell("trainer-actor-2")
 
         await group._refresh_cells(rollout_id=0)
 
@@ -307,8 +308,8 @@ class TestRefreshCellsHealing:
     async def test_healed_cell_receives_set_rollout_executor(self):
         """A healed cell is handed the executor handle again after init."""
         group = await _make_alive_group(num_cells=2, rollout_executor="executor-handle")
-        await group.stop_cell(1)
-        group.start_cell(1)
+        await group.stop_cell("trainer-actor-1")
+        group.start_cell("trainer-actor-1")
 
         await group._refresh_cells(rollout_id=0)
 
@@ -325,9 +326,9 @@ class TestRefreshCellsHealing:
         group = await _make_alive_group(num_cells=3)
 
         # cell 1 stopped (not restarted), cell 2 pending
-        await group.stop_cell(1)
-        await group.stop_cell(2)
-        group.start_cell(2)
+        await group.stop_cell("trainer-actor-1")
+        await group.stop_cell("trainer-actor-2")
+        group.start_cell("trainer-actor-2")
 
         await group._refresh_cells(rollout_id=0)
 
@@ -356,8 +357,8 @@ class TestRefreshCellsReconfigureEvent:
     async def test_healing_emits_event_with_src_and_healed_cells(self, _event_log_dir: Path):
         """A healing reconfigure emits one CellReconfigureEvent naming rollout, src cell, and healed cells."""
         group = await _make_alive_group(num_cells=3)
-        await group.stop_cell(2)
-        group.start_cell(2)
+        await group.stop_cell("trainer-actor-2")
+        group.start_cell("trainer-actor-2")
 
         await group._refresh_cells(rollout_id=7)
 
@@ -372,7 +373,7 @@ class TestRefreshCellsReconfigureEvent:
     async def test_shrink_emits_event_without_src(self, _event_log_dir: Path):
         """A pure-shrink reconfigure emits one CellReconfigureEvent with no src and no healed cells."""
         group = await _make_alive_group(num_cells=3)
-        await group.stop_cell(1)
+        await group.stop_cell("trainer-actor-1")
 
         await group._refresh_cells(rollout_id=4)
 
@@ -394,8 +395,8 @@ class TestRefreshCellsReconfigureEvent:
     async def test_failed_healing_emits_no_event(self, _event_log_dir: Path):
         """When cooperative prepare fails, no CellReconfigureEvent is emitted (witness stays absent)."""
         group = await _make_alive_group(num_cells=3)
-        await group.stop_cell(2)
-        group.start_cell(2)
+        await group.stop_cell("trainer-actor-2")
+        group.start_cell("trainer-actor-2")
         train_conftest.fake_worker_manager.fail_init_for_cell(2)
 
         await group._refresh_cells(rollout_id=5)
@@ -428,7 +429,7 @@ class TestRefreshCellsNoOp:
 
     async def test_refresh_after_reconfigure_is_noop_on_second_call(self):
         group = await _make_alive_group(num_cells=3)
-        await group.stop_cell(1)
+        await group.stop_cell("trainer-actor-1")
         await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 1
 
@@ -442,20 +443,20 @@ class TestConsecutiveStopStartCycles:
         group = await _make_alive_group(num_cells=3)
 
         # Step 1: Stop cell 1
-        await group.stop_cell(1)
+        await group.stop_cell("trainer-actor-1")
         await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 1
         assert group._cells[0].indep_dp_info.alive_cell_indices == [0, 2]
 
         # Step 2: Stop cell 2 (only cell 0 alive)
-        await group.stop_cell(2)
+        await group.stop_cell("trainer-actor-2")
         await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 2
         assert group._cells[0].indep_dp_info.alive_cell_indices == [0]
         assert group._cells[0].indep_dp_info.alive_size == 1
 
         # Step 3: Start cell 1 (cells 0 and 1 alive)
-        group.start_cell(1)
+        group.start_cell("trainer-actor-1")
         await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 3
         assert group._cells[0].is_alive
@@ -478,7 +479,7 @@ class TestTrain:
 
     async def test_train_with_stopped_cell_only_dispatches_to_alive(self):
         group = await _make_alive_group(num_cells=3)
-        await group.stop_cell(1)
+        await group.stop_cell("trainer-actor-1")
 
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
@@ -516,8 +517,8 @@ class TestTrain:
         """Cell stopped and immediately started before next train — healed in one shot."""
         group = await _make_alive_group(num_cells=3)
 
-        await group.stop_cell(1)
-        group.start_cell(1)
+        await group.stop_cell("trainer-actor-1")
+        group.start_cell("trainer-actor-1")
 
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
@@ -534,7 +535,7 @@ class TestTrain:
         assert group._indep_dp_quorum_id == 0
 
         # Step 2: Stop cell 2 → degraded (triggers reconfigure)
-        await group.stop_cell(2)
+        await group.stop_cell("trainer-actor-2")
         await group.train(rollout_id=1, rollout_data_pack=_DUMMY_DATA_PACK)
         assert group._indep_dp_quorum_id == 1
         assert group._cells[0].indep_dp_info.alive_cell_indices == [0, 1]
@@ -544,7 +545,7 @@ class TestTrain:
         assert group._indep_dp_quorum_id == 1
 
         # Step 4: Start cell 2 → healing (triggers reconfigure)
-        group.start_cell(2)
+        group.start_cell("trainer-actor-2")
         await group.train(rollout_id=3, rollout_data_pack=_DUMMY_DATA_PACK)
         assert group._indep_dp_quorum_id == 2
         assert all(c.is_alive for c in group._cells)
@@ -638,8 +639,8 @@ class TestRefreshCellsErrorHandling:
         group = await _make_alive_group(num_cells=3)
 
         # Step 1: Stop cell 2 and start it (pending)
-        await group.stop_cell(2)
-        group.start_cell(2)
+        await group.stop_cell("trainer-actor-2")
+        group.start_cell("trainer-actor-2")
 
         # Step 2: Replace actor factory so new actors fail on init
         train_conftest.fake_worker_manager.fail_init_for_cell(2)

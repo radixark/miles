@@ -221,11 +221,12 @@ def make_mock_group(cells: list[MockRayTrainCell], *, spec_name: str = "trainer-
     from miles.ray.train.group import RayTrainGroup
 
     group = object.__new__(RayTrainGroup)
-    group._cells_by_index = dict(enumerate(cells))
-    group._spec_name = spec_name
-    group._indep_dp_quorum_id = 0
     for cell_index, cell in enumerate(cells):
         cell.cell_index = cell_index
+        cell.cell_id = f"{spec_name}-{cell_index}"
+    group._cells_by_id = {cell.cell_id: cell for cell in cells}
+    group._spec_name = spec_name
+    group._indep_dp_quorum_id = 0
     return group
 
 

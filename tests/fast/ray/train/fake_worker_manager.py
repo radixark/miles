@@ -4,7 +4,7 @@ import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
 from miles.ray.specs.train import MASTER_PORT_NAME
-from miles.utils.workers.naming import compute_cell_id
+from miles.utils.workers.naming import compute_cell_id, parse_cell_id
 from miles.utils.workers.ray_worker_manager import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import HostAndPort
@@ -50,11 +50,10 @@ class FakeWorkerManager:
                 )
         return infos
 
-    def _get_worker_infos(self, spec_name: str, cell_index: int) -> list[WorkerInfo]:
-        cell_id = compute_cell_id(spec_name=spec_name, cell_index=cell_index)
+    def _get_worker_infos(self, cell_id: str) -> list[WorkerInfo]:
         if cell_id not in self._handles:
             handles = [DummyTrainActor.remote() for _ in range(self.actor_count_per_cell)]
-            if cell_index in self._cell_indices_failing_init:
+            if parse_cell_id(cell_id).cell_index in self._cell_indices_failing_init:
                 ray.get([handle.set_fail_methods.remote(["init"]) for handle in handles])
             self._handles[cell_id] = handles
         return [

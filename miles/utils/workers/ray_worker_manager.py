@@ -100,8 +100,8 @@ class RayWorkerManager:
             name: [a.self_addrs for c in g.cells if c.alive for a in c.actors] for name, g in self._group_infos.items()
         }
 
-    def get_worker_infos(self, spec_name: str, cell_index: int) -> list[WorkerInfo]:
-        cell = self._group_infos[spec_name].cells[cell_index]
+    def get_worker_infos(self, cell_id: str) -> list[WorkerInfo]:
+        cell = self._find_cell(cell_id)
         return [
             WorkerInfo(
                 name=actor.name,
