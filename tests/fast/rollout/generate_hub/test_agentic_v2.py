@@ -29,10 +29,10 @@ class _Tracer:
 
 def _generate_input(**args_kwargs) -> GenerateFnInput:
     args = SimpleNamespace(
-        session_server_ip="127.0.0.1",
-        session_server_ports=[12345],
+        session_server_addrs=["127.0.0.1:12345"],
         custom_agent_function_path="test.fake_agent",
         max_seq_len=None,
+        partial_rollout=False,
         use_session_server="v2",
         **args_kwargs,
     )
@@ -119,6 +119,35 @@ async def test_empty_reply_returns_aborted_list(monkeypatch, empty_reason):
     assert len(output.samples) == 1
     assert output.samples[0] is not generate_input.sample
     assert output.samples[0].status == Sample.Status.ABORTED
+
+
+_ADDRS_ATTR_ABSENT = object()
+
+
+class TestSessionServerAddrsValidation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("addrs", [_ADDRS_ATTR_ABSENT, None, []], ids=["absent", "none", "empty"])
+    async def test_empty_session_server_addrs_is_rejected(self, monkeypatch, addrs):
+        """generate() raises the documented AssertionError when session_server_addrs is absent, null or empty, without creating a tracer."""
+        created_for: list[object] = []
+
+        async def fake_create(args):
+            created_for.append(args)
+            return _Tracer(SamplesReply(samples=[], session_metadata={}, empty_reason="no_records"))
+
+        monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
+        monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: _fake_agent)
+
+        generate_input = _generate_input()
+        if addrs is _ADDRS_ATTR_ABSENT:
+            del generate_input.args.session_server_addrs
+        else:
+            generate_input.args.session_server_addrs = addrs
+
+        with pytest.raises(AssertionError, match="requires session_server_addrs"):
+            await agentic_tool_call.generate(generate_input)
+
+        assert created_for == []
 
 
 @pytest.mark.asyncio

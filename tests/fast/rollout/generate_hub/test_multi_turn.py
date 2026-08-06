@@ -694,7 +694,8 @@ class TestAgentMetadata:
             mock_tools.AGENTIC_RETURN_METADATA = None
 
         samples = listify(result.sample)
-        (session_server_port,) = generation_env.args.session_server_ports
+        (session_server_addr,) = generation_env.args.session_server_addrs
+        session_server_port = int(session_server_addr.rsplit(":", 1)[1])
         expected_session_server_id = f"127.0.0.1:{session_server_port}"
         for s in samples:
             assert s.metadata["session_server_id"] == expected_session_server_id
@@ -772,8 +773,7 @@ class TestAgentNoRecords:
                 extra_argv=noop_argv,
             )
             with with_session_server(mock_server.url, args, port=session_port):
-                args.session_server_ip = "127.0.0.1"
-                args.session_server_ports = [session_port]
+                args.session_server_addrs = [f"127.0.0.1:{session_port}"]
                 env = GenerateEnv(args=args, mock_server=mock_server)
                 result = _run_generate(agentic_variant, env, make_sample(prompt=TwoTurnStub.PROMPT))
 

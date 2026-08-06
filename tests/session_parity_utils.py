@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 import httpx
 import numpy as np
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.generate_hub import agentic_tool_call
@@ -230,6 +231,7 @@ def assert_sample_bitwise_equal(
 def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Iterator[SimpleNamespace]:
     port = find_available_port(31000)
     instance_id = f"session-parity-{version}"
+    session_addr = f"127.0.0.1:{port}"
     args = SimpleNamespace(
         miles_router_timeout=_CHAT_TIMEOUT_SECS,
         hf_checkpoint=hf_checkpoint,
@@ -241,19 +243,33 @@ def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Ite
         use_rollout_routing_replay=False,
         use_rollout_indexer_replay=False,
         pause_generation_mode="retract",
-        session_server_instance_id=instance_id,
         session_server_ip="127.0.0.1",
-        session_server_ports=[port],
-        session_server_instance_ids={port: instance_id},
+        session_server_addrs=[session_addr],
+        session_server_instance_ids={session_addr: instance_id},
         save_debug_trajectory_data=None,
         custom_agent_function_path="miles.utils.test_utils.session_verify_agent.run_agent",
+        partial_rollout=False,
         max_seq_len=None,
         session_verify_cycles=1,
         tool_call_failure_mode="rollback",
         session_sample_picker_path=_PICKER_PATH,
         session_sample_postprocessor_path=_POSTPROCESSOR_PATH,
     )
-    app = SessionServer(args, backend_url=backend_url).app
+    config = make_session_server_config(
+        host=args.session_server_ip,
+        port=port,
+        instance_id=instance_id,
+        backend_url=backend_url,
+        timeout=args.miles_router_timeout,
+        hf_checkpoint=args.hf_checkpoint,
+        apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+        tito_model=args.tito_model,
+        use_session_server=args.use_session_server,
+        pause_generation_mode=args.pause_generation_mode,
+        session_sample_picker_path=args.session_sample_picker_path,
+        session_sample_postprocessor_path=args.session_sample_postprocessor_path,
+    )
+    app = SessionServer(config).app
     server = UvicornThreadServer(app, host=args.session_server_ip, port=port)
     server.start()
     try:
