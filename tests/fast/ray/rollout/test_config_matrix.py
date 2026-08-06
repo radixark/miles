@@ -159,7 +159,7 @@ class TestFrozenGroupWeightsBackupMode:
                 model_cfg=_frozen_ref(mode), needs_offload=True, group_worker_type="regular"
             )
 
-    @pytest.mark.parametrize("mode", ["cpu", "disk", "reload"])
+    @pytest.mark.parametrize("mode", ["cpu", "reload"])
     def test_frozen_colocated_accepts_explicit_source(self, mode):
         assert (
             _resolve_weights_backup_mode(
@@ -195,11 +195,11 @@ class TestWeightsBackupModeResolveValidation:
             m.resolve(make_args(rollout_num_gpus_per_engine=1, hf_checkpoint="/actor/model"))
 
     def test_updatable_group_rejects_backup_mode(self):
-        # A disk reload on the student would overwrite freshly trained weights.
+        # A cpu reload on the student would overwrite freshly trained weights.
         m = ModelConfig(
             name="actor",
             model_path="/actor/model",
-            weights_backup_mode="disk",
+            weights_backup_mode="cpu",
             server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=4)],
         )
         with pytest.raises(ValueError, match="conflicts with update_weights=True"):

@@ -249,7 +249,7 @@ class ServerGroup:
     async def onload(self, tags: list[str] | None = None):
         """Resume memory occupation, then restore weight *content* if this group owns that.
 
-        `resume_memory_occupation` only hands back the allocation. For `cpu`/`disk` modes
+        `resume_memory_occupation` only hands back the allocation. For `cpu` modes
         torch_memory_saver refills it transparently; for `actor_sync` the caller's weight
         sync refills it; for `reload` this group must re-read `model_path` itself.
         """
@@ -275,7 +275,7 @@ class ServerGroup:
     ) -> None:
         if not self._owns_weight_restore(tags):
             return
-        logger.info(f"Reloading weights from disk for frozen group '{self.worker_type}' ({self.model_path})")
+        logger.info(f"Reloading weights for frozen group '{self.worker_type}' ({self.model_path})")
         await asyncio.gather(*self.onload_weights_from_disk(engines=engines))
 
 

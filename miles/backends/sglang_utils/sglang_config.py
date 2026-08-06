@@ -35,7 +35,7 @@ class ServerGroupConfig:
         ), f"Invalid worker_type '{self.worker_type}', must be one of {valid_types}"
         assert self.num_gpus > 0, f"num_gpus must be > 0, got {self.num_gpus}"
 
-WEIGHTS_BACKUP_MODES = ("actor_sync", "cpu", "disk", "reload")
+WEIGHTS_BACKUP_MODES = ("actor_sync", "cpu", "reload")
 
 @dataclasses.dataclass
 class ModelConfig:
@@ -57,7 +57,7 @@ class ModelConfig:
                         colocated offload/onload cycle.  ``actor_sync`` (weights
                         pushed by training) is only valid for updatable models.
                         Frozen colocated models must pick ``cpu`` (host RAM
-                        backup), ``disk`` (process-local backup), or ``reload``
+                        backup), or ``reload``
                         (re-read ``model_path``).
     """
 

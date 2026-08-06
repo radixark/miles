@@ -125,7 +125,7 @@ def _resolve_weights_backup_mode(*, model_cfg, needs_offload: bool, group_worker
             f"(needs_offload=True) but has no weight restoration source: its weights are released for the "
             f"Megatron step and it does not receive actor weight sync, so it would serve uninitialized "
             f"weights after resume. Set weights_backup_mode to one of 'cpu' (host RAM copy), "
-            f"'disk' (process-local backup), or 'reload' (re-read model_path)."
+            f"or 'reload' (re-read model_path)."
         )
     return mode
 
