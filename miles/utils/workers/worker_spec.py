@@ -33,13 +33,15 @@ class SchedulingSpec(FrozenStrictBaseModel):
     num_cells: int
     num_workers_per_cell: int
     num_gpus_per_worker: float
+    pin_to_head: bool = False
 
     @classmethod
-    def single(cls, num_gpus_per_worker: float) -> "SchedulingSpec":
+    def single(cls, num_gpus_per_worker: float, pin_to_head: bool = False) -> "SchedulingSpec":
         return SchedulingSpec(
             num_cells=1,
             num_workers_per_cell=1,
             num_gpus_per_worker=num_gpus_per_worker,
+            pin_to_head=pin_to_head,
         )
 
 

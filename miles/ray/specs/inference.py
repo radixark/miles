@@ -56,7 +56,11 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
             PortInfo(name="prometheus", static_port=9000, allow_dynamic=True),
         ],
         env_var=lambda: {},
-        scheduling=SchedulingSpec.single(num_gpus_per_worker=0),
+        scheduling=SchedulingSpec.single(
+            num_gpus_per_worker=0,
+            # TODO: refactor the flag
+            pin_to_head=args.pin_rollout_manager_to_head,
+        ),
         launch_command=_compute_launch_command,
     )
 
@@ -94,6 +98,7 @@ def spec_session_server(args) -> CommandWorkerSpec:
             num_cells=compute_num_session_server_ports(args),
             num_workers_per_cell=1,
             num_gpus_per_worker=0,
+            pin_to_head=args.pin_rollout_manager_to_head,
         ),
         launch_command=_compute_launch_command,
     )
