@@ -3,13 +3,12 @@ import logging
 import time
 from typing import Any
 
-import ray
-
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
 from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
+from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
     convert_samples_to_train_data,
@@ -44,7 +43,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-@ray.remote
 class RolloutExecutor:
     """The class to run rollout and convert rollout data to training data."""
 
@@ -56,6 +54,13 @@ class RolloutExecutor:
         # set by the training actor after each weight update
         self.weight_version: int | None = None
         self._rollouts_since_weight_version_publish = 0
+
+    async def init(self) -> None:
+        args = self.args
+        if not args.debug_train_only:
+            await resolve_router_addrs(args)
+            await wait_session_server_ready(args)
+
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
@@ -100,7 +105,6 @@ class RolloutExecutor:
         self._metric_checker = MetricChecker.maybe_create(args)
 
     # -------------------------- lifecycle -----------------------------
-    # TODO: may have a `async def init` here later
 
     def dispose(self) -> None:
         if (close := getattr(self.data_source, "close", None)) is not None:

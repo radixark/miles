@@ -8,11 +8,10 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import create_inference_controller_handle
+from miles.ray.specs.rollout import create_rollout_executor_handle
 from miles.ray.specs.train import compute_critic_args, create_trainer_controller_handle
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
-from ..utils.ray_utils import compute_ray_pin_head_options
-from .rollout.rollout_executor import RolloutExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -142,20 +141,20 @@ async def create_training_models(args, rollout_executor) -> tuple[BaseWorkerHand
     if args.start_rollout_id is None:
         args.start_rollout_id = start_rollout_ids[0]
 
-    await rollout_executor.set_train_parallel_config.remote(await actor_model.get_train_parallel_config())
-    await rollout_executor.load.remote(args.start_rollout_id - 1)
+    await rollout_executor.set_train_parallel_config(await actor_model.get_train_parallel_config())
+    await rollout_executor.load(args.start_rollout_id - 1)
 
     return actor_model, critic_model
 
 
 async def update_weights(actor_model, rollout_executor, *, rollout_id: int | None = None) -> None:
     if (weight_version := await actor_model.update_weights(rollout_id=rollout_id)) is not None:
-        await rollout_executor.set_weight_version.remote(weight_version)
+        await rollout_executor.set_weight_version(weight_version)
 
 
 class RolloutComponents(NamedTuple):
     inference_controller: BaseWorkerHandle
-    rollout_executor: ray.actor.ActorHandle
+    rollout_executor: BaseWorkerHandle
     num_rollout_per_epoch: int | None
 
 
@@ -167,14 +166,13 @@ async def create_rollout_components(args) -> RolloutComponents:
     inference_controller = create_inference_controller_handle()
     await inference_controller.init()
 
-    rollout_executor = RolloutExecutor.options(
-        num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
-    ).remote(args=args)
+    rollout_executor = create_rollout_executor_handle()
+    await rollout_executor.init()
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
     if args.num_rollout is None:
-        num_rollout_per_epoch = ray.get(rollout_executor.get_num_rollout_per_epoch.remote())
+        num_rollout_per_epoch = await rollout_executor.get_num_rollout_per_epoch()
         args.num_rollout = num_rollout_per_epoch * args.num_epoch
         assert args.num_rollout > 0
 

@@ -26,9 +26,9 @@ async def train(args):
     validate_async_off_policy_correction(args)
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
+    init_tracking(args)
     _worker_manager = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)
-    init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
@@ -75,7 +75,7 @@ async def train(args):
 
     async def prepare_and_generate(rollout_id):
         await inference_controller.prepare_rollout(rollout_id)
-        return await rollout_executor.get.remote(rollout_id)
+        return await rollout_executor.get(rollout_id)
 
     # async train loop.
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
@@ -109,7 +109,7 @@ async def train(args):
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
-            await rollout_executor.save.remote(rollout_id)
+            await rollout_executor.save(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
@@ -135,7 +135,7 @@ async def train(args):
             break
 
     await eval_dispatcher.drain()
-    await rollout_executor.dispose.remote()
+    await rollout_executor.dispose()
     await inference_controller.dispose()
     await actor_model.dispose()
     if critic_model is not None:

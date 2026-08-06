@@ -24,9 +24,9 @@ async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
+    init_tracking(args)
     _worker_manager = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)
-    init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
@@ -64,7 +64,7 @@ async def train(args):
     # special case for eval-only
     if args.num_rollout == 0 and args.eval_interval is not None:
         await inference_controller.prepare_eval()
-        await rollout_executor.eval.remote(rollout_id=0)
+        await rollout_executor.eval(rollout_id=0)
 
     async def offload_train():
         if args.use_critic:
@@ -88,17 +88,17 @@ async def train(args):
             await save_training_model(actor_model)
         if args.use_critic:
             await save_training_model(critic_model)
-        await rollout_executor.save.remote(rollout_id)
+        await rollout_executor.save(rollout_id)
 
     # train loop.
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
             await inference_controller.prepare_eval()
-            await rollout_executor.eval.remote(rollout_id)
+            await rollout_executor.eval(rollout_id)
 
         await inference_controller.prepare_rollout(rollout_id)
-        rollout_data_pack = await rollout_executor.get.remote(rollout_id)
+        rollout_data_pack = await rollout_executor.get(rollout_id)
 
         if args.offload_rollout:
             offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
@@ -138,7 +138,7 @@ async def train(args):
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await inference_controller.prepare_eval()
-            await rollout_executor.eval.remote(rollout_id)
+            await rollout_executor.eval(rollout_id)
 
         if (
             args.debug_exit_after_rollout is not None
@@ -151,7 +151,7 @@ async def train(args):
             )
             break
 
-    await rollout_executor.dispose.remote()
+    await rollout_executor.dispose()
     await inference_controller.dispose()
     await actor_model.dispose()
     if critic_model is not None:
