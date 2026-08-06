@@ -92,9 +92,9 @@ class DefaultDataBuffer(DataBuffer):
         self._entries: list[DataBufferInput] = []
         self._cond = asyncio.Condition()
         self._latest_weight_version: int | None = None
-        self._entered_groups = 0
-        self._evicted_stale_groups = 0
-        self._evicted_overflow_groups = 0
+        self._metric_entered_groups = 0
+        self._metric_evicted_stale_groups = 0
+        self._metric_evicted_overflow_groups = 0
 
     async def put(self, input: DataBufferInput) -> None:
         if input.weight_version is not None:
@@ -109,7 +109,7 @@ class DefaultDataBuffer(DataBuffer):
                 while len(self._entries) >= self._capacity:
                     await self._cond.wait()
                 self._entries.append(input)
-            self._entered_groups += 1
+            self._metric_entered_groups += 1
             self._cond.notify_all()
 
     async def get(self) -> DataBufferInput:
@@ -123,12 +123,12 @@ class DefaultDataBuffer(DataBuffer):
     def get_metrics(self) -> dict[str, float]:
         metrics = {
             "queue_size": len(self._entries),
-            "evicted_stale_groups": self._evicted_stale_groups,
-            "evicted_overflow_groups": self._evicted_overflow_groups,
+            "evicted_stale_groups": self._metric_evicted_stale_groups,
+            "evicted_overflow_groups": self._metric_evicted_overflow_groups,
         }
-        if self._entered_groups:
-            evicted = self._evicted_stale_groups + self._evicted_overflow_groups
-            metrics["evict_rate"] = evicted / self._entered_groups
+        if self._metric_entered_groups:
+            evicted = self._metric_evicted_stale_groups + self._metric_evicted_overflow_groups
+            metrics["evict_rate"] = evicted / self._metric_entered_groups
         if self._latest_weight_version is not None:
             staleness = [
                 self._latest_weight_version - oldest
@@ -138,7 +138,7 @@ class DefaultDataBuffer(DataBuffer):
             if staleness:
                 metrics["buffer_avg_staleness"] = sum(staleness) / len(staleness)
                 metrics["buffer_max_staleness"] = max(staleness)
-        self._entered_groups = self._evicted_stale_groups = self._evicted_overflow_groups = 0
+        self._metric_entered_groups = self._metric_evicted_stale_groups = self._metric_evicted_overflow_groups = 0
         return metrics
 
     @staticmethod
@@ -164,7 +164,7 @@ class DefaultDataBuffer(DataBuffer):
             if not if_exceed_staleness and len(self._entries) <= self._capacity:
                 return
             if if_exceed_staleness:
-                self._evicted_stale_groups += 1
+                self._metric_evicted_stale_groups += 1
             else:
-                self._evicted_overflow_groups += 1
+                self._metric_evicted_overflow_groups += 1
             self._on_evict(self._entries.pop(index).prompt_group)

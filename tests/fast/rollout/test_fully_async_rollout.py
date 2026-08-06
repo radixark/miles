@@ -480,16 +480,16 @@ async def test_drain_reports_eviction_metrics(monkeypatch):
     # Evictions land in the buffer counters between drains; the racy overflow
     # path itself is covered by the DataBuffer tests above.
     assert fn._output._on_evict == fn._recycle
-    fn._output._entered_groups += 8
-    fn._output._evicted_stale_groups = 1
-    fn._output._evicted_overflow_groups = 2
+    fn._output._metric_entered_groups += 8
+    fn._output._metric_evicted_stale_groups = 1
+    fn._output._metric_evicted_overflow_groups = 2
     output = await fn(RolloutFnTrainInput(rollout_id=1))
 
     assert output.metrics["rollout/fully_async/evicted_stale_groups"] == 1
     assert output.metrics["rollout/fully_async/evicted_overflow_groups"] == 2
     # 3 evictions over >= 8 seeded + 2 consumed entries
     assert 0 < output.metrics["rollout/fully_async/evict_rate"] <= 3 / 10
-    assert fn._output._evicted_stale_groups == 0  # counters reset per drain
+    assert fn._output._metric_evicted_stale_groups == 0  # counters reset per drain
 
     output2 = await fn(RolloutFnTrainInput(rollout_id=2))
     assert output2.metrics["rollout/fully_async/evicted_overflow_groups"] == 0
