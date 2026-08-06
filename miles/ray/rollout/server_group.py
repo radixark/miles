@@ -15,14 +15,12 @@ from miles.ray.rollout.addr_allocator import (
     allocate_rollout_engine_addr_and_ports_external,
     allocate_rollout_engine_addr_and_ports_normal,
 )
-from miles.ray.rollout.server_cell import ServerCell, flatten_cells
+from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, flatten_cells
 from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import async_utils, dumper_utils
 
 logger = logging.getLogger(__name__)
-
-_SHUTDOWN_TIMEOUT = 30
 
 
 @dataclasses.dataclass
@@ -237,26 +235,16 @@ class ServerGroup:
     def stop_engines(self, engine_indices: list[int]):
         logger.info(f"Killing server {engine_indices=}...")
         try:
-            async_utils.run(asyncio.wait_for(self.unregister_workers(engine_indices), timeout=_SHUTDOWN_TIMEOUT))
+            async_utils.run(asyncio.wait_for(self.unregister_workers(engine_indices), timeout=SHUTDOWN_TIMEOUT))
         except Exception as e:
             logger.warning(f"Unregistering {engine_indices=} from the router failed, tearing down anyway (e: {e})")
-        all_engines = flatten_cells(self.cells)
-        for i in engine_indices:
-            engine = all_engines[i]
-            if engine.is_allocated:
-                logger.info(f"Shutting down and killing engine at index {i}")
-                try:
-                    ray.get(engine.actor_handle.shutdown.remote(), timeout=_SHUTDOWN_TIMEOUT)
-                except Exception as e:
-                    logger.warning(f"Graceful shutdown of engine at index {i} failed, killing anyway (e: {e})")
-                try:
-                    ray.kill(engine.actor_handle)
-                    logger.info(f"Successfully killed engine at index {i}")
-                except Exception as e:
-                    logger.warning(f"Fail to kill engine at index {i} (e: {e})")
-            else:
-                logger.info(f"Engine at index {i} is already None")
-            all_engines[i].mark_stopped()
+        for cell_index in sorted({i // self.nodes_per_engine for i in engine_indices}):
+            cell = self.cells[cell_index]
+            cell_engine_indices = range(cell_index * self.nodes_per_engine, (cell_index + 1) * self.nodes_per_engine)
+            assert set(cell_engine_indices) <= set(
+                engine_indices
+            ), f"stop_engines must cover whole cells ({engine_indices=}, {cell_index=})"
+            cell.stop()
 
     async def recover(self, port_cursors: PortCursors, filter_indices: list[int] | None = None):
         all_engines = flatten_cells(self.cells)
