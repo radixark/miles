@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 BASE_PORT = 20000
 
 # The trainer picks its torch-distributed master port by probing for a free one rather
-# than reserving it here, so it has to sit far enough above BASE_PORT that this
-# allocator cannot walk into a port the trainer is about to bind.
+# than reserving it here, so this allocator must never hand out a port inside the band
+# the trainer probes.
 TRAIN_MASTER_PORT_RANGE = (30000, 31000)
 
 
@@ -30,5 +30,17 @@ class PortAllocator:
                 count=consecutive,
             )
         )
+        # Distance from the trainer band is an assumption, not a guarantee: the cursor only
+        # ever moves up, and a long-lived run that keeps reconfiguring can walk into it.
+        # Fail here rather than let two owners agree on the same port much later.
+        assert not _overlaps_train_master_band(port, consecutive), (
+            f"port allocator reached the trainer master band: {port}..{port + consecutive - 1} "
+            f"overlaps {TRAIN_MASTER_PORT_RANGE}"
+        )
         self._next_port_of_ip[node_ip] = port + consecutive
         return port
+
+
+def _overlaps_train_master_band(port: int, consecutive: int) -> bool:
+    low, high = TRAIN_MASTER_PORT_RANGE
+    return port + consecutive - 1 >= low and port <= high

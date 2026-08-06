@@ -27,6 +27,11 @@ CI_GATE_RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
 
 # Accelerator memory is freed by the driver asynchronously after the holders are killed.
 _REAP_SETTLE_SECONDS = 10.0
+_REAP_POLL_SECONDS = 1.0
+
+# Both patterns end in "::" on purpose: a test path under tests/e2e/sglang/ contains
+# "sglang", so a bare pattern would make the reaper kill the process it is preparing for.
+_LEFTOVER_PATTERNS = ("sglang::", "ray::")
 
 
 def _sanitize_for_path(name: str) -> str:
@@ -671,14 +676,47 @@ def reap_leaked_accelerator_processes() -> None:
     #
     # The kill is process-wide. That is safe only because every accelerator stage runs in its
     # own container with its own pid namespace, so nothing outside this job is reachable.
-    for argv in (
-        ["ray", "stop", "--force"],
-        ["pkill", "-9", "-f", "sglang::"],
-        ["pkill", "-9", "-f", "ray::"],
-    ):
+    for argv in (["ray", "stop", "--force"], *(["pkill", "-9", "-f", p] for p in _LEFTOVER_PATTERNS)):
         try:
             subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
         except (OSError, subprocess.SubprocessError) as e:
             logger.warning(f"Reaping leftovers with {argv[0]} failed: {type(e).__name__}: {e}")
 
-    time.sleep(_REAP_SETTLE_SECONDS)
+    _wait_until_reaped()
+
+
+def _wait_until_reaped() -> None:
+    # Sleeping a fixed time and moving on cannot tell "the device is clean" from "the kill
+    # missed and the next file is about to start dirty", which is exactly the failure this
+    # whole mechanism exists to stop being misread as a broken test. Poll instead, and say
+    # so loudly when the leftovers outlive the wait.
+    # Checked at least once even with no time budget left: the point is to know, not to wait.
+    deadline = time.monotonic() + _REAP_SETTLE_SECONDS
+    while True:
+        survivors = _surviving_leftover_patterns()
+        if not survivors or time.monotonic() >= deadline:
+            break
+        time.sleep(_REAP_POLL_SECONDS)
+
+    # Even with nothing left holding a handle, the driver frees the memory asynchronously.
+    time.sleep(_REAP_POLL_SECONDS)
+    if survivors:
+        logger.warning(
+            f"Leftovers still alive after {_REAP_SETTLE_SECONDS}s: {survivors}. "
+            f"The next test file may start on an occupied device."
+        )
+
+
+def _surviving_leftover_patterns() -> list[str]:
+    alive = []
+    for pattern in _LEFTOVER_PATTERNS:
+        try:
+            found = subprocess.run(
+                ["pgrep", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning(f"Checking leftovers for {pattern!r} failed: {type(e).__name__}: {e}")
+            continue
+        if found.returncode == 0:
+            alive.append(pattern)
+    return alive

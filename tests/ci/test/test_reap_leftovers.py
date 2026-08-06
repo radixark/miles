@@ -1,4 +1,5 @@
 import inspect
+import logging
 import subprocess
 import textwrap
 from pathlib import Path
@@ -17,10 +18,12 @@ def recorded_argvs(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
     def fake_run(argv, **kwargs):
         argvs.append(list(argv))
-        return subprocess.CompletedProcess(argv, 0)
+        # pgrep exits 1 when it matches nothing, i.e. the reap worked.
+        return subprocess.CompletedProcess(argv, 1 if argv[0] == "pgrep" else 0)
 
     monkeypatch.setattr(ci_utils.subprocess, "run", fake_run)
     monkeypatch.setattr(ci_utils, "_REAP_SETTLE_SECONDS", 0.0)
+    monkeypatch.setattr(ci_utils, "_REAP_POLL_SECONDS", 0.0)
     return argvs
 
 
@@ -63,6 +66,35 @@ class TestReapLeakedAcceleratorProcesses:
         assert patterns
         for pattern in patterns:
             assert pattern.endswith("::")
+
+    def test_leftovers_that_outlive_the_wait_are_reported(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A kill that missed leaves the next file on an occupied device, and staying silent
+        about it is what makes the infrastructure failure read as that test being broken."""
+
+        def fake_run(argv, **kwargs):
+            # pgrep exit 0 means the pattern still matches something.
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(ci_utils.subprocess, "run", fake_run)
+        monkeypatch.setattr(ci_utils, "_REAP_SETTLE_SECONDS", 0.0)
+        monkeypatch.setattr(ci_utils, "_REAP_POLL_SECONDS", 0.0)
+
+        with caplog.at_level(logging.WARNING):
+            ci_utils.reap_leaked_accelerator_processes()
+
+        assert any("still alive" in record.message for record in caplog.records)
+
+    def test_a_clean_reap_reports_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, recorded_argvs: list[list[str]], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The warning only earns its place if the ordinary path stays quiet."""
+        with caplog.at_level(logging.WARNING):
+            ci_utils.reap_leaked_accelerator_processes()
+
+        assert any(argv[0] == "pgrep" for argv in recorded_argvs)
+        assert not [record for record in caplog.records if "still alive" in record.message]
 
     def test_running_test_files_does_not_reap_unless_asked(
         self, monkeypatch: pytest.MonkeyPatch, one_passing_file: list[ci_utils.TestFile]

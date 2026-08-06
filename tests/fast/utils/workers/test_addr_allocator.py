@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from tests.fast.ray.rollout.conftest import fake_engine
 
 from miles.utils.workers.addr_allocator import BASE_PORT, TRAIN_MASTER_PORT_RANGE, PortAllocator
@@ -18,6 +19,29 @@ class TestPortBands:
         low, high = TRAIN_MASTER_PORT_RANGE
         assert low > BASE_PORT
         assert high < 32768
+
+
+class TestTrainMasterBandIsEnforced:
+    def test_a_cursor_that_reaches_the_trainer_band_fails_instead_of_handing_out_the_port(
+        self, patch_ray_get
+    ) -> None:
+        """The bands are only far apart, not partitioned: the cursor only moves up, so a long
+        run that keeps reconfiguring can walk into the band the trainer probes. Two owners
+        agreeing on one port surfaces much later and much worse than failing here."""
+        allocator = PortAllocator()
+        allocator._next_port_of_ip["10.0.0.1"] = TRAIN_MASTER_PORT_RANGE[0]
+
+        with pytest.raises(AssertionError, match="trainer master band"):
+            allocator.alloc(fake_engine(), node_ip="10.0.0.1")
+
+    def test_a_block_that_straddles_the_band_boundary_is_rejected(self, patch_ray_get) -> None:
+        """A consecutive block is checked whole; only its first port clearing the band is not
+        enough, because the trainer binds anywhere inside it."""
+        allocator = PortAllocator()
+        allocator._next_port_of_ip["10.0.0.1"] = TRAIN_MASTER_PORT_RANGE[0] - 2
+
+        with pytest.raises(AssertionError, match="trainer master band"):
+            allocator.alloc(fake_engine(), node_ip="10.0.0.1", consecutive=8)
 
 
 class TestPortAllocator:
