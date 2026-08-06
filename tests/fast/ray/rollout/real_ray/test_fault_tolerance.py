@@ -9,7 +9,7 @@ import pytest
 import ray
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
-from miles.ray.rollout.addr_allocator import PortCursors
+from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.server_cell import flatten_cells
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
@@ -39,7 +39,7 @@ def _build_group(
 
 
 def _start(group: ServerGroup) -> None:
-    handles, indices = group.start_engines(PortCursors.empty())
+    handles, indices = group.start_engines(PortAllocator.empty())
     ray.get(handles)
     group.mark_alive(indices)
 
@@ -76,7 +76,7 @@ class TestKillAndRecover:
         flatten_cells(group.cells)[0].mark_stopped()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty(), filter_cell_indices=[0])
+            await group.recover(port_allocator=PortAllocator.empty(), filter_cell_indices=[0])
             # New actor for slot 0
             assert flatten_cells(group.cells)[0].is_allocated
             assert flatten_cells(group.cells)[0].actor_handle is not original_handles[0]
@@ -106,7 +106,7 @@ class TestKillAndRecover:
             flatten_cells(group.cells)[i].mark_stopped()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty())
+            await group.recover(port_allocator=PortAllocator.empty())
             for i in (0, 2):
                 assert flatten_cells(group.cells)[i].is_allocated
                 assert flatten_cells(group.cells)[i].actor_handle is not old[i]
@@ -143,7 +143,7 @@ class TestKillAndRecover:
 
         try:
             with patch.object(ServerGroup, "_router_api_client", property(lambda self: _Recorder())):
-                await group.recover(port_cursors=PortCursors.empty(), filter_cell_indices=[0])
+                await group.recover(port_allocator=PortAllocator.empty(), filter_cell_indices=[0])
 
             assert [event["worker_url"] for event in events] == [flatten_cells(group.cells)[0].addr_info.server_url]
             assert flatten_cells(group.cells)[0].is_alive
@@ -168,7 +168,7 @@ class TestKillAndRecover:
         flatten_cells(group.cells)[0].mark_stopped()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty(), filter_cell_indices=[0])
+            await group.recover(port_allocator=PortAllocator.empty(), filter_cell_indices=[0])
             calls = ray.get(flatten_cells(group.cells)[0].actor_handle.get_calls.remote())
             assert "init" in [c[0] for c in calls]
 
@@ -231,8 +231,8 @@ class TestConcurrentRecover:
         try:
             # Real concurrent recover via asyncio.gather
             await asyncio.gather(
-                a.recover(port_cursors=PortCursors.empty(), filter_cell_indices=[0]),
-                b.recover(port_cursors=PortCursors.empty(), filter_cell_indices=[0]),
+                a.recover(port_allocator=PortAllocator.empty(), filter_cell_indices=[0]),
+                b.recover(port_allocator=PortAllocator.empty(), filter_cell_indices=[0]),
             )
             assert flatten_cells(a.cells)[0].is_allocated
             assert flatten_cells(b.cells)[0].is_allocated
@@ -283,7 +283,7 @@ class TestRecoverMultiNodeEngine:
         assert group.nodes_per_engine == 2
 
         try:
-            await group.recover(port_cursors=PortCursors.empty())
+            await group.recover(port_allocator=PortAllocator.empty())
 
             node0_paths = mock_engine_http_servers.for_rank(0).paths
             node1_paths = mock_engine_http_servers.for_rank(1).paths
