@@ -6,7 +6,7 @@ from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
-from miles.ray.rollout.server_engine import ServerEngine
+from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
 
 
@@ -21,7 +21,7 @@ def _build_servers(
             engines = [ServerEngine() for _ in range(engines_per_group)]
             for e in engines:
                 e.mark_allocated_uninitialized(fake_actor_handle())
-                e.set_server_url("http://127.0.0.1:30000")
+                e.set_addressing(AddrInfo(server_url="http://127.0.0.1:30000"))
                 e.mark_alive()
             groups.append(
                 ServerGroup(

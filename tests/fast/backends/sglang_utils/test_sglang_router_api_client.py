@@ -1,3 +1,5 @@
+from argparse import Namespace
+
 import httpx
 import pytest
 
@@ -247,3 +249,21 @@ async def test_remove_worker_tolerates_a_broken_worker_lookup(client, monkeypatc
         await client.remove_worker(worker_url=WORKER_URL, use_legacy_api=False)
 
     assert "Failed to fetch workers list" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "version, use_miles_router, expected",
+    [
+        ("0.2.1", False, True),
+        ("0.2.2", False, False),
+        ("0.3.1", False, False),
+        ("0.3.1", True, True),
+    ],
+)
+def test_legacy_router_api_decision(version, use_miles_router, expected, monkeypatch):
+    """0.2.1 is the last version with the query-string API; --use-miles-router pins it too."""
+    from miles.backends.sglang_utils.sglang_router_api_client import use_legacy_router_api
+
+    monkeypatch.setattr(sglang_router, "__version__", version)
+
+    assert use_legacy_router_api(Namespace(use_miles_router=use_miles_router)) is expected

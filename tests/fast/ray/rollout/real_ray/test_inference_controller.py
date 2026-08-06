@@ -12,11 +12,27 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.inference_controller import InferenceController
 
 
+class _NoopRouterApiClient:
+    """The rollout process registers its engines for real; ``sglang_router_ip``
+    here is a placeholder that keeps ``start_router`` short-circuited, and no
+    router listens on it."""
+
+    def __init__(self, router_url: str):
+        self.router_url = router_url
+
+    async def add_worker(self, **kwargs):
+        return None
+
+    async def remove_worker(self, **kwargs):
+        return None
+
+
 @pytest.fixture
 def patch_low_level(monkeypatch, mock_engine_http_servers):
     """Replace, in the test process:
     - ``SGLangEngine`` → ``MockSGLangEngine`` so created actors are mocks.
     - addr allocator → deterministic stub pointing at the mock http servers.
+    - ``SGLangRouterApiClient`` → no-op (no router runs at the placeholder address).
     - ``start_session_server`` → no-op (the production default touches network)."""
     import miles.ray.rollout.inference_controller as ictl
     import miles.ray.rollout.rollout_server as rsrv
@@ -50,6 +66,7 @@ def patch_low_level(monkeypatch, mock_engine_http_servers):
         )
 
     monkeypatch.setattr(sg, "allocate_rollout_engine_addr_and_ports_normal", _fake_alloc)
+    monkeypatch.setattr(sg, "SGLangRouterApiClient", _NoopRouterApiClient)
     monkeypatch.setattr(ictl, "start_session_server", lambda args: None)
 
 
@@ -398,7 +415,7 @@ class TestCheckWeights:
                 assert engine_result == {"mock": True}
 
         updatable_urls = {
-            engine.server_url
+            engine.addr_info.server_url
             for srv in controller.servers.values()
             if srv.update_weights
             for group in srv.server_groups
@@ -406,7 +423,7 @@ class TestCheckWeights:
             if engine.is_allocated
         }
         frozen_urls = {
-            engine.server_url
+            engine.addr_info.server_url
             for srv in controller.servers.values()
             if not srv.update_weights
             for group in srv.server_groups

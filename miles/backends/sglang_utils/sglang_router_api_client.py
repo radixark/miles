@@ -10,6 +10,10 @@ from miles.utils.http_utils import GeneralHttpClientProvider
 logger = logging.getLogger(__name__)
 
 
+def use_legacy_router_api(args) -> bool:
+    return parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router
+
+
 @dataclasses.dataclass(frozen=True)
 class SGLangRouterApiClient:
     router_url: str
