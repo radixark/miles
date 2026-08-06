@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import numpy
 import pytest
 
-from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 def _make_sample(
@@ -246,6 +246,24 @@ class TestWeightVersions:
         restored = Sample.from_dict(s.to_dict())
         assert restored.weight_versions == s.weight_versions
         assert all(isinstance(span, WeightVersionSpan) for span in restored.all_weight_version_spans)
+
+    def test_from_dict_keeps_pre_span_dumps_loadable(self):
+        """Dumps predating per-call spans load without misparsing their flat version strings."""
+        restored = Sample.from_dict({"status": "completed", "weight_versions": ["v1", "v2"], "tokens": [1, 2]})
+        assert restored.weight_versions == []
+        assert getattr(restored, LEGACY_WEIGHT_VERSIONS_KEY) == ["v1", "v2"]
+
+    def test_from_dict_reads_current_dumps_unchanged(self):
+        """A dump written with per-call spans still round-trips into the typed structure."""
+        restored = Sample.from_dict(
+            {
+                "status": "completed",
+                "weight_versions": [[{"version": "v1", "abs_start": 0, "abs_end": 2}]],
+                "tokens": [1, 2],
+            }
+        )
+        assert restored.weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 0, 2)])]
+        assert not hasattr(restored, LEGACY_WEIGHT_VERSIONS_KEY)
 
     def test_oldest_weight_version_reads_all_spans(self):
         """oldest_weight_version takes the minimum numeric version across every span."""
