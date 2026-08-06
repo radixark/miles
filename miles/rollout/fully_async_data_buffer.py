@@ -106,7 +106,8 @@ class DefaultDataBuffer(DataBuffer):
 
     async def put(self, input: DataBufferInput) -> None:
         if input.weight_version is not None:
-            self._latest_weight_version = max(self._latest_weight_version or 0, input.weight_version)
+            if self._latest_weight_version is None or input.weight_version > self._latest_weight_version:
+                self._latest_weight_version = input.weight_version
         async with self._cond:
             if self._evict_on_overflow:
                 self._entries.append(input)
@@ -161,11 +162,12 @@ class DefaultDataBuffer(DataBuffer):
         while self._entries:
             keys = [self._eviction_key(entry.group) for entry in self._entries]
             index = keys.index(min(keys))
-            # keys[index][0]: stalest group's oldest version, inf if unrecorded
+            oldest = group_oldest_weight_version(self._entries[index].group)
             if_exceed_staleness = (
                 self._max_staleness is not None
                 and self._latest_weight_version is not None
-                and self._latest_weight_version - keys[index][0] > self._max_staleness
+                and oldest is not None
+                and self._latest_weight_version - oldest > self._max_staleness
             )
             if not if_exceed_staleness and len(self._entries) <= self._capacity:
                 return

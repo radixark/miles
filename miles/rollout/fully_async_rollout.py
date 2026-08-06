@@ -2,9 +2,9 @@
 
 A persistent background worker keeps up to ``rollout_batch_size`` prompt groups in
 flight at all times; each training step only drains already-completed groups from the
-worker's output queue. Rollout production and training consumption run in parallel,
-so per-iteration wall time moves from ``rollout_time + train_time`` toward
-``max(rollout_time, train_time)``.
+data buffer (see ``fully_async_data_buffer.py``). Rollout production and training
+consumption run in parallel, so per-iteration wall time moves from
+``rollout_time + train_time`` toward ``max(rollout_time, train_time)``.
 
 Selected by ``train_async.py --fully-async``, which also requires the class-based
 rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``).
