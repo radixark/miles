@@ -65,7 +65,6 @@ async def _create_group(*, num_cells: int) -> RayTrainGroup:
         role="actor",
         with_ref=False,
         inference_controller=None,
-        rollout_executor=None,
     )
 
 
