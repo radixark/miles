@@ -252,7 +252,7 @@ class _FakeWorkerProvider:
         return _stop_watch
 
 
-def _patch_create(
+def _patch_init(
     monkeypatch: pytest.MonkeyPatch, *, provider: _FakeWorkerProvider, servers: dict[str, _RecordingServer]
 ) -> None:
     async def _fake_create_rollout_servers(args: Namespace, **kwargs: Any) -> dict[str, _RecordingServer]:
@@ -264,22 +264,22 @@ def _patch_create(
     )
 
 
-class TestCreateSubscription:
+class TestInitSubscription:
     @pytest.mark.asyncio
-    async def test_create_watches_exactly_the_engine_specs(self, monkeypatch: pytest.MonkeyPatch):
-        """create must subscribe to engine specs only; a router spec here is reconciled as an engine."""
+    async def test_init_watches_exactly_the_engine_specs(self, monkeypatch: pytest.MonkeyPatch):
+        """init must subscribe to engine specs only; a router spec here is reconciled as an engine."""
         args = make_args()
         provider = _FakeWorkerProvider([])
-        _patch_create(monkeypatch, provider=provider, servers={"default": _RecordingServer()})
+        _patch_init(monkeypatch, provider=provider, servers={"default": _RecordingServer()})
 
-        await InferenceController.create(args)
+        await InferenceController(args).init()
 
         assert provider.watched_spec_names == compute_engine_spec_names(args)
         assert compute_router_spec_name(0) not in provider.watched_spec_names
         assert "session-server" not in provider.watched_spec_names
 
     @pytest.mark.asyncio
-    async def test_create_survives_a_router_cell_offered_by_the_provider(self, monkeypatch: pytest.MonkeyPatch):
+    async def test_init_survives_a_router_cell_offered_by_the_provider(self, monkeypatch: pytest.MonkeyPatch):
         """A router cell carries no engine meta, so a too-wide subscription kills startup in the initial sync."""
         args = make_args()
         router_info = CellInfo(
@@ -293,9 +293,9 @@ class TestCreateSubscription:
         engine_info = _make_cell_info(model_id="default")
         provider = _FakeWorkerProvider([router_info, engine_info])
         srv = _RecordingServer()
-        _patch_create(monkeypatch, provider=provider, servers={"default": srv})
+        _patch_init(monkeypatch, provider=provider, servers={"default": srv})
 
-        await InferenceController.create(args)
+        await InferenceController(args).init()
 
         assert srv.calls == [("add", engine_info.cell_id)]
 

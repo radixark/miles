@@ -37,27 +37,6 @@ _CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
 class TrainerController:
-    @staticmethod
-    async def create(
-        args,
-        *,
-        inference_controller: object | None,
-        role: str,
-        with_ref: bool,
-        with_opd_teacher: bool = False,
-    ) -> "TrainerController":
-        group = TrainerController(
-            args=args,
-            inference_controller=inference_controller,
-            role=role,
-            with_ref=with_ref,
-            with_opd_teacher=with_opd_teacher,
-        )
-        provider: BaseWorkerProvider = RayWorkerProvider.create()
-        group._watcher_disposer = await provider.watch_cells(group._reconcile, spec_names=[group._spec_name])
-        await group._wait_expected_num_cells()
-        return group
-
     def __init__(
         self,
         args,
@@ -304,8 +283,13 @@ class TrainerController:
 
     async def init(self):
         """
-        Allocate GPU resourced and initialize model, optimzier, local ckpt, etc.
+        Observe the controller's cells, then allocate GPU resources and initialize
+        model, optimzier, local ckpt, etc.
         """
+        provider: BaseWorkerProvider = RayWorkerProvider.create()
+        self._watcher_disposer = await provider.watch_cells(self._reconcile, spec_names=[self._spec_name])
+        await self._wait_expected_num_cells()
+
         cell_results = await asyncio.gather(
             *[
                 cell.init(

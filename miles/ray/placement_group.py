@@ -125,7 +125,7 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
 
 
 async def create_training_models(args, inference_controller, rollout_executor):
-    actor_model = await TrainerController.create(
+    actor_model = TrainerController(
         args=args,
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
@@ -135,7 +135,7 @@ async def create_training_models(args, inference_controller, rollout_executor):
     actor_start_rollout_ids = await actor_model.init()
 
     if args.use_critic:
-        critic_model = await TrainerController.create(
+        critic_model = TrainerController(
             args=compute_critic_args(args),
             role="critic",
             with_ref=False,
@@ -164,7 +164,8 @@ class RolloutComponents(NamedTuple):
 
 
 async def create_rollout_components(args) -> RolloutComponents:
-    inference_controller = await InferenceController.create(args)
+    inference_controller = InferenceController(args)
+    await inference_controller.init()
 
     rollout_executor = RolloutExecutor.options(
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})

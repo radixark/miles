@@ -45,13 +45,15 @@ def fake_components():
     controller.check_weights = AsyncMock()
     controller.offload = AsyncMock()
 
-    async def build_controller(args):
-        args.sglang_router_ip = "10.0.0.1"
-        args.sglang_router_port = 4321
+    def construct_controller(args):
+        async def _init():
+            args.sglang_router_ip = "10.0.0.1"
+            args.sglang_router_port = 4321
+
+        controller.init = AsyncMock(side_effect=_init)
         return controller
 
-    controller_cls = MagicMock(name="InferenceController")
-    controller_cls.create = AsyncMock(side_effect=build_controller)
+    controller_cls = MagicMock(name="InferenceController", side_effect=construct_controller)
 
     executor_handle = MagicMock(name="rollout_executor")
     executor_cls = _FakeExecutorClass(executor_handle)

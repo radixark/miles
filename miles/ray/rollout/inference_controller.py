@@ -37,31 +37,6 @@ CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 @enforce_lock_discipline
 class InferenceController:
-    @staticmethod
-    @lock_exempt
-    async def create(args) -> "InferenceController":
-        controller = InferenceController(args)
-        if not args.debug_train_only:
-            controller.servers = await create_rollout_servers(
-                args,
-                context_lock=controller.context_lock,
-                global_health_checker_activeness=controller._health_checker_activeness.get,
-            )
-
-            # TODO: may change to InferenceController.init(engine_provider, ...) later
-            provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
-            controller._watcher_disposers.append(
-                await provider.watch_cells(controller._reconcile, spec_names=compute_engine_spec_names(args))
-            )
-            controller._ticker = SimpleTicker(controller._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
-
-            dashboard_hooks.register_router(args)
-            await start_session_server(args)
-
-            await asyncio.gather(*[srv.wait_expected_num_cells() for srv in controller.servers.values()])
-
-        return controller
-
     @lock_exempt
     def __init__(self, args):
         self.args = args
@@ -70,6 +45,29 @@ class InferenceController:
         self._watcher_disposers: list[StopWatchFn] = []
         self._health_checker_activeness = ActivenessTracker(active=True)
         self._ticker: SimpleTicker | None = None
+
+    @lock_exempt
+    async def init(self) -> None:
+        if self.args.debug_train_only:
+            return
+
+        self.servers = await create_rollout_servers(
+            self.args,
+            context_lock=self.context_lock,
+            global_health_checker_activeness=self._health_checker_activeness.get,
+        )
+
+        # TODO: may change to InferenceController.init(engine_provider, ...) later
+        provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
+        self._watcher_disposers.append(
+            await provider.watch_cells(self._reconcile, spec_names=compute_engine_spec_names(self.args))
+        )
+        self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
+
+        dashboard_hooks.register_router(self.args)
+        await start_session_server(self.args)
+
+        await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
