@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 import traceback
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from miles.utils.tracking_utils.structured_log import log_structured
@@ -15,9 +17,17 @@ logger = logging.getLogger(__name__)
 
 
 class RpcCallExecutor:
-    def __init__(self, *, worker: object) -> None:
+    def __init__(self, *, worker: object, specs: dict[str, RpcMethodSpec]) -> None:
         self._worker = worker
+        self._executors = {
+            group: ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"rpc-{group}")
+            for group in sorted({spec.concurrency_group for spec in specs.values() if not spec.is_async})
+        }
         self._background_tasks: set[asyncio.Task[None]] = set()
+
+    @property
+    def concurrency_groups(self) -> list[str]:
+        return sorted(self._executors)
 
     def start(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any], call_id: str, finish: Callable[..., None]) -> None:
         task = asyncio.create_task(self._run(spec=spec, kwargs=kwargs, call_id=call_id, finish=finish))
@@ -29,7 +39,7 @@ class RpcCallExecutor:
     ) -> None:
         started_at = time.monotonic()
         log_fields = {"tag": "rpc", "op": "execute", "method": spec.name, "call": call_id}
-        log_structured(logger.debug, phase="start", **log_fields)
+        log_structured(logger.debug, phase="start", **log_fields, group=spec.concurrency_group)
 
         try:
             result = await self._call_worker(spec=spec, kwargs=kwargs)
@@ -44,4 +54,9 @@ class RpcCallExecutor:
         finish(outcome=outcome)
 
     async def _call_worker(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> Any:
-        return await getattr(self._worker, spec.name)(**kwargs)
+        method = getattr(self._worker, spec.name)
+        if spec.is_async:
+            return await method(**kwargs)
+        return await asyncio.get_running_loop().run_in_executor(
+            self._executors[spec.concurrency_group], functools.partial(method, **kwargs)
+        )
