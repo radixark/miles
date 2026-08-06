@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 import miles.utils.workers.process_utils as process_utils
-from miles.utils.workers.process_utils import _terminate_process_tree, launch_bound_subprocess
+from miles.utils.workers.process_utils import kill_process_tree, launch_bound_subprocess, terminate_process_tree
 
 _SLEEP_FOREVER = "import time; time.sleep(300)"
 
@@ -40,10 +40,10 @@ def _read_when_present(path: Path, *, deadline_seconds: float = 15.0) -> str:
 
 class TestTerminateProcessTree:
     def test_kills_the_child(self):
-        """A launched sleeper is gone after _terminate_process_tree."""
+        """A launched sleeper is gone after terminate_process_tree."""
         process = launch_bound_subprocess([sys.executable, "-c", _SLEEP_FOREVER], envs={})
         assert _is_alive(process.pid)
-        _terminate_process_tree(process)
+        terminate_process_tree(process)
         assert not _is_alive(process.pid)
 
     def test_kills_the_grandchild_too(self, tmp_path):
@@ -58,7 +58,7 @@ class TestTerminateProcessTree:
         process = launch_bound_subprocess([sys.executable, "-c", child_code], envs={})
         grandchild_pid = int(_read_when_present(pid_file))
 
-        _terminate_process_tree(process)
+        terminate_process_tree(process)
         assert _wait_until(lambda: not _is_alive(grandchild_pid))
 
     def test_sigkills_grandchild_after_leader_exits(self, tmp_path: Path) -> None:
@@ -79,7 +79,7 @@ class TestTerminateProcessTree:
         grandchild_pid = int(_read_when_present(pid_file))
 
         try:
-            _terminate_process_tree(process, sigkill_timeout=0.1)
+            terminate_process_tree(process, sigkill_timeout=0.1)
             assert _wait_until(lambda: not _is_alive(grandchild_pid), deadline_seconds=1.0)
         finally:
             try:
@@ -109,7 +109,7 @@ class TestTerminateProcessTree:
         process.wait(timeout=15)
 
         try:
-            _terminate_process_tree(process, sigkill_timeout=0.1)
+            terminate_process_tree(process, sigkill_timeout=0.1)
             assert _wait_until(lambda: not _is_alive(grandchild_pid), deadline_seconds=1.0)
         finally:
             try:
@@ -129,7 +129,7 @@ class TestTerminateProcessTree:
         process = launch_bound_subprocess([sys.executable, "-c", code], envs={})
         _read_when_present(ready_file)
 
-        _terminate_process_tree(process, sigkill_timeout=0.1)
+        terminate_process_tree(process, sigkill_timeout=0.1)
 
         assert process.returncode == -signal.SIGKILL
 
@@ -137,8 +137,21 @@ class TestTerminateProcessTree:
         """Terminating an exited process is safe and idempotent."""
         process = launch_bound_subprocess([sys.executable, "-c", "pass"], envs={})
         process.wait(timeout=15)
-        _terminate_process_tree(process)
-        _terminate_process_tree(process)
+        terminate_process_tree(process)
+        terminate_process_tree(process)
+
+
+class TestKillProcessTree:
+    def test_kills_the_child_without_a_term_grace_period(self):
+        """The kill is a crash simulation, so the child gets SIGKILL, not SIGTERM."""
+        trap_term = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"
+        process = launch_bound_subprocess([sys.executable, "-c", trap_term], envs={})
+        assert _is_alive(process.pid)
+
+        kill_process_tree(process)
+
+        process.wait(timeout=15)
+        assert process.returncode == -signal.SIGKILL
 
 
 class TestLaunchBoundSubprocess:

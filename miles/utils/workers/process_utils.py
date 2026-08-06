@@ -1,10 +1,13 @@
 import atexit
 import ctypes
+import logging
 import os
 import signal
 import subprocess
 import sys
 from functools import partial
+
+logger = logging.getLogger(__name__)
 
 _PR_SET_PDEATHSIG = 1
 
@@ -19,18 +22,24 @@ def launch_bound_subprocess(argv: list[str], *, envs: dict[str, str]) -> subproc
         start_new_session=True,
         preexec_fn=partial(_set_parent_death_signal, expected_parent_pid=parent_pid) if _LIBC is not None else None,
     )
-    atexit.register(_terminate_process_tree, process)
+    atexit.register(terminate_process_tree, process)
     return process
 
 
-def _terminate_process_tree(process: subprocess.Popen, *, sigkill_timeout: float = 5.0) -> None:
+def terminate_process_tree(process: subprocess.Popen, *, sigkill_timeout: float = 5.0) -> None:
     _signal_process_group(process.pid, signal.SIGTERM)
     try:
         process.wait(timeout=sigkill_timeout)
     except subprocess.TimeoutExpired:
-        pass
+        logger.warning(
+            "Process %d did not exit within %.1fs after SIGTERM; escalating to SIGKILL", process.pid, sigkill_timeout
+        )
     _signal_process_group(process.pid, signal.SIGKILL)
     process.wait()
+
+
+def kill_process_tree(process: subprocess.Popen) -> None:
+    _signal_process_group(process.pid, signal.SIGKILL)
 
 
 def _signal_process_group(process_group_id: int, signal_number: int) -> None:
