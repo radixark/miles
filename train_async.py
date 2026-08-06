@@ -9,7 +9,7 @@ from miles.utils import object_store
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
-from miles.utils.data import remove_rollout_data_refs
+from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.ft_utils.api_server.server import start_api_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
@@ -96,6 +96,7 @@ async def train(args):
                 await actor_model.train(rollout_id, rollout_data_curr_ref, external_data=values)
                 if args.offload_train:
                     await actor_model.offload()
+            remove_train_output_refs(values)
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
         remove_rollout_data_refs(args, rollout_data_curr_ref)

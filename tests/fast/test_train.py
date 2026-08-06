@@ -2,9 +2,16 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 import train as train_driver
-from tests.fast.fixtures.driver_fakes import FakeInferenceController, FakeRolloutExecutor, FakeTrainingModel
+from tests.fast.fixtures.driver_fakes import (
+    FakeInferenceController,
+    FakeObjectStore,
+    FakeRolloutExecutor,
+    FakeTrainingModel,
+)
+
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.utils import object_store
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -116,6 +123,32 @@ class TestWeightEqualityCheck:
         await train_driver.train(args)
 
         assert components.inference_controller.check_weights_calls == []
+
+
+class TestCriticValuesHandoff:
+    async def test_critic_outputs_reach_the_actor_and_are_released_after_training(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Critic value references reach actor training and remain live until it consumes them."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, use_critic=True)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        store = FakeObjectStore()
+        monkeypatch.setattr(object_store, "_INSTANCE", store)
+        ref = store.put({"values": ["critic-values"]})
+        values = [TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=ref)]
+        components.critic_model.train_outputs[0] = values
+
+        def consume_critic_values(external_data: list[TrainStepOutput]) -> None:
+            assert external_data is values
+            assert store.get(external_data[0].values).value == {"values": ["critic-values"]}
+
+        components.actor_model.consume_external_data = consume_critic_values
+
+        await train_driver.train(args)
+
+        assert store.consumed == [ref]
+        assert not store.contains(ref)
 
 
 class TestTerminalLifecycle:

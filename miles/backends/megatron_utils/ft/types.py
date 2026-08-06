@@ -9,7 +9,7 @@ except ImportError:
 
 
 if TYPE_CHECKING:
-    from miles.utils.ray_utils import Box
+    from miles.utils.object_store import StoreObjectRef
 
 
 class TrainStepOutcome(StrEnum):
@@ -20,4 +20,4 @@ class TrainStepOutcome(StrEnum):
 @dataclass(frozen=True)
 class TrainStepOutput:
     outcome: TrainStepOutcome
-    values: "Box | None" = None
+    values: "StoreObjectRef | None" = None
