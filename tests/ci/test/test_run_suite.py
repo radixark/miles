@@ -302,6 +302,18 @@ class TestWorkflowScopeSeam:
         workflow = self._workflow()
         assert "github.event.schedule || github.run_id" in workflow
 
+    def test_closed_pr_only_cancels_existing_run(self):
+        workflow = self._workflow()
+        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
+        assert (
+            "group: ${{ github.workflow }}-${{ github.event.number || github.event.schedule || github.run_id }}"
+            in workflow
+        )
+
+        for job_name in ("resolve-ci-policy", "docker-paths", "docker-build"):
+            job_header = workflow.split(f"  {job_name}:", 1)[1].split("    runs-on:", 1)[0]
+            assert "github.event.action != 'closed'" in job_header
+
 
 class TestRocmWorkflowScopeSeam:
     @staticmethod
