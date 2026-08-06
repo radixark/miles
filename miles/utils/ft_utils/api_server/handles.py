@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 
 import ray
 
@@ -10,117 +11,126 @@ from miles.utils.ft_utils.api_server.models import Cell, CellMetadata, CellSpec
 from miles.utils.test_utils.fault_injector import FailureMode
 
 
-class _CellHandle(abc.ABC):
-    @property
-    def cell_id(self) -> str:
-        return f"{self.cell_type}-{self.cell_key}"
+_ACTOR_CELL_ID_PREFIX = "actor-"
 
+
+class _CellHandler(abc.ABC):
     @property
     @abc.abstractmethod
     def cell_type(self) -> str: ...
 
-    @property
     @abc.abstractmethod
-    def cell_key(self) -> str: ...
+    async def list_cell_ids(self) -> list[str]: ...
 
     @abc.abstractmethod
-    async def get_cell(self) -> Cell: ...
+    async def get_cell(self, cell_id: str) -> Cell: ...
 
     @abc.abstractmethod
-    async def suspend(self) -> None: ...
+    async def suspend(self, cell_id: str) -> None: ...
 
     @abc.abstractmethod
-    async def resume(self) -> None: ...
+    async def resume(self, cell_id: str) -> None: ...
 
-    async def inject_fault(self, *, mode: FailureMode, sub_index: int) -> None:
+    async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
         raise NotImplementedError(f"{type(self).__name__} does not support fault injection")
 
+    async def list_cells(self) -> list[Cell]:
+        cell_ids = await self.list_cell_ids()
+        return list(await asyncio.gather(*(self.get_cell(cell_id) for cell_id in cell_ids)))
 
-class _ActorCellHandle(_CellHandle):
-    def __init__(self, *, group: RayTrainGroup, cell_index: int) -> None:
+    def _compute_metadata(self, cell_id: str) -> CellMetadata:
+        return CellMetadata(
+            name=cell_id,
+            labels={
+                "miles.io/cell-type": self.cell_type,
+                "miles.io/cell-id": cell_id,
+            },
+        )
+
+
+def _compute_actor_cell_id(cell_index: int) -> str:
+    return f"{_ACTOR_CELL_ID_PREFIX}{cell_index}"
+
+
+def _parse_actor_cell_index(cell_id: str) -> int:
+    assert cell_id.startswith(_ACTOR_CELL_ID_PREFIX), f"{cell_id=}"
+    return int(cell_id[len(_ACTOR_CELL_ID_PREFIX) :])
+
+
+class _ActorCellHandler(_CellHandler):
+    def __init__(self, *, group: RayTrainGroup) -> None:
         self._group = group
-        self._cell_index = cell_index
 
     @property
     def cell_type(self) -> str:
         return "actor"
 
-    @property
-    def cell_key(self) -> str:
-        return str(self._cell_index)
+    async def list_cell_ids(self) -> list[str]:
+        return [_compute_actor_cell_id(cell_index) for cell_index in range(len(self._group._cells))]
 
-    async def get_cell(self) -> Cell:
-        cell = self._group._cells[self._cell_index]
+    async def get_cell(self, cell_id: str) -> Cell:
+        cell = self._find_cell(cell_id)
         return Cell(
-            metadata=CellMetadata(
-                name=self.cell_id,
-                labels={
-                    "miles.io/cell-type": "actor",
-                    "miles.io/cell-index": self.cell_key,
-                },
-            ),
+            metadata=self._compute_metadata(cell_id),
             spec=CellSpec(suspend=cell.is_stopped),
             status=cell.cell_status(),
         )
 
-    async def suspend(self) -> None:
-        self._group.stop_cell(self._cell_index)
+    async def suspend(self, cell_id: str) -> None:
+        self._group.stop_cell(_parse_actor_cell_index(cell_id))
 
-    async def resume(self) -> None:
-        self._group.start_cell(self._cell_index)
+    async def resume(self, cell_id: str) -> None:
+        self._group.start_cell(_parse_actor_cell_index(cell_id))
 
-    async def inject_fault(self, *, mode: FailureMode, sub_index: int) -> None:
-        """Inject a fault into a specific actor of this cell. Fire-and-forget."""
-        cell = self._group._cells[self._cell_index]
+    async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        cell = self._find_cell(cell_id)
         if not cell.is_alive:
-            raise RuntimeError(f"Cell {self._cell_index} is not alive, cannot inject fault")
+            raise RuntimeError(f"Cell {cell_id} is not alive, cannot inject fault")
         actors = cell._get_actor_handles()
         if sub_index < 0 or sub_index >= len(actors):
-            raise IndexError(
-                f"sub_index {sub_index} out of range for cell {self._cell_index} " f"(has {len(actors)} actors)"
-            )
+            raise IndexError(f"sub_index {sub_index} out of range for cell {cell_id} (has {len(actors)} actors)")
         actors[sub_index].inject_fault.remote(mode.value)
 
+    def _find_cell(self, cell_id: str):
+        return self._group._cells[_parse_actor_cell_index(cell_id)]
 
-class _RolloutCellHandle(_CellHandle):
+
+class _RolloutCellHandler(_CellHandler):
     def __init__(
         self,
         *,
         worker_manager: ray.actor.ActorHandle,
         inference_controller: object,
-        rollout_cell_id: str,
     ) -> None:
         self._worker_manager = worker_manager
         self._inference_controller = inference_controller
-        self._rollout_cell_id = rollout_cell_id
 
     @property
     def cell_type(self) -> str:
         return "rollout"
 
-    @property
-    def cell_key(self) -> str:
-        return self._rollout_cell_id
+    async def list_cell_ids(self) -> list[str]:
+        return sorted(self._inference_controller.get_cell_statuses())
 
-    async def get_cell(self) -> Cell:
+    async def list_cells(self) -> list[Cell]:
         statuses = self._inference_controller.get_cell_statuses()
-        status = statuses.get(self._rollout_cell_id) or compute_pending_rollout_cell_status()
+        return [self._compute_cell(cell_id, statuses=statuses) for cell_id in sorted(statuses)]
+
+    async def get_cell(self, cell_id: str) -> Cell:
+        return self._compute_cell(cell_id, statuses=self._inference_controller.get_cell_statuses())
+
+    def _compute_cell(self, cell_id: str, *, statuses: dict[str, object]) -> Cell:
+        status = statuses.get(cell_id) or compute_pending_rollout_cell_status()
         return Cell(
-            metadata=CellMetadata(
-                name=self.cell_id,
-                labels={
-                    "miles.io/cell-type": "rollout",
-                    "miles.io/cell-index": self.cell_key,
-                },
-            ),
+            metadata=self._compute_metadata(cell_id),
             spec=CellSpec(suspend=status.phase == "Suspended"),
             status=status,
         )
 
-    async def suspend(self) -> None:
-        await self._worker_manager.stop_cells.remote([self._rollout_cell_id])
-        self._inference_controller.notify_cell_suspended(self._rollout_cell_id)
+    async def suspend(self, cell_id: str) -> None:
+        await self._worker_manager.stop_cells.remote([cell_id])
+        self._inference_controller.notify_cell_suspended(cell_id)
 
-    async def resume(self) -> None:
-        await self._worker_manager.start_cells.remote([self._rollout_cell_id])
-        self._inference_controller.notify_cell_resumed(self._rollout_cell_id)
+    async def resume(self, cell_id: str) -> None:
+        await self._worker_manager.start_cells.remote([cell_id])
+        self._inference_controller.notify_cell_resumed(cell_id)
