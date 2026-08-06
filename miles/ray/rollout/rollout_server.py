@@ -38,7 +38,7 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
         server_cells: dict[str, ServerCell] = {}
 
-        for group_cfg in model_cfg.server_groups:
+        for group_index, group_cfg in enumerate(model_cfg.server_groups):
             gpus_per_engine = group_cfg.num_gpus_per_engine
             num_gpu_per_engine_local = min(gpus_per_engine, args.num_gpus_per_node)
             num_engines = group_cfg.num_gpus // num_gpu_per_engine_local
@@ -74,6 +74,7 @@ async def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                         gpu_offset=group_cfg.gpu_offset + cell_start * num_gpu_per_engine_local,
                         sglang_overrides=group_cfg.overrides,
                         model_idx=model_idx,
+                        group_index=group_index,
                         server_group_config=group_cfg,
                         cell_index=cell_start // nodes_per_engine,
                         needs_offload=group_cfg.needs_offload,

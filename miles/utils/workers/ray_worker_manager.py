@@ -32,6 +32,15 @@ if TYPE_CHECKING:
 _ACTOR_NAME = "ray_worker_manager"
 
 
+@dataclass(kw_only=True)
+class WorkerInfo:
+    name: str
+    generation: int
+    self_addrs: NamedHostAndPorts
+    gpu_ids: list[int]
+    actor_handle: ray.actor.ActorHandle
+
+
 class RayWorkerManager:
     def __init__(self):
         self.port_allocator = PortAllocator()
@@ -68,6 +77,19 @@ class RayWorkerManager:
 
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
         return {name: [a.self_addrs for c in g.cells for a in c.actors] for name, g in self._group_infos.items()}
+
+    def get_worker_infos(self, spec_name: str, cell_index: int) -> list[WorkerInfo]:
+        cell = self._group_infos[spec_name].cells[cell_index]
+        return [
+            WorkerInfo(
+                name=actor.name,
+                generation=actor.generation,
+                self_addrs=actor.self_addrs,
+                gpu_ids=actor.gpu_ids,
+                actor_handle=actor.actor_handle,
+            )
+            for actor in cell.actors
+        ]
 
     async def _for_all_cells(self, fn: Callable[[_CellManager], Any]):
         await asyncio.gather(*[fn(c) for g in self._group_infos.values() for c in g.cells])
