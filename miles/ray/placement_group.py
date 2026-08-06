@@ -7,10 +7,12 @@ from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
+from miles.ray.specs.inference import create_inference_controller_handle
 from miles.ray.specs.train import compute_critic_args
 from miles.ray.train.group import TrainerController
+from miles.utils.workers.worker_handle import BaseWorkerHandle
+
 from ..utils.ray_utils import compute_ray_pin_head_options
-from .rollout.inference_controller import InferenceController
 from .rollout.rollout_executor import RolloutExecutor
 
 logger = logging.getLogger(__name__)
@@ -125,7 +127,7 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     return ans
 
 
-async def create_training_models(args, inference_controller, rollout_executor):
+async def create_training_models(args, inference_controller: BaseWorkerHandle, rollout_executor):
     actor_model = TrainerController(
         args=args,
         role="actor",
@@ -164,7 +166,7 @@ async def update_weights(actor_model, rollout_executor, *, rollout_id: int | Non
 
 
 class RolloutComponents(NamedTuple):
-    inference_controller: InferenceController
+    inference_controller: BaseWorkerHandle
     rollout_executor: ray.actor.ActorHandle
     num_rollout_per_epoch: int | None
 
@@ -174,7 +176,7 @@ async def create_rollout_components(args) -> RolloutComponents:
         await resolve_router_addrs(args)
         await wait_session_server_ready(args)
 
-    inference_controller = InferenceController(args)
+    inference_controller = create_inference_controller_handle()
     await inference_controller.init()
 
     rollout_executor = RolloutExecutor.options(
