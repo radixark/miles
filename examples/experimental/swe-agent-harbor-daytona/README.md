@@ -13,18 +13,19 @@ It is the `examples/swe-agent` pipeline with two changes:
   is the practical option when the trainer runs on a GPU node where you cannot
   or do not want to run Docker-in-Docker.
 - **terminus-2 agent.** terminus-2 runs as a host process and calls the model
-  endpoint itself, rather than from inside the sandbox. It appends both `user`
-  and `tool` turns, which the session server must be told to allow.
+  endpoint itself, rather than from inside the sandbox, so the model endpoint
+  must be reachable from the agent-server host.
 
-Everything else — TITO, the session server, GRPO, the reward path — is shared
-with `examples/swe-agent`, and `run.py` imports that example's `generate.py` and
-`swe_agent_function.py` rather than duplicating them.
+Everything else — TITO, the session server, GRPO, the reward path — is identical
+to `examples/swe-agent`, and so is the trainer side: this example has no
+launcher of its own and runs `examples/swe-agent/run.py` unchanged. Daytona is
+selected entirely by the agent server's environment, which the trainer never
+sees.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `run.py` | Training launcher for Daytona-backed terminus-2 runs. |
 | `launch_agent_server.sh` | Starts the Harbor agent server in Daytona mode. |
 
 ## 1. Provision Daytona
@@ -91,7 +92,7 @@ server colocated on the same host as the trainer:
 ```bash
 export WANDB_API_KEY=<your-wandb-key>
 
-python examples/experimental/swe-agent-harbor-daytona/run.py \
+python examples/swe-agent/run.py \
     --num-nodes 1 \
     --num-gpus-per-node 8 \
     --skip-prepare \
@@ -107,7 +108,7 @@ python examples/experimental/swe-agent-harbor-daytona/run.py \
     --num-rollout 200 \
     --save-interval 10 \
     --agent-server-url http://127.0.0.1:11000 \
-    --router-external-host <trainer-ip-reachable-from-agent-server> \
+    --router-external-host <trainer-address-reachable-from-agent-server> \
     --save-traces-dir /path/to/traces \
     --wandb-project <your-wandb-project>
 ```
@@ -115,9 +116,12 @@ python examples/experimental/swe-agent-harbor-daytona/run.py \
 For a smoke test, set `--num-rollout 1`.
 
 `--router-external-host` is the address the agent server uses to reach the Miles
-session server and SGLang router. **It must be a numeric IP**: sgl-router parses
-it into a Rust `SocketAddr` and a hostname fails to bind. Ports 30000 and 31000
-must be reachable from the agent-server host.
+session server, substituted into the base URL handed to the agent. It only has
+to resolve from the agent-server host, so a hostname is fine — use one when the
+agent server reaches the trainer over a tailnet or other overlay. Do not confuse
+it with `--miles-host-ip`, which is bound locally on the trainer and must be an
+address that already exists on one of its interfaces. Ports 30000 and 31000 must
+be reachable from the agent-server host.
 
 ## Sizing the per-turn response cap
 
@@ -136,6 +140,11 @@ To size these, compare `rollout/response_len/mean` and `rollout/response_len/max
 against the cap, and keep `AGENT_MAX_INPUT_TOKENS` above the largest observed
 context.
 `--max-seq-len 65536` leaves plenty of headroom to raise both.
+
+`examples/swe-agent/run.py` hardcodes `--rollout-max-response-len 8192`, so raise
+it there; `AGENT_MAX_OUTPUT_TOKENS` is an environment variable on the agent
+server and is set in `launch_agent_server.sh`. Raise the two together — leaving
+either one behind reintroduces the aborts.
 
 ## Verify progress
 
@@ -171,5 +180,5 @@ are written by the trainer itself and are authoritative.
 | `EnvironmentStartTimeoutError` in bursts | Sandbox creation is slow because the account is near its disk quota. |
 | `SingleTurnMaxSeqLenExceededError` | Per-turn output cap too low; see the sizing section. |
 | `ContextLengthExceededError` | `AGENT_MAX_INPUT_TOKENS` below the observed context length. |
-| sgl-router fails to bind | `--router-external-host` is a hostname; it must be a numeric IP. |
+| sgl-router fails to bind | `--miles-host-ip` is not an address the trainer host can bind; leave it unset to auto-detect. |
 | Every trial scores 0 | `metadata.instance_id` values have no matching directory under `HARBOR_TASKS_DIR`. |
