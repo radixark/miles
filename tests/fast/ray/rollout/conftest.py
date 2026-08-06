@@ -79,6 +79,8 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_router_policy=None,
         sglang_router_request_timeout_secs=600,
         sglang_dp_size=1,
+        sglang_pp_size=1,
+        sglang_ep_size=1,
         sglang_speculative_algorithm=None,
         sglang_config=None,
         sglang_model_routers=None,
@@ -98,6 +100,11 @@ def make_args(**overrides: Any) -> Namespace:
         use_fault_tolerance=False,
         rollout_health_check_interval=10.0,
         rollout_health_check_timeout=30.0,
+        # engine launch command
+        seed=42,
+        fp16=False,
+        use_rollout_indexer_replay=False,
+        env_report=None,
         # checkpoint / data source
         hf_checkpoint="/fake/model",
         lora_rank=0,
@@ -306,7 +313,7 @@ def make_dataclass_cells(
 
 
 def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
-    """MagicMock that mimics ``SGLangEngine`` enough for ``addr_allocator``.
+    """MagicMock that mimics the engine ``CommandActor`` enough for ``addr_allocator``.
 
     Mocks ``_get_free_port_block.remote(start_port, count)`` with a
     deterministic ``max(seq, start_port)`` counter so allocator tests can

@@ -6,11 +6,10 @@ from pathlib import Path
 
 import pytest
 import ray
-from tests.fast.ray.rollout.conftest import make_args
 
-from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 from miles.utils.misc import get_free_port
 from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
+from miles.utils.workers.command_actor import CommandActor
 
 # tests/fast/utils/test_utils/test_mock_sglang_engine.py → 4 levels up → repo root
 ROLLOUT_DIR = Path(__file__).resolve().parents[4] / "miles" / "ray" / "rollout"
@@ -32,7 +31,7 @@ def _public_methods(cls) -> set[str]:
     """Public methods (and known semi-private helpers) of ``cls``."""
     if hasattr(cls, "__ray_actor_class__"):
         cls = cls.__ray_actor_class__  # unwrap @ray.remote
-    keep_underscored = {"_get_free_port_block", "_get_node_ip", "_get_gpu_uuids"}
+    keep_underscored = {"_get_free_port_block", "_get_node_ip", "_get_gpu_uuids", "_collect_env_report"}
     return {
         name
         for name, _ in inspect.getmembers(cls, predicate=inspect.isfunction)
@@ -63,7 +62,7 @@ def used_methods() -> set[str]:
 
 class TestApiContractMatchesRealEngine:
     def test_mock_implements_every_method_used_in_rollout_dir(self, used_methods: set[str]) -> None:
-        real_methods = _public_methods(SGLangEngine)
+        real_methods = _public_methods(CommandActor)
         mock_methods = _public_methods(MockSGLangEngine)
 
         must_have = used_methods & real_methods
@@ -78,7 +77,7 @@ class TestApiContractMatchesRealEngine:
         """Mock must not declare methods that rollout code calls but the real
         engine does not implement — that would produce false positives where
         the mock test passes but real code AttributeErrors."""
-        real_methods = _public_methods(SGLangEngine)
+        real_methods = _public_methods(CommandActor)
         mock_methods = _public_methods(MockSGLangEngine)
 
         invented = (mock_methods & used_methods) - real_methods
@@ -87,18 +86,12 @@ class TestApiContractMatchesRealEngine:
             f"do not exist on the real SGLangEngine: {sorted(invented)}."
         )
 
-    def test_signature_compat_for_init(self) -> None:
-        """``init`` is the most important signature to keep aligned because
-        the rollout code passes addr/port kwargs from addr_allocator."""
-        real_sig = inspect.signature(SGLangEngine.init)
-        mock_sig = inspect.signature(MockSGLangEngine.__ray_actor_class__.init)
-        real_params = set(real_sig.parameters) - {"self"}
-        mock_params = set(mock_sig.parameters) - {"self"}
-
-        # Mock accepts **kwargs catch-all; real signature lists explicit params.
-        if "kwargs" not in mock_params:
-            missing = real_params - mock_params
-            assert not missing, f"MockSGLangEngine.init drops real params: {sorted(missing)}"
+    def test_signature_compat_for_run(self) -> None:
+        """``run`` is the most important signature to keep aligned because
+        the rollout code hands it the launch command and env map."""
+        real_sig = inspect.signature(CommandActor.run)
+        mock_sig = inspect.signature(MockSGLangEngine.__ray_actor_class__.run)
+        assert set(real_sig.parameters) - {"self"} == set(mock_sig.parameters) - {"self"}
 
     def test_signature_compat_for_every_shared_method(self) -> None:
         """Every method shared by mock and real engine declares the same parameter names, kinds and default-ness."""
@@ -127,28 +120,23 @@ class TestRealRayActorLifecycle:
     def test_actor_construction_and_method_round_trip(self, ray_local_mode):
         """End-to-end: every method rollout code touches round-trips through
         Ray with the right args, and the call log preserves ordering."""
-        args = make_args(rollout_num_gpus_per_engine=1)
-        actor = MockSGLangEngine.options(num_cpus=0.1, num_gpus=0).remote(
-            args,
-            rank=0,
-            worker_type="regular",
-            base_gpu_id=0,
-            sglang_overrides={},
-            num_gpus_per_engine=1,
-        )
+        actor = MockSGLangEngine.options(num_cpus=0.1, num_gpus=0).remote()
         try:
-            ray.get(actor.init.remote(host="127.0.0.1", port=get_free_port(start_port=20000)))
+            port = get_free_port(start_port=20000)
+            cmd = f"python -m sglang.launch_server --model-path /fake/model --host 127.0.0.1 --port {port}"
+            ray.get(actor.run.remote(cmd=cmd, envs={}))
             ray.get(actor._get_free_port_block.remote(start_port=20100, count=1))
-            ray.get(actor.simulate_crash.remote())
+            ray.get(actor.kill_subprocess.remote())
 
             calls = ray.get(actor.get_calls.remote())
             method_names = [name for name, _, _ in calls]
             assert method_names == [
-                "init",
+                "run",
                 "_get_free_port_block",
-                "simulate_crash",
-                "shutdown",
+                "kill_subprocess",
             ]
+            server_args = ray.get(actor.get_server_args.remote())
+            assert server_args["host"] == "127.0.0.1" and server_args["port"] == port
         finally:
             try:
                 ray.get(actor.shutdown.remote())
@@ -158,15 +146,7 @@ class TestRealRayActorLifecycle:
     def test_fault_injection_round_trips_through_ray(self, ray_local_mode):
         """``set_fault`` schedules an exception; it must surface back via
         ``ray.get`` and be one-shot (cleared after firing)."""
-        args = make_args(rollout_num_gpus_per_engine=1)
-        actor = MockSGLangEngine.options(num_cpus=0.1, num_gpus=0).remote(
-            args,
-            rank=0,
-            worker_type="regular",
-            base_gpu_id=0,
-            sglang_overrides={},
-            num_gpus_per_engine=1,
-        )
+        actor = MockSGLangEngine.options(num_cpus=0.1, num_gpus=0).remote()
         try:
             ray.get(actor.set_fault.remote("shutdown", RuntimeError("boom")))
             with pytest.raises(ray.exceptions.RayTaskError, match="boom"):
