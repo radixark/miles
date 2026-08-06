@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import TypeAdapter
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.naming import compute_cell_id, parse_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 if TYPE_CHECKING:
@@ -20,8 +21,9 @@ class FTTestAction(FrozenStrictBaseModel):
     rank: int = 0  # for actor-level actions: which rank within the cell
     attempt: int = 0  # for actor-level actions: which attempt (0 = first try)
 
-    def resolve_cell_id(self, cell_ids: list[str]) -> str:
-        return cell_ids[self.cell_index]
+    def resolve_cell_id(self, *, spec_name: str, num_cells: int) -> str:
+        cell_index = self.cell_index if self.cell_index >= 0 else num_cells + self.cell_index
+        return compute_cell_id(spec_name=spec_name, cell_index=cell_index)
 
 
 _ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestAction])
@@ -53,7 +55,9 @@ class FTTestActionGroupExecutor:
     async def run_after_step(self, rollout_id: int) -> None:
         for action in self._actions:
             if action.at_rollout == rollout_id:
-                cell_id = action.resolve_cell_id(self._group.cell_ids)
+                cell_id = action.resolve_cell_id(
+                    spec_name=self._group.spec_name, num_cells=self._group.expected_num_cells
+                )
                 logger.info("FT test action: %s cell %s after rollout %d", action.action, cell_id, rollout_id)
 
                 worker_manager = RayWorkerManager.get_handle()
@@ -90,7 +94,10 @@ class FTTestActionActorExecutor:
             if (
                 action.at_rollout == rollout_id
                 and action.attempt == attempt
-                and action.resolve_cell_id(self._cell_ids) == self._cell_id
+                and action.resolve_cell_id(
+                    spec_name=parse_cell_id(self._cell_id).spec_name, num_cells=len(self._cell_ids)
+                )
+                == self._cell_id
                 and action.rank == self._rank
             ):
                 msg = (
