@@ -188,7 +188,7 @@ local/
 .idea
 *.iml
 
-glm/
+/glm/
 _examples_synced/
 .env
 .DS_Store

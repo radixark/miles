@@ -117,6 +117,7 @@
         "group": "GLM",
         "root": "models/glm/index",
         "pages": [
+         "models/glm/glm5-2",
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
          "models/glm/glm4-5",
