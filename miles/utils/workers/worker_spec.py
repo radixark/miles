@@ -7,6 +7,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.backend_capability.base import BackendCapability
 
 RPC_PORT_NAME = "rpc"
+MASTER_PORT_NAME = "master"
 DEFAULT_RPC_PORT = 8000
 
 
@@ -67,12 +68,15 @@ class WorkerCtorContext(WorkerLaunchContext):
     capability: BackendCapability
 
 
+SpecMetaFn = Callable[[WorkerMetaContext], dict[str, Any]]
+
+
 class BaseWorkerSpec(FrozenStrictBaseModel):
     name: str
     port_infos: list[PortInfo]
     env_var: Callable[[WorkerLaunchContext], dict[str, str]]
     scheduling: SchedulingSpec
-    meta: Callable[[WorkerMetaContext], dict[str, Any]] | None = None
+    meta: SpecMetaFn | None = None
 
 
 class HostAndPort(FrozenStrictBaseModel):

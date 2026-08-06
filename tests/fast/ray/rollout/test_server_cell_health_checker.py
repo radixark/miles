@@ -25,6 +25,7 @@ from miles.utils.ft_utils.health_checker import (
     SimpleHealthCheckerConfig,
 )
 from miles.utils.test_utils.clock import FakeClock
+from miles.utils.workers.worker_spec import HostAndPort
 
 pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
 
@@ -46,12 +47,21 @@ def _make_meta(*, needs_offload: bool = False) -> ServerCellMetadata:
     )
 
 
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> dict[str, HostAndPort]:
+        return dict(
+            primary=HostAndPort(host="10.0.0.1", port=30000),
+            gate=HostAndPort(host="10.0.0.1", port=31000),
+        )
+
+
 def _make_cell(*, ft_components: list[str], global_activeness: bool = True, **arg_overrides: Any) -> ServerCell:
     return track_server_cell(
         ServerCell(
             args=make_args(ft_components=ft_components, **arg_overrides),
             meta=_make_meta(),
             router_api_client=MagicMock(),
+            provider=_StubProvider(),
             global_health_checker_activeness=lambda: ActiveAndEpoch(active=global_activeness, epoch=0),
         )
     )
@@ -305,6 +315,7 @@ async def _make_controller_with_serving_cell(
         server_cells={},
         args=args,
         context_lock=controller.context_lock,
+        engine_provider=_StubProvider(),
         global_health_checker_activeness=controller._health_checker_activeness.get,
     )
     controller.servers = {"default": srv}
