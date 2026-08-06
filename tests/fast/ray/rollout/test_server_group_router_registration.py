@@ -55,8 +55,13 @@ def _build_group(
 
     group = ServerGroup(
         args=args,
-        pg=(None, [], []),
-        cells=chunk_engines_into_cells(engines, num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8),
+        cells=chunk_engines_into_cells(
+            engines,
+            num_gpus_per_engine=num_gpus_per_engine,
+            num_gpus_per_node=8,
+            args=args,
+            worker_type=worker_type,
+        ),
         num_gpus_per_engine=num_gpus_per_engine,
         has_new_engines=False,
         worker_type=worker_type,

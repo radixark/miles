@@ -154,7 +154,8 @@ class FakeServerEngine:
 class FakeGroup:
     def __init__(self, engines, nodes_per_engine=1):
         self.cells = [
-            ServerCell(engines=engines[i : i + nodes_per_engine]) for i in range(0, len(engines), nodes_per_engine)
+            ServerCell(args=None, worker_type="regular", engines=engines[i : i + nodes_per_engine])
+            for i in range(0, len(engines), nodes_per_engine)
         ]
         self.nodes_per_engine = nodes_per_engine
 
