@@ -82,56 +82,45 @@ class ServerGroup:
 
         num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
 
-        start_indices = (
-            None
-            if start_cell_indices is None
-            else [i for cell_index in start_cell_indices for i in self._engine_indices_of_cell(cell_index)]
-        )
-
-        all_engines = flatten_cells(self.cells)
-
-        new_engines = []
-        new_engine_indices = []
-        for i in range(len(all_engines)):
-            if (start_indices is not None) and (i not in start_indices):
-                continue
-            if all_engines[i].is_allocated:
+        new_engine_indices: list[int] = []
+        init_handles: list = []
+        for cell_index, cell in enumerate(self.cells):
+            if (start_cell_indices is not None) and (cell_index not in start_cell_indices):
                 continue
 
-            global_rank = self.rank_offset + i
-            rollout_engine = launch_sglang_ray_actor(
-                args=self.args,
-                pg=self.pg,
-                global_rank=global_rank,
-                gpu_index=self.gpu_offset + i * num_gpu_per_engine,
-                worker_type=self.worker_type,
-                sglang_overrides=self.sglang_overrides,
-                num_gpus_per_engine=self.num_gpus_per_engine,
-            )
+            if cell.is_allocated:
+                continue
 
-            new_engines.append((global_rank, rollout_engine))
-            new_engine_indices.append(i)
-            all_engines[i].mark_allocated_uninitialized(rollout_engine)
+            new_entries: list[tuple[int, ServerEngine, Any]] = []
+            for local_index, engine_slot in enumerate(cell.engines):
+                flat_index = cell_index * self.nodes_per_engine + local_index
+                global_rank = self.rank_offset + flat_index
+                rollout_engine = launch_sglang_ray_actor(
+                    args=self.args,
+                    pg=self.pg,
+                    global_rank=global_rank,
+                    gpu_index=self.gpu_offset + flat_index * num_gpu_per_engine,
+                    worker_type=self.worker_type,
+                    sglang_overrides=self.sglang_overrides,
+                    num_gpus_per_engine=self.num_gpus_per_engine,
+                )
 
-        curr_num_new_engines = len(new_engines)
-        self.has_new_engines |= curr_num_new_engines > 0
+                new_entries.append((global_rank, engine_slot, rollout_engine))
+                new_engine_indices.append(flat_index)
+                engine_slot.mark_allocated_uninitialized(rollout_engine)
 
-        if curr_num_new_engines == 0:
-            return []
+            self.has_new_engines = True
 
-        addr_and_ports: dict[int, dict[str, Any]] = {}
-        for cell_index in sorted({index // self.nodes_per_engine for index in new_engine_indices}):
+            addr_and_ports: dict[int, dict[str, Any]] = {}
             dist_init_addr = None
-            for engine_in_cell_index in range(self.nodes_per_engine):
-                actor = self.cells[cell_index].engines[engine_in_cell_index].actor_handle
+            for entry_index, (global_rank, _, actor) in enumerate(new_entries):
                 node_ip, _ = ray.get(actor._get_current_node_ip_and_free_port.remote())
                 alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
 
-                if engine_in_cell_index == 0:
+                if entry_index == 0:
                     dist_init_addr = f"{node_ip}:{alloc(consecutive=30 + self.args.sglang_dp_size)}"
 
-                rank = self.rank_offset + cell_index * self.nodes_per_engine + engine_in_cell_index
-                addr_and_ports[rank] = dict(
+                addr_and_ports[global_rank] = dict(
                     host=node_ip,
                     port=alloc(),
                     nccl_port=alloc(),
@@ -139,20 +128,20 @@ class ServerGroup:
                     dist_init_addr=dist_init_addr,
                 )
                 if self.worker_type == "prefill":
-                    addr_and_ports[rank]["disaggregation_bootstrap_port"] = alloc()
+                    addr_and_ports[global_rank]["disaggregation_bootstrap_port"] = alloc()
 
-        for index, _ in new_engines:
-            engine_addr_and_ports = addr_and_ports[index]
-            all_engines[index - self.rank_offset].set_addressing(
-                AddrInfo(
-                    server_url=build_server_url(
-                        host=engine_addr_and_ports["host"], port=engine_addr_and_ports["port"]
-                    ),
-                    bootstrap_port=engine_addr_and_ports.get("disaggregation_bootstrap_port"),
+            for global_rank, engine_slot, actor in new_entries:
+                engine_addr_and_ports = addr_and_ports[global_rank]
+                engine_slot.set_addressing(
+                    AddrInfo(
+                        server_url=build_server_url(
+                            host=engine_addr_and_ports["host"], port=engine_addr_and_ports["port"]
+                        ),
+                        bootstrap_port=engine_addr_and_ports.get("disaggregation_bootstrap_port"),
+                    )
                 )
-            )
+                init_handles.append(actor.init.remote(**addr_and_ports[global_rank]))
 
-        init_handles = [engine.init.remote(**addr_and_ports[index]) for index, engine in new_engines]
         await asyncio.gather(*init_handles)
         return new_engine_indices
 
@@ -216,11 +205,7 @@ class ServerGroup:
 
     async def recover(self, port_allocator: PortAllocator, filter_cell_indices: list[int] | None = None):
         if filter_cell_indices is None:
-            filter_cell_indices = [
-                cell_index
-                for cell_index, cell in enumerate(self.cells)
-                if any(not engine.is_allocated for engine in cell.engines)
-            ]
+            filter_cell_indices = [cell_index for cell_index, cell in enumerate(self.cells) if not cell.is_allocated]
 
         new_engine_indices = await self.start_engines(port_allocator, start_cell_indices=filter_cell_indices)
 
@@ -255,16 +240,12 @@ class ServerGroup:
     async def offload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
-        return await asyncio.gather(
-            *[cell.offload(tags=tags) for cell in self.cells if cell.primary_engine.is_allocated]
-        )
+        return await asyncio.gather(*[cell.offload(tags=tags) for cell in self.cells if cell.is_allocated])
 
     async def onload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
-        return await asyncio.gather(
-            *[cell.onload(tags=tags) for cell in self.cells if cell.primary_engine.is_allocated]
-        )
+        return await asyncio.gather(*[cell.onload(tags=tags) for cell in self.cells if cell.is_allocated])
 
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
@@ -275,6 +256,6 @@ class ServerGroup:
                     action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
                 )
                 for cell in self.cells
-                if cell.primary_engine.is_allocated
+                if cell.is_allocated
             ]
         )
