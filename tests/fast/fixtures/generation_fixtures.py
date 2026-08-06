@@ -235,7 +235,7 @@ def with_session_server(
     # Mirror wait_session_server_ready (router_manager.py): the id is minted into the
     # caller's per-port map, where OpenAIEndpointTracer.create reads it from.
     instance_id = f"{args.run_uuid}-0"
-    args.session_server_instance_ids = {port: instance_id}
+    args.session_server_instance_ids = {f"127.0.0.1:{port}": instance_id}
     # Sample assembly runs inside the server, so the R3 decode shape args
     # must reach the server config (set them via args_kwargs BEFORE the
     # server starts; assigning to the driver args afterwards has no effect).
@@ -305,8 +305,7 @@ def generation_env(request, variant):
             if is_agentic:
                 # Point session server address to the SessionServer we just started,
                 # mirroring the driver-side contract set by wait_session_server_ready.
-                args.session_server_ip = "127.0.0.1"
-                args.session_server_ports = [server_port]
+                args.session_server_addrs = [f"127.0.0.1:{server_port}"]
                 mock_tools.AGENTIC_MAX_TURNS = args_kwargs.get("generate_max_turns")
                 mock_tools.AGENTIC_RETURN_METADATA = args_kwargs.get("agentic_return_metadata")
             yield GenerateEnv(args=args, mock_server=mock_server)

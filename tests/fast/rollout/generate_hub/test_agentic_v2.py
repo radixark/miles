@@ -28,10 +28,10 @@ class _Tracer:
 
 def _generate_input(**args_kwargs) -> GenerateFnInput:
     args = SimpleNamespace(
-        session_server_ip="127.0.0.1",
-        session_server_ports=[12345],
+        session_server_addrs=["127.0.0.1:12345"],
         custom_agent_function_path="test.fake_agent",
         max_seq_len=None,
+        partial_rollout=False,
         use_session_server="v2",
         **args_kwargs,
     )
