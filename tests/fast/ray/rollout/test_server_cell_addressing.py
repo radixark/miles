@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
-from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata, compute_nodes_per_engine
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -39,19 +38,17 @@ class _StubProvider:
 
 
 @pytest.fixture
-def stub_provider(monkeypatch):
+def stub_provider():
     def _install(addrs: dict[str, HostAndPort]) -> _StubProvider:
-        provider = _StubProvider(addrs)
-        monkeypatch.setattr(
-            server_cell_module, "RayWorkerProvider", type("_Factory", (), {"create": staticmethod(lambda: provider)})
-        )
-        return provider
+        return _StubProvider(addrs)
 
     return _install
 
 
-def _make_cell(**meta_overrides) -> ServerCell:
-    return track_server_cell(ServerCell(args=make_args(), meta=_make_meta(**meta_overrides), router_api_client=None))
+def _make_cell(provider: _StubProvider, **meta_overrides) -> ServerCell:
+    return track_server_cell(
+        ServerCell(args=make_args(), meta=_make_meta(**meta_overrides), router_api_client=None, provider=provider)
+    )
 
 
 class TestComputeAddrInfo:
@@ -64,27 +61,27 @@ class TestComputeAddrInfo:
             )
         )
 
-        addr_info = await _make_cell()._compute_addr_info()
+        addr_info = await _make_cell(provider)._compute_addr_info()
 
         assert provider.requested_worker_names == ["inference-engine-0-0-0-0"]
         assert addr_info.server_url == "http://10.0.0.1:30000"
 
     async def test_the_gate_url_points_at_the_out_of_band_control_port(self, stub_provider):
         """Activation must target the gate port, never the engine's serving port."""
-        stub_provider(
+        provider = stub_provider(
             dict(
                 primary=HostAndPort(host="10.0.0.1", port=30000),
                 gate=HostAndPort(host="10.0.0.1", port=13007),
             )
         )
 
-        addr_info = await _make_cell()._compute_addr_info()
+        addr_info = await _make_cell(provider)._compute_addr_info()
 
         assert addr_info.gate_url == "http://10.0.0.1:13007"
 
     async def test_a_prefill_cell_also_carries_its_disaggregation_bootstrap_port(self, stub_provider):
         """PD disaggregation needs this port published to the router alongside the url."""
-        stub_provider(
+        provider = stub_provider(
             dict(
                 primary=HostAndPort(host="10.0.0.1", port=30000),
                 gate=HostAndPort(host="10.0.0.1", port=13000),
@@ -92,33 +89,33 @@ class TestComputeAddrInfo:
             )
         )
 
-        addr_info = await _make_cell(worker_type="prefill")._compute_addr_info()
+        addr_info = await _make_cell(provider, worker_type="prefill")._compute_addr_info()
 
         assert addr_info.bootstrap_port == 11000
 
     async def test_a_regular_cell_has_no_bootstrap_port(self, stub_provider):
         """Only prefill engines allocate a bootstrap port, so the rest must report None."""
-        stub_provider(
+        provider = stub_provider(
             dict(
                 primary=HostAndPort(host="10.0.0.1", port=30000),
                 gate=HostAndPort(host="10.0.0.1", port=13000),
             )
         )
 
-        addr_info = await _make_cell()._compute_addr_info()
+        addr_info = await _make_cell(provider)._compute_addr_info()
 
         assert addr_info.bootstrap_port is None
 
     async def test_ipv6_hosts_stay_bracketed_in_both_urls(self, stub_provider):
         """Unbracketed ipv6 literals would make both urls unparseable."""
-        stub_provider(
+        provider = stub_provider(
             dict(
                 primary=HostAndPort(host="[fd00::1]", port=30000),
                 gate=HostAndPort(host="[fd00::1]", port=13000),
             )
         )
 
-        addr_info = await _make_cell()._compute_addr_info()
+        addr_info = await _make_cell(provider)._compute_addr_info()
 
         assert addr_info.server_url == "http://[fd00::1]:30000"
         assert addr_info.gate_url == "http://[fd00::1]:13000"

@@ -4,19 +4,24 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, track_server_cell
 
 from miles.ray.rollout import server_cell as server_cell_module
-from miles.ray.rollout.cell_state import CellAddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch, NoopHealthChecker, SimpleHealthChecker
+from miles.utils.workers.launch_gate import GATE_PORT_NAME
+from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 pytestmark = pytest.mark.usefixtures("dispose_tracked_server_cells")
 
-_ADDR_INFO = CellAddrInfo(
-    server_url="http://10.0.0.1:30000",
-    bootstrap_port=None,
-    gate_url="http://10.0.0.1:13000",
-)
+_ADDRS: NamedHostAndPorts = {
+    "primary": HostAndPort(host="10.0.0.1", port=30000),
+    GATE_PORT_NAME: HostAndPort(host="10.0.0.1", port=13000),
+}
+
+
+class _StubProvider:
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        return _ADDRS
 
 
 def _make_meta(cell_id: str = "cell-0", **overrides) -> ServerCellMetadata:
@@ -42,6 +47,7 @@ def _make_server(*, ft_components=("rollout",), **overrides) -> RolloutServer:
         server_cells={},
         args=make_args(colocate=True, ft_components=list(ft_components)),
         context_lock=ContextLock("InferenceController"),
+        engine_provider=_StubProvider(),
         **overrides,
     )
 
@@ -52,6 +58,7 @@ def _make_cell(*, global_activeness=None, router=None, **meta_overrides) -> Serv
             args=make_args(ft_components=["rollout"]),
             meta=_make_meta(**meta_overrides),
             router_api_client=router or SimpleNamespace(),
+            provider=_StubProvider(),
             global_health_checker_activeness=global_activeness or (lambda: ActiveAndEpoch(active=True, epoch=0)),
         )
     )
@@ -64,12 +71,8 @@ def _stub_network(monkeypatch, *, ready: bool = True) -> None:
     async def _probe(server_url: str, api_key, timeout: float = 5.0) -> bool:
         return ready
 
-    async def _compute_addr_info(self) -> CellAddrInfo:
-        return _ADDR_INFO
-
     monkeypatch.setattr(server_cell_module, "activate_launch_gate", _activate)
     monkeypatch.setattr(server_cell_module, "probe_server_healthy", _probe)
-    monkeypatch.setattr(ServerCell, "_compute_addr_info", _compute_addr_info)
 
 
 async def _noop_add_worker(**kwargs) -> None:
