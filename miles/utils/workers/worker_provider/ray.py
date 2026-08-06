@@ -14,13 +14,20 @@ POLL_INTERVAL_SECONDS = 5.0
 
 
 class RayWorkerProvider(BaseWorkerProvider):
-    def __init__(self, worker_manager_handle: ray.actor.ActorHandle, poll_interval_seconds: float = 5.0):
+    def __init__(
+        self,
+        worker_manager_handle: ray.actor.ActorHandle,
+        *,
+        spec_names: list[str] | None = None,
+        poll_interval_seconds: float = 5.0,
+    ):
         self._worker_manager_handle = worker_manager_handle
+        self._spec_names = spec_names
         self._poll_interval_seconds = poll_interval_seconds
 
     @classmethod
-    def create(cls) -> "RayWorkerProvider":
-        return cls(worker_manager_handle=RayWorkerManager.get_handle())
+    def create(cls, *, spec_names: list[str] | None = None) -> "RayWorkerProvider":
+        return cls(worker_manager_handle=RayWorkerManager.get_handle(), spec_names=spec_names)
 
     def get_worker_infos(self, *, cell_id: str) -> list[WorkerInfo]:
         return ray.get(self._worker_manager_handle.get_worker_infos.remote(cell_id))
@@ -31,12 +38,17 @@ class RayWorkerProvider(BaseWorkerProvider):
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return await self._worker_manager_handle.get_worker_addrs.remote(worker_name)
 
-    async def watch_cells(self, reconcile: ReconcileFn, *, spec_names: list[str]) -> StopWatchFn:
+    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+        spec_names = self._watched_spec_names()
         seen_infos: dict[str, CellInfo] = {}
         # the initial sync must complete (and raise on failure) before the watch is considered established
         await self._poll_once(reconcile, seen_infos=seen_infos, spec_names=spec_names)
         task = asyncio.create_task(self._watch_loop(reconcile, seen_infos, spec_names=spec_names))
         return partial(_cancel_and_await_task, task)
+
+    def _watched_spec_names(self) -> list[str]:
+        assert self._spec_names is not None, "this provider was built without the fleets it is meant to observe"
+        return self._spec_names
 
     async def _watch_loop(
         self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, spec_names: list[str]

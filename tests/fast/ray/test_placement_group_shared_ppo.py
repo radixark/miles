@@ -64,7 +64,8 @@ async def _stop_watch() -> None:
 
 class _RecordingWorkerProvider(BaseWorkerProvider):
     def __init__(self) -> None:
-        self.watched_spec_names: list[list[str]] = []
+        self.built_for: list[list[str]] = []
+        self.watch_count = 0
 
     async def get_addr(self, worker_name: str) -> HostAndPort:
         raise NotImplementedError
@@ -72,8 +73,8 @@ class _RecordingWorkerProvider(BaseWorkerProvider):
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         raise NotImplementedError
 
-    async def watch_cells(self, reconcile: ReconcileFn, *, spec_names: list[str]) -> StopWatchFn:
-        self.watched_spec_names.append(list(spec_names))
+    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+        self.watch_count += 1
         return _stop_watch
 
 
@@ -135,14 +136,19 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
 
     args = _training_models_args(indep_dp=False, enable_witness=False)
 
-    with patch("miles.utils.workers.worker_provider.ray.RayWorkerProvider.create", lambda: provider):
+    def _create(*, spec_names: list[str] | None = None) -> _RecordingWorkerProvider:
+        provider.built_for.append(list(spec_names or []))
+        return provider
+
+    with patch("miles.utils.workers.worker_provider.ray.RayWorkerProvider.create", _create):
         actor, critic = await placement_group_module.create_training_models(
             args,
             inference_controller=object(),
             rollout_executor=_RecordingRolloutExecutor(),
         )
 
-    assert provider.watched_spec_names == [["trainer-actor"], ["trainer-critic"]]
+    assert provider.built_for == [["trainer-actor"], ["trainer-critic"]]
+    assert provider.watch_count == 2
 
     assert actor._role == "actor"
     assert actor.args is args

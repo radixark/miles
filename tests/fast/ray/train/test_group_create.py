@@ -16,14 +16,18 @@ _POLL_INTERVAL_SECONDS = 0.01
 
 
 class _RecordingWorkerProvider(RayWorkerProvider):
-    def __init__(self, *, worker_manager_handle: object) -> None:
-        super().__init__(worker_manager_handle=worker_manager_handle, poll_interval_seconds=_POLL_INTERVAL_SECONDS)
+    def __init__(self, *, worker_manager_handle: object, spec_names: list[str] | None = None) -> None:
+        super().__init__(
+            worker_manager_handle=worker_manager_handle,
+            spec_names=spec_names,
+            poll_interval_seconds=_POLL_INTERVAL_SECONDS,
+        )
         self.watch_calls: list[tuple[ReconcileFn, list[str]]] = []
         self.poll_count: int = 0
 
-    async def watch_cells(self, reconcile: ReconcileFn, *, spec_names: list[str]) -> StopWatchFn:
-        self.watch_calls.append((reconcile, list(spec_names)))
-        return await super().watch_cells(reconcile, spec_names=spec_names)
+    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+        self.watch_calls.append((reconcile, list(self._watched_spec_names())))
+        return await super().watch_cells(reconcile)
 
     async def _poll_once(
         self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, spec_names: list[str]
