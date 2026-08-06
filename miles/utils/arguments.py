@@ -1302,7 +1302,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--critic-save",
                 type=str,
                 default=None,
-                help="Where to save critic checkpoints. Defaults to '<--save>_critic' when --save is set.",
+                help="Where to save critic checkpoints. If not set, it defaults to the --save path with a "
+                "'_critic' suffix appended, e.g. --save /ckpts/run1 saves the critic to /ckpts/run1_critic.",
             )
             parser.add_argument("--critic-lr", type=float, default=None, help="The lr for critic model")
             parser.add_argument(
