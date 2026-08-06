@@ -26,12 +26,6 @@ class RayWorkerProvider(BaseWorkerProvider):
         self._pool_ids = pool_ids
         self._poll_interval_seconds = poll_interval_seconds
 
-    @classmethod
-    def create(cls, *, pool_ids: list[str] | None = None) -> "RayWorkerProvider":
-        from miles.utils.workers.ray_worker_manager import RayWorkerManager
-
-        return cls(worker_manager_handle=RayWorkerManager.get_handle(), pool_ids=pool_ids)
-
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         refs = [self._worker_manager_handle.get_worker_infos.remote(cell_id) for cell_id in cell_ids]
         return ray.get(refs)
