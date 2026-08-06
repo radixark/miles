@@ -236,5 +236,13 @@ def _compute_lora_target_modules(args) -> list[str]:
         f"supported by its LoRA runtime; check --target-modules"
     )
 
-    logger.info(f"Asking SGLang to auto-detect LoRA targets: {unspellable} have no command-line spelling")
+    # Auto-detection is not the requested set: SGLang scans every compatible module the base
+    # model exposes, so asking for it widens the adapter beyond what --target-modules named.
+    # That is the price of launching at all here, but it is a real deviation from the user's
+    # request and must not be silent.
+    logger.warning(
+        f"LoRA targets {unspellable} have no SGLang command-line spelling, so the launch asks for "
+        f"'{LORA_TARGET_ALL_MODULES}' instead of {sorted(hf_modules)}. SGLang will allocate adapter "
+        f"buffers for every compatible module it finds, including ones the trainer never fills."
+    )
     return [LORA_TARGET_ALL_MODULES]

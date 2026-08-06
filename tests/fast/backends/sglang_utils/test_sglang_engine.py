@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shlex
 import sys
 
@@ -100,6 +101,15 @@ class TestLoraTargetModules:
         targets = self._parsed_lora_targets(["layers.*.self_attention.in_proj"])
 
         assert set(targets) == {"all"}
+
+    def test_the_widening_that_auto_detection_costs_is_announced(self, caplog):
+        """Auto-detection is not the requested set -- it covers every compatible module the
+        base model exposes -- so a run whose adapter is wider than --target-modules asked for
+        must be able to find out why from its own log."""
+        with caplog.at_level(logging.WARNING):
+            self._parsed_lora_targets(["layers.*.self_attention.in_proj"])
+
+        assert any("no SGLang command-line spelling" in record.message for record in caplog.records)
 
     def test_a_target_the_lora_runtime_does_not_know_aborts_the_launch(self):
         """An unmapped module name would otherwise widen to auto-detection, training adapters
