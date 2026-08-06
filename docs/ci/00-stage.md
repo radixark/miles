@@ -61,8 +61,10 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 
+**The ROCm lane reads its stage list from `main`.** `pr-test-rocm.yml` is a `pull_request_target` workflow, so GitHub takes its definition from `main` rather than from the PR. A branch whose base predates a stage added there fails that lane with `ValueError: Unknown suite <name> for backend ROCM` no matter what the branch itself contains, and every PR stacked on that base fails it identically. Read such a failure as "this branch is behind `main` on the ROCm stage list", not as a defect in the change under review.
+
 ## Assumptions
 
 - Suite ↔ stage stays 1:1 and is kept in sync manually across `run_suite.py` and `pr-test.yml`.
-- Runner placement assumes the live fleet actually carries the requested `runs_on` labels for each GPU class and count.
+- Runner placement assumes the live fleet actually carries the requested `runs_on` labels for each GPU class and count. A job whose runner never picks it up reports `cancelled` with an empty `runner_name` and no steps, which reads like a test failure but is capacity.
 - `est_time` only affects shard balancing and per-file timeout, never pass/fail.
