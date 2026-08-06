@@ -40,7 +40,7 @@ def group_oldest_weight_version(group: Group) -> int | None:
 @dataclass(frozen=True)
 class DataBufferConstructorInput:
     args: Namespace
-    on_evict: Callable[[list[Sample]], None]  # recycles prompts to the data source
+    recycle: Callable[[list[Sample]], None]  # resets prompts and returns them to the data source
 
 
 @dataclass
@@ -74,21 +74,29 @@ class DataBuffer(ABC):
 class DefaultDataBuffer(DataBuffer):
     """FIFO buffer of finished groups between rollout production and training consumption.
 
-    Dataflow/staleness control: use ``--async-data-buffer-max-batches`` to set
-    the max size of the buffer, in multiples of rollout_batch_size. On overflow
-    the most stale groups are evicted and their prompts recycled for
-    regeneration; 0 disables eviction and blocks the producer when the buffer
-    is full.
+    Dataflow/staleness control options:
+
+    (1) max groups: use ``--async-data-buffer-max-batches`` to set the max size
+        of the buffer, in multiples of rollout_batch_size. On overflow the most
+        stale groups are evicted; 0 disables eviction and blocks the producer
+        when the buffer is full.
+    (2) stale handling: ``--async-stale-samples-handler`` decides what happens
+        to an evicted group beyond ``--max-weight-staleness``: drop discards
+        it, retry recycles its prompts for regeneration. Groups evicted purely
+        by capacity are always recycled.
     """
 
     def __init__(self, input: DataBufferConstructorInput):
         args = input.args
         max_batches = args.async_data_buffer_max_batches
+        stale_handler = args.async_stale_samples_handler
         assert max_batches >= 0, f"negative buffer capacity: {max_batches}"
+        assert stale_handler in ("retry", "drop"), f"unknown stale samples handler: {stale_handler}"
         self._evict_on_overflow = max_batches > 0
         self._capacity = max_batches * args.rollout_batch_size if max_batches else OUTPUT_QUEUE_MAX_GROUPS
         self._max_staleness = args.max_weight_staleness
-        self._on_evict = input.on_evict
+        self._stale_handler = stale_handler
+        self._recycle = input.recycle
         self._entries: list[DataBufferInput] = []
         self._cond = asyncio.Condition()
         self._latest_weight_version: int | None = None
@@ -163,8 +171,11 @@ class DefaultDataBuffer(DataBuffer):
             )
             if not if_exceed_staleness and len(self._entries) <= self._capacity:
                 return
+            entry = self._entries.pop(index)
             if if_exceed_staleness:
                 self._metric_evicted_stale_groups += 1
+                if self._stale_handler == "retry":
+                    self._recycle(entry.prompt_group)
             else:
                 self._metric_evicted_overflow_groups += 1
-            self._on_evict(self._entries.pop(index).prompt_group)
+                self._recycle(entry.prompt_group)

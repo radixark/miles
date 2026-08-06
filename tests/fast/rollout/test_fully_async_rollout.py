@@ -76,6 +76,7 @@ def make_args(**overrides) -> Namespace:
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
         async_data_buffer_max_batches=0,
+        async_stale_samples_handler="drop",
         custom_async_data_buffer_path=None,
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
@@ -120,7 +121,7 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     assert indices == sorted(indices)
     assert all(len(group) == N_SAMPLES_PER_PROMPT for group in output.samples)
     assert output.metrics["rollout/fully_async/aborted_groups_recycled"] == 0
-    assert output.metrics["rollout/fully_async/stale_groups_recycled"] == 0
+    assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 0
 
     # The worker persists across calls; a second drain works on the same instance.
     output2 = await fn(RolloutFnTrainInput(rollout_id=1))
@@ -232,7 +233,8 @@ async def test_stale_group_recycled(monkeypatch):
 
     data_source.get_samples = get_samples_with_fresh_versions
 
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1, max_weight_staleness=2), data_source)
+    args = make_args(rollout_batch_size=1, max_weight_staleness=2, async_stale_samples_handler="retry")
+    fn = make_fn(monkeypatch, args, data_source)
 
     class FakeWeightVersion:
         async def get(self, args):
@@ -243,8 +245,20 @@ async def test_stale_group_recycled(monkeypatch):
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
     assert data_source.recycled == [stale]
-    assert output.metrics["rollout/fully_async/stale_groups_recycled"] == 1
+    assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
     assert output.metrics["rollout/fully_async/max_staleness"] == 5
+
+
+async def test_stale_group_dropped_by_default(monkeypatch):
+    stale = make_group(1, weight_versions=["5"])
+    data_source = FakeDataSource(scripted=[stale])
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1, max_weight_staleness=2), data_source)
+    fn._weight_version = FakeWeightVersion(10)
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert data_source.recycled == []
+    assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
 
 
 async def test_worker_error_propagates(monkeypatch):
@@ -413,15 +427,16 @@ async def test_weight_version_maps_non_numeric_to_none(monkeypatch):
 # ── DataBuffer: staleness-bounded buffering ─────────────────────────
 
 
-def make_buffer(max_groups=None, max_staleness=None):
-    evicted = []
+def make_buffer(max_groups=None, max_staleness=None, stale_handler="retry"):
+    recycled = []
     args = make_args(
         rollout_batch_size=1,  # capacity is in batches; batch size 1 makes it count groups
         async_data_buffer_max_batches=max_groups or 0,
         max_weight_staleness=max_staleness,
+        async_stale_samples_handler=stale_handler,
     )
-    buffer = data_buffer.DefaultDataBuffer(data_buffer.DataBufferConstructorInput(args=args, on_evict=evicted.append))
-    return buffer, evicted
+    buffer = data_buffer.DefaultDataBuffer(data_buffer.DataBufferConstructorInput(args=args, recycle=recycled.append))
+    return buffer, recycled
 
 
 async def put_group(buffer, group, weight_version=None):
@@ -471,6 +486,17 @@ async def test_buffer_threshold_evicts_all_over_staleness_first():
     assert metrics["evicted_stale_groups"] == 2
     assert metrics["evicted_overflow_groups"] == 0
     assert metrics["queue_size"] == 2
+
+
+async def test_buffer_drop_handler_discards_stale_without_recycle():
+    buffer, recycled = make_buffer(max_groups=1, max_staleness=2, stale_handler="drop")
+    await put_group(buffer, make_group(1, weight_versions=["5"]), weight_version=10)
+    await put_group(buffer, make_group(2, weight_versions=["10"]), weight_version=10)
+
+    assert recycled == []
+    metrics = buffer.get_metrics()
+    assert metrics["evicted_stale_groups"] == 1
+    assert metrics["queue_size"] == 1
 
 
 async def test_buffer_staleness_metrics():

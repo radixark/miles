@@ -111,7 +111,7 @@ class FullyAsyncRolloutFn:
             return await self._call_eval(input)
         if self._worker is None:
             buffer_cls = load_function(self.args.custom_async_data_buffer_path) or DefaultDataBuffer
-            self._output = buffer_cls(DataBufferConstructorInput(args=self.args, on_evict=self._recycle))
+            self._output = buffer_cls(DataBufferConstructorInput(args=self.args, recycle=self._recycle))
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
         return await self._drain(input.rollout_id)
@@ -202,7 +202,7 @@ class FullyAsyncRolloutFn:
         target_data_size = args.rollout_batch_size
         data: list[Group] = []
         aborted_groups_recycled = 0
-        stale_groups_recycled = 0
+        stale_groups_filtered = 0
         staleness_values: list[int] = []
         metric_gatherer = MetricGatherer()
         do_print = True
@@ -224,11 +224,13 @@ class FullyAsyncRolloutFn:
                 staleness = current - oldest
                 staleness_values.append(staleness)
                 if args.max_weight_staleness is not None and staleness > args.max_weight_staleness:
-                    self._recycle(entry.prompt_group)
-                    stale_groups_recycled += 1
+                    retry = args.async_stale_samples_handler == "retry"
+                    if retry:
+                        self._recycle(entry.prompt_group)
+                    stale_groups_filtered += 1
                     logger.info(
-                        f"Recycled stale group (oldest_version={oldest}, current={current}, "
-                        f"staleness={staleness} > max={args.max_weight_staleness})"
+                        f"{'Recycled' if retry else 'Dropped'} stale group (oldest_version={oldest}, "
+                        f"current={current}, staleness={staleness} > max={args.max_weight_staleness})"
                     )
                     continue
 
@@ -261,7 +263,7 @@ class FullyAsyncRolloutFn:
 
         metrics = {
             "rollout/fully_async/aborted_groups_recycled": aborted_groups_recycled,
-            "rollout/fully_async/stale_groups_recycled": stale_groups_recycled,
+            "rollout/fully_async/stale_groups_filtered": stale_groups_filtered,
             **{f"rollout/fully_async/{key}": value for key, value in self._output.get_metrics().items()},
             **metric_gatherer.collect(),
         }
