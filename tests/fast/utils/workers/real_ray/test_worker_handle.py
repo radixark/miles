@@ -4,7 +4,8 @@ import pytest
 import ray
 from tests.fast.utils.workers.real_ray.conftest import kill_quietly
 
-from miles.utils.workers.worker_handle import RayWorkerHandle, WorkerUnreachableError
+from miles.utils.workers.ray_worker_handle import RayWorkerHandle
+from miles.utils.workers.worker_handle import WorkerUnreachableError
 
 pytestmark = pytest.mark.asyncio
 

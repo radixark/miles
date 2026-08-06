@@ -15,7 +15,8 @@ from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
-from miles.utils.workers.worker_handle import BaseWorkerHandle, RayWorkerHandle
+from miles.utils.workers.ray_worker_handle import RayWorkerHandle
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
     BaseWorkerSpec,
