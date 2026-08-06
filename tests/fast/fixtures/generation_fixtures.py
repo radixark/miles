@@ -6,11 +6,12 @@ import uuid
 from argparse import Namespace
 from contextlib import contextmanager
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import pytest
+from tests.fast.fixtures.session_fixtures import make_session_server_config
+
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
@@ -237,22 +238,22 @@ def with_session_server(
     # caller's per-port map, where OpenAIEndpointTracer.create reads it from.
     instance_id = uuid.uuid4().hex
     args.session_server_instance_ids = {port: instance_id}
-    server_args = SimpleNamespace(
-        miles_router_timeout=30,
+    config = make_session_server_config(
+        backend_url=backend_url,
         hf_checkpoint=args.hf_checkpoint,
         chat_template_path=args.chat_template_path,
         tito_model=args.tito_model,
         use_rollout_routing_replay=args.use_rollout_routing_replay,
         sglang_speculative_algorithm=args.sglang_speculative_algorithm,
         # Sample assembly runs inside the server, so the R3 decode shape args
-        # must reach the server namespace (set them via args_kwargs BEFORE the
+        # must reach the server config (set them via args_kwargs BEFORE the
         # server starts; assigning to the driver args afterwards has no effect).
         num_layers=getattr(args, "num_layers", None),
         moe_router_topk=getattr(args, "moe_router_topk", None),
         save_debug_trajectory_data=getattr(args, "save_debug_trajectory_data", None),
-        session_server_instance_id=instance_id,
+        instance_id=instance_id,
     )
-    session_server = SessionServer(server_args, backend_url=backend_url)
+    session_server = SessionServer(config)
 
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
     server.start()
