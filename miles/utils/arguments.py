@@ -109,8 +109,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=tuple(backend.value for backend in ClusterBackend),
                 help=(
                     "Which backend provides the worker processes: "
-                    "`ray` launches them from the driver, `kubernetes` expects them to already exist. "
-                    "`kubernetes` is refused until a later milestone provisions those workers."
+                    "`ray` launches them from the driver, `kubernetes` expects the platform to have "
+                    "created them already and observes them by their pod labels."
                 ),
             )
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
@@ -3138,11 +3138,6 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
-
-    assert args.cluster_backend == ClusterBackend.RAY.value, (
-        f"--cluster-backend {args.cluster_backend} is not usable yet: "
-        f"only {ClusterBackend.RAY.value} provisions workers today"
-    )
 
     args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
 
