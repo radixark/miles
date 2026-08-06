@@ -123,7 +123,7 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
         # Session server populates diagnostic metadata (token IDs,
         # trim config, mismatch analysis, dashboard lifecycle timing) that
         # varies with mock setup. Strip these before comparing structure.
-        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens", "lifecycle"):
+        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens", "lifecycle", "leaf"):
             actual_partial.metadata.pop(key, None)
         assert actual_partial == expected_item.partial_sample
 
@@ -679,7 +679,7 @@ class TestAgentCollectionFailure:
     ):
         collect_error = asyncio.TimeoutError()
 
-        async def fail_collect(_tracer, _input_sample, *, max_seq_len):
+        async def fail_collect(_tracer, _input_sample, *, max_seq_len, agent_metadata=None):
             raise collect_error
 
         monkeypatch.setattr(
@@ -690,8 +690,8 @@ class TestAgentCollectionFailure:
         with caplog.at_level(logging.WARNING):
             result = _run_generate(variant, generation_env, input_sample)
 
-        assert isinstance(result.sample, Sample)
-        assert result.sample.status == Sample.Status.ABORTED
+        [sample] = listify(result.sample)
+        assert sample.status == Sample.Status.ABORTED
         assert input_sample.status == Sample.Status.PENDING
         assert "Timed out collecting samples" in caplog.text
 
@@ -739,5 +739,5 @@ class TestAgentNoRecords:
 
         SingletonMeta.clear_all_instances()
 
-        assert isinstance(result.sample, Sample)
-        assert result.sample.status == Sample.Status.ABORTED
+        [sample] = listify(result.sample)
+        assert sample.status == Sample.Status.ABORTED

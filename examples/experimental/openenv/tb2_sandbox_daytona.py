@@ -22,16 +22,15 @@ nothing a create passes can name a pre-registered snapshot — registering one
 per task would only spend the org quota the declarative path exists to avoid.
 """
 
-import getpass
 import os
 import shlex
-import threading
-import time
 from pathlib import Path
 
+import tb2_sandbox_recipe as recipe
 from tb2_sandbox_recipe import (
     read_task_config,
     resolve_docker_image,
+    sandbox_labels,
     server_cmd,
     server_layer_commands,
     wait_server_ready,
@@ -64,31 +63,6 @@ def task_resources(task_dir: Path):
     )
 
 
-def sandbox_labels(task_dir: Path) -> dict[str, str]:
-    """Labels for a per-task sandbox: what it runs, and who launched it.
-
-    The Daytona API records no creator, so in a shared org labels are the only
-    attribution. ``openenv-tbench2-task`` keys sweep/cleanup tooling to exactly
-    the sandboxes this recipe created (shared orgs run other workloads).
-    ``openenv-launcher`` is OPENENV_LAUNCHER when set — do set it on shared
-    hosts, where the unix user is a generic account — else the local unix
-    user. ``openenv-run-id`` (OPENENV_RUN_ID, optional) additionally groups
-    one run's sandboxes for targeted sweeps.
-    """
-    try:
-        user = getpass.getuser()
-    except Exception:  # no passwd entry / login env on minimal hosts
-        user = "unknown"
-    labels = {
-        "openenv-tbench2-task": task_dir.name,
-        "openenv-launcher": os.environ.get("OPENENV_LAUNCHER") or user,
-    }
-    run_id = os.environ.get("OPENENV_RUN_ID")
-    if run_id:
-        labels["openenv-run-id"] = run_id
-    return labels
-
-
 # Keepalive cadence: 6 beats per 30-minute auto-stop window, and up to 3
 # consecutive failed beats (15 minutes of API blips) tolerated before the
 # thread concludes the sandbox is gone and exits.
@@ -102,23 +76,14 @@ def _start_keepalive(sandbox, task_id: str) -> None:
     Daytona's auto-stop clock counts only SDK interactions — preview-proxy
     traffic, which is ALL of an episode's I/O, does not reset it — so without
     a heartbeat any healthy episode longer than the auto-stop interval would
-    be stopped mid-run. A daemon thread has exactly the right lifetime: it
-    dies with the process, which is what turns auto-stop into a dead-man's
-    switch for orphans. The thread exits once refreshes fail persistently
-    (the normal case: the episode ended and the caller deleted the sandbox).
-    """
-
-    def _beat() -> None:
-        failures = 0
-        while failures < _KEEPALIVE_MAX_CONSECUTIVE_FAILURES:
-            time.sleep(_KEEPALIVE_INTERVAL_S)
-            try:
-                sandbox.refresh_activity()
-                failures = 0
-            except Exception:
-                failures += 1
-
-    threading.Thread(target=_beat, name=f"tb2-sandbox-keepalive-{task_id}", daemon=True).start()
+    be stopped mid-run (see recipe.start_keepalive for the dead-man's-switch
+    lifetime contract)."""
+    recipe.start_keepalive(
+        sandbox.refresh_activity,
+        f"tb2-sandbox-keepalive-{task_id}",
+        interval_s=_KEEPALIVE_INTERVAL_S,
+        max_consecutive_failures=_KEEPALIVE_MAX_CONSECUTIVE_FAILURES,
+    )
 
 
 def create_task_sandbox(
@@ -175,27 +140,9 @@ _DEFAULT_API_KEY_FILE = "~/.config/daytona/api_key"
 
 
 def resolve_api_key() -> str:
-    """The Daytona API key: DAYTONA_API_KEY, else the key file.
-
-    The file indirection (DAYTONA_API_KEY_FILE, default
-    ``~/.config/daytona/api_key``) exists so launchers can hand rollout
-    workers a PATH instead of the secret itself: anything a launcher
-    forwards rides ray's runtime_env, which is echoed into driver logs and
-    persisted in job metadata in plaintext. Env vars the worker already has
-    (platform-injected, single-host inheritance) never pass through ray, so
-    DAYTONA_API_KEY is checked first.
-    """
-    key = os.environ.get("DAYTONA_API_KEY", "").strip()
-    if key:
-        return key
-    key_file = Path(os.environ.get("DAYTONA_API_KEY_FILE", "").strip() or _DEFAULT_API_KEY_FILE).expanduser()
-    try:
-        key = key_file.read_text(encoding="utf-8").strip()
-    except OSError:
-        key = ""
-    if not key:
-        raise RuntimeError(f"no Daytona API key: DAYTONA_API_KEY is unset and {key_file} is missing or empty")
-    return key
+    """The Daytona API key: DAYTONA_API_KEY, else the key file (see
+    recipe.resolve_api_key for the file-indirection rationale)."""
+    return recipe.resolve_api_key("DAYTONA_API_KEY", "DAYTONA_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
 
 
 def make_daytona():

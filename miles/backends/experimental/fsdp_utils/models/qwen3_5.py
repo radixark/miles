@@ -70,11 +70,10 @@ def _patch_decoder_forward(dl_cls, gdn_cls):
     @functools.wraps(orig)
     def forward(self, *args, **kwargs):
         ctx = packed_seq_context(kwargs.get("position_ids"))
-        if ctx is not None:
-            for module in self.modules():
-                if isinstance(module, gdn_cls):
-                    module._gdn_cu_seqlens = ctx.cu_seqlens
-                    module._gdn_seq_idx = ctx.seq_idx
+        for module in self.modules():
+            if isinstance(module, gdn_cls):
+                module._gdn_cu_seqlens = ctx.cu_seqlens if ctx is not None else None
+                module._gdn_seq_idx = ctx.seq_idx if ctx is not None else None
         return orig(self, *args, **kwargs)
 
     forward._gdn_packing = True
@@ -91,7 +90,7 @@ def _find_class(mod, suffix):
 def apply_gateddeltanet_packing_patch():
     """Patch every GatedDeltaNet hybrid arch present (idempotent). Returns True if anything was patched."""
     patched = False
-    for mod_name in ("qwen3_5_moe", "qwen3_next"):
+    for mod_name in ("qwen3_5", "qwen3_5_moe", "qwen3_next"):
         try:
             mod = __import__(f"transformers.models.{mod_name}.modeling_{mod_name}", fromlist=["x"])
         except Exception:

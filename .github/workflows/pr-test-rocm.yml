@@ -1,0 +1,130 @@
+# doc-dev: docs/ci/00-stage.md
+name: PR Test (ROCm)
+
+# ROCm counterpart to pr-test.yml. Same structure, different GPU stage:
+# calls _run-ci-rocm.yml instead of _run-ci.yml, using the ROCm container
+# with HIP/CUDA compatibility.
+#
+# Test selection is explicit rather than inherited from the CUDA suites. The
+# shared CI policy selects matching register_rocm_ci() labels for PR/nightly
+# runs; manual dispatch keeps the full regular MI300X suite.
+#
+# The MI300X host is split into two 4-GPU runners, so this stage is 4-GPU.
+# CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
+# own 4-GPU CaseConfig rather than an IS_HIP branch in the original.
+#
+# pull_request_target keeps the workflow and fork authorization on the trusted
+# base branch. A fork reaches the privileged self-hosted stage only after a
+# maintainer adds a canonical `run-ci-*` label.
+#
+# The reusable job then checks out the PR merge ref explicitly. Fork PR jobs
+# receive no repository secrets; the accepted label still authorizes their
+# code to run against the MI300X host mounts.
+#
+# SGLang / Megatron-LM versions are baked into the ROCm image
+# (_run-ci-rocm.yml defaults skip_dependency_install to true), so unlike
+# pr-test.yml there are no ci_megatron_pr / ci_sglang_pr inputs here.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  schedule:
+    # Same nightly cadence as pr-test.yml; ci_policy.py maps this exact cron.
+    - cron: '0 15 * * *'
+  workflow_dispatch:
+    inputs:
+      ci_image_tag:
+        description: 'ROCm Docker image tag (default: miles-rocm700-mi30x-20260708)'
+        required: false
+        type: string
+        default: 'miles-rocm700-mi30x-20260708'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  resolve-ci-policy:
+    runs-on: ubuntu-latest
+    outputs:
+      allow_self_hosted: ${{ steps.authorize.outputs.allow_self_hosted }}
+      cadence: ${{ steps.resolve.outputs.cadence }}
+      raw_labels: ${{ steps.resolve.outputs.raw_labels }}
+      bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
+    steps:
+      - name: Authorize self-hosted PR execution
+        id: authorize
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          BASE_REPOSITORY: ${{ github.repository }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          ALLOW_SELF_HOSTED=true
+          if [[ "$EVENT_NAME" == "pull_request_target" && "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]]; then
+            ALLOW_SELF_HOSTED=false
+            if jq -e 'any(.[]; test("^run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*$"))' <<<"$PR_LABELS_JSON" >/dev/null; then
+              ALLOW_SELF_HOSTED=true
+            fi
+          fi
+          echo "allow_self_hosted=${ALLOW_SELF_HOSTED}" >> "$GITHUB_OUTPUT"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve CI policy inputs
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name == 'pull_request_target' && 'pull_request' || github.event_name }}
+          SCHEDULE: ${{ github.event.schedule || '' }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python -m tests.ci.ci_policy
+
+  resolve-ci-image:
+    runs-on: ubuntu-latest
+    outputs:
+      container_image: ${{ steps.resolve.outputs.container_image }}
+    steps:
+      - name: Resolve CI image
+        id: resolve
+        shell: bash
+        env:
+          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+        run: |
+          CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
+          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm700-mi30x-20260708"
+          if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
+            exit 1
+          fi
+          echo "container_image=rocm/sgl-dev:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
+
+  stage-c-4-gpu-mi300x:
+    needs: [resolve-ci-policy, resolve-ci-image]
+    if: needs.resolve-ci-policy.outputs.allow_self_hosted == 'true'
+    # One shard per 4-GPU runner, so the pair works the suite in parallel.
+    # run_suite.py balances the shards by est_time. fail-fast: false so one
+    # shard's failure does not cancel the other mid-run.
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci-rocm.yml
+    with:
+      runs_on: '["self-hosted", "amd", "mi300x", "4gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      checkout_ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi300x
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+        --enable-retry --max-attempts 2
+    secrets:
+      WANDB_API_KEY: ${{ (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.WANDB_API_KEY || '' }}

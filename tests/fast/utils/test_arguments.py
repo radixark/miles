@@ -261,6 +261,59 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
         miles_validate_args(args)
 
 
+class TestCriticSaveDerivation:
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        miles_validate_args(args)
+        return args
+
+    def test_derives_sibling_dir_from_save(self):
+        args = self._validate(["--advantage-estimator", "ppo", "--save", "/ckpts/run1"])
+        assert args.critic_save == "/ckpts/run1_critic"
+
+    def test_trailing_slash_is_stripped(self):
+        args = self._validate(["--advantage-estimator", "ppo", "--save", "/ckpts/run1/"])
+        assert args.critic_save == "/ckpts/run1_critic"
+
+    def test_explicit_critic_save_is_respected(self):
+        args = self._validate(
+            ["--advantage-estimator", "ppo", "--save", "/ckpts/run1", "--critic-save", "/elsewhere/critic"]
+        )
+        assert args.critic_save == "/elsewhere/critic"
+
+    def test_stays_none_without_save(self):
+        args = self._validate(["--advantage-estimator", "ppo"])
+        assert args.critic_save is None
+
+
+class TestSessionServerV2Validation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    @pytest.mark.parametrize(
+        ("extra", "flag"),
+        [
+            (["--group-rm"], "--group-rm"),
+            (["--partial-rollout"], "--partial-rollout"),
+            (
+                ["--true-on-policy-mode", "--recompute-logprobs-via-prefill"],
+                "--recompute-logprobs-via-prefill",
+            ),
+        ],
+    )
+    def test_rejects_unsupported_list_consumers(self, extra, flag):
+        args = self._parse(["--use-session-server", "v2", *extra])
+
+        with pytest.raises(ValueError) as exc_info:
+            miles_validate_args(args)
+
+        assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
+
+
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
