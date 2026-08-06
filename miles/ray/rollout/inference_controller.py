@@ -15,16 +15,19 @@ logger = logging.getLogger(__name__)
 
 
 class InferenceController:
+    @staticmethod
+    async def create(args, pg) -> "InferenceController":
+        controller = InferenceController(args, pg)
+        if not args.debug_train_only:
+            controller.servers = await start_rollout_servers(args, pg)
+            dashboard_hooks.register_router(args)
+            start_session_server(args)
+        return controller
+
     def __init__(self, args, pg):
         self.pg = pg
         self.args = args
-
-        if self.args.debug_train_only:
-            self.servers: dict[str, RolloutServer] = {}
-        else:
-            self.servers = start_rollout_servers(args, pg)
-            dashboard_hooks.register_router(args)
-            start_session_server(args)
+        self.servers: dict[str, RolloutServer] = {}
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
 
