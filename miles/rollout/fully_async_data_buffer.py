@@ -72,27 +72,19 @@ class DataBuffer(ABC):
 
 
 class DefaultDataBuffer(DataBuffer):
-    """Finished groups waiting between rollout production and training consumption.
+    """FIFO buffer of finished groups between rollout production and training consumption.
 
-    Supported dataflow/staleness control options:
-
-    (1) max groups: use ``--async-data-buffer-max-batches`` to set the max size
-        of the buffer, in multiples of rollout_batch_size. On overflow the most
-        stale groups are evicted and their prompts recycled for regeneration;
-        0 disables eviction and blocks the producer when the buffer is full.
-    (2) order: use ``--async-data-buffer-order`` to set the consumption order,
-        fifo (default) or lifo. lifo trains on the freshest group first — pair
-        it with (1) and/or ``--max-weight-staleness`` so sunk old groups are
-        evicted rather than eventually trained on.
+    Dataflow/staleness control: use ``--async-data-buffer-max-batches`` to set
+    the max size of the buffer, in multiples of rollout_batch_size. On overflow
+    the most stale groups are evicted and their prompts recycled for
+    regeneration; 0 disables eviction and blocks the producer when the buffer
+    is full.
     """
 
     def __init__(self, input: DataBufferConstructorInput):
         args = input.args
-        order = args.async_data_buffer_order
         max_batches = args.async_data_buffer_max_batches
-        assert order in ("fifo", "lifo"), f"unknown buffer order: {order}"
         assert max_batches >= 0, f"negative buffer capacity: {max_batches}"
-        self._order = order
         self._evict_on_overflow = max_batches > 0
         self._capacity = max_batches * args.rollout_batch_size if max_batches else OUTPUT_QUEUE_MAX_GROUPS
         self._max_staleness = args.max_weight_staleness
@@ -124,7 +116,7 @@ class DefaultDataBuffer(DataBuffer):
         async with self._cond:
             while not self._entries:
                 await self._cond.wait()
-            entry = self._entries.pop() if self._order == "lifo" else self._entries.pop(0)
+            entry = self._entries.pop(0)
             self._cond.notify_all()
             return entry
 

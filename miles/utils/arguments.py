@@ -678,19 +678,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--async-data-buffer-order",
-                type=str,
-                choices=["fifo", "lifo"],
-                default="fifo",
-                help=(
-                    "Consumption order of the fully async finished-group data buffer. fifo (default) "
-                    "trains on the oldest finished group first; lifo trains on the freshest, "
-                    "keeping updates closer to on-policy at the cost of letting old groups sink — "
-                    "pair lifo with --async-data-buffer-max-batches / --max-weight-staleness so "
-                    "sunk groups are evicted rather than eventually trained on."
-                ),
-            )
-            parser.add_argument(
                 "--custom-async-data-buffer-path",
                 type=str,
                 default=None,

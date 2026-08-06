@@ -76,7 +76,6 @@ def make_args(**overrides) -> Namespace:
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
         async_data_buffer_max_batches=0,
-        async_data_buffer_order="fifo",
         custom_async_data_buffer_path=None,
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
@@ -403,11 +402,10 @@ async def test_weight_version_throttles_failed_queries(monkeypatch):
 # ── DataBuffer: staleness-bounded buffering ─────────────────────────
 
 
-def make_buffer(order="fifo", max_groups=None, max_staleness=None):
+def make_buffer(max_groups=None, max_staleness=None):
     evicted = []
     args = make_args(
         rollout_batch_size=1,  # capacity is in batches; batch size 1 makes it count groups
-        async_data_buffer_order=order,
         async_data_buffer_max_batches=max_groups or 0,
         max_weight_staleness=max_staleness,
     )
@@ -462,15 +460,6 @@ async def test_buffer_threshold_evicts_all_over_staleness_first():
     assert metrics["evicted_stale_groups"] == 2
     assert metrics["evicted_overflow_groups"] == 0
     assert metrics["queue_size"] == 2
-
-
-async def test_buffer_lifo_serves_freshest_first():
-    buffer, _ = make_buffer(order="lifo")
-    await put_group(buffer, make_group(1))
-    await put_group(buffer, make_group(2))
-
-    assert (await buffer.get()).group[0].group_index == 2
-    assert (await buffer.get()).group[0].group_index == 1
 
 
 async def test_buffer_staleness_metrics():
