@@ -12,8 +12,6 @@ from dataclasses import dataclass
 
 from miles.utils.types import Sample
 
-OUTPUT_QUEUE_MAX_GROUPS = 1000
-
 # A finished group is list[Sample], or list[list[Sample]] when a generate function
 # returns multiple samples per trajectory (e.g. multi-agent).
 Group = list[Sample | list[Sample]]
@@ -93,7 +91,7 @@ class DefaultDataBuffer(DataBuffer):
         assert max_batches >= 0, f"negative buffer capacity: {max_batches}"
         assert stale_handler in ("retry", "drop"), f"unknown stale samples handler: {stale_handler}"
         self._evict_on_overflow = max_batches > 0
-        self._capacity = max_batches * args.rollout_batch_size if max_batches else OUTPUT_QUEUE_MAX_GROUPS
+        self._capacity = max_batches * args.rollout_batch_size if max_batches else 1000  # legacy blocking bound
         self._max_staleness = args.max_weight_staleness
         self._recycle_fn = input.recycle_fn
         # "drop" discards stale groups instead of recycling them
