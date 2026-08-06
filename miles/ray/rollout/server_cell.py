@@ -11,6 +11,21 @@ if TYPE_CHECKING:
 class ServerCell:
     engines: list[ServerEngine]
 
+    @property
+    def primary_engine(self) -> ServerEngine:
+        return self.engines[0]
+
+    async def offload(self, tags: list[str] | None):
+        return await self.primary_engine.api_client.release_memory_occupation(tags=tags)
+
+    async def onload(self, tags: list[str] | None):
+        return await self.primary_engine.api_client.resume_memory_occupation(tags=tags)
+
+    async def check_weights(self, action: str, allow_quant_error: bool, selector: str, skip_list: list[str] | None):
+        return await self.primary_engine.api_client.check_weights(
+            action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+        )
+
 
 def flatten_cells(cells: list[ServerCell]) -> list[ServerEngine]:
     return [engine for cell in cells for engine in cell.engines]
