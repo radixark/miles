@@ -234,3 +234,119 @@ def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
 
     assert saver.resume.call_count == 1
     assert worker._asleep is False
+
+
+def _actor_train_args(**overrides):
+    defaults = dict(
+        compute_advantages_and_returns=True,
+        use_rollout_logprobs=False,
+        keep_old_actor=False,
+        get_mismatch_metrics=False,
+        skip_forward_only=False,
+    )
+    return Namespace(**(defaults | overrides))
+
+
+def _actor_reuse_worker(actor_module, **args_overrides):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = _actor_train_args(use_critic=False, **args_overrides)
+    worker.model = [object()]
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker.weights_backuper = Mock(backup_tags=set())
+    worker._active_model_tag = "actor"
+    worker._switch_model = Mock()
+    worker._set_replay_stage = Mock()
+    worker.compute_log_prob = Mock(return_value={"log_probs": [object()]})
+    worker.rollout_data_postprocess = None
+    worker.prof = Mock()
+    worker._ft_test_action_executor = None
+    worker.weight_updater = Mock()
+    worker.weight_updater.pop_metrics.return_value = {}
+    worker._heartbeat = Mock()
+    return worker
+
+
+def _patch_actor_reuse_dependencies(actor_module, monkeypatch, *, num_microbatches):
+    @contextmanager
+    def passthrough_timer(_name):
+        yield
+
+    monkeypatch.setattr(actor_module, "all_replay_managers", [])
+    monkeypatch.setattr(
+        actor_module,
+        "get_data_iterator",
+        lambda *_args: ([Namespace(micro_batch_indices=None, micro_batch_size=1)], num_microbatches),
+    )
+    monkeypatch.setattr(actor_module, "compute_advantages_and_returns", Mock())
+    monkeypatch.setattr(actor_module, "log_train_advantage_computation_event", Mock())
+    monkeypatch.setattr(actor_module, "log_rollout_data", Mock())
+    monkeypatch.setattr(actor_module, "log_perf_data", Mock())
+    monkeypatch.setattr(actor_module.train_dump_utils, "save_debug_train_data", Mock())
+    monkeypatch.setattr(actor_module, "inverse_timer", passthrough_timer)
+    monkeypatch.setattr(actor_module, "timer", passthrough_timer)
+    monkeypatch.setattr(
+        actor_module,
+        "train",
+        Mock(return_value=actor_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY),
+    )
+
+
+@pytest.mark.parametrize(
+    ("skip_forward_only", "num_microbatches"),
+    [
+        (False, [1]),
+        (True, [1]),
+        (True, [2]),
+    ],
+)
+def test_actor_logprob_forward_is_explicit_single_step_opt_in(
+    actor_module, monkeypatch, skip_forward_only, num_microbatches
+):
+    worker = _actor_reuse_worker(
+        actor_module,
+        skip_forward_only=skip_forward_only,
+    )
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=num_microbatches)
+    rollout_data = {
+        "num_rollouts": [1] * len(num_microbatches),
+        "total_lengths": [1] * sum(num_microbatches),
+    }
+
+    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    assert worker.compute_log_prob.call_count == int(not skip_forward_only)
+    assert (
+        actor_module.compute_advantages_and_returns.call_args.kwargs["allow_training_logprob_reuse"]
+        is skip_forward_only
+    )
+    train_call = actor_module.train.call_args
+    assert train_call.args[6] is rollout_data["num_rollouts"]
+    assert train_call.kwargs["allow_training_logprob_reuse"] is skip_forward_only
+
+
+def test_skip_forward_only_rejects_multiple_optimizer_steps(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, skip_forward_only=True)
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1, 1])
+    rollout_data = {"num_rollouts": [1, 1], "total_lengths": [1, 1]}
+
+    with pytest.raises(AssertionError, match="requires 1 optimizer step"):
+        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.compute_advantages_and_returns.assert_not_called()
+    actor_module.train.assert_not_called()
+
+
+def test_skip_forward_only_rejects_existing_actor_log_probs(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, skip_forward_only=True)
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
+    rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
+    rollout_data["log_probs"] = [object()]
+
+    with pytest.raises(AssertionError, match="without actor log probs"):
+        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.compute_advantages_and_returns.assert_not_called()
+    actor_module.train.assert_not_called()

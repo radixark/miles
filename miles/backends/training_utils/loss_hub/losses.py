@@ -64,6 +64,8 @@ def policy_loss_function(
     batch: RolloutBatch,
     logits: torch.Tensor,
     sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
+    *,
+    allow_training_logprob_reuse: bool = False,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Compute policy loss (PPO/GSPO) and metrics.
 
@@ -81,6 +83,8 @@ def policy_loss_function(
             and optionally "ref_log_probs" and "rollout_log_probs".
         logits: Policy logits with shape `[1, T, V]`.
         sum_of_sample_mean: Reduction function that averages per-sample values.
+        allow_training_logprob_reuse: Derive old policy log-probs by detaching
+            current log-probs when the actor explicitly omitted that input.
 
     Returns:
         Tuple of `(loss, metrics)` where `loss` is a scalar tensor and `metrics`
@@ -91,7 +95,11 @@ def policy_loss_function(
     """
     parallel_state = get_parallel_state()
     advantages = torch.cat(batch["advantages"], dim=0)
-    old_log_probs = batch["rollout_log_probs"] if args.use_rollout_logprobs else batch["log_probs"]
+    old_log_probs = batch.get("rollout_log_probs" if args.use_rollout_logprobs else "log_probs")
+    if allow_training_logprob_reuse and (args.use_rollout_logprobs or old_log_probs is not None):
+        raise ValueError("training log-prob reuse requires no separate old-policy log-probs")
+    if not allow_training_logprob_reuse and old_log_probs is None:
+        raise ValueError("policy loss requires old-policy log-probs")
 
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
@@ -110,6 +118,9 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    if allow_training_logprob_reuse:
+        old_log_probs = [log_prob.detach() for log_prob in log_probs]
+
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
 
@@ -125,12 +136,15 @@ def policy_loss_function(
                 log_probs, total_lengths, response_lengths, strict=False
             )
         ]
-        full_old_log_probs = [
-            all_gather_with_cp(old_log_prob, total_length, response_length)
-            for old_log_prob, total_length, response_length in zip(
-                old_log_probs, total_lengths, response_lengths, strict=False
-            )
-        ]
+        if allow_training_logprob_reuse:
+            full_old_log_probs = [full_log_prob.detach() for full_log_prob in full_log_probs]
+        else:
+            full_old_log_probs = [
+                all_gather_with_cp(old_log_prob, total_length, response_length)
+                for old_log_prob, total_length, response_length in zip(
+                    old_log_probs, total_lengths, response_lengths, strict=False
+                )
+            ]
 
     # Compute OPSM mask if enabled
     if args.use_opsm:

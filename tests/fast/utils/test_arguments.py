@@ -15,6 +15,7 @@ from miles.utils.arguments import (
     miles_validate_args,
     resolve_rollout_function_paths,
     validate_async_off_policy_correction,
+    validate_skip_forward_only,
 )
 from miles.utils.misc import function_registry
 
@@ -668,3 +669,117 @@ class TestValidateAsyncOffPolicyCorrection:
 
     def test_non_ppo_estimators_are_unaffected(self):
         validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected"),
+    [
+        ([], False),
+        (["--skip-forward-only"], True),
+    ],
+)
+def test_skip_forward_only_flag_is_parsed(extra_args, expected):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(extra_args + REQUIRED_ARGS)
+
+    assert args.skip_forward_only is expected
+
+
+def test_skip_forward_only_is_gated_during_miles_validation():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--skip-forward-only", "--global-batch-size", "32", "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="--skip-forward-only"):
+        miles_validate_args(args)
+
+
+def _make_skip_forward_only_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        compute_advantages_and_returns=True,
+        custom_megatron_before_log_prob_hook_path=None,
+        custom_megatron_before_train_step_hook_path=None,
+        custom_model_provider_path=None,
+        dumper_enable=False,
+        dumper_fwd_only=None,
+        dumper_source_patcher_config_train=None,
+        dump_details=None,
+        get_mismatch_metrics=False,
+        global_batch_size=64,
+        keep_old_actor=False,
+        kl_coef=0.0,
+        log_correct_samples=False,
+        loss_type="policy_loss",
+        multi_lora=False,
+        n_samples_per_prompt=8,
+        num_steps_per_rollout=None,
+        rollout_batch_size=8,
+        rollout_data_postprocess_path=None,
+        save_debug_train_data=None,
+        train_backend="megatron",
+        true_on_policy_mode=False,
+        use_dynamic_global_batch_size=False,
+        use_indexer_replay=False,
+        use_opd=False,
+        use_rollout_entropy=False,
+        use_rollout_indexer_replay=False,
+        use_rollout_logprobs=False,
+        use_rollout_routing_replay=False,
+        use_routing_replay=False,
+        use_tis=False,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class TestValidateSkipForwardOnly:
+    def test_valid_single_step_configuration_passes(self):
+        validate_skip_forward_only(_make_skip_forward_only_args())
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"loss_type": "custom_loss"},
+            {"compute_advantages_and_returns": False},
+            {"use_rollout_logprobs": True},
+            {"keep_old_actor": True},
+            {"kl_coef": 0.1},
+            {"use_opd": True},
+            {"use_tis": True},
+            {"get_mismatch_metrics": True},
+            {"use_rollout_entropy": True},
+            {"true_on_policy_mode": True},
+            {"log_correct_samples": True},
+            {"rollout_data_postprocess_path": "pkg.hook"},
+            {"custom_megatron_before_log_prob_hook_path": "pkg.hook"},
+            {"custom_megatron_before_train_step_hook_path": "pkg.hook"},
+            {"custom_model_provider_path": "pkg.model_provider"},
+            {"dumper_enable": True},
+            {"dumper_fwd_only": []},
+            {"dumper_source_patcher_config_train": "patcher.yaml"},
+            {"dump_details": "/tmp/details"},
+            {"save_debug_train_data": "train-{rollout_id}.pt"},
+            {"use_routing_replay": True},
+            {"use_indexer_replay": True},
+            {"use_rollout_routing_replay": True},
+            {"use_rollout_indexer_replay": True},
+            {"num_steps_per_rollout": 2},
+            {"global_batch_size": 32},
+        ],
+    )
+    def test_incompatible_configuration_is_rejected(self, overrides):
+        with pytest.raises(AssertionError, match="--skip-forward-only"):
+            validate_skip_forward_only(_make_skip_forward_only_args(**overrides))
+
+    def test_dynamic_global_batch_size_defers_step_count_to_runtime(self):
+        validate_skip_forward_only(
+            _make_skip_forward_only_args(
+                global_batch_size=32,
+                use_dynamic_global_batch_size=True,
+            )
+        )
