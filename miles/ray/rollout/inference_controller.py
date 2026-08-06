@@ -40,6 +40,8 @@ class InferenceController:
             dashboard_hooks.register_router(args)
             await start_session_server(args)
 
+            await asyncio.gather(*[srv.wait_expected_num_cells() for srv in controller.servers.values()])
+
         return controller
 
     def __init__(self, args):
