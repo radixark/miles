@@ -19,16 +19,6 @@ from miles.utils.multi_lora import is_multi_lora_enabled
 logger = logging.getLogger(__name__)
 
 
-def get_base_gpu_id(args, rank):
-    num_gpus = min(args.num_gpus_per_node, args.rollout_num_gpus_per_engine)
-    if args.colocate:
-        start_index = (rank * num_gpus) % args.num_gpus_per_node
-    else:
-        num_actor_gpus = 0 if args.debug_rollout_only else args.actor_num_gpus_per_node * args.actor_num_nodes
-        start_index = (num_actor_gpus + rank * num_gpus) % args.num_gpus_per_node
-    return start_index
-
-
 def _to_local_gpu_id(physical_gpu_id: int) -> int:
     cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
     if not cvd:
@@ -108,7 +98,7 @@ def _compute_server_args(
     port,
     worker_type: str = "regular",
     disaggregation_bootstrap_port: int | None = None,
-    base_gpu_id: int | None = None,
+    base_gpu_id: int,
     engine_info_bootstrap_port: int | None = None,
     sglang_overrides: dict | None = None,
     num_gpus_per_engine: int | None = None,
@@ -116,8 +106,7 @@ def _compute_server_args(
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
     node_rank = rank % nnodes
-    base = base_gpu_id if base_gpu_id is not None else get_base_gpu_id(args, rank)
-    base = _to_local_gpu_id(base)
+    base = _to_local_gpu_id(base_gpu_id)
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
