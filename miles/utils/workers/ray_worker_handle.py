@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import ray
 
-from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
+from miles.utils.workers.worker_handle import (
+    _WAIT_DEAD_PROBE_INTERVAL_SECONDS,
+    BaseWorkerHandle,
+    WorkerUnreachableError,
+)
 
 logger = logging.getLogger(__name__)
-
-_WAIT_DEAD_PROBE_INTERVAL_SECONDS = 1.0
 
 
 class RayWorkerHandle(BaseWorkerHandle):
@@ -39,22 +40,15 @@ class RayWorkerHandle(BaseWorkerHandle):
         except (TimeoutError, asyncio.TimeoutError) as e:
             raise WorkerUnreachableError(f"Worker not ready within {timeout}s") from e
 
-    async def wait_dead(self, *, timeout: float) -> None:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                await asyncio.wait_for(
-                    self._actor_handle.__ray_ready__.remote(), timeout=_WAIT_DEAD_PROBE_INTERVAL_SECONDS
-                )
-            except ray.exceptions.ActorUnavailableError as e:
-                logger.info("Worker death probe was inconclusive; the actor is temporarily unavailable: %r", e)
-            except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
-                return
-            except (TimeoutError, asyncio.TimeoutError):
-                pass
-
-            if time.monotonic() >= deadline:
-                logger.error("Timed out after %.0fs waiting for worker death; proceeding anyway", timeout)
-                return
-
-            await asyncio.sleep(_WAIT_DEAD_PROBE_INTERVAL_SECONDS)
+    async def _probe_is_dead(self) -> bool:
+        try:
+            await asyncio.wait_for(
+                self._actor_handle.__ray_ready__.remote(), timeout=_WAIT_DEAD_PROBE_INTERVAL_SECONDS
+            )
+        except ray.exceptions.ActorUnavailableError as e:
+            logger.info("Worker death probe was inconclusive; the actor is temporarily unavailable: %r", e)
+        except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
+            return True
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        return False
