@@ -86,6 +86,20 @@ class TestReapLeakedAcceleratorProcesses:
 
         assert any("still alive" in record.message for record in caplog.records)
 
+    def test_the_settle_window_is_spent_even_when_nothing_survives(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The driver frees the memory after its holders are gone, so an empty process table is
+        not yet a clean device; polling exists to tell whether the kill worked, not to cut the
+        wait short."""
+        slept: list[float] = []
+        monkeypatch.setattr(ci_utils.subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, 1))
+        monkeypatch.setattr(ci_utils.time, "sleep", slept.append)
+        monkeypatch.setattr(ci_utils, "_REAP_SETTLE_SECONDS", 4.0)
+
+        ci_utils.reap_leaked_accelerator_processes()
+
+        # Approximate because the survivor check itself consumes part of the window.
+        assert sum(slept) == pytest.approx(4.0, abs=0.5)
+
     def test_a_clean_reap_reports_nothing(
         self, monkeypatch: pytest.MonkeyPatch, recorded_argvs: list[list[str]], caplog: pytest.LogCaptureFixture
     ) -> None:

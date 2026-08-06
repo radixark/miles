@@ -698,8 +698,13 @@ def _wait_until_reaped() -> None:
             break
         time.sleep(_REAP_POLL_SECONDS)
 
-    # Even with nothing left holding a handle, the driver frees the memory asynchronously.
-    time.sleep(_REAP_POLL_SECONDS)
+    # The full window is still spent even once nothing matches: the driver frees the memory
+    # asynchronously after its holders are gone, so an empty process table is not yet a clean
+    # device. Polling is what tells us whether the kill worked, not what shortens the wait.
+    remaining = deadline - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
+
     if survivors:
         logger.warning(
             f"Leftovers still alive after {_REAP_SETTLE_SECONDS}s: {survivors}. "
