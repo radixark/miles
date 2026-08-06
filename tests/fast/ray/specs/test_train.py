@@ -5,7 +5,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from miles.ray.specs.train import compute_trainer_spec_name, specs_trainer
+from miles.ray.specs.train import (
+    TRAINER_CONTROLLER_WORKER_CLASS,
+    compute_trainer_controller_spec_name,
+    compute_trainer_spec_name,
+    spec_trainer_controller_actor,
+    spec_trainer_controller_critic,
+    specs_trainer,
+    trainer_controller_cell_id,
+    trainer_controller_worker_name,
+)
 from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TrainRayActor
 from miles.utils.workers.worker_spec import WorkerLaunchContext
 
@@ -226,3 +235,45 @@ class TestPorts:
 def test_the_spec_name_encodes_the_role(role):
     """Spec names identify trainer cells apart from inference cells."""
     assert compute_trainer_spec_name(role) == f"trainer-{role}"
+
+
+def _controller_context() -> WorkerLaunchContext:
+    return WorkerLaunchContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[])
+
+
+class TestSpecTrainerController:
+    def test_one_controller_per_trainer_role(self):
+        """Each controller owns exactly one trainer fleet, so a critic run needs a second one."""
+        assert spec_trainer_controller_actor(_make_args()).name == "trainer-controller-actor"
+        assert spec_trainer_controller_critic(_make_args(use_critic=True)).name == "trainer-controller-critic"
+
+    def test_it_is_a_gpuless_worker_on_both_backends(self):
+        """A gpu request would reserve a whole trainer slot for a process that only sends rpcs."""
+        spec = spec_trainer_controller_actor(_make_args())
+
+        assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (1, 1)
+        assert spec.scheduling.num_gpus_per_worker == 0
+        assert spec.scheduling.num_gpu_slots_per_worker == 0
+
+    def test_the_worker_class_is_the_controller_itself(self):
+        """The spec names the class a pod or actor constructs, so it must be the real implementation."""
+        spec = spec_trainer_controller_actor(_make_args())
+
+        assert spec.worker_class == TRAINER_CONTROLLER_WORKER_CLASS
+
+    def test_the_worker_and_cell_names_are_stable(self):
+        """The driver looks the controller up by name, so these names are part of the release's contract."""
+        assert trainer_controller_worker_name("actor") == "trainer-controller-actor-0-0"
+        assert trainer_controller_cell_id("actor") == "trainer-controller-actor-0"
+
+    def test_the_critic_args_are_neutralized(self):
+        """A critic controller must not hand its cells the actor's KL settings."""
+        spec = spec_trainer_controller_critic(_make_args(use_critic=True, kl_coef=0.1, use_kl_loss=True, use_opd=True))
+        critic_kwargs = spec.ctor_kwargs(_controller_context())
+
+        assert (critic_kwargs["args"].kl_coef, critic_kwargs["args"].use_opd) == (0, False)
+        assert (critic_kwargs["with_ref"], critic_kwargs["with_opd_teacher"]) == (False, False)
+
+    def test_the_controller_spec_name_encodes_the_role(self):
+        """The two controllers of a critic run must not collide in the address book."""
+        assert compute_trainer_controller_spec_name("critic") == "trainer-controller-critic"
