@@ -389,6 +389,9 @@ class TestRocmWorkflowScopeSeam:
         assert "--auto-partition-size 2" in command
         assert "if: needs.resolve-ci-policy.outputs.allow_self_hosted == 'true'" in stage
         assert "format('refs/pull/{0}/merge', github.event.pull_request.number)" in stage
+        # A known-failing test in this suite would otherwise halt the shard and
+        # hide the rest; the flag does not stop a failure from failing the job.
+        assert "--continue-on-error" in command
 
 
 # --- CLI seam: local nightly alias and invalid-suite exit behavior -----------

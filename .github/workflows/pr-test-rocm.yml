@@ -182,6 +182,12 @@ jobs:
     if: needs.resolve-ci-policy.outputs.allow_self_hosted == 'true'
     # Same shape as the MI300X stage: the MI350X host is likewise split into
     # two 4-GPU runners, so one shard each. run_suite.py balances by est_time.
+    #
+    # Unlike the MI300X stage this passes --continue-on-error unconditionally.
+    # test_qwen3_30B_A3B/test_baseline.py currently fails this suite on MI350
+    # (log-prob tolerance; it fails the external SGLang nightly too), and
+    # halting on it would hide the other five tests. A failing test still
+    # fails the job -- the flag only controls how far the run gets.
     strategy:
       fail-fast: false
       matrix:
@@ -197,6 +203,7 @@ jobs:
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+        --continue-on-error
         --enable-retry --max-attempts 2
     secrets:
       WANDB_API_KEY: ${{ (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.WANDB_API_KEY || '' }}
