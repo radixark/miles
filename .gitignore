@@ -194,3 +194,5 @@ _examples_synced/
 .DS_Store
 
 .humanize/
+
+charts/*/charts/
