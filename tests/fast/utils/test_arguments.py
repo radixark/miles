@@ -241,21 +241,158 @@ class TestClusterBackend:
         with pytest.raises(SystemExit):
             self._parse(["--cluster-backend", "slurm"])
 
-    def test_validation_rejects_kubernetes_until_it_provisions_workers(self):
-        """kubernetes parses but is refused, so nobody silently gets a ray topology under it."""
+    def test_validation_accepts_kubernetes_now_that_it_provisions_workers(self):
+        """The kubernetes backend observes platform-created workers, so validation must let a run reach it."""
         args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
 
-        with pytest.raises(AssertionError, match="is not usable yet"):
-            miles_validate_args(args)
+        miles_validate_args(args)
 
-    def test_kubernetes_from_the_custom_config_file_is_refused_too(self, tmp_path):
-        """The config file overwrites args after the flags are parsed, so it must not skip the check."""
+        assert args.cluster_backend == "kubernetes"
+
+    def test_the_custom_config_file_still_decides_the_backend(self, tmp_path):
+        """The config file overwrites args after the flags are parsed, so its backend must be the one that survives."""
         config = tmp_path / "override.yaml"
         config.write_text("cluster_backend: kubernetes\n")
         args = self._parse(["--custom-config-path", str(config), "--num-rollout", "1"])
 
-        with pytest.raises(AssertionError, match="is not usable yet"):
+        miles_validate_args(args)
+
+        assert args.cluster_backend == "kubernetes"
+
+    def test_a_kubernetes_run_is_moved_onto_the_mooncake_object_store(self):
+        """A ray store reference can only be redeemed by a ray driver, and this run has none."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--object-store-backend", "ray", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.object_store_backend == "mooncake"
+
+    def test_the_override_outlives_the_custom_config_file(self, tmp_path):
+        """That file is applied late, so a ray store named there would otherwise survive the override."""
+        config = tmp_path / "override.yaml"
+        config.write_text("cluster_backend: kubernetes\nobject_store_backend: ray\n")
+        args = self._parse(["--custom-config-path", str(config), "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.object_store_backend == "mooncake"
+
+    def test_the_store_this_backend_chose_is_also_configured_by_it(self):
+        """The launcher asserts these kwargs exist and rewrites their host to the master it starts, so
+        a run that never asked for mooncake in the first place must not have to name them itself: with
+        them unset, every kubernetes run using the defaults died before a single pod did any work."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert ":" in args.mooncake_store_init_kwargs["master_server_address"]
+        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs())
+
+    def test_a_named_store_configuration_is_left_alone(self):
+        """A run that configured the store itself knows something the default cannot."""
+        named = '{"master_server_address": "10.0.0.2:60000", "protocol": "rdma"}'
+        args = self._parse(
+            ["--cluster-backend", "kubernetes", "--mooncake-store-init-kwargs", named, "--num-rollout", "1"]
+        )
+
+        miles_validate_args(args)
+
+        assert args.mooncake_store_init_kwargs == {"master_server_address": "10.0.0.2:60000", "protocol": "rdma"}
+
+    def test_a_ray_run_is_not_given_a_store_it_does_not_use(self):
+        """The ray store needs none of this, and inventing kwargs would misreport what the run uses."""
+        args = self._parse(["--cluster-backend", "ray", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.mooncake_store_init_kwargs is None
+
+    def test_a_ray_run_may_keep_the_ray_object_store(self):
+        """Every existing run takes this path, and nothing about it changed."""
+        args = self._parse(["--cluster-backend", "ray", "--object-store-backend", "ray", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.object_store_backend == "ray"
+
+    def test_refuses_a_kubernetes_run_that_serves_the_miles_dashboard(self, tmp_path):
+        """The dashboard is a named Ray actor, and this backend brings up no Ray cluster to hold it."""
+        args = self._parse(
+            [
+                "--cluster-backend",
+                "kubernetes",
+                "--num-rollout",
+                "1",
+                "--use-miles-dashboard",
+                "--dump-details",
+                str(tmp_path),
+            ]
+        )
+
+        with pytest.raises(AssertionError, match="--use-miles-dashboard"):
             miles_validate_args(args)
+
+    def test_refuses_a_kubernetes_run_that_posts_through_the_ray_cluster(self):
+        """Distributed POST reads ray.nodes(), which answers nothing where there is no cluster."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1", "--use-distributed-post"])
+
+        with pytest.raises(AssertionError, match="--use-distributed-post"):
+            miles_validate_args(args)
+
+    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self):
+        """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
+        args = self._parse(
+            [
+                "--cluster-backend",
+                "kubernetes",
+                "--num-rollout",
+                "1",
+                "--multi-lora-n-adapters",
+                "2",
+                "--lora-rank",
+                "8",
+                "--target-modules",
+                "linear_qkv",
+            ]
+        )
+
+        with pytest.raises(AssertionError, match="--multi-lora-n-adapters"):
+            miles_validate_args(args)
+
+    def test_refuses_these_modes_before_the_run_reaches_them(self):
+        """Each of them failed deep inside a started run, after the launcher had reported success."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1", "--use-distributed-post"])
+
+        with pytest.raises(AssertionError):
+            miles_validate_args(args)
+
+        assert args.use_distributed_post is True
+
+    def test_a_ray_run_may_still_post_through_the_ray_cluster(self):
+        """These are Ray-only modes, not modes a run may no longer have."""
+        args = self._parse(["--cluster-backend", "ray", "--num-rollout", "1", "--use-distributed-post"])
+
+        miles_validate_args(args)
+
+        assert args.use_distributed_post is True
+
+    def test_a_ray_run_may_still_serve_the_miles_dashboard(self, tmp_path):
+        """The Ray cluster that holds the dashboard actor is exactly what this backend has."""
+        args = self._parse(
+            [
+                "--cluster-backend",
+                "ray",
+                "--num-rollout",
+                "1",
+                "--use-miles-dashboard",
+                "--dump-details",
+                str(tmp_path),
+            ]
+        )
+
+        miles_validate_args(args)
+
+        assert args.use_miles_dashboard is True
 
 
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
