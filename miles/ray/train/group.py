@@ -138,8 +138,12 @@ class RayTrainGroup:
 
     # ------------------------ API :: train ------------------------
 
-    async def train(self, rollout_id: int, rollout_data_pack) -> list:
+    async def train(self, rollout_id: int, rollout_data_pack, external_data: list | None = None) -> list:
         """Do one rollout training"""
+
+        assert (
+            external_data is None or len(self._cells) == 1
+        ), "external_data is only supported for a single cell, i.e. without independent DP"
 
         event_analyzer.run_analysis_from_args(self.args)
 
@@ -152,13 +156,16 @@ class RayTrainGroup:
 
             log_structured(logger.info, tag="ft", op="train", phase="start", rollout=rollout_id, attempt=attempt)
             await self._refresh_cells(rollout_id=rollout_id)
-            snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
-                "train",
+            snapshot_alive_cells, results = await self._gather_all_alive_and_catch(
+                lambda cell: cell.train(
+                    rollout_id=rollout_id,
+                    rollout_data_ref=rollout_data_pack["data_ref"],
+                    witness_info=witness_info,
+                    attempt=attempt,
+                    external_data=external_data,
+                ),
+                debug_name="execute_all_alive_and_catch#train",
                 check_recoverable=False,
-                rollout_id=rollout_id,
-                rollout_data_ref=rollout_data_pack["data_ref"],
-                witness_info=witness_info,
-                attempt=attempt,
             )
             self._check_train_one_attempt(snapshot_alive_cells, results)
 
@@ -219,9 +226,10 @@ class RayTrainGroup:
             log_structured(
                 logger.error, tag="ft", op="check", **outcomes, decision="retry", reason="all alive cells failed"
             )
-            raise self._make_all_cells_failed_error("All cells failed in this training attempt") from _first_exception(
-                results
-            )
+            cause = _first_exception(results)
+            raise self._make_all_cells_failed_error(
+                "All cells failed in this training attempt", cause=cause
+            ) from cause
 
         # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
         #       This may happen when some cells fails *after* exchanging gradients w/ others
@@ -347,10 +355,19 @@ class RayTrainGroup:
     def _is_recoverable(self) -> bool:
         return any(cell.is_alive for cell in self._cells)
 
-    def _make_all_cells_failed_error(self, message: str) -> Exception:
+    def _make_all_cells_failed_error(self, message: str, *, cause: BaseException | None = None) -> Exception:
+        if isinstance(cause, NonRetryableError):
+            return NonRetryableError(message)
         return RuntimeError(message) if self._is_recoverable() else NonRetryableError(message)
 
     async def _execute_all_alive_and_catch(self, fn_name: str, *, check_recoverable: bool = True, **kwargs):
+        return await self._gather_all_alive_and_catch(
+            lambda cell: cell.execute(fn_name, **kwargs),
+            debug_name=f"execute_all_alive_and_catch#{fn_name}",
+            check_recoverable=check_recoverable,
+        )
+
+    async def _gather_all_alive_and_catch(self, compute_coroutine, *, debug_name: str, check_recoverable: bool = True):
         snapshot_alive_cells = [c for c in self._cells if c.is_alive]
         if not snapshot_alive_cells:
             raise NonRetryableError("No alive cells")
@@ -358,14 +375,13 @@ class RayTrainGroup:
         # detects stale heartbeat via cell_status(), calls cell.stop() to kill
         # actors, which unblocks this gather with ActorDiedError.
         outputs = await asyncio.gather(
-            *[cell.execute(fn_name, **kwargs) for cell in snapshot_alive_cells],
+            *[compute_coroutine(cell) for cell in snapshot_alive_cells],
             return_exceptions=True,
         )
-        AsyncioGatherUtils.log_error(outputs, debug_name=f"execute_all_alive_and_catch#{fn_name}")
+        AsyncioGatherUtils.log_error(outputs, debug_name=debug_name)
         if check_recoverable and not self._is_recoverable():
-            raise self._make_all_cells_failed_error(f"All cells failed during {fn_name}") from _first_exception(
-                outputs
-            )
+            cause = _first_exception(outputs)
+            raise self._make_all_cells_failed_error(f"All cells failed during {debug_name}", cause=cause) from cause
         return snapshot_alive_cells, outputs
 
     async def _execute_first_alive(self, fn_name: str, **kwargs):
