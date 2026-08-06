@@ -82,6 +82,14 @@ class MockSGLangEngine:
         self._record("_get_current_node_ip_and_free_port", (), {"start_port": start_port, "consecutive": consecutive})
         return ("127.0.0.1", get_free_port(start_port=start_port, consecutive=consecutive))
 
+    def _get_node_ip(self):
+        self._record("_get_node_ip", (), {})
+        return "127.0.0.1"
+
+    def _get_gpu_uuids(self, gpu_ids: list[int]):
+        self._record("_get_gpu_uuids", (gpu_ids,), {})
+        return [None] * len(gpu_ids)
+
     def _record(self, name: str, args: tuple, kwargs: dict) -> None:
         self.calls.append((name, args, kwargs))
 

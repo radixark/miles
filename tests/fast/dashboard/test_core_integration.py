@@ -94,26 +94,26 @@ def test_registry_contains_dashboard_backend():
 
 
 def test_engine_topology_gpu_range_logic():
-    # the pure slice of SGLangEngine.get_topology_info: node-physical range
+    # the pure slice of the topology construction: node-physical gpu ranges
     pytest.importorskip("sglang")
-    from miles.backends.sglang_utils.sglang_engine import SGLangEngine
+    from miles.ray.rollout.server_cell import ServerCell
 
-    engine = SGLangEngine.__new__(SGLangEngine)
-    engine.args = Namespace(num_gpus_per_node=8)
-    engine.base_gpu_id = 4
-    engine.num_gpus_per_engine = 2
-    engine.worker_type = "regular"
-    engine.node_rank = 0
-    engine.server_host = "10.0.0.9"
-    engine.server_port = 15000
-
-    info = engine.get_topology_info()
-    assert info["url"] == "http://10.0.0.9:15000"
-    assert info["gpu_ids"] == [4, 5]
-    assert len(info["gpu_uuids"]) == 2
-    assert info["worker_type"] == "regular"
+    cell = ServerCell(
+        args=Namespace(num_gpus_per_node=8),
+        worker_type="regular",
+        cell_id="cell-0",
+        pg=(None, [], [4, 5, 6, 7]),
+        num_gpus_per_engine=2,
+    )
+    assert cell.engine_gpu_ids == [[4, 5]]
 
     # multi-node engine: each member covers its whole node (base 0, capped per node)
-    engine.base_gpu_id = 0
-    engine.num_gpus_per_engine = 16
-    assert engine.get_topology_info()["gpu_ids"] == list(range(8))
+    multi_node = ServerCell(
+        args=Namespace(num_gpus_per_node=8),
+        worker_type="regular",
+        cell_id="cell-0",
+        pg=(None, [], list(range(8)) + list(range(8))),
+        num_nodes=2,
+        num_gpus_per_engine=16,
+    )
+    assert multi_node.engine_gpu_ids == [list(range(8)), list(range(8))]

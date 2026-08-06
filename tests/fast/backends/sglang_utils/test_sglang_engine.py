@@ -11,4 +11,4 @@ def test_engine_exposes_only_launcher_duties():
     engine_methods = {name for name in vars(SGLangEngine) if not name.startswith("_")}
 
     assert not (engine_methods & client_methods), "these belong on the api client, not on the actor"
-    assert {"init", "shutdown", "simulate_crash", "get_topology_info"} <= engine_methods
+    assert {"init", "shutdown", "simulate_crash"} <= engine_methods

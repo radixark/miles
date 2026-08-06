@@ -72,6 +72,18 @@ def get_free_port(start_port=10000, consecutive=1):
     return port
 
 
+def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+    """Best-effort NVML UUIDs so the dashboard can reconcile GPU index
+    spaces across processes; None entries when NVML is unavailable."""
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        return [str(pynvml.nvmlDeviceGetUUID(pynvml.nvmlDeviceGetHandleByIndex(i))) for i in gpu_ids]
+    except Exception:
+        return [None] * len(gpu_ids)
+
+
 class NodeProbeMixin:
     @staticmethod
     def _get_node_ip() -> str:
@@ -80,6 +92,10 @@ class NodeProbeMixin:
     @staticmethod
     def _get_free_port_block(*, start_port: int, count: int) -> int:
         return get_free_port(start_port=start_port, consecutive=count)
+
+    @staticmethod
+    def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+        return get_gpu_uuids(gpu_ids)
 
 
 def should_run_periodic_action(
