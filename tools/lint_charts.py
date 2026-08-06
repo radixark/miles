@@ -11,7 +11,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHARTS_DIR = REPO_ROOT / "charts"
 
-VARIANTS: dict[str, list[list[str]]] = {}
+VARIANTS: dict[str, list[list[str]]] = {
+    "miles-workbench": [
+        ["--set", "sharedStorage.type=pvc", "--set", "sharedStorage.pvcClaimName=shared"],
+        ["--set", "sharedStorage.type=none"],
+        ["--set", "rbac.create=false", "--set", "serviceAccount.name=preexisting"],
+        ["--set", "rbac.leaderWorkerSets=false"],
+    ],
+}
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess:
