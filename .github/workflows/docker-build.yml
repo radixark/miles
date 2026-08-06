@@ -106,12 +106,14 @@ jobs:
             LAST_WHEELS_CU13_X86=$(sed -n '3p' "$CACHE_FILE")
             LAST_WHEELS_CU13_ARM64=$(sed -n '4p' "$CACHE_FILE")
             LAST_WHEELS_CU12_X86=$(sed -n '5p' "$CACHE_FILE")
+            LAST_BUILD_EPOCH=$(sed -n '6p' "$CACHE_FILE")
           else
             LAST_SGLANG=""
             LAST_MEGATRON=""
             LAST_WHEELS_CU13_X86=""
             LAST_WHEELS_CU13_ARM64=""
             LAST_WHEELS_CU12_X86=""
+            LAST_BUILD_EPOCH=""
           fi
 
           if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_CU13_X86_FP" != "$LAST_WHEELS_CU13_X86" ] || [ "$WHEELS_CU13_ARM64_FP" != "$LAST_WHEELS_CU13_ARM64" ] || [ "$WHEELS_CU12_X86_FP" != "$LAST_WHEELS_CU12_X86" ]; then
@@ -121,12 +123,28 @@ jobs:
             echo "No upstream changes"
           fi
 
-          # Save current values for next run
+          # miles commits alone never trigger rebuilds, so bound how stale the baked
+          # miles checkout can get.
+          MAX_BUILD_AGE_SECONDS=$(( 24 * 3600 ))
+          NOW_EPOCH=$(date +%s)
+          if [ "$SHOULD_BUILD" = "false" ]; then
+            if ! [ "$LAST_BUILD_EPOCH" -gt 0 ] 2>/dev/null; then
+              SHOULD_BUILD=true
+              echo "No last-build timestamp recorded; rebuilding"
+            elif [ $(( NOW_EPOCH - LAST_BUILD_EPOCH )) -ge $MAX_BUILD_AGE_SECONDS ]; then
+              SHOULD_BUILD=true
+              echo "Last build was $(( (NOW_EPOCH - LAST_BUILD_EPOCH) / 3600 ))h ago (max $(( MAX_BUILD_AGE_SECONDS / 3600 ))h); rebuilding"
+            fi
+          fi
+
+          # Save current values for next run (cached only when a build triggers,
+          # so line 6 = when the last build was kicked off).
           echo "${SGLANG_SHA}" > "$CACHE_FILE"
           echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
           echo "${WHEELS_CU13_X86_FP}" >> "$CACHE_FILE"
           echo "${WHEELS_CU13_ARM64_FP}" >> "$CACHE_FILE"
           echo "${WHEELS_CU12_X86_FP}" >> "$CACHE_FILE"
+          echo "${NOW_EPOCH}" >> "$CACHE_FILE"
 
           echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
 

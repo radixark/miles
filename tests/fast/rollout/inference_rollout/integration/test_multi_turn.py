@@ -1,7 +1,7 @@
 from typing import Any
 
 import pytest
-from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant
+from tests.fast.fixtures.generation_fixtures import extra_argv_for_variant, listify
 from tests.fast.fixtures.rollout_fixtures import RolloutEnvConfig
 from tests.fast.rollout.inference_rollout.integration.utils import MODULAR_ROLLOUT_BASE_ARGV, load_and_call_rollout
 
@@ -56,8 +56,11 @@ def test_rollout(rollout_env, variant, test_type):
 
 def _verify_samples(variant: str, samples: list[Any]):
     assert len(samples) == 2, f"n_samples_per_prompt=2, so group should have 2 samples, got {len(samples)}"
-    for sample in samples:
-        assert isinstance(sample, Sample), f"{variant} returns a scalar Sample per generate"
+    for generated in samples:
+        [sample] = listify(generated)
+        assert isinstance(sample, Sample), f"{variant} should return Sample trajectories"
+        if variant == "agentic_tool_call":
+            assert "leaf" in sample.metadata, "session server v2 should attach leaf metadata"
         _verify_sample(sample)
 
 

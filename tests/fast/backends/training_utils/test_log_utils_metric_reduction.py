@@ -26,19 +26,19 @@ def test_min_max_keys_reduce_to_global_extrema():
             "raw_response_length/response_length_min": 32.0,
         },
     ]
-    reduced = log_utils._reduce_gathered_log_dicts(
-        "multi_turn",
+    reduced = log_utils.reduce_gathered_log_dict(
         gathered,
-        {
+        dp_size=2,
+        reduction_by_key={
             "raw_response_length/response_length_max": "max",
             "raw_response_length/response_length_min": "min",
         },
     )
 
-    assert reduced["multi_turn/raw_response_length/response_length_mean"] == pytest.approx(160.0)
+    assert reduced["raw_response_length/response_length_mean"] == pytest.approx(160.0)
     # The old mean reduction would report max=650.0 and min=20.0.
-    assert reduced["multi_turn/raw_response_length/response_length_max"] == 900.0
-    assert reduced["multi_turn/raw_response_length/response_length_min"] == 8.0
+    assert reduced["raw_response_length/response_length_max"] == 900.0
+    assert reduced["raw_response_length/response_length_min"] == 8.0
 
 
 def test_keys_default_to_mean_without_reduction_map():
@@ -47,9 +47,9 @@ def test_keys_default_to_mean_without_reduction_map():
         {"custom_metric_max": 4.0},
     ]
 
-    reduced = log_utils._reduce_gathered_log_dicts("multi_turn", gathered)
+    reduced = log_utils.reduce_gathered_log_dict(gathered, dp_size=2)
 
-    assert reduced == {"multi_turn/custom_metric_max": pytest.approx(3.0)}
+    assert reduced == {"custom_metric_max": pytest.approx(3.0)}
 
 
 def test_explicit_reduction_selects_extrema():
@@ -58,13 +58,28 @@ def test_explicit_reduction_selects_extrema():
         {"multi_turn_metric/round_number_max": 4.0},
     ]
 
-    reduced = log_utils._reduce_gathered_log_dicts(
-        "multi_turn",
+    reduced = log_utils.reduce_gathered_log_dict(
         gathered,
-        {"multi_turn_metric/round_number_max": "max"},
+        dp_size=2,
+        reduction_by_key={"multi_turn_metric/round_number_max": "max"},
     )
 
-    assert reduced == {"multi_turn/multi_turn_metric/round_number_max": 4.0}
+    assert reduced == {"multi_turn_metric/round_number_max": 4.0}
+
+
+def test_sum_count_tuples_ignore_reduction_map():
+    gathered = [
+        {"loss": (6.0, 2.0), "score_max": 1.0},
+        {"loss": (2.0, 2.0), "score_max": 5.0},
+    ]
+
+    reduced = log_utils.reduce_gathered_log_dict(
+        gathered,
+        dp_size=2,
+        reduction_by_key={"score_max": "max"},
+    )
+
+    assert reduced == {"loss": pytest.approx(2.0), "score_max": 5.0}
 
 
 def test_mismatched_keys_across_ranks_raise():
@@ -74,18 +89,22 @@ def test_mismatched_keys_across_ranks_raise():
     ]
 
     with pytest.raises(ValueError, match="Metric keys differ across ranks"):
-        log_utils._reduce_gathered_log_dicts("multi_turn", gathered, {})
+        log_utils.reduce_gathered_log_dict(gathered, dp_size=2, reduction_by_key={})
 
 
 def test_unknown_reduction_name_raises():
     gathered = [{"multi_turn_metric/round_number_max": 3.0}]
 
     with pytest.raises(ValueError, match="Unsupported metric reduction"):
-        log_utils._reduce_gathered_log_dicts("multi_turn", gathered, {"multi_turn_metric/round_number_max": "median"})
+        log_utils.reduce_gathered_log_dict(
+            gathered,
+            dp_size=1,
+            reduction_by_key={"multi_turn_metric/round_number_max": "median"},
+        )
 
 
 def test_empty_gather_returns_empty_dict():
-    assert log_utils._reduce_gathered_log_dicts("multi_turn", [], {}) == {}
+    assert log_utils.reduce_gathered_log_dict([], dp_size=2, reduction_by_key={}) == {}
 
 
 def test_log_multi_turn_data_passes_explicit_extrema_reductions(monkeypatch):

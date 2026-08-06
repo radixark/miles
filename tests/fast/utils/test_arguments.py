@@ -6,13 +6,14 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.backends.sglang_utils.arguments import add_sglang_arguments
+from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
     get_miles_extra_args_provider,
     miles_validate_args,
+    resolve_rollout_function_paths,
     validate_async_off_policy_correction,
 )
 from miles.utils.misc import function_registry
@@ -143,6 +144,17 @@ class TestMaybeApplyDumperOverrides:
         assert args.num_rollout == 6
 
 
+def test_fully_async_eval_resolves_to_the_producer_itself():
+    """Only the producer's own instance pauses on eval, and RolloutManager reuses one
+    instance only when both paths match."""
+    path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
+    default = SimpleNamespace(rollout_function_path=None, eval_function_path=None, fully_async=True)
+    assert resolve_rollout_function_paths(default) == (path, path)
+
+    override = SimpleNamespace(rollout_function_path=None, eval_function_path="pkg.CustomEval", fully_async=True)
+    assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
+
+
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
@@ -182,6 +194,41 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
     assert args.sglang_attn_cp_size == 5
 
 
+class TestEvalSglangOverrides:
+    """Unset means "inherit --sglang-*", so an unset flag must leave no attribute at all."""
+
+    def _parse(self, argv):
+        return add_sglang_arguments(argparse.ArgumentParser()).parse_args(argv)
+
+    def test_unset_flags_produce_no_overrides(self):
+        args = self._parse(["--sglang-mem-fraction-static", "0.7"])
+
+        assert collect_eval_sglang_overrides(args) == {}
+        assert not hasattr(args, "eval_sglang_mem_fraction_static")
+
+    def test_set_flag_becomes_an_override_without_touching_the_base_family(self):
+        args = self._parse(["--sglang-mem-fraction-static", "0.7", "--eval-sglang-mem-fraction-static", "0.9"])
+
+        assert collect_eval_sglang_overrides(args) == {"mem_fraction_static": 0.9}
+        assert args.sglang_mem_fraction_static == 0.7
+
+    def test_boolean_can_be_turned_back_off(self):
+        args = self._parse(["--sglang-enable-dp-attention", "--no-eval-sglang-enable-dp-attention"])
+
+        assert args.sglang_enable_dp_attention is True
+        assert collect_eval_sglang_overrides(args) == {"enable_dp_attention": False}
+
+    def test_parallel_sizes_keep_server_args_destinations(self):
+        args = self._parse(["--eval-sglang-data-parallel-size", "2", "--eval-sglang-expert-parallel-size", "4"])
+
+        assert collect_eval_sglang_overrides(args) == {"dp_size": 2, "ep_size": 4}
+
+    def test_tp_size_is_not_exposed(self):
+        """A second TP knob could move tp_size off the bundles --eval-num-gpus-per-engine placed."""
+        with pytest.raises(SystemExit):
+            self._parse(["--eval-sglang-tp-size", "2"])
+
+
 def test_custom_megatron_post_save_hook_path_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
@@ -203,6 +250,68 @@ def test_custom_megatron_post_save_hook_path_requires_save():
         match="'--save' is required when custom_megatron_post_save_hook_path is set.",
     ):
         miles_validate_args(args)
+
+
+def test_dynamic_global_batch_size_requires_dynamic_batch_size():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--use-dynamic-global-batch-size", "--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with pytest.raises(AssertionError, match="requires --use-dynamic-batch-size"):
+        miles_validate_args(args)
+
+
+class TestCriticSaveDerivation:
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        miles_validate_args(args)
+        return args
+
+    def test_derives_sibling_dir_from_save(self):
+        args = self._validate(["--advantage-estimator", "ppo", "--save", "/ckpts/run1"])
+        assert args.critic_save == "/ckpts/run1_critic"
+
+    def test_trailing_slash_is_stripped(self):
+        args = self._validate(["--advantage-estimator", "ppo", "--save", "/ckpts/run1/"])
+        assert args.critic_save == "/ckpts/run1_critic"
+
+    def test_explicit_critic_save_is_respected(self):
+        args = self._validate(
+            ["--advantage-estimator", "ppo", "--save", "/ckpts/run1", "--critic-save", "/elsewhere/critic"]
+        )
+        assert args.critic_save == "/elsewhere/critic"
+
+    def test_stays_none_without_save(self):
+        args = self._validate(["--advantage-estimator", "ppo"])
+        assert args.critic_save is None
+
+
+class TestSessionServerV2Validation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    @pytest.mark.parametrize(
+        ("extra", "flag"),
+        [
+            (["--group-rm"], "--group-rm"),
+            (["--partial-rollout"], "--partial-rollout"),
+            (
+                ["--true-on-policy-mode", "--recompute-logprobs-via-prefill"],
+                "--recompute-logprobs-via-prefill",
+            ),
+        ],
+    )
+    def test_rejects_unsupported_list_consumers(self, extra, flag):
+        args = self._parse(["--use-session-server", "v2", *extra])
+
+        with pytest.raises(ValueError) as exc_info:
+            miles_validate_args(args)
+
+        assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
 
 
 class TestTitoFixedTemplateConfiguration:

@@ -1,6 +1,6 @@
 """Qwen3.5/3.6/Qwen3-Next (GatedDeltaNet) adaptation: a config-time packed-doc reset that feeds
 cu_seqlens to fla chunk/recurrent_gated_delta_rule and seq_idx to causal_conv1d_fn per packed document.
-Patches the DecoderLayer/GatedDeltaNet class forwards; kernel logic lives in ``models/qwen3_5_moe.py``."""
+Patches the DecoderLayer/GatedDeltaNet class forwards; kernel logic lives in ``models/qwen3_5.py``."""
 
 from ..packing.registry import PackingPatch, register_packing_patch
 
@@ -16,7 +16,7 @@ def _applies(hf_config) -> bool:
 
 
 def _apply():
-    from ...models.qwen3_5_moe import apply_gateddeltanet_packing_patch
+    from ...models.qwen3_5 import apply_gateddeltanet_packing_patch
 
     return apply_gateddeltanet_packing_patch()
 

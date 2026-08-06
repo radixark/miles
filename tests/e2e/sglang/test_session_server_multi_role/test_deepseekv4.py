@@ -1,5 +1,5 @@
 from tests.ci.ci_register import register_cuda_ci
-from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_one
+from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_both_versions
 
 register_cuda_ci(est_time=1000, suite="stage-c-4-gpu-h200", labels=["sglang"])
 
@@ -17,6 +17,7 @@ CONFIG = ModelConfig(
     ep_size=4,
     enable_spec=True,
     cycles=2,
+    assistant_text_threshold=0.05,
     # V4 sorts tool_result blocks by the preceding assistant's tool_calls
     # order, so a sentinel tool_call_id would not roundtrip; use the
     # universal rollback recovery when the model emits no tool_calls.
@@ -25,7 +26,7 @@ CONFIG = ModelConfig(
 
 
 def test_deepseekv4():
-    run_one(CONFIG)
+    run_both_versions(CONFIG)
 
 
 if __name__ == "__main__":

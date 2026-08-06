@@ -45,6 +45,8 @@ class FSDPArgs:
     fsdp_cpu_backend: str | None = (
         "gloo"  # CPU backend for FSDP CPU offload (e.g., "gloo"). Set to None to disable hybrid backend.
     )
+    # FSDP2 hybrid-shard replica count.
+    dp_replicate_size: int = 1
 
     deterministic_mode: bool = False  # This name must be the same as Megatron's
 
@@ -106,3 +108,24 @@ def load_fsdp_args(extra_args_provider=None):
                 setattr(args, k, v)
     args.bf16 = not args.fp16
     return args
+
+
+def validate_hybrid_shard_args(args) -> None:
+    """Validate that the training topology can form the requested FSDP2 mesh."""
+    replicate_size = args.dp_replicate_size
+    if replicate_size < 1:
+        raise ValueError(f"dp_replicate_size must be at least 1, got {replicate_size}")
+
+    world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
+    if args.context_parallel_size < 1:
+        raise ValueError(f"context_parallel_size must be at least 1, got {args.context_parallel_size}")
+    if world_size % args.context_parallel_size:
+        raise ValueError(
+            f"world_size({world_size}) must be divisible by " f"context_parallel_size({args.context_parallel_size})"
+        )
+
+    data_parallel_size = world_size // args.context_parallel_size
+    if data_parallel_size % replicate_size:
+        raise ValueError(
+            f"data_parallel_size({data_parallel_size}) must be divisible by " f"dp_replicate_size({replicate_size})"
+        )

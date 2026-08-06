@@ -35,6 +35,7 @@ ignore = [
     "E501", # Line too long # TODO handle it later
 ]
 
+
 [tool.pytest.ini_options]
 # durations=0 will display all tests execution time, sorted in ascending order starting from from the slowest one.
 # -vv will also display tests with duration = 0.00s

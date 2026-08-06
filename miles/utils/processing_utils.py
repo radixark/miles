@@ -145,6 +145,13 @@ def extract_multimodal_train_inputs(processor_output: Mapping[str, Any]) -> dict
 
 
 def load_processor(name_or_path: str, **kwargs):
+    from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
+
+    if is_inkling_checkpoint(name_or_path):
+        from miles_plugins.models.inkling.mm_processor import InklingTrainProcessor
+
+        return InklingTrainProcessor(name_or_path)
+
     try:
         proc = AutoProcessor.from_pretrained(name_or_path, **kwargs)
     except (OSError, ValueError) as e:
@@ -159,6 +166,9 @@ def load_processor(name_or_path: str, **kwargs):
 
 
 def process_vision_info(prompt, processor):
+    if hasattr(processor, "extract_media"):
+        return processor.extract_media(prompt)
+
     # TODO: temporary solution, will write image utils for miles later
     from qwen_vl_utils import process_vision_info as qwen_process_vision_info
 

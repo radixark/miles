@@ -105,7 +105,11 @@ def reconfigure_indep_dp_group(
 
 
 def allreduce_grads_and_losses_across_replicas(
-    args, model: Sequence["DDP"], parallel_state: ParallelState, losses_reduced: list
+    args,
+    model: Sequence["DDP"],
+    parallel_state: ParallelState,
+    losses_reduced: list,
+    num_rollouts: int | None = None,
 ) -> tuple[bool, dict[str, float]]:
     assert not args.calculate_per_token_loss, "calculate_per_token_loss is not supported with indep_dp yet"
     assert parallel_state.intra_dp.size == 1, (
@@ -129,7 +133,7 @@ def allreduce_grads_and_losses_across_replicas(
     allreduce_success = True
     try:
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
-            loss_reduced = aggregate_train_losses(losses_reduced)
+            loss_reduced = aggregate_train_losses(losses_reduced, num_rollouts)
         for model_chunk in model:
             # mimic: DistributedDataParallel.start_grad_sync
             for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
