@@ -6,11 +6,19 @@ import httpx
 import pytest
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
+
 from miles.utils.ft_utils.api_server import server
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.test_utils.fault_injector import FailureMode
 
-from .conftest import MockHandler, MockInferenceController, MockWorkerManager, make_cell_summaries, make_mock_group
+from .conftest import (
+    MockHandler,
+    MockInferenceController,
+    MockRayTrainCell,
+    MockWorkerManager,
+    make_cell_summaries,
+    make_mock_group,
+)
 
 
 class TestGetHealth:
@@ -222,7 +230,12 @@ class TestPatchCell:
 
 class TestStartApiServerRegistration:
     def _start(
-        self, monkeypatch: pytest.MonkeyPatch, *, ft_components: list[str], cell_ids: list[str]
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        ft_components: list[str],
+        cell_ids: list[str],
+        actor_cells: list[MockRayTrainCell] | None = None,
     ) -> _CellRegistry:
         manager = MockWorkerManager(make_cell_summaries(*cell_ids))
         registries: list[_CellRegistry] = []
@@ -232,7 +245,7 @@ class TestStartApiServerRegistration:
 
         server.start_api_server(
             args=SimpleNamespace(),
-            actor_model=make_mock_group([]),
+            actor_model=make_mock_group(actor_cells if actor_cells is not None else []),
             inference_controller=MockInferenceController(
                 {cell_id: compute_pending_rollout_cell_status() for cell_id in cell_ids}
             ),
@@ -263,6 +276,22 @@ class TestStartApiServerRegistration:
         registry = self._start(monkeypatch, ft_components=["train"], cell_ids=["inference-engine-0-0-0"])
 
         assert await registry.list_cells() == []
+
+    @pytest.mark.asyncio
+    async def test_the_actor_handler_enumerates_the_real_trainer_spec_cells(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The unpatched trainer spec name must match the real trainer cells, or the heal loop sees no trainer."""
+        registry = self._start(
+            monkeypatch,
+            ft_components=["train"],
+            cell_ids=["trainer-actor-0"],
+            actor_cells=[MockRayTrainCell(phase="Running")],
+        )
+
+        cells = await registry.list_cells()
+        assert [cell.metadata.name for cell in cells] == ["trainer-actor-0"]
+        assert cells[0].status.phase == "Running"
 
     @pytest.mark.asyncio
     async def test_both_handlers_coexist_under_mixed_ft(self, monkeypatch: pytest.MonkeyPatch) -> None:
