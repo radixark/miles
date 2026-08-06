@@ -11,6 +11,8 @@ from tests.fast.ray.train.conftest import (
     make_indep_dp_info,
 )
 
+from miles.ray.train import cell as cell_module
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 pytestmark = pytest.mark.asyncio
@@ -35,6 +37,15 @@ class TestInitialState:
 
 
 class TestKillWorkers:
+    async def test_a_restarted_worker_is_already_gone_for_killing(self):
+        """A stale handle that reaches a new server must not make cell teardown fail."""
+
+        class RestartedHandle:
+            async def kill_self(self) -> None:
+                raise ServerRestartedError
+
+        await cell_module._kill_worker(RestartedHandle())
+
     async def test_killing_reaches_every_worker(self):
         """The dead workers must not linger in a cross-cell collective."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
