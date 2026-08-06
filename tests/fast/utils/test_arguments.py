@@ -9,6 +9,7 @@ import pytest
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
+    _apply_custom_config_overrides,
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
     get_miles_extra_args_provider,
@@ -668,3 +669,30 @@ class TestValidateAsyncOffPolicyCorrection:
 
     def test_non_ppo_estimators_are_unaffected(self):
         validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))
+
+
+class TestApplyCustomConfigOverrides:
+    def test_no_config_path_is_a_noop(self):
+        args = SimpleNamespace(custom_config_path=None, advantage_estimator="grpo")
+        _apply_custom_config_overrides(args)
+        assert args.advantage_estimator == "grpo"
+
+    def test_missing_attribute_is_a_noop(self):
+        args = SimpleNamespace(advantage_estimator="grpo")
+        _apply_custom_config_overrides(args)
+        assert args.advantage_estimator == "grpo"
+
+    def test_empty_config_is_a_noop(self, tmp_path):
+        config = tmp_path / "overrides.yaml"
+        config.write_text("")
+        args = SimpleNamespace(custom_config_path=str(config), advantage_estimator="grpo")
+        _apply_custom_config_overrides(args)
+        assert args.advantage_estimator == "grpo"
+
+    def test_overrides_existing_and_adds_new_keys(self, tmp_path):
+        config = tmp_path / "overrides.yaml"
+        config.write_text("advantage_estimator: ppo\nmy_custom_function_arg: 7\n")
+        args = SimpleNamespace(custom_config_path=str(config), advantage_estimator="grpo")
+        _apply_custom_config_overrides(args)
+        assert args.advantage_estimator == "ppo"
+        assert args.my_custom_function_arg == 7

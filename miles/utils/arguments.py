@@ -2559,7 +2559,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             "--custom-config-path",
             type=str,
             default=None,
-            help="Path to the YAML config for custom function arguments.",
+            help="Path to the YAML config for custom function arguments. Entries are applied onto "
+            "the parsed args before validation, so overriding a core argument behaves like "
+            "passing it on the command line.",
         )
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
@@ -2705,6 +2707,11 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
 
 
 def miles_validate_args(args):
+    # Config-file overrides must land before any validation or derivation below,
+    # so that derived flags (e.g. use_critic from advantage_estimator) and the
+    # worker topology are computed from the overridden values.
+    _apply_custom_config_overrides(args)
+
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
@@ -3320,14 +3327,6 @@ def miles_validate_args(args):
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
 
-    if args.custom_config_path:
-        with open(args.custom_config_path) as f:
-            data = yaml.safe_load(f) or {}
-        for k, v in data.items():
-            if hasattr(args, k):
-                logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
-            setattr(args, k, v)
-
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
         assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
@@ -3388,6 +3387,25 @@ def validate_async_off_policy_correction(args) -> None:
         "as the ratio denominator), --use-tis (truncated importance sampling correction), or "
         "--keep-old-actor (recompute the denominator with the weights the rollout engines used)."
     )
+
+
+def _apply_custom_config_overrides(args) -> None:
+    """Apply --custom-config-path YAML entries onto the parsed args.
+
+    Runs at the very start of `miles_validate_args`, so an overridden argument
+    behaves as if it had been passed on the command line: it participates in
+    every subsequent validation and derivation instead of silently bypassing
+    them. Tests call `miles_validate_args` with partial namespaces, so a
+    missing attribute is treated as "no config file".
+    """
+    if not getattr(args, "custom_config_path", None):
+        return
+    with open(args.custom_config_path) as f:
+        data = yaml.safe_load(f) or {}
+    for k, v in data.items():
+        if hasattr(args, k):
+            logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
+        setattr(args, k, v)
 
 
 def _maybe_apply_dumper_overrides(args) -> None:
