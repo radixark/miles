@@ -146,7 +146,7 @@ class TestPublicCellInventory:
         group = _make_controller(num_cells=1, indep_dp=True)
         await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0, workers_hash="hash-9"))
 
-        statuses = group.get_cell_statuses()
+        statuses = await group.get_cell_statuses()
 
         assert statuses[f"{_POOL_ID}-0"].workers_hash == "hash-9"
 
@@ -156,7 +156,7 @@ class TestPublicCellInventory:
         await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0, workers_hash="hash-9"))
         await group._reconcile(f"{_POOL_ID}-1", _make_cell_info(1, workers_hash="hash-10"))
 
-        statuses = group.get_cell_statuses()
+        statuses = await group.get_cell_statuses()
 
         assert (statuses[f"{_POOL_ID}-0"].workers_hash, statuses[f"{_POOL_ID}-1"].workers_hash) == (
             "hash-9",
@@ -170,7 +170,7 @@ class TestPublicCellInventory:
 
         await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0, workers_hash="hash-10"))
 
-        assert group.get_cell_statuses()[f"{_POOL_ID}-0"].workers_hash == "hash-10"
+        assert (await group.get_cell_statuses())[f"{_POOL_ID}-0"].workers_hash == "hash-10"
 
 
 class _AutoAdvancingClock:
