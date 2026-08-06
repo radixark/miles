@@ -16,7 +16,7 @@ from miles.utils.workers.rpc.common.protocol import (
     SubmitResponse,
 )
 from miles.utils.workers.rpc.server.executor import RpcCallExecutor
-from miles.utils.workers.rpc.server.store import CallStore
+from miles.utils.workers.rpc.server.store import CallStore, DuplicateCallError
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,10 @@ class RpcServer:
         except ValidationError as e:
             reject(status_code=400, reason="invalid_query", detail=str(e))
 
-        self._store.begin(call_id=request.call_id)
+        try:
+            self._store.begin(call_id=request.call_id)
+        except DuplicateCallError as e:
+            reject(status_code=409, reason="duplicate_call", detail=str(e))
 
         self._executor.start(
             spec=spec,
