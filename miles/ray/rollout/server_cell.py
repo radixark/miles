@@ -47,6 +47,12 @@ class ServerCell:
         assert len(states) == 1, f"a cell's engines are allocated and stopped together ({states=})"
         return states == {True}
 
+    @property
+    def is_alive(self) -> bool:
+        states = {engine.is_alive for engine in self.engines}
+        assert len(states) == 1, f"a cell's engines go alive together ({states=})"
+        return states == {True}
+
     async def start_engines(self, port_allocator: PortAllocator) -> None:
         assert not ({"host", "port"} & set(self.sglang_overrides)), (
             f"sglang_overrides must not override host/port ({self.sglang_overrides=}): the rollout process derives "
@@ -73,9 +79,9 @@ class ServerCell:
                 sglang_overrides=self.sglang_overrides,
                 num_gpus_per_engine=self.num_gpus_per_engine,
             )
-
             new_entries.append((global_rank, engine_slot, rollout_engine))
-            engine_slot.mark_allocated_uninitialized(rollout_engine)
+
+        self._mark_allocated_uninitialized([(engine, actor) for _, engine, actor in new_entries])
 
         addr_and_ports: dict[int, dict[str, Any]] = {}
         dist_init_addr = None
@@ -96,20 +102,24 @@ class ServerCell:
             if self.worker_type == "prefill":
                 addr_and_ports[global_rank]["disaggregation_bootstrap_port"] = alloc()
 
-        init_handles = []
-        for global_rank, engine_slot, actor in new_entries:
-            engine_addr_and_ports = addr_and_ports[global_rank]
-            engine_slot.set_addressing(
-                AddrInfo(
-                    server_url=build_server_url(
-                        host=engine_addr_and_ports["host"], port=engine_addr_and_ports["port"]
+        self._mark_addressing(
+            [
+                (
+                    engine,
+                    AddrInfo(
+                        server_url=build_server_url(
+                            host=addr_and_ports[global_rank]["host"], port=addr_and_ports[global_rank]["port"]
+                        ),
+                        bootstrap_port=addr_and_ports[global_rank].get("disaggregation_bootstrap_port"),
                     ),
-                    bootstrap_port=engine_addr_and_ports.get("disaggregation_bootstrap_port"),
                 )
-            )
-            init_handles.append(actor.init.remote(**addr_and_ports[global_rank]))
+                for global_rank, engine, _ in new_entries
+            ]
+        )
 
-        await asyncio.gather(*init_handles)
+        await asyncio.gather(
+            *[actor.init.remote(**addr_and_ports[global_rank]) for global_rank, _, actor in new_entries]
+        )
 
     async def start(
         self, port_allocator: PortAllocator, router_api_client: SGLangRouterApiClient, recover: bool = False
@@ -121,13 +131,9 @@ class ServerCell:
             if self.update_weights or self.model_path:
                 await self.primary_engine.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
-        self.mark_alive()
+        self._mark_alive()
 
         await self.register(router_api_client)
-
-    def mark_alive(self):
-        for engine in self.engines:
-            engine.mark_alive()
 
     async def stop(self, router_api_client: SGLangRouterApiClient) -> None:
         if self.is_allocated:
@@ -152,7 +158,23 @@ class ServerCell:
                     logger.warning(f"Fail to kill engine at cell-local index {local_index} (e: {e})")
             else:
                 logger.info(f"Engine at cell-local index {local_index} is already None")
-            self.engines[local_index].mark_stopped()
+        self._mark_stopped()
+
+    def _mark_allocated_uninitialized(self, engine_actors: list[tuple[ServerEngine, Any]]) -> None:
+        for engine, actor in engine_actors:
+            engine.mark_allocated_uninitialized(actor)
+
+    def _mark_addressing(self, engine_addrs: list[tuple[ServerEngine, AddrInfo]]) -> None:
+        for engine, addr_info in engine_addrs:
+            engine.set_addressing(addr_info)
+
+    def _mark_alive(self) -> None:
+        for engine in self.engines:
+            engine.mark_alive()
+
+    def _mark_stopped(self) -> None:
+        for engine in self.engines:
+            engine.mark_stopped()
 
     async def offload(self, tags: list[str] | None):
         return await self.primary_engine.api_client.release_memory_occupation(tags=tags)
