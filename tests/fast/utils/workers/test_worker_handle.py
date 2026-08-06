@@ -6,6 +6,7 @@ import pytest
 import ray
 
 from miles.utils.workers import ray_worker_handle as ray_worker_handle_module
+from miles.utils.workers import worker_handle as worker_handle_module
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
@@ -21,7 +22,7 @@ class TestBaseWorkerHandle:
         assert issubclass(RayWorkerHandle, BaseWorkerHandle)
 
     def test_incomplete_implementation_rejected(self):
-        """A handle that does not implement wait_ready cannot be instantiated."""
+        """A handle that implements neither wait_ready nor the death probe cannot be instantiated."""
 
         class Incomplete(BaseWorkerHandle):
             pass
@@ -261,8 +262,8 @@ class TestRayWorkerHandleWaitDead:
         async def _noop_sleep(seconds):
             slept.append(seconds)
 
-        monkeypatch.setattr(ray_worker_handle_module.asyncio, "sleep", _noop_sleep)
-        monkeypatch.setattr(ray_worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 1.0])))
+        monkeypatch.setattr(worker_handle_module.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 1.0])))
         handle, inner = _make_handle(
             __ray_ready__=_FakeRemoteMethod(
                 [
@@ -284,20 +285,20 @@ class TestRayWorkerHandleWaitDead:
         async def _noop_sleep(seconds: float) -> None:
             slept.append(seconds)
 
-        monkeypatch.setattr(ray_worker_handle_module.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(worker_handle_module.asyncio, "sleep", _noop_sleep)
         monkeypatch.setattr(
-            ray_worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 60.0, 200.0]))
+            worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 60.0, 200.0]))
         )
         handle, inner = _make_handle(__ray_ready__=_FakeRemoteMethod([_return_factory(None)]))
 
-        with caplog.at_level(logging.ERROR, logger="miles.utils.workers.ray_worker_handle"):
+        with caplog.at_level(logging.ERROR, logger="miles.utils.workers.worker_handle"):
             await handle.wait_dead(timeout=120.0)
 
         assert inner.__ray_ready__.call_count == 2
         assert slept == [1.0]
         error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert len(error_records) == 1
-        assert "Timed out after 120s waiting for worker death" in error_records[0].getMessage()
+        assert "Timed out after 120s waiting for" in error_records[0].getMessage()
 
     async def test_deadline_reached_returns_and_logs_error(self, monkeypatch, caplog):
         """When the timeout deadline is exceeded after a hung probe, it returns and logs an ERROR."""
@@ -305,29 +306,14 @@ class TestRayWorkerHandleWaitDead:
         async def _noop_sleep(seconds):
             return None
 
-        monkeypatch.setattr(ray_worker_handle_module.asyncio, "sleep", _noop_sleep)
-        monkeypatch.setattr(ray_worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 200.0])))
+        monkeypatch.setattr(worker_handle_module.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 200.0])))
         handle, inner = _make_handle(__ray_ready__=_FakeRemoteMethod([_raise_factory(asyncio.TimeoutError())]))
 
-        with caplog.at_level(logging.ERROR, logger="miles.utils.workers.ray_worker_handle"):
+        with caplog.at_level(logging.ERROR, logger="miles.utils.workers.worker_handle"):
             await handle.wait_dead(timeout=120.0)
 
         assert inner.__ray_ready__.call_count == 1
         error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
         assert len(error_records) == 1
-        assert "Timed out after 120s waiting for worker death" in error_records[0].getMessage()
-
-
-class TestRpcWorkerHandleWaitDead:
-    @pytest.mark.asyncio
-    async def test_is_not_implemented_yet(self):
-        """Death confirmation over rpc is platform work that has not been built."""
-
-        # The handle refuses a worker with no rpc surface, so give it one method.
-        class Worker:
-            def ping(self) -> None: ...
-
-        handle = RpcWorkerHandle(Worker, server_url="http://localhost:1")
-
-        with pytest.raises(NotImplementedError):
-            await handle.wait_dead(timeout=1.0)
+        assert "Timed out after 120s waiting for" in error_records[0].getMessage()

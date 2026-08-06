@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -12,6 +13,7 @@ from pydantic import ValidationError
 from tests.fast.utils.workers.rpc.client.fake_transports import PollWindowRecordingTransport, StallingPollTransport
 
 from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.workers import worker_handle as worker_handle_module
 from miles.utils.workers.rpc.client import call as rpc_client_module
 from miles.utils.workers.rpc.client import handle as rpc_handle_module
 from miles.utils.workers.rpc.client import misc as rpc_misc_module
@@ -943,3 +945,52 @@ class TestPositionalCalls:
                 with pytest.raises(TypeError, match="at most 0 positional arguments"):
                     await handle.demo_nothing(1)
                 assert transport.requests == 0
+
+
+class TestWaitDead:
+    async def test_wait_dead_returns_once_the_server_stops_answering(self):
+        """A cell is healed only after its ranks are gone, and a refused connection is that proof."""
+        transport = _HookTransport(None, hook=_fail_hook(-1))
+        async with _handle_over(transport) as handle:
+            await handle.wait_dead(timeout=5.0)
+
+            assert transport.requests == 1
+
+    async def test_wait_dead_gives_up_on_a_worker_that_stays_healthy(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """A worker that refuses to die must not block healing forever, so the wait is bounded and says so."""
+        monkeypatch.setattr(worker_handle_module, "_WAIT_DEAD_PROBE_INTERVAL_SECONDS", 0.01)
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                with caplog.at_level(logging.ERROR, logger=worker_handle_module.__name__):
+                    await handle.wait_dead(timeout=0.05)
+
+                assert transport.requests >= 2
+                assert "waiting for" in caplog.text
+
+    async def test_wait_dead_treats_a_restarted_server_as_dead(self):
+        """The pod that was asked to die is gone once a fresh boot uuid answers in its place."""
+        async with _running_app(_Worker()) as first:
+            transport = _HookTransport(first)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+                async with _running_app(_Worker()) as second:
+                    transport.switch_to(second)
+                    requests_before = transport.requests
+
+                    await handle.wait_dead(timeout=5.0)
+
+                    assert transport.requests == requests_before + 1
+
+    async def test_wait_dead_keeps_waiting_while_the_worker_is_merely_unreachable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A connect timeout says nothing about the worker, so healing must not start on one."""
+        monkeypatch.setattr(worker_handle_module, "_WAIT_DEAD_PROBE_INTERVAL_SECONDS", 0.01)
+        transport = _HookTransport(None, hook=_fail_hook(-1, error_type=httpx.ConnectTimeout))
+        async with _handle_over(transport) as handle:
+            await handle.wait_dead(timeout=0.05)
+
+            assert transport.requests >= 2
