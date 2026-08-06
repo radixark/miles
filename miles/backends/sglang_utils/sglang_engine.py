@@ -66,6 +66,7 @@ def compute_engine_launch_cmd(
     port: int,
     disaggregation_bootstrap_port: int | None,
     engine_info_bootstrap_port: int,
+    gated_launch_port: int,
 ) -> str:
     server_args_dict = _compute_server_args(
         args,
@@ -80,6 +81,7 @@ def compute_engine_launch_cmd(
         engine_info_bootstrap_port=engine_info_bootstrap_port,
         sglang_overrides=sglang_overrides,
         num_gpus_per_engine=num_gpus_per_engine,
+        gated_launch_port=gated_launch_port,
     )
 
     launch_args = ServerArgs(**{**server_args_dict, "host": server_args_dict["host"].strip("[]")})
@@ -100,6 +102,7 @@ def _compute_server_args(
     engine_info_bootstrap_port: int | None,
     sglang_overrides: dict | None,
     num_gpus_per_engine: int | None,
+    gated_launch_port: int,
 ):
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
@@ -120,6 +123,7 @@ def _compute_server_args(
         "dist_init_addr": dist_init_addr,
         "gpu_id_step": 1,
         "base_gpu_id": base,
+        "gated_launch_port": gated_launch_port,
         # parallel
         "tp_size": _gpus_per_engine,
         "dp_size": args.sglang_dp_size,
