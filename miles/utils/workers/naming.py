@@ -1,3 +1,7 @@
+def compute_cell_id(*, spec_name: str, cell_index: int) -> str:
+    return f"{spec_name}-{cell_index}"
+
+
 # TODO refactor & move later
 def compute_worker_name(*, spec_name: str, cell_index: int = 0, worker_in_cell_index: int = 0) -> str:
     return f"{spec_name}-{cell_index}-{worker_in_cell_index}"

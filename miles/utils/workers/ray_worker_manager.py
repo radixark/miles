@@ -14,7 +14,7 @@ from miles.utils.http_utils import _wrap_ipv6
 from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
-from miles.utils.workers.naming import compute_worker_name
+from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
     BaseWorkerSpec,
@@ -217,7 +217,7 @@ class _CellManager(Generic[SpecT]):
 
     @property
     def cell_id(self) -> str:
-        return f"{self.spec.name}-{self.cell_index}"
+        return compute_cell_id(spec_name=self.spec.name, cell_index=self.cell_index)
 
     @property
     def alive(self) -> bool:

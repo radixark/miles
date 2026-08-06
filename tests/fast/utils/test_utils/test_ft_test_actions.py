@@ -96,7 +96,7 @@ class FakeGroup:
         self.stopped: list[int] = []
         self.started: list[int] = []
 
-    def stop_cell(self, cell_index: int) -> None:
+    async def stop_cell(self, cell_index: int) -> None:
         self.stopped.append(cell_index)
 
     def start_cell(self, cell_index: int) -> None:
@@ -116,57 +116,62 @@ class TestResolveCellIndex:
 
 
 class TestRunAfterStep:
-    def test_stop_cell_fires_on_matching_rollout(self):
+    @pytest.mark.asyncio
+    async def test_stop_cell_fires_on_matching_rollout(self):
         """stop_cell_at_end triggers group.stop_cell with the resolved cell index on its rollout."""
         group = FakeGroup(num_cells=3)
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
         executor = FTTestActionGroupExecutor(actions=[action], group=group)
 
-        executor.run_after_step(5)
+        await executor.run_after_step(5)
 
         assert group.stopped == [1]
         assert group.started == []
 
-    def test_no_action_on_non_matching_rollout(self):
+    @pytest.mark.asyncio
+    async def test_no_action_on_non_matching_rollout(self):
         """run_after_step does nothing when no action's at_rollout matches the given rollout."""
         group = FakeGroup(num_cells=3)
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
         executor = FTTestActionGroupExecutor(actions=[action], group=group)
 
-        executor.run_after_step(4)
+        await executor.run_after_step(4)
 
         assert group.stopped == []
         assert group.started == []
 
-    def test_start_cell_with_default_index_resolves_to_last_cell(self):
+    @pytest.mark.asyncio
+    async def test_start_cell_with_default_index_resolves_to_last_cell(self):
         """start_cell_at_end with cell_index -1 calls group.start_cell on the last cell."""
         group = FakeGroup(num_cells=3)
         action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_index=-1)
         executor = FTTestActionGroupExecutor(actions=[action], group=group)
 
-        executor.run_after_step(2)
+        await executor.run_after_step(2)
 
         assert group.started == [2]
         assert group.stopped == []
 
-    def test_two_actions_same_rollout_both_fire(self):
+    @pytest.mark.asyncio
+    async def test_two_actions_same_rollout_both_fire(self):
         """Two actions sharing the same rollout both dispatch to their respective group methods."""
         group = FakeGroup(num_cells=3)
         stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_index=0)
         start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_index=2)
         executor = FTTestActionGroupExecutor(actions=[stop_action, start_action], group=group)
 
-        executor.run_after_step(7)
+        await executor.run_after_step(7)
 
         assert group.stopped == [0]
         assert group.started == [2]
 
-    def test_empty_actions_is_noop(self):
+    @pytest.mark.asyncio
+    async def test_empty_actions_is_noop(self):
         """An executor with no actions performs no group calls."""
         group = FakeGroup(num_cells=3)
         executor = FTTestActionGroupExecutor(actions=[], group=group)
 
-        executor.run_after_step(5)
+        await executor.run_after_step(5)
 
         assert group.stopped == []
         assert group.started == []

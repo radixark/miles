@@ -49,14 +49,14 @@ class FTTestActionGroupExecutor:
     def from_args(args: object, *, group: "RayTrainGroup") -> "FTTestActionGroupExecutor":
         return FTTestActionGroupExecutor(actions=_load_actions(args, _GROUP_ACTIONS), group=group)
 
-    def run_after_step(self, rollout_id: int) -> None:
+    async def run_after_step(self, rollout_id: int) -> None:
         for action in self._actions:
             if action.at_rollout == rollout_id:
                 cell_index = action.resolve_cell_index(self._group.num_cells)
                 logger.info("FT test action: %s cell %d after rollout %d", action.action, cell_index, rollout_id)
 
                 if action.action == "stop_cell_at_end":
-                    self._group.stop_cell(cell_index)
+                    await self._group.stop_cell(cell_index)
                 elif action.action == "start_cell_at_end":
                     self._group.start_cell(cell_index)
 
