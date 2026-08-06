@@ -353,6 +353,43 @@ class TestRocmWorkflowScopeSeam:
         assert "ref: ${{ inputs.checkout_ref }}" in reusable
         assert "persist-credentials: false" in reusable
 
+    def test_each_gpu_family_gets_its_own_image(self):
+        """The two ROCm stages run different rocm/sgl-dev lines, so one shared
+        `container_image` output would silently run MI350 tests on the MI300X
+        image (ROCm 7.0 vs 7.2, gfx942 vs gfx950)."""
+        workflow = self._workflow()
+        resolver = workflow.split("resolve-ci-image:", 1)[1].split("  stage-c-", 1)[0]
+
+        assert "mi300x_image: ${{ steps.resolve.outputs.mi300x_image }}" in resolver
+        assert "mi350_image: ${{ steps.resolve.outputs.mi350_image }}" in resolver
+        # A single generic output would let a stage bind the wrong family.
+        assert "container_image: ${{ steps.resolve.outputs.container_image }}" not in workflow
+
+        mi300x = workflow.split("  stage-c-4-gpu-mi300x:", 1)[1].split("  stage-c-4-gpu-mi350:", 1)[0]
+        mi350 = workflow.split("  stage-c-4-gpu-mi350:", 1)[1]
+        assert "container_image: ${{ needs.resolve-ci-image.outputs.mi300x_image }}" in mi300x
+        assert "container_image: ${{ needs.resolve-ci-image.outputs.mi350_image }}" in mi350
+
+        # MI300X pins a dated tag; MI350 is rebuilt daily so it probes for the
+        # newest instead. A pinned MI350 default would rot within days.
+        assert 'TAG_MI300X="miles-rocm700-mi30x-20260708"' in resolver
+        assert "BASE=miles-rocm720-mi35x" in resolver
+        assert "docker manifest inspect" in resolver
+
+    def test_mi350_stage_matches_its_runner_fleet(self):
+        """The MI350X host is split into two 4-GPU runners labelled amd/mi350/4gpu."""
+        workflow = self._workflow()
+        stage = workflow.split("  stage-c-4-gpu-mi350:", 1)[1]
+        command = stage.split("execute_command:", 1)[1].split("secrets:", 1)[0]
+
+        assert 'runs_on: \'["self-hosted", "amd", "mi350", "4gpu"]\'' in stage
+        assert "--suite stage-c-4-gpu-mi350" in command
+        # One shard per runner; size must track the matrix or a shard runs nothing.
+        assert "partition_id: [0, 1]" in stage
+        assert "--auto-partition-size 2" in command
+        assert "if: needs.resolve-ci-policy.outputs.allow_self_hosted == 'true'" in stage
+        assert "format('refs/pull/{0}/merge', github.event.pull_request.number)" in stage
+
 
 # --- CLI seam: local nightly alias and invalid-suite exit behavior -----------
 
