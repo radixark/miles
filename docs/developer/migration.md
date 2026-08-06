@@ -76,8 +76,8 @@ Same pattern applies to `offload`, `onload` and `clear_memory`.
 
 | | Owns | Lives in |
 |---|---|---|
-| `InferenceController` | sglang servers, router, engine lock, health monitors | its own Ray actor |
-| `RolloutExecutor` | data source, rollout functions, data conversion | its own Ray actor |
+| `InferenceController` | sglang servers, router, engine lock, health monitors | its own worker: a Ray actor, or a pod of its own under `--cluster-backend kubernetes` |
+| `RolloutExecutor` | data source, rollout functions, data conversion | its own worker: a Ray actor, or a pod of its own under `--cluster-backend kubernetes` |
 
 ```diff
 - rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
@@ -87,7 +87,7 @@ Same pattern applies to `offload`, `onload` and `clear_memory`.
 
 - await rollout_manager.generate.remote(rollout_id)
 + await inference_controller.prepare_rollout(rollout_id)
-+ await rollout_executor.get.remote(rollout_id)
++ await rollout_executor.get(rollout_id=rollout_id)
 
 - await rollout_manager.onload_weights.remote()
 + await inference_controller.onload_weights()
