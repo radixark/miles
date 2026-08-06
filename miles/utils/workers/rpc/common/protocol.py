@@ -10,6 +10,8 @@ SUBMIT_PATH = "/v1/{method_name}"
 
 DEFAULT_POLL_TIMEOUT_SECONDS = 30.0
 
+MAX_POLL_TIMEOUT_SECONDS = 300.0
+
 
 class SubmitRequest(StrictBaseModel):
     call_id: str
