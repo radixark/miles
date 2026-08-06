@@ -61,7 +61,7 @@ def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate")
     Falls back to the default router if *model_name* is not found or
     ``sglang_model_routers`` is not set.
     """
-    routers = getattr(args, "sglang_model_routers", None)
+    routers = args.sglang_model_routers
     if routers and model_name in routers:
         ip, port = routers[model_name]
         return f"http://{ip}:{port}{endpoint}"
