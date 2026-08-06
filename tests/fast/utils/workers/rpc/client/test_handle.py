@@ -174,6 +174,17 @@ class TestTypedCalls:
         async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
             assert await handle.demo_default_arg(a=1) == 101
 
+    async def test_positional_arguments_are_bound_by_name(self):
+        """A positional call is bound to parameter names client-side, so the wire stays keyword-shaped."""
+        async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            assert await handle.demo_default_arg(1, 2) == 3
+
+    async def test_a_positional_and_keyword_duplicate_is_rejected_locally(self):
+        """The same parameter given twice is a caller bug and must not reach the server."""
+        async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            with pytest.raises(TypeError, match="multiple values"):
+                await handle.demo_default_arg(1, a=2)
+
     async def test_model_result_revived(self):
         """Pydantic model results come back as real model instances."""
         async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
