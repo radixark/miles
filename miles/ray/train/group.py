@@ -286,8 +286,8 @@ class TrainerController:
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
         """
-        provider: BaseWorkerProvider = RayWorkerProvider.create()
-        self._watcher_disposer = await provider.watch_cells(self._reconcile, spec_names=[self._spec_name])
+        provider: BaseWorkerProvider = RayWorkerProvider.create(spec_names=[self._spec_name])
+        self._watcher_disposer = await provider.watch_cells(self._reconcile)
         await self._wait_expected_num_cells()
 
         cell_results = await asyncio.gather(

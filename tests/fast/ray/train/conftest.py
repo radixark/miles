@@ -25,7 +25,9 @@ def _patch_worker_backends():
         patch("miles.utils.workers.ray_worker_manager.RayWorkerManager.get_handle", lambda: fake_worker_manager),
         patch(
             "miles.utils.workers.worker_provider.ray.RayWorkerProvider.create",
-            lambda: RayWorkerProvider(worker_manager_handle=fake_worker_manager),
+            lambda *, spec_names=None: RayWorkerProvider(
+                worker_manager_handle=fake_worker_manager, spec_names=spec_names
+            ),
         ),
     ):
         yield

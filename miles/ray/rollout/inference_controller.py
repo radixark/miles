@@ -58,10 +58,10 @@ class InferenceController:
         )
 
         # TODO: may change to InferenceController.init(engine_provider, ...) later
-        provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
-        self._watcher_disposers.append(
-            await provider.watch_cells(self._reconcile, spec_names=compute_engine_spec_names(self.args))
-        )
+        provider: BaseWorkerProvider = RayWorkerProvider.create(
+            spec_names=compute_engine_spec_names(self.args)
+        )  # TODO inject instance
+        self._watcher_disposers.append(await provider.watch_cells(self._reconcile))
         self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
 
         dashboard_hooks.register_router(self.args)

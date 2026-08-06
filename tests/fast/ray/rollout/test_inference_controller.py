@@ -238,9 +238,15 @@ class TestReconcile:
 class _FakeWorkerProvider:
     def __init__(self, cell_infos: list[CellInfo]) -> None:
         self._cell_infos = cell_infos
+        self._spec_names: list[str] = []
         self.watched_spec_names: list[str] | None = None
 
-    async def watch_cells(self, reconcile: ReconcileFn, *, spec_names: list[str]) -> StopWatchFn:
+    def created_with(self, spec_names: list[str]) -> "_FakeWorkerProvider":
+        self._spec_names = list(spec_names)
+        return self
+
+    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+        spec_names = self._spec_names
         self.watched_spec_names = list(spec_names)
         for info in self._cell_infos:
             if info.spec_name in spec_names:
@@ -260,7 +266,10 @@ def _patch_init(
 
     monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
     monkeypatch.setattr(
-        inference_controller_module, "RayWorkerProvider", SimpleNamespace(create=lambda: provider), raising=True
+        inference_controller_module,
+        "RayWorkerProvider",
+        SimpleNamespace(create=lambda *, spec_names: provider.created_with(spec_names)),
+        raising=True,
     )
 
 
