@@ -9,11 +9,14 @@ those launchers cannot silently drift apart. Each launcher keeps only its own
 perf/sglang/misc profile and its ``ScriptArgs`` defaults.
 """
 
+import importlib
 import os
 import subprocess
 import time
 from pathlib import Path
 from typing import Protocol
+
+import openenv_sandbox_common as sandbox_common
 
 
 class LaunchArgs(Protocol):
@@ -30,7 +33,9 @@ class LaunchArgs(Protocol):
     openenv_max_turns: int
     openenv_max_rollout_time_seconds: int
     openenv_tb2_tasks_dir: str
+    openenv_sandbox_backend: str
     daytona_api_key_file: str
+    e2b_api_key_file: str
     router_external_host: str
     miles_host_ip: str
 
@@ -100,12 +105,42 @@ def optimizer_args() -> str:
     )
 
 
-def agent_args(tito_model: str, daytona_sandboxes: bool = False) -> str:
+def resolve_sandbox_backend(args: LaunchArgs) -> str:
+    """The per-episode sandbox backend in effect: "" (shared env server),
+    "daytona", or "e2b".
+
+    Names and aliases resolve through openenv_sandbox_common, the canonical
+    registry: "agentenv" is an accepted alias for "e2b", because AgentENV
+    (https://github.com/kvcache-ai/AgentENV) is a self-hosted Firecracker
+    microVM platform whose native API is the E2B API, so it runs on the e2b
+    leg with E2B_API_URL/E2B_SANDBOX_URL pointed at it.
+
+    The two settings that turn this mode on come as a pair — a task checkout
+    to build images from, and the provider to build them on — so naming one
+    without the other is an error rather than a guess.
+    """
+    raw = (getattr(args, "openenv_sandbox_backend", "") or "").strip()
+    tasks_dir = args.openenv_tb2_tasks_dir
+    if not raw and not tasks_dir:
+        return ""
+    if not tasks_dir:
+        raise ValueError(
+            "sandbox backends build per-task images: set openenv_tb2_tasks_dir to a terminal-bench-2 checkout"
+        )
+    if not raw:
+        raise ValueError(
+            "openenv_tb2_tasks_dir selects per-episode sandboxes: set openenv_sandbox_backend "
+            "(OPENENV_SANDBOX_BACKEND) to the provider to run them on"
+        )
+    return sandbox_common.resolve_backend(raw)
+
+
+def agent_args(tito_model: str, sandbox_backend: str = "") -> str:
     """Agentic-rollout wiring. The TITO surface differs across models; the
     agent function decides where episodes run — the shared env server by
-    default, Daytona sandboxes (openenv_daytona_agent_function)
-    when the launcher runs with openenv_tb2_tasks_dir set."""
-    agent_fn = "openenv_daytona_agent_function.run" if daytona_sandboxes else "openenv_agent_function.run"
+    default, per-episode sandboxes (Daytona or E2B/AgentENV) when the launcher
+    resolves a sandbox backend (see resolve_sandbox_backend)."""
+    agent_fn = sandbox_common.AGENT_FUNCTIONS.get(sandbox_backend, "openenv_agent_function.run")
     return (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
         f"--custom-agent-function-path {agent_fn} "
@@ -158,69 +193,51 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
         env["MILES_HOST_IP"] = args.miles_host_ip
     if args.router_external_host:
         env["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
-    if args.openenv_tb2_tasks_dir:
-        # Key-supply contract (kept deliberately general): rollout workers get
-        # the Daytona key from their OWN environment (DAYTONA_API_KEY, e.g.
-        # platform-injected) or from a file they can read (DAYTONA_API_KEY_FILE,
-        # default ~/.config/daytona/api_key — a dotfile, K8s Secret mount, or
-        # shared-FS path). The launcher forwards only the file PATH, never the
-        # value: worker env rides ray's runtime_env, which exec_command echoes
-        # into driver logs and ray persists in job metadata, all in plaintext.
-        key_file = Path(args.daytona_api_key_file or "~/.config/daytona/api_key").expanduser()
-        try:
-            key_present = bool(key_file.read_text(encoding="utf-8").strip())
-        except OSError:
-            key_present = False
-        # Either supply is fine; neither is fully verifiable from here (the
-        # launcher cannot probe worker nodes), so echo which one is in effect.
-        if key_present:
-            env["DAYTONA_API_KEY_FILE"] = str(key_file)
-            print(
-                f"openenv: Daytona key supply: file {key_file} "
-                "(readable here; forwarding the path, workers read it themselves)",
-                flush=True,
+    backend = resolve_sandbox_backend(args)
+    if backend:
+        if backend == "daytona":
+            _sandbox_key_supply(
+                env,
+                provider="Daytona",
+                key_env_var="DAYTONA_API_KEY",
+                file_env_var="DAYTONA_API_KEY_FILE",
+                arg_path=args.daytona_api_key_file,
+                default_path="~/.config/daytona/api_key",
+                provision_hint="mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key",
             )
-        elif args.daytona_api_key_file:
-            # An explicitly configured path that doesn't resolve on the launcher
-            # is a config error; failing every episode later is far worse.
-            raise ValueError(f"DAYTONA_API_KEY_FILE={args.daytona_api_key_file} is missing or empty")
-        elif os.environ.get("DAYTONA_API_KEY", "").strip():
-            print(
-                "openenv: Daytona key supply: worker environment (DAYTONA_API_KEY "
-                "is set here; workers are assumed to have it in their own env — "
-                "single-host inheritance or platform-injected pod env)",
-                flush=True,
+            _preflight_sdk("daytona", "pip install daytona (or pip install -e '<OpenEnv>/envs/tbench2_env[daytona]')")
+        else:  # e2b (E2B Cloud or a self-hosted AgentENV endpoint)
+            _sandbox_key_supply(
+                env,
+                provider="E2B",
+                key_env_var="E2B_API_KEY",
+                file_env_var="E2B_API_KEY_FILE",
+                arg_path=args.e2b_api_key_file,
+                default_path="~/.config/e2b/api_key",
+                provision_hint="mkdir -p ~/.config/e2b && echo <key> > ~/.config/e2b/api_key"
+                "  # AgentENV accepts any non-empty key today",
             )
-        else:
-            raise ValueError(
-                "the Daytona sandbox mode needs an API key: put it in a file "
-                f"({key_file}; DAYTONA_API_KEY_FILE overrides) or in the "
-                "environment as DAYTONA_API_KEY. Provision the file with:\n"
-                "  mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key"
-            )
-        # Preflight the lazily-imported SDK. Without this, a missing install only
-        # surfaces inside each episode's sandbox start, where the failed sample is
-        # aborted, the group dropped, and the rollout loop refills forever — a
-        # silent GPU-burning churn instead of a launch-time error.
-        try:
-            import daytona  # noqa: F401
-        except ImportError as e:
-            raise RuntimeError(
-                "the Daytona sandbox mode needs the daytona SDK in the rollout "
-                "process's environment: pip install daytona "
-                "(or pip install -e '<OpenEnv>/envs/tbench2_env[daytona]')"
-            ) from e
-        # Same preflight for the env package the recipe bakes into each task
-        # image. The import check catches a missing install; the source probe
-        # catches an install that imports fine but lacks the server features
-        # the sandbox leg scores through (canonical tests/test.sh evaluate,
-        # TB2_WITHHOLD_TESTS) — that one would not even fail per-episode, it
-        # would silently mis-score every episode.
+            _preflight_sdk("e2b", "pip install e2b")
+            # Endpoint overrides are read from the environment by the SDK on
+            # every worker; forward them (they are addresses, not secrets).
+            # E2B_API_URL unset means E2B Cloud; set, it usually points at a
+            # self-hosted AgentENV deployment.
+            for var in ("E2B_API_URL", "E2B_SANDBOX_URL", "E2B_DOMAIN", "OPENENV_E2B_URL_SCHEME"):
+                if os.environ.get(var, "").strip():
+                    env[var] = os.environ[var].strip()
+            endpoint = env.get("E2B_API_URL", "E2B Cloud (default)")
+            print(f"openenv: E2B endpoint: {endpoint}", flush=True)
+        # Preflight the env package the recipe bakes into each task image —
+        # shared by every sandbox backend. The import check catches a missing
+        # install; the source probe catches an install that imports fine but
+        # lacks the server features the sandbox legs score through (canonical
+        # tests/test.sh evaluate, TB2_WITHHOLD_TESTS) — that one would not
+        # even fail per-episode, it would silently mis-score every episode.
         try:
             import tbench2_env
         except ImportError as e:
             raise RuntimeError(
-                "the Daytona sandbox mode needs tbench2_env in the rollout "
+                "the sandbox modes need tbench2_env in the rollout "
                 "process's environment: pip install -e '<OpenEnv>/envs/tbench2_env' "
                 "from the checkout described in this directory's README"
             ) from e
@@ -234,3 +251,66 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
                 "(04d259ea6) — see this directory's README"
             )
         env["OPENENV_TB2_TASKS_DIR"] = args.openenv_tb2_tasks_dir
+
+
+def _sandbox_key_supply(
+    env: dict[str, str],
+    *,
+    provider: str,
+    key_env_var: str,
+    file_env_var: str,
+    arg_path: str,
+    default_path: str,
+    provision_hint: str,
+) -> None:
+    """Key-supply contract, shared by the sandbox backends: rollout workers
+    get the provider key from their OWN environment (e.g. platform-injected)
+    or from a file they can read (a dotfile, K8s Secret mount, or shared-FS
+    path). The launcher forwards only the file PATH, never the value: worker
+    env rides ray's runtime_env, which exec_command echoes into driver logs
+    and ray persists in job metadata, all in plaintext."""
+    key_file = Path(arg_path or default_path).expanduser()
+    try:
+        key_present = bool(key_file.read_text(encoding="utf-8").strip())
+    except OSError:
+        key_present = False
+    # Either supply is fine; neither is fully verifiable from here (the
+    # launcher cannot probe worker nodes), so echo which one is in effect.
+    if key_present:
+        env[file_env_var] = str(key_file)
+        print(
+            f"openenv: {provider} key supply: file {key_file} "
+            "(readable here; forwarding the path, workers read it themselves)",
+            flush=True,
+        )
+    elif arg_path:
+        # An explicitly configured path that doesn't resolve on the launcher
+        # is a config error; failing every episode later is far worse.
+        raise ValueError(f"{file_env_var}={arg_path} is missing or empty")
+    elif os.environ.get(key_env_var, "").strip():
+        print(
+            f"openenv: {provider} key supply: worker environment ({key_env_var} "
+            "is set here; workers are assumed to have it in their own env — "
+            "single-host inheritance or platform-injected pod env)",
+            flush=True,
+        )
+    else:
+        raise ValueError(
+            f"the {provider} sandbox mode needs an API key: put it in a file "
+            f"({key_file}; {file_env_var} overrides) or in the "
+            f"environment as {key_env_var}. Provision the file with:\n"
+            f"  {provision_hint}"
+        )
+
+
+def _preflight_sdk(module: str, install_hint: str) -> None:
+    """Preflight the lazily-imported provider SDK. Without this, a missing
+    install only surfaces inside each episode's sandbox start, where the
+    failed sample is aborted, the group dropped, and the rollout loop refills
+    forever — a silent GPU-burning churn instead of a launch-time error."""
+    try:
+        importlib.import_module(module)
+    except ImportError as e:
+        raise RuntimeError(
+            f"this sandbox mode needs the {module} SDK in the rollout process's environment: {install_hint}"
+        ) from e

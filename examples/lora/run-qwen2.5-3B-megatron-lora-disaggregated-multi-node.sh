@@ -298,7 +298,6 @@ if [ "$NODE_RANK" -eq 0 ]; then
       }' \
       -- python3 train.py \
       --calculate-per-token-loss \
-      --use-miles-router \
       ${MODEL_ARGS[@]} \
       ${CKPT_ARGS[@]} \
       ${LORA_ARGS[@]} \

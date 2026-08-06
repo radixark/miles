@@ -271,4 +271,6 @@ jobs:
 
       - name: Run tests
         shell: bash
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: ${{ inputs.execute_command }}

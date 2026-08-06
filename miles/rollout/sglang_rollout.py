@@ -22,7 +22,7 @@ from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
 from miles.utils.multi_lora import make_rid, slot_lora_name
 from miles.utils.processing_utils import (
@@ -45,6 +45,51 @@ from .rm_hub import async_rm, batched_async_rm
 __all__ = ["generate_rollout", "get_model_url"]
 
 logger = logging.getLogger(__name__)
+
+
+def _len_or_value(value: Any) -> Any:
+    if isinstance(value, (dict, list, tuple, str)):
+        return {"type": type(value).__name__, "len": len(value)}
+    return value
+
+
+def _sample_text_preview(sample: Sample, max_chars: int = 512) -> str:
+    text = (str(sample.prompt) + sample.response).replace("\n", "\\n")
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}...<truncated chars={len(text) - max_chars}>"
+
+
+def _reward_log_summary(reward: Any) -> Any:
+    """Summarize a reward (which for OPD scoring can be a large nested dict of logprobs)
+    into shapes/lengths instead of dumping the whole thing into the log."""
+    if not isinstance(reward, dict):
+        return _len_or_value(reward)
+
+    summary: dict[str, Any] = {}
+    for key, value in reward.items():
+        if not isinstance(value, dict):
+            summary[key] = _len_or_value(value)
+            continue
+
+        entry: dict[str, Any] = {"keys": list(value.keys())}
+        meta_info = value.get("meta_info")
+        if isinstance(meta_info, dict):
+            entry["meta_info"] = {
+                meta_key: _len_or_value(meta_info[meta_key])
+                for meta_key in (
+                    "id",
+                    "finish_reason",
+                    "prompt_tokens",
+                    "weight_version",
+                    "input_token_logprobs",
+                    "input_token_ids_logprobs",
+                    "input_top_logprobs",
+                )
+                if meta_key in meta_info
+            }
+        summary[key] = entry
+    return summary
 
 
 def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate") -> str:
@@ -149,7 +194,10 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
     ), f"Sample status is {sample.status}"
 
-    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
+    if state.processor and (
+        isinstance(sample.prompt, (list, tuple))
+        or (sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()))
+    ):
         processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
         prompt_ids = prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
@@ -192,7 +240,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         payload["lora_path"] = slot_lora_name(sample.adapter.slot)
         payload["rid"] = make_rid(sample.adapter.name)
         payload["extra_key"] = f"{sample.adapter.name}:v{adapter.version}"
-    elif is_lora_enabled(args):
+    elif lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:
@@ -203,6 +251,13 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+
+    if sample.multimodal_inputs and sample.multimodal_inputs.get("audios"):
+        import base64 as _b64
+
+        payload["audio_data"] = [
+            f"data:audio;base64,{_b64.b64encode(a).decode('ascii')}" for a in sample.multimodal_inputs["audios"]
+        ]
 
     # Use existing tokens for multi-turn or tokenize the new prompt
     if len(sample.response) > 0:
@@ -242,14 +297,22 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     sample.rollout_log_probs += new_response_log_probs
 
     if "routed_experts" in output["meta_info"]:
-        sample.rollout_routed_experts = np.frombuffer(
+        _re = np.frombuffer(
             pybase64.b64decode(output["meta_info"]["routed_experts"].encode("ascii")),
             dtype=np.int32,
-        ).reshape(
-            len(sample.tokens) - 1,
-            args.num_layers,
-            args.moe_router_topk,
         )
+        _ntok = int(output["meta_info"]["prompt_tokens"]) + len(new_response_tokens) - 1
+        _topk = _re.size // max(1, _ntok * args.num_layers)
+        if _re.size == (_ntok + 1) * args.num_layers * max(1, _topk):
+            # stop-edge: sglang also forwarded the final token; its routing rows
+            # feed no training position - drop the tail position.
+            _re = _re[: _ntok * args.num_layers * _topk]
+        assert _re.size == _ntok * args.num_layers * _topk, (
+            f"routed_experts buffer {_re.size} != ntok({_ntok}) x layers({args.num_layers}) x topk({_topk}); "
+            f"prompt_tokens={output['meta_info'].get('prompt_tokens')} response={len(new_response_tokens)} "
+            f"unexpanded_tokens={len(sample.tokens)}"
+        )
+        sample.rollout_routed_experts = _re.reshape(_ntok, args.num_layers, _topk)
     if "indexer_topk" in output["meta_info"]:
         sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
@@ -468,7 +531,10 @@ async def generate_rollout_async(
             if do_print:
                 sample = group[0][0] if isinstance(group[0], list) else group[0]
                 logger.info(
-                    f"First rollout sample: {[str(sample.prompt) + sample.response]}, label: {str(sample.label)[:100]}, reward: {sample.reward}",
+                    "First rollout sample: text_preview=%s, label=%s, reward_summary=%s",
+                    _sample_text_preview(sample),
+                    str(sample.label)[:100],
+                    _reward_log_summary(sample.reward),
                 )
                 do_print = False
 
@@ -489,7 +555,10 @@ async def generate_rollout_async(
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
     logger.info(
-        f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {str(sample.label)[:100]}, reward: {sample.reward}",
+        "Finish rollout: text_preview=%s, label=%s, reward_summary=%s",
+        _sample_text_preview(sample),
+        str(sample.label)[:100],
+        _reward_log_summary(sample.reward),
     )
 
     # there are still some unfinished requests, abort them

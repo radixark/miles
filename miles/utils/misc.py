@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import inspect
 import logging
 import re
 import subprocess
@@ -44,22 +45,28 @@ function_registry = FunctionRegistry()
 
 
 # TODO may rename to `load_object` since it can be used to load things like tool_specs
-def load_function(path):
+def load_function(path, *, sync_required=False):
     """
     Load a function from registry or module.
     :param path: The path to the function, e.g. "module.submodule.function".
+    :param sync_required: Reject coroutine functions, for callers that run the
+        loaded function synchronously on an event loop.
     :return: The function object.
     """
-    if path is None:
+    if not path:
         return None
 
-    registered = function_registry.get(path)
-    if registered is not None:
-        return registered
-
-    module_path, _, attr = path.rpartition(".")
-    module = importlib.import_module(module_path)
-    return getattr(module, attr)
+    fn = function_registry.get(path)
+    if fn is None:
+        module_path, _, attr = path.rpartition(".")
+        module = importlib.import_module(module_path)
+        fn = getattr(module, attr)
+    if sync_required:
+        if not callable(fn):
+            raise ValueError(f"load_function({path!r}) did not resolve to a callable")
+        if inspect.iscoroutinefunction(fn):
+            raise ValueError(f"load_function({path!r}) resolved to an async function; a synchronous one is required")
+    return fn
 
 
 async def call_agent_abort_hook(args) -> None:

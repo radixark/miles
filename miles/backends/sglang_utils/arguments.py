@@ -1,3 +1,5 @@
+import argparse
+
 from sglang.srt.server_args import ServerArgs
 from miles.utils.http_utils import _wrap_ipv6
 
@@ -34,36 +36,38 @@ def add_sglang_router_arguments(parser):
     return parser
 
 
-def add_sglang_arguments(parser):
-    """
-    Add arguments to the parser for the SGLang server.
-    """
-    parser = add_sglang_router_arguments(parser)
-    parser.add_argument("--sglang-server-concurrency", type=int, default=512)
+_SKIPPED_SERVER_ARGS = [
+    "model_path",
+    "config",
+    "trust_remote_code",
+    "random_seed",
+    # memory
+    "enable_memory_saver",
+    # distributed
+    # tp_size stays exposed: scripts pass --sglang-tp-size, but the value is
+    # overridden from --rollout-num-gpus-per-engine in validate_args below.
+    "port",
+    "nnodes",
+    "node_rank",
+    "dist_init_addr",
+    "gpu_id_step",
+    "base_gpu_id",
+    "nccl_port",
+    "skip_server_warmup",
+    "enable_return_routed_experts",
+    "enable_return_indexer_topk",
+]
 
+# tp_size comes from --eval-num-gpus-per-engine, which also places the engines.
+_EVAL_SKIPPED_SERVER_ARGS = _SKIPPED_SERVER_ARGS + ["tp_size"]
+
+
+def _add_prefixed_server_args(parser, *, flag_prefix: str, dest_prefix: str, skipped_args: list[str], inherit: bool):
+    """Register ``ServerArgs.add_cli_args`` as ``--{flag_prefix}-*`` -> ``args.{dest_prefix}*``.
+
+    ``inherit=True`` defaults to SUPPRESS, so an unset flag leaves no attribute to inherit over.
+    """
     old_add_argument = parser.add_argument
-
-    skipped_args = [
-        "model_path",
-        "config",
-        "trust_remote_code",
-        "random_seed",
-        # memory
-        "enable_memory_saver",
-        # distributed
-        # tp_size stays exposed: scripts pass --sglang-tp-size, but the value is
-        # overridden from --rollout-num-gpus-per-engine in validate_args below.
-        "port",
-        "nnodes",
-        "node_rank",
-        "dist_init_addr",
-        "gpu_id_step",
-        "base_gpu_id",
-        "nccl_port",
-        "skip_server_warmup",
-        "enable_return_routed_experts",
-        "enable_return_indexer_topk",
-    ]
 
     def new_add_argument_wrapper(*name_or_flags, **kwargs):
         """
@@ -90,7 +94,7 @@ def add_sglang_arguments(parser):
         for item_flag in name_or_flags:
             if isinstance(item_flag, str) and item_flag.startswith("-"):
                 original_flag_stem = item_flag.lstrip("-")  # "foo-bar" from "--foo-bar", or "f" from "-f"
-                prefixed_item = f"--sglang-{original_flag_stem}"
+                prefixed_item = f"--{flag_prefix}-{original_flag_stem}"
                 new_name_or_flags_list.append(prefixed_item)
             else:
                 # Positional arguments or non-string items
@@ -104,9 +108,9 @@ def add_sglang_arguments(parser):
         # This ensures the attribute on the args namespace becomes, e.g., args.sglang_dest_name.
         if "dest" in final_kwargs and isinstance(final_kwargs["dest"], str):
             original_dest = final_kwargs["dest"]
-            # Avoid double prefixing if dest somehow already starts with sglang_
-            if not original_dest.startswith("sglang_"):
-                final_kwargs["dest"] = f"sglang_{original_dest}"
+            # Avoid double prefixing if dest somehow already starts with the prefix
+            if not original_dest.startswith(dest_prefix):
+                final_kwargs["dest"] = f"{dest_prefix}{original_dest}"
         elif "dest" not in final_kwargs:
             # argparse derives dest from the first alias, so store parallel sizes under SGLang's short field names.
             for item_flag in name_or_flags:
@@ -114,14 +118,48 @@ def add_sglang_arguments(parser):
                     continue
                 canonical_dest = item_flag[2:].replace("-", "_")
                 if canonical_dest in ("tp_size", "dp_size", "pp_size", "ep_size"):
-                    final_kwargs["dest"] = f"sglang_{canonical_dest}"
+                    final_kwargs["dest"] = f"{dest_prefix}{canonical_dest}"
                     break
+
+        if inherit:
+            final_kwargs["default"] = argparse.SUPPRESS
+            if final_kwargs.get("action") in ("store_true", "store_false"):
+                # store_true can only turn a field on; an override must also turn one off.
+                final_kwargs["action"] = argparse.BooleanOptionalAction
+                final_kwargs.pop("const", None)
+                final_kwargs.pop("nargs", None)
 
         old_add_argument(*new_name_or_flags_list, **final_kwargs)
 
     parser.add_argument = new_add_argument_wrapper
     ServerArgs.add_cli_args(parser)
     parser.add_argument = old_add_argument
+
+
+def collect_eval_sglang_overrides(args) -> dict:
+    """``ServerArgs`` fields set via ``--eval-sglang-*``; absent means inherit ``--sglang-*``."""
+    return {
+        key.removeprefix("eval_sglang_"): value for key, value in vars(args).items() if key.startswith("eval_sglang_")
+    }
+
+
+def add_sglang_arguments(parser):
+    """
+    Add arguments to the parser for the SGLang server.
+    """
+    parser = add_sglang_router_arguments(parser)
+    parser.add_argument("--sglang-server-concurrency", type=int, default=512)
+
+    _add_prefixed_server_args(
+        parser, flag_prefix="sglang", dest_prefix="sglang_", skipped_args=_SKIPPED_SERVER_ARGS, inherit=False
+    )
+    _add_prefixed_server_args(
+        parser,
+        flag_prefix="eval-sglang",
+        dest_prefix="eval_sglang_",
+        skipped_args=_EVAL_SKIPPED_SERVER_ARGS,
+        inherit=True,
+    )
 
     parser.add_argument(
         "--sglang-config",
@@ -133,6 +171,8 @@ def add_sglang_arguments(parser):
             "num_gpus per group, and optional per-group 'overrides' dict of "
             "ServerArgs field names that override the base --sglang-* CLI args. "
             "Placeholder groups reserve GPU slots without creating engines. "
+            "A 'name: eval' model is filled in from the --eval-* args (model_path, "
+            "num_gpus_per_engine, --eval-sglang-* overrides) wherever the YAML leaves them unset. "
             "Mutually exclusive with --prefill-num-servers."
         ),
     )

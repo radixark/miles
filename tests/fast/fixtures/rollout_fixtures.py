@@ -2,6 +2,7 @@
 Fixtures to test rollout-function
 """
 
+import copy
 import json
 from argparse import Namespace
 from collections.abc import Iterator
@@ -101,17 +102,8 @@ DEFAULT_DATA_ROWS = [{"input": "What is 1+7?", "label": "8"}]
 @contextmanager
 def _with_session_server(args: Namespace, backend_url: str) -> Iterator[UvicornThreadServer]:
     """Start a SessionServer for agentic variants that need TITO session tracking."""
-    from types import SimpleNamespace
-
-    session_args = SimpleNamespace(
-        miles_router_timeout=30,
-        hf_checkpoint=args.hf_checkpoint,
-        chat_template_path=getattr(args, "chat_template_path", None),
-        tito_model=getattr(args, "tito_model", "default"),
-        use_rollout_routing_replay=getattr(args, "use_rollout_routing_replay", False),
-        save_debug_trajectory_data=getattr(args, "save_debug_trajectory_data", None),
-        sglang_speculative_algorithm=getattr(args, "sglang_speculative_algorithm", None),
-    )
+    session_args = copy.copy(args)
+    session_args.miles_router_timeout = 30
     session_server = SessionServer(session_args, backend_url=backend_url)
     port = find_available_port(31000)
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)

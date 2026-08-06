@@ -138,7 +138,6 @@ MISC_ARGS=(
    --actor-num-gpus-per-node ${NUM_GPUS}
    --colocate
    --calculate-per-token-loss # +fsdp
-   --use-miles-router # +fsdp
 )
 
 # launch the master node of ray in container

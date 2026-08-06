@@ -181,7 +181,6 @@ run_mode() {
         --sglang-mem-fraction-static 0.7
         --sglang-ep-size 4
         --sglang-cuda-graph-bs 1 2 4 8 16
-        # --use-miles-router
         --sglang-enable-dp-attention
         --sglang-enable-dp-lm-head
     )
