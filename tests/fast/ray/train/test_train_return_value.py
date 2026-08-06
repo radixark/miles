@@ -7,7 +7,7 @@ import ray
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.ray_utils import Box
 
@@ -16,8 +16,8 @@ pytestmark = pytest.mark.asyncio
 _DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
 
 
-def _make_group(cells: list) -> RayTrainGroup:
-    group = object.__new__(RayTrainGroup)
+def _make_group(cells: list) -> TrainerController:
+    group = object.__new__(TrainerController)
     group._cells_by_id = {cell.cell_id: cell for cell in cells}
     group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
     group._witness_allocator = None
@@ -115,7 +115,7 @@ class TestWorkerResultShape:
         cell = make_alive_cell(0, alive_cell_indices=[0])
         results = [TrainStepOutput(outcome=TrainStepOutcome.DISCARDED_SHOULD_RETRY)]
 
-        outcomes = RayTrainGroup._compute_attempt_outcomes([cell], [results])
+        outcomes = TrainerController._compute_attempt_outcomes([cell], [results])
 
         assert outcomes["discarded"] == [0]
         assert outcomes["normal"] == []

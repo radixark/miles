@@ -109,7 +109,7 @@ async def test_start_update_weights_initializes_colocated_cells_before_snapshott
 
 
 def _make_group(order: list[str]):
-    from miles.ray.train.group import RayTrainGroup as FaultTolerantTrainGroup
+    from miles.ray.train.group import TrainerController as FaultTolerantTrainGroup
 
     group = FaultTolerantTrainGroup.__new__(FaultTolerantTrainGroup)
     group.args = Namespace(debug_train_only=False, debug_rollout_only=False)

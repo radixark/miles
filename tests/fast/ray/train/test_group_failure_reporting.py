@@ -4,7 +4,7 @@ import pytest
 import ray
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell, make_cell
 
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import NonRetryableError
 
@@ -18,8 +18,8 @@ pytestmark = pytest.mark.asyncio
 _DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
 
 
-def _make_group(cells: list) -> RayTrainGroup:
-    group = object.__new__(RayTrainGroup)
+def _make_group(cells: list) -> TrainerController:
+    group = object.__new__(TrainerController)
     group._cells_by_id = {cell.cell_id: cell for cell in cells}
     group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
     group._witness_allocator = None
@@ -29,7 +29,7 @@ def _make_group(cells: list) -> RayTrainGroup:
     return group
 
 
-def _make_failing_group(fn_name: str) -> RayTrainGroup:
+def _make_failing_group(fn_name: str) -> TrainerController:
     cell = make_alive_cell(0, alive_cell_indices=[0])
     for handle in get_raw_actor_handles(cell):
         ray.get(handle.set_fail_methods.remote([fn_name]))

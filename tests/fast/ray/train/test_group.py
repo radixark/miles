@@ -8,7 +8,7 @@ from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import get_raw_actor_handles
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -28,7 +28,7 @@ def _make_mock_args(
     gpus_per_cell: int = 1,
     num_cells: int = 3,
 ) -> SimpleNamespace:
-    # Use SimpleNamespace (not MagicMock) so the args object is picklable. RayTrainCell.init
+    # Use SimpleNamespace (not MagicMock) so the args object is picklable. TrainerCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
     # recursion limit because its __getattr__ creates new sub-mocks indefinitely.
     return SimpleNamespace(
@@ -43,7 +43,7 @@ def _make_mock_args(
         debug_train_only=False,
         debug_rollout_only=False,
         # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
-        # gpus_per_cell so RayTrainGroup computes num_cells correctly.
+        # gpus_per_cell so TrainerController computes num_cells correctly.
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         context_parallel_size=gpus_per_cell,
@@ -58,11 +58,11 @@ def _make_group(
     actor_count_per_cell: int = 1,
     inference_controller: object | None = None,
     rollout_executor: object | None = None,
-) -> RayTrainGroup:
-    """Create a RayTrainGroup and let it observe every cell, as the watcher would."""
+) -> TrainerController:
+    """Create a TrainerController and let it observe every cell, as the watcher would."""
     train_conftest.fake_worker_manager.num_cells = num_cells
     train_conftest.fake_worker_manager.actor_count_per_cell = actor_count_per_cell
-    group = RayTrainGroup(
+    group = TrainerController(
         args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell, num_cells=num_cells),
         role="actor",
         inference_controller=inference_controller,
@@ -76,28 +76,28 @@ def _make_group(
     return group
 
 
-async def _stop_cell(group: RayTrainGroup, cell_index: int) -> None:
+async def _stop_cell(group: TrainerController, cell_index: int) -> None:
     """Suspension stops the cell in the manager; reconcile then drops it from the bookkeeping."""
     cell_id = f"{group._spec_name}-{cell_index}"
     train_conftest.fake_worker_manager._stop_cells([cell_id])
     await group._reconcile(cell_id, None)
 
 
-def _cell(group: RayTrainGroup, cell_index: int) -> object:
+def _cell(group: TrainerController, cell_index: int) -> object:
     return group._cells_by_id[f"{group._spec_name}-{cell_index}"]
 
 
-def _start_cell(group: RayTrainGroup, cell_index: int) -> None:
+def _start_cell(group: TrainerController, cell_index: int) -> None:
     """The manager relaunches the cell, so reconcile hands the controller a fresh object."""
     cell_id = f"{group._spec_name}-{cell_index}"
     group._cells_by_id[cell_id] = group._create_cell(cell_id, cell_index=cell_index, workers_hash="pseudo-hash-2")
 
 
-def _was_stopped(group: RayTrainGroup, cell_index: int) -> bool:
+def _was_stopped(group: TrainerController, cell_index: int) -> bool:
     return [f"{group._spec_name}-{cell_index}"] in train_conftest.fake_worker_manager.stopped_cell_ids
 
 
-def _was_killed(group: RayTrainGroup, cell_index: int) -> bool:
+def _was_killed(group: TrainerController, cell_index: int) -> bool:
     for handle in get_raw_actor_handles(_cell(group, cell_index)):
         try:
             ray.get(handle.get_calls.remote())
@@ -107,12 +107,12 @@ def _was_killed(group: RayTrainGroup, cell_index: int) -> bool:
     return True
 
 
-async def _init_group(group: RayTrainGroup) -> None:
+async def _init_group(group: TrainerController) -> None:
     """Call init and wait for all cells to become alive."""
     await group.init()
 
 
-async def _make_alive_group(*, num_cells: int = 3, **kwargs) -> RayTrainGroup:
+async def _make_alive_group(*, num_cells: int = 3, **kwargs) -> TrainerController:
     """Create a group and init all cells to alive."""
     group = _make_group(num_cells=num_cells, **kwargs)
     await _init_group(group)
@@ -805,29 +805,29 @@ class TestCheckTrainOneAttempt:
     def test_compute_attempt_outcomes_buckets_cells_by_index(self):
         """_compute_attempt_outcomes buckets each alive cell into errored / discarded / normal by index."""
         results = [_ERR, [DISCARDED], [NORMAL, NORMAL]]
-        outcomes = RayTrainGroup._compute_attempt_outcomes(_alive_cells_for(results), results)
+        outcomes = TrainerController._compute_attempt_outcomes(_alive_cells_for(results), results)
         assert outcomes == {"errored": [0], "discarded": [1], "normal": [2]}
 
     def test_a_payload_carrying_output_is_bucketed_by_its_outcome(self):
         """The critic ships values alongside its outcome, so the payload must not hide a retry request."""
         results = [[TrainStepOutput(outcome=TrainStepOutcome.DISCARDED_SHOULD_RETRY, values=Box("ref"))]]
-        outcomes = RayTrainGroup._compute_attempt_outcomes(_alive_cells_for(results), results)
+        outcomes = TrainerController._compute_attempt_outcomes(_alive_cells_for(results), results)
         assert outcomes == {"errored": [], "discarded": [0], "normal": []}
 
 
-async def _set_all_train_return(group: RayTrainGroup, value: TrainStepOutput) -> None:
+async def _set_all_train_return(group: TrainerController, value: TrainStepOutput) -> None:
     for cell in group._cells:
         for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_train_return_value.remote(value))
 
 
-async def _set_all_train_returns_per_attempt(group: RayTrainGroup, values: list[TrainStepOutput]) -> None:
+async def _set_all_train_returns_per_attempt(group: TrainerController, values: list[TrainStepOutput]) -> None:
     for cell in group._cells:
         for handle in cell._get_actor_handles():
             ray.get(handle.set_train_return_values_per_attempt.remote(values))
 
 
-def _count_train_calls(group: RayTrainGroup, cell_index: int) -> int:
+def _count_train_calls(group: TrainerController, cell_index: int) -> int:
     total = 0
     for handle in get_raw_actor_handles(_cell(group, cell_index)):
         calls = ray.get(handle.get_calls.remote())

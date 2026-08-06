@@ -9,7 +9,7 @@ from starlette.responses import JSONResponse
 
 from miles.ray.specs.inference import compute_engine_spec_names
 from miles.ray.specs.train import compute_trainer_spec_name
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 def start_api_server(
     *,
     args,
-    actor_model: RayTrainGroup,
+    actor_model: TrainerController,
     inference_controller: object,
     port: int,
     ft_components: list[str],

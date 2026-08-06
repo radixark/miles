@@ -185,7 +185,7 @@ def make_cell_summaries(*cell_ids: str, suspended: bool = False) -> dict[str, Ce
     }
 
 
-class MockRayTrainCell:
+class MockTrainerCell:
     def __init__(
         self,
         *,
@@ -215,10 +215,10 @@ class MockRayTrainCell:
         )
 
 
-def make_mock_group(cells: list[MockRayTrainCell], *, spec_name: str = "trainer-actor") -> object:
-    from miles.ray.train.group import RayTrainGroup
+def make_mock_controller(cells: list[MockTrainerCell], *, spec_name: str = "trainer-actor") -> object:
+    from miles.ray.train.group import TrainerController
 
-    group = object.__new__(RayTrainGroup)
+    group = object.__new__(TrainerController)
     for cell_index, cell in enumerate(cells):
         cell.cell_index = cell_index
         cell.cell_id = f"{spec_name}-{cell_index}"

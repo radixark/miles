@@ -14,10 +14,10 @@ from miles.utils.test_utils.fault_injector import FailureMode
 from .conftest import (
     MockHandler,
     MockInferenceController,
-    MockRayTrainCell,
+    MockTrainerCell,
     MockWorkerManager,
     make_cell_summaries,
-    make_mock_group,
+    make_mock_controller,
 )
 
 
@@ -235,7 +235,7 @@ class TestStartApiServerRegistration:
         *,
         ft_components: list[str],
         cell_ids: list[str],
-        actor_cells: list[MockRayTrainCell] | None = None,
+        actor_cells: list[MockTrainerCell] | None = None,
     ) -> _CellRegistry:
         manager = MockWorkerManager(make_cell_summaries(*cell_ids))
         registries: list[_CellRegistry] = []
@@ -245,7 +245,7 @@ class TestStartApiServerRegistration:
 
         server.start_api_server(
             args=SimpleNamespace(),
-            actor_model=make_mock_group(actor_cells if actor_cells is not None else []),
+            actor_model=make_mock_controller(actor_cells if actor_cells is not None else []),
             inference_controller=MockInferenceController(
                 {cell_id: compute_pending_rollout_cell_status() for cell_id in cell_ids}
             ),
@@ -286,7 +286,7 @@ class TestStartApiServerRegistration:
             monkeypatch,
             ft_components=["train"],
             cell_ids=["trainer-actor-0"],
-            actor_cells=[MockRayTrainCell(phase="Running")],
+            actor_cells=[MockTrainerCell(phase="Running")],
         )
 
         cells = await registry.list_cells()
