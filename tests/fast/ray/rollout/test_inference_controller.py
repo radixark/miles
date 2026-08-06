@@ -22,7 +22,7 @@ from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
-from miles.utils.workers.worker_spec import WorkerMetaContext
+from miles.utils.workers.worker_spec import HostAndPort, WorkerMetaContext
 
 
 def _make_cell_info(
@@ -334,7 +334,11 @@ def _patch_init(
     async def _fake_create_rollout_servers(args: Namespace, **kwargs: Any) -> dict[str, _RecordingServer]:
         return servers
 
+    async def _fake_resolve_router_addrs(args: Namespace, **kwargs: Any) -> dict[str, HostAndPort]:
+        return {name: HostAndPort(host="10.0.0.1", port=30000) for name in servers}
+
     monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
+    monkeypatch.setattr(inference_controller_module, "resolve_router_addrs", _fake_resolve_router_addrs)
     monkeypatch.setattr(
         inference_controller_module,
         "RayWorkerProvider",

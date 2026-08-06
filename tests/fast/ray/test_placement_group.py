@@ -16,6 +16,7 @@ pytestmark = pytest.mark.asyncio
 def _make_args(**overrides) -> Namespace:
     defaults = dict(
         pin_rollout_manager_to_head=False,
+        debug_train_only=False,
         num_rollout=None,
         num_epoch=2,
         check_weight_update_equal=False,
@@ -51,8 +52,6 @@ def fake_components():
 
     def construct_controller(args):
         async def _init():
-            args.sglang_router_ip = "10.0.0.1"
-            args.sglang_router_port = 4321
             controller.eval_fleet = eval_fleet
 
         controller.init = AsyncMock(side_effect=_init)
@@ -60,13 +59,19 @@ def fake_components():
 
     controller_cls = MagicMock(name="InferenceController", side_effect=construct_controller)
 
+    async def fake_resolve_router_addrs(args):
+        args.sglang_router_ip = "10.0.0.1"
+        args.sglang_router_port = 4321
+
     executor_handle = MagicMock(name="rollout_executor")
     executor_handle.set_eval_fleet.remote = AsyncMock()
     executor_cls = _FakeExecutorClass(executor_handle)
 
     with patch("miles.ray.placement_group.InferenceController", controller_cls), patch(
         "miles.ray.placement_group.RolloutExecutor", executor_cls
-    ), patch("miles.ray.placement_group.ray.get", return_value=5):
+    ), patch("miles.ray.placement_group.resolve_router_addrs", fake_resolve_router_addrs), patch(
+        "miles.ray.placement_group.ray.get", return_value=5
+    ):
         yield Namespace(
             controller=controller,
             executor_cls=executor_cls,
