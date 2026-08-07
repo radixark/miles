@@ -301,7 +301,6 @@ class SessionRegistry:
         *,
         tito_tokenizer: TITOTokenizer,
         message_matcher: SessionMessageMatcher | None = None,
-        message_matcher_selector: str = "strict",
     ):
         self.sessions: dict[str, LinearTrajectory] = {}
         self.args = args
@@ -313,7 +312,6 @@ class SessionRegistry:
         self.message_matcher: SessionMessageMatcher = (
             message_matcher if message_matcher is not None else message_matches
         )
-        self.message_matcher_selector = message_matcher_selector
 
     def create_session(self) -> str:
         session_id = uuid.uuid4().hex

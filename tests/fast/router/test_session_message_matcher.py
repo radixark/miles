@@ -219,19 +219,16 @@ class TestRegistryOwnership:
         registry = SessionRegistry(SimpleNamespace(), tokenizer=None, tito_tokenizer=_RecordingTITOTokenizer())
 
         assert registry.message_matcher is message_matches
-        assert registry.message_matcher_selector == "strict"
 
-    def test_holds_the_injected_matcher_and_selector(self):
+    def test_holds_the_injected_matcher(self):
         registry = SessionRegistry(
             SimpleNamespace(),
             tokenizer=None,
             tito_tokenizer=_RecordingTITOTokenizer(),
             message_matcher=loose_tool_call_message_matches,
-            message_matcher_selector="loose_tool_call",
         )
 
         assert registry.message_matcher is loose_tool_call_message_matches
-        assert registry.message_matcher_selector == "loose_tool_call"
 
 
 class TestValidatedMessageMatcher:

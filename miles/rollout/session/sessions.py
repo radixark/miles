@@ -73,22 +73,10 @@ def setup_session_routes(app, backend, args):
         from miles.rollout.session.v2.core import SessionCoreV2
         from miles.rollout.session.v2.session_state import SessionRegistryV2
 
-        registry = SessionRegistryV2(
-            args,
-            tokenizer,
-            tito_tokenizer=tito_tokenizer,
-            message_matcher=message_matcher,
-            message_matcher_selector=message_matcher_selector,
-        )
+        registry = SessionRegistryV2(args, tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
         core = SessionCoreV2(backend, registry, args, session_server_instance_id)
     else:
-        registry = SessionRegistry(
-            args,
-            tokenizer,
-            tito_tokenizer=tito_tokenizer,
-            message_matcher=message_matcher,
-            message_matcher_selector=message_matcher_selector,
-        )
+        registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
         core = SessionCore(backend, registry, args, session_server_instance_id)
 
     @app.exception_handler(SessionError)
