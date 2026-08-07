@@ -320,6 +320,13 @@ class DistBucketedWeightUpdateMixin:
     def _finalize_and_resume_engines(self) -> None:
         """Close the weight-update session and resume rollout engines."""
         if dist.get_rank() == 0:
+            # unify update weight version here to cover both full param and lora update
+            ray.get(
+                [
+                    engine.update_weight_version.remote(weight_version=str(self.weight_version))
+                    for engine in self.rollout_engines
+                ]
+            )
             end_weight_update(self.rollout_engines)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
 

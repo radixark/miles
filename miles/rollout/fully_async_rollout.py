@@ -18,9 +18,6 @@ rollout engines, pausing producer submissions for the duration of the
 
 import asyncio
 import logging
-import time
-
-import httpx
 
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
@@ -28,6 +25,7 @@ from miles.rollout.base_types import (
     RolloutFnEvalOutput,
     RolloutFnInput,
     RolloutFnOutput,
+    RolloutFnTrainInput,
     RolloutFnTrainOutput,
 )
 from miles.rollout.fully_async_data_buffer import (
@@ -41,42 +39,12 @@ from miles.rollout.fully_async_data_buffer import (
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.rollout.submission_scheduler import make_submission_scheduler
-from miles.utils.http_utils import get
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
 NO_PROGRESS_WARN_SECS = 30.0
-WEIGHT_VERSION_QUERY_TIMEOUT_SECS = 2.0
-
-
-class _CachedWeightVersion:
-    """Throttled query of the current engine weight version via the router's /model_info."""
-
-    def __init__(self, ttl: float = 1.0):
-        self._ttl = ttl
-        self._value: int | None = None
-        self._last_query = float("-inf")
-
-    async def get(self, args) -> int | None:
-        # Throttles failures too: the drain queries once per group, and an unreachable
-        # router would otherwise cost every one of them the full timeout.
-        if (time.monotonic() - self._last_query) < self._ttl:
-            return self._value
-        url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/model_info"
-        try:
-            data = await asyncio.wait_for(get(url), timeout=WEIGHT_VERSION_QUERY_TIMEOUT_SECS)
-            version = data["weight_version"]
-            # "default" until the first stamped weight update
-            self._value = int(version) if str(version).isdigit() else None
-        except (httpx.HTTPError, asyncio.TimeoutError) as e:
-            # Transient router unavailability; the staleness filter is best-effort.
-            logger.debug(f"Failed to query engine weight version: {e}")
-        finally:
-            # Stamped on completion, so a router slower than the TTL still gets throttled.
-            self._last_query = time.monotonic()
-        return self._value
 
 
 class FullyAsyncRolloutFn:
@@ -100,7 +68,6 @@ class FullyAsyncRolloutFn:
             self._recycle if input.args.async_unused_samples_handler == "retry" else (lambda prompt_group: None)
         )
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
-        self._weight_version = _CachedWeightVersion()
         self._worker: asyncio.Task | None = None
         self._eval_prompt_dataset_cache: dict = {}
         self._producer_resumed = asyncio.Event()
@@ -117,7 +84,7 @@ class FullyAsyncRolloutFn:
             )
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
-        return await self._drain(input.rollout_id)
+        return await self._drain(input)
 
     async def _call_eval(self, input: RolloutFnEvalInput) -> RolloutFnOutput:
         if input.generate_state is not None:
@@ -190,7 +157,7 @@ class FullyAsyncRolloutFn:
             if not queue_get.done():
                 queue_get.cancel()
 
-    async def _drain(self, rollout_id: int) -> RolloutFnTrainOutput:
+    async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args
         assert args.rollout_global_dataset
 
@@ -199,7 +166,7 @@ class FullyAsyncRolloutFn:
         do_print = True
 
         while len(data) < target_data_size:
-            entry = await self._next_group(await self._weight_version.get(args))
+            entry = await self._next_group(input.weight_version)
             assert len(entry.group) == args.n_samples_per_prompt
 
             if do_print:
