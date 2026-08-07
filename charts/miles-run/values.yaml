@@ -46,6 +46,10 @@ run:
         cpu: "2"
         memory: 16Gi
       limits: {}
+  colocate:
+    enabled: false
+    enginePool: ""
+    trainerPool: ""
 
 adhoc:
   enabled: false

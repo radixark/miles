@@ -52,7 +52,7 @@ def launch_argv(monkeypatch: pytest.MonkeyPatch, *, train_args: str) -> list[str
     monkeypatch.setitem(sys.modules, "miles.ray.specs.entrypoint", entrypoint)
 
     arguments = ModuleType("miles.utils.arguments")
-    arguments.parse_args_from_argv = lambda argv: SimpleNamespace(argv=argv)
+    arguments.parse_args_from_argv = lambda argv: SimpleNamespace(colocate=False, argv=argv)
     monkeypatch.setitem(sys.modules, "miles.utils.arguments", arguments)
 
     recorded: list[list[str]] = []

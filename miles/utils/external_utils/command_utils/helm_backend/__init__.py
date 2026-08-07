@@ -59,6 +59,7 @@ class KubernetesCommandBackend(BaseCommandBackend):
             infra_values_files=list(config.infra_values),
             repo_base_dir=repo_base_dir,
             train_argv=train_argv,
+            colocate=bool(args.colocate),
             stage_to_local=config.stage_to_local,
             node_local_root=config.node_local_root,
             force=config.force,

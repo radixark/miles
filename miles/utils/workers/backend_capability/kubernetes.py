@@ -48,6 +48,7 @@ def compute_kubernetes_backend_capability(
     kubernetes_client_factory: Callable[[], Any],
     num_gpus_per_node: int,
     label_keys: CellLabelKeys | None = None,
+    colocated_with: Callable[[str], list[str]] | None = None,
 ) -> KubernetesBackendCapability:
     run = kubernetes_run(
         specs=specs,
@@ -62,6 +63,8 @@ def compute_kubernetes_backend_capability(
         run=run,
         static_provider=static_worker_provider(specs=specs, release=release),
         cell_operations=KubernetesCellOperations(
-            provider=KubernetesWorkerProvider(run=run, pool_ids=sorted(run.pools)), namespace=namespace
+            provider=KubernetesWorkerProvider(run=run, pool_ids=sorted(run.pools)),
+            namespace=namespace,
+            colocated_with=colocated_with,
         ),
     )

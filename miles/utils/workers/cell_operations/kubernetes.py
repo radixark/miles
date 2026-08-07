@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.worker_provider.base import CellInfo, StopWatchFn
@@ -8,9 +10,16 @@ from miles.utils.workers.worker_provider.kubernetes.provider import KubernetesWo
 
 
 class KubernetesCellOperations(BaseCellOperations):
-    def __init__(self, *, provider: KubernetesWorkerProvider, namespace: str) -> None:
+    def __init__(
+        self,
+        *,
+        provider: KubernetesWorkerProvider,
+        namespace: str,
+        colocated_with: Callable[[str], list[str]] | None = None,
+    ) -> None:
         self._provider = provider
         self._namespace = namespace
+        self._colocated_with = colocated_with
         self._stop_watch: StopWatchFn | None = None
 
     async def cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
@@ -26,6 +35,8 @@ class KubernetesCellOperations(BaseCellOperations):
         pods = self._provider.pod_names(cell_id)
         assert pods, f"cannot suspend {cell_id}, which has no pods"
 
+        if self._colocated_with is not None:
+            pods = pods + self._colocated_with(cell_id)
         await delete_pods(namespace=self._namespace, pod_names=pods)
 
     async def resume(self, *, cell_id: str) -> None:

@@ -26,6 +26,7 @@ This page has two passes.
 | `--rollout-num-gpus` | derived | GPUs for SGLang rollout (ignored when `--colocate`). |
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
+| `--colocate-engine-pool` | derived | Engine spec sharing the trainer's GPUs, e.g. `inference-engine-0-1`; needed only when several pools could be it. |
 | `--run-uuid` | generated | Machine-readable id for this launch; 16 lowercase hex characters. |
 
 See [Training Script Walkthrough: Colocation](/user-guide/training-script-walkthrough#colocation-share-gpus-or-dont)
@@ -148,6 +149,7 @@ Sections mirror the launch-script argument groups.
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
 | `--rollout-num-gpus-per-engine` | int | `1` | TP size of each SGLang engine. |
 | `--colocate` | flag | off | Share GPUs between actor and rollout. Implicitly enables `--offload-train`, `--offload-rollout`, and defaults `--sglang-cuda-graph-backend-prefill=disabled`. |
+| `--colocate-engine-pool` | str | derived | Name of the engine spec that shares the trainer's GPUs, e.g. `inference-engine-0-1`. Defaults to the decode pool of the weight-updated model, and is only needed when several pools could be the colocated one. |
 
 ### Model and checkpoints
 

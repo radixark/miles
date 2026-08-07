@@ -27,7 +27,11 @@
 {{- end }}
 
 {{- define "miles-run.podDefaults" -}}
-{{- $context := . -}}
+{{- include "miles-run.podDefaultsFor" (dict "context" . "gated" false) }}
+{{- end }}
+
+{{- define "miles-run.podDefaultsFor" -}}
+{{- $context := .context -}}
 {{- $scheduling := $context.Values.infra.scheduling | default dict -}}
 enableServiceLinks: false
 {{- with include "miles-common.imagePullSecrets" $context }}
@@ -41,9 +45,11 @@ nodeSelector:
 tolerations:
   {{- toYaml . | nindent 2 }}
 {{- end }}
+{{- if not .gated }}
 {{- with $scheduling.affinity }}
 affinity:
   {{- toYaml . | nindent 2 }}
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -98,4 +104,24 @@ imagePullPolicy: {{ .Values.infra.image.pullPolicy | quote }}
 volumeMounts:
   {{- . | nindent 2 }}
 {{- end }}
+{{- end }}
+
+{{- define "miles-run.colocateEnv" -}}
+{{- $colocate := .Values.run.colocate | default dict -}}
+{{- $env := dict -}}
+{{- if $colocate.enabled }}
+{{- $engine := dict }}
+{{- range .Values.run.inferenceEngines }}{{- if eq .name $colocate.enginePool }}{{- $engine = . }}{{- end }}{{- end }}
+{{- $trainer := dict }}
+{{- range .Values.run.trainers }}{{- if eq .name $colocate.trainerPool }}{{- $trainer = . }}{{- end }}{{- end }}
+{{- $env = dict
+      "MILES_K8S_COLOCATE_ENGINE_COMPONENT" (include "miles-run.componentName" (dict "context" . "component" $colocate.enginePool))
+      "MILES_K8S_COLOCATE_TRAINER_COMPONENT" (include "miles-run.componentName" (dict "context" . "component" $colocate.trainerPool))
+      "MILES_K8S_COLOCATE_TRAINER_POOL" $colocate.trainerPool
+      "MILES_K8S_COLOCATE_ENGINE_CELLS" (default 1 $engine.replicas | toString)
+      "MILES_K8S_COLOCATE_TRAINER_CELLS" (default 1 $trainer.replicas | toString)
+      "MILES_K8S_COLOCATE_PODS_PER_ENGINE_CELL" (default 1 $engine.size | toString)
+      "MILES_K8S_COLOCATE_PODS_PER_TRAINER_CELL" (default 1 $trainer.size | toString) }}
+{{- end }}
+{{- toYaml $env }}
 {{- end }}

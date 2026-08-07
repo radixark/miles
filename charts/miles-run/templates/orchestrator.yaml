@@ -52,7 +52,7 @@ spec:
             - {{ . | quote }}
             {{- end }}
           {{- $identity := dict "MILES_K8S_NAMESPACE" .Release.Namespace "MILES_K8S_RELEASE" .Release.Name }}
-          {{- $orchestratorEnv := dict "env" $identity }}
+          {{- $orchestratorEnv := dict "env" (merge $identity (include "miles-run.colocateEnv" . | fromYaml)) }}
           {{- with include "miles-run.env" (dict "context" . "entry" $orchestratorEnv) }}
           {{- . | nindent 10 }}
           {{- end }}

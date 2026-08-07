@@ -62,12 +62,12 @@ def read_cell_ordinal(environ: Mapping[str, str]) -> int:
         return 0
 
     leader_host = leader_address.split(".", maxsplit=1)[0]
-    _, separator, group_index = leader_host.rpartition("-")
-    assert separator and group_index.isdigit(), (
-        f"{LEADER_ADDRESS_ENV_VAR} is {leader_address!r}, which does not end in the group index the pool_id "
+    _, separator, cell_ordinal = leader_host.rpartition("-")
+    assert separator and cell_ordinal.isdigit(), (
+        f"{LEADER_ADDRESS_ENV_VAR} is {leader_address!r}, which does not end in the ordinal the pool_id "
         f"leader's hostname carries, so this pod cannot tell which cell it belongs to"
     )
-    return int(group_index)
+    return int(cell_ordinal)
 
 
 def _index_from(environ: Mapping[str, str], name: str) -> int:

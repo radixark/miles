@@ -36,10 +36,10 @@ UPPER_LAYER_NAMES = (
     "KubernetesBackendCapability",
     "RayBackendCapability",
     "RayWorkerManager",
-    "SharedKubernetesWorkerProvider",
     "compute_ctor_kwargs",
     "compute_specs",
     "create_backend_capability",
+    "get_backend_capability",
     "create_worker_backend_capability",
     "compute_kubernetes_backend_capability",
 )
@@ -56,6 +56,9 @@ UPPER_LAYER_EXEMPTIONS = {
     "miles/utils/workers/reconcile/k8s_api.py": "the kubernetes client the observing provider is written against",
     "miles/utils/arguments.py": "declares the --cluster-backend flag the composition roots read",
     "miles/utils/tracking_utils/base.py": "the prometheus collector is a ray actor and has no kubernetes form",
+    "miles/backends/sglang_utils/sglang_config.py": (
+        "reads the colocated pool_id a kubernetes run declares, and falls back to the gpu ranges ray packs by"
+    ),
 }
 
 

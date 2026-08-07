@@ -13,6 +13,7 @@ from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import ClusterBackend
 from miles.utils.workers.worker_provider.kubernetes.client import create_kubernetes_client
 from miles.utils.workers.worker_provider.kubernetes.helm.env import (
+    current_colocated_with,
     current_label_keys,
     current_namespace,
     current_release,
@@ -42,6 +43,7 @@ def _kubernetes_backend_capability_from_args(args) -> KubernetesBackendCapabilit
         release=current_release(),
         kubernetes_client_factory=create_kubernetes_client,
         num_gpus_per_node=args.num_gpus_per_node,
+        colocated_with=current_colocated_with(),
         label_keys=current_label_keys(),
     )
 

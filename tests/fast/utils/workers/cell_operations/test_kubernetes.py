@@ -113,5 +113,36 @@ class TestInjectFault:
             )
 
 
+class TestColocateFallback:
+    def test_takes_the_paired_engine_pods_down_with_the_cell(self):
+        """A healed trainer cell may return on different nodes, and a scheduled engine cannot follow it."""
+        deleted = []
+        operations = KubernetesCellOperations(
+            provider=FakeProvider({"trainer-actor-0": _info(workers=("t0",))}),
+            delete_pods=lambda names: _record(deleted, names),
+            colocated_with=lambda cell_id: ["engine-0-0"],
+        )
+
+        asyncio.run(operations.suspend(cell_id="trainer-actor-0"))
+
+        assert deleted == [["t0", "engine-0-0"]]
+
+    def test_deletes_only_the_cell_when_nothing_is_colocated(self):
+        """A disaggregated run has no engines pinned to trainer nodes, so none should be disturbed."""
+        deleted = []
+        operations = KubernetesCellOperations(
+            provider=FakeProvider({"trainer-actor-0": _info(workers=("t0",))}),
+            delete_pods=lambda names: _record(deleted, names),
+        )
+
+        asyncio.run(operations.suspend(cell_id="trainer-actor-0"))
+
+        assert deleted == [["t0"]]
+
+
+async def _record(deleted, names):
+    deleted.append(list(names))
+
+
 async def _stop_watching() -> None:
     return None

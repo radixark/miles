@@ -46,6 +46,10 @@ run:
     rpcPort: 50051
     metricsPort: 50052
     resources: {requests: {cpu: "2", memory: 16Gi}, limits: {}}
+  colocate:
+    enabled: false
+    enginePool: ""
+    trainerPool: ""
 
 adhoc:
   enabled: false
@@ -92,6 +96,7 @@ run:
   env: {PYTHONUNBUFFERED: "1"}
   inferenceEngines: [{name: engine, replicas: 4, size: 2, command: [...], resources: {limits: {nvidia.com/gpu: 8}}, poolId: engine, meta: {...}}]
   trainers: [{name: trainer-actor, replicas: 2, size: 1, command: [...]}]
+  colocate: {enabled: false}
   mooncake: {enabled: true, rpcPort: 50051}
 ```
 
@@ -191,6 +196,53 @@ constructor arguments the driver would have passed under Ray.
   from a single pod template.
 - `miles.radixark.io/meta-<name>` annotations override them, which is how a platform states a
   fact miles cannot derive. `gpu_ids` is the one the bundled chart writes.
+
+### Colocated runs
+
+A colocated run puts a trainer rank and the engine rank that reads its weights on the same
+gpu, so the weight update hands over a CUDA IPC handle instead of copying over the network.
+
+A platform doing this its own way must provide:
+
+- **Same node, same gpus.** Every engine rank sits on a gpu a trainer rank holds.
+- **`hostIPC: true`** on both pods: a CUDA IPC handle's reference counter lives in shared
+  memory, so the two processes must share an IPC namespace.
+- **Gpu accounting on one side only.** The trainer requests the node's gpus; the engine
+  requests none and sees them through `NVIDIA_VISIBLE_DEVICES=all`, the way dcgm-exporter
+  does. Two claims on one gpu would never both schedule.
+- **Which gpus a worker holds**, as a `miles.radixark.io/meta-gpu_ids` annotation: a pod
+  cannot see which physical cards it was given from inside its own numbering.
+
+`run.colocate.enginePool` is the pool the run declares colocated, never one guessed from
+pool sizes: with prefill/decode disaggregation several engine pools share the trainer's
+gpus, and only the declared one is paired cell for cell. The launcher takes it from the
+engine spec `--colocate-engine-pool` names, which defaults to the decode pool of the
+weight-updated model.
+
+Trainer gpus that seat no engine are legal: with prefill/decode disaggregation the prefill
+pool runs on its own nodes, so the colocated pool covers only part of the trainer. These
+shapes are refused outright rather than approximated:
+
+- An engine cell wider than its trainer cell.
+- An engine cell that straddles two trainer cells.
+- A cell smaller than a node.
+- More engine cells than the trainer pool can seat.
+
+The bundled pairing controller is the replaceable half of this:
+
+- Engine pods are born with a `miles.radixark.io/colocate-pairing` scheduling gate and no
+  affinity.
+- A single-replica controller watches both pools and maps each gated engine pod to the
+  trainer pod it must join.
+- Once that trainer has a `spec.nodeName`, it patches the engine once: narrow
+  `spec.nodeSelector` to `kubernetes.io/hostname: <node>` and drop the gate.
+- Reconciliation is level-driven and idempotent, so a crash mid-flight is safe.
+- It needs pod read and patch rights in the run's namespace, and Kubernetes 1.27 or later.
+- A gate only holds a pod before it is scheduled, so drift is handled one level up: when a
+  trainer cell is recreated, ft deletes the engine pods paired with it and the replacements
+  are born gated again.
+- On a cluster where `kubernetes.io/hostname` differs from `spec.nodeName`, the platform must
+  do the placement itself. That is why the controller sits on the replaceable side.
 
 ### Launch script
 

@@ -6,6 +6,7 @@ from typing import Any
 
 from miles.utils.external_utils.command_utils.helm_backend import naming, staging
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers import colocate_matching
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.worker_provider.kubernetes.helm.labels import GPU_IDS_META
 from miles.utils.workers.worker_spec import (
@@ -36,6 +37,7 @@ class RunLayout(FrozenStrictBaseModel):
     worker_argv: list[str]
     num_gpus_per_node: int
     env: dict[str, str] = {}
+    colocate: bool = False
     uses_mooncake: bool = False
     mooncake_port: int = 0
     stage_to_local: tuple[str, ...] = ()
@@ -59,6 +61,8 @@ def build_values(specs: list[BaseWorkerSpec], layout: RunLayout) -> dict[str, An
         run["mooncake"] = _mooncake_section(layout)
     for spec in specs:
         run[section_of(spec)].append(_build_entry(spec, layout=layout, addresses=addresses))
+    if layout.colocate:
+        run["colocate"] = colocate_section(specs, layout=layout)
     return {"run": run}
 
 
@@ -71,6 +75,48 @@ def _mooncake_section(layout: RunLayout) -> dict[str, Any]:
     if layout.mooncake_port:
         section["rpcPort"] = layout.mooncake_port
     return section
+
+
+def colocate_section(specs: list[BaseWorkerSpec], *, layout: RunLayout) -> dict[str, Any]:
+    engines = [spec for spec in specs if section_of(spec) == "inferenceEngines"]
+    trainers = [spec for spec in specs if section_of(spec) == "trainers"]
+    assert len(trainers) == 1, (
+        f"colocate pins engines onto one trainer pool_id's nodes, but this run has {len(trainers)} trainer "
+        f"pool_ids; which one an engine belongs beside would be undefined"
+    )
+
+    trainer = trainers[0]
+    engine = _colocated_engine(engines)
+    colocate_matching.assert_colocate_supported(
+        layout=pairing_layout(engine=engine, trainer=trainer, num_gpus_per_node=layout.num_gpus_per_node),
+        gpus_per_engine_pod=min(gpus_per_cell_of(engine), layout.num_gpus_per_node),
+        gpus_per_trainer_pod=min(gpus_per_cell_of(trainer), layout.num_gpus_per_node),
+        gpus_per_node=layout.num_gpus_per_node,
+    )
+    return {"enabled": True, "enginePool": engine.name, "trainerPool": trainer.name}
+
+
+def _colocated_engine(engines: list[BaseWorkerSpec]) -> BaseWorkerSpec:
+    declared = [engine for engine in engines if engine.scheduling.colocate_with_trainer]
+    assert len(declared) == 1, (
+        f"colocate pins one engine pool_id onto the trainer pool_id's nodes, but "
+        f"{[engine.name for engine in declared]} of {[engine.name for engine in engines]} say they are that "
+        f"pool_id; name it with --colocate-engine-pool, "
+        f"because with prefill/decode disaggregation several pool_ids share the trainer's gpus and only the "
+        f"named one is paired cell for cell"
+    )
+    return declared[0]
+
+
+def pairing_layout(
+    *, engine: BaseWorkerSpec, trainer: BaseWorkerSpec, num_gpus_per_node: int
+) -> colocate_matching.PairingLayout:
+    return colocate_matching.PairingLayout(
+        engine_cells=engine.scheduling.num_cells,
+        trainer_cells=trainer.scheduling.num_cells,
+        pods_per_engine_cell=pods_per_cell_of(engine, num_gpus_per_node),
+        pods_per_trainer_cell=pods_per_cell_of(trainer, num_gpus_per_node),
+    )
 
 
 def section_of(spec: BaseWorkerSpec) -> str:

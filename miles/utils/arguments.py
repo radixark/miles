@@ -133,7 +133,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Number of GPUs for inference. Note that when using --colocate, "
                     "i.e. the training and the inference engines are on the same gpus, this param will be ignored and will be set as "
-                    "actor_num_gpus_per_node * actor_num_nodes."
+                    "actor_num_gpus_per_node * actor_num_nodes, unless --sglang-config or --prefill-num-servers "
+                    "splits the rollout into pool_ids: only the colocated pool_id then shares the trainer's gpus, "
+                    "and the rest get their own nodes."
                 ),
             )
             parser.add_argument(
@@ -158,6 +160,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Whether to colocate the inference engines and the actor. "
                     "Turning this on will also set --offload to true."
+                ),
+            )
+            parser.add_argument(
+                "--colocate-engine-pool",
+                type=str,
+                default=None,
+                help=(
+                    "Name of the inference engine spec that shares the trainer's gpus, e.g. "
+                    "inference-engine-0-1. Only needed when several engine pool_ids could be the colocated "
+                    "one, e.g. when two weight-updated models each have a regular server group. With PD "
+                    "disaggregation the decode pool_id is the colocated one unless this names another."
                 ),
             )
             parser.add_argument(
@@ -2986,6 +2999,7 @@ def miles_validate_args(args):
         )
 
     if args.colocate:
+        actor_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
         if args.offload_train is None:
             args.offload_train = True
         if args.offload_rollout is None:
@@ -3001,12 +3015,15 @@ def miles_validate_args(args):
                 f"Warning: colocate mode with --sglang-cuda-graph-backend-prefill="
                 f"{args.sglang_cuda_graph_backend_prefill} may trigger NVLS OOM."
             )
-        if args.rollout_num_gpus != args.actor_num_gpus_per_node * args.actor_num_nodes:
+        declares_own_rollout_pools = (
+            getattr(args, "sglang_config", None) is not None or getattr(args, "prefill_num_servers", None) is not None
+        )
+        if not declares_own_rollout_pools and args.rollout_num_gpus != actor_num_gpus:
             logger.info(
                 f"rollout_num_gpus {args.rollout_num_gpus} != actor_num_gpus_per_node {args.actor_num_gpus_per_node} "
                 f"* actor_num_nodes {args.actor_num_nodes}, overriding rollout_num_gpus to match actor_num_gpus_per_node * actor_num_nodes."
             )
-            args.rollout_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
+            args.rollout_num_gpus = actor_num_gpus
 
     if args.use_critic and not args.debug_rollout_only:
         if args.offload_train is None:

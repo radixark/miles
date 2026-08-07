@@ -24,9 +24,9 @@ def static_worker_host(release: str, component: str, cell_index: int = 0) -> str
     return f"{name}-{cell_index}.{name}"
 
 
-def cell_leader_host(release: str, component: str, group_index: int) -> str:
+def cell_leader_host(release: str, component: str, cell_ordinal: int) -> str:
     name = component_name(release, component)
-    return f"{name}-{group_index}.{name}"
+    return f"{name}-{cell_ordinal}.{name}"
 
 
 def _trunc(value: str, count: int) -> str:
