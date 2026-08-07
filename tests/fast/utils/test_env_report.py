@@ -1,8 +1,10 @@
+import argparse
 import json
 import os
 import subprocess
+import sys
+import types
 import uuid
-from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,7 +19,12 @@ from miles.utils.env_report import (
     _is_editable,
     _parse_pip_entry,
     collect_and_print_node_env_report,
+    collect_key_versions,
     decode_env_report,
+    dump_args,
+    redact,
+    redact_argv,
+    redact_env_vars,
 )
 
 _SAMPLE_PIP_INSPECT = {
@@ -50,6 +57,10 @@ _SAMPLE_PIP_INSPECT = {
         },
     ],
 }
+
+
+def _args(**overrides) -> argparse.Namespace:
+    return argparse.Namespace(**{"env_report": "", **overrides})
 
 
 class TestParsePipEntry:
@@ -156,6 +167,205 @@ class TestDecodeEnvReport:
         assert decode_env_report("not json at all!!!") is None
 
 
+class TestRedact:
+    def test_same_secret_hashes_to_same_digest(self) -> None:
+        """Skew auditing needs to compare secrets across processes without revealing them."""
+        assert redact("hunter2") == redact("hunter2")
+        assert redact("hunter2") != redact("hunter3")
+        assert "hunter2" not in redact("hunter2")
+
+
+class TestRedactArgv:
+    def test_hides_the_value_of_a_secret_flag(self) -> None:
+        """A hashed wandb_key in args is pointless while the same key sits in argv verbatim."""
+        argv = redact_argv(["train.py", "--wandb-key", "s3cret", "--reward-key", "reward"])
+        assert "s3cret" not in argv
+        assert argv[:2] == ["train.py", "--wandb-key"]
+        assert argv[-2:] == ["--reward-key", "reward"]
+
+    def test_hides_the_value_of_an_inline_secret_flag(self) -> None:
+        argv = redact_argv(["train.py", "--wandb-key=s3cret"])
+        assert "s3cret" not in argv[1]
+        assert argv[1].startswith("--wandb-key=redacted-sha256:")
+
+    def test_keeps_an_argv_without_secrets_unchanged(self) -> None:
+        argv = ["train.py", "--reward-key", "reward", "--lr=1e-4"]
+        assert redact_argv(argv) == argv
+
+    def test_a_trailing_secret_flag_hides_nothing_that_follows(self) -> None:
+        assert redact_argv(["train.py", "--wandb-key"]) == ["train.py", "--wandb-key"]
+
+
+class TestRedactEnvVars:
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "WANDB_API_KEY",
+            "HF_TOKEN",
+            "MY_SECRET",
+            "DB_PASSWORD",
+            "PG_PASSWD",
+            "GCP_CREDENTIALS",
+            "hf_token",
+            "NEON_DATABASE_URL",
+        ],
+    )
+    def test_redacts_a_secret_named_variable(self, name: str) -> None:
+        """Every secret-ish name suffix is redacted, whatever its case."""
+        assert "s3cret" not in redact_env_vars({name: "s3cret"})[name]
+
+    @pytest.mark.parametrize(
+        "name", ["TOKENIZERS_PARALLELISM", "KEYRING_PATH", "SSH_KEY_FILE", "CUDA_VISIBLE_DEVICES"]
+    )
+    def test_keeps_a_variable_that_merely_contains_a_secret_word(self, name: str) -> None:
+        """Hashing every name containing 'key' would erase exactly the values an audit reads."""
+        assert redact_env_vars({name: "plain"})[name] == "plain"
+
+    def test_sorts_and_keeps_every_variable(self) -> None:
+        """The report dumps all env vars, so redaction must never drop one."""
+        redacted = redact_env_vars({"ZZZ": "z", "HF_TOKEN": "t", "RANK": "3"})
+        assert list(redacted.keys()) == ["HF_TOKEN", "RANK", "ZZZ"]
+        assert redacted["RANK"] == "3"
+
+
+class TestDumpArgs:
+    def test_keeps_serializable_values(self) -> None:
+        dump = dump_args(_args(lr=1e-4, tags=["a"], nested={"x": 1}, flag=True, missing=None))
+        assert dump.skipped_names == []
+        assert dump.values["lr"] == 1e-4
+        assert dump.values["tags"] == ["a"]
+        assert dump.values["nested"] == {"x": 1}
+        assert dump.values["missing"] is None
+
+    def test_skips_unserializable_values(self) -> None:
+        """A non-JSON arg is skipped by name instead of being coerced to a lossy string."""
+        dump = dump_args(_args(model=object(), lr=1.0))
+        assert dump.skipped_names == ["model"]
+        assert "model" not in dump.values
+        assert dump.values["lr"] == 1.0
+
+    def test_redacts_a_declared_secret_arg(self) -> None:
+        dump = dump_args(_args(wandb_key="abc"))
+        assert dump.values["wandb_key"].startswith("redacted-sha256:")
+
+    def test_keeps_an_unset_secret_arg_as_none(self) -> None:
+        """--wandb-key defaults to None, and hashing that would crash every process at startup."""
+        assert dump_args(_args(wandb_key=None)).values["wandb_key"] is None
+
+    def test_snapshots_nested_values_instead_of_referencing_them(self) -> None:
+        """The dump outlives the caller, which is free to keep mutating its own args."""
+        tags = ["a"]
+        dump = dump_args(_args(tags=tags))
+        tags.append("b")
+        assert dump.values["tags"] == ["a"]
+
+    def test_keeps_dataset_column_args_that_merely_end_in_key(self) -> None:
+        """--reward-key names a dataset column; hashing it would hide the run's actual configuration."""
+        dump = dump_args(_args(reward_key="reward", input_key="prompt"))
+        assert dump.values["reward_key"] == "reward"
+        assert dump.values["input_key"] == "prompt"
+
+    def test_dump_is_json_serializable(self) -> None:
+        dump = dump_args(_args(model=object(), lr=1.0))
+        assert json.loads(json.dumps(dump.model_dump()))["values"]["lr"] == 1.0
+
+
+class TestCollectKeyVersions:
+    def test_reports_python_and_known_packages(self) -> None:
+        versions = collect_key_versions(
+            [{"name": "torch", "version": "2.5.0"}, {"name": "SGLang", "version": "0.4.0"}]
+        )
+        assert versions["python"] == ".".join(str(part) for part in sys.version_info[:3])
+        assert versions["sglang"] == "0.4.0"
+        assert "platform" in versions
+
+    def test_ignores_unknown_packages(self) -> None:
+        versions = collect_key_versions([{"name": "numpy", "version": "1.26.0"}])
+        assert "numpy" not in versions
+
+    def test_reports_torch_cuda_when_torch_is_imported(self) -> None:
+        torch = types.SimpleNamespace(__version__="2.5.0", version=types.SimpleNamespace(cuda="12.4"))
+        with patch.dict(sys.modules, {"torch": torch}):
+            versions = collect_key_versions([])
+
+        assert versions["torch"] == "2.5.0"
+        assert versions["torch_cuda"] == "12.4"
+
+    def test_reports_an_empty_cuda_version_for_a_cpu_torch(self) -> None:
+        torch = types.SimpleNamespace(__version__="2.5.0", version=types.SimpleNamespace(cuda=None))
+        with patch.dict(sys.modules, {"torch": torch}):
+            assert collect_key_versions([])["torch_cuda"] == ""
+
+    def test_reports_nothing_about_an_unimported_torch(self) -> None:
+        """torch is read from sys.modules, so an unimported torch costs nothing and reports nothing."""
+        with patch.dict(sys.modules, {"torch": None}):
+            assert "torch_cuda" not in collect_key_versions([])
+
+
+class TestCollectAndPrintNodeEnvReport:
+    def _mock_pip_inspect(self) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            args=["pip", "inspect"],
+            returncode=0,
+            stdout=json.dumps(_SAMPLE_PIP_INSPECT),
+            stderr="",
+        )
+
+    def _collect(self, **overrides) -> NodeEnvReport:
+        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
+            return collect_and_print_node_env_report(role="training", rank=0, args=_args(**overrides))
+
+    def test_returns_structured_report(self) -> None:
+        report = self._collect(env_report='{"flavor": "test"}')
+
+        assert isinstance(report, NodeEnvReport)
+        assert report.role == "training"
+        assert report.rank == 0
+        assert report.launcher_env_report == {"flavor": "test"}
+        assert len(report.editable_packages) == 2
+        assert len(report.full_pip_list) == 4
+
+    def test_records_process_identity_context(self) -> None:
+        """The audit needs to know which host and command line produced this report."""
+        report = self._collect(lr=1.0)
+        assert report.hostname
+        assert report.argv == sys.argv
+        assert report.args.values["lr"] == 1.0
+
+    def test_records_redacted_environment(self) -> None:
+        with patch.dict(os.environ, {"MILES_TEST_ENV_REPORT_TOKEN": "hunter2", "MILES_TEST_ENV_REPORT_RANK": "7"}):
+            report = self._collect()
+
+        assert report.env_vars["MILES_TEST_ENV_REPORT_RANK"] == "7"
+        assert "hunter2" not in report.env_vars["MILES_TEST_ENV_REPORT_TOKEN"]
+
+    def test_records_key_versions(self) -> None:
+        report = self._collect()
+        assert report.key_versions["sglang"] == "0.4.0"
+
+    def test_prints_single_line_json(self, capsys) -> None:
+        self._collect(env_report="")
+
+        captured = capsys.readouterr()
+        lines = [line for line in captured.out.splitlines() if line.startswith(ENV_REPORT_PREFIX)]
+        assert len(lines) == 1
+        parsed = json.loads(lines[0].removeprefix(ENV_REPORT_PREFIX))
+        assert parsed["role"] == "training"
+        assert parsed["rank"] == 0
+
+    def test_empty_partial_env_report(self) -> None:
+        assert self._collect(env_report="").launcher_env_report is None
+
+    def test_invalid_json_partial_env_report(self) -> None:
+        assert self._collect(env_report="not json").launcher_env_report is None
+
+    def test_report_serializable(self) -> None:
+        report = self._collect(env_report='{"x": 1}', model=object())
+        parsed = json.loads(report.model_dump_json())
+        assert parsed["editable_packages"][0]["name"] == "miles"
+        assert parsed["args"]["skipped_names"] == ["model"]
+
+
 class TestCollectGitInfo:
     def test_collects_commit_and_diff(self, tmp_path) -> None:
         subprocess.run(["git", "init", str(tmp_path)], capture_output=True)
@@ -187,92 +397,6 @@ class TestCollectGitInfo:
 
     def test_not_a_git_repo_returns_none(self, tmp_path) -> None:
         assert _collect_git_info(package_name="x", location=str(tmp_path)) is None
-
-
-class TestCollectAndPrintNodeEnvReport:
-    def _mock_pip_inspect(self) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(
-            args=["pip", "inspect"],
-            returncode=0,
-            stdout=json.dumps(_SAMPLE_PIP_INSPECT),
-            stderr="",
-        )
-
-    def test_returns_structured_report(self) -> None:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
-            report = collect_and_print_node_env_report(
-                role="training",
-                rank=0,
-                partial_env_report='{"flavor": "test"}',
-            )
-
-        assert isinstance(report, NodeEnvReport)
-        assert report.role == "training"
-        assert report.rank == 0
-        assert report.launcher_env_report == {"flavor": "test"}
-        assert len(report.editable_packages) == 2
-        assert len(report.full_pip_list) == 4
-
-    def test_prints_single_line_json(self, capsys) -> None:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
-            collect_and_print_node_env_report(
-                role="rollout",
-                rank=3,
-                partial_env_report="",
-            )
-
-        captured = capsys.readouterr()
-        lines = [line for line in captured.out.splitlines() if line.startswith(ENV_REPORT_PREFIX)]
-        assert len(lines) == 1
-        json_str = lines[0].removeprefix(ENV_REPORT_PREFIX)
-        parsed = json.loads(json_str)
-        assert parsed["role"] == "rollout"
-        assert parsed["rank"] == 3
-
-    def test_printed_json_has_sorted_keys(self, capsys) -> None:
-        """Verify JSON output uses sort_keys for deterministic cross-process comparison."""
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
-            collect_and_print_node_env_report(
-                role="training",
-                rank=0,
-                partial_env_report='{"b": 2, "a": 1}',
-            )
-
-        captured = capsys.readouterr()
-        line = next(x for x in captured.out.splitlines() if x.startswith(ENV_REPORT_PREFIX))
-        json_str = line.removeprefix(ENV_REPORT_PREFIX)
-        keys = list(json.loads(json_str).keys())
-        assert keys == sorted(keys), f"Top-level keys not sorted: {keys}"
-
-    def test_empty_partial_env_report(self) -> None:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
-            report = collect_and_print_node_env_report(
-                role="training",
-                rank=0,
-                partial_env_report="",
-            )
-        assert report.launcher_env_report is None
-
-    def test_invalid_json_partial_env_report(self) -> None:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
-            report = collect_and_print_node_env_report(
-                role="training",
-                rank=0,
-                partial_env_report="not json",
-            )
-        assert report.launcher_env_report is None
-
-    def test_report_serializable(self) -> None:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
-            report = collect_and_print_node_env_report(
-                role="training",
-                rank=0,
-                partial_env_report='{"x": 1}',
-            )
-        report_dict = asdict(report)
-        json_str = json.dumps(report_dict, default=str)
-        parsed = json.loads(json_str)
-        assert parsed["editable_packages"][0]["name"] == "miles"
 
 
 # ---------------------------------------------------------------------------
@@ -339,11 +463,7 @@ class TestRealEditablePackage:
         expected_commit = editable_package["commit"]
 
         # Step 1: Run the full collection (no mocks)
-        report = collect_and_print_node_env_report(
-            role="training",
-            rank=0,
-            partial_env_report='{"test": true}',
-        )
+        report = collect_and_print_node_env_report(role="training", rank=0, args=_args(env_report='{"test": true}'))
 
         # Step 2: Verify the package appears in editable_packages
         editable_names = {pkg.name for pkg in report.editable_packages}
@@ -388,11 +508,7 @@ class TestRealEditablePackage:
         _git(repo, "add", "staged_change.txt")
 
         # Step 2: Run collection
-        report = collect_and_print_node_env_report(
-            role="training",
-            rank=0,
-            partial_env_report="",
-        )
+        report = collect_and_print_node_env_report(role="training", rank=0, args=_args())
 
         # Step 3: Verify dirty + diff_stat mentions the file
         git_info = next(
@@ -414,11 +530,7 @@ class TestRealEditablePackage:
         init_py.write_text('__version__ = "0.0.2"\n')
 
         # Step 2: Run collection
-        report = collect_and_print_node_env_report(
-            role="training",
-            rank=0,
-            partial_env_report="",
-        )
+        report = collect_and_print_node_env_report(role="training", rank=0, args=_args())
 
         # Step 3: Verify dirty
         git_info = next(

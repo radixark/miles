@@ -78,12 +78,8 @@ class TrainRayActor(NodeProbeMixin):
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
 
-        if env_report := args.env_report:
-            collect_and_print_node_env_report(
-                role=role,
-                rank=self._rank,
-                partial_env_report=env_report,
-            )
+        if args.env_report:
+            collect_and_print_node_env_report(role=role, rank=self._rank, args=args)
 
         torch.serialization.add_safe_globals([miles.utils.eval_config.EvalDatasetConfig])
 
