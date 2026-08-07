@@ -212,12 +212,16 @@ def _compute_server_args(
 
 
 def _compute_lora_target_modules(args) -> list[str]:
-    # Only --target-modules asking for everything may produce the auto-detecting shorthand.
+    # Inkling checkpoints expose module names this mapping cannot produce, so they are the one
+    # family that asks SGLang to discover them; everything else names what it wants.
     if sglang_lora_target_all_sentinel(args):
         return [LORA_TARGET_ALL_MODULES]
 
     hf_modules = convert_target_modules_to_hf(args.target_modules)
-    unspellable = sorted(set(hf_modules) - set(SUPPORTED_LORA_TARGET_MODULES))
+    # The shorthand is itself a valid --lora-target-modules value, so a run that asked for it
+    # by name is spellable; what is refused below is substituting it for something else.
+    spellable = set(SUPPORTED_LORA_TARGET_MODULES) | {LORA_TARGET_ALL_MODULES}
+    unspellable = sorted(set(hf_modules) - spellable)
 
     # Substituting the auto-detecting shorthand here would launch, but it is not the set that
     # was asked for: SGLang then scans every compatible module the base model exposes, so the

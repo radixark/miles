@@ -101,13 +101,25 @@ class TestLoraTargetModules:
 
         assert sorted(targets) == ["in_proj_ba", "in_proj_qkvz"]
 
+    def test_an_inkling_checkpoint_asks_sglang_to_discover_the_names(self, monkeypatch: pytest.MonkeyPatch):
+        """Inkling exposes module names the megatron-to-HF mapping cannot produce, so it is the
+        one family that hands SGLang the shorthand instead of naming its targets."""
+        monkeypatch.setattr(
+            "miles.backends.sglang_utils.sglang_engine.sglang_lora_target_all_sentinel", lambda _args: True
+        )
+
+        targets = self._parsed_lora_targets(["layers.*.self_attention.linear_qkv"])
+
+        assert set(targets) == {"all"}
+
     def test_an_unmapped_target_aborts_the_launch(self):
         """A typo or an unmapped Megatron path must not reach the engine either."""
         with pytest.raises(AssertionError, match="no spelling on SGLang's command line"):
             self._parsed_lora_targets(["layers.*.self_attention.linear_typo"])
 
     def test_asking_for_every_module_is_still_honoured(self):
-        """The shorthand is legitimate when --target-modules is what asked for everything."""
+        """SGLang accepts the shorthand as a target name, so a run that spelled it out itself
+        is not the substitution this refuses."""
         targets = self._parsed_lora_targets(["all"])
 
         assert set(targets) == {"all"}
