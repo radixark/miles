@@ -55,6 +55,7 @@ def _server_args(
         worker_type=worker_type,
         disaggregation_bootstrap_port=disaggregation_bootstrap_port,
         base_gpu_id=0,
+        fleet_gpu_offset=0,
         engine_info_bootstrap_port=20033,
         sglang_overrides=overrides,
         num_gpus_per_engine=num_gpus_per_engine,
@@ -63,15 +64,13 @@ def _server_args(
 
 
 def _assert_roundtrips(server_args_dict: dict) -> None:
-    """Every field the launched process ends up with matches what miles asked for.
-
-    ``random_seed`` is excluded on purpose: each engine draws its own."""
+    """Every field the launched process ends up with matches what miles asked for."""
     parsed = parse_server_args_argv(server_args_to_argv(server_args_dict))
     wanted = ServerArgs(**server_args_dict)
     differing = [
         field.name
         for field in dataclasses.fields(wanted)
-        if field.name != "random_seed" and getattr(parsed, field.name) != getattr(wanted, field.name)
+        if getattr(parsed, field.name) != getattr(wanted, field.name)
     ]
     assert differing == []
 
