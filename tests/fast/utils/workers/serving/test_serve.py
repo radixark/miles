@@ -14,7 +14,7 @@ from miles.utils.http_utils import find_available_port
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.serving import serve as serve_module
-from miles.utils.workers.serving.serve_common import split_worker_argv
+from miles.utils.workers.serving.utils import split_worker_argv
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]

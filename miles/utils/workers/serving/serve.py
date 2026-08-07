@@ -5,7 +5,7 @@ import os
 import sys
 
 from miles.utils.function_registry import load_function
-from miles.utils.workers.serving.serve_common import split_worker_argv
+from miles.utils.workers.serving.utils import split_worker_argv
 
 
 def main() -> None:
