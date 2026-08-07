@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tests.fast.fixtures.replay_fixtures import reset_routing_replay_manager, wire_replay
 
-from miles.backends.experimental.fsdp_utils.models.replay_routers import (
+from miles.backends.fsdp_utils.models.replay_routers import (
     install_glm4_moe_lite_router_replay,
     install_qwen3_router_replay,
 )

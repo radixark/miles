@@ -1,7 +1,7 @@
-diff --git a/miles/backends/experimental/fsdp_utils/update_weight_utils.py b/miles/backends/experimental/fsdp_utils/update_weight_utils.py
+diff --git a/miles/backends/fsdp_utils/update_weight_utils.py b/miles/backends/fsdp_utils/update_weight_utils.py
 index 98000e7d3..94fb71da5 100644
---- a/miles/backends/experimental/fsdp_utils/update_weight_utils.py
-+++ b/miles/backends/experimental/fsdp_utils/update_weight_utils.py
+--- a/miles/backends/fsdp_utils/update_weight_utils.py
++++ b/miles/backends/fsdp_utils/update_weight_utils.py
 @@ -234,12 +234,12 @@ class UpdateWeightFromDistributed(UpdateWeight):
                      i * self.args.rollout_num_gpus_per_engine + 1,
                      world_size,

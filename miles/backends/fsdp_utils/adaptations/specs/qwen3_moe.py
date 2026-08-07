@@ -2,7 +2,7 @@
 into the per-expert names sglang expects, via HF's own reverse conversion), the true-on-policy
 config-time MoE-block patch, and the rollout-routing-replay hook."""
 
-from miles.backends.experimental.fsdp_utils.models.replay_routers import install_qwen3_router_replay
+from miles.backends.fsdp_utils.models.replay_routers import install_qwen3_router_replay
 from ..class_patches import ModelPatchHook, register_model_patch
 from ..routing_replay import RoutingReplayAdapter, register_routing_replay_adapter
 from ..weight_bridge import _batched_experts_matches, _hf_unfuse_experts_expand, register_param_transform

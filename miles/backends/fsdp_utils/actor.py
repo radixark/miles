@@ -10,7 +10,17 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
-from miles.backends.experimental.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.training_utils.ci_utils import check_grad_norm
+from miles.backends.training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
+from miles.backends.training_utils.log_utils import (
+    aggregate_forward_results,
+    aggregate_train_losses,
+    log_rollout_data,
+    log_train_step,
+)
+from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
+from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
@@ -19,21 +29,11 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_processor, load_tokenizer
+from miles.utils.profile_utils import TrainProfiler
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
-from ....utils.profile_utils import TrainProfiler
-from ...training_utils.ci_utils import check_grad_norm
-from ...training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
-from ...training_utils.log_utils import (
-    aggregate_forward_results,
-    aggregate_train_losses,
-    log_rollout_data,
-    log_train_step,
-)
-from ...training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
-from ...training_utils.parallel import get_parallel_state, set_parallel_state
 from . import checkpoint
 from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
 from .adaptations.packing import apply_packing

@@ -2,7 +2,7 @@
 cu_seqlens to fla chunk/recurrent_gated_delta_rule and seq_idx to causal_conv1d_fn per packed document.
 Patches the DecoderLayer/GatedDeltaNet class forwards; kernel logic lives in ``models/qwen3_5.py``."""
 
-from miles.backends.experimental.fsdp_utils.models.replay_routers import install_qwen3_router_replay
+from miles.backends.fsdp_utils.models.replay_routers import install_qwen3_router_replay
 from ..packing.registry import PackingPatch, register_packing_patch
 from ..routing_replay import RoutingReplayAdapter, register_routing_replay_adapter
 
