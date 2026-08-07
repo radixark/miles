@@ -18,6 +18,7 @@ from miles.rollout.inference_rollout.compatibility import (
     call_rollout_function,
     load_generate_function,
     load_rollout_function,
+    maybe_close,
 )
 from miles.utils.async_utils import run
 from miles.utils.misc import function_registry
@@ -194,3 +195,44 @@ class TestSupportedGenerateFormats:
             assert isinstance(fn, MyGenerateFn)
             assert isinstance(result, GenerateFnOutput)
             assert result.samples == "my_sample"
+
+
+class TestMaybeClose:
+    class _WorkerFn:
+        """A class-based fn whose background task lives on the shared rollout loop."""
+
+        def __init__(self):
+            self.worker = None
+            self.closed = False
+
+        async def start(self):
+            self.worker = asyncio.create_task(asyncio.sleep(3600))
+
+        async def aclose(self):
+            self.worker.cancel()
+            try:
+                await self.worker
+            except asyncio.CancelledError:
+                pass
+            self.closed = True
+
+    def test_closes_worker_from_a_foreign_loop(self):
+        # Regression: dispose runs on a different event loop than the shared
+        # rollout loop hosting the fn's tasks; a naive ``await aclose()``
+        # raised "attached to a different loop" and leaked the worker.
+        fn = self._WorkerFn()
+        run(fn.start())
+        asyncio.run(maybe_close(fn))
+        assert fn.closed and fn.worker.cancelled()
+
+    def test_close_and_absent_hooks(self):
+        class SyncClose:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        fn = SyncClose()
+        asyncio.run(maybe_close(fn))
+        assert fn.closed
+        asyncio.run(maybe_close(object()))  # no hooks: no-op

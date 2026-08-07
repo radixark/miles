@@ -134,6 +134,14 @@ class RayTrainGroup:
         (load new, cleanup gone). Called by the trainer before generate."""
         await self._broadcast("reconcile_adapters")
 
+    async def bind_adapters(self, bind_plan: list[dict]) -> None:
+        """Multi-LoRA slot oversubscription: execute the selection's bind plan
+        (swap-out victims, swap-in selected tenants) on every trainer rank
+        between generate and train. Decisions were made by the
+        controller at selection time; this only executes."""
+        if bind_plan:
+            await self._broadcast("bind_adapters", bind_plan)
+
     async def onload(self):
         await self._broadcast("wake_up")
 

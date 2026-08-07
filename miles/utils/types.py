@@ -8,10 +8,14 @@ import torch
 
 @dataclass(frozen=True)
 class AdapterRef:
-    """Which LoRA adapter a sample is bound to (training slot routing, inference lora_path); ``None`` = no adapter."""
+    """Serving identity of the sample's LoRA adapter: routing derives from
+    ``(name, registration_id)`` so a re-registered name never aliases a
+    previous tenant; ``slot`` is trainer-side only, never used for serving."""
 
     name: str
-    slot: int
+    registration_id: str
+    serving_version: int
+    slot: int | None
 
 
 @dataclass(frozen=True)
@@ -175,7 +179,8 @@ class Sample:
         return sample
 
     def get_reward_value(self, args) -> float:
-        return self.reward if not args.reward_key else self.reward[args.reward_key]
+        reward_key = getattr(args, "reward_key", None)
+        return self.reward if not reward_key else self.reward[reward_key]
 
     @property
     def effective_response_length(self):

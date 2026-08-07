@@ -351,14 +351,18 @@ def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
 
     # Prevent future slot tenants from inheriting optimizer momentum or the
     # previous tenant's partially accumulated gradients.
-    from miles.backends.megatron_utils.multi_lora_optimizer import zero_adapter_slot_grads
-
-    from miles.backends.megatron_utils.multi_lora_scheduler import drop_slot_scheduler
+    from miles.backends.megatron_utils.multi_lora_utils.optimizer import (
+        reload_adapter_slot_model_params,
+        zero_adapter_slot_grads,
+    )
+    from miles.backends.megatron_utils.multi_lora_utils.scheduler import drop_slot_scheduler
 
     zero_optimizer_state_for_adapter(optimizer, model, slot)
     zero_adapter_slot_grads(model, slot)
     drop_slot_scheduler(optimizer, slot)
-    optimizer.reload_model_params()
+    # Slot-scoped: a global reload would quantize every other resident slot's fp32
+    # master through bf16.
+    reload_adapter_slot_model_params(optimizer, slot)
     logger.info(f"{log_prefix} cleared optimizer state and retained grads for slot {slot}")
 
 
@@ -371,7 +375,7 @@ def load_adapters(args, model, optimizer, adapters) -> int:
         dist.barrier(group=get_gloo_group())
     if not adapters:
         return 0
-    from miles.backends.megatron_utils.multi_lora_scheduler import install_slot_scheduler
+    from miles.backends.megatron_utils.multi_lora_utils.scheduler import install_slot_scheduler
 
     resume_steps: dict[str, int] = {}
     for adapter in adapters:
@@ -380,7 +384,12 @@ def load_adapters(args, model, optimizer, adapters) -> int:
         install_slot_scheduler(args, optimizer, adapter, resume_steps[adapter.name])
     if dist.is_initialized():
         dist.barrier(group=get_gloo_group())
-    optimizer.reload_model_params()
+    from miles.backends.megatron_utils.multi_lora_utils.optimizer import reload_adapter_slot_model_params
+
+    # Slot-scoped: a global reload would quantize every other resident slot's fp32
+    # master through bf16.
+    for adapter in adapters:
+        reload_adapter_slot_model_params(optimizer, adapter.slot)
     if is_first_replica_megatron_main_rank():
         for name, step in resume_steps.items():
             if step > 0:
@@ -410,26 +419,50 @@ def cleanup_adapters(args, model, optimizer, adapters) -> int:
 def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id: int, step_id: int) -> float:
     """Optimizer-step the slots whose adapter batch completes with this train batch and advance
     their per-adapter LR/WD schedules. Returns the max grad norm across stepped slots (0.0 if none)."""
-    from miles.backends.megatron_utils.multi_lora_optimizer import step_adapter_slots
-    from miles.backends.megatron_utils.multi_lora_scheduler import step_slot_schedulers
+    from miles.backends.megatron_utils.multi_lora_utils.optimizer import step_adapter_slots
+    from miles.backends.megatron_utils.multi_lora_utils.scheduler import step_slot_schedulers
     from miles.utils.tracking_utils.structured_log import log_structured
 
-    # slot -> adapter_global_batch_size for adapter batches completing now.
-    step_batch_sizes = dict(rollout_data.get("step_adapter_batch_sizes", {}))
-    grad_norms_by_slot = step_adapter_slots(
+    # ACTUAL per-adapter rollout-execution counts from the BatchPlan drive
+    # normalization (agentic sibling trajectories count once per execution).
+    step_counts = dict(rollout_data.get("step_adapter_actual_counts", {}))
+    grad_norms_by_slot, vetoed = step_adapter_slots(
         optimizer,
         model,
-        step_batch_sizes,
+        step_counts,
         clip_grad=args.clip_grad,
     )
 
-    if lr_by_slot := step_slot_schedulers(optimizer, step_batch_sizes):
+    if vetoed:
+        # A vetoed adapter's clocks must not advance and its weights must not
+        # be published: prune it from every downstream commit signal.
+        name_by_slot = rollout_data.get("adapter_name_by_slot", {})
+        vetoed_names = sorted(name_by_slot.get(slot, f"slot-{slot}") for slot in vetoed)
+        logger.error(f"[multilora] non-finite step vetoed for adapters {vetoed_names}")
+        rollout_data["step_slots"] = [s for s in rollout_data.get("step_slots", []) if s not in vetoed]
+        vetoed_name_set = set(vetoed_names)
+        rollout_data["step_adapter_names"] = [
+            n for n in rollout_data.get("step_adapter_names", []) if n not in vetoed_name_set
+        ]
+        rollout_data["vetoed_adapter_names"] = vetoed_names
+
+    stepped_slots = sorted(slot for slot in step_counts if slot not in vetoed)
+    if lr_by_slot := step_slot_schedulers(optimizer, stepped_slots):
         log_structured(
             logger.info,
             op="adapter_lr",
             rollout=rollout_id,
             step=step_id,
             **{f"slot_{slot}": lr for slot, lr in lr_by_slot.items()},
+        )
+    if grad_norms_by_slot:
+        # Per-adapter observability: the train loop only surfaces the max.
+        log_structured(
+            logger.info,
+            op="adapter_grad_norm",
+            rollout=rollout_id,
+            step=step_id,
+            **{f"slot_{slot}": norm for slot, norm in grad_norms_by_slot.items()},
         )
     return max(grad_norms_by_slot.values(), default=0.0)
 
@@ -442,7 +475,11 @@ def commit_trained_batch(rollout_data, rollout_id: int, pending_push: set) -> No
 
     pending_push.update(rollout_data.get("step_adapter_names", []))
     if is_first_replica_megatron_main_rank():
-        ray.get(get_multi_lora_controller().mark_batch_trained.remote(rollout_id))
+        ray.get(
+            get_multi_lora_controller().commit_train_selection.remote(
+                rollout_id, list(rollout_data.get("vetoed_adapter_names", []))
+            )
+        )
 
 
 def save_due_adapter_checkpoints(args, model) -> bool:

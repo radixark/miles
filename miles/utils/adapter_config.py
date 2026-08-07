@@ -37,6 +37,9 @@ class AdapterRunConfig:
     rm_type: str | None = None
     custom_rm_path: str | None = None
 
+    # Per-adapter child rollout fn; one invocation returns one complete batch.
+    rollout_function_path: str | None = None
+
     # Stop after N optimizer steps; derived from num_epoch (default 1) when absent.
     num_step: int | None = None
     num_epoch: int | None = None
@@ -56,11 +59,9 @@ class AdapterRun:
 
     name: str
     config: AdapterRunConfig
-    slot: int
+    slot: int | None
     version: int = 0
     step: int = 0
-    # Committed prompt groups accumulated toward the current optimizer step.
-    accumulated_groups: int = 0
     # Unique per registration (see AdapterRecord.registration_id): lets the
     # rollout worker tell a re-registered name apart from the previous tenant.
     registration_id: str = ""
@@ -87,6 +88,7 @@ def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:
         metadata_key=raw.get("metadata_key"),
         rm_type=raw.get("rm_type"),
         custom_rm_path=raw.get("custom_rm_path"),
+        rollout_function_path=raw.get("rollout_function_path"),
         num_step=raw.get("num_step"),
         num_epoch=raw.get("num_epoch"),
         metadata=raw.get("metadata") or {},

@@ -9,6 +9,7 @@ import numpy as np
 import pybase64
 
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.utils.multi_lora import cache_extra_key, make_rid, serving_lora_name
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
 
@@ -49,11 +50,37 @@ def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
     return None
 
 
+def apply_adapter_routing(
+    args,
+    payload: dict,
+    sample: Sample | None,
+    serving_version: int | None = None,
+) -> dict:
+    """Single injection point for adapter serving routing (generation AND prefill
+    scoring): registration-scoped lora_path, prefix-abortable rid, and the
+    KV-cache namespace. Child rollout code never sees slots or serving aliases.
+
+    ``serving_version`` overrides the version stamped on the sample — the live
+    upsert path passes the adapter's current published revision so a request
+    running under fresh weights never reuses a previous revision's KV.
+    """
+    ref = sample.adapter if sample is not None else None
+    if ref is not None:
+        version = ref.serving_version if serving_version is None else serving_version
+        payload["lora_path"] = serving_lora_name(ref.name, ref.registration_id)
+        payload["rid"] = make_rid(ref.name, ref.registration_id)
+        payload["extra_key"] = cache_extra_key(ref.name, ref.registration_id, version)
+    elif lora_rollout_enabled(args):
+        payload["lora_path"] = LORA_ADAPTER_NAME
+    return payload
+
+
 def compute_request_payload(
     args,
     input_ids: list[int],
     sampling_params: dict,
     multimodal_inputs: dict | None = None,
+    sample: Sample | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
@@ -69,8 +96,7 @@ def compute_request_payload(
         "return_routed_experts": args.use_rollout_routing_replay,
         "return_indexer_topk": args.use_rollout_indexer_replay,
     }
-    if lora_rollout_enabled(args):
-        payload["lora_path"] = LORA_ADAPTER_NAME
+    apply_adapter_routing(args, payload, sample)
     if image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 

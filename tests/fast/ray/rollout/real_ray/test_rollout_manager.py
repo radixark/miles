@@ -516,9 +516,10 @@ class TestGenerate:
         assert len(captured) == 1
         assert isinstance(captured[0], RolloutFnTrainInput)
         assert captured[0].rollout_id == 42
-        # generate returns {"sample_indices": ..., "data_ref": ...};
+        # generate returns {"sample_indices", "data_ref", "control_metadata"}
+        # (control_metadata = the rollout fn's typed control plane);
         # split_train_data_by_dp returns Box(ObjectRef) per dp rank
-        assert set(result) == {"sample_indices", "data_ref"}
+        assert set(result) == {"sample_indices", "data_ref", "control_metadata"}
         data_refs = result["data_ref"]
         assert len(data_refs) == 2
         partitions = ray.get([box.inner for box in data_refs])

@@ -15,6 +15,7 @@ from tqdm import tqdm
 
 from miles.rollout.base_types import GenerateFnInput, RolloutFnEvalOutput, RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.generate_utils.generate_endpoint_utils import apply_adapter_routing
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.utils import dumper_utils
 from miles.utils.async_utils import run
@@ -24,7 +25,7 @@ from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
-from miles.utils.multi_lora import make_rid, slot_lora_name
+from miles.utils.multi_lora import is_multi_lora_enabled, rid_prefix
 from miles.utils.processing_utils import (
     call_processor,
     encode_image_for_rollout_engine,
@@ -237,9 +238,10 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             )
             sample.status = Sample.Status.ABORTED
             return sample
-        payload["lora_path"] = slot_lora_name(sample.adapter.slot)
-        payload["rid"] = make_rid(sample.adapter.name)
-        payload["extra_key"] = f"{sample.adapter.name}:v{adapter.version}"
+        # Live-upsert mode: namespace the KV cache by the adapter's CURRENT
+        # published revision, not the one stamped at sample time — the request
+        # runs under the live weights.
+        apply_adapter_routing(args, payload, sample, serving_version=adapter.version)
     elif lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
@@ -449,7 +451,22 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     urls = router_worker_base_urls(urls)
 
     logger.info(f"Abort request for {urls}")
-    abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
+    if is_multi_lora_enabled(args):
+        # Engines are shared by every tenant: abort this child's own rid
+        # namespace, never abort_all.
+        identity = getattr(args, "multi_lora_adapter_identity", None)
+        if identity is not None:
+            payloads = [{"rid": rid_prefix(*identity), "prefix": True}]
+        else:
+            from miles.rollout.multi_lora.data_source import fetch_snapshot, sampleable
+
+            payloads = [
+                {"rid": rid_prefix(name, run.registration_id), "prefix": True}
+                for name, run in sampleable(fetch_snapshot()).items()
+            ]
+    else:
+        payloads = [{"abort_all": True}]
+    abort_tasks = [post(f"{url}/abort_request", payload) for url in urls for payload in payloads]
     abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)
     for url, result in zip(urls, abort_results, strict=False):
         if isinstance(result, Exception):

@@ -2,11 +2,13 @@
 requires plain DDP all-reduce (use_distributed_optimizer OFF) so cross-batch gradient retention stays idempotent."""
 
 import logging
+import math
 from argparse import Namespace
 from collections.abc import Sequence
 from contextlib import contextmanager
 
 import torch
+import torch.distributed as dist
 from megatron.core.optimizer import get_megatron_optimizer
 from megatron.core.optimizer.clip_grads import clip_grad_by_total_norm_fp32, get_grad_norm_fp32
 from megatron.core.optimizer.layer_wise_optimizer import LayerWiseDistributedOptimizer
@@ -109,7 +111,9 @@ def build_multi_lora_optimizer(
             for child in children:
                 for group in child.param_groups:
                     group["miles_multi_lora_slot"] = slot
-                base_optimizers.append(child)
+                # LayerWise wraps raw torch optimizers itself; the pinned MCore
+                # rejects pre-wrapped children (slot tags survive via the proxy).
+                base_optimizers.append(child.optimizer)
                 init_fns.append(_adam_init_state_fn)
     finally:
         config.bf16 = reset_bf16
@@ -132,9 +136,16 @@ def _slot_children(optimizer, slot: int):
     return [optimizer.chained_optimizers[i] for i in optimizer.miles_slot_child_indices[slot]]
 
 
+def reload_adapter_slot_model_params(optimizer, slot: int) -> None:
+    """Refresh fp32 masters for ONE slot only — a global reload would quantize
+    every other resident slot's masters through bf16."""
+    for child in _slot_children(optimizer, slot):
+        child.reload_model_params()
+
+
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
-    """Reset DDP per-iteration grad bookkeeping WITHOUT zeroing grad buffers, so per-adapter accumulation
-    survives across train batches (replaces ``DistributedDataParallel.zero_grad_buffer``)."""
+    """Reset DDP grad bookkeeping WITHOUT zeroing buffers, so per-adapter
+    accumulation survives (replaces ``zero_grad_buffer``)."""
     for model_chunk in model_chunks:
         if getattr(model_chunk.config, "cuda_graph_impl", "none") != "transformer_engine":
             for param in model_chunk.params_with_grad:
@@ -154,24 +165,40 @@ def zero_adapter_slot_grads(model, slot: int) -> None:
             main_param.grad = None
 
 
+def _found_inf_anywhere(found_inf: bool) -> bool:
+    """The veto must agree on every rank, or the collective step order diverges."""
+    if not dist.is_initialized():
+        return found_inf
+    flag = torch.tensor([1.0 if found_inf else 0.0], device=torch.cuda.current_device())
+    dist.all_reduce(flag, op=dist.ReduceOp.MAX)
+    return flag.item() > 0
+
+
 def step_adapter_slots(
     optimizer,
     model,
-    step_batch_sizes: dict[int, int],
+    step_counts: dict[int, int],
     clip_grad: float,
-) -> dict[int, float]:
-    """Step exactly the slots in ``step_batch_sizes`` (slot -> batch size), retaining all other slots' gradients;
-    scales each slot's accumulated grad sum by 1/batch_size and returns the grad norm per stepped slot."""
+    *,
+    normalize_by_count: bool = True,
+) -> tuple[dict[int, float], set[int]]:
+    """Step exactly the slots in ``step_counts`` (slot -> rollout-execution
+    count, the loss's aggregation unit), retaining all other slots' gradients.
+    Returns (grad norms, vetoed slots): a found-inf/NaN slot is not stepped,
+    its grads are cleared, and the caller must not commit or publish it."""
     grad_norms: dict[int, float] = {}
+    vetoed: set[int] = set()
 
-    for slot, batch_size in step_batch_sizes.items():
+    for slot in sorted(step_counts):
         children = _slot_children(optimizer, slot)
-        # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the adapter-batch mean.
+        # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the per-execution mean.
+        found_inf = False
         for child in children:
-            child.prepare_grads()
-            for main_param in child.get_parameters():
-                if main_param.grad is not None:
-                    main_param.grad.mul_(1.0 / batch_size)
+            found_inf = bool(child.prepare_grads()) or found_inf
+            if normalize_by_count:
+                for main_param in child.get_parameters():
+                    if main_param.grad is not None:
+                        main_param.grad.mul_(1.0 / step_counts[slot])
 
         # Per-slot grad norm over the slot's children, reduced across the whole world (whole-param DP scatter).
         grads_for_norm = []
@@ -180,6 +207,19 @@ def step_adapter_slots(
             grads_for_norm += child.get_main_grads_for_grad_norm()
             slot_params += child.get_parameters()
         slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
+
+        # The gate the single-adapter path has always had (`assert update_successful`)
+        # and this path silently lacked: a non-finite step would otherwise be
+        # applied AND live-published to every engine.
+        if _found_inf_anywhere(found_inf) or not math.isfinite(float(slot_norm)):
+            logger.error(
+                f"[multilora] slot {slot}: non-finite gradients "
+                f"(found_inf={found_inf}, grad_norm={float(slot_norm)}); step vetoed, grads cleared"
+            )
+            vetoed.add(slot)
+            zero_adapter_slot_grads(model, slot)
+            continue
+
         if clip_grad > 0.0 and slot_params:
             clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
         grad_norms[slot] = float(slot_norm)
@@ -189,7 +229,7 @@ def step_adapter_slots(
 
         zero_adapter_slot_grads(model, slot)
 
-    if step_batch_sizes:
+    if grad_norms:
         optimizer.allgather_params()
 
-    return grad_norms
+    return grad_norms, vetoed

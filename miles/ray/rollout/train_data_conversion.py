@@ -132,18 +132,22 @@ def convert_samples_to_train_data(
 
     if any(sample.adapter is not None for sample in samples):
         assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
-        train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
-        # Slots whose adapter batch completes with this batch: the trainer scales their
-        # accumulated gradients by 1/adapter-batch-size and advances the LR schedule.
-        step_slots = sorted(metadata.get("step_slots", []))
-        train_data["step_slots"] = step_slots
+        # The bind plan is authoritative for slot routing; a stamped slot can
+        # be stale, and a name missing from the plan must fail loudly.
+        slot_by_name = {name: slot for slot, name in (metadata.get("adapter_name_by_slot") or {}).items()}
+        missing = {sample.adapter.name for sample in samples if sample.adapter.name not in slot_by_name}
+        if missing:
+            raise ValueError(
+                f"Samples from adapters {sorted(missing)} have no bind-plan slot; refusing stale slot routing"
+            )
+        train_data["adapter_slots"] = [slot_by_name[sample.adapter.name] for sample in samples]
+        # Slots stepping with this batch; all of it comes from the BatchPlan.
+        train_data["step_slots"] = sorted(metadata.get("step_slots", []))
         train_data["step_adapter_names"] = sorted(metadata.get("step_adapter_names", []))
-        step_slot_set = set(step_slots)
-        train_data["step_adapter_batch_sizes"] = {
-            sample.adapter.slot: sample.metadata["adapter_global_batch_size"]
-            for sample in samples
-            if sample.adapter.slot in step_slot_set
-        }
+        if (actual_counts := metadata.get("step_adapter_actual_counts")) is not None:
+            train_data["step_adapter_actual_counts"] = actual_counts
+        if (name_by_slot := metadata.get("adapter_name_by_slot")) is not None:
+            train_data["adapter_name_by_slot"] = name_by_slot
 
     if (prompt_group_sizes := metadata.get("prompt_group_sizes")) is not None:
         train_data["prompt_group_sizes"] = prompt_group_sizes
@@ -225,6 +229,12 @@ def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: di
     if can_schedule_on_rollout_side(args, data, train_parallel_config):
         shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
     else:
+        # Multi-LoRA has no legacy fallback: whole-batch atomicity (never trim)
+        # and slot-contiguous micro-batches only hold on the scheduled path.
+        assert not is_multi_lora_enabled(args), (
+            "multi-LoRA requires the rollout-side DP schedule; the training backend "
+            f"did not advertise its parallel config (got {train_parallel_config})"
+        )
         shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
     store = object_store.get_instance()
     return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
@@ -234,12 +244,14 @@ def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_conf
     """Whether the rollout side can precompute the full DP/mbs schedule."""
     if not has_full_schedule_config(train_parallel_config):
         return False
-    if is_multi_lora_enabled(args):
-        return False
     if "multimodal_train_inputs" in data:
         return False
     if "rollout_ids" not in data:
         return False
+    if is_multi_lora_enabled(args):
+        # The whole selection trains as one step; the per-step rollout-count
+        # threshold below is a step-formation concern that does not apply.
+        return True
     global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
     return len(set(data["rollout_ids"])) >= global_batch_size
 
@@ -258,6 +270,7 @@ def split_train_data_by_dp_scheduled_raw(
         total_lengths,
         global_batch_size=global_batch_size,
         rollout_indices=data["rollout_ids"],
+        adapter_slots=data.get("adapter_slots"),
     )
     logger.info(
         f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
@@ -281,12 +294,6 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
         partitions = get_seqlen_balanced_partitions(total_lengths, dp_size, equal_size=True)
     else:
         partitions = [range(i, len(total_lengths), dp_size) for i in range(dp_size)]
-
-    # Multi-LoRA: sort partitions by adapter slot so each microbatch is
-    # contiguous-by-slot (required by the per-adapter token-count math).
-    adapter_slots = data.get("adapter_slots")
-    if adapter_slots is not None:
-        partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
 
     return _package_shards(args, data, partitions)
 
@@ -331,7 +338,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "dynamic_global_batch_size",
             "step_slots",
             "step_adapter_names",
-            "step_adapter_batch_sizes",
+            "step_adapter_actual_counts",
+            "adapter_name_by_slot",
             "prompt_group_sizes",
         ]:
             if key not in data:

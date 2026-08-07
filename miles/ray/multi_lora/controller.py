@@ -88,14 +88,33 @@ class MultiLoRAController:
     def record_weight_update(self, names: list[str]) -> None:
         self.backend.registry.record_weight_update(names)
 
-    def record_batch_adapters(self, rollout_id: int, groups: dict[str, int], step_names: list[str]) -> None:
-        self.backend.registry.record_batch_adapters(rollout_id, groups, step_names)
+    def record_train_selection(self, rollout_id: int, names: list[str]) -> None:
+        self.backend.registry.record_train_selection(rollout_id, names)
 
-    def mark_batch_trained(self, rollout_id: int) -> list[str]:
-        return self.backend.registry.mark_batch_trained(rollout_id)
+    def commit_train_selection(self, rollout_id: int, vetoed_names: list[str] | None = None) -> list[str]:
+        return self.backend.registry.commit_train_selection(rollout_id, vetoed_names)
 
     def resolve_num_step(self, name: str, dataset_rows: int) -> None:
         self.backend.registry.resolve_num_step(name, dataset_rows)
+
+    def bootstrap_pending(self) -> list[str]:
+        return self.backend.registry.bootstrap_pending()
+
+    # ---------------- bind transactions (driver-sequenced only) ----------------
+
+    def bindable_slot_count(self) -> int:
+        return self.backend.registry.bindable_slot_count()
+
+    def plan_bind(self, txn_id: str, tenants: list) -> dict:
+        """Authoritative admission at selection finalization (still inside
+        generate). Reservations are provisional until commit/abort."""
+        return self.backend.registry.plan_bind(txn_id, [tuple(t) for t in tenants])
+
+    def commit_bind(self, txn_id: str) -> None:
+        self.backend.registry.commit_bind(txn_id)
+
+    def abort_bind(self, txn_id: str) -> None:
+        self.backend.registry.abort_bind(txn_id)
 
     def set_adapter_step(self, name: str, step: int) -> None:
         self.backend.registry.set_step(name, step)

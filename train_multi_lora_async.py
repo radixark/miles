@@ -87,8 +87,24 @@ async def main(args):
         except ray.exceptions.RayTaskError as e:
             if _is_empty_batch_timeout(e):
                 logger.warning(f"Generate timed out with no trainable groups; retrying reconcile/update. {e}")
+                # Pace the retry so an admission-empty selection cannot busy-loop.
+                await asyncio.sleep(args.multi_lora_idle_poll_s)
                 continue
             raise
+
+        # Execute the selection's bind plan on every trainer rank, then commit.
+        # Bind failure is fail-stop: a half-executed swap cannot be rolled back
+        # in-process, so abort the reservations and let restart rebuild.
+        control_metadata = rollout_data.get("control_metadata") or {}
+        if bind_plan := control_metadata.get("batch_plan"):
+            txn_id = control_metadata["train_txn_id"]
+            try:
+                await actor_model.bind_adapters(bind_plan)
+                await get_multi_lora_controller().commit_bind.remote(txn_id)
+            except Exception:
+                logger.error("bind_adapters failed; aborting the bind transaction and terminating (fail-stop)")
+                await get_multi_lora_controller().abort_bind.remote(txn_id)
+                raise
         await actor_model.train(rollout_id, rollout_data)
         remove_rollout_data_refs(args, rollout_data)
 

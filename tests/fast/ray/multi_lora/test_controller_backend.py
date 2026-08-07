@@ -12,15 +12,14 @@ import pytest
 from miles.ray.multi_lora.backend import MultiLoRABackend
 from miles.ray.multi_lora.registry import AdapterRegistry, AdapterState
 from miles.utils.adapter_config import AdapterRunConfig
-from miles.utils.multi_lora import make_rid, min_groups_per_dp_split, parse_adapter
-
+from miles.utils.multi_lora import make_rid, parse_adapter
 
 # Registration validates that the data path exists; the test file itself is a
 # convenient always-present stand-in.
 DATA_FILE = __file__
 
 
-def make_args(max_adapters: int = 4, save: str | None = None, dp_size: int = 2) -> SimpleNamespace:
+def make_args(max_adapters: int = 4, save: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         multi_lora_n_adapters=max_adapters,
         save=save,
@@ -28,13 +27,12 @@ def make_args(max_adapters: int = 4, save: str | None = None, dp_size: int = 2) 
         lora_alpha=32,
         rollout_batch_size=16,
         n_samples_per_prompt=4,
-        multi_lora_dp_size=dp_size,
         multi_lora_max_adapter_global_batch_size=256,
     )
 
 
-def make_backend(max_adapters: int = 4, save: str | None = None, dp_size: int = 2) -> MultiLoRABackend:
-    return MultiLoRABackend(make_args(max_adapters, save, dp_size), "http://unused")
+def make_backend(max_adapters: int = 4, save: str | None = None) -> MultiLoRABackend:
+    return MultiLoRABackend(make_args(max_adapters, save), "http://unused")
 
 
 def make_config(save: str | None = None, **overrides) -> AdapterRunConfig:
@@ -60,7 +58,7 @@ def register_and_promote(registry: AdapterRegistry, name: str, config=None) -> N
 
 def test_rid_roundtrip_preserves_names_with_underscores():
     for name in ["a", "adapter_a", "weird__name", "x_y_z"]:
-        assert parse_adapter(make_rid(name)) == name
+        assert parse_adapter(make_rid(name, "reg1")) == name
 
 
 def test_register_starts_pending_and_push_promotes():
@@ -89,18 +87,23 @@ def test_snapshot_reports_sets_in_registry_vocabulary():
     assert set(registry.active_adapters()) == {"A"}  # only active adapters are sampleable
 
 
-def test_slot_version_is_monotonic_across_slot_reuse():
+def test_serving_version_is_per_registration_and_identity_separates_tenants():
+    # v2: the serving version belongs to the REGISTRATION (restarts at 0 for a
+    # new tenant); slot-reuse aliasing is prevented by the registration id in
+    # the serving name / rid / cache key, not by a never-resetting counter.
     registry = AdapterRegistry(max_adapters=2)
     register_and_promote(registry, "A")  # slot 0, version 1
     registry.record_weight_update(["A"])  # version 2
+    first_registration = registry.records["A"].registration_id
     registry.deregister("A")
     registry.retire_adapters()
     registry.free_slot("A")
 
     registry.register("A2", None)  # reuses slot 0
-    assert registry.snapshot()["pending"]["A2"].version == 2  # inherits, not reset
+    assert registry.snapshot()["pending"]["A2"].version == 0  # fresh tenant
     registry.record_weight_update(["A2"])
-    assert registry.active_adapters()["A2"].version == 3
+    assert registry.active_adapters()["A2"].version == 1
+    assert registry.records["A2"].registration_id != first_registration
 
 
 def test_record_weight_update_only_touches_reported_names():
@@ -141,37 +144,36 @@ def test_deregister_retires_but_keeps_serving_until_demoted():
 # make_config(): rollout_batch_size=4 groups/step, n_samples_per_prompt=4.
 
 
-def test_mark_batch_trained_accumulates_and_steps_on_completion():
+def test_commit_train_selection_steps_each_selected_adapter_once():
     registry = AdapterRegistry(max_adapters=4)
     register_and_promote(registry, "A", make_config())
     register_and_promote(registry, "B", make_config())
 
-    # Two partial batches accumulate; the third completes the adapter batch.
-    registry.record_batch_adapters(1, {"A": 1, "B": 2}, step_names=[])
-    assert registry.mark_batch_trained(1) == []
-    assert registry.records["A"].accumulated_groups == 1
-    assert registry.records["B"].accumulated_groups == 2
-
-    registry.record_batch_adapters(2, {"A": 1}, step_names=[])
-    assert registry.mark_batch_trained(2) == []
-    assert registry.records["A"].accumulated_groups == 2
-
-    registry.record_batch_adapters(3, {"A": 2, "B": 2}, step_names=["A", "B"])
-    assert registry.mark_batch_trained(3) == ["A", "B"]
+    # Option 1: a selection is whole adapter batches — one step per name.
+    registry.record_train_selection(1, ["A", "B"])
+    assert registry.commit_train_selection(1) == ["A", "B"]
     assert registry.step_count("A") == 1
     assert registry.step_count("B") == 1
-    assert registry.records["A"].accumulated_groups == 0
-    assert registry.records["B"].accumulated_groups == 0
 
-    assert registry.mark_batch_trained(3) == []  # record consumed
+    assert registry.commit_train_selection(1) == []  # record consumed
 
 
-def test_batch_trained_counts_deregistered_adapter_until_freed():
+def test_vetoed_adapter_does_not_step():
     registry = AdapterRegistry(max_adapters=4)
     register_and_promote(registry, "A", make_config())
-    registry.record_batch_adapters(3, {"A": 4}, step_names=["A"])
+    register_and_promote(registry, "B", make_config())
+    registry.record_train_selection(1, ["A", "B"])
+    assert registry.commit_train_selection(1, vetoed_names=["B"]) == ["A"]
+    assert registry.step_count("A") == 1
+    assert registry.step_count("B") == 0  # non-finite step: clocks frozen
+
+
+def test_commit_counts_deregistered_adapter_until_freed():
+    registry = AdapterRegistry(max_adapters=4)
+    register_and_promote(registry, "A", make_config())
+    registry.record_train_selection(3, ["A"])
     registry.deregister("A")  # deregistered while its batch is training
-    assert registry.mark_batch_trained(3) == ["A"]
+    assert registry.commit_train_selection(3) == ["A"]
     assert registry.step_count("A") == 1  # final ckpt reads this
     registry.retire_adapters()
     assert registry.step_count("A") == 1  # cleanup record still holds it
@@ -183,21 +185,21 @@ def test_set_step_on_resume():
     registry = AdapterRegistry(max_adapters=2)
     registry.register("A", make_config())
     registry.set_step("A", 40)
-    registry.record_batch_adapters(1, {"A": 4}, step_names=["A"])
+    registry.record_train_selection(1, ["A"])
     registry.record_weight_update(["A"])
-    registry.mark_batch_trained(1)
+    registry.commit_train_selection(1)
     assert registry.step_count("A") == 41
 
 
 def test_num_step_deregisters_on_committed_steps():
     registry = AdapterRegistry(max_adapters=2)
     register_and_promote(registry, "A", make_config(num_step=2))
-    registry.record_batch_adapters(1, {"A": 4}, step_names=["A"])
-    assert registry.mark_batch_trained(1) == ["A"]
+    registry.record_train_selection(1, ["A"])
+    assert registry.commit_train_selection(1) == ["A"]
     assert registry.adapter_state("A") == AdapterState.ACTIVE
 
-    registry.record_batch_adapters(2, {"A": 4}, step_names=["A"])
-    assert registry.mark_batch_trained(2) == ["A"]
+    registry.record_train_selection(2, ["A"])
+    assert registry.commit_train_selection(2) == ["A"]
     assert registry.step_count("A") == 2
     assert registry.adapter_state("A") == AdapterState.RETIRING
 
@@ -207,23 +209,15 @@ def test_num_step_is_relative_to_resume_step():
     register_and_promote(registry, "A", make_config(num_step=2))
     registry.set_step("A", 40)
 
-    registry.record_batch_adapters(1, {"A": 4}, step_names=["A"])
-    registry.mark_batch_trained(1)
+    registry.record_train_selection(1, ["A"])
+    registry.commit_train_selection(1)
     assert registry.step_count("A") == 41
     assert registry.adapter_state("A") == AdapterState.ACTIVE
 
-    registry.record_batch_adapters(2, {"A": 4}, step_names=["A"])
-    registry.mark_batch_trained(2)
+    registry.record_train_selection(2, ["A"])
+    registry.commit_train_selection(2)
     assert registry.step_count("A") == 42
     assert registry.adapter_state("A") == AdapterState.RETIRING
-
-
-def test_min_groups_per_dp_split():
-    assert min_groups_per_dp_split(n_samples_per_prompt=4, dp_size=8) == 2  # divisor
-    assert min_groups_per_dp_split(n_samples_per_prompt=8, dp_size=8) == 1  # equal
-    assert min_groups_per_dp_split(n_samples_per_prompt=16, dp_size=8) == 1  # multiple
-    with pytest.raises(ValueError, match="divisor or a multiple"):
-        min_groups_per_dp_split(n_samples_per_prompt=6, dp_size=8)
 
 
 @pytest.mark.asyncio
@@ -239,12 +233,7 @@ async def test_register_resolves_batch_shape_defaults(tmp_path):
 
 @pytest.mark.asyncio
 async def test_register_rejects_bad_batch_shapes(tmp_path):
-    backend = make_backend(save=str(tmp_path), dp_size=8)
-    with pytest.raises(ValueError, match="divisor or a multiple"):
-        await backend.register("B", make_config(n_samples_per_prompt=6, rollout_batch_size=4))
-    with pytest.raises(ValueError, match="min_groups_per_dp_split"):
-        # dp=8, n_samples=4 -> multiple of 2 groups; 3 groups is not
-        await backend.register("C", make_config(rollout_batch_size=3))
+    backend = make_backend(save=str(tmp_path))
     with pytest.raises(ValueError, match="exceeding"):
         await backend.register("D", make_config(rollout_batch_size=128))  # 512 samples > cap 256
     with pytest.raises(ValueError, match="exceeds the allocated maximum rank"):
@@ -266,10 +255,11 @@ def test_deregister_holds_slot_until_free_slot():
     registry.deregister("A")
     registry.retire_adapters()
     assert not registry.free_slots  # slot 0 held until cleanup
-    with pytest.raises(RuntimeError, match="No free adapter slots"):
-        registry.register("C", None)
+    # Oversubscription: a full pool queues the registration unbound.
+    assert registry.register("C", None) == {"name": "C", "slot": None}
     registry.free_slot("A")
-    assert registry.register("C", None) == {"name": "C", "slot": 0}
+    assert registry.bootstrap_pending() == ["C"]
+    assert registry.records["C"].slot == 0
 
 
 @pytest.mark.asyncio
@@ -280,7 +270,7 @@ async def test_free_slot_reaborts_before_releasing_slot():
     backend = make_backend()
     aborted: list[str] = []
 
-    async def record_abort(name: str) -> None:
+    async def record_abort(name: str, registration_id: str) -> None:
         aborted.append(name)
 
     backend.abort_adapter_requests = record_abort
@@ -300,7 +290,7 @@ async def test_free_slot_skips_abort_when_not_in_cleanup():
     backend = make_backend()
     aborted: list[str] = []
 
-    async def record_abort(name: str) -> None:
+    async def record_abort(name: str, registration_id: str) -> None:
         aborted.append(name)
 
     backend.abort_adapter_requests = record_abort
@@ -390,3 +380,32 @@ async def test_register_accepts_reward_config_from_global_args(tmp_path):
     backend = MultiLoRABackend(args, "http://unused")
     await backend.register("A", make_config(rm_type=None))
     assert backend.registry.records["A"].config.rm_type is None  # resolved at reward time via args
+
+
+def test_commit_bind_syncs_record_slots_with_the_pool():
+    # An eviction-bind must land on the records too: the snapshot can never
+    # disagree with the SlotPool about who holds a slot (reconcile and the
+    # HTTP status view derive loaded state from the records).
+    registry = AdapterRegistry(max_adapters=1)
+    register_and_promote(registry, "A")
+    registry.register("B", None)
+    assert registry.records["B"].slot is None  # queued unbound
+
+    tenant_b = registry.records["B"].tenant
+    plan = registry.plan_bind("txn1", [tenant_b])
+    assert plan[tenant_b]["evict"] == registry.records["A"].tenant
+    registry.commit_bind("txn1")
+
+    assert registry.records["A"].slot is None
+    assert registry.records["B"].slot == 0
+    assert registry.slot_pool.entry_of(tenant_b).slot == 0
+
+
+def test_abort_bind_leaves_record_slots_untouched():
+    registry = AdapterRegistry(max_adapters=1)
+    register_and_promote(registry, "A")
+    registry.register("B", None)
+    registry.plan_bind("txn1", [registry.records["B"].tenant])
+    registry.abort_bind("txn1")
+    assert registry.records["A"].slot == 0
+    assert registry.records["B"].slot is None

@@ -191,7 +191,7 @@ def setup_model_and_optimizer(
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
     elif is_multi_lora_enabled(args):
-        from miles.backends.megatron_utils.multi_lora_optimizer import build_multi_lora_optimizer
+        from miles.backends.megatron_utils.multi_lora_utils.optimizer import build_multi_lora_optimizer
 
         optimizer = build_multi_lora_optimizer(args, config, model)
     else:
@@ -446,7 +446,7 @@ def train_one_step(
     multi_lora = is_multi_lora_enabled(args)
 
     if multi_lora:
-        from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
+        from miles.backends.megatron_utils.multi_lora_utils.optimizer import reset_grad_metadata_keep_grads
 
         # Retain accumulated per-adapter gradients; reset only the per-iteration
         # DDP bookkeeping. Slot grads are zeroed selectively at step time.
@@ -614,7 +614,7 @@ def train_one_step(
 
     if not disable_optimizer and valid_step:
         if multi_lora:
-            from miles.backends.megatron_utils.multi_lora_utils import step_stepped_adapter_slots
+            from miles.backends.megatron_utils.multi_lora_utils.utils import step_stepped_adapter_slots
 
             grad_norm = step_stepped_adapter_slots(
                 args, model, optimizer, data_iterator[0].rollout_data, rollout_id, step_id

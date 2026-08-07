@@ -121,7 +121,7 @@ async def test_recompute_uses_per_sample_adapter_lora_path(monkeypatch):
         tokens=[10, 11, 20],
         response_length=1,
         status=Sample.Status.COMPLETED,
-        adapter=AdapterRef(name="run-a", slot=3),
+        adapter=AdapterRef(name="run-a", registration_id="ra1", serving_version=1, slot=3),
     )
     # Multi-LoRA forces lora_rank > 0, so is_lora_enabled(args) is always true.
     args = SimpleNamespace(recompute_logprobs_via_prefill=True, lora_rank=8)
@@ -140,7 +140,7 @@ async def test_recompute_uses_per_sample_adapter_lora_path(monkeypatch):
         sampling_params={},
     )
 
-    assert seen["payload"]["lora_path"] == "__miles_slot_3"
+    assert seen["payload"]["lora_path"] == "__miles_adapter_run-a_ra1"
     assert sample.rollout_log_probs == [-0.5]
 
 
@@ -153,19 +153,19 @@ async def test_recompute_samples_batches_group_by_adapter(monkeypatch):
             tokens=[10, 11, 20],
             response_length=1,
             status=Sample.Status.COMPLETED,
-            adapter=AdapterRef(name="run-a", slot=0),
+            adapter=AdapterRef(name="run-a", registration_id="ra1", serving_version=1, slot=0),
         ),
         Sample(
             tokens=[10, 11, 21],
             response_length=1,
             status=Sample.Status.COMPLETED,
-            adapter=AdapterRef(name="run-b", slot=1),
+            adapter=AdapterRef(name="run-b", registration_id="rb1", serving_version=1, slot=1),
         ),
         Sample(
             tokens=[10, 11, 22],
             response_length=1,
             status=Sample.Status.COMPLETED,
-            adapter=AdapterRef(name="run-a", slot=0),
+            adapter=AdapterRef(name="run-a", registration_id="ra1", serving_version=1, slot=0),
         ),
     ]
     args = SimpleNamespace(
@@ -196,15 +196,23 @@ async def test_recompute_samples_batches_group_by_adapter(monkeypatch):
     assert [sample.rollout_log_probs for sample in samples] == [[-20.0], [-21.0], [-22.0]]
     by_lora_path = {payload["lora_path"]: payload["input_ids"] for payload in generate_payloads}
     assert by_lora_path == {
-        "__miles_slot_0": [[10, 11, 20], [10, 11, 22]],
-        "__miles_slot_1": [[10, 11, 21]],
+        "__miles_adapter_run-a_ra1": [[10, 11, 20], [10, 11, 22]],
+        "__miles_adapter_run-b_rb1": [[10, 11, 21]],
     }
 
 
 def test_batch_payload_rejects_mixed_lora_paths():
     samples = [
-        Sample(tokens=[10, 11, 20], response_length=1, adapter=AdapterRef(name="run-a", slot=0)),
-        Sample(tokens=[10, 11, 21], response_length=1, adapter=AdapterRef(name="run-b", slot=1)),
+        Sample(
+            tokens=[10, 11, 20],
+            response_length=1,
+            adapter=AdapterRef(name="run-a", registration_id="ra1", serving_version=1, slot=0),
+        ),
+        Sample(
+            tokens=[10, 11, 21],
+            response_length=1,
+            adapter=AdapterRef(name="run-b", registration_id="rb1", serving_version=1, slot=1),
+        ),
     ]
     args = SimpleNamespace(lora_rank=8)
 

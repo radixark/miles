@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from miles.rollout.data_source import DataSource
@@ -51,6 +51,10 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
 class RolloutFnTrainOutput:
     samples: list[list[Sample]]
     metrics: dict[str, Any] = None
+    # Typed control plane for batch-level decisions (e.g. the multi-LoRA
+    # BatchPlan): travels next to the samples instead of being smuggled
+    # through the first sample's per-sample metadata.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 # TODO make it frozen

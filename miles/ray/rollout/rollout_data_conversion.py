@@ -12,24 +12,21 @@ def postprocess_rollout_data(args, data, train_parallel_config):
 
     validate_compact_rollout_ids(data)
 
-    # Multi-LoRA: record group boundaries (heterogeneous per-adapter group sizes)
-    # and lift the collection loop's batch-level step decision out of sample metadata,
-    # both before flattening.
+    # Multi-LoRA: record group boundaries (heterogeneous per-adapter group
+    # sizes) before flattening. Step decisions arrive via the typed BatchPlan
+    # (RolloutFnTrainOutput.metadata), never through sample metadata.
     if is_multi_lora_enabled(args) and isinstance(data[0], list):
         metadata["prompt_group_sizes"] = [_nested_sample_count(group) for group in data]
-        head = _first_sample(data[0])
-        metadata["step_slots"] = list(head.metadata.pop("step_slots", []))
-        metadata["step_adapter_names"] = list(head.metadata.pop("step_adapter_names", []))
 
     # flatten the data if it is a list of lists
     while isinstance(data[0], list):
         data = list(itertools.chain.from_iterable(data))
 
-    # Compact rollouts must not be trimmed by sample count; the schedule drops
-    # whole trailing rollouts instead.
+    # Compact rollouts and multi-LoRA batches never trim: the schedule drops
+    # whole trailing rollouts, and a multi-LoRA selection trains whole.
     is_compact = any(s.rollout_id is not None for s in data)
 
-    if not args.disable_rollout_trim_samples and not is_compact:
+    if not args.disable_rollout_trim_samples and not is_compact and not is_multi_lora_enabled(args):
         global_batch_size = args.global_batch_size
         if args.use_dynamic_global_batch_size:
             logger.info(f"Collected {len(data)} samples from rollout to train with dynamic global batch size")
@@ -90,17 +87,6 @@ def _compute_dynamic_global_batch_size(args, train_parallel_config, num_samples:
     """
     dp_size = train_parallel_config["dp_size"]
     original_gbs = args.global_batch_size
-
-    if is_multi_lora_enabled(args):
-        # Batches take groups in multiples of each adapter's
-        # min_groups_per_dp_split, so this holds by construction; a violation
-        # means a generate fn's group shape broke the invariant.
-        if num_samples % dp_size != 0:
-            raise ValueError(
-                f"Multi-LoRA batch of {num_samples} samples is not divisible by dp_size={dp_size}; "
-                "the min_groups_per_dp_split invariant was violated (variable-size generate fn output?)"
-            )
-        return num_samples
 
     # Round down to a multiple of dp_size to ensure only one training step
     dynamic_gbs = (num_samples // dp_size) * dp_size

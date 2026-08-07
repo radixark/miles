@@ -1,9 +1,7 @@
-"""Multi-LoRA adapter registry: the controller-owned lifecycle state machine.
-
-One record per adapter name, walking PENDING -> ACTIVE -> RETIRING -> CLEANUP
--> COMPLETED. Slots are reused across registrations but ``slot_versions``
-never reset, so a (slot, version) pair never recurs.
-"""
+"""Controller-owned adapter lifecycle: one record per name, walking PENDING ->
+ACTIVE -> RETIRING -> CLEANUP -> COMPLETED. Slots are rented from the SlotPool;
+serving identity is ``(name, registration_id)``, so slot reuse or same-name
+re-registration can never alias a previous tenant."""
 
 import logging
 import re
@@ -13,6 +11,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from miles.ray.multi_lora.slot_pool import SlotPool
 from miles.utils.adapter_config import AdapterRun, AdapterRunConfig
 
 logger = logging.getLogger(__name__)
@@ -40,34 +39,44 @@ LIVE_STATES = (
 @dataclass
 class AdapterRecord:
     name: str
-    slot: int
-    config: Any
+    config: Any = None
+    # Bound trainer slot; None only transiently during registration today
+    # (bind-at-selection makes unbound a long-lived state).
+    slot: int | None = None
     step: int = 0
     # Baseline step for relative num_step stopping (supports checkpoint resume).
     start_step: int = 0
-    # Committed prompt groups accumulated toward the current optimizer step.
-    # Only advanced by mark_batch_trained (after a successful train call).
-    accumulated_groups: int = 0
+    # Published weight revision of THIS registration; the KV-cache namespace
+    # carries (name, registration_id, serving_version), so restarting at 0 for
+    # a new tenant cannot alias a predecessor's cache entries.
+    serving_version: int = 0
     state: AdapterState = AdapterState.PENDING
     # Unique per registration: a re-registered name is a new tenant, and
     # rollout-side state stamped by the previous tenant must not carry over.
     registration_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
+    @property
+    def tenant(self) -> tuple[str, str]:
+        return (self.name, self.registration_id)
 
-MAX_BATCH_RECORDS = 16
+
+MAX_SELECTION_RECORDS = 16
 MAX_COMPLETED_RECORDS = 1024
 
 
 class AdapterRegistry:
-    """One record per name; ``slot_versions`` never reset, so (slot, version)
-    never recurs across slot reuse."""
+    """One record per name; slot tenancy delegated to the SlotPool."""
 
     def __init__(self, max_adapters: int) -> None:
         self.max_adapters = max_adapters
-        self.free_slots: set[int] = set(range(max_adapters))
-        self.slot_versions: list[int] = [0] * max_adapters
+        self.slot_pool = SlotPool(max_adapters)
         self.records: dict[str, AdapterRecord] = {}
-        self.batch_records: dict[int, dict] = {}
+        # rollout_id -> selected names; the commit is one optimizer step each.
+        self.selection_records: dict[int, list[str]] = {}
+
+    @property
+    def free_slots(self) -> set[int]:
+        return self.slot_pool.free_slot_ids()
 
     def in_state(self, *states: AdapterState) -> dict[str, AdapterRecord]:
         return {name: r for name, r in self.records.items() if r.state in states}
@@ -95,13 +104,62 @@ class AdapterRegistry:
                     raise ValueError(
                         f"Adapter '{name}' save dir '{save_dir}' is already used by adapter '{record.name}'"
                     )
-        if not self.free_slots:
-            raise RuntimeError(f"No free adapter slots (max {self.max_adapters})")
-        slot = min(self.free_slots)
-        self.free_slots.remove(slot)
+        record = AdapterRecord(name=name, config=config)
+        # Slot oversubscription: a full pool queues the registration
+        # unbound (slot None); bootstrap_pending binds it when a slot frees.
+        record.slot = self.slot_pool.bind_immediately(record.tenant)
         self.records.pop(name, None)
-        self.records[name] = AdapterRecord(name=name, slot=slot, config=config)
-        return {"name": name, "slot": slot}
+        self.records[name] = record
+        if record.slot is None:
+            logger.info(f"Adapter '{name}' queued unbound: all {self.max_adapters} slots busy")
+        return {"name": name, "slot": record.slot}
+
+    def bootstrap_pending(self) -> list[str]:
+        """Bind queued unbound PENDING records to free slots, in name order —
+        never evicting (bootstrap must queue, not displace a resident tenant).
+        The next reconcile loads + pushes them, promoting PENDING to ACTIVE."""
+        bound = []
+        for name, record in sorted(self.in_state(AdapterState.PENDING).items()):
+            if record.slot is not None:
+                continue
+            slot = self.slot_pool.bind_immediately(record.tenant)
+            if slot is None:
+                break
+            record.slot = slot
+            bound.append(name)
+            logger.info(f"Adapter '{name}' bootstrap-bound to slot {slot}")
+        return bound
+
+    # ---------------- bind transactions (driver-sequenced only) ----------------
+
+    def bindable_slot_count(self) -> int:
+        return self.slot_pool.bindable_count()
+
+    def plan_bind(self, txn_id: str, tenants: list[tuple[str, str]]) -> dict:
+        return self.slot_pool.plan_bind(txn_id, tenants)
+
+    def commit_bind(self, txn_id: str) -> None:
+        """Reservations become tenancy in the pool AND on the records: the
+        snapshot must never disagree with the SlotPool about who holds a slot
+        (reconcile and the HTTP status view derive loaded state from it)."""
+        committed = [
+            (entry.proposed_tenant, entry.tenant, entry.slot)
+            for entry in self.slot_pool.entries
+            if entry.reserved_by == txn_id
+        ]
+        self.slot_pool.commit_bind(txn_id)
+        for proposed, previous, slot in committed:
+            if previous is not None and previous != proposed:
+                self._sync_record_slot(previous, None)
+            self._sync_record_slot(proposed, slot)
+
+    def abort_bind(self, txn_id: str) -> None:
+        self.slot_pool.abort_bind(txn_id)
+
+    def _sync_record_slot(self, tenant: tuple[str, str], slot: int | None) -> None:
+        record = self.records.get(tenant[0])
+        if record is not None and record.registration_id == tenant[1]:
+            record.slot = slot
 
     def deregister(self, name: str) -> None:
         record = self.records.get(name)
@@ -118,7 +176,7 @@ class AdapterRegistry:
         record = self.records.get(name)
         if record is None or record.state is not AdapterState.CLEANUP:
             return -1
-        self.free_slots.add(record.slot)
+        self.slot_pool.release(record.tenant)
         record.state = AdapterState.COMPLETED
         self.records[name] = self.records.pop(name)
         completed = self.in_state(AdapterState.COMPLETED)
@@ -135,38 +193,34 @@ class AdapterRegistry:
         return record.state
 
     def record_weight_update(self, names: list[str]) -> None:
-        """A weight push landed: bump slot versions, promote PENDING to ACTIVE."""
+        """A weight push landed: bump the registration's serving version,
+        promote PENDING to ACTIVE."""
         for name in names:
             record = self.find(name)
             if record is None:
                 continue
-            self.slot_versions[record.slot] += 1
+            record.serving_version += 1
             if record.state is AdapterState.PENDING:
                 record.state = AdapterState.ACTIVE
 
-    def record_batch_adapters(self, rollout_id: int, groups: dict[str, int], step_names: list[str]) -> None:
-        """Register what a train batch contains before it trains.
+    def record_train_selection(self, rollout_id: int, names: list[str]) -> None:
+        """Register a selection before it trains: whole adapter batches only,
+        so the eventual commit is exactly one optimizer step per name."""
+        self.selection_records[rollout_id] = list(names)
+        while len(self.selection_records) > MAX_SELECTION_RECORDS:
+            self.selection_records.pop(next(iter(self.selection_records)))
 
-        ``groups`` maps adapter name -> prompt groups riding in this batch;
-        ``step_names`` lists adapters whose adapter batch completes with
-        this batch (decided by the collection loop, which caps per-adapter
-        contributions at the adapter's remaining groups).
-        """
-        unknown = set(step_names) - set(groups)
-        assert not unknown, f"step adapters {sorted(unknown)} not present in batch groups"
-        self.batch_records[rollout_id] = {"groups": dict(groups), "step_names": list(step_names)}
-        while len(self.batch_records) > MAX_BATCH_RECORDS:
-            self.batch_records.pop(next(iter(self.batch_records)))
-
-    def mark_batch_trained(self, rollout_id: int) -> list[str]:
-        """Bank the batch's trained groups and fire steps; returns adapters that stepped. Only place
-        accumulation/step state advances, so a failed/retried train call leaves the registry untouched."""
-        record_entry = self.batch_records.pop(rollout_id, None)
-        if record_entry is None:
+    def commit_train_selection(self, rollout_id: int, vetoed_names: list[str] | None = None) -> list[str]:
+        """Fire one step per selected (non-vetoed) adapter; returns adapters that
+        stepped. The only place step state advances, so a failed/retried train
+        call leaves the registry untouched."""
+        names = self.selection_records.pop(rollout_id, None)
+        if names is None:
             return []
+        vetoed = set(vetoed_names or ())
         stepped = []
         reached_num_step = []
-        for name, n_groups in record_entry["groups"].items():
+        for name in names:
             record = self.records.get(name)
             if record is None or record.state not in (
                 AdapterState.ACTIVE,
@@ -174,23 +228,20 @@ class AdapterRegistry:
                 AdapterState.CLEANUP,
             ):
                 continue
-            record.accumulated_groups += n_groups
-            if name in record_entry["step_names"]:
-                target = record.config.rollout_batch_size
-                if record.accumulated_groups != target:
-                    logger.warning(
-                        f"Adapter '{name}' stepped with accumulated_groups={record.accumulated_groups} "
-                        f"!= rollout_batch_size={target}; adapter batch accounting drifted"
-                    )
-                record.step += 1
-                record.accumulated_groups = 0
-                stepped.append(name)
-                if (
-                    getattr(record.config, "num_step", None) is not None
-                    and record.state is AdapterState.ACTIVE
-                    and (record.step - record.start_step) >= record.config.num_step
-                ):
-                    reached_num_step.append(name)
+            if name in vetoed:
+                # The trainer vetoed this adapter's step (non-finite grads): no
+                # clock advances, nothing publishes; the poisoned batch's data
+                # is consumed and dropped.
+                logger.error(f"Adapter '{name}': step vetoed by the trainer; clocks not advanced")
+                continue
+            record.step += 1
+            stepped.append(name)
+            if (
+                getattr(record.config, "num_step", None) is not None
+                and record.state is AdapterState.ACTIVE
+                and (record.step - record.start_step) >= record.config.num_step
+            ):
+                reached_num_step.append(name)
         for name in reached_num_step:
             logger.info(
                 f"Adapter '{name}' reached num_step={self.records[name].config.num_step} "
@@ -226,9 +277,8 @@ class AdapterRegistry:
             name=record.name,
             config=record.config,
             slot=record.slot,
-            version=self.slot_versions[record.slot],
+            version=record.serving_version,
             step=record.step,
-            accumulated_groups=record.accumulated_groups,
             registration_id=record.registration_id,
         )
 

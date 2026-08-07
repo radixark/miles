@@ -40,6 +40,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
@@ -67,7 +68,9 @@ class RolloutManager:
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
 
-        self.use_experimental_refactor = enable_experimental_rollout_refactor()
+        # The multi-LoRA rollout fn is class-based; the legacy plain-function
+        # invocation would call the class itself and crash.
+        self.use_experimental_refactor = enable_experimental_rollout_refactor() or is_multi_lora_enabled(args)
         if self.use_experimental_refactor:
             input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
             self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
@@ -119,7 +122,13 @@ class RolloutManager:
     def get_router_address(self) -> tuple[str, int]:
         return self.args.sglang_router_ip, self.args.sglang_router_port
 
-    def dispose(self):
+    async def dispose(self):
+        from miles.rollout.inference_rollout.compatibility import maybe_close
+
+        await maybe_close(self.generate_rollout)
+        # generate/eval may share one instance; never close it twice.
+        if self.eval_generate_rollout is not self.generate_rollout:
+            await maybe_close(self.eval_generate_rollout)
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
@@ -142,9 +151,19 @@ class RolloutManager:
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout"):
-            data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
+            data, metadata, metrics, control_metadata = await self._get_rollout_data(rollout_id=rollout_id)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
         log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
+        if batch_plan := control_metadata.get("batch_plan"):
+            # The BatchPlan is authoritative for step decisions.
+            metadata["step_slots"] = sorted(entry["bound_slot"] for entry in batch_plan)
+            metadata["step_adapter_names"] = sorted(entry["name"] for entry in batch_plan)
+            # Normalization counts rollout executions (matching the loss), so K
+            # sibling trajectories from one execution count once.
+            metadata["step_adapter_actual_counts"] = {
+                entry["bound_slot"]: entry["actual_rollout_count"] for entry in batch_plan
+            }
+            metadata["adapter_name_by_slot"] = {entry["bound_slot"]: entry["name"] for entry in batch_plan}
         data = convert_samples_to_train_data(
             self.args,
             data,
@@ -157,7 +176,9 @@ class RolloutManager:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
-        return dict(sample_indices=sample_indices, data_ref=data_ref)
+        # control_metadata carries batch-level decisions (bind plan, txn id)
+        # to the driver — never smuggled inside samples.
+        return dict(sample_indices=sample_indices, data_ref=data_ref, control_metadata=control_metadata)
 
     async def eval(
         self,
@@ -232,6 +253,7 @@ class RolloutManager:
         log_eval_skip(rollout_id, self.args, reason)
 
     async def _get_rollout_data(self, rollout_id):
+        control_metadata: dict = {}
         if self.args.load_debug_rollout_data:
             data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
             metrics = None
@@ -245,6 +267,10 @@ class RolloutManager:
                     call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
                 )
             metrics = data.metrics
+            # The rollout fn's typed control plane (e.g. the multi-LoRA
+            # BatchPlan) — must survive the samples unwrap or the driver and
+            # trainer can never see batch-level decisions.
+            control_metadata = data.metadata
             data = data.samples
             data, metadata = postprocess_rollout_data(
                 self.args, data, train_parallel_config=self.train_parallel_config
@@ -256,8 +282,11 @@ class RolloutManager:
                     self.args, generated=generated_data, injected=data, rollout_id=rollout_id
                 )
                 metrics = None
+                # Injected data replaced the generated batch; the generated
+                # batch's control decisions no longer describe it.
+                control_metadata = {}
 
-        return data, metadata, metrics
+        return data, metadata, metrics, control_metadata
 
     # -------------------------- checkpointing -----------------------------
 

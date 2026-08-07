@@ -35,9 +35,12 @@ def build_dp_schedule(
     *,
     global_batch_size: int,
     rollout_indices: list[int],
+    adapter_slots: list[int] | None = None,
 ) -> tuple[list[list[int]], list[list[list[int]]], list[int], list[int]]:
-    """Compute per-rank ``(partitions, micro_batch_indices, num_microbatches, num_rollouts)``;
-    ``global_batch_size`` counts rollouts, not training samples."""
+    """Compute per-rank ``(partitions, micro_batch_indices, num_microbatches,
+    num_rollouts)``; ``global_batch_size`` counts rollouts, not samples. With
+    ``adapter_slots`` (multi-LoRA) the whole batch trains as one step and every
+    micro-batch is ordered by slot (the token routing needs contiguous rows)."""
     dp_size = train_parallel_config["dp_size"]
     cp_size = train_parallel_config["cp_size"]
     vpp_size = train_parallel_config["vpp_size"] or 1
@@ -61,19 +64,24 @@ def build_dp_schedule(
     # Plan the rollout count of each training step: full steps of global_batch_size,
     # plus (under --allow-partial-train-step) one smaller final step for the trailing
     # rollouts that would otherwise be dropped.
-    num_full_steps = len(rollout_ids) // global_batch_size
-    assert num_full_steps >= 1, (
-        f"total rollouts ({len(rollout_ids)}) < global_batch_size ({global_batch_size}); "
-        f"need at least one rollout per step."
-    )
-    num_rollouts = [global_batch_size] * num_full_steps
-    leftover = len(rollout_ids) - num_full_steps * global_batch_size
-    if leftover and getattr(args, "allow_partial_train_step", False) and args.use_dynamic_batch_size:
-        leftover_samples = sum(len(rollout_id_to_sample_index[rid]) for rid in rollout_ids[-leftover:])
-        if leftover_samples >= dp_size:
-            num_rollouts.append(leftover)
-        else:
-            logger.info(f"partial step skipped: {leftover_samples} samples < dp_size {dp_size}")
+    if adapter_slots is not None:
+        # Multi-LoRA: the selection IS the step — whole per-adapter batches,
+        # one optimizer step per selected adapter, nothing dropped.
+        num_rollouts = [len(rollout_ids)]
+    else:
+        num_full_steps = len(rollout_ids) // global_batch_size
+        assert num_full_steps >= 1, (
+            f"total rollouts ({len(rollout_ids)}) < global_batch_size ({global_batch_size}); "
+            f"need at least one rollout per step."
+        )
+        num_rollouts = [global_batch_size] * num_full_steps
+        leftover = len(rollout_ids) - num_full_steps * global_batch_size
+        if leftover and getattr(args, "allow_partial_train_step", False) and args.use_dynamic_batch_size:
+            leftover_samples = sum(len(rollout_id_to_sample_index[rid]) for rid in rollout_ids[-leftover:])
+            if leftover_samples >= dp_size:
+                num_rollouts.append(leftover)
+            else:
+                logger.info(f"partial step skipped: {leftover_samples} samples < dp_size {dp_size}")
 
     partitions: list[list[int]] = [[] for _ in range(dp_size)]
     micro_batch_indices: list[list[list[int]]] = [[] for _ in range(dp_size)]
@@ -130,6 +138,12 @@ def build_dp_schedule(
                     f"Splitting static micro-batches would break the fixed-size invariant; adjust the config "
                     f"so step_size % (dp_size * micro_batch_size * mb_group) == 0."
                 )
+
+        if adapter_slots is not None:
+            # Multi-LoRA: FFD/balancing pack by length only; restore slot order
+            # within every micro-batch for the counts-vector routing.
+            for micro_batch in step_micro_batches:
+                micro_batch.sort(key=lambda i: adapter_slots[sample_indices[i]])
 
         num_microbatches.append(len(step_micro_batches) // dp_size)
 

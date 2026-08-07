@@ -277,9 +277,9 @@ class DistBucketedWeightUpdateMixin:
         rank transmits."""
         from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
 
-        from miles.utils.multi_lora import slot_lora_name
+        from miles.utils.multi_lora import serving_lora_name
 
-        from ...multi_lora_utils import slice_lora_to_rank
+        from ...multi_lora_utils.utils import slice_lora_to_rank
 
         adapter_rank = adapter.config.rank
         lora_config = build_lora_sync_config(self.args) | {"r": adapter_rank, "lora_alpha": adapter.config.alpha}
@@ -302,7 +302,7 @@ class DistBucketedWeightUpdateMixin:
 
         self._update_multi_lora_weight_implementation(
             accumulated_named_tensors,
-            lora_name=slot_lora_name(adapter.slot),
+            lora_name=serving_lora_name(adapter.name, adapter.registration_id),
             lora_config=lora_config,
         )
 

@@ -13,7 +13,7 @@ import httpx
 from miles.ray.multi_lora.registry import AdapterRegistry, AdapterState
 from miles.utils.adapter_config import AdapterRunConfig
 from miles.utils.http_utils import router_worker_base_urls
-from miles.utils.multi_lora import RID_SEPARATOR, min_groups_per_dp_split
+from miles.utils.multi_lora import rid_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -108,18 +108,6 @@ class MultiLoRABackend:
                     f"(rollout_batch_size {rollout_batch_size} x n_samples_per_prompt {n_samples_per_prompt}), "
                     f"exceeding --multi-lora-max-adapter-global-batch-size {max_batch}"
                 )
-        if (dp_size := getattr(self.args, "multi_lora_dp_size", None)) is not None:
-            try:
-                group_multiple = min_groups_per_dp_split(n_samples_per_prompt, dp_size)
-            except ValueError as e:
-                raise ValueError(f"Adapter '{name}': {e}") from None
-            if rollout_batch_size % group_multiple != 0:
-                raise ValueError(
-                    f"Adapter '{name}' rollout_batch_size {rollout_batch_size} must be a multiple of "
-                    f"its min_groups_per_dp_split ({group_multiple} at dp_size={dp_size}), so the "
-                    f"adapter batch can complete from evenly-splitting takes"
-                )
-
         save = Path(config.save) if config.save is not None else None
         if save is None:
             if getattr(self.args, "save", None) is None:
@@ -150,7 +138,9 @@ class MultiLoRABackend:
     async def retire_adapters(self) -> list[str]:
         names = self.registry.retire_adapters()
         for name in names:
-            await self.abort_adapter_requests(name)
+            record = self.registry.records.get(name)
+            if record is not None:
+                await self.abort_adapter_requests(name, record.registration_id)
         return names
 
     async def free_slot(self, name: str) -> int:
@@ -158,7 +148,7 @@ class MultiLoRABackend:
         ``retire_adapters`` abort (e.g. multi-turn groups), and must not leak to the slot's next tenant."""
         record = self.registry.records.get(name)
         if record is not None and record.state is AdapterState.CLEANUP:
-            await self.abort_adapter_requests(name)
+            await self.abort_adapter_requests(name, record.registration_id)
         return self.registry.free_slot(name)
 
     async def worker_urls(self) -> list[str]:
@@ -175,8 +165,10 @@ class MultiLoRABackend:
                 continue
         return []
 
-    async def abort_adapter_requests(self, adapter_name: str) -> None:
-        prefix = f"{adapter_name}{RID_SEPARATOR}"
+    async def abort_adapter_requests(self, adapter_name: str, registration_id: str) -> None:
+        # Registration-scoped: a retiring tenant's abort must never match a
+        # same-name successor's in-flight requests (rid carries the registration).
+        prefix = rid_prefix(adapter_name, registration_id)
         urls = await self.worker_urls()
         if not urls:
             logger.warning(f"Abort for adapter '{adapter_name}': no workers discovered at {self.router_url}")

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.backends.megatron_utils.multi_lora_scheduler import install_slot_scheduler, step_slot_schedulers
+from miles.backends.megatron_utils.multi_lora_utils.scheduler import install_slot_scheduler, step_slot_schedulers
 
 LR = 2e-5
 
@@ -46,6 +46,15 @@ def slot_lr(optimizer, slot: int) -> float:
     return optimizer.chained_optimizers[slot].param_groups[0]["lr"]
 
 
+def step_n(optimizer, slot: int, n: int) -> dict[int, float]:
+    """Advance one slot by n optimizer steps (the scheduler clock is steps,
+    not samples — child batches vary in size under Option 1)."""
+    out: dict[int, float] = {}
+    for _ in range(n):
+        out = step_slot_schedulers(optimizer, [slot])
+    return out
+
+
 def test_decaying_adapter_walks_its_own_cosine_schedule():
     optimizer = make_optimizer()
     adapter = make_adapter(slot=0, num_step=10)
@@ -53,10 +62,10 @@ def test_decaying_adapter_walks_its_own_cosine_schedule():
 
     assert slot_lr(optimizer, 0) == pytest.approx(LR)  # fresh: top of the schedule
 
-    step_slot_schedulers(optimizer, {0: 5 * 64})  # half the horizon
+    step_n(optimizer, 0, 5)  # half the horizon
     assert slot_lr(optimizer, 0) == pytest.approx(LR / 2)
 
-    step_slot_schedulers(optimizer, {0: 100 * 64})  # far past the horizon
+    step_n(optimizer, 0, 100)  # far past the horizon
     assert slot_lr(optimizer, 0) == pytest.approx(0.0)  # clamped at min_lr
 
 
@@ -64,14 +73,14 @@ def test_adapter_without_num_step_holds_constant():
     optimizer = make_optimizer()
     install_slot_scheduler(make_args(), optimizer, make_adapter(slot=0, num_step=None), resume_step=0)
 
-    step_slot_schedulers(optimizer, {0: 12345 * 64})
+    step_n(optimizer, 0, 300)
     assert slot_lr(optimizer, 0) == pytest.approx(LR)  # no horizon: never decays
 
 
 def test_resume_position_is_deterministic_from_committed_steps():
     stepped = make_optimizer()
     install_slot_scheduler(make_args(), stepped, make_adapter(slot=0, num_step=10), resume_step=0)
-    step_slot_schedulers(stepped, {0: 5 * 64})
+    step_n(stepped, 0, 5)
 
     resumed = make_optimizer()
     install_slot_scheduler(make_args(), resumed, make_adapter(slot=0, num_step=10), resume_step=5)
@@ -85,7 +94,7 @@ def test_only_stepped_slots_advance():
     install_slot_scheduler(args, optimizer, make_adapter(slot=0, num_step=10), resume_step=0)
     install_slot_scheduler(args, optimizer, make_adapter(slot=1, num_step=10), resume_step=0)
 
-    lr_by_slot = step_slot_schedulers(optimizer, {0: 5 * 64})
+    lr_by_slot = step_n(optimizer, 0, 5)
 
     assert set(lr_by_slot) == {0}
     assert slot_lr(optimizer, 0) == pytest.approx(LR / 2)
@@ -96,7 +105,7 @@ def test_slot_reuse_installs_a_fresh_schedule():
     optimizer = make_optimizer()
     args = make_args()
     install_slot_scheduler(args, optimizer, make_adapter(slot=0, num_step=10), resume_step=0)
-    step_slot_schedulers(optimizer, {0: 5 * 64})
+    step_n(optimizer, 0, 5)
 
     install_slot_scheduler(args, optimizer, make_adapter(slot=0, num_step=20), resume_step=0)
     assert slot_lr(optimizer, 0) == pytest.approx(LR)  # next tenant starts at the top
@@ -108,7 +117,7 @@ def test_warmup_ramps_from_init_lr():
     install_slot_scheduler(args, optimizer, make_adapter(slot=0, num_step=10), resume_step=0)
 
     assert slot_lr(optimizer, 0) == pytest.approx(0.0)  # init_lr
-    step_slot_schedulers(optimizer, {0: 64})
+    step_n(optimizer, 0, 1)
     assert slot_lr(optimizer, 0) == pytest.approx(LR / 2)  # mid-warmup
-    step_slot_schedulers(optimizer, {0: 64})
+    step_n(optimizer, 0, 1)
     assert slot_lr(optimizer, 0) == pytest.approx(LR)  # warmed up

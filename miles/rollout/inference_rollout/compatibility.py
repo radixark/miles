@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 from collections.abc import Callable
 
@@ -10,7 +11,7 @@ from miles.rollout.base_types import (
     RolloutFnOutput,
     RolloutFnTrainOutput,
 )
-from miles.utils.async_utils import run
+from miles.utils.async_utils import get_async_loop, run
 from miles.utils.misc import load_function
 
 
@@ -46,6 +47,17 @@ def call_rollout_function(fn, input: RolloutFnInput) -> RolloutFnOutput:
         output = run(output)
 
     return output
+
+
+async def maybe_close(fn) -> None:
+    """Release a rollout fn's resources via its optional aclose/close hook.
+    Plain legacy functions have neither hook and are skipped."""
+    if (aclose := getattr(fn, "aclose", None)) is not None:
+        # The fn's tasks live on the shared rollout loop (``run``); awaiting
+        # them from another loop raises, so aclose must execute there.
+        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(aclose(), get_async_loop().loop))
+    elif (close := getattr(fn, "close", None)) is not None:
+        close()
 
 
 class LegacyGenerateFnAdapter:

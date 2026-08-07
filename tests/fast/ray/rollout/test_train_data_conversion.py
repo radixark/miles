@@ -609,9 +609,13 @@ class TestCanScheduleOnRolloutSide:
         assert not can_schedule_on_rollout_side(args, _make_split_data(8), {})
         assert not can_schedule_on_rollout_side(args, _make_split_data(8), None)
 
-    def test_rejects_multi_lora(self):
-        args = make_args(balance_data=False, micro_batch_size=1, multi_lora=True)
-        assert not can_schedule_on_rollout_side(args, _make_split_data(8), FULL_SCHEDULE_CONFIG)
+    def test_multi_lora_schedules_regardless_of_rollout_count(self):
+        # Multi-LoRA rides the rollout-side schedule (slot-sorted micro-batches,
+        # whole selection as one step); the per-step rollout-count threshold
+        # does not apply — even a batch smaller than gbs schedules.
+        args = make_args(balance_data=False, micro_batch_size=1, multi_lora=True)  # global_batch_size=8
+        assert can_schedule_on_rollout_side(args, _make_split_data(8), FULL_SCHEDULE_CONFIG)
+        assert can_schedule_on_rollout_side(args, _make_split_data(6), FULL_SCHEDULE_CONFIG)
 
     def test_rejects_multimodal(self):
         args = make_args(balance_data=False, micro_batch_size=1, multi_lora=False)
@@ -700,3 +704,31 @@ class TestSplitTrainDataByDpScheduled:
         assert shards[0]["num_microbatches"] == [2, 2]
         assert shards[0]["dynamic_global_batch_size"] == 8
         assert shards[0]["num_rollouts"] == [8, 8]
+
+
+class TestMultiLoraScheduledShards:
+    def test_shards_are_slot_sorted_per_micro_batch_and_single_step(self):
+        # End-to-end through the scheduled split: a dp-indivisible multi-LoRA
+        # batch (10 samples, dp 4) ships whole as ONE step, and every
+        # micro-batch's rows are ordered by adapter slot.
+        args = make_args(
+            balance_data=False,
+            micro_batch_size=None,
+            multi_lora=True,
+            multi_lora_n_adapters=2,
+            use_dynamic_batch_size=True,
+            max_tokens_per_gpu=8,
+        )
+        data = _make_split_data(10, lengths=[6, 2, 6, 2, 6, 2, 6, 2, 6, 2])
+        data["adapter_slots"] = [1, 0, 1, 0, 0, 1, 0, 1, 0, 1]
+        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=FULL_SCHEDULE_CONFIG)
+
+        assert all(shard["num_rollouts"] == [10] for shard in shards)
+        assert all(len(shard["num_microbatches"]) == 1 for shard in shards)
+        covered = sorted(i for shard in shards for i in shard["sample_indices"])
+        assert covered == list(range(10))  # nothing trimmed or duplicated
+        for shard in shards:
+            slots = shard["adapter_slots"]
+            for micro_batch in shard["micro_batch_indices"]:
+                micro_batch_slots = [slots[j] for j in micro_batch]
+                assert micro_batch_slots == sorted(micro_batch_slots)

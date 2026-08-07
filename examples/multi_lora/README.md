@@ -1,10 +1,13 @@
-# Multi-LoRA Training Example (fully-async)
+# Multi-LoRA Training Service
 
-Train multiple LoRA adapters concurrently against a shared base model, using a
-fully-async rollout (continuous producer) + a slot-keyed LoRA page table on the
-SGLang engines (in-place upsert, no unload, no drain).
+Train many LoRA adapters concurrently against one shared base model: one
+Megatron trainer holds a pool of adapter slots, shared SGLang engines serve
+every adapter's rollouts, and a control-plane HTTP API registers and retires
+training runs at runtime — adapters may outnumber slots.
 
-This example trains two adapters on Qwen3-4B:
+Each registered adapter is an **independent run**: its own dataset, reward,
+batch shape, learning-rate clock, stop condition, and checkpoints. This
+example trains two adapters on Qwen3-4B:
 
 - **gsm8k** — grade-school math, `rm_type: math`
 - **dapo_math** — competition math (DAPO-Math-17k), `rm_type: deepscaler`
@@ -12,70 +15,47 @@ This example trains two adapters on Qwen3-4B:
 ## Layout
 
 ```
-run_multi_lora.py                    # launcher: prepare / train / full-train / serve
-service_smoke.py                     # register/deregister smoke test against the API
+run_multi_lora.py            # launcher: prepare / train / full-train / serve
+register_and_train.py        # client example: register runs via the API, watch them finish
 adapters/
   gsm8k.yaml
   dapo_math.yaml
 ```
 
-The implementation lives in the library: the driver is `train_multi_lora_async.py`
-at the repo root (next to `train.py`/`train_async.py`), the rollout fn and data
-source are `miles/rollout/multi_lora/`, and the controller is
-`miles/ray/multi_lora/` (registry + backend + HTTP API, plus the named Ray
-actor pinned to the head node).
+The implementation lives in the library: the driver is
+`train_multi_lora_async.py` at the repo root, the rollout frontend is
+`miles/rollout/multi_lora/` (`MultiLoRARolloutFn`), and the controller is
+`miles/ray/multi_lora/` (registry + slot pool + HTTP API on a named Ray actor).
 
-## Design (decoupled per-adapter optimizers)
+## How it works
 
-- **Controller** (Ray actor + control-plane HTTP API) is the source of truth:
-  `POST/GET/DELETE /adapter_runs` plus `GET /adapter_runs/state`. The data source
-  reads it; the trainer reads it. Generation traffic goes straight to the router;
-  on deregister the controller aborts the adapter's in-flight requests
-  engine-side by rid prefix (`rid = {adapter}::{uuid}`, set in `generate`).
-- **Per-adapter gradient accumulation.** Each adapter has its own batch shape:
-  `rollout_batch_size` prompt groups per optimizer step, each group holding
-  `n_samples_per_prompt` responses (`adapter_global_batch_size =
-  rollout_batch_size x n_samples_per_prompt` samples per step). Completed
-  prompt groups flow into training continuously in multiples of the
-  adapter's `min_groups_per_dp_split` (the smallest group count whose samples
-  split evenly across data-parallel ranks), gradients
-  accumulate in the DDP buffers across train batches, and an adapter's
-  optimizer steps exactly when its adapter batch fills — independent of every other
-  adapter. The controller tracks adapter batch progress (`accumulated_groups`) and commits
-  it only after a successful train call.
-- **Per-slot optimizers.** One Adam per adapter slot under Megatron's
-  `LayerWiseDistributedOptimizer` (whole-parameter ZeRO-1): per-slot state,
-  step counts, and gradient clipping; optimizer state sharded across DP ranks;
-  plain DDP all-reduce (no distributed optimizer) makes cross-batch gradient
-  retention idempotent.
-- **Batch collection.** The collection loop (same shape as fully_async's)
-  pops groups from the per-adapter buffers round-robin, one
-  `min_groups_per_dp_split` at a time, capped at each adapter's remaining
-  batch, until the batch reaches `--global-batch-size` samples or a non-empty
-  batch makes no progress for `--multi-lora-max-coalesce-wait-s` (the target
-  can be permanently unreachable, so it trains on whatever is ready) — a
-  single adapter with a small batch trains alone without waiting for
-  anyone. Samples enter the gradient buffers with weight 1; at step time the
-  slot's accumulated gradient is scaled by `1/adapter_global_batch_size`
-  (a constant known in advance), so an adapter's update is identical to what
-  it would get training alone.
-- **Selective weight sync.** Only adapters whose optimizer stepped are pushed
-  to the engines (upsert into the slot-keyed page table); only their slot
-  versions bump, keeping staleness filtering per-adapter accurate.
-- Adapters deregister on committed optimizer-step count (`num_step`) in the
-  controller's train-commit path (`mark_batch_trained`), so stop checks happen
-  exactly when steps advance. `num_step` is relative to the adapter's
-  start/resume step. When an adapter doesn't set `num_step`, it is derived
-  from `num_epoch` (default 1) as `num_epoch x len(dataset) //
-  rollout_batch_size` once the data source loads the dataset (post-filter
-  length). The trainer's
-  `reconcile_adapters` (before each generate) retires it at the next sync
-  point and cleans up (save ckpt + clear Megatron slot + zero its optimizer
-  state and retained gradients). The adapter's untrained tail — buffered
-  groups and any partially accumulated gradients — is discarded.
-- **Batch ⊆ loaded property:** `reconcile_adapters` runs before `generate`, so the
-  batch is fetched with loaded = active; active only shrinks during generate, so every
-  adapter in the batch is live on the trainer.
+- **Controller** (Ray actor + HTTP API) is the source of truth:
+  `POST/GET/DELETE /adapter_runs`. Serving identity is registration-scoped —
+  a re-registered name is a new tenant, so stale in-flight requests and KV
+  cache entries from a previous registration can never leak into the new run.
+- **Whole batches, atomically.** Each adapter's child rollout produces one
+  complete logical batch (`rollout_batch_size` prompt groups ×
+  `n_samples_per_prompt` responses). A persistent round-robin selection
+  coalesces ready batches toward `--global-batch-size` (waiting at most
+  `--multi-lora-max-coalesce-wait-s`), and a selected batch always ships
+  whole — an adapter's optimizer step sees exactly the batch shape its yaml
+  declared, independent of every other adapter.
+- **Per-slot optimizers and schedulers.** One Adam per slot under Megatron's
+  `LayerWiseDistributedOptimizer`; per-slot learning-rate schedulers tick on
+  that adapter's optimizer steps. A non-finite gradient vetoes only the
+  offending adapter's step — its clocks don't advance and nothing publishes.
+- **Slot oversubscription.** Registrations beyond the slot pool queue unbound
+  and bind when a slot frees (bootstrap) or at selection time via
+  transactional reservations; idle residents are evicted keep-warm (LRU) with
+  optimizer-inclusive sidecar checkpoints, so a swapped-out adapter resumes
+  bit-exact — weights, fp32 masters, Adam moments, and step counters.
+- **Publish gate.** Only adapters whose step committed push weights, under
+  their registration-scoped serving name; an adapter's next batch starts only
+  after its previous step's weights are live on the engines.
+- **Lifecycle.** A run retires automatically once committed steps reach
+  `num_step` (derived from `num_epoch`, default 1, when unset): final
+  checkpoint saved, slot cleared, in-flight requests aborted by rid prefix.
+  Re-registering the same name resumes from its saved checkpoint.
 
 ## Provision (once)
 
@@ -86,14 +66,14 @@ python examples/multi_lora/run_multi_lora.py prepare
 Downloads `Qwen/Qwen3-4B` (to `/root/models`), `zhuzilin/dapo-math-17k`, and
 `zhuzilin/gsm8k` (to `/root/datasets`).
 
-## Run
+## Bounded run
 
 ```bash
 python examples/multi_lora/run_multi_lora.py train        # or: full-train (prepare + train)
 ```
 
-Registers the two adapters from CLI flags and trains until each hits its `num_step`,
-then exits.
+Registers the two adapters from `adapters/` at startup and exits once each
+reaches its `num_step`.
 
 ## Service mode
 
@@ -101,20 +81,31 @@ then exits.
 python examples/multi_lora/run_multi_lora.py serve
 ```
 
-Starts with no adapters and idles; register/deregister at runtime through the
-control-plane API (port 8068):
+Starts with no adapters and idles; register and watch runs from any machine
+that can reach the API (port 8068):
 
 ```bash
-python examples/multi_lora/service_smoke.py --api-url http://127.0.0.1:8068 \
-    --data /root/datasets/gsm8k/train.parquet --input-key messages --label-key label --rm-type math
+python examples/multi_lora/register_and_train.py \
+    --api-url http://127.0.0.1:8068 \
+    --adapter gsm8k=examples/multi_lora/adapters/gsm8k.yaml \
+    --adapter dapo_math=examples/multi_lora/adapters/dapo_math.yaml
 ```
+
+`tests/manual/multi_lora_service_smoke.py` exercises the full register/train/deregister lifecycle
+(including mid-run registration, mid-run deregistration, and name reuse) and
+is what the GPU E2E scripts assert against.
 
 ## Multi-LoRA CLI flags
 
 | Flag | Purpose |
 | --- | --- |
-| `--multi-lora-n-adapters N` | Max concurrent adapter slots. `0` disables (default); `> 0` enables. |
+| `--multi-lora-n-adapters N` | Adapter slot pool size. `0` disables (default); registrations beyond `N` queue unbound. |
 | `--multi-lora-adapter NAME PATH` | Register an adapter at startup. Repeatable. `PATH` → an `adapter.yaml`. |
+| `--multi-lora-api-port PORT` | Control-plane API port on the head node (default 8068). |
+| `--multi-lora-disable-service-mode` | Exit after all startup adapters finish instead of idling for registrations. |
+| `--multi-lora-idle-poll-s S` | Poll cadence for new registrations while no adapter is active. |
+| `--multi-lora-max-coalesce-wait-s S` | How long ready batches wait to coalesce toward `--global-batch-size`. |
+| `--multi-lora-max-empty-wait-s S` | How long a generate call waits for the first ready batch. |
 
 Per-adapter `rank` in `adapter.yaml` must be `<= --lora-rank`.
 
@@ -129,18 +120,31 @@ data: /root/datasets/gsm8k/train.parquet
 input_key: messages
 label_key: label
 rm_type: math
-num_step: 400               # stop adapter after N optimizer steps
+num_step: 400               # stop after N committed optimizer steps
                             # (default: derived from num_epoch, itself default 1)
-# optional: save, num_epoch, custom_rm_path, ...
+# optional: save, num_epoch, custom_rm_path, metadata, rollout_function_path
 ```
 
-The derived `adapter_global_batch_size = rollout_batch_size x
-n_samples_per_prompt` is the adapter's samples-per-optimizer-step (the
-per-adapter analog of `--global-batch-size`).
+## Scheduling semantics and boundaries
 
-Batch-shape constraints (validated at registration, not at runtime):
-`n_samples_per_prompt` must be a divisor or multiple of the trainer's
-data-parallel size; `rollout_batch_size` must be a multiple of the adapter's
-`min_groups_per_dp_split`;
-`adapter_global_batch_size` is capped by
-`--multi-lora-max-adapter-global-batch-size` (default 4x `--global-batch-size`).
+- **Oversubscription is queue-first.** A registration beyond the slot pool
+  waits unbound and binds when a slot frees (an earlier run retiring); it does
+  not evict a resident adapter at selection time. The transactional
+  bind-at-selection machinery exists, but reaching it requires the rollout
+  engines to serve more adapters than the trainer has slots — today
+  `--multi-lora-n-adapters` sizes both, so eviction stays dormant.
+- **Batch shape.** A selection ships whole per-adapter batches and trains them
+  as one step; nothing is trimmed and no dp-divisibility is required. The step
+  must still be splittable into `dp_size` micro-batches (with pipeline
+  parallelism disabled that is the only alignment): a selection whose sample
+  count is below `dp_size`, or whose samples individually exceed
+  `--max-tokens-per-gpu` in a way that leaves fewer splittable micro-batches
+  than ranks, fails the schedule with an explicit assertion.
+- **Agentic children.** One rollout execution may emit several sibling samples
+  (shared `rollout_id`); the loss and the per-adapter step normalization both
+  count executions, not samples. Size agentic runs with the per-adapter
+  `rollout_batch_size` — the per-execution trajectory count multiplies the
+  physical batch and is invisible to registration-time validation.
+- On MoE models the grouped-GEMM adapter path supports up to
+  `1024 / experts_per_rank` concurrent slots (a `torch._grouped_mm` limit;
+  higher expert parallelism raises the ceiling).

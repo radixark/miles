@@ -1,7 +1,7 @@
 """Smoke test for multi-LoRA service mode: register/deregister against a running
 trainer, using step counts as the race-free progress signal.
 
-Usage: python examples/multi_lora/service_smoke.py --api-url http://HOST:8068 \\
+Usage: python tests/manual/multi_lora_service_smoke.py --api-url http://HOST:8068 \\
     --data /root/datasets/gsm8k/train.parquet --input-key messages --label-key label --rm-type math
 """
 
@@ -25,6 +25,7 @@ class ServiceClient:
         self.http = httpx.Client(timeout=30.0)
 
     def adapters(self, states: set[str] | None = None) -> dict:
+        """Adapters filtered to `states`; pass states=None for {"ACTIVE"} only."""
         response = self.http.get(f"{self.api_url}/adapter_runs")
         response.raise_for_status()
         wanted_states = states if states is not None else {"ACTIVE"}
@@ -38,6 +39,11 @@ class ServiceClient:
             for status in response.json()["adapters"]
             if status["state"] in wanted_states
         }
+
+    def all_adapters(self) -> dict:
+        response = self.http.get(f"{self.api_url}/adapter_runs")
+        response.raise_for_status()
+        return {status["name"]: status for status in response.json()["adapters"]}
 
     def active_adapters(self) -> dict:
         return self.adapters(states={"ACTIVE"})
@@ -65,17 +71,19 @@ class ServiceClient:
             time.sleep(POLL_INTERVAL_S)
         raise SmokeFailure(f"timed out after {self.timeout_s}s waiting for: {description}")
 
-    def wait_for_step(self, name: str, min_step: int) -> None:
-        # Step-triggered deregistration can move an adapter to RETIRING quickly;
-        # count both ACTIVE and RETIRING for progress waits.
-        self.wait_for(
-            f"'{name}' to reach step {min_step}",
-            lambda _active: (
-                (adapters := self.adapters(states={"ACTIVE", "RETIRING"}))
-                and name in adapters
-                and adapters[name]["step"] >= min_step
-            ),
-        )
+    def wait_for_step(self, name: str, min_step: int, allow_completion: bool = False) -> None:
+        # A whole train cycle can finish between polls; with allow_completion a
+        # terminal record (only reachable after num_step) also counts as success.
+        def predicate(_active: dict) -> bool:
+            adapters = self.adapters(states={"ACTIVE", "RETIRING"})
+            if name in adapters and adapters[name]["step"] >= min_step:
+                return True
+            if not allow_completion:
+                return False
+            record = self.all_adapters().get(name)
+            return record is None or record["state"] in {"CLEANUP", "COMPLETED"}
+
+        self.wait_for(f"'{name}' to reach step {min_step}", predicate)
 
     def register_when_allowed(self, name: str, config: dict) -> None:
         """Registration is rejected while a same-named adapter is cleaning up;
@@ -133,7 +141,7 @@ def main() -> int:
         auto_cfg = config("smoke_auto")
         auto_cfg["num_step"] = args.num_step_smoke
         client.register_when_allowed("smoke_auto", auto_cfg)
-        client.wait_for_step("smoke_auto", args.num_step_smoke)
+        client.wait_for_step("smoke_auto", args.num_step_smoke, allow_completion=True)
         client.wait_for("'smoke_auto' auto-deregistered", lambda adapters: "smoke_auto" not in adapters)
 
         print("phase 3: register smoke_a; expect promotion + training progress")

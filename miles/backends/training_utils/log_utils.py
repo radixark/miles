@@ -207,7 +207,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "adapter_slots",
                 "step_slots",
                 "step_adapter_names",
-                "step_adapter_batch_sizes",
+                "step_adapter_actual_counts",
+                "adapter_name_by_slot",
                 "prompt_group_sizes",
             ]:
                 continue
