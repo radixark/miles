@@ -5,8 +5,7 @@ These cover the Python-side policy and label pipeline:
 * `strip_run_ci_prefix`: empty input, prefix stripping, silent skip of
   workflow-only labels, warning on other non-prefixed inputs.
 * `resolve_policy`: explicit cadence + raw labels -> selection and fast-fail.
-* The pr-test.yml seam: one adapter resolves trigger facts and every stage
-  consumes its outputs.
+* The PR workflow seams: one adapter resolves trigger facts and every CUDA/ROCm stage consumes its outputs.
 * `filter_tests`: include-set selection with the "empty labels means always
   run" semantic; a scope subtraction is not a per-test veto.
 * `CI_SUITES`: locked to the new taxonomy including the
@@ -241,6 +240,10 @@ class TestWorkflowScopeSeam:
     def _workflow() -> str:
         return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "pr-test.yml").read_text()
 
+    @staticmethod
+    def _reusable_workflow(name: str) -> str:
+        return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / name).read_text()
+
     def test_every_stage_consumes_resolved_policy(self):
         workflow = self._workflow()
         commands = workflow.split("execute_command:")[1:]
@@ -260,6 +263,22 @@ class TestWorkflowScopeSeam:
         expected = "needs: [resolve-ci-policy, resolve-ci-image]"
         assert expected in stage_a
         assert expected in stage_b
+
+    def test_cpu_and_gpu_stages_use_dedicated_reusable_workflows(self):
+        workflow = self._workflow()
+        assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
+        assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 5
+        assert "cpu_runner" not in workflow
+
+        gpu_workflow = self._reusable_workflow("_run-ci.yml")
+        cpu_workflow = self._reusable_workflow("_run-cpu-ci.yml")
+        job_id_pattern = r"^  ([A-Za-z_][A-Za-z0-9_-]*):$"
+        gpu_jobs = re.findall(job_id_pattern, gpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
+        cpu_jobs = re.findall(job_id_pattern, cpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
+        assert gpu_jobs == ["run"]
+        assert cpu_jobs == ["run-cpu"]
+        assert "cpu_runner" not in gpu_workflow
+        assert "cpu_runner" not in cpu_workflow
 
     def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
@@ -302,6 +321,69 @@ class TestWorkflowScopeSeam:
     def test_non_pr_concurrency_does_not_collapse_to_ref(self):
         workflow = self._workflow()
         assert "github.event.schedule || github.run_id" in workflow
+
+    def test_closed_pr_only_cancels_existing_run(self):
+        workflow = self._workflow()
+        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
+        assert (
+            "group: ${{ github.workflow }}-${{ github.event.number || github.event.schedule || github.run_id }}"
+            in workflow
+        )
+
+        for job_name in ("resolve-ci-policy", "docker-paths", "docker-build"):
+            job_header = workflow.split(f"  {job_name}:", 1)[1].split("    runs-on:", 1)[0]
+            assert "github.event.action != 'closed'" in job_header
+
+
+class TestRocmWorkflowScopeSeam:
+    @staticmethod
+    def _workflow() -> str:
+        return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "pr-test-rocm.yml").read_text()
+
+    def test_pr_nightly_and_dispatch_share_policy(self):
+        workflow = self._workflow()
+        assert (
+            "pull_request_target:\n    types: [opened, synchronize, reopened, ready_for_review, labeled]" in workflow
+        )
+        configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))
+        assert configured == set(SCHEDULE_POLICIES)
+
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
+        assert "allow_self_hosted: ${{ steps.authorize.outputs.allow_self_hosted }}" in policy_block
+        assert '"$HEAD_REPOSITORY" != "$BASE_REPOSITORY"' in policy_block
+        assert "ALLOW_SELF_HOSTED=false" in policy_block
+        assert 'test("^run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*$")' in policy_block
+        assert "EVENT_NAME: ${{ github.event_name == 'pull_request_target' && 'pull_request'" in policy_block
+        assert "SCHEDULE: ${{ github.event.schedule || '' }}" in policy_block
+        assert "PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in policy_block
+        assert "run: python -m tests.ci.ci_policy" in policy_block
+        assert "github.event.schedule || github.run_id" in workflow
+
+    def test_stage_consumes_policy_and_preserves_manual_full_scope(self):
+        workflow = self._workflow()
+        stage = workflow.split("  stage-c-4-gpu-mi300x:", 1)[1]
+        command = stage.split("execute_command:", 1)[1].split("secrets:", 1)[0]
+
+        assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
+        assert "if: needs.resolve-ci-policy.outputs.allow_self_hosted == 'true'" in stage
+        assert "partition_id: [0, 1]" in stage
+        assert "--auto-partition-size 2" in command
+        assert "format('refs/pull/{0}/merge', github.event.pull_request.number)" in stage
+        assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in command
+        assert "--labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}" in command
+        assert "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}" in command
+        secret_gate = (
+            "(github.event_name != 'pull_request_target' || "
+            "github.event.pull_request.head.repo.full_name == github.repository)"
+        )
+        assert f"WANDB_API_KEY: ${{{{ {secret_gate} && secrets.WANDB_API_KEY || '' }}}}" in stage
+        assert "--labels amd" not in command
+        assert "if: github.event_name == 'workflow_dispatch'" not in workflow
+
+        reusable = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "_run-ci-rocm.yml").read_text()
+        assert "checkout_ref:" in reusable
+        assert "ref: ${{ inputs.checkout_ref }}" in reusable
+        assert "persist-credentials: false" in reusable
 
 
 # --- CLI seam: local nightly alias and invalid-suite exit behavior -----------

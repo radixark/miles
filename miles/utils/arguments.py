@@ -344,6 +344,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--rematerialize-param-from-master-weight",
+                action="store_true",
+                help=(
+                    "Colocate CPU memory optimization. Drop the actor's parameter weight backup "
+                    "during inference, and rebuild it from the optimizer's master weights on the "
+                    "next train step. Reduces peak CPU memory by 2*param per rank (bf16 training). "
+                    "Works with both the GPU optimizer and the CPU optimizer, but is not compatible "
+                    "with --use-precision-aware-optimizer on GPU. ref/teacher tags keep their "
+                    "backups. Recommended for Grace GPU colocate training."
+                ),
+            )
+            parser.add_argument(
+                "--check-rematerialize-param-from-master-weight",
+                action="store_true",
+                help="Debug: SHA256-verify the first two rematerialize cycles are bit-identical.",
+            )
+            parser.add_argument(
                 "--megatron-to-hf-mode",
                 choices=["raw", "bridge"],
                 default="raw",
@@ -1338,7 +1355,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "while the actor stays frozen. Only takes effect when --advantage-estimator is ppo.",
             )
             parser.add_argument("--critic-load", type=str, default=None, help="The checkpoint for critic model.")
-            parser.add_argument("--critic-save", type=str, default=None, help="The checkpoint for critic model.")
+            parser.add_argument(
+                "--critic-save",
+                type=str,
+                default=None,
+                help="Where to save critic checkpoints. If not set, it defaults to the --save path with a "
+                "'_critic' suffix appended, e.g. --save /ckpts/run1 saves the critic to /ckpts/run1_critic.",
+            )
             parser.add_argument("--critic-lr", type=float, default=None, help="The lr for critic model")
             parser.add_argument(
                 "--critic-lr-warmup-iters",
@@ -2744,6 +2767,52 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
     return list(args.ft_components)
 
 
+def _validate_rematerialize_param_from_master_weight(args):
+    if not args.rematerialize_param_from_master_weight:
+        return
+    if args.debug_train_only:
+        # update_weights never runs, so the param buffer would never be paused.
+        args.rematerialize_param_from_master_weight = False
+        return
+    assert (
+        args.train_backend == "megatron"
+    ), "--rematerialize-param-from-master-weight reads Megatron's distributed-optimizer main params"
+    from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+
+    assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
+    assert not args.debug_disable_optimizer, "--debug-disable-optimizer leaves no main params to rematerialize from"
+    assert not args.indep_dp, (
+        "--rematerialize-param-from-master-weight drops the backup inside update_weights, which "
+        "RayTrainGroup runs on the first alive cell only. Every other cell would keep it for the whole "
+        "run. Lift this once all cells update weights."
+    )
+    assert args.colocate and args.offload_train
+    assert args.offload_train_target == "cpu", (
+        "--offload-train-target=disk streams the weights to NVMe and reads them back from GPU after "
+        "resume, so there is no backup for the rebuild to replace"
+    )
+    assert args.use_distributed_optimizer
+    assert args.enable_weights_backuper
+    assert not args.keep_old_actor
+    assert not args.use_precision_aware_optimizer or args.optimizer_cpu_offload, (
+        "--use-precision-aware-optimizer on GPU keeps the master weights inside TE FusedAdam, stored as "
+        "int16 remainders of the params. There is nothing standalone to rebuild from. Add "
+        "--optimizer-cpu-offload, which holds standalone masters instead."
+    )
+    assert (
+        not args.overlap_param_gather
+    ), "the rebuild calls DDP.start_param_sync outside the training step; overlap-param-gather does not support that"
+    assert (
+        args.compute_advantages_and_returns
+    ), "the per-cycle rebuild runs in the compute_advantages_and_returns block; without it training would run on dropped weights"
+    assert (
+        args.num_critic_only_steps == 0
+    ), "critic-only steps run update_weights repeatedly without an intervening actor wake_up"
+    args.disable_param_buffers_cpu_backup = True
+    if args.ci_test:
+        args.check_rematerialize_param_from_master_weight = True
+
+
 def miles_validate_args(args):
     validate_dashboard_args(args)
 
@@ -3116,6 +3185,9 @@ def miles_validate_args(args):
         args.critic_load = args.load
     if args.critic_lr is None:
         args.critic_lr = args.lr
+    if args.critic_save is None and args.save is not None:
+        # a sibling dir, not args.save itself: sharing a dir would clobber the actor's iteration tracker
+        args.critic_save = args.save.rstrip("/") + "_critic"
 
     if args.offload:
         args.offload_train = True
@@ -3220,6 +3292,8 @@ def miles_validate_args(args):
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
+
+    _validate_rematerialize_param_from_master_weight(args)
 
     if args.offload_train_target == "disk":
         assert args.offload_train, "--offload-train-target=disk requires --offload-train"

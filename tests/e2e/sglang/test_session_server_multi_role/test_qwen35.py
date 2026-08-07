@@ -10,6 +10,7 @@ CONFIG = ModelConfig(
     tool_call_parser="qwen3_coder",
     tito_model="qwen35",
     tp_size=2,
+    enable_spec=True,
     cycles=2,
     tool_call_failure_mode="append_tool",
 )

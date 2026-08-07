@@ -126,6 +126,7 @@ def _execute_with_cp(cp_size: int):
         f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
         "--moe-token-dispatcher-type flex "
+        "--rematerialize-param-from-master-weight "
     )
 
     train_args = (

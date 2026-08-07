@@ -198,6 +198,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
     if case.colocate:
         misc_args += "--colocate "
+        misc_args += "--rematerialize-param-from-master-weight "
     else:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
 

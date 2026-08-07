@@ -1,7 +1,7 @@
 from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_both_versions
 
-register_cuda_ci(est_time=600, suite="stage-c-4-gpu-h200", labels=["sglang"])
+register_cuda_ci(est_time=600, suite="stage-c-2-gpu-h200", labels=["sglang"])
 
 
 CONFIG = ModelConfig(
@@ -9,7 +9,8 @@ CONFIG = ModelConfig(
     reasoning_parser="qwen3",
     tool_call_parser="qwen25",
     tito_model="qwen3",
-    tp_size=2,
+    num_gpus=2,
+    tp_size=1,
     cycles=2,
     tool_call_failure_mode="append_tool",
     # qwen3 assistant_text TITO roundtrip drifts just over the 0.2 default

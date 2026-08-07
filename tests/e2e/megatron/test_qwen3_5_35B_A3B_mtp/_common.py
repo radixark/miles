@@ -166,6 +166,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
         "--colocate "
         "--moe-token-dispatcher-type flex "
+        "--rematerialize-param-from-master-weight "
     )
 
     train_args = (

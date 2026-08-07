@@ -1,4 +1,4 @@
-# SWE-Agent training with Harbor
+# SWE-Agent training with Harbor on Docker sandboxes
 
 This example trains GLM-4.7-Flash on agentic coding and terminal tasks. Miles
 runs synchronous GRPO and serves the policy through its session server; a
@@ -48,6 +48,19 @@ generous — agentic trials routinely run past an hour, and a short timeout kill
 them mid-episode. Verify `http://<agent-server>:30000/health` before launching
 Miles.
 
+The two per-trial timeouts must be ordered. `--agent-timeout` is the authoritative
+one: when it fires, the agent server ends the trial and frees its sandbox. The
+rollout client applies a second ceiling, `AGENT_TRIAL_TIMEOUT` (default 7200
+seconds), which has to stay above `--agent-timeout`. If the client gives up first,
+the trial is recorded as aborted while the agent server keeps running it, so the
+sandbox and its `--max-concurrent` slot stay busy for the remaining difference, and
+the aborted sample takes its whole GRPO group down with it. Raise it through the
+launcher's generic env-var hook:
+
+```bash
+python examples/swe-agent-harbor-docker/run.py ... --extra-env-vars 'AGENT_TRIAL_TIMEOUT=10800'
+```
+
 If the trainer reaches the agent server through a proxy or an in-cluster service
 rather than directly, point `--agent-server-url` at that stable name rather than
 an ephemeral pod address. The rollout client enables TCP keepalive probes so
@@ -58,7 +71,7 @@ long-running trials do not lose an idle connection while Harbor is working.
 Convert a local JSONL whose rows include a task instruction and instance name:
 
 ```bash
-python examples/swe-agent/download_and_process_data.py \
+python examples/swe-agent-harbor-docker/download_and_process_data.py \
     --input /path/to/terminal-bench.jsonl \
     --output /path/to/tb2_train.jsonl \
     --agent-name mini-swe-agent \
@@ -75,7 +88,7 @@ H200 GPUs: 32 trajectories per GRPO step (4 prompts times 8 samples), each one a
 full mini-swe-agent episode in its own Harbor sandbox.
 
 ```bash
-python examples/swe-agent/run.py \
+python examples/swe-agent-harbor-docker/run.py \
     --num-nodes 1 \
     --num-gpus-per-node 8 \
     --skip-prepare \
