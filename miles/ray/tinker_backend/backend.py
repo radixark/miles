@@ -5,6 +5,7 @@ payload must never reach the shared GPU driver."""
 
 import asyncio
 import logging
+import math
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -236,13 +237,18 @@ class TinkerBackend:
     ) -> None:
         """A data selection landed: forward_backward adapters now hold
         unstepped gradients (pin them); every listed operation completes with
-        its per-datum target logprobs in the operation's row order."""
+        its per-datum target logprobs in the operation's row order, plus
+        backend-computed metrics in the SDK combiner's name:reduction format."""
         self.registry.mark_accumulated(accumulated)
         logprobs_by_op = logprobs_by_op or {}
         for operation_id in operation_ids:
             operation = self.operations.get(operation_id)
             if operation is not None and operation["state"] == "CLAIMED":
-                self.operations.complete(operation_id, {"logprobs": logprobs_by_op.get(operation_id)})
+                logprobs = logprobs_by_op.get(operation_id)
+                result = {"logprobs": logprobs}
+                if operation["kind"] == "forward_backward" and logprobs is not None:
+                    result["metrics"] = operation_result_metrics(self.operations.payload(operation_id), logprobs)
+                self.operations.complete(operation_id, result)
 
     # ---------------- engine-facing ----------------
 
@@ -290,3 +296,33 @@ class TinkerBackend:
             ready_adapters=sorted(self.registry.in_state(AdapterState.READY)),
             supported_loss_fns=list(SUPPORTED_LOSS_FNS),
         )
+
+
+def operation_result_metrics(payload: dict, logprobs: list[list[float]]) -> dict[str, float]:
+    """Recompute a forward_backward operation's loss from its own payload and
+    the returned logprobs, keyed ``name:reduction`` so the tinker SDK combiner
+    can merge chunked operations (``:sum`` adds across chunks — the same
+    chunk-additivity the gradient sum has)."""
+    spec = payload.get("loss") or {}
+    loss_fn = spec.get("loss_fn", "cross_entropy")
+    config = spec.get("loss_fn_config") or {}
+    total = 0.0
+    weighted_tokens = 0.0
+    for sample, sample_logprobs in zip(payload.get("samples") or [], logprobs, strict=False):
+        mask = sample.get("loss_mask") or [1.0] * len(sample_logprobs)
+        weighted_tokens += sum(1.0 for m in mask if m)
+        if loss_fn == "cross_entropy":
+            weights = sample.get("loss_weights") or []
+            total += sum(-lp * w * m for lp, w, m in zip(sample_logprobs, weights, mask, strict=False))
+        else:
+            old = sample.get("rollout_log_probs") or []
+            advantages = sample.get("advantages") or []
+            for lp, old_lp, advantage, m in zip(sample_logprobs, old, advantages, mask, strict=False):
+                ratio = math.exp(lp - old_lp)
+                surrogate = ratio * advantage
+                if loss_fn == "ppo":
+                    low = config.get("clip_low_threshold", 0.8)
+                    high = config.get("clip_high_threshold", 1.2)
+                    surrogate = min(surrogate, min(max(ratio, low), high) * advantage)
+                total += -surrogate * m
+    return {"loss:sum": total, "unmasked_tokens:sum": weighted_tokens}

@@ -302,7 +302,9 @@ class DistBucketedWeightUpdateMixin:
 
         self._update_multi_lora_weight_implementation(
             accumulated_named_tensors,
-            lora_name=slot_lora_name(adapter.slot),
+            # Tinker runs serve registration-scoped names (anti-ABA); the
+            # adapter-sample-level path keys engines by slot.
+            lora_name=getattr(adapter, "serving_name", None) or slot_lora_name(adapter.slot),
             lora_config=lora_config,
         )
 

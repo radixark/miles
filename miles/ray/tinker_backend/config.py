@@ -36,6 +36,14 @@ class AdapterRun:
     # state stamped by the previous tenant must not carry over.
     registration_id: str = ""
 
+    @property
+    def serving_name(self) -> str:
+        """Engine-side LoRA name: registration-scoped, so a re-registered name
+        never aliases the previous tenant's served weights (anti-ABA)."""
+        from miles.utils.tinker_backend import serving_lora_name
+
+        return serving_lora_name(self.name, self.registration_id)
+
 
 def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:
     """Parse a single adapter.yaml (CLI registration). The public fields only:

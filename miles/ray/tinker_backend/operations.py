@@ -290,6 +290,11 @@ class OperationLedger:
         op = self.by_id.get(operation_id)
         return op.view() if op is not None else None
 
+    def payload(self, operation_id: str) -> dict | None:
+        """The stored request payload (metrics recomputation at completion)."""
+        op = self.by_id.get(operation_id)
+        return op.payload if op is not None else None
+
     def ack(self, operation_id: str) -> None:
         """Drop a terminal record the client has retrieved. Terminal records
         are never evicted by pressure while their registration lives — the

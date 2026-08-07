@@ -53,3 +53,8 @@ def cache_extra_key(adapter_name: str, registration_id: str, serving_version: in
     """KV-cache namespace: registration and serving version both enter the key, so
     neither a re-registered name nor a republished revision can reuse stale KV."""
     return f"{adapter_name}:{registration_id}:v{serving_version}"
+
+
+def is_tinker_enabled(args) -> bool:
+    """Tinker mode: multi-LoRA slots driven by the tinker operation backend."""
+    return bool(getattr(args, "tinker_backend", False)) and getattr(args, "multi_lora_n_adapters", 0) > 0

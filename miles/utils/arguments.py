@@ -1727,6 +1727,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
             )
             parser.add_argument(
+                "--tinker-backend",
+                action="store_true",
+                default=False,
+                help="Serve the multi-LoRA slots through the tinker-compatible operation backend "
+                "(client-driven forward_backward/optim_step; no dataset or reward on the server). "
+                "Requires --multi-lora-n-adapters > 0.",
+            )
+            parser.add_argument(
                 "--multi-lora-adapter",
                 nargs=2,
                 action="append",

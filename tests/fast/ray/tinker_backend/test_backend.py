@@ -180,7 +180,9 @@ class TestCommitAndFence:
         backend.enqueue_operation("X", "fb1", 1, "forward_backward", fb_payload())
         backend.operations.claim_data_operation("X", reg_id)
         backend.commit_tinker_batch(["X"], ["fb1"], {"fb1": [[-0.1, -0.2]]})
-        assert backend.operations.get("fb1")["result"] == {"logprobs": [[-0.1, -0.2]]}
+        result = backend.operations.get("fb1")["result"]
+        assert result["logprobs"] == [[-0.1, -0.2]]
+        assert result["metrics"]["loss:sum"] == pytest.approx(0.1 + 0.2)  # unit loss_weights
         assert backend.registry.is_dirty("X")
 
     def test_retirement_fences_open_operations(self, monkeypatch):
