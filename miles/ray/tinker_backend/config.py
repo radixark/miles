@@ -35,3 +35,21 @@ class AdapterRun:
     # Unique per registration: a re-registered name is a new tenant, and any
     # state stamped by the previous tenant must not carry over.
     registration_id: str = ""
+
+
+def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:
+    """Parse a single adapter.yaml (CLI registration). The public fields only:
+    alpha is deployment-configured and rejected if present."""
+    import yaml
+
+    with open(path) as f:
+        raw = yaml.safe_load(f) or {}
+    known = {"rank", "save", "num_step", "metadata"}
+    if unknown := set(raw) - known:
+        raise ValueError(f"adapter yaml {path} has unsupported fields: {sorted(unknown)} (allowed: {sorted(known)})")
+    return AdapterRunConfig(
+        rank=raw.get("rank"),
+        save=Path(raw["save"]) if raw.get("save") else None,
+        num_step=raw.get("num_step"),
+        metadata=raw.get("metadata") or {},
+    )
