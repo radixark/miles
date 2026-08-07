@@ -348,7 +348,13 @@ class TestWorkerDeathOnRealRay:
         probe.wait_for_records(2)
         infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine-0"))
 
-        await infos[0].handle.kill_subprocess()
+        # The babysit thread may reach os._exit before this reply is sent, so losing the reply is
+        # the death under test arriving early rather than a failure; the loop below still has to
+        # observe it, so nothing is taken on faith here.
+        try:
+            await infos[0].handle.kill_subprocess()
+        except WorkerUnreachableError:
+            pass
 
         deadline = time.monotonic() + 60
         while True:

@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
-from unittest.mock import patch
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells
+from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_config import (
     _compute_megatron_num_gpus,
     _compute_rollout_offset,
     resolve_sglang_config,
 )
+from miles.ray.rollout.cell_state import CellAddrInfo, StateServing
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
@@ -93,49 +92,6 @@ class TestRolloutServerPureFunctions:
     def test_compute_megatron_num_gpus_zero_when_debug_rollout_only(self):
         args = make_args(debug_rollout_only=True)
         assert _compute_megatron_num_gpus(args) == 0
-
-
-@pytest.mark.skip(
-    reason="TODO: rebuild against the meta/router_api_client ServerCell; make_dataclass_cells and "
-    "_mark_allocated_uninitialized/_mark_addressing target the removed constructor and state API"
-)
-class TestRolloutServerCrossCellProperties:
-    def test_api_clients_expose_one_client_per_cell(self):
-        """Each cell is addressed through its primary (node-0) endpoint."""
-        cells = make_dataclass_cells(num_cells=2, gpu_offset=0) + make_dataclass_cells(num_cells=2, gpu_offset=2)
-        for index, cell in enumerate(cells):
-            cell._mark_allocated_uninitialized()
-            cell._mark_addressing(server_url=f"http://10.0.0.{index + 1}:30000")
-        srv = RolloutServer(
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
-            args=SimpleNamespace(),
-            context_lock=_make_lock(),
-        )
-        assert [client.server_url for client in srv.api_clients] == [
-            f"http://10.0.0.{index + 1}:30000" for index in range(4)
-        ]
-
-    def test_engine_gpu_counts_parallel_to_engines(self):
-        cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1) + make_dataclass_cells(
-            num_cells=2, num_gpus_per_engine=2
-        )
-        srv = RolloutServer(
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
-            args=SimpleNamespace(),
-            context_lock=_make_lock(),
-        )
-        assert srv.engine_gpu_counts == [1, 1, 2, 2]
-
-    def test_engine_gpu_offsets_consistent_across_cells(self):
-        cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1, gpu_offset=0) + make_dataclass_cells(
-            num_cells=2, num_gpus_per_engine=2, gpu_offset=4
-        )
-        srv = RolloutServer(
-            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
-            args=SimpleNamespace(),
-            context_lock=_make_lock(),
-        )
-        assert srv.engine_gpu_offsets == [0, 1, 4, 6]
 
 
 class TestEngineListOrdering:
@@ -268,73 +224,90 @@ async def _noop_async(self):
     return None
 
 
-@pytest.mark.skip(
-    reason="TODO: rebuild against the meta/router_api_client ServerCell; _make_started_server still drives the "
-    "removed AddrInfo/_mark_addressing/_mark_alive state API and the removed constructors"
-)
 class TestRemoveCell:
     @pytest.mark.asyncio
-    async def test_remove_cell_detaches_the_cell_from_every_server_view(self):
-        """A removed cell is gone from server_cells and from every view derived from it."""
-        events: list[dict[str, Any]] = []
-        srv = _make_started_server(num_cells=2)
+    async def test_removing_a_cell_detaches_it_from_every_view_derived_from_the_fleet(self, monkeypatch):
+        """A removed cell left in one of the derived lists sends the trainer a weight shard for
+        an engine that is gone, and the ranks disagree about how many engines there are."""
+        srv = await _make_serving_server(monkeypatch, num_cells=2)
 
-        with _with_recording_router(events):
+        async with srv.context_lock:
             await srv.remove_cell("default-0")
 
-        assert "default-0" not in srv.server_cells
-        assert list(srv.server_cells) == ["default-1"]
-        assert [client.server_url for client in srv.api_clients] == ["http://10.0.0.2:30001"]
-        assert srv.engine_gpu_counts == [1]
-        assert srv.engine_gpu_offsets == [1]
+            assert list(srv.server_cells) == ["default-1"]
+            assert srv.engine_gpu_offsets == [1]
+            assert srv.engine_gpu_counts == [1]
+            await srv.dispose()
 
     @pytest.mark.asyncio
-    async def test_remove_cell_unregisters_from_the_router_before_dropping_the_cell(self):
-        """Dropping the cell without unregistering would leave the router routing to a dead worker."""
-        events: list[dict[str, Any]] = []
-        srv = _make_started_server(num_cells=2)
+    async def test_removing_a_cell_takes_its_url_out_of_the_router_first(self, monkeypatch):
+        """Dropping the cell first loses the only record of what to unregister, and the router
+        keeps sending generation to a worker that is being torn down."""
+        srv = await _make_serving_server(monkeypatch, num_cells=2)
+        router = srv.server_cells["default-0"].router_api_client
 
-        with _with_recording_router(events):
+        async with srv.context_lock:
             await srv.remove_cell("default-0")
+            await srv.dispose()
 
-        assert events == [{"call": "remove_worker", "worker_url": "http://10.0.0.1:30000", "use_legacy_api": False}]
+        assert ("remove_worker", "http://10.0.0.1:30000") in [
+            (name, kwargs.get("worker_url")) for name, kwargs in router.calls
+        ]
 
 
-def _make_started_server(*, num_cells: int) -> RolloutServer:
-    args = make_args(num_gpus_per_node=8)
-    srv = RolloutServer(server_cells={}, args=args)
-    for cell_index in range(num_cells):
-        meta = ServerCellMetadata(
-            model_id="default",
-            worker_type="regular",
-            cell_id=f"default-{cell_index}",
-            num_gpus_per_engine=1,
-            gpu_offset=cell_index,
-            sglang_api_key=None,
-            worker_name=f"default-{cell_index}-0",
-            needs_offload=False,
-            update_weights=True,
-            workers_hash=f"pseudo-hash-{cell_index}",
-        )
-        cell = ServerCell(args=args, meta=meta)
-        cell._mark_addressing(AddrInfo(server_url=f"http://10.0.0.{cell_index + 1}:3000{cell_index}"))  # noqa: F821
-        cell._mark_alive()
-        srv.server_cells[meta.cell_id] = cell
+async def _make_serving_server(monkeypatch, *, num_cells: int) -> RolloutServer:
+    """A server whose cells are all registered and serving, without dialling anything."""
+    router = _RecordingRouterApiClient()
+    monkeypatch.setattr(RolloutServer, "_router_api_client", property(lambda self: router))
+
+    srv = RolloutServer(
+        server_cells={},
+        args=SimpleNamespace(colocate=True, ft_components=[], use_miles_router=False),
+        context_lock=_make_lock(),
+    )
+    async with srv.context_lock:
+        for cell_index in range(num_cells):
+            await srv.add_cell(
+                ServerCellMetadata(
+                    model_id="default",
+                    worker_type="regular",
+                    cell_id=f"default-{cell_index}",
+                    num_gpus_per_engine=1,
+                    gpu_offset=cell_index,
+                    sglang_api_key=None,
+                    worker_name=f"default-{cell_index}-0",
+                    needs_offload=False,
+                    update_weights=True,
+                    workers_hash=f"pseudo-hash-{cell_index}",
+                )
+            )
+            cell = srv.server_cells[f"default-{cell_index}"]
+            addr_info = CellAddrInfo(
+                server_url=f"http://10.0.0.{cell_index + 1}:3000{cell_index}", bootstrap_port=None, gate_url=None
+            )
+            await cell._register_with_router(addr_info=addr_info)
+            cell._state = StateServing(addr_info=addr_info)
     return srv
 
 
-def _with_recording_router(events: list[dict[str, Any]]) -> Any:
-    return patch.object(
-        RolloutServer, "_router_api_client", property(lambda self: _RecordingRouterApiClient(events=events))
-    )
-
-
 class _RecordingRouterApiClient:
-    def __init__(self, *, events: list[dict[str, Any]]) -> None:
-        self._events = events
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
 
-    async def add_worker(self, **kwargs: Any) -> None:
-        self._events.append({"call": "add_worker", **kwargs})
+    async def add_worker(self, **kwargs) -> None:
+        self.calls.append(("add_worker", kwargs))
 
-    async def remove_worker(self, **kwargs: Any) -> None:
-        self._events.append({"call": "remove_worker", **kwargs})
+    async def remove_worker(self, **kwargs) -> None:
+        self.calls.append(("remove_worker", kwargs))
+
+
+def _make_lock() -> ContextLock:
+    return ContextLock("InferenceController")
+
+
+async def _raise_async(self):
+    raise RuntimeError("injected init failure")
+
+
+async def _noop_async(self):
+    return None

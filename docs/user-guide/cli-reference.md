@@ -277,8 +277,8 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--sglang-router-ip` | str | – | Must stay unset: external router mode was removed. Miles always starts its own router. |
-| `--sglang-router-port` | int | – | Must stay unset (see `--sglang-router-ip`). |
+| `--sglang-router-ip` | str | – | Must stay unset: attaching to a router miles did not start was removed. Miles always starts its own router. |
+| `--sglang-router-port` | int | – | Pins the port of the router miles starts; model `i` gets `port + i`. Unset lets it move off a busy port. |
 | `--sglang-*` | passthrough | | Any flag accepted by `python -m sglang.launch_server` works with this prefix. |
 | `--router-*` | passthrough | | Any flag accepted by the active router works with this prefix. |
 

@@ -49,7 +49,7 @@ The bash launcher does **not** convert for you — produce `$BASE_DIR/GLM-4.5-35
 
 ```bash
 cd /root/miles
-MODEL_ARGS_LINE="$(python3 scripts/model_args.py glm4.5-355B-A32B)" || exit 1
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py glm4.5-355B-A32B)" || exit 1
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \

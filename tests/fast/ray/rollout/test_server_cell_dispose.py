@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +13,7 @@ from miles.ray.rollout.cell_state import (
     StatePendingWeights,
     StateServing,
 )
+from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 
 
@@ -148,4 +150,39 @@ class TestServerCellDispose:
         await cell.dispose()
 
         client.remove_worker.assert_awaited_once_with(worker_url="http://10.0.0.5:30000", use_legacy_api=False)
+        assert isinstance(cell._state, StateDisposed)
+
+
+class TestServerCellRegisterRobustness:
+    @pytest.mark.asyncio
+    async def test_use_miles_router_pins_the_legacy_api_when_registering_too(self) -> None:
+        """Adding through the wrong API shape lands the engine in a table the miles router never
+        reads, so it is never routed to while removals still appear to work."""
+        client = _make_router_api_client()
+        cell = _make_cell(router_api_client=client, use_miles_router=True)
+
+        await _register(cell, state=StateServing, server_url="http://10.0.0.2:30000", bootstrap_port=None)
+        await cell.dispose()
+
+        assert client.add_worker.await_args.kwargs["use_legacy_api"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_router_that_never_answers_the_unregister_does_not_wedge_teardown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The shared http client has no read timeout, so without the bound here an unresponsive
+        router stalls dispose forever, and with it the whole reconcile and heal path."""
+        never_answers = asyncio.Event()
+
+        async def _hang(**_kwargs) -> None:
+            await never_answers.wait()
+
+        client = _make_router_api_client()
+        client.remove_worker = _hang
+        monkeypatch.setattr(server_cell_module, "SHUTDOWN_TIMEOUT", 0.05)
+        cell = _make_cell(router_api_client=client)
+        await _register(cell, state=StateServing, server_url="http://10.0.0.2:30000", bootstrap_port=None)
+
+        await asyncio.wait_for(cell.dispose(), timeout=5.0)
+
         assert isinstance(cell._state, StateDisposed)

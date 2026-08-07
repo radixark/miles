@@ -146,6 +146,10 @@ def execute(args: ScriptArgs):
         "--custom-rm-path nemogym_generate.reward_func "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--use-session-server "
+        # 0.0.0.0 so the NeMo-Gym host can dial in on any interface (e.g. a
+        # tailnet address); internal calls resolve it to localhost.
+        "--session-server-ip 0.0.0.0 "
+        "--session-server-port 30000 "
         "--tito-model qwen3 "
     )
 

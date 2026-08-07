@@ -61,13 +61,21 @@ def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
 
 
 class _RecordingServer:
-    def __init__(self, server_cells: dict | None = None):
+    def __init__(self, server_cells: dict | None = None, *, model_name: str = "model", update_weights: bool = False):
         self.server_cells = server_cells or {}
-        self.update_weights = False
+        self.update_weights = update_weights
+        self.model_name = model_name
         self.calls: list[tuple] = []
+        self.api_clients: list = []
+        self.engine_gpu_counts: list[int] = []
+        self.engine_gpu_offsets: list[int] = []
 
     async def offload(self, tags=None):
         self.calls.append(("offload",))
+
+    async def check_weights(self, action, allow_quant_error=False, selector="all", skip_list=None):
+        self.calls.append(("check_weights", action))
+        return [self.model_name]
 
     async def add_cell(self, cell_meta: ServerCellMetadata):
         self.calls.append(("add", cell_meta.cell_id))
@@ -393,3 +401,59 @@ class TestServersShareTheControllerLock:
 
         with pytest.raises(AssertionError, match="must be called with"):
             await controller.offload()
+
+
+class TestUpdatableModelSelection:
+    @staticmethod
+    def _controller(*servers: _RecordingServer) -> InferenceController:
+        return _make_controller({srv.model_name: srv for srv in servers})
+
+    @pytest.mark.asyncio
+    async def test_only_the_updatable_models_engines_receive_weights(self):
+        """A frozen reference model handed the trainer's weights stops being the baseline the
+        KL term is measured against."""
+        actor = _RecordingServer(model_name="actor", update_weights=True)
+        actor.api_clients = ["actor-client"]
+        ref = _RecordingServer(model_name="ref", update_weights=False)
+        ref.api_clients = ["ref-client"]
+
+        updatable = await self._controller(actor, ref).start_update_weights()
+
+        assert updatable.rollout_engines == ["actor-client"]
+
+    @pytest.mark.asyncio
+    async def test_an_inference_only_deployment_updates_nothing(self):
+        """No model is being trained, so there is no engine to push weights into; returning a
+        frozen model's engines here would overwrite it."""
+        updatable = await self._controller(_RecordingServer(model_name="ref")).start_update_weights()
+
+        assert updatable.rollout_engines == []
+        assert updatable.snapshot_cell_id_to_hashes == {}
+
+    @pytest.mark.asyncio
+    async def test_two_updatable_models_are_refused_by_name(self):
+        """Picking one arbitrarily would silently train one model and leave the other stale."""
+        controller = self._controller(
+            _RecordingServer(model_name="a", update_weights=True),
+            _RecordingServer(model_name="b", update_weights=True),
+        )
+
+        with pytest.raises(ValueError, match="Multiple servers have update_weights=True"):
+            await controller.start_update_weights()
+
+    @pytest.mark.asyncio
+    async def test_the_weight_checker_skips_the_frozen_models(self):
+        """reset_tensors on a model nobody will rewrite scrambles it for the rest of the run."""
+        actor = _RecordingServer(model_name="actor", update_weights=True)
+        ref = _RecordingServer(model_name="ref", update_weights=False)
+
+        assert await self._controller(actor, ref).check_weights(action="snapshot") == ["actor"]
+        assert ref.calls == []
+
+    @pytest.mark.asyncio
+    async def test_the_weight_checker_is_a_noop_without_an_updatable_model(self):
+        """Nothing was updated, so there is nothing to compare against."""
+        ref = _RecordingServer(model_name="ref")
+
+        assert await self._controller(ref).check_weights(action="compare") == []
+        assert ref.calls == []
