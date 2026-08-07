@@ -7,7 +7,9 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
+from miles.utils.workers.k8s_types import ContainerStatus, Pod, PodMetadata, PodStatus
 from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi, PodWatchEvent, exception_rejects_cursor
 
 
@@ -16,6 +18,16 @@ def make_exception(**fields: Any) -> Exception:
     for name, value in fields.items():
         setattr(exception, name, value)
     return exception
+
+
+def make_wire_pod() -> SimpleNamespace:
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name="pod-0", uid="uid-0", resource_version="7", labels=None, annotations=None),
+        spec=None,
+        status=SimpleNamespace(
+            pod_ip="10.0.0.1", conditions=None, container_statuses=[SimpleNamespace(restart_count=2)]
+        ),
+    )
 
 
 class TestKubernetesAsyncioPodApi:
@@ -61,10 +73,9 @@ class TestResourceVersionParsing:
             (dict(metadata=dict(resourceVersion="7")), "7"),
         ],
     )
-    @pytest.mark.parametrize("event_type", ["ADDED", "BOOKMARK"])
-    def test_both_wire_shapes_are_read(self, event_type: str, obj: Any, expected: str) -> None:
+    def test_both_wire_shapes_are_read(self, obj: Any, expected: str) -> None:
         """A deserialized model spells it as an attribute, a raw dict as a camelCase key."""
-        assert PodWatchEvent.from_frame(event_type=event_type, obj=obj).resource_version == expected
+        assert PodWatchEvent.from_frame(event_type="BOOKMARK", obj=obj).resource_version == expected
 
     @pytest.mark.parametrize(
         "obj",
@@ -77,18 +88,73 @@ class TestResourceVersionParsing:
             dict(metadata={}),
         ],
     )
-    @pytest.mark.parametrize("event_type", ["ADDED", "BOOKMARK"])
-    def test_a_frame_without_a_readable_version_parses_to_none(self, event_type: str, obj: Any) -> None:
+    def test_a_frame_without_a_readable_version_parses_to_none(self, obj: Any) -> None:
         """A missing or malformed metadata block must parse to None, never raise: the caller keeps its cursor."""
-        assert PodWatchEvent.from_frame(event_type=event_type, obj=obj).resource_version is None
+        assert PodWatchEvent.from_frame(event_type="BOOKMARK", obj=obj).resource_version is None
 
-    @pytest.mark.parametrize("event_type", ["ADDED", "BOOKMARK"])
-    def test_a_non_object_payload_parses_to_none(self, event_type: str) -> None:
-        """A non-object payload has no readable resource version in either frame type."""
-        event = PodWatchEvent.from_frame(event_type=event_type, obj="a payload that is not an object at all")
+    def test_a_payload_that_is_not_an_object_at_all_raises(self) -> None:
+        """An unreadable envelope carries no cursor to keep, so it must raise and let the reflector relist."""
+        with pytest.raises(ValidationError):
+            PodWatchEvent.from_frame(event_type="BOOKMARK", obj="a payload that is not an object at all")
 
-        assert event.resource_version is None
-        assert event.obj == "a payload that is not an object at all"
+
+class TestPodParsing:
+    def test_a_pod_frame_carries_the_pod_the_wire_described(self) -> None:
+        """Every consumer downstream reads typed fields, so the frame is validated once, here."""
+        event = PodWatchEvent.from_frame(event_type="ADDED", obj=make_wire_pod())
+
+        assert event.pod == Pod(
+            metadata=PodMetadata(name="pod-0", uid="uid-0", resource_version="7"),
+            status=PodStatus(pod_ip="10.0.0.1", container_statuses=[ContainerStatus(restart_count=2)]),
+        )
+
+    def test_a_raw_json_pod_is_read_through_its_camel_case_spelling(self) -> None:
+        """A payload the client left as raw JSON spells every compound field differently."""
+        obj = dict(
+            metadata=dict(name="pod-0", uid="uid-0", resourceVersion="7"),
+            spec=dict(nodeName="gpu-1"),
+            status=dict(podIP="10.0.0.1", containerStatuses=[dict(restartCount=2)]),
+        )
+
+        event = PodWatchEvent.from_frame(event_type="ADDED", obj=obj)
+
+        assert event.pod is not None
+        assert (event.pod.spec.node_name, event.pod.status.pod_ip) == ("gpu-1", "10.0.0.1")
+        assert [status.restart_count for status in event.pod.status.container_statuses] == [2]
+
+    def test_the_scheduling_fields_a_gated_pod_is_paired_by_are_typed(self) -> None:
+        """Colocate pairing reads the gates and the node selector off the pod, so PodSpec has to model them."""
+        obj = dict(
+            metadata=dict(name="pod-0", uid="uid-0"),
+            spec=dict(
+                nodeName=None,
+                schedulingGates=[dict(name="miles.ai/awaiting-pair")],
+                nodeSelector={"kubernetes.io/hostname": "gpu-1"},
+            ),
+        )
+
+        event = PodWatchEvent.from_frame(event_type="ADDED", obj=obj)
+
+        assert event.pod is not None
+        assert [gate.name for gate in event.pod.spec.scheduling_gates] == ["miles.ai/awaiting-pair"]
+        assert event.pod.spec.node_selector == {"kubernetes.io/hostname": "gpu-1"}
+
+    def test_an_ungated_pod_reads_as_empty_rather_than_missing(self) -> None:
+        """The client leaves both fields out entirely, and pairing must not have to guard every read."""
+        event = PodWatchEvent.from_frame(event_type="ADDED", obj=make_wire_pod())
+
+        assert event.pod is not None
+        assert (event.pod.spec.scheduling_gates, event.pod.spec.node_selector) == ([], {})
+
+    @pytest.mark.parametrize("event_type", ["BOOKMARK", "ERROR"])
+    def test_a_frame_that_is_not_about_a_pod_carries_no_pod(self, event_type: str) -> None:
+        """BOOKMARK and ERROR frames carry a bare version and a Status, and parsing them as pods would fail."""
+        assert PodWatchEvent.from_frame(event_type=event_type, obj=dict(code=410, reason="Expired")).pod is None
+
+    def test_a_pod_frame_miles_cannot_read_is_refused(self) -> None:
+        """A pod the apiserver sent that does not validate is a contract break, not a pod to skip quietly."""
+        with pytest.raises(ValidationError):
+            PodWatchEvent.from_frame(event_type="ADDED", obj=SimpleNamespace(metadata=None))
 
 
 class TestCursorRejection:
@@ -112,7 +178,6 @@ class TestCursorRejection:
             ("ERROR", SimpleNamespace(code=500, reason="InternalError")),
             ("ERROR", dict(code=500)),
             ("ERROR", SimpleNamespace()),
-            ("MODIFIED", SimpleNamespace(code=410, reason="Expired")),
             ("BOOKMARK", dict(code=410)),
         ],
     )
@@ -122,15 +187,14 @@ class TestCursorRejection:
 
     def test_a_pod_frame_carrying_a_dead_cursor_code_leaves_the_cursor_alone(self) -> None:
         """A pod whose own fields happen to spell 410 must not be read as an expired-cursor error."""
-        obj = SimpleNamespace(metadata=SimpleNamespace(name="pod-0", resource_version="7"))
+        obj = make_wire_pod()
         obj.code = 410
         obj.reason = "Expired"
 
         event = PodWatchEvent.from_frame(event_type="MODIFIED", obj=obj)
 
         assert not event.rejects_cursor
-        assert event.obj is obj
-        assert event.obj.metadata.name == "pod-0"
+        assert event.pod is not None and event.pod.metadata.name == "pod-0"
 
 
 class TestExceptionRejection:
