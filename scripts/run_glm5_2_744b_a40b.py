@@ -61,6 +61,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import torch
 import typer
 
 import miles.utils.external_utils.command_utils as U
@@ -353,6 +354,12 @@ def _execute_train(args: ScriptArgs):
         sglang_decode_max_bs = 32
         sglang_world_size = 4 if balanced else min(8, args.num_gpus_per_node)
 
+    if torch.version.hip is not None:
+        dsa_prefill_backend = dsa_decode_backend = "tilelang"
+    else:
+        dsa_prefill_backend = "flashmla_sparse"
+        dsa_decode_backend = "flashmla_kv"
+
     sglang_args = (
         f"--rollout-num-gpus-per-engine {sglang_world_size} "
         # 0.85: measured on the full 744B, 64x GB300 (276GB). 0.75 there leaves
@@ -398,9 +405,8 @@ def _execute_train(args: ScriptArgs):
         sglang_args += "--prefill-num-servers 1 "
     sglang_args += (
         "--sglang-kv-cache-dtype fp8_e4m3 "
-        # flashmla_kv decode / flashmla_sparse prefill (GLM-5.2 recipe)
-        "--sglang-nsa-decode-backend flashmla_kv "
-        "--sglang-nsa-prefill-backend flashmla_sparse "
+        f"--sglang-nsa-decode-backend {dsa_decode_backend} "
+        f"--sglang-nsa-prefill-backend {dsa_prefill_backend} "
         "--sglang-attention-backend nsa "
         "--sglang-page-size 64 "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
