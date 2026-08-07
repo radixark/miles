@@ -92,7 +92,7 @@ def main(fp8_path, bf16_path):
 
             if weight_name.endswith("_scale_inv"):
                 continue
-            elif weight.element_size() == 1:  # FP8 weight
+            elif weight.element_size() == 1 and weight.is_floating_point():  # FP8 weight
                 scale_inv_name = f"{weight_name}_scale_inv"
                 try:
                     # Get scale_inv from the correct file
@@ -100,8 +100,8 @@ def main(fp8_path, bf16_path):
                     fp8_weight_names.append(weight_name)
                     new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
                 except KeyError:
-                    print(f"Warning: Missing scale_inv tensor for {weight_name}, skipping conversion")
-                    new_state_dict[weight_name] = weight
+                    print(f"Warning: Missing scale_inv tensor for {weight_name}, upcasting to {torch.get_default_dtype()}")
+                    new_state_dict[weight_name] = weight.to(torch.get_default_dtype())
             else:
                 new_state_dict[weight_name] = weight
 
