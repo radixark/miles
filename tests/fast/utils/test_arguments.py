@@ -77,6 +77,7 @@ class TestMaybeApplyDumperOverrides:
         *,
         dumper_enable: bool = False,
         use_fault_tolerance: bool = False,
+        ft_components: list[str] | None = None,
         router_disable_health_check: bool = False,
         rollout_health_check_interval: float = 30.0,
         miles_router_health_check_failure_threshold: int = 3,
@@ -92,6 +93,7 @@ class TestMaybeApplyDumperOverrides:
         return SimpleNamespace(
             dumper_enable=dumper_enable,
             use_fault_tolerance=use_fault_tolerance,
+            ft_components=ft_components if ft_components is not None else [],
             router_disable_health_check=router_disable_health_check,
             rollout_health_check_interval=rollout_health_check_interval,
             miles_router_health_check_failure_threshold=miles_router_health_check_failure_threshold,
@@ -131,8 +133,18 @@ class TestMaybeApplyDumperOverrides:
         assert args.use_fault_tolerance is False
         assert args.router_disable_health_check is True
 
-    def test_leaves_miles_router_heartbeat_enabled(self) -> None:
-        """Dumper mode does not suppress MilesRouter probing: its health check interval is unchanged."""
+    def test_the_selected_ft_components_go_with_the_flag(self) -> None:
+        """ft_components is resolved from the flag long before this runs, so clearing the flag
+        alone would leave every component selected and its probes still firing."""
+        args = self._make_args(dumper_enable=True, use_fault_tolerance=True, ft_components=["rollout", "train"])
+
+        _maybe_apply_dumper_overrides(args)
+
+        assert args.ft_components == []
+
+    def test_the_miles_router_stops_probing_too(self) -> None:
+        """Engines busy writing dumps miss probes; three misses strike them from the routing
+        pool, and the router has no path to put them back."""
         args = self._make_args(
             dumper_enable=True,
             use_fault_tolerance=True,
@@ -142,9 +154,7 @@ class TestMaybeApplyDumperOverrides:
 
         config: MilesRouterConfig = compute_miles_router_config(args, host="10.0.0.1", port=1234)
 
-        assert args.rollout_health_check_interval == 30.0
-        assert config.health_check_interval == 30.0
-        assert config.health_check_failure_threshold == 3
+        assert config.health_check_interval > 1e12
 
     def test_forces_single_rollout(self) -> None:
         args = self._make_args(dumper_enable=True, num_rollout=100)
@@ -689,9 +699,15 @@ class TestRolloutHealthCheckArguments:
 
         assert (config.interval, config.timeout, config.first_wait) == (30.0, 30.0, 600.0)
 
-    def test_the_failure_threshold_knob_is_now_available(self):
-        """Debouncing was previously pinned to a single failed probe with no way to tune it."""
-        assert self._parse([]).rollout_health_check_failure_threshold == 3
+    def test_a_rollout_engine_is_condemned_by_its_first_failed_probe(self):
+        """The knob is new; the default it replaced was one. Debouncing by default leaves a dead
+        engine serving traffic for two more 30s intervals before anything notices."""
+        assert self._parse([]).rollout_health_check_failure_threshold == 1
         assert (
             self._parse(["--rollout-health-check-failure-threshold", "5"]).rollout_health_check_failure_threshold == 5
         )
+
+    def test_the_trainer_heartbeat_keeps_its_own_debounce(self):
+        """The rollout default must not be pushed down into the shared config: a trainer heartbeat
+        shares an RPC channel with the train step, so one slow reply is a blip, not a dead cell."""
+        assert self._parse([]).trainer_heartbeat_checker_failure_threshold == 3

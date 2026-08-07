@@ -29,6 +29,7 @@ class SimpleHealthCheckerConfig(StrictBaseModel):
         interval_default: float = 10.0,
         timeout_default: float = 10.0,
         first_wait_default: float = 300.0,
+        failure_threshold_default: int = 3,
     ) -> None:
         parser.add_argument(
             f"--{prefix}-interval",
@@ -55,7 +56,7 @@ class SimpleHealthCheckerConfig(StrictBaseModel):
         parser.add_argument(
             f"--{prefix}-failure-threshold",
             type=int,
-            default=3,
+            default=failure_threshold_default,
             help=(
                 f"Number of consecutive failed {prefix} checks before reporting unhealthy. "
                 "Debounces transient RPC blips so a single hiccup does not recycle a live cell."
