@@ -17,7 +17,7 @@ from miles.utils.workers.reconcile.source_event import (
 
 logger = logging.getLogger(__name__)
 
-KeyMapFn = Callable[[Any], ParentKey]
+KeyMapFn = Callable[[Any], ParentKey | None]
 
 
 @dataclass(frozen=True)

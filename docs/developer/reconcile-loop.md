@@ -59,7 +59,7 @@ An empty last column means 1:1. Each entry is the shadow of a **Dropped** / **Re
 | Upstream | Solves | Decision | Reason |
 | --- | --- | --- | --- |
 | workqueue | The scheduling core | **Kept** as a dedup set; delayed retry lives in `retry_scheduler.py` | With one worker, the dirty/processing protocol collapses into the set |
-| `ShutDown` vs `ShutDownWithDrain` | Finish in-flight work first | **Dropped**; `stop()` cancels everything, then waits. It runs once, after `start()` returns; awaiting it inside reconcile asserts (use `asyncio.create_task`), and a hung `start()` is aborted by cancelling its task | Drain exists for many Go workers. One worker means one in-flight key, and reconcile is idempotent, so abandoning it costs a re-derivation |
+| `ShutDown` vs `ShutDownWithDrain` | Finish in-flight work first | **Dropped**; `stop()` cancels everything, then waits. Awaiting it inside reconcile asserts (use `asyncio.create_task`). It may only follow a `start()` call, but a `start()` that raised leaves no tasks and `stop()` is then a no-op that returns, so an aborted start unwinds carrying its own exception instead of an assertion | Drain exists for many Go workers. One worker means one in-flight key, and reconcile is idempotent, so abandoning it costs a re-derivation. A caller that wraps `start()` in `except: await stop()` is the normal shape, and it must not lose the failure it is unwinding |
 
 ### `retry_scheduler.py`
 

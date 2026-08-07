@@ -86,7 +86,7 @@ class ReconcileLoop:
             self._tasks.append(asyncio.create_task(self._resync_loop()))
 
     async def stop(self) -> None:
-        assert self._tasks, "ReconcileLoop.stop() must come after start(); abort a hung start() by cancelling its task"
+        assert self._start_called, "ReconcileLoop.stop() must come after start()"
         assert asyncio.current_task() not in self._tasks, (
             "ReconcileLoop.stop() waits for the worker, so it cannot be awaited from inside reconcile; "
             "call asyncio.create_task(loop.stop()) instead"
@@ -104,6 +104,9 @@ class ReconcileLoop:
 
     def get_by_parent(self, parent_key: ParentKey) -> list[Any]:
         return self._store.get_by_parent(parent_key)
+
+    def parent_keys(self) -> set[ParentKey]:
+        return self._store.parent_keys()
 
     def _enqueue_all(self, parent_keys: set[ParentKey]) -> None:
         for parent_key in sorted(parent_keys):
