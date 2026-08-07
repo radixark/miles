@@ -477,6 +477,100 @@ def sft_loss_function(
     )
 
 
+def tinker_loss_function(
+    args: Namespace,
+    batch: RolloutBatch,
+    logits: torch.Tensor,
+    sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Client-directed per-slot losses for tinker batches.
+
+    Every sample dispatches on its adapter's ``loss_spec`` from the BatchPlan:
+    linear cross-entropy ``Σ(-logp·w)``, importance sampling ``-Σ(ratio·A)``,
+    or the PPO clipped surrogate. Reduction is a plain token sum — chunk
+    additive, so K accumulated forward_backward operations produce the same
+    gradient as one, and the client's ``loss_weights`` own the scale (no
+    1/count normalization ever applies to tinker slots).
+
+    Selections are homogeneous: a batch is either all forward_backward or all
+    forward (``tinker_forward_only``). A forward batch only fills the logprob
+    collector — backward never runs, so no gradient can reach its adapters.
+    """
+    specs_by_slot = batch["tinker_loss_by_slot"]
+    adapter_slots = batch["adapter_slots"]
+    response_lengths = batch["response_lengths"]
+    total_lengths = batch["total_lengths"]
+    max_seq_lens = batch.get("max_seq_lens", None)
+
+    log_probs = get_log_probs_and_entropy(
+        logits,
+        args=args,
+        unconcat_tokens=batch["unconcat_tokens"],
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        with_entropy=False,
+        max_seq_lens=max_seq_lens,
+    )["log_probs"]
+    local_masks = get_local_response_loss_masks(
+        total_lengths, response_lengths, batch["loss_masks"], args.qkv_format, max_seq_lens
+    )
+
+    def channel(key: str, i: int, loss_fn: str) -> torch.Tensor:
+        values = batch.get(key)
+        if values is None or values[i] is None:
+            raise ValueError(f"tinker loss '{loss_fn}' needs per-token '{key}'")
+        return values[i]
+
+    # Operation result plane: per-datum target logprobs, keyed by (slot, row)
+    # so one selection's adapters never collide. CP shards gather to the full
+    # response; a checkpointed loss recompute overwrites idempotently.
+    collector = batch.get("tinker_logprob_collector")
+    if collector is not None:
+        sample_indices = batch["sample_indices"]
+        for i, logp in enumerate(log_probs):
+            full = logp
+            if get_parallel_state().cp.size > 1:
+                full = all_gather_with_cp(logp, total_lengths[i], response_lengths[i])
+            collector[(adapter_slots[i], sample_indices[i])] = full.detach().float().cpu().tolist()
+
+    if batch.get("tinker_forward_only"):
+        # Logprobs are the whole result; the dummy scalar is never backwarded
+        # (the executor runs this batch with forward_only=True).
+        loss = 0 * logits.sum()
+        return loss, {"loss": loss.clone().detach()}
+
+    loss = None
+    for i, logp in enumerate(log_probs):
+        spec = specs_by_slot.get(adapter_slots[i])
+        if spec is None:
+            raise ValueError(f"tinker backward batch has no loss spec for slot {adapter_slots[i]}")
+        loss_fn = spec.get("loss_fn", "cross_entropy")
+        config = spec.get("loss_fn_config") or {}
+        mask = local_masks[i].to(device=logp.device, dtype=logp.dtype)
+        if loss_fn == "cross_entropy":
+            sample_loss = -(logp * channel("loss_weights", i, loss_fn) * mask).sum()
+        elif loss_fn in ("importance_sampling", "ppo"):
+            ratio = torch.exp(logp - channel("rollout_log_probs", i, loss_fn))
+            advantages = channel("advantages", i, loss_fn)
+            surrogate = ratio * advantages
+            if loss_fn == "ppo":
+                low = config.get("clip_low_threshold", 0.8)
+                high = config.get("clip_high_threshold", 1.2)
+                surrogate = torch.minimum(surrogate, ratio.clamp(low, high) * advantages)
+            sample_loss = -(surrogate * mask).sum()
+        else:
+            raise ValueError(f"tinker adapter in slot {adapter_slots[i]} requests unknown loss_fn '{loss_fn}'")
+        loss = sample_loss if loss is None else loss + sample_loss
+
+    if loss is None:
+        raise ValueError("tinker backward batch produced no loss terms; selections must be homogeneous")
+    # Every rank's loss must depend on its local logits (CP shards may hold no
+    # response tokens), or backward's collectives diverge.
+    loss = loss + 0 * logits.sum()
+
+    return loss, {"loss": loss.clone().detach()}
+
+
 def get_loss_function(args: Namespace) -> LossFunction:
     match args.loss_type:
         case "policy_loss":
