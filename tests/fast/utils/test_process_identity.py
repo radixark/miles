@@ -4,8 +4,11 @@ import pytest
 from pydantic import ValidationError
 
 from miles.utils.audit_utils.process_identity import (
+    InferenceControllerProcessIdentity,
     MainProcessIdentity,
+    MultiLoRAControllerProcessIdentity,
     RolloutExecutorProcessIdentity,
+    TrainerControllerProcessIdentity,
     TrainProcessIdentity,
 )
 
@@ -24,6 +27,22 @@ class TestProcessIdentityToName:
     def test_critic(self) -> None:
         source = TrainProcessIdentity(component="critic", cell_id="trainer-critic-0", rank_within_cell=2)
         assert source.to_name() == "critic_trainer-critic-0_rank2"
+
+    def test_trainer_controller(self) -> None:
+        assert TrainerControllerProcessIdentity(role="actor").to_name() == "trainer_controller_actor"
+
+    def test_inference_controller(self) -> None:
+        assert InferenceControllerProcessIdentity().to_name() == "inference_controller"
+
+    def test_multi_lora_controller(self) -> None:
+        assert MultiLoRAControllerProcessIdentity().to_name() == "multi_lora_controller"
+
+
+class TestControllerIdentityRoundtrip:
+    def test_trainer_controller_keeps_its_role(self) -> None:
+        """Two trainer controllers share a component, so only the role tells their events apart."""
+        source = TrainerControllerProcessIdentity(role="critic")
+        assert TrainerControllerProcessIdentity.model_validate_json(source.model_dump_json()) == source
 
 
 class TestTrainProcessIdentityValidation:

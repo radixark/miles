@@ -4,6 +4,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import types
 import uuid
 from pathlib import Path
@@ -15,18 +16,21 @@ from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events
 from miles.utils.audit_utils.event_logger.models import EditablePackageInfo, EnvReportEvent, NodeEnvReport
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.env_report import (
+    LAUNCHER_REPORT_ENV_VAR,
     _collect_git_info,
     _collect_pip_info,
     _is_editable,
     _parse_pip_entry,
     collect_key_versions,
     collect_node_env_report,
+    collect_process_env_snapshot,
     decode_env_report,
     dump_args,
     log_env_report,
     redact,
     redact_argv,
     redact_env_vars,
+    start_env_reporting,
 )
 
 _SAMPLE_PIP_INSPECT = {
@@ -65,6 +69,38 @@ def _args(**overrides) -> argparse.Namespace:
     return argparse.Namespace(**{"env_report": "", **overrides})
 
 
+def _mock_pip_inspect() -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(
+        args=["pip", "inspect"], returncode=0, stdout=json.dumps(_SAMPLE_PIP_INSPECT), stderr=""
+    )
+
+
+@pytest.fixture()
+def mocked_pip_inspect():
+    with patch("miles.utils.env_report.subprocess.run", return_value=_mock_pip_inspect()):
+        yield
+
+
+@pytest.fixture()
+def event_log_dir(tmp_path: Path) -> Path:
+    set_event_logger(EventLogger(log_dir=tmp_path, source=MainProcessIdentity()))
+    yield tmp_path
+    set_event_logger(None)
+
+
+@pytest.fixture()
+def without_event_logger():
+    set_event_logger(None)
+    yield
+    set_event_logger(None)
+
+
+def _join_reporter_threads(timeout: float = 30.0) -> None:
+    for thread in threading.enumerate():
+        if thread.name == "env-report":
+            thread.join(timeout=timeout)
+
+
 class TestParsePipEntry:
     def test_normal_package(self) -> None:
         entry = _parse_pip_entry({"metadata": {"name": "torch", "version": "2.5.0"}})
@@ -97,7 +133,7 @@ class TestCollectPipInfo:
             stderr="",
         )
         with patch("miles.utils.env_report.subprocess.run", return_value=mock_result):
-            editable, full_list = _collect_pip_info()
+            editable, full_list = _collect_pip_info({})
 
         assert len(full_list) == 4
         assert full_list[0] == {"name": "miles", "version": "0.2.1"}
@@ -123,32 +159,45 @@ class TestCollectPipInfo:
             stderr="error",
         )
         with patch("miles.utils.env_report.subprocess.run", return_value=mock_result):
-            editable, full_list = _collect_pip_info()
+            editable, full_list = _collect_pip_info({})
         assert editable == []
         assert full_list == []
 
     def test_pip_inspect_exception_returns_empty(self) -> None:
         with patch("miles.utils.env_report.subprocess.run", side_effect=OSError("no pip")):
-            editable, full_list = _collect_pip_info()
+            editable, full_list = _collect_pip_info({})
         assert editable == []
         assert full_list == []
 
-    def test_pip_inspect_excludes_pythonpath_from_env(self) -> None:
-        """PYTHONPATH must be excluded when running pip inspect, otherwise pip
-        misses editable packages whose source is on the PYTHONPATH."""
+    def test_runs_pip_with_the_environment_it_is_given(self) -> None:
+        """The caller hands in a snapshot; reading os.environ here would race whoever mutates it."""
         mock_result = subprocess.CompletedProcess(
             args=["pip", "inspect"],
             returncode=0,
             stdout=json.dumps(_SAMPLE_PIP_INSPECT),
             stderr="",
         )
-        with patch.dict(os.environ, {"PYTHONPATH": "/workspace/Megatron-LM"}):
-            with patch("miles.utils.env_report.subprocess.run", return_value=mock_result) as mock_run:
-                _collect_pip_info()
+        with patch("miles.utils.env_report.subprocess.run", return_value=mock_result) as mock_run:
+            _collect_pip_info({"HOME": "/root"})
 
-        passed_env = mock_run.call_args.kwargs.get("env")
-        assert passed_env is not None, "subprocess.run must be called with explicit env"
-        assert "PYTHONPATH" not in passed_env
+        assert mock_run.call_args.kwargs["env"] == {"HOME": "/root"}
+
+
+class TestCollectProcessEnvSnapshot:
+    def test_excludes_pythonpath_from_the_pip_probe(self) -> None:
+        """pip inspect misses editable packages whose source is on the PYTHONPATH."""
+        with patch.dict(os.environ, {"PYTHONPATH": "/workspace/Megatron-LM"}):
+            snapshot = collect_process_env_snapshot(_args())
+
+        assert "PYTHONPATH" not in snapshot.probe_env
+
+    def test_snapshots_the_environment_the_probe_will_run_with(self) -> None:
+        """The probe runs on another thread, while the caller is still setting RANK and friends."""
+        with patch.dict(os.environ, {"MILES_TEST_ENV_REPORT_MARK": "before"}):
+            snapshot = collect_process_env_snapshot(_args())
+            os.environ["MILES_TEST_ENV_REPORT_MARK"] = "after"
+
+            assert snapshot.probe_env["MILES_TEST_ENV_REPORT_MARK"] == "before"
 
 
 class TestDecodeEnvReport:
@@ -167,14 +216,6 @@ class TestDecodeEnvReport:
 
     def test_returns_none_for_invalid(self) -> None:
         assert decode_env_report("not json at all!!!") is None
-
-
-class TestRedact:
-    def test_same_secret_hashes_to_same_digest(self) -> None:
-        """Skew auditing needs to compare secrets across processes without revealing them."""
-        assert redact("hunter2") == redact("hunter2")
-        assert redact("hunter2") != redact("hunter3")
-        assert "hunter2" not in redact("hunter2")
 
 
 class TestRedactArgv:
@@ -196,6 +237,14 @@ class TestRedactArgv:
 
     def test_a_trailing_secret_flag_hides_nothing_that_follows(self) -> None:
         assert redact_argv(["train.py", "--wandb-key"]) == ["train.py", "--wandb-key"]
+
+
+class TestRedact:
+    def test_same_secret_hashes_to_same_digest(self) -> None:
+        """Skew auditing needs to compare secrets across processes without revealing them."""
+        assert redact("hunter2") == redact("hunter2")
+        assert redact("hunter2") != redact("hunter3")
+        assert "hunter2" not in redact("hunter2")
 
 
 class TestRedactEnvVars:
@@ -305,89 +354,76 @@ class TestCollectKeyVersions:
 
 
 class TestCollectNodeEnvReport:
-    def _mock_pip_inspect(self) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess(
-            args=["pip", "inspect"],
-            returncode=0,
-            stdout=json.dumps(_SAMPLE_PIP_INSPECT),
-            stderr="",
-        )
-
     def _collect(self, **overrides) -> NodeEnvReport:
-        with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
-            return collect_node_env_report(args=_args(**overrides))
+        return collect_node_env_report(snapshot=collect_process_env_snapshot(_args(**overrides)))
 
-    def test_returns_structured_report(self) -> None:
+    def test_returns_structured_report(self, mocked_pip_inspect) -> None:
         report = self._collect(env_report='{"flavor": "test"}')
 
         assert isinstance(report, NodeEnvReport)
-        assert report.launcher_env_report == {"flavor": "test"}
+        assert report.process.launcher_env_report == {"flavor": "test"}
         assert len(report.editable_packages) == 2
         assert len(report.full_pip_list) == 4
 
-    def test_records_process_identity_context(self) -> None:
+    def test_records_process_identity_context(self, mocked_pip_inspect) -> None:
         """The audit needs to know which host and command line produced this report."""
         report = self._collect(lr=1.0)
-        assert report.hostname
-        assert report.argv == sys.argv
-        assert report.args.values["lr"] == 1.0
+        assert report.process.hostname
+        assert report.process.argv == sys.argv
+        assert report.process.args.values["lr"] == 1.0
 
-    def test_records_redacted_environment(self) -> None:
+    def test_records_redacted_environment(self, mocked_pip_inspect) -> None:
         with patch.dict(os.environ, {"MILES_TEST_ENV_REPORT_TOKEN": "hunter2", "MILES_TEST_ENV_REPORT_RANK": "7"}):
             report = self._collect()
 
-        assert report.env_vars["MILES_TEST_ENV_REPORT_RANK"] == "7"
-        assert "hunter2" not in report.env_vars["MILES_TEST_ENV_REPORT_TOKEN"]
+        assert report.process.env_vars["MILES_TEST_ENV_REPORT_RANK"] == "7"
+        assert "hunter2" not in report.process.env_vars["MILES_TEST_ENV_REPORT_TOKEN"]
 
-    def test_records_key_versions(self) -> None:
+    def test_leaves_the_launcher_record_out_of_the_environment_dump(self, mocked_pip_inspect) -> None:
+        """The launcher's record is already stored decoded, and it is large enough to matter."""
+        with patch.dict(os.environ, {LAUNCHER_REPORT_ENV_VAR: '{"flavor": "test"}'}):
+            report = self._collect(env_report='{"flavor": "test"}')
+
+        assert LAUNCHER_REPORT_ENV_VAR not in report.process.env_vars
+        assert report.process.launcher_env_report == {"flavor": "test"}
+
+    def test_records_key_versions(self, mocked_pip_inspect) -> None:
         report = self._collect()
         assert report.key_versions["sglang"] == "0.4.0"
 
-    def test_empty_partial_env_report(self) -> None:
-        assert self._collect(env_report="").launcher_env_report is None
+    def test_empty_partial_env_report(self, mocked_pip_inspect) -> None:
+        assert self._collect(env_report="").process.launcher_env_report is None
 
-    def test_invalid_json_partial_env_report(self) -> None:
-        assert self._collect(env_report="not json").launcher_env_report is None
+    def test_invalid_json_partial_env_report(self, mocked_pip_inspect) -> None:
+        assert self._collect(env_report="not json").process.launcher_env_report is None
 
-    def test_report_serializable(self) -> None:
+    def test_report_serializable(self, mocked_pip_inspect) -> None:
         report = self._collect(env_report='{"x": 1}', model=object())
         parsed = json.loads(report.model_dump_json())
         assert parsed["editable_packages"][0]["name"] == "miles"
-        assert parsed["args"]["skipped_names"] == ["model"]
+        assert parsed["process"]["args"]["skipped_names"] == ["model"]
 
 
 class TestLogEnvReport:
-    @pytest.fixture(autouse=True)
-    def _no_event_logger(self):
-        set_event_logger(None)
-        yield
-        set_event_logger(None)
-
     def _log(self, **overrides) -> None:
-        mock_result = subprocess.CompletedProcess(
-            args=["pip", "inspect"], returncode=0, stdout=json.dumps(_SAMPLE_PIP_INSPECT), stderr=""
-        )
-        with patch("miles.utils.env_report.subprocess.run", return_value=mock_result):
-            log_env_report(args=_args(**overrides))
+        log_env_report(snapshot=collect_process_env_snapshot(_args(**overrides)))
 
-    def test_writes_one_event_the_analyzer_can_read_back(self, tmp_path: Path) -> None:
+    def test_writes_one_event_the_analyzer_can_read_back(self, mocked_pip_inspect, event_log_dir: Path) -> None:
         """The report is stored as a normal event, so replaying a run's jsonl recovers its environment."""
-        set_event_logger(EventLogger(log_dir=tmp_path, source=MainProcessIdentity()))
-
         self._log(lr=1.0)
 
-        events = read_events(tmp_path)
+        events = read_events(event_log_dir)
         assert len(events) == 1
         event = events[0]
         assert isinstance(event, EnvReportEvent)
         assert event.source == MainProcessIdentity()
-        assert event.report.args.values["lr"] == 1.0
-        assert event.report.hostname
+        assert event.report.process.args.values["lr"] == 1.0
+        assert event.report.process.hostname
 
-    def test_summarises_the_report_on_stdout_instead_of_dumping_it(self, tmp_path: Path, caplog) -> None:
-        """A full report is tens of kilobytes; logging it per process per interval would drown the logs."""
-        set_event_logger(EventLogger(log_dir=tmp_path, source=MainProcessIdentity()))
-
+    def test_summarises_the_report_on_stdout_instead_of_dumping_it(
+        self, mocked_pip_inspect, event_log_dir: Path, caplog
+    ) -> None:
+        """A full report is tens of kilobytes; logging it per process would drown the logs."""
         with caplog.at_level(logging.INFO, logger="miles.utils.env_report"):
             self._log(lr=1.0)
 
@@ -395,13 +431,47 @@ class TestLogEnvReport:
         assert "num_packages=4" in caplog.text
         assert "PYTHONUNBUFFERED" not in caplog.text
 
-    def test_summarises_the_report_when_no_event_logger_is_configured(self, caplog) -> None:
+    def test_summarises_the_report_when_no_event_logger_is_configured(
+        self, mocked_pip_inspect, without_event_logger, caplog
+    ) -> None:
         """A run without an event dir still leaves a trace instead of silently dropping the report."""
         with caplog.at_level(logging.INFO, logger="miles.utils.env_report"):
             self._log()
 
         assert "op=env_report" in caplog.text
         assert "stored=false" in caplog.text
+
+
+class TestStartEnvReporting:
+    def test_reports_from_a_background_thread(self, mocked_pip_inspect, event_log_dir: Path) -> None:
+        """Collection shells out, so it must not sit on the caller's startup path."""
+        start_env_reporting(_args())
+        _join_reporter_threads()
+
+        assert len(read_events(event_log_dir)) == 1
+
+    def test_snapshots_the_environment_before_the_caller_changes_it(
+        self, mocked_pip_inspect, event_log_dir: Path
+    ) -> None:
+        """The reporting thread must not read args or os.environ while the caller is still mutating them."""
+        args = _args(lr=1.0)
+
+        start_env_reporting(args)
+        args.lr = 2.0
+        _join_reporter_threads()
+
+        event = read_events(event_log_dir)[0]
+        assert event.report.process.args.values["lr"] == 1.0
+
+    def test_a_failing_collection_only_warns(self, event_log_dir: Path, caplog) -> None:
+        """A broken environment probe must never take the process down with it."""
+        with patch("miles.utils.env_report.log_env_report", side_effect=RuntimeError("boom")):
+            with caplog.at_level(logging.WARNING, logger="miles.utils.env_report"):
+                start_env_reporting(_args())
+                _join_reporter_threads()
+
+        assert "Failed to log the env report" in caplog.text
+        assert read_events(event_log_dir) == []
 
 
 class TestCollectGitInfo:
@@ -501,7 +571,7 @@ class TestRealEditablePackage:
         expected_commit = editable_package["commit"]
 
         # Step 1: Run the full collection (no mocks)
-        report = collect_node_env_report(args=_args(env_report='{"test": true}'))
+        report = collect_node_env_report(snapshot=collect_process_env_snapshot(_args(env_report='{"test": true}')))
 
         # Step 2: Verify the package appears in editable_packages
         editable_names = {pkg.name for pkg in report.editable_packages}
@@ -535,7 +605,7 @@ class TestRealEditablePackage:
         _git(repo, "add", "staged_change.txt")
 
         # Step 2: Run collection
-        report = collect_node_env_report(args=_args())
+        report = collect_node_env_report(snapshot=collect_process_env_snapshot(_args()))
 
         # Step 3: Verify dirty + diff_stat mentions the file
         git_info = next(
@@ -557,7 +627,7 @@ class TestRealEditablePackage:
         init_py.write_text('__version__ = "0.0.2"\n')
 
         # Step 2: Run collection
-        report = collect_node_env_report(args=_args())
+        report = collect_node_env_report(snapshot=collect_process_env_snapshot(_args()))
 
         # Step 3: Verify dirty
         git_info = next(

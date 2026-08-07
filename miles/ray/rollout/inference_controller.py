@@ -11,6 +11,7 @@ from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils.audit_utils.process_identity import InferenceControllerProcessIdentity
 from miles.utils.context_lock import (
     ContextLock,
     acquires_lock,
@@ -22,6 +23,7 @@ from miles.utils.context_lock import (
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin, SimpleTicker
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
@@ -44,6 +46,8 @@ class InferenceController(NodeProbeMixin):
         engine_provider: BaseWorkerProvider,
         router_provider: BaseWorkerProvider,
     ) -> None:
+        configure_logger(args, source=InferenceControllerProcessIdentity())
+
         self.args = args
         self._engine_provider = engine_provider
         self._router_provider = router_provider

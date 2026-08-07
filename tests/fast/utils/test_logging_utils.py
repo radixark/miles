@@ -1,14 +1,69 @@
 """Tests for configure_strict_async_warnings."""
 
+import argparse
 import asyncio
+import importlib
+import inspect
+import pkgutil
 import subprocess
 import sys
 import textwrap
 import warnings
+from unittest.mock import patch
 
 import pytest
 
-from miles.utils.logging_utils import configure_strict_async_warnings
+from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.logging_utils import configure_logger, configure_strict_async_warnings
+
+SPECS_PACKAGE = "miles.ray.specs"
+
+
+def _worker_class_paths() -> list[str]:
+    package = importlib.import_module(SPECS_PACKAGE)
+    paths = {
+        value
+        for module in pkgutil.iter_modules(package.__path__)
+        for name, value in vars(importlib.import_module(f"{SPECS_PACKAGE}.{module.name}")).items()
+        if name.endswith("_WORKER_CLASS")
+    }
+    assert paths, f"no worker classes found in {SPECS_PACKAGE}"
+    return sorted(paths)
+
+
+def _load_class(path: str):
+    module_path, _, class_name = path.rpartition(".")
+    return getattr(importlib.import_module(module_path), class_name)
+
+
+def _constructor_source(klass: type) -> str | None:
+    if "__init__" not in vars(klass):
+        return None
+    try:
+        return inspect.getsource(klass.__init__)
+    except (OSError, TypeError):
+        return None
+
+
+class TestConfigureLogger:
+    def test_reports_the_environment_of_this_process(self) -> None:
+        """Configuring a process's logger is what makes it record the environment it runs in."""
+        with patch("miles.utils.logging_utils.start_env_reporting") as start:
+            configure_logger(argparse.Namespace(save_debug_event_data=None), source=MainProcessIdentity())
+
+        assert start.call_count == 1
+
+
+class TestServedWorkerLogging:
+    @pytest.mark.parametrize("worker_class_path", _worker_class_paths())
+    def test_worker_configures_its_logger(self, worker_class_path: str) -> None:
+        """Every served worker owns a process, and configure_logger is where that process names
+        itself, opens its event log and reports its environment."""
+        cls = _load_class(worker_class_path)
+        constructors = [source for klass in cls.__mro__ if (source := _constructor_source(klass)) is not None]
+        assert any(
+            "configure_logger(" in source for source in constructors
+        ), f"{worker_class_path} runs as its own process but never calls configure_logger"
 
 
 async def _dummy_coroutine():

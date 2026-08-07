@@ -5,6 +5,7 @@ import sys
 import warnings
 from miles.utils.audit_utils.event_logger.logger import EventLogger, is_event_logger_initialized, set_event_logger
 from miles.utils.audit_utils.process_identity import ProcessIdentity
+from miles.utils.env_report import start_env_reporting
 
 _LOGGER_CONFIGURED = False
 
@@ -20,6 +21,8 @@ def configure_logger(args, *, source: ProcessIdentity) -> None:
     if (event_dir := getattr(args, "save_debug_event_data", None)) is not None:
         if not is_event_logger_initialized():
             set_event_logger(EventLogger(log_dir=event_dir, file_name=f"{name}.jsonl", source=source))
+
+    start_env_reporting(args)
 
 
 # ref: SGLang

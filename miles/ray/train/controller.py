@@ -19,10 +19,12 @@ from miles.utils.audit_utils.event_logger.models import (
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
 )
+from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
@@ -51,6 +53,8 @@ class TrainerController(NodeProbeMixin):
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
+        configure_logger(args, source=TrainerControllerProcessIdentity(role=role))
+
         self.args = args
         self._inference_controller = inference_controller
         self._role = role

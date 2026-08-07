@@ -27,13 +27,17 @@ class ArgsDump(FrozenStrictBaseModel):
     skipped_names: list[str]
 
 
-class NodeEnvReport(FrozenStrictBaseModel):
+class ProcessEnvFacts(FrozenStrictBaseModel):
     hostname: str
     argv: list[str]
     args: ArgsDump
     env_vars: dict[str, str]
-    key_versions: dict[str, str]
     launcher_env_report: dict[str, Any] | None
+
+
+class NodeEnvReport(FrozenStrictBaseModel):
+    process: ProcessEnvFacts
+    key_versions: dict[str, str]
     editable_packages: list[EditablePackageInfo]
     git_repos: list[GitRepoInfo]
     full_pip_list: list[dict[str, str]]

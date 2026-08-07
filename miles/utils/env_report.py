@@ -8,6 +8,8 @@ import re
 import socket
 import subprocess
 import sys
+import threading
+from dataclasses import dataclass
 from typing import Any
 
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -17,16 +19,27 @@ from miles.utils.audit_utils.event_logger.models import (
     EnvReportEvent,
     GitRepoInfo,
     NodeEnvReport,
+    ProcessEnvFacts,
 )
 from miles.utils.tracking_utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ProcessEnvSnapshot:
+    facts: ProcessEnvFacts
+    # TODO: remove the PYTHONPATH workaround and still make Megatron detected
+    probe_env: dict[str, str]
+
 
 _SECRET_ENV_VAR_PATTERN = re.compile(
     r"(^|_)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|DATABASE_URL)$", re.IGNORECASE
 )
 _SECRET_ARG_NAMES = frozenset({"wandb_key"})
 _SECRET_ARG_FLAGS = frozenset(f"--{name.replace('_', '-')}" for name in _SECRET_ARG_NAMES)
+_REPORTER_THREAD_NAME = "env-report"
+LAUNCHER_REPORT_ENV_VAR = "MILES_SCRIPT_ENV_REPORT"
 _REDACTED_PREFIX = "redacted-sha256:"
 _REDACTED_HASH_CHARS = 16
 _KEY_PACKAGE_NAMES = (
@@ -56,8 +69,22 @@ def decode_env_report(raw: str) -> dict[str, Any] | None:
             return None
 
 
-def log_env_report(*, args: Any) -> NodeEnvReport:
-    report = collect_node_env_report(args=args)
+def start_env_reporting(args: Any) -> None:
+    snapshot = collect_process_env_snapshot(args)
+    threading.Thread(
+        target=_log_env_report_safely, kwargs={"snapshot": snapshot}, name=_REPORTER_THREAD_NAME, daemon=True
+    ).start()
+
+
+def _log_env_report_safely(*, snapshot: ProcessEnvSnapshot) -> None:
+    try:
+        log_env_report(snapshot=snapshot)
+    except Exception:
+        logger.warning("Failed to log the env report", exc_info=True)
+
+
+def log_env_report(*, snapshot: ProcessEnvSnapshot) -> NodeEnvReport:
+    report = collect_node_env_report(snapshot=snapshot)
 
     if is_event_logger_initialized():
         get_event_logger().log(EnvReportEvent, {"report": report}, print_log=False)
@@ -71,29 +98,39 @@ def _log_report_summary(report: NodeEnvReport) -> None:
         logger.info,
         tag="audit",
         op="env_report",
-        hostname=report.hostname,
+        hostname=report.process.hostname,
         versions=report.key_versions,
         repos={repo.package_name: f"{repo.commit}{'-dirty' if repo.dirty else ''}" for repo in report.git_repos},
         num_packages=len(report.full_pip_list),
-        num_env_vars=len(report.env_vars),
+        num_env_vars=len(report.process.env_vars),
         stored=is_event_logger_initialized(),
     )
 
 
-def collect_node_env_report(*, args: Any) -> NodeEnvReport:
-    editable_packages, full_pip_list = _collect_pip_info()
+def collect_process_env_snapshot(args: Any) -> ProcessEnvSnapshot:
+    environ = dict(os.environ)
+    env_vars = {name: value for name, value in environ.items() if name != LAUNCHER_REPORT_ENV_VAR}
+
+    facts = ProcessEnvFacts(
+        hostname=socket.gethostname(),
+        argv=redact_argv(sys.argv),
+        args=dump_args(args),
+        env_vars=redact_env_vars(env_vars),
+        launcher_env_report=decode_env_report(args.env_report),
+    )
+    return ProcessEnvSnapshot(facts=facts, probe_env={k: v for k, v in environ.items() if k != "PYTHONPATH"})
+
+
+def collect_node_env_report(*, snapshot: ProcessEnvSnapshot) -> NodeEnvReport:
+    editable_packages, full_pip_list = _collect_pip_info(snapshot.probe_env)
 
     git_repos = [
         info for pkg in editable_packages if (info := _collect_git_info(package_name=pkg.name, location=pkg.location))
     ]
 
     return NodeEnvReport(
-        hostname=socket.gethostname(),
-        argv=redact_argv(sys.argv),
-        args=dump_args(args),
-        env_vars=redact_env_vars(dict(os.environ)),
+        process=snapshot.facts,
         key_versions=collect_key_versions(full_pip_list),
-        launcher_env_report=decode_env_report(args.env_report),
         editable_packages=editable_packages,
         git_repos=git_repos,
         full_pip_list=full_pip_list,
@@ -171,14 +208,12 @@ def _json_snapshot(values: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
-def _collect_pip_info() -> tuple[list[EditablePackageInfo], list[dict[str, str]]]:
+def _collect_pip_info(env: dict[str, str]) -> tuple[list[EditablePackageInfo], list[dict[str, str]]]:
     """Collect all pip info in a single `pip inspect` call.
 
     Returns (editable_packages, full_pip_list).
     """
     try:
-        # TODO: remove this workaround and still make Megatron detected
-        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         result = subprocess.run(
             ["pip", "inspect"],
             capture_output=True,
