@@ -13,7 +13,13 @@ from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
 
 
 def _cmd(
-    *, worker_type: str = "regular", args=None, addr_overrides: dict | None = None, base_gpu_id: int = 0, **kwargs
+    *,
+    worker_type: str = "regular",
+    args=None,
+    addr_overrides: dict | None = None,
+    base_gpu_id: int = 0,
+    fleet_gpu_offset: int = 0,
+    **kwargs,
 ) -> str:
     addr_and_ports = dict(
         host="10.0.0.1",
@@ -30,6 +36,7 @@ def _cmd(
         node_rank=0,
         worker_type=worker_type,
         base_gpu_id=base_gpu_id,
+        fleet_gpu_offset=fleet_gpu_offset,
         # ServerArgs probes the local accelerator when no device is given, which a CPU-only
         # CI runner cannot answer. Production resolves it to the engine's own device the same way.
         sglang_overrides={"device": "cuda"},
@@ -68,10 +75,24 @@ class TestComputeEngineLaunchCmd:
         """Same seed and same prompt on every engine collapses n-samples-per-prompt into one."""
         args = make_engine_args(seed=42)
         seeds = [
-            parse_server_args_argv(shlex.split(_cmd(args=args, base_gpu_id=gpu))[3:]).random_seed for gpu in (0, 1)
+            parse_server_args_argv(shlex.split(_cmd(args=args, fleet_gpu_offset=offset))[3:]).random_seed
+            for offset in (0, 1)
         ]
 
         assert seeds == [42, 43]
+
+    def test_the_seed_does_not_follow_the_node_local_gpu_id(self):
+        """One engine per node is the standard large-model layout, and every such engine sits on
+        the node's gpu 0; keying off that id gives the whole fleet one seed."""
+        args = make_engine_args(seed=42)
+        seeds = [
+            parse_server_args_argv(
+                shlex.split(_cmd(args=args, base_gpu_id=0, fleet_gpu_offset=offset))[3:]
+            ).random_seed
+            for offset in (0, 8)
+        ]
+
+        assert seeds == [42, 50]
 
     def test_a_bracketed_v6_host_is_stripped_for_the_server_but_kept_in_dist_addr(self):
         """sglang binds a bare v6 host while the rendezvous addr stays bracketed."""

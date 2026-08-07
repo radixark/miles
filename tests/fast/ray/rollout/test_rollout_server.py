@@ -216,14 +216,6 @@ def _make_lock() -> ContextLock:
     return ContextLock("InferenceController")
 
 
-async def _raise_async(self):
-    raise RuntimeError("injected init failure")
-
-
-async def _noop_async(self):
-    return None
-
-
 class TestRemoveCell:
     @pytest.mark.asyncio
     async def test_removing_a_cell_detaches_it_from_every_view_derived_from_the_fleet(self, monkeypatch):

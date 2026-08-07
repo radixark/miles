@@ -12,6 +12,7 @@ from miles.router.config import MilesRouterConfig, compute_miles_router_config
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
+    _resolve_mini_ft_controller_enable,
     get_miles_extra_args_provider,
     miles_validate_args,
     validate_async_off_policy_correction,
@@ -94,6 +95,7 @@ class TestMaybeApplyDumperOverrides:
             dumper_enable=dumper_enable,
             use_fault_tolerance=use_fault_tolerance,
             ft_components=ft_components if ft_components is not None else [],
+            mini_ft_controller_enable=None,
             router_disable_health_check=router_disable_health_check,
             rollout_health_check_interval=rollout_health_check_interval,
             miles_router_health_check_failure_threshold=miles_router_health_check_failure_threshold,
@@ -132,6 +134,15 @@ class TestMaybeApplyDumperOverrides:
 
         assert args.use_fault_tolerance is False
         assert args.router_disable_health_check is True
+
+    def test_no_healing_loop_survives_dumper_mode(self) -> None:
+        """It is resolved from ft_components, which dumper mode clears, so resolving it first
+        would leave the loop polling a registry with nothing in it for the whole run."""
+        args = self._make_args(dumper_enable=True, use_fault_tolerance=True, ft_components=["rollout"])
+
+        _maybe_apply_dumper_overrides(args)
+
+        assert _resolve_mini_ft_controller_enable(args) is False
 
     def test_the_selected_ft_components_go_with_the_flag(self) -> None:
         """ft_components is resolved from the flag long before this runs, so clearing the flag

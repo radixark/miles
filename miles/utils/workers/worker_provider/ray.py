@@ -3,6 +3,7 @@ import logging
 from functools import partial
 
 import ray.actor
+import ray.exceptions
 
 from miles.utils.workers.ray_worker_manager import RayWorkerManager, WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
@@ -33,7 +34,12 @@ class RayWorkerProvider(BaseWorkerProvider):
         return await self._worker_manager_handle.get_worker_addrs.remote(worker_name)
 
     async def is_worker_alive(self, worker_name: str) -> bool:
-        handle = await self._worker_manager_handle.get_worker_handle.remote(worker_name)
+        try:
+            handle = await self._worker_manager_handle.get_worker_handle.remote(worker_name)
+        except ray.exceptions.RayTaskError:
+            # The manager only hands out handles for live cells, so a cell stopped since the
+            # caller looked up its address has no handle to probe -- which is the answer.
+            return False
         return await handle.is_alive(timeout=WORKER_LIVENESS_PROBE_TIMEOUT_SECONDS)
 
     async def watch_cells(self, reconcile: ReconcileFn, *, spec_names: list[str]) -> StopWatchFn:

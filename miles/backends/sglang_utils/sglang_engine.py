@@ -59,6 +59,7 @@ def compute_engine_launch_cmd(
     node_rank: int,
     worker_type: str,
     base_gpu_id: int,
+    fleet_gpu_offset: int,
     sglang_overrides: dict,
     num_gpus_per_engine: int,
     dist_init_addr: str,
@@ -79,6 +80,7 @@ def compute_engine_launch_cmd(
         worker_type=worker_type,
         disaggregation_bootstrap_port=disaggregation_bootstrap_port,
         base_gpu_id=base_gpu_id,
+        fleet_gpu_offset=fleet_gpu_offset,
         engine_info_bootstrap_port=engine_info_bootstrap_port,
         sglang_overrides=sglang_overrides,
         num_gpus_per_engine=num_gpus_per_engine,
@@ -100,6 +102,7 @@ def _compute_server_args(
     worker_type: str = "regular",
     disaggregation_bootstrap_port: int | None,
     base_gpu_id: int,
+    fleet_gpu_offset: int,
     engine_info_bootstrap_port: int | None,
     sglang_overrides: dict | None,
     num_gpus_per_engine: int | None,
@@ -111,9 +114,10 @@ def _compute_server_args(
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
-        # Offset per engine so two engines do not sample the same continuation for the same
-        # prompt, and derived from --seed so a rerun of the same launch reproduces the rollouts.
-        "random_seed": args.seed + base_gpu_id,
+        # Offset by the engine's place in the fleet so two engines do not sample the same
+        # continuation for the same prompt -- node-local gpu ids repeat across nodes and would
+        # collide -- and derived from --seed so a rerun of the same launch reproduces the rollouts.
+        "random_seed": args.seed + fleet_gpu_offset,
         # memory
         "enable_memory_saver": args.offload_rollout,
         # distributed

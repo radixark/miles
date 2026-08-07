@@ -12,6 +12,7 @@ from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch
 from miles.utils.retry_utils import retry_until_deadline
+from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
 
@@ -22,21 +23,19 @@ WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 async def create_rollout_servers(
     args, context_lock: ContextLock, global_health_checker_activeness: Callable[[], ActiveAndEpoch]
 ) -> dict[str, "RolloutServer"]:
-    """Create rollout servers: one per model, each with its own router."""
-    # Only the ip is refused. A port on its own never meant "attach", it pinned the router miles
-    # starts to a known port, and the spec still honours it; refusing it here broke launchers that
-    # pin one so a firewall rule or a dial-back host can name it.
-    assert args.sglang_router_ip is None, (
-        "external router mode was removed: miles always starts its own routers "
-        "(expected to return with the k8s-native mode)"
-    )
-
+    """Create rollout servers: one per model, each behind a router."""
     config = resolve_sglang_config(args)
+
+    external_router_addr = _compute_external_router_addr(args)
+    assert external_router_addr is None or len(config.models) == 1, (
+        f"--sglang-router-ip names one router, but {len(config.models)} models were configured; "
+        f"each model needs its own"
+    )
 
     servers: dict[str, RolloutServer] = {}
 
     for model_idx, model_cfg in enumerate(config.models):
-        router_addr = await wait_router_ready(model_idx=model_idx)
+        router_addr = external_router_addr or await wait_router_ready(model_idx=model_idx)
 
         if model_idx == 0:
             args.sglang_router_ip = router_addr.host
@@ -57,6 +56,19 @@ async def create_rollout_servers(
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
     return servers
+
+
+def _compute_external_router_addr(args) -> HostAndPort | None:
+    """The router miles should talk to instead of starting one, when it was given one.
+
+    An ip alone is not enough to reach a router, so the port has to come with it; a port on its
+    own means something else entirely -- pin the port of the router miles starts.
+    """
+    if args.sglang_router_ip is None:
+        return None
+
+    assert args.sglang_router_port is not None, "--sglang-router-ip needs --sglang-router-port to be reachable"
+    return HostAndPort(host=args.sglang_router_ip, port=args.sglang_router_port)
 
 
 def _compute_expected_num_cells(args, *, model_cfg) -> int:

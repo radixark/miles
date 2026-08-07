@@ -2606,7 +2606,6 @@ def miles_validate_args(args):
 
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
-    args.mini_ft_controller_enable = _resolve_mini_ft_controller_enable(args)
 
     if "train" in args.ft_components:
         args.indep_dp = True
@@ -3174,6 +3173,12 @@ def miles_validate_args(args):
         getattr(args, "sglang_config", None) is not None and args.rollout_external
     ), "sglang_config cannot be set when rollout_external is set."
 
+    if args.rollout_external:
+        assert args.rollout_external_engine_addrs, (
+            "rollout_external needs --rollout-external-engine-addrs: miles launches no engines in "
+            "this mode, so the addresses are the only description of the fleet."
+        )
+
     assert not (
         getattr(args, "sglang_config", None) is not None and getattr(args, "prefill_num_servers", None) is not None
     ), "sglang_config and prefill_num_servers are mutually exclusive. Use server_groups in the YAML config instead."
@@ -3185,6 +3190,9 @@ def miles_validate_args(args):
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
     _maybe_apply_dumper_overrides(args)
+
+    # After the dumper overrides, not before: they clear ft_components, and this default follows it.
+    args.mini_ft_controller_enable = _resolve_mini_ft_controller_enable(args)
 
 
 def validate_async_off_policy_correction(args) -> None:

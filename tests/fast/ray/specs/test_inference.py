@@ -15,6 +15,7 @@ from miles.ray.specs.inference import (
     compute_router_spec_name,
     spec_session_server,
     specs_inference_engine,
+    specs_router,
 )
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
@@ -71,6 +72,48 @@ class TestRouterPortPinning:
         ]
 
         assert ports == [31000, 31001]
+
+
+class TestExternalRouter:
+    def test_no_router_is_launched_in_front_of_one_that_was_named(self):
+        """Starting one would put a second router in front of the same engines, and half the
+        traffic would go to a routing table nobody registers with."""
+        assert specs_router(make_args(sglang_router_ip="10.0.0.9", sglang_router_port=31000)) == []
+
+    def test_a_router_is_launched_when_none_was_named(self):
+        """The ordinary case: miles owns the router for every model."""
+        assert len(specs_router(make_args(sglang_router_ip=None, sglang_router_port=None))) == 1
+
+    def test_the_session_server_is_pointed_at_the_named_router(self):
+        """There is no router spec to read an address from, so reading one would KeyError."""
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            num_session_servers=1,
+            sglang_router_ip="10.0.0.9",
+            sglang_router_port=31000,
+            miles_router_timeout=None,
+            chat_template_path=None,
+            tito_model="default",
+            apply_chat_template_kwargs=None,
+            sglang_speculative_algorithm=None,
+            num_layers=None,
+            moe_router_topk=None,
+            save_debug_trajectory_data=None,
+            lora_rank=0,
+            lora_adapter_path=None,
+        )
+        ctx = LaunchCommandContext(
+            cell_index=0,
+            worker_in_cell_index=0,
+            self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
+            spec_addrs={},
+            gpu_ids=[],
+        )
+
+        config = parse_config_argv(SessionServerConfig, shlex.split(spec_session_server(args).launch_command(ctx))[3:])
+
+        assert config.backend_url == "http://10.0.0.9:31000"
 
 
 class TestComputeSpecRouterLaunchCommand:
@@ -363,6 +406,29 @@ class TestInferenceEngineGatedLaunch:
                 spec.launch_command(_make_engine_ctx(cell_index=cell_index, worker_in_cell_index=worker_in_cell_index))
 
         assert recorded == [0, 1, 0, 1]
+
+    def test_each_engine_is_told_where_it_sits_in_the_whole_fleet(self, tmp_path, monkeypatch):
+        """The gpu ids a worker reports are node-local and repeat across nodes, so anything keyed
+        off them -- the sampling seed among others -- would be shared by one engine per node."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 16, "num_gpus_per_engine": 8}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=16, num_gpus_per_node=8)
+        recorded: list[int] = []
+
+        def _record(**kwargs) -> str:
+            recorded.append(kwargs["fleet_gpu_offset"])
+            return "launch-cmd"
+
+        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
+        (spec,) = specs_inference_engine(args)
+        for cell_index in range(2):
+            spec.launch_command(_make_engine_ctx(cell_index=cell_index))
+
+        assert recorded == [0, 8]
 
 
 def _make_engine_ctx(*, cell_index: int = 0, worker_in_cell_index: int = 0) -> LaunchCommandContext:

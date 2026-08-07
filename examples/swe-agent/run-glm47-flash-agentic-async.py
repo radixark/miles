@@ -279,7 +279,7 @@ def execute(args: ScriptArgs):
         "--custom-rm-path generate.reward_func "
         "--tito-model glm47 "
         "--use-session-server "
-        "--session-server-port 30000 "
+        "--session-server-port 29000 "
     )
 
     misc_args = (

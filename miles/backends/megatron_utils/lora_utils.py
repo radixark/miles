@@ -12,6 +12,7 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
+from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -628,7 +629,10 @@ def _load_training_state(
 
 def build_lora_sync_config(args: Namespace) -> dict[str, Any]:
     """Build LoRA config dict for syncing weights to SGLang engines."""
-    if sglang_lora_target_all_sentinel(args):
+    # The engine was launched with the auto-detecting shorthand only when it serves a single
+    # adapter; multi-LoRA names its targets, and publishing an adapter that claims more than the
+    # engine was launched to host makes the engine reject it or quietly host a subset.
+    if sglang_lora_target_all_sentinel(args) and not is_multi_lora_enabled(args):
         target_modules_hf: Any = "all-linear"
     else:
         target_modules_hf = (
