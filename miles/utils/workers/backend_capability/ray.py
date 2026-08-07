@@ -18,7 +18,7 @@ class RayBackendCapability(BackendCapability):
     def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider:
         return RayWorkerProvider(worker_manager_handle=self._worker_manager_handle, pool_ids=list(pool_ids))
 
-    def static_worker_provider(self, *, worker_name: str) -> BaseWorkerProvider:
+    def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider:
         return RayWorkerProvider(worker_manager_handle=self._worker_manager_handle)
 
     def cell_operations(self) -> BaseCellOperations:

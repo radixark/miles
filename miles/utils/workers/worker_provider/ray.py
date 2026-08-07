@@ -32,6 +32,10 @@ class RayWorkerProvider(BaseWorkerProvider):
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return await self._worker_manager_handle.get_worker_addrs.remote(worker_name)
 
+    async def cell_infos(self, *, pool_id: str) -> dict[str, CellInfo]:
+        infos = await self._worker_manager_handle.get_cell_infos.remote(pool_ids=[pool_id])
+        return {cell_id: info for cell_id, info in infos.items() if info.alive}
+
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
         pool_ids = self._watched_pool_ids()
         seen_infos: dict[str, CellInfo] = {}

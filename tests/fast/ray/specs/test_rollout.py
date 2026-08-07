@@ -45,7 +45,7 @@ class TestRolloutExecutorSpec:
         assert sorted(kwargs) == ["args", "router_provider", "session_server_provider"]
         assert kwargs["router_provider"] is capability.static_provider
         assert kwargs["session_server_provider"] is capability.static_provider
-        assert capability.requested_worker_names == ["inference-router-0-0-0", "session-server-0-0"]
+        assert capability.requested_static_pool_ids == ["inference-router-0", "session-server"]
 
     def test_a_run_without_session_servers_is_given_no_session_provider(self):
         """Nothing is deployed to wait for, and a provider would make the executor wait for it anyway."""

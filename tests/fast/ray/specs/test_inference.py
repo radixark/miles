@@ -16,7 +16,6 @@ from miles.ray.specs.inference import (
     _compute_spec_router,
     compute_engine_pool_ids,
     compute_router_pool_id,
-    compute_router_worker_name,
     inference_controller_cell_id,
     inference_controller_worker_name,
     spec_inference_controller,
@@ -493,7 +492,7 @@ class TestSpecInferenceController:
 
         kwargs = spec_inference_controller(self._args(tmp_path)).ctor_kwargs(self._ctor_context(capability))
 
-        assert capability.requested_worker_names == [compute_router_worker_name(0)]
+        assert capability.requested_static_pool_ids == [compute_router_pool_id(0)]
         assert kwargs["router_provider"] is capability.static_provider
 
     def test_a_train_only_run_builds_a_controller_over_an_empty_pool(self, tmp_path):

@@ -303,7 +303,7 @@ class TestSpecTrainerController:
         actor_kwargs = actor_spec.ctor_kwargs(_controller_context(capability))
         critic_kwargs = critic_spec.ctor_kwargs(_controller_context(capability))
 
-        assert capability.requested_worker_names == ["inference-controller-0-0"]
+        assert capability.requested_static_pool_ids == ["inference-controller"]
         assert actor_kwargs["inference_controller"] is capability.static_provider
         assert critic_kwargs["inference_controller"] is None
 

@@ -31,6 +31,9 @@ class BaseWorkerProvider(abc.ABC):
     @abc.abstractmethod
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]: ...
 
+    @abc.abstractmethod
+    async def cell_infos(self, *, pool_id: str) -> dict[str, CellInfo]: ...
+
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
         raise NotImplementedError(f"{type(self).__name__} answers addresses, it does not observe cells")
 

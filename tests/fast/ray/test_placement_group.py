@@ -106,7 +106,7 @@ class TestCreateRolloutComponents:
 
         await create_rollout_components(args)
 
-        assert fake_components.capability.requested_worker_names == []
+        assert fake_components.capability.requested_static_pool_ids == []
         assert args.sglang_router_ip is None
 
 

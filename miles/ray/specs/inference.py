@@ -46,19 +46,15 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
         ctor_kwargs=lambda ctx: dict(
             args=args,
             engine_provider=ctx.capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args)),
-            router_provider=ctx.capability.static_worker_provider(worker_name=compute_router_worker_name(0)),
+            router_provider=ctx.capability.static_worker_provider(pool_id=compute_router_pool_id(0)),
         ),
     )
 
 
 def create_inference_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
     worker_name = inference_controller_worker_name()
-    provider = capability.static_worker_provider(worker_name=worker_name)
+    provider = capability.static_worker_provider(pool_id=INFERENCE_CONTROLLER_POOL_ID)
     return provider.get_handle(worker_name)
-
-
-def session_server_worker_name(cell_index: int) -> str:
-    return compute_worker_name(pool_id=SESSION_SERVER_POOL_ID, cell_index=cell_index)
 
 
 def inference_controller_worker_name() -> str:

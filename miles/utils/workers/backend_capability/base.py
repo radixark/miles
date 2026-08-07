@@ -14,7 +14,7 @@ class BackendCapability(abc.ABC):
     def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider: ...
 
     @abc.abstractmethod
-    def static_worker_provider(self, *, worker_name: str) -> BaseWorkerProvider: ...
+    def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider: ...
 
     @abc.abstractmethod
     def cell_operations(self) -> BaseCellOperations: ...
@@ -28,8 +28,8 @@ class DeferredBackendCapability(BackendCapability):
     def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider:
         return self._resolve().dynamic_worker_provider(pool_ids=pool_ids)
 
-    def static_worker_provider(self, *, worker_name: str) -> BaseWorkerProvider:
-        return self._resolve().static_worker_provider(worker_name=worker_name)
+    def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider:
+        return self._resolve().static_worker_provider(pool_id=pool_id)
 
     def cell_operations(self) -> BaseCellOperations:
         return self._resolve().cell_operations()

@@ -4,6 +4,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_router_ready, wait_session_server_ready
+from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
@@ -71,6 +72,25 @@ class TestWaitRouterReady:
         assert addr == HostAndPort(host="10.0.0.9", port=12345)
 
 
+class _SessionServerProvider:
+    """A backend that names its session-server cells its own way, not `pool-0`, `pool-1`."""
+
+    cell_ids = ("session-server-east", "session-server-west")
+
+    async def cell_infos(self, *, pool_id: str) -> dict[str, CellInfo]:
+        return {
+            cell_id: CellInfo(
+                cell_id=cell_id,
+                pool_id=pool_id,
+                alive=True,
+                worker_names=[f"{cell_id}-0"],
+                workers_hash="hash",
+                meta={},
+            )
+            for cell_id in self.cell_ids
+        }
+
+
 class TestWaitSessionServerReady:
     async def test_disabled_returns_silently(self):
         """Happy no-op: ``use_session_server=False`` returns without touching any other config."""
@@ -87,7 +107,7 @@ class TestWaitSessionServerReady:
         """The driver-side contract (ip, ports, instance ids) comes from the worker manager addrs."""
         requested: list[str] = []
 
-        class _FakeProvider:
+        class _FakeProvider(_SessionServerProvider):
             async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
                 requested.append(worker_name)
                 return {"primary": HostAndPort(host="10.0.0.9", port=5004 + len(requested))}
@@ -106,19 +126,20 @@ class TestWaitSessionServerReady:
         )
         await wait_session_server_ready(args, provider=_FakeProvider())
 
-        assert requested == ["session-server-0-0", "session-server-1-0"]
+        assert requested == ["session-server-east-0", "session-server-west-0"]
         assert args.session_server_addrs == ["10.0.0.9:5005", "10.0.0.9:5006"]
         assert args.session_server_instance_ids == {
-            "10.0.0.9:5005": "00112233445566aa-0",
-            "10.0.0.9:5006": "00112233445566aa-1",
+            "10.0.0.9:5005": "00112233445566aa-session-server-east",
+            "10.0.0.9:5006": "00112233445566aa-session-server-west",
         }
         assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
 
     async def test_servers_on_different_hosts_raise(self):
         """A session server pool spread across hosts violates the single-ip contract."""
 
-        class _FakeProvider:
+        class _FakeProvider(_SessionServerProvider):
             def __init__(self):
+                super().__init__()
                 self._counter = 0
 
             async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:

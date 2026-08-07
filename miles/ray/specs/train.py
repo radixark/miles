@@ -54,7 +54,7 @@ def spec_trainer_controller_critic(args) -> ServeWorkerSpec:
 
 def create_trainer_controller_handle(*, capability: BackendCapability, role: str) -> BaseWorkerHandle:
     worker_name = trainer_controller_worker_name(role)
-    provider = capability.static_worker_provider(worker_name=worker_name)
+    provider = capability.static_worker_provider(pool_id=compute_trainer_controller_pool_id(role))
     return provider.get_handle(worker_name)
 
 
