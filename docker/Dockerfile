@@ -225,22 +225,8 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       echo "CUDA 12 variant: keeping the base image's mooncake"; \
     fi
 
-ARG KUBECTL_VERSION=v1.36.3
-ARG HELM_VERSION=v4.2.3
-
-RUN set -eux; \
-    curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl"; \
-    curl -fsSL -o /tmp/kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256"; \
-    echo "$(cat /tmp/kubectl.sha256)  /tmp/kubectl" | sha256sum -c -; \
-    install -m 0755 /tmp/kubectl /usr/local/bin/kubectl; \
-    curl -fsSL -o /tmp/helm.tar.gz "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH}.tar.gz"; \
-    curl -fsSL -o /tmp/helm.tar.gz.sha256 "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH}.tar.gz.sha256sum"; \
-    echo "$(awk '{print $1}' /tmp/helm.tar.gz.sha256)  /tmp/helm.tar.gz" | sha256sum -c -; \
-    tar -xzf /tmp/helm.tar.gz -C /tmp; \
-    install -m 0755 "/tmp/linux-${TARGETARCH}/helm" /usr/local/bin/helm; \
-    rm -rf /tmp/kubectl /tmp/kubectl.sha256 /tmp/helm.tar.gz /tmp/helm.tar.gz.sha256 "/tmp/linux-${TARGETARCH}"; \
-    kubectl version --client; \
-    helm version --short
+COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
+RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
 
 # ====================================== Install main package ============================================
 

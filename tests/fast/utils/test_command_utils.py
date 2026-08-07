@@ -3,9 +3,10 @@ import os
 import shlex
 
 import pytest
-from tests.fast.utils.command_recorder import record_commands
+from tests.fast.utils.command_recorder import patch_helper, record_commands
 
 import miles.utils.external_utils.command_utils as command_utils
+from miles.utils.external_utils.command_utils import common
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import resolve_file_arg
 
@@ -13,7 +14,7 @@ from miles.utils.file_arg_utils import resolve_file_arg
 @pytest.fixture
 def commands(monkeypatch):
     recorded = record_commands(monkeypatch)
-    monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
+    patch_helper(monkeypatch, "check_has_nvlink", lambda: False)
     for name in ("MILES_SCRIPT_EXTERNAL_RAY", "RAY_ADDRESS", "NCCL_NVLS_ENABLE", "WANDB_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
@@ -41,7 +42,7 @@ class TestConvertCheckpoint:
         """The converter runs out-of-process, so miles and megatron must be on its PYTHONPATH."""
         commands = []
         monkeypatch.setenv("PYTHONPATH", "/sglang:/existing")
-        monkeypatch.setattr(command_utils, "exec_command_gpu", commands.append)
+        patch_helper(monkeypatch, "exec_command_gpu", commands.append)
 
         command_utils.convert_checkpoint(
             model_name="model",
@@ -130,7 +131,7 @@ class TestRsyncSimple:
     def test_limits_itself_to_the_requested_node_count(self, monkeypatch):
         """prepare_cp asks for the training node count; forwarding it is the whole point of the argument."""
         calls = []
-        monkeypatch.setattr(command_utils, "exec_command_multi_node", lambda cmd, **kwargs: calls.append(kwargs))
+        patch_helper(monkeypatch, "exec_command_multi_node", lambda cmd, **kwargs: calls.append(kwargs))
 
         command_utils.rsync_simple("/src", "/dst", num_nodes=4)
 
@@ -173,11 +174,9 @@ class TestStartMooncakeMaster:
         """An already listening master must not be restarted out from under its clients."""
         commands = []
         waits = []
-        monkeypatch.setattr(command_utils, "_is_tcp_server_ready", lambda host, port: True)
-        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
-        monkeypatch.setattr(
-            command_utils, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs))
-        )
+        patch_helper(monkeypatch, "_is_tcp_server_ready", lambda host, port: True)
+        patch_helper(monkeypatch, "exec_command_cpu", commands.append)
+        patch_helper(monkeypatch, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs)))
 
         command_utils.start_mooncake_master()
 
@@ -189,11 +188,9 @@ class TestStartMooncakeMaster:
         commands = []
         waits = []
         log_path = tmp_path / "mooncake master.log"
-        monkeypatch.setattr(command_utils, "_is_tcp_server_ready", lambda host, port: False)
-        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
-        monkeypatch.setattr(
-            command_utils, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs))
-        )
+        patch_helper(monkeypatch, "_is_tcp_server_ready", lambda host, port: False)
+        patch_helper(monkeypatch, "exec_command_cpu", commands.append)
+        patch_helper(monkeypatch, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs)))
 
         command_utils.start_mooncake_master(rpc_port=50151, metrics_port=50152, timeout=12, log_path=log_path)
 
@@ -208,13 +205,13 @@ class TestStartMooncakeMaster:
         log_path = tmp_path / "mooncake_master.log"
         log_path.write_text("bind failed\nfatal startup error\n")
         commands = []
-        monkeypatch.setattr(command_utils, "_is_tcp_server_ready", lambda host, port: False)
-        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
+        patch_helper(monkeypatch, "_is_tcp_server_ready", lambda host, port: False)
+        patch_helper(monkeypatch, "exec_command_cpu", commands.append)
 
         def fail_wait(*args, **kwargs):
             raise RuntimeError("not ready")
 
-        monkeypatch.setattr(command_utils, "wait_for_server_ready", fail_wait)
+        patch_helper(monkeypatch, "wait_for_server_ready", fail_wait)
 
         with pytest.raises(RuntimeError, match="fatal startup error"):
             command_utils.start_mooncake_master(log_path=log_path)
@@ -229,8 +226,8 @@ class TestExecuteTrain:
         commands = []
         monkeypatch.delenv("MILES_SCRIPT_EXTERNAL_RAY", raising=False)
         monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
-        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
+        patch_helper(monkeypatch, "exec_command_cpu", commands.append)
+        patch_helper(monkeypatch, "check_has_nvlink", lambda: False)
 
         command_utils.execute_train(
             train_args="",
@@ -248,8 +245,8 @@ class TestExecuteTrain:
         commands = []
         monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
         monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
-        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
+        patch_helper(monkeypatch, "exec_command_cpu", commands.append)
+        patch_helper(monkeypatch, "check_has_nvlink", lambda: False)
 
         command_utils.execute_train(train_args="", num_gpus_per_node=1, megatron_model_type="qwen3-4B")
 
@@ -262,8 +259,8 @@ class TestExecuteTrain:
         monkeypatch.setenv("PYTHONPATH", "/sglang:/existing")
         monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", "1")
         monkeypatch.setenv("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1")
-        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
-        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
+        patch_helper(monkeypatch, "exec_command_cpu", commands.append)
+        patch_helper(monkeypatch, "check_has_nvlink", lambda: False)
 
         command_utils.execute_train(
             train_args="",
@@ -375,7 +372,7 @@ class TestExecuteTrain:
 
     def test_derives_nvls_from_nvlink_detection(self, commands, monkeypatch):
         """NCCL_NVLS_ENABLE follows the detected topology when it is not preset."""
-        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: True)
+        patch_helper(monkeypatch, "check_has_nvlink", lambda: True)
 
         command_utils.execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
@@ -383,7 +380,7 @@ class TestExecuteTrain:
 
     def test_lets_the_environment_override_nvls(self, commands, monkeypatch):
         """An explicit NCCL_NVLS_ENABLE wins over topology detection."""
-        monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: True)
+        patch_helper(monkeypatch, "check_has_nvlink", lambda: True)
         monkeypatch.setenv("NCCL_NVLS_ENABLE", "0")
 
         command_utils.execute_train(train_args="", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
@@ -467,6 +464,65 @@ class TestExecuteTrain:
         assert "-- python3 /opt/train.py " in commands[-1]
 
 
+class TestBuildTrainEnvVars:
+    @staticmethod
+    def _request(**overrides):
+        defaults = dict(
+            train_args="",
+            num_gpus_per_node=8,
+            megatron_model_type="qwen3-4B",
+            train_script="/opt/train.py",
+            train_backend_fsdp=False,
+            extra_env_vars={},
+            config=command_utils.ExecuteTrainConfig(),
+            megatron_path="/root/Megatron-LM",
+            before_ray_job_submit=None,
+        )
+        return command_utils.ExecuteTrainRequest(**{**defaults, **overrides})
+
+    def test_keeps_the_backend_vars_where_the_serialized_order_expects_them(self):
+        """The ray backend serializes this dict verbatim, so the launch snapshots pin its key order."""
+        env = common.build_train_env_vars(self._request(), {"NCCL_NVLS_ENABLE": "0", "MASTER_ADDR": "10.0.0.1"})
+
+        assert list(env) == ["PYTHONUNBUFFERED", "CUDA_DEVICE_MAX_CONNECTIONS", "NCCL_NVLS_ENABLE", "MASTER_ADDR"]
+
+    def test_omits_the_connection_limit_for_fsdp(self):
+        """Capping the connections breaks FSDP's computation and communication overlap."""
+        env = common.build_train_env_vars(self._request(train_backend_fsdp=True), {})
+
+        assert "CUDA_DEVICE_MAX_CONNECTIONS" not in env
+
+    def test_lets_the_caller_override_a_backend_var(self):
+        """extra_env_vars is merged last so a script can win over anything the backend chose."""
+        env = common.build_train_env_vars(
+            self._request(extra_env_vars={"MASTER_ADDR": "caller"}), {"MASTER_ADDR": "backend"}
+        )
+
+        assert env["MASTER_ADDR"] == "caller"
+
+    def test_lets_the_config_override_the_caller(self):
+        """The operator's --extra-env-vars is the last word, above what the script hardcoded."""
+        env = common.build_train_env_vars(
+            self._request(
+                extra_env_vars={"A": "from-script"},
+                config=command_utils.ExecuteTrainConfig(extra_env_vars="A=from-operator"),
+            ),
+            {},
+        )
+
+        assert env["A"] == "from-operator"
+
+    def test_adds_the_coredump_vars_only_when_asked(self):
+        """Core dumps are large, so they stay off until a run opts in."""
+        config = command_utils.ExecuteTrainConfig(cuda_core_dump=True, output_dir="/runs")
+
+        env = common.build_train_env_vars(self._request(config=config), {})
+
+        assert env["CUDA_ENABLE_COREDUMP_ON_EXCEPTION"] == "1"
+        assert env["CUDA_COREDUMP_FILE"] == "/runs/cuda_coredump_%h.%p.%t"
+        assert "CUDA_ENABLE_COREDUMP_ON_EXCEPTION" not in common.build_train_env_vars(self._request(), {})
+
+
 class TestParseExtraEnvVars:
     @pytest.mark.parametrize(
         "text, expected",
@@ -492,7 +548,7 @@ class TestCheckHasNvlink:
                 captured.append(capture_output)
                 return output
 
-            monkeypatch.setattr(command_utils, "exec_command_gpu", fake_exec_command)
+            patch_helper(monkeypatch, "exec_command_gpu", fake_exec_command)
             return captured
 
         return install

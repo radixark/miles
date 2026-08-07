@@ -63,7 +63,7 @@ class TestCreateWorker:
             [
                 "--worker",
                 WORKER_FN,
-                "--spec-name",
+                "--pool-id",
                 "trainer-actor",
                 "--ctor-kwargs-fn",
                 CTOR_KWARGS_FN,
@@ -83,7 +83,7 @@ class TestCreateWorker:
             [
                 "--worker",
                 WORKER_FN,
-                "--spec-name",
+                "--pool-id",
                 "trainer-actor",
                 "--ctor-kwargs-fn",
                 CTOR_KWARGS_FN,
@@ -111,7 +111,7 @@ class TestCreateWorker:
             [
                 "--worker",
                 WORKER_FN,
-                "--spec-name",
+                "--pool-id",
                 "trainer-actor",
                 "--ctor-kwargs-fn",
                 CONTEXT_FN,
@@ -126,7 +126,7 @@ class TestCreateWorker:
 
     def test_refuses_to_compute_kwargs_without_knowing_which_spec(self, registered_functions):
         """The function resolves one named spec out of the run, so an unnamed one would pick arbitrarily."""
-        with pytest.raises(AssertionError, match="--spec-name"):
+        with pytest.raises(AssertionError, match="--pool-id"):
             worker_of(["--worker", WORKER_FN, "--ctor-kwargs-fn", CTOR_KWARGS_FN, "--", "--x"], environ={})
 
 

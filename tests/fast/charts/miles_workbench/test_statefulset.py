@@ -71,7 +71,9 @@ class TestWorkbenchStatefulSet:
 
     def test_host_path_storage_mounts_where_training_pods_see_it(self):
         """Shared storage is mounted at the configured path verbatim so launch scripts need no path mapping."""
-        objects = render("--set", "sharedStorage.hostPath=/gpfs", "--set", "sharedStorage.mountPath=/cluster-storage")
+        objects = render(
+            "--set", "infra.sharedStorage.hostPath=/gpfs", "--set", "infra.sharedStorage.mountPath=/cluster-storage"
+        )
         volume = single_object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["volumes"][0]
 
         assert volume["hostPath"] == {"path": "/gpfs", "type": "Directory"}
@@ -79,17 +81,35 @@ class TestWorkbenchStatefulSet:
 
     def test_pvc_storage_binds_the_named_claim(self):
         """Clusters without host mounts point the same mount at a pre-existing RWX claim."""
-        objects = render("--set", "sharedStorage.type=pvc", "--set", "sharedStorage.pvcClaimName=miles-shared")
+        objects = render(
+            "--set", "infra.sharedStorage.type=pvc", "--set", "infra.sharedStorage.pvcClaimName=miles-shared"
+        )
         volume = single_object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["volumes"][0]
 
         assert volume["persistentVolumeClaim"] == {"claimName": "miles-shared"}
 
     def test_storage_type_none_leaves_the_pod_without_volumes(self):
         """Storage is optional; disabling it must not leave a dangling mount referencing a missing volume."""
-        objects = render("--set", "sharedStorage.type=none")
+        objects = render("--set", "infra.sharedStorage.type=none")
 
         assert "volumes" not in pod_spec(objects)
         assert "volumeMounts" not in container(objects)
+
+    def test_a_repo_on_shared_storage_replaces_the_copy_in_the_image(self):
+        """Launch scripts run from this pod, so it must see the same checkout as the training pods do."""
+        objects = render("--set", "infra.paths.repos.miles=alice/miles")
+
+        assert {"name": "shared-storage", "mountPath": "/root/miles", "subPath": "alice/miles"} in container(objects)[
+            "volumeMounts"
+        ]
+        assert dict(name="PYTHONPATH", value="/root/miles") in container(objects)["env"]
+
+    def test_repos_are_ignored_when_there_is_no_shared_storage_to_mount_them_from(self):
+        """A subPath mount of a volume that was never rendered would leave the pod stuck creating."""
+        objects = render("--set", "infra.sharedStorage.type=none", "--set", "infra.paths.repos.miles=alice/miles")
+
+        assert "volumeMounts" not in container(objects)
+        assert "env" not in container(objects)
 
     def test_scheduling_and_environment_values_reach_the_pod(self, tmp_path):
         """Cluster-specific scheduling and environment values are passed through untouched."""
@@ -97,12 +117,14 @@ class TestWorkbenchStatefulSet:
         values_file.write_text(
             yaml.safe_dump(
                 dict(
-                    scheduling=dict(
-                        nodeSelector={"pool": "cpu"},
-                        tolerations=[dict(key="gpu", operator="Exists", effect="NoSchedule")],
-                        affinity=dict(podAntiAffinity=dict(preferredDuringSchedulingIgnoredDuringExecution=[])),
-                    ),
-                    env={"HTTP_PROXY": "http://proxy:7890"},
+                    infra=dict(
+                        scheduling=dict(
+                            nodeSelector={"pool": "cpu"},
+                            tolerations=[dict(key="gpu", operator="Exists", effect="NoSchedule")],
+                            affinity=dict(podAntiAffinity=dict(preferredDuringSchedulingIgnoredDuringExecution=[])),
+                        ),
+                        env={"HTTP_PROXY": "http://proxy:7890"},
+                    )
                 )
             )
         )
@@ -116,7 +138,7 @@ class TestWorkbenchStatefulSet:
 
     def test_private_registries_get_their_pull_secret(self):
         """The training image often lives in a private registry, so its pull secret must be declared."""
-        objects = render("--set", "image.pullSecrets[0]=registry-cred")
+        objects = render("--set", "infra.image.pullSecrets[0]=registry-cred")
 
         assert pod_spec(objects)["imagePullSecrets"] == [dict(name="registry-cred")]
 

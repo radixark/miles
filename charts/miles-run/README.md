@@ -1,0 +1,200 @@
+# miles-run
+
+One training run: the orchestration script, the static workers, and the inference and
+training pools.
+
+- A working reference for `--cluster-backend kubernetes`, not the only way to satisfy it.
+- A platform may deploy the pods its own way as long as it honours the contract below.
+- The launcher runs inside a [`miles-workbench`](../miles-workbench/README.md) pod: it needs
+  both the shared filesystem the run directory lives on and the credentials to install a
+  release.
+
+## Values: three sections, one writer each
+
+The three top level keys never overlap.
+
+| Key | Writer | Holds |
+| --- | --- | --- |
+| `infra` | The user, once per cluster | Image, shared storage, site path conventions, scheduling, cluster-wide env |
+| `run` | The launcher, per run | The whole run, rendered from the miles specs |
+
+`values.yaml` carries defaults for both, so a bare `helm lint` renders:
+
+```yaml
+infra:
+  image: {repository: radixark/miles, tag: dev, pullPolicy: Always, pullSecrets: []}
+  sharedStorage: {type: hostPath, hostPath: /cluster-storage, pvcClaimName: "", mountPath: /cluster-storage}
+  paths:
+    runsSubPath: miles_data
+    repos: {miles: "", megatron: "", sglang: ""}
+  nodeLocalStorage: {hostPath: "", mountPath: /scratch}
+  scheduling: {nodeSelector: {}, tolerations: [], affinity: {}}
+  env: {}
+
+run:
+  id: unset
+  orchestrator:
+    command: []
+    resources: {requests: {cpu: "2", memory: 8Gi}, limits: {}}
+  staticWorkers: []
+  inferenceEngines: []
+  trainers: []
+  env: {}
+  mooncake:
+    enabled: false
+    rpcPort: 50051
+    metricsPort: 50052
+    resources: {requests: {cpu: "2", memory: 16Gi}, limits: {}}
+```
+
+- `run.env` is the runtime environment both backends give the training processes; it carries
+  none of the launcher node's own settings.
+- `nodeLocalStorage` is scratch on the machine itself, shared by every pod of the run that
+  lands there.
+    - Staging copies a checkpoint once per node instead of once per pod.
+    - Locks live there too, so the second pod waits.
+
+### The two files
+
+- The user keeps an `infra.yaml` per cluster and hands it to the launcher.
+- The launcher writes its own file and installs both; disjoint top level keys make the merge
+  unambiguous.
+- The same `infra.yaml` is valid for `miles-workbench`, which shares the `infra` schema and
+  adds only `rbac` and `serviceAccount`.
+
+```yaml
+# infra.yaml, written once per cluster and reused by every run
+infra:
+  image: {repository: registry.example/radixark/miles, tag: v0.9.3}
+  sharedStorage: {type: pvc, pvcClaimName: shared-nvme, mountPath: /cluster-storage}
+  paths:
+    repos: {miles: alice/miles, megatron: alice/Megatron-LM}
+  scheduling: {nodeSelector: {pool: h100}}
+  env: {NCCL_SOCKET_IFNAME: bond0}
+```
+
+```yaml
+# generated per run by the launcher
+run:
+  id: "260805-091500-042"
+  orchestrator: {command: [python, scripts/run-x.py, train, ...]}
+  staticWorkers: [...]
+  env: {PYTHONUNBUFFERED: "1"}
+  inferenceEngines: [{name: engine, replicas: 4, size: 2, command: [...], resources: {limits: {nvidia.com/gpu: 8}}, poolId: engine, meta: {...}}]
+  trainers: [{name: trainer-actor, replicas: 2, size: 1, command: [...]}]
+  mooncake: {enabled: true, rpcPort: 50051}
+```
+
+```bash
+helm upgrade --install <release> charts/miles-run -f infra.yaml -f <generated>.yaml
+```
+
+### Code mounts
+
+- `infra.paths.repos.{miles,megatron,sglang}` are checkout paths relative to the shared
+  storage root.
+- A non-empty one is mounted as a `subPath` of the shared volume over the image's copy in
+  every pod of the run, and joined into `PYTHONPATH`.
+- An empty string keeps the copy baked into the image.
+- This is how a branch is tested without rebuilding an image; nothing is copied into a pod by
+  hand.
+
+| Key | In-image path it replaces |
+| --- | --- |
+| `miles` | `/root/miles` |
+| `megatron` | `/root/Megatron-LM` |
+| `sglang` | `/sgl-workspace/sglang` |
+
+### Object store master
+
+- `--object-store-backend mooncake` needs a master every pod can reach.
+- Under Ray the launcher starts one on its own node and every worker dials `127.0.0.1`; a
+  pod's localhost holds no master.
+- `run.mooncake.enabled` renders a single-replica StatefulSet plus a Service on
+  `run.mooncake.rpcPort` / `.metricsPort` instead.
+- The launcher rewrites `master_server_address` in `--mooncake-store-init-kwargs` to that
+  Service before the values are written, so a launch script needs no change.
+
+## Contract: what a platform must provide
+
+### Run directory
+
+- A filesystem every pod of a run mounts at the same path.
+- The run's directory is `<sharedStorage.mountPath>/<infra.paths.runsSubPath>/miles-runs/<run id>/`.
+- `<run dir>/state/orchestrator.exit` holds the verdict as JSON.
+    - `status` is `started` or `exited`.
+    - `exit_code` is the training process's code once it is `exited`.
+- Write it atomically, through a temporary file and a rename: a reader of a half-written file
+  must see no verdict rather than a wrong one.
+
+### Orchestration pod
+
+- Runs the user's script through
+  `python -m miles.utils.external_utils.command_utils.helm_backend.orchestrator_wrapper --exit-file <path> -- <script argv>`,
+  or anything else publishing the same exit file.
+- Stays alive after the script exits, so its logs remain readable on a failed run.
+- Is told which pods are its own, because it cannot derive that.
+    - `MILES_K8S_NAMESPACE` names the namespace.
+    - `MILES_K8S_RELEASE` names the `app.kubernetes.io/instance` value its workers carry.
+- Runs as an account that may `get`, `list`, `watch` and `delete` pods in that namespace: the
+  first three observe cells, the fourth heals one.
+
+### Worker pods
+
+- A cell is the unit Miles heals as a whole: one inference engine, or one trainer dp group.
+    - Losing a rank must restart its own cell and leave the other cells running.
+    - A LeaderWorkerSet group does this with `RecreateGroupOnPodRestart`.
+- A pod holds one node's worth of a cell; a cell spanning several nodes becomes several pods.
+- A rank is reached at its pod ip, or at `<pod>.<subdomain>.<namespace>.svc` while the ip is
+  still missing, on the ports its spec declares. The `rpc` port is the one Miles drives the
+  worker through.
+- Pods of one cell must be identifiable as such and their ranks ordered.
+    - Miles reads the label keys defined in `miles/utils/workers/worker_provider/kubernetes/labels.py`,
+      whose defaults describe LeaderWorkerSet.
+    - Each is overridable through the matching `MILES_K8S_*_LABEL` environment variable.
+    - A pod carrying none of the cell labels is not a worker, and miles leaves it alone.
+- `enableServiceLinks: false` is required.
+    - Kubernetes otherwise injects a `<SERVICE>_PORT` variable per service in the namespace.
+    - Miles reads environment variables of that shape, so a service named `prometheus` breaks
+      argument parsing at import.
+
+### Served worker pods
+
+A served worker is constructed rather than launched as a command, so its pod has to rebuild the
+constructor arguments the driver would have passed under Ray.
+
+- The command names the spec (`--pool-id`) and a function that turns the run's argv back into
+  that spec's constructor keywords (`--ctor-kwargs-fn`), and the run's own argv follows `--`.
+- The pod's rank is not in the command, because every rank of a pod runs the same one. It comes
+  from `LWS_WORKER_INDEX`, from `MILES_SUPERVISOR_SUBPROCESS_INDEX` for the ranks the supervisor
+  starts inside one pod, and from `--ranks-per-pod`, which says how they combine.
+- The cell index comes from the group index in `LWS_LEADER_ADDRESS`; a pod outside a pool is
+  the only cell of its spec.
+- Rank `n` of a pod serves on the spec's `rpc` port plus `n`, and the driver reports one worker
+  per rank rather than per pod, so a cell wider than its pods is driven rank by rank. The other
+  ports of the spec have to leave that range free.
+
+### Domain facts about a cell
+
+- The orchestrator computes them from the specs it already holds, per observed cell index, so a
+  fact that differs between the cells of one pool stays correct even though the pool renders
+  from a single pod template.
+- `miles.radixark.io/meta-<name>` annotations override them, which is how a platform states a
+  fact miles cannot derive. `gpu_ids` is the one the bundled chart writes.
+
+### Launch script
+
+- A `train` subcommand must only start training, with no preparation step.
+    - Preparation stays in `prepare`, and `prepare_cp` where a script needs it.
+- `full_train` chains preparation and training and is the one-shot Ray entry point. A script
+  whose only entry point is that chain cannot use `--cluster-backend kubernetes`.
+
+## Elastic runs
+
+Relaunching the same run id upgrades the release in place, which is how a run grows or
+shrinks. Kubernetes restarts a pod whose template changed, so the upgrade is checked first:
+
+- `infra` must be identical to the installed release.
+- `run` may differ only in `inferenceEngines[].replicas`, `trainers[].replicas`, and the ConfigMap
+  contents derived from them.
+- Anything else is refused.

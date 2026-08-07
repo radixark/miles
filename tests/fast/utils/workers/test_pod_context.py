@@ -72,8 +72,8 @@ class TestReadPodRank:
             [1],
         )
 
-    def test_the_ctor_context_always_carries_a_provider_factory(self):
-        """A spec asking for its engines must never find the factory missing, so it cannot be omitted."""
+    def test_the_ctor_context_always_carries_a_backend_capability(self):
+        """A spec asking for its engines must never find the capability missing, so it cannot be omitted."""
         rank = read_pod_rank(ranks_per_pod=1, gpu_slots_per_rank=0, environ={})
 
         with pytest.raises(TypeError):

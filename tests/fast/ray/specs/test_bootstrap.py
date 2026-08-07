@@ -97,7 +97,9 @@ class TestServeSpecOf:
 class TestComputeCtorKwargs:
     def test_gives_a_trainer_rank_the_keywords_its_constructor_declares(self, run_argv):
         """MegatronTrainRayActor is keyword-only, so these names are the pod's whole construction contract."""
-        kwargs = compute_ctor_kwargs(pool_id=TRAINER_POOL_ID, worker_argv=run_argv, context=context(worker_in_cell_index=3))
+        kwargs = compute_ctor_kwargs(
+            pool_id=TRAINER_POOL_ID, worker_argv=run_argv, context=context(worker_in_cell_index=3)
+        )
 
         assert set(kwargs) == {"args", "world_size", "rank", "indep_dp_store_addr", "role", "cell_id"}
         assert (kwargs["rank"], kwargs["role"], kwargs["world_size"]) == (3, "actor", 8)
@@ -122,7 +124,7 @@ class TestProviderRequests:
         monkeypatch.setattr(entrypoint, "compute_specs", lambda _args: [addressing_spec()])
         return run_argv
 
-    def test_a_spec_names_the_pools_its_worker_will_observe(self, addressing_run):
+    def test_a_spec_declares_the_pools_its_worker_will_observe(self, addressing_run):
         """The worker never learns which backend reports those cells, only which pool_ids it wants reported."""
         capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
 
@@ -130,7 +132,7 @@ class TestProviderRequests:
 
         assert capability.requested_pool_ids == [WATCHED_POOLS]
 
-    def test_a_spec_names_the_statically_addressed_worker_it_calls(self, addressing_run):
+    def test_a_spec_declares_the_statically_addressed_worker_it_calls(self, addressing_run):
         """A router is addressed rather than observed, and only the backend knows how to redeem that name."""
         capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
 

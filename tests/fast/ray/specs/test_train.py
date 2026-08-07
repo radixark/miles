@@ -18,6 +18,7 @@ from miles.ray.specs.train import (
     trainer_controller_worker_name,
 )
 from miles.ray.train_actor import TrainRayActor
+from miles.utils.external_utils.command_utils.helm_backend.values import RunLayout, build_values, section_of
 from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
@@ -251,6 +252,16 @@ class _FakeStaticProvider:
         return self
 
 
+def _controller_layout() -> RunLayout:
+    return RunLayout(
+        run_id="260101-000000-000",
+        release="miles-run-260101",
+        orchestrator_command=["python", "/repo/train.py"],
+        worker_argv=["--actor-num-nodes", "1"],
+        num_gpus_per_node=8,
+    )
+
+
 def _controller_context(capability: FakeBackendCapability) -> WorkerCtorContext:
     return WorkerCtorContext(
         cell_id=f"cell-{0}", cell_ordinal=0, worker_in_cell_index=0, gpu_ids=[], capability=capability
@@ -282,6 +293,19 @@ class TestSpecTrainerController:
         spec = spec_trainer_controller_actor(_make_args())
 
         assert spec.worker_class == TRAINER_CONTROLLER_WORKER_CLASS
+
+    def test_it_renders_into_static_workers_with_its_rpc_port(self):
+        """The release has to contain the controller pod, or the address book would point at nothing."""
+        spec = spec_trainer_controller_actor(_make_args())
+
+        values = build_values([spec], _controller_layout())
+
+        (entry,) = values["run"]["staticWorkers"]
+        assert section_of(spec) == "staticWorkers"
+        assert entry["name"] == "trainer-controller-actor"
+        assert entry["ports"] == [{"name": "rpc", "port": 8000}]
+        assert TRAINER_CONTROLLER_WORKER_CLASS in entry["command"]
+        assert "resources" not in entry
 
     def test_the_worker_and_cell_names_are_stable(self):
         """The driver looks the controller up by name, so these names are part of the release's contract."""

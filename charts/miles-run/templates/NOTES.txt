@@ -1,0 +1,10 @@
+Miles run {{ .Values.run.id }} is installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Run directory (shared storage): {{ include "miles-run.runDir" . }}
+Orchestrator exit file:         {{ include "miles-run.orchestratorExitFile" . }}
+
+Follow the run:
+  kubectl logs -f -n {{ .Release.Namespace }} statefulset/{{ include "miles-run.componentName" (dict "context" . "component" "orchestrator") }}
+
+Tear it down:
+  helm uninstall -n {{ .Release.Namespace }} {{ .Release.Name }}

@@ -11,7 +11,7 @@ def build_base_parser(description: str) -> argparse.ArgumentParser:
     parser.add_argument("--worker", required=True, help="Worker factory as 'package.module.callable'")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--spec-name", default=None, help="Which worker spec this process serves")
+    parser.add_argument("--pool-id", default=None, help="Which worker spec this process serves")
     parser.add_argument(
         "--ctor-kwargs-fn",
         default=None,

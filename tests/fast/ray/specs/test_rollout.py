@@ -11,6 +11,7 @@ from miles.ray.specs.rollout import (
     rollout_executor_worker_name,
     spec_rollout_executor,
 )
+from miles.utils.external_utils.command_utils.helm_backend.values import RunLayout, build_values, section_of
 from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
@@ -19,6 +20,16 @@ def _args(*, debug_train_only: bool = False, use_session_server: bool = False) -
         pin_rollout_manager_to_head=False,
         debug_train_only=debug_train_only,
         use_session_server=use_session_server,
+    )
+
+
+def _layout() -> RunLayout:
+    return RunLayout(
+        run_id="260101-000000-000",
+        release="miles-run-260101",
+        orchestrator_command=["python", "/repo/train.py"],
+        worker_argv=["--rollout-num-gpus", "8"],
+        num_gpus_per_node=8,
     )
 
 
@@ -59,6 +70,19 @@ class TestRolloutExecutorSpec:
         kwargs = spec_rollout_executor(_args(use_session_server=False)).ctor_kwargs(context)
 
         assert kwargs["session_server_provider"] is None
+
+    def test_it_renders_into_static_workers_with_its_rpc_port(self):
+        """The release has to contain the executor pod, or the address book would point at nothing."""
+        spec = spec_rollout_executor(_args())
+
+        values = build_values([spec], _layout())
+
+        (entry,) = values["run"]["staticWorkers"]
+        assert section_of(spec) == "staticWorkers"
+        assert entry["name"] == ROLLOUT_EXECUTOR_POOL
+        assert entry["ports"] == [{"name": "rpc", "port": 8000}]
+        assert ROLLOUT_EXECUTOR_WORKER_CLASS in entry["command"]
+        assert "resources" not in entry
 
     def test_the_worker_and_cell_names_are_stable(self):
         """The driver looks the executor up by name, so these names are part of the release's contract."""

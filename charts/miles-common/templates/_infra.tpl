@@ -1,10 +1,10 @@
 {{- define "miles-common.image" -}}
-{{- $image := .Values.image | default dict -}}
+{{- $image := .Values.infra.image | default dict -}}
 {{- printf "%s:%s" ($image.repository | default "") ($image.tag | default "") | quote }}
 {{- end }}
 
 {{- define "miles-common.imagePullSecrets" -}}
-{{- with (.Values.image | default dict).pullSecrets -}}
+{{- with (.Values.infra.image | default dict).pullSecrets -}}
 imagePullSecrets:
 {{- range . }}
   - name: {{ . | quote }}
@@ -13,22 +13,32 @@ imagePullSecrets:
 {{- end }}
 
 {{- define "miles-common.scheduling" -}}
-{{- with (.Values.scheduling | default dict).nodeSelector -}}
+{{- with (.Values.infra.scheduling | default dict).nodeSelector -}}
 nodeSelector:
   {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- with (.Values.scheduling | default dict).tolerations }}
+{{- with (.Values.infra.scheduling | default dict).tolerations }}
 tolerations:
   {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- with (.Values.scheduling | default dict).affinity }}
+{{- with (.Values.infra.scheduling | default dict).affinity }}
 affinity:
   {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end }}
 
+{{- define "miles-common.envBase" -}}
+{{- $base := dict -}}
+{{- with include "miles-common.codePythonPath" . }}{{- $base = dict "PYTHONPATH" . }}{{- end }}
+{{- toYaml (merge (deepCopy (.Values.infra.env | default dict)) $base) }}
+{{- end }}
+
 {{- define "miles-common.env" -}}
-{{- with .Values.env -}}
+{{- include "miles-common.envBlock" (include "miles-common.envBase" . | fromYaml) }}
+{{- end }}
+
+{{- define "miles-common.envBlock" -}}
+{{- with . -}}
 env:
 {{- range $name, $value := . }}
   - name: {{ $name | quote }}
@@ -37,23 +47,61 @@ env:
 {{- end }}
 {{- end }}
 
-{{- define "miles-common.sharedStorageVolume" -}}
-{{- if ne ((.Values.sharedStorage | default dict).type | default "none") "none" -}}
+{{- define "miles-common.repoTargets" -}}
+- name: miles
+  path: /root/miles
+- name: megatron
+  path: /root/Megatron-LM
+- name: sglang
+  path: /sgl-workspace/sglang
+{{- end }}
+
+{{- define "miles-common.overriddenRepos" -}}
+{{- $repos := ((.Values.infra.paths | default dict).repos | default dict) -}}
+{{- $mounted := list -}}
+{{- if ne ((.Values.infra.sharedStorage | default dict).type | default "none") "none" -}}
+{{- range $target := include "miles-common.repoTargets" . | fromYamlArray }}
+{{- with get $repos $target.name }}
+{{- $mounted = append $mounted (dict "path" $target.path "subPath" .) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- toYaml $mounted }}
+{{- end }}
+
+{{- define "miles-common.codeVolumeMounts" -}}
+{{- range include "miles-common.overriddenRepos" . | fromYamlArray }}
 - name: shared-storage
-  {{- if eq (.Values.sharedStorage | default dict).type "hostPath" }}
+  mountPath: {{ .path | quote }}
+  subPath: {{ .subPath | quote }}
+{{- end }}
+{{- end }}
+
+{{- define "miles-common.codePythonPath" -}}
+{{- $entries := list -}}
+{{- range include "miles-common.overriddenRepos" . | fromYamlArray }}
+{{- $entries = append $entries .path }}
+{{- end }}
+{{- join ":" $entries }}
+{{- end }}
+
+{{- define "miles-common.sharedStorageVolume" -}}
+{{- if ne ((.Values.infra.sharedStorage | default dict).type | default "none") "none" -}}
+- name: shared-storage
+  {{- if eq (.Values.infra.sharedStorage | default dict).type "hostPath" }}
   hostPath:
-    path: {{ (.Values.sharedStorage | default dict).hostPath | quote }}
+    path: {{ (.Values.infra.sharedStorage | default dict).hostPath | quote }}
     type: Directory
   {{- else }}
   persistentVolumeClaim:
-    claimName: {{ (.Values.sharedStorage | default dict).pvcClaimName | quote }}
+    claimName: {{ (.Values.infra.sharedStorage | default dict).pvcClaimName | quote }}
   {{- end }}
 {{- end }}
 {{- end }}
 
 {{- define "miles-common.sharedStorageVolumeMount" -}}
-{{- if ne ((.Values.sharedStorage | default dict).type | default "none") "none" -}}
+{{- if ne ((.Values.infra.sharedStorage | default dict).type | default "none") "none" -}}
 - name: shared-storage
-  mountPath: {{ (.Values.sharedStorage | default dict).mountPath | quote }}
+  mountPath: {{ (.Values.infra.sharedStorage | default dict).mountPath | quote }}
 {{- end }}
 {{- end }}

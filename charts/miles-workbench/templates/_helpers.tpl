@@ -36,6 +36,9 @@
 - apiGroups: ["batch"]
   resources: ["jobs"]
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 {{- if .Values.rbac.leaderWorkerSets }}
 - apiGroups: ["leaderworkerset.x-k8s.io"]
   resources: ["leaderworkersets"]

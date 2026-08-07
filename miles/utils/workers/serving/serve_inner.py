@@ -29,9 +29,11 @@ def create_worker(args: argparse.Namespace, *, worker_argv: list[str], rank: Pod
     if args.ctor_kwargs_fn is None:
         return factory(worker_argv)
 
-    assert args.pool_id, "--ctor-kwargs-fn computes the keywords of one named spec, so --spec-name is required"
+    assert args.pool_id, "--ctor-kwargs-fn computes the keywords of one named spec, so --pool-id is required"
 
-    context = rank.ctor_context(pool_id=args.pool_id, capability=create_worker_backend_capability(worker_argv=worker_argv))
+    context = rank.ctor_context(
+        pool_id=args.pool_id, capability=create_worker_backend_capability(worker_argv=worker_argv)
+    )
     ctor_kwargs = load_function(args.ctor_kwargs_fn)(pool_id=args.pool_id, worker_argv=worker_argv, context=context)
     return factory(**ctor_kwargs)
 

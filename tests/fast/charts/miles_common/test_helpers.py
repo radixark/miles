@@ -7,9 +7,12 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.fast.charts.utils import SHARED_INFRA_SCHEMA_PATH
+from tests.fast.charts.utils import NAMESPACE, SHARED_INFRA_SCHEMA_PATH
 
-LIBRARY_CHART = SHARED_INFRA_SCHEMA_PATH.parent / "miles-common"
+CHARTS_DIR = SHARED_INFRA_SCHEMA_PATH.parent
+LIBRARY_CHART = CHARTS_DIR / "miles-common"
+RELEASE_NAME = "myrel"
+LONGEST_RELEASE_NAME_THE_LABEL_BUDGET_ALLOWS = "a" * 53
 
 CONSUMER_TEMPLATE = """
 apiVersion: v1
@@ -31,7 +34,9 @@ spec:
       {{- with include "miles-common.env" . }}
       {{- . | nindent 6 }}
       {{- end }}
-      {{- with include "miles-common.sharedStorageVolumeMount" . }}
+      {{- $mounts := compact (list (include "miles-common.sharedStorageVolumeMount" . | trim) \
+(include "miles-common.codeVolumeMounts" . | trim)) | join "\\n" }}
+      {{- with $mounts }}
       volumeMounts:
         {{- . | nindent 8 }}
       {{- end }}
@@ -43,10 +48,14 @@ spec:
 
 DEFAULT_VALUES = {
     "component": "worker",
-    "image": {"repository": "registry.local/miles", "tag": "v1"},
-    "sharedStorage": {"type": "hostPath", "hostPath": "/cluster-storage", "mountPath": "/cluster-storage"},
-    "scheduling": {"nodeSelector": {}, "tolerations": [], "affinity": {}},
-    "env": {},
+    "infra": {
+        "image": {"repository": "registry.local/miles", "tag": "v1"},
+        "sharedStorage": {"type": "hostPath", "hostPath": "/cluster-storage", "mountPath": "/cluster-storage"},
+        "paths": {"runsSubPath": "miles_data", "repos": {"miles": "", "megatron": "", "sglang": ""}},
+        "nodeLocalStorage": {"hostPath": "", "mountPath": "/scratch"},
+        "scheduling": {"nodeSelector": {}, "tolerations": [], "affinity": {}},
+        "env": {},
+    },
 }
 
 
@@ -64,9 +73,9 @@ def consumer(tmp_path_factory) -> Path:
     return chart
 
 
-def render(consumer: Path, release: str = "rel", *args: str) -> dict[str, Any]:
+def render(consumer: Path, release: str = RELEASE_NAME, *args: str) -> dict[str, Any]:
     result = subprocess.run(
-        ["helm", "template", release, str(consumer), "-n", "rl", *args], capture_output=True, text=True
+        ["helm", "template", release, str(consumer), "-n", NAMESPACE, *args], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
     return next(document for document in yaml.safe_load_all(result.stdout) if document)
@@ -76,18 +85,18 @@ def render(consumer: Path, release: str = "rel", *args: str) -> dict[str, Any]:
 class TestNaming:
     def test_the_release_name_carries_the_chart_name(self, consumer):
         """Helm's own convention, so an object is traceable to the release that made it."""
-        assert render(consumer, "rel")["metadata"]["name"] == "rel-consumer-worker"
-        assert render(consumer, "rel-consumer")["metadata"]["name"] == "rel-consumer-worker"
+        assert render(consumer, RELEASE_NAME)["metadata"]["name"] == f"{RELEASE_NAME}-consumer-worker"
+        assert render(consumer, f"{RELEASE_NAME}-consumer")["metadata"]["name"] == f"{RELEASE_NAME}-consumer-worker"
 
     def test_a_component_name_stays_inside_the_label_budget(self, consumer):
         """It becomes a StatefulSet name, whose derived pod and revision labels cap at 63."""
-        name = render(consumer, "a" * 53)["metadata"]["name"]
+        name = render(consumer, LONGEST_RELEASE_NAME_THE_LABEL_BUDGET_ALLOWS)["metadata"]["name"]
 
         assert len(name) + len("-0123456789") <= 63
 
     def test_distinct_components_never_collapse_onto_one_name(self, consumer):
         """Truncating a name that is already at the limit silently renders two workloads as one."""
-        long_release = "a" * 53
+        long_release = LONGEST_RELEASE_NAME_THE_LABEL_BUDGET_ALLOWS
         first = render(consumer, long_release, "--set", "component=leader")["metadata"]["name"]
         second = render(consumer, long_release, "--set", "component=logger")["metadata"]["name"]
 
@@ -97,12 +106,12 @@ class TestNaming:
 
     def test_the_labels_are_the_standard_set(self, consumer):
         """Selectors and tooling across the repo key off these, so the set is pinned."""
-        labels = render(consumer, "rel")["metadata"]["labels"]
+        labels = render(consumer, RELEASE_NAME)["metadata"]["labels"]
 
         assert labels == {
             "helm.sh/chart": "consumer-0.1.0",
             "app.kubernetes.io/name": "consumer",
-            "app.kubernetes.io/instance": "rel",
+            "app.kubernetes.io/instance": RELEASE_NAME,
             "app.kubernetes.io/component": "worker",
             "app.kubernetes.io/version": "",
             "app.kubernetes.io/managed-by": "Helm",
@@ -113,14 +122,14 @@ class TestNaming:
 class TestInfra:
     def test_the_image_is_one_quoted_string(self, consumer):
         """Two free-form values are joined here; unquoted they could inject sibling keys."""
-        pod = render(consumer, "rel", "--set-string", 'image.tag=v1"\n          privileged: true')
+        pod = render(consumer, RELEASE_NAME, "--set-string", 'infra.image.tag=v1"\n          privileged: true')
 
         assert pod["spec"]["containers"][0]["image"].startswith("registry.local/miles:v1")
         assert "privileged" not in pod["spec"]["containers"][0]
 
     def test_scheduling_and_pull_secrets_are_omitted_when_empty(self, consumer):
         """An empty nodeSelector rendered as `{}` is a different pod spec from no nodeSelector."""
-        spec = render(consumer, "rel")["spec"]
+        spec = render(consumer, RELEASE_NAME)["spec"]
 
         assert "nodeSelector" not in spec
         assert "tolerations" not in spec
@@ -131,13 +140,13 @@ class TestInfra:
         """The whole point of the shared section is that every chart renders it the same way."""
         spec = render(
             consumer,
-            "rel",
+            RELEASE_NAME,
             "--set",
-            "scheduling.nodeSelector.pool=cpu",
+            "infra.scheduling.nodeSelector.pool=cpu",
             "--set-json",
-            'scheduling.tolerations=[{"key":"gpu","operator":"Exists"}]',
+            'infra.scheduling.tolerations=[{"key":"gpu","operator":"Exists"}]',
             "--set",
-            "image.pullSecrets[0]=cred",
+            "infra.image.pullSecrets[0]=cred",
         )["spec"]
 
         assert spec["nodeSelector"] == {"pool": "cpu"}
@@ -147,50 +156,85 @@ class TestInfra:
     def test_environment_names_and_values_stay_strings(self, consumer, tmp_path):
         """Names like "on" are legal environment variables but YAML booleans."""
         values = tmp_path / "env.yaml"
-        values.write_text(yaml.safe_dump({"env": {"on": "1", "HTTP_PROXY": "http://p:1"}}))
-        container = render(consumer, "rel", "-f", str(values))["spec"]["containers"][0]
+        values.write_text(yaml.safe_dump({"infra": {"env": {"on": "1", "HTTP_PROXY": "http://p:1"}}}))
+        container = render(consumer, RELEASE_NAME, "-f", str(values))["spec"]["containers"][0]
 
         assert container["env"] == [{"name": "HTTP_PROXY", "value": "http://p:1"}, {"name": "on", "value": "1"}]
 
     def test_host_path_storage_renders_a_matched_volume_and_mount(self, consumer):
         """A mount naming a volume that is not there is a pod that never starts."""
-        spec = render(consumer, "rel", "--set", "sharedStorage.hostPath=/gpfs")["spec"]
+        spec = render(consumer, RELEASE_NAME, "--set", "infra.sharedStorage.hostPath=/gpfs")["spec"]
 
         assert spec["volumes"] == [{"name": "shared-storage", "hostPath": {"path": "/gpfs", "type": "Directory"}}]
         assert spec["containers"][0]["volumeMounts"] == [{"name": "shared-storage", "mountPath": "/cluster-storage"}]
 
     def test_pvc_storage_binds_the_named_claim(self, consumer):
         """Clusters without host mounts point the same mount at a pre-existing claim."""
-        spec = render(consumer, "rel", "--set", "sharedStorage.type=pvc", "--set", "sharedStorage.pvcClaimName=c1")[
-            "spec"
-        ]
+        spec = render(
+            consumer,
+            RELEASE_NAME,
+            "--set",
+            "infra.sharedStorage.type=pvc",
+            "--set",
+            "infra.sharedStorage.pvcClaimName=c1",
+        )["spec"]
 
         assert spec["volumes"] == [{"name": "shared-storage", "persistentVolumeClaim": {"claimName": "c1"}}]
 
     def test_storage_type_none_renders_neither_volume_nor_mount(self, consumer):
         """Disabling storage must not leave a mount referencing a volume that no longer exists."""
-        spec = render(consumer, "rel", "--set", "sharedStorage.type=none")["spec"]
+        spec = render(consumer, RELEASE_NAME, "--set", "infra.sharedStorage.type=none")["spec"]
 
         assert "volumes" not in spec
         assert "volumeMounts" not in spec["containers"][0]
 
+    def test_a_configured_repo_is_mounted_over_its_in_image_path_and_put_on_the_python_path(self, consumer):
+        """Code on shared storage only takes effect if both the mount and the import path point at it."""
+        spec = render(consumer, RELEASE_NAME, "--set", "infra.paths.repos.sglang=myuser/sglang")["spec"]
+
+        assert spec["containers"][0]["volumeMounts"][-1] == {
+            "name": "shared-storage",
+            "mountPath": "/sgl-workspace/sglang",
+            "subPath": "myuser/sglang",
+        }
+        assert {"name": "PYTHONPATH", "value": "/sgl-workspace/sglang"} in spec["containers"][0]["env"]
+
+    def test_repos_are_ignored_without_shared_storage_to_mount_them_from(self, consumer):
+        """A subPath mount of a volume that does not exist would keep the pod from ever starting."""
+        spec = render(
+            consumer,
+            RELEASE_NAME,
+            "--set",
+            "infra.sharedStorage.type=none",
+            "--set",
+            "infra.paths.repos.miles=myuser/miles",
+        )["spec"]
+
+        assert "volumeMounts" not in spec["containers"][0]
+        assert "env" not in spec["containers"][0]
+
     def test_a_section_the_user_blanked_out_does_not_crash_the_render(self, consumer):
         """A values file with a bare `scheduling:` header deletes the chart default; helm keeps the null."""
-        for section in ("scheduling", "image", "sharedStorage", "env"):
-            pod = render(consumer, "rel", "--set", f"{section}=null")
+        for section in ("scheduling", "image", "sharedStorage", "env", "paths"):
+            pod = render(consumer, RELEASE_NAME, "--set", f"infra.{section}=null")
 
             assert pod["kind"] == "Pod"
 
 
 class TestContract:
-    def test_the_helpers_cover_exactly_the_shared_sections(self):
-        """A section in the schema with no helper behind it is never rendered into any pod."""
-        shared = set(json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"])
-        rendered = {
-            section
-            for section in shared
-            if f".Values.{section}" in (LIBRARY_CHART / "templates" / "_infra.tpl").read_text()
-        }
+    def test_every_shared_infra_section_is_rendered_by_some_chart_template(self):
+        """A section in the schema with no template behind it is never rendered into any pod."""
+        shared = set(json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]["infra"]["properties"])
+        templates = "".join(path.read_text() for path in CHARTS_DIR.glob("*/templates/*"))
+        rendered = {section for section in shared if f".Values.infra.{section}" in templates}
 
-        assert shared == {"image", "sharedStorage", "scheduling", "env"}
         assert rendered == shared
+
+    def test_the_library_chart_owns_every_section_but_the_node_local_scratch_disk(self):
+        """Only miles-run has pods worth a node-local disk, so that one helper stays with the run chart."""
+        library = (LIBRARY_CHART / "templates" / "_infra.tpl").read_text()
+        shared = set(json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]["infra"]["properties"])
+
+        assert {section for section in shared if f".Values.infra.{section}" in library} == shared - {
+            "nodeLocalStorage"
+        }

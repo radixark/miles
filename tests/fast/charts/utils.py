@@ -11,11 +11,14 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CHARTS_DIR = REPO_ROOT / "charts"
 CHART_DIR = CHARTS_DIR / "miles-workbench"
+RUN_CHART_DIR = CHARTS_DIR / "miles-run"
 SHARED_INFRA_SCHEMA_PATH = CHARTS_DIR / "shared-infra.schema.json"
 CLI_PATH = CHART_DIR / "cli.py"
 
-RELEASE_NAME = "miles-workbench-alice"
-NAMESPACE = "rl"
+RELEASE_NAME = "miles-workbench-myuser"
+RUN_RELEASE_NAME = "myrun"
+RUN_ID = "260101-000000-000"
+NAMESPACE = "myns"
 LWS_RESOURCE = "leaderworkersets.leaderworkerset.x-k8s.io"
 
 requires_helm = pytest.mark.skipif(
@@ -46,6 +49,56 @@ def render_error(*args: str) -> str:
     result = run_helm_template(*args)
     assert result.returncode != 0, result.stdout
     return result.stderr
+
+
+def schema_error_mentions(error: str, *, path: tuple[str, ...]) -> bool:
+    return "/" + "/".join(path) in error or ".".join(path) in error
+
+
+def run_helm_template_run(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            "helm",
+            "template",
+            RUN_RELEASE_NAME,
+            str(RUN_CHART_DIR),
+            "-n",
+            NAMESPACE,
+            "--set",
+            f"run.id={RUN_ID}",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def render_run(*args: str) -> list[dict[str, Any]]:
+    result = run_helm_template_run(*args)
+    assert result.returncode == 0, result.stderr
+    return [document for document in yaml.safe_load_all(result.stdout) if document is not None]
+
+
+def render_run_error(*args: str) -> str:
+    result = run_helm_template_run(*args)
+    assert result.returncode != 0, result.stdout
+    return result.stderr
+
+
+def named_object(objects: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
+    matched = [obj for obj in objects_of_kind(objects, kind) if obj["metadata"]["name"] == name]
+    assert len(matched) == 1, f"expected one {kind}/{name}, got {[obj['metadata']['name'] for obj in matched]}"
+    return matched[0]
+
+
+def pod_spec_of(objects: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
+    return named_object(objects, kind, name)["spec"]["template"]["spec"]
+
+
+def only_container_of(objects: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
+    containers = pod_spec_of(objects, kind, name)["containers"]
+    assert len(containers) == 1
+    return containers[0]
 
 
 def cli_module():
