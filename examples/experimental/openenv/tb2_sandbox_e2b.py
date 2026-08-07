@@ -55,20 +55,33 @@ from tb2_sandbox_recipe import (
 )
 
 
+# The user every build command and the env server run as. The TB2 task images
+# are built for a root agent (their solutions and tests apt-install freely), so
+# anything less would change the task environment, not just the build.
+#
+# The BUILD is where this is load-bearing: E2B Cloud runs template-build
+# commands as a non-root user, which fails every layer of the recipe. At
+# RUNTIME both endpoints already default to root (measured), so passing it to
+# the server exec pins the task environment's user rather than fixing a
+# failure — a provider default that changed would otherwise change what the
+# agent may do, silently.
+_BUILD_USER = "root"
+
+
 def template_alias(task_dir: Path) -> str:
     """Deterministic template alias: ``tb2-<task-id>-<recipe digest>``.
 
-    The digest covers the base image, every build command (which embed the
-    tbench2_env source, deterministically tarred — see ``_dir_tar_b64``), and
-    the build resources (E2B sizes sandboxes at template-build time), so the
-    alias changes exactly when the baked artifact would: recipe edits,
-    env-package changes, or a task.toml resource bump re-bake; identical
-    inputs reuse the existing template.
+    The digest covers the base image, the build user, every build command (which
+    embed the tbench2_env source, deterministically tarred — see
+    ``_dir_tar_b64``), and the build resources (E2B sizes sandboxes at
+    template-build time), so the alias changes exactly when the baked artifact
+    would: recipe edits, env-package changes, or a task.toml resource bump
+    re-bake; identical inputs reuse the existing template.
     """
     task_dir = Path(task_dir)
     base = resolve_docker_image(task_dir, None)
     resources = task_build_resources(task_dir)
-    inputs = [base, *server_layer_commands(task_dir), repr(sorted(resources.items()))]
+    inputs = [base, _BUILD_USER, *server_layer_commands(task_dir), repr(sorted(resources.items()))]
     digest = hashlib.sha256("\n".join(inputs).encode()).hexdigest()[:10]
     slug = re.sub(r"[^a-z0-9-]", "-", task_dir.name.lower())
     return f"tb2-{slug}-{digest}"
@@ -134,7 +147,11 @@ def ensure_task_template(
         if not force and Template.alias_exists(alias, **_connection_opts()):
             return alias
         base = resolve_docker_image(task_dir, None)
-        template = Template().from_image(base)
+        # set_user before the first command: E2B runs template-build commands as
+        # a NON-root user by default, which fails every layer of the recipe
+        # (apt-get exits 100, /opt is not writable). A self-hosted AgentENV
+        # builds as root and so never showed this.
+        template = Template().from_image(base).set_user(_BUILD_USER)
         for command in server_layer_commands(task_dir):
             template = template.run_cmd(command)
 
@@ -229,9 +246,14 @@ def create_task_sandbox(
     )
     try:
         cmd = server_cmd(command_timeout_s, default_task_id=task_dir.name)
+        # user: the env server executes the agent's commands, so the user it
+        # runs as IS the task environment's user. E2B defaults to a non-root
+        # user; a TB2 task image expects root (its own tests apt-install), so
+        # anything else would silently change what the agent can do.
         sandbox.commands.run(
             f"bash -c {shlex.quote(cmd)} > /tmp/openenv-server.log 2>&1",
             background=True,
+            user=_BUILD_USER,
         )
         url = base_url(sandbox)
         wait_server_ready(url, timeout_s=ready_timeout_s)
