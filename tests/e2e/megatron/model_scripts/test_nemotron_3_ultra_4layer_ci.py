@@ -42,7 +42,7 @@ def _args() -> ScriptArgs:
         n_samples_per_prompt=2,
         global_batch_size=16,
         skip_saving=True,
-        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
+        extra_args=("--ci-test " "--ci-disable-logprobs-checker "),
     )
 
 
