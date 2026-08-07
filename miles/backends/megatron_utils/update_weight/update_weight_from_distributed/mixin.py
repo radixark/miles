@@ -320,8 +320,7 @@ class DistBucketedWeightUpdateMixin:
     def _finalize_and_resume_engines(self) -> None:
         """Close the weight-update session and resume rollout engines."""
         if dist.get_rank() == 0:
-            # not redundant with the base push, which stamps via its own weight_version
-            # argument: the LoRA push RPC has no such argument.
+            # unify update weight version here to cover both full param and lora update
             ray.get(
                 [
                     engine.update_weight_version.remote(weight_version=str(self.weight_version))
