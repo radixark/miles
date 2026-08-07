@@ -180,11 +180,14 @@ A router sits in front of the SGLang workers. Pass router-side flags with the
 --router-balance-abs-threshold 0   # force uniform distribution (lowers prefix-cache hit rate)
 ```
 
-Miles always starts its own router per model. Attaching to a router miles did
-not start (`--sglang-router-ip`) was removed and is expected to return with the
-k8s-native mode. `--sglang-router-port` still works and pins the router miles
-starts, so a firewall rule or a dial-back host can name the port in advance;
-each further model's router takes the next port up.
+Miles starts its own router per model by default.
+
+- `--sglang-router-port` alone pins the port of the router miles starts, so a
+  firewall rule or a dial-back host can name it in advance; each further model's
+  router takes the next port up.
+- `--sglang-router-ip` together with `--sglang-router-port` attaches to a router
+  miles did not start, and miles launches none. One router describes one model,
+  so this is rejected alongside a multi-model `--sglang-config`.
 
 ---
 
