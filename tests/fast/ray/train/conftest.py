@@ -7,7 +7,7 @@ import pytest
 import ray
 from tests.fast.ray.train.fake_worker_manager import FakeWorkerManager
 
-import miles.ray.train.group as group_module
+import miles.ray.train.controller as controller_module
 from miles.ray.train.cell import TrainerCell
 from miles.utils.ft_utils.health_checker import NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -55,7 +55,7 @@ def instant_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _retry_without_sleeping(fn: Callable[[int], Awaitable[Any]], **kwargs: Any) -> Any:
         return await retry(fn, **{**kwargs, "sleep_fn": _no_sleep})
 
-    monkeypatch.setattr(group_module, "retry", _retry_without_sleeping)
+    monkeypatch.setattr(controller_module, "retry", _retry_without_sleeping)
 
 
 def make_provider() -> BaseWorkerProvider:

@@ -12,7 +12,7 @@ from miles.utils.workers.worker_spec import NamedHostAndPorts
 @dataclass(frozen=True)
 class CellInfo:
     cell_id: str
-    spec_name: str
+    pool_id: str
     alive: bool
     worker_names: list[str]
     workers_hash: str
@@ -35,8 +35,8 @@ class BaseWorkerProvider(abc.ABC):
         raise NotImplementedError(f"{type(self).__name__} answers addresses, it does not observe cells")
 
     def get_handle(self, worker_name: str) -> BaseWorkerHandle:
-        spec_name, cell_index, _worker_in_cell_index = parse_worker_name(worker_name)
-        cell_id = compute_cell_id(spec_name=spec_name, cell_index=cell_index)
+        pool_id, cell_index, _worker_in_cell_index = parse_worker_name(worker_name)
+        cell_id = compute_cell_id(pool_id=pool_id, cell_index=cell_index)
         (infos,) = self.get_worker_infos(cell_ids=[cell_id])
         matches = [info for info in infos if info.name == worker_name]
         assert len(matches) == 1, f"{worker_name=} matched {[info.name for info in matches]}"

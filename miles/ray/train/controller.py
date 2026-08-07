@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
-from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_spec_name
+from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils.async_utils import AsyncioGatherUtils
@@ -25,7 +25,7 @@ from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChe
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
-from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
+from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -56,7 +56,7 @@ class TrainerController(NodeProbeMixin):
         self._role = role
         self._with_ref = with_ref
         self._with_opd_teacher = with_opd_teacher
-        self._spec_name = compute_trainer_spec_name(role)
+        self._pool_id = compute_trainer_pool_id(role)
         self._provider = cell_provider
         self._watcher_disposer: StopWatchFn | None = None
 
@@ -78,13 +78,13 @@ class TrainerController(NodeProbeMixin):
         if self._witness_allocator is not None and args.save_debug_event_data is not None:
             self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
 
-        self._test_action_executor = FTTestActionGroupExecutor.from_args(
-            args, group=self, cell_operations=cell_operations
+        self._test_action_executor = FTTestActionControllerExecutor.from_args(
+            args, controller=self, cell_operations=cell_operations
         )
 
     @property
-    def spec_name(self) -> str:
-        return self._spec_name
+    def pool_id(self) -> str:
+        return self._pool_id
 
     @property
     def expected_num_cells(self) -> int:
@@ -114,7 +114,7 @@ class TrainerController(NodeProbeMixin):
             retry_on=TimeoutError,
             initial_delay=1.0,
             max_delay=5.0,
-            log_fields=dict(tag="ft", spec=self._spec_name),
+            log_fields=dict(tag="ft", spec=self._pool_id),
         )
 
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:

@@ -4,13 +4,13 @@ from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
 
-ROLLOUT_EXECUTOR_SPEC_NAME = "rollout-executor"
+ROLLOUT_EXECUTOR_POOL_ID = "rollout-executor"
 ROLLOUT_EXECUTOR_WORKER_CLASS = "miles.ray.rollout.rollout_executor.RolloutExecutor"
 
 
 def spec_rollout_executor(args) -> ServeWorkerSpec:
     return ServeWorkerSpec(
-        name=ROLLOUT_EXECUTOR_SPEC_NAME,
+        name=ROLLOUT_EXECUTOR_POOL_ID,
         port_infos=[],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
@@ -40,8 +40,8 @@ def create_rollout_executor_handle(*, capability: BackendCapability) -> BaseWork
 
 
 def rollout_executor_worker_name() -> str:
-    return compute_worker_name(spec_name=ROLLOUT_EXECUTOR_SPEC_NAME)
+    return compute_worker_name(pool_id=ROLLOUT_EXECUTOR_POOL_ID)
 
 
 def rollout_executor_cell_id() -> str:
-    return compute_cell_id(spec_name=ROLLOUT_EXECUTOR_SPEC_NAME, cell_index=0)
+    return compute_cell_id(pool_id=ROLLOUT_EXECUTOR_POOL_ID, cell_index=0)

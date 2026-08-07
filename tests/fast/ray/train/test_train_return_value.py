@@ -7,7 +7,7 @@ import ray
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.ray.train.group import TrainerController
+from miles.ray.train.controller import TrainerController
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.ray_utils import Box
 
@@ -16,7 +16,7 @@ pytestmark = pytest.mark.asyncio
 _DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
 
 
-def _make_group(cells: list) -> TrainerController:
+def _make_controller(cells: list) -> TrainerController:
     group = object.__new__(TrainerController)
     group._cells_by_id = {cell.cell_id: cell for cell in cells}
     group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
@@ -46,7 +46,7 @@ class TestTrainReturnValue:
         _set_train_return_value(
             cell, TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box({"critic_loss": 1.5}))
         )
-        group = _make_group([cell])
+        group = _make_controller([cell])
 
         results = await group.train(3, _DUMMY_DATA_PACK)
 
@@ -58,7 +58,7 @@ class TestTrainReturnValue:
         cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
         for index, cell in enumerate(cells):
             _set_train_return_value(cell, TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box(index)))
-        group = _make_group(cells)
+        group = _make_controller(cells)
 
         results = await group.train(3, _DUMMY_DATA_PACK)
 
@@ -69,7 +69,7 @@ class TestTrainReturnValue:
         cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
         ray.get(get_raw_actor_handles(cells[0])[0].set_fail_methods.remote(["train"]))
         _set_train_return_value(cells[1], TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("ok")))
-        group = _make_group(cells)
+        group = _make_controller(cells)
 
         results = await group.train(3, _DUMMY_DATA_PACK)
 
@@ -103,7 +103,7 @@ class TestWorkerResultShape:
         _set_train_return_value(
             cell, TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box({"train_step_outcome": "whatever"}))
         )
-        group = _make_group([cell])
+        group = _make_controller([cell])
 
         results = await group.train(3, _DUMMY_DATA_PACK)
 
@@ -132,7 +132,7 @@ class TestWorkerResultShape:
                     ]
                 )
             )
-        group = _make_group([cell])
+        group = _make_controller([cell])
 
         results = await group.train(3, _DUMMY_DATA_PACK)
 

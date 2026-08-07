@@ -25,14 +25,14 @@ from miles.utils.workers.worker_spec import (
 
 logger = logging.getLogger(__name__)
 
-INFERENCE_CONTROLLER_SPEC_NAME = "inference-controller"
-SESSION_SERVER_SPEC_NAME = "session-server"
+INFERENCE_CONTROLLER_POOL_ID = "inference-controller"
+SESSION_SERVER_POOL_ID = "session-server"
 INFERENCE_CONTROLLER_WORKER_CLASS = "miles.ray.rollout.inference_controller.InferenceController"
 
 
 def spec_inference_controller(args) -> ServeWorkerSpec:
     return ServeWorkerSpec(
-        name=INFERENCE_CONTROLLER_SPEC_NAME,
+        name=INFERENCE_CONTROLLER_POOL_ID,
         port_infos=[],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
@@ -45,7 +45,7 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
         worker_class=INFERENCE_CONTROLLER_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
             args=args,
-            engine_provider=ctx.capability.dynamic_worker_provider(spec_names=compute_engine_spec_names(args)),
+            engine_provider=ctx.capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args)),
             router_provider=ctx.capability.static_worker_provider(worker_name=compute_router_worker_name(0)),
         ),
     )
@@ -58,15 +58,15 @@ def create_inference_controller_handle(*, capability: BackendCapability) -> Base
 
 
 def session_server_worker_name(cell_index: int) -> str:
-    return compute_worker_name(spec_name=SESSION_SERVER_SPEC_NAME, cell_index=cell_index)
+    return compute_worker_name(pool_id=SESSION_SERVER_POOL_ID, cell_index=cell_index)
 
 
 def inference_controller_worker_name() -> str:
-    return compute_worker_name(spec_name=INFERENCE_CONTROLLER_SPEC_NAME)
+    return compute_worker_name(pool_id=INFERENCE_CONTROLLER_POOL_ID)
 
 
 def inference_controller_cell_id() -> str:
-    return compute_cell_id(spec_name=INFERENCE_CONTROLLER_SPEC_NAME, cell_index=0)
+    return compute_cell_id(pool_id=INFERENCE_CONTROLLER_POOL_ID, cell_index=0)
 
 
 def specs_router(args) -> list[CommandWorkerSpec]:
@@ -77,12 +77,12 @@ def specs_router(args) -> list[CommandWorkerSpec]:
     ]
 
 
-def compute_router_spec_name(model_idx: int) -> str:
+def compute_router_pool_id(model_idx: int) -> str:
     return f"inference-router-{model_idx}"
 
 
 def compute_router_worker_name(model_idx: int) -> str:
-    return compute_worker_name(spec_name=compute_router_spec_name(model_idx))
+    return compute_worker_name(pool_id=compute_router_pool_id(model_idx))
 
 
 def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> CommandWorkerSpec:
@@ -107,7 +107,7 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
         return shlex.join(launch_argv)
 
     return CommandWorkerSpec(
-        name=compute_router_spec_name(model_idx),
+        name=compute_router_pool_id(model_idx),
         port_infos=[
             _compute_router_primary_port_info(args, model_idx=model_idx),
             PortInfo(name="prometheus", static_port=9000, allow_dynamic=True),
@@ -138,13 +138,13 @@ def spec_session_server(args) -> CommandWorkerSpec:
             port=ctx.self_addrs["primary"].port,
             # TODO: make the indexing it k8s native compatible
             instance_id=compute_session_server_instance_id(args, ctx.cell_index),
-            backend_url=ctx.spec_addrs[compute_router_spec_name(0)][0]["primary"].addr,
+            backend_url=ctx.spec_addrs[compute_router_pool_id(0)][0]["primary"].addr,
         )
         launch_argv = [sys.executable, "-m", "miles.rollout.session.server", *config_to_argv(config)]
         return shlex.join(launch_argv)
 
     return CommandWorkerSpec(
-        name=SESSION_SERVER_SPEC_NAME,
+        name=SESSION_SERVER_POOL_ID,
         port_infos=[
             _compute_session_server_primary_port_info(args),
         ],
@@ -169,7 +169,7 @@ def compute_session_server_instance_id(args, instance_index: int) -> str:
     return f"{args.run_uuid}-{instance_index}"
 
 
-def compute_engine_spec_name(model_idx: int, group_index: int) -> str:
+def compute_engine_pool_id(model_idx: int, group_index: int) -> str:
     return f"inference-engine-{model_idx}-{group_index}"
 
 
@@ -193,7 +193,7 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
     ]
 
 
-def compute_engine_spec_names(args) -> list[str]:
+def compute_engine_pool_ids(args) -> list[str]:
     return [spec.name for spec in specs_inference_engine(args)]
 
 
@@ -242,7 +242,7 @@ def _compute_spec_inference_engine(
     )
 
     return CommandWorkerSpec(
-        name=compute_engine_spec_name(model_idx=model_idx, group_index=group_index),
+        name=compute_engine_pool_id(model_idx=model_idx, group_index=group_index),
         port_infos=[
             PortInfo(name="primary", static_port=8000, allow_dynamic=True),
             PortInfo(

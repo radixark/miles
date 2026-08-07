@@ -12,7 +12,7 @@ from miles.ray.rollout import inference_controller as inference_controller_modul
 from miles.ray.rollout.inference_controller import InferenceController, _compute_server_cell_meta_from_info
 from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCellMetadata
-from miles.ray.specs.inference import compute_engine_spec_names, compute_router_spec_name, specs_inference_engine
+from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
@@ -25,11 +25,11 @@ def _make_cell_info(
     workers_hash: str = "pseudo-hash-0",
     alive: bool = True,
     model_id: str = "model-a",
-    spec_name: str = "inference-engine-0-0",
+    pool_id: str = "inference-engine-0-0",
 ) -> CellInfo:
     return CellInfo(
         cell_id=cell_id,
-        spec_name=spec_name,
+        pool_id=pool_id,
         alive=alive,
         worker_names=[f"{cell_id}-0"],
         workers_hash=workers_hash,
@@ -85,15 +85,15 @@ class _RecordingServer:
 
 
 class _FakeWorkerProvider:
-    def __init__(self, cell_infos: list[CellInfo], *, spec_names: list[str] | None = None) -> None:
+    def __init__(self, cell_infos: list[CellInfo], *, pool_ids: list[str] | None = None) -> None:
         self._cell_infos = cell_infos
-        self._spec_names = spec_names or []
-        self.watched_spec_names: list[str] | None = None
+        self._pools = pool_ids or []
+        self.watched_pool_ids: list[str] | None = None
 
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
-        self.watched_spec_names = list(self._spec_names)
+        self.watched_pool_ids = list(self._pools)
         for info in self._cell_infos:
-            if info.spec_name in self._spec_names:
+            if info.pool_id in self._pools:
                 await reconcile(info.cell_id, info)
 
         async def _stop_watch() -> None:
@@ -192,7 +192,7 @@ class TestReconcile:
     async def test_a_second_models_cell_is_routed_to_that_models_server(self, servers):
         """Routing is by model_id, so model-b's cell must not be absorbed by the first server."""
         controller = _make_controller(servers)
-        info = _make_cell_info(cell_id="inference-engine-1-0-0", model_id="model-b", spec_name="inference-engine-1-0")
+        info = _make_cell_info(cell_id="inference-engine-1-0-0", model_id="model-b", pool_id="inference-engine-1-0")
 
         await controller._reconcile(info.cell_id, info)
 
@@ -214,7 +214,7 @@ class TestReconcile:
     @pytest.mark.asyncio
     async def test_a_disappeared_cell_is_removed_from_its_owning_server(self, servers):
         """The owner scan must find the server that actually tracks the cell, not the first one."""
-        info = _make_cell_info(cell_id="inference-engine-1-0-0", model_id="model-b", spec_name="inference-engine-1-0")
+        info = _make_cell_info(cell_id="inference-engine-1-0-0", model_id="model-b", pool_id="inference-engine-1-0")
         servers["model-b"].server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info))
         controller = _make_controller(servers)
 
@@ -279,16 +279,16 @@ async def _init_controller(args: Namespace, *, engine_provider: _FakeWorkerProvi
 class TestInitSubscription:
     @pytest.mark.asyncio
     async def test_init_watches_the_engine_provider_it_was_handed(self, monkeypatch: pytest.MonkeyPatch):
-        """The fleets are the provider's own, so the controller may only open a watch on what it was given."""
+        """The pools are the provider's own, so the controller may only open a watch on what it was given."""
         args = make_args()
-        provider = _FakeWorkerProvider([], spec_names=compute_engine_spec_names(args))
+        provider = _FakeWorkerProvider([], pool_ids=compute_engine_pool_ids(args))
         _patch_init(monkeypatch, servers={"default": _RecordingServer()})
 
         await _init_controller(args, engine_provider=provider)
 
-        assert provider.watched_spec_names == compute_engine_spec_names(args)
-        assert compute_router_spec_name(0) not in provider.watched_spec_names
-        assert "session-server" not in provider.watched_spec_names
+        assert provider.watched_pool_ids == compute_engine_pool_ids(args)
+        assert compute_router_pool_id(0) not in provider.watched_pool_ids
+        assert "session-server" not in provider.watched_pool_ids
 
     @pytest.mark.asyncio
     async def test_init_survives_a_router_cell_offered_by_the_provider(self, monkeypatch: pytest.MonkeyPatch):
@@ -296,7 +296,7 @@ class TestInitSubscription:
         args = make_args()
         router_info = CellInfo(
             cell_id="inference-router-0-0",
-            spec_name=compute_router_spec_name(0),
+            pool_id=compute_router_pool_id(0),
             alive=True,
             worker_names=["inference-router-0-0-0"],
             workers_hash="pseudo-hash-router",
@@ -305,7 +305,7 @@ class TestInitSubscription:
         engine_info = _make_cell_info(model_id="default")
         provider = _FakeWorkerProvider(
             [router_info, engine_info],
-            spec_names=[*compute_engine_spec_names(args), compute_router_spec_name(0)],
+            pool_ids=[*compute_engine_pool_ids(args), compute_router_pool_id(0)],
         )
         srv = _RecordingServer()
         _patch_init(monkeypatch, servers={"default": srv})
@@ -332,7 +332,7 @@ class TestEngineMetaContract:
 
         info = CellInfo(
             cell_id="inference-engine-0-0-1",
-            spec_name=spec.name,
+            pool_id=spec.name,
             alive=True,
             worker_names=["inference-engine-0-0-1-0"],
             workers_hash="pseudo-hash-0",

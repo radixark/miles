@@ -145,10 +145,10 @@ class MockWorkerManager:
     @property
     def get_cell_infos(self) -> MockRemoteCall:
         def _filtered(**kwargs: object) -> dict[str, CellInfo]:
-            spec_names = kwargs.get("spec_names")
-            if spec_names is None:
+            pool_ids = kwargs.get("pool_ids")
+            if pool_ids is None:
                 return dict(self._summaries)
-            return {cell_id: info for cell_id, info in self._summaries.items() if info.spec_name in spec_names}
+            return {cell_id: info for cell_id, info in self._summaries.items() if info.pool_id in pool_ids}
 
         return MockRemoteCall(
             None,
@@ -175,7 +175,7 @@ def make_cell_summaries(*cell_ids: str, suspended: bool = False) -> dict[str, Ce
     return {
         cell_id: CellInfo(
             cell_id=cell_id,
-            spec_name=cell_id.rsplit("-", 1)[0],
+            pool_id=cell_id.rsplit("-", 1)[0],
             alive=not suspended,
             worker_names=[] if suspended else [f"{cell_id}-0"],
             workers_hash="pseudo-hash-0",
@@ -215,15 +215,15 @@ class MockTrainerCell:
         )
 
 
-def make_mock_controller(cells: list[MockTrainerCell], *, spec_name: str = "trainer-actor") -> object:
-    from miles.ray.train.group import TrainerController
+def make_mock_controller(cells: list[MockTrainerCell], *, pool_id: str = "trainer-actor") -> object:
+    from miles.ray.train.controller import TrainerController
 
     group = object.__new__(TrainerController)
     for cell_index, cell in enumerate(cells):
         cell.cell_index = cell_index
-        cell.cell_id = f"{spec_name}-{cell_index}"
+        cell.cell_id = f"{pool_id}-{cell_index}"
     group._cells_by_id = {cell.cell_id: cell for cell in cells}
-    group._spec_name = spec_name
+    group._pool = pool_id
     group._indep_dp_quorum_id = 0
     return group
 

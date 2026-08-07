@@ -11,7 +11,7 @@ _CELL_ID = "spec-0"
 def _make_cell_info(workers_hash: str = "hash-1") -> CellInfo:
     return CellInfo(
         cell_id=_CELL_ID,
-        spec_name="spec",
+        pool_id="spec",
         alive=True,
         worker_names=["spec-0-0"],
         workers_hash=workers_hash,

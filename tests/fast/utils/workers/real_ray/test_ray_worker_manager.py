@@ -137,7 +137,7 @@ class TestNamedManagerActor:
 
 
 class TestScaleOnRealRay:
-    def test_a_larger_fleet_still_gets_disjoint_port_blocks(self, manager_factory, worker_probe_factory):
+    def test_a_larger_pool_still_gets_disjoint_port_blocks(self, manager_factory, worker_probe_factory):
         """Six workers with multi-port specs must not overlap, including inside reserved blocks."""
         probe = worker_probe_factory()
         manager_factory(

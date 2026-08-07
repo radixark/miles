@@ -6,7 +6,7 @@ description: "A minimal, level-triggered controller runtime for Miles, and how i
 ## What this is
 
 - A deliberately small port of the [client-go informer stack](https://github.com/kubernetes/client-go/tree/master/tools/cache) plus [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime).
-- Tracks fleets of processes — SGLang engine cells, trainer cells — that appear, disappear and restart mid-run.
+- Tracks pools of processes — SGLang engine cells, trainer cells — that appear, disappear and restart mid-run.
 - The alignment record: **every deviation from Go must appear below with a reason.**
 
 ## Modules
@@ -51,7 +51,7 @@ An empty last column means 1:1. Each entry is the shadow of a **Dropped** / **Re
 | Store | Read without hitting the apiserver | **Kept**, a plain `dict` | Single-threaded asyncio: no locks |
 | `Replace()` on relist | Deletions missed while disconnected | **Kept**, store-side | Ghost cells are forever. Store-side also survives a whole stream reopening, which a reflector-side diff cannot remember across. Costs one event type (`ReplaceEvent`) |
 | Indexer | Large-scale reverse lookup | **Dropped**; `dict[ObjectKey, ParentKey]` scanned | The parent map is already the index |
-| `EnqueueRequestForOwner` | Child event to parent key | **Kept** as `key_map`; an object it cannot map is evicted with an error, not stored | Cells are not Kubernetes objects, so the parent comes from labels, and one bad pod must not stall the fleet. Go caches an object it cannot attribute and merely enqueues nothing, but this store is indexed by parent, so an object whose labels stop mapping leaves and re-drives the parent it left. Ignoring the update instead would serve it under that parent forever |
+| `EnqueueRequestForOwner` | Child event to parent key | **Kept** as `key_map`; an object it cannot map is evicted with an error, not stored | Cells are not Kubernetes objects, so the parent comes from labels, and one bad pod must not stall the pool. Go caches an object it cannot attribute and merely enqueues nothing, but this store is indexed by parent, so an object whose labels stop mapping leaves and re-drives the parent it left. Ignoring the update instead would serve it under that parent forever |
 | DeltaFIFO | Delta coalescing | **Dropped** | Reconcile reads a snapshot, so the queue needs parent-key dedup, never a delta chain |
 
 ### `work_queue.py`
@@ -75,7 +75,7 @@ An empty last column means 1:1. Each entry is the shadow of a **Dropped** / **Re
 | Upstream | Solves | Decision | Reason |
 | --- | --- | --- | --- |
 | Cache-before-notify ordering | Handlers never read a stale state | **Kept** | Correctness, not volume |
-| WaitForCacheSync | Do not decide on a half-filled cache | **Kept**: `run()` + `wait_for_sync()`, the [`SyncingSource`](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/source/source.go) shape; `start()` awaits it | A partial engine list at step 0 would silently shrink the fleet |
+| WaitForCacheSync | Do not decide on a half-filled cache | **Kept**: `run()` + `wait_for_sync()`, the [`SyncingSource`](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/source/source.go) shape; `start()` awaits it | A partial engine list at step 0 would silently shrink the pool |
 | `source.Channel` | External event injection | **Dropped** | Miles-internal events are method calls |
 | Retry inside vs outside the stream | Recover without losing the cursor | **Kept** at both levels: `KubernetesReflector.retry_delay`, then `ReconcileLoop.source_retry_delay` | The inner one recovers a dropped watch, a failed LIST or an expired cursor without ending the stream. The outer one is the net for a stream that dies for good; in-process registries reach it |
 | Closing a stream during teardown | Do not hide a worse error | **Replaced**: every close is logged, none propagates | `run()`'s `finally` closes the stream and clears it before `stop()` gathers the driver, so `aclose()` only ever finds nothing left to close. That leaves `_aclose_logging_failure` as the single close path, and it must swallow: a close failure would otherwise mask an unwinding cancellation, or re-raise the very failure the driver exists to recover from |

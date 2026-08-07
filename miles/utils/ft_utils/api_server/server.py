@@ -7,8 +7,8 @@ import uvicorn
 from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse
 
-from miles.ray.specs.inference import compute_engine_spec_names
-from miles.ray.specs.train import compute_trainer_spec_name
+from miles.ray.specs.inference import compute_engine_pool_ids
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
@@ -38,7 +38,7 @@ def start_api_server(
                 cell_type="actor",
                 operations=cell_operations,
                 controller=actor_model,
-                spec_names=[compute_trainer_spec_name("actor")],
+                pool_ids=[compute_trainer_pool_id("actor")],
             )
         )
 
@@ -48,7 +48,7 @@ def start_api_server(
                 cell_type="rollout",
                 operations=cell_operations,
                 controller=inference_controller,
-                spec_names=compute_engine_spec_names(args),
+                pool_ids=compute_engine_pool_ids(args),
             )
         )
 

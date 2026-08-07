@@ -9,8 +9,8 @@ from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from miles.ray.specs.train import (
     TRAINER_CONCURRENCY_GROUPS,
     TRAINER_CONTROLLER_WORKER_CLASS,
-    compute_trainer_controller_spec_name,
-    compute_trainer_spec_name,
+    compute_trainer_controller_pool_id,
+    compute_trainer_pool_id,
     spec_trainer_controller_actor,
     spec_trainer_controller_critic,
     specs_trainer,
@@ -69,15 +69,15 @@ class TestSpecSet:
         """Most runs have no critic, so no idle critic workers may be scheduled."""
         specs = specs_trainer(_make_args())
 
-        assert [spec.name for spec in specs] == [compute_trainer_spec_name("actor")]
+        assert [spec.name for spec in specs] == [compute_trainer_pool_id("actor")]
 
     def test_the_critic_gets_its_own_spec(self):
         """Actor and critic are separate worker sets even though they share GPUs."""
         specs = specs_trainer(_make_args(use_critic=True))
 
         assert [spec.name for spec in specs] == [
-            compute_trainer_spec_name("actor"),
-            compute_trainer_spec_name("critic"),
+            compute_trainer_pool_id("actor"),
+            compute_trainer_pool_id("critic"),
         ]
 
     def test_the_critic_args_are_neutralized(self):
@@ -234,9 +234,9 @@ class TestPorts:
 
 
 @pytest.mark.parametrize("role", ["actor", "critic"])
-def test_the_spec_name_encodes_the_role(role):
+def test_the_pool_name_encodes_the_role(role):
     """Spec names identify trainer cells apart from inference cells."""
-    assert compute_trainer_spec_name(role) == f"trainer-{role}"
+    assert compute_trainer_pool_id(role) == f"trainer-{role}"
 
 
 class _FakeStaticProvider:
@@ -260,7 +260,7 @@ def _controller_providers() -> FakeBackendCapability:
 
 class TestSpecTrainerController:
     def test_one_controller_per_trainer_role(self):
-        """Each controller owns exactly one trainer fleet, so a critic run needs a second one."""
+        """Each controller owns exactly one trainer pool, so a critic run needs a second one."""
         assert spec_trainer_controller_actor(_make_args()).name == "trainer-controller-actor"
         assert spec_trainer_controller_critic(_make_args(use_critic=True)).name == "trainer-controller-critic"
 
@@ -283,15 +283,15 @@ class TestSpecTrainerController:
         assert trainer_controller_worker_name("actor") == "trainer-controller-actor-0-0"
         assert trainer_controller_cell_id("actor") == "trainer-controller-actor-0"
 
-    def test_it_asks_for_a_provider_over_its_own_trainer_fleet(self):
-        """A controller that watched both fleets would try to heal the other role's cells."""
+    def test_it_asks_for_a_provider_over_its_own_trainer_pool(self):
+        """A controller that watched both pools would try to heal the other role's cells."""
         capability = _controller_providers()
 
         args = _make_args(use_critic=True)
         specs = [spec_trainer_controller_actor(args), spec_trainer_controller_critic(args)]
         kwargs = [spec.ctor_kwargs(_controller_context(capability)) for spec in specs]
 
-        assert capability.requested_spec_names == [["trainer-actor"], ["trainer-critic"]]
+        assert capability.requested_pool_ids == [["trainer-actor"], ["trainer-critic"]]
         assert [entry["cell_provider"] for entry in kwargs] == [capability.cells_provider] * 2
 
     def test_only_the_actor_controller_drives_the_inference_controller(self):
@@ -326,6 +326,6 @@ class TestSpecTrainerController:
         assert (critic_kwargs["args"].kl_coef, critic_kwargs["args"].use_opd) == (0, False)
         assert (critic_kwargs["with_ref"], critic_kwargs["with_opd_teacher"]) == (False, False)
 
-    def test_the_controller_spec_name_encodes_the_role(self):
+    def test_the_controller_pool_name_encodes_the_role(self):
         """The two controllers of a critic run must not collide in the address book."""
-        assert compute_trainer_controller_spec_name("critic") == "trainer-controller-critic"
+        assert compute_trainer_controller_pool_id("critic") == "trainer-controller-critic"

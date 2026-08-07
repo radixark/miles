@@ -194,8 +194,8 @@ def manager_factory(ray_local_mode) -> Callable[..., ray.actor.ActorHandle]:
 
 
 class CellStoppableManager(RayWorkerManager):
-    async def stop_cell(self, spec_name: str, cell_index: int) -> None:
-        await self._group_infos[spec_name].cells[cell_index].stop()
+    async def stop_cell(self, pool_id: str, cell_index: int) -> None:
+        await self._pools[pool_id].cells[cell_index].stop()
 
 
 @pytest.fixture

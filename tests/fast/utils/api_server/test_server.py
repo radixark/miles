@@ -241,7 +241,7 @@ class TestStartApiServerRegistration:
         manager = MockWorkerManager(make_cell_summaries(*cell_ids))
         registries: list[_CellRegistry] = []
 
-        monkeypatch.setattr(server, "compute_engine_spec_names", lambda args: ["inference-engine-0-0"])
+        monkeypatch.setattr(server, "compute_engine_pool_ids", lambda args: ["inference-engine-0-0"])
         monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
 
         server.start_api_server(
@@ -274,7 +274,7 @@ class TestStartApiServerRegistration:
 
     @pytest.mark.asyncio
     async def test_no_rollout_handler_exists_when_rollout_ft_is_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Exposing suspend on engines nobody heals would let a request strand the fleet."""
+        """Exposing suspend on engines nobody heals would let a request strand the pool."""
         registry = self._start(monkeypatch, ft_components=["train"], cell_ids=["inference-engine-0-0-0"])
 
         assert await registry.list_cells() == []
@@ -361,8 +361,8 @@ class TestOperationsSelection:
         """Under Kubernetes the api server must act on pods, not on a Ray worker manager."""
         operations = object()
         registries: list[_CellRegistry] = []
-        monkeypatch.setattr(server, "compute_trainer_spec_name", lambda role: f"trainer-{role}")
-        monkeypatch.setattr(server, "compute_engine_spec_names", lambda args: ["engine"])
+        monkeypatch.setattr(server, "compute_trainer_pool_id", lambda role: f"trainer-{role}")
+        monkeypatch.setattr(server, "compute_engine_pool_ids", lambda args: ["engine"])
         monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
 
         server.start_api_server(

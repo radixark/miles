@@ -948,7 +948,7 @@ class TestInStreamRelist:
         await loop.stop()
 
     async def test_a_relist_skips_unmappable_objects_and_applies_the_rest(self):
-        """One poison object must not stop the whole fleet from being updated."""
+        """One poison object must not stop the whole pool from being updated."""
         pods = [make_pod("pod-a", cell="cell-a"), make_pod("pod-b", cell="cell-b")]
         loop, source, recorder, _ = await make_loop(initial=pods)
         recorder.parent_keys.clear()

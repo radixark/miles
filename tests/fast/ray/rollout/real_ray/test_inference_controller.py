@@ -10,7 +10,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.inference_controller import InferenceController
-from miles.ray.specs.inference import compute_engine_spec_names, compute_router_worker_name
+from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_worker_name
 from miles.ray.wiring import get_backend_capability
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -105,7 +105,7 @@ async def _init_controller(args) -> InferenceController:
     capability = get_backend_capability(args)
     controller = InferenceController(
         args,
-        engine_provider=capability.dynamic_worker_provider(spec_names=compute_engine_spec_names(args)),
+        engine_provider=capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args)),
         router_provider=capability.static_worker_provider(worker_name=compute_router_worker_name(0)),
     )
     await controller.init()

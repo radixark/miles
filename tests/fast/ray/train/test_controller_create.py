@@ -4,36 +4,36 @@ from types import SimpleNamespace
 import pytest
 from tests.fast.ray.train import conftest as train_conftest
 
-from miles.ray.specs.train import compute_trainer_spec_name
-from miles.ray.train.group import RayTrainGroup
+from miles.ray.specs.train import compute_trainer_pool_id
+from miles.ray.train.controller import TrainerController
 from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 pytestmark = pytest.mark.asyncio
 
-_SPEC_NAME = compute_trainer_spec_name("actor")
+_POOL_ID = compute_trainer_pool_id("actor")
 _POLL_INTERVAL_SECONDS = 0.01
 
 
 class _RecordingWorkerProvider(RayWorkerProvider):
-    def __init__(self, *, worker_manager_handle: object, spec_names: list[str] | None = None) -> None:
+    def __init__(self, *, worker_manager_handle: object, pool_ids: list[str] | None = None) -> None:
         super().__init__(
             worker_manager_handle=worker_manager_handle,
-            spec_names=spec_names,
+            pool_ids=pool_ids,
             poll_interval_seconds=_POLL_INTERVAL_SECONDS,
         )
         self.watch_calls: list[tuple[ReconcileFn, list[str]]] = []
         self.poll_count: int = 0
 
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
-        self.watch_calls.append((reconcile, list(self._watched_spec_names())))
+        self.watch_calls.append((reconcile, list(self._watched_pools())))
         return await super().watch_cells(reconcile)
 
     async def _poll_once(
-        self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, spec_names: list[str]
+        self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, pool_ids: list[str]
     ) -> None:
         self.poll_count += 1
-        await super()._poll_once(reconcile, seen_infos=seen_infos, spec_names=spec_names)
+        await super()._poll_once(reconcile, seen_infos=seen_infos, pool_ids=pool_ids)
 
 
 def _make_args(*, num_cells: int) -> SimpleNamespace:
@@ -62,9 +62,9 @@ def provider(monkeypatch) -> _RecordingWorkerProvider:
     return recording_provider
 
 
-async def _create_group(*, num_cells: int) -> RayTrainGroup:
+async def _create_controller(*, num_cells: int) -> TrainerController:
     train_conftest.fake_worker_manager.num_cells = num_cells
-    return await RayTrainGroup.create(
+    return await TrainerController.create(
         _make_args(num_cells=num_cells),
         role="actor",
         with_ref=False,
@@ -74,40 +74,40 @@ async def _create_group(*, num_cells: int) -> RayTrainGroup:
 
 class TestCreate:
     async def test_create_subscribes_reconcile_to_the_trainer_spec(self, provider):
-        """create() must watch its own trainer spec with the group's reconcile callback."""
-        group = await _create_group(num_cells=2)
+        """create() must watch its own trainer spec with the controller's reconcile callback."""
+        controller = await _create_controller(num_cells=2)
         try:
             assert len(provider.watch_calls) == 1
-            reconcile, spec_names = provider.watch_calls[0]
-            assert reconcile == group._reconcile
-            assert spec_names == [_SPEC_NAME]
+            reconcile, pool_ids = provider.watch_calls[0]
+            assert reconcile == controller._reconcile
+            assert pool_ids == [_POOL_ID]
         finally:
-            await group.dispose()
+            await controller.dispose()
 
     async def test_create_populates_cells_from_the_initial_sync(self, provider):
         """The initial watch sync must fill in the cells before create() returns."""
-        group = await _create_group(num_cells=2)
+        controller = await _create_controller(num_cells=2)
         try:
-            assert sorted(group._cells_by_index) == [0, 1]
-            assert [cell.cell_index for cell in group._cells] == [0, 1]
+            assert sorted(controller._cells_by_index) == [0, 1]
+            assert [cell.cell_index for cell in controller._cells] == [0, 1]
         finally:
-            await group.dispose()
+            await controller.dispose()
 
     async def test_dispose_stops_the_watch_loop(self, provider):
         """Without dispose() the 5-second poll loop outlives training and keeps logging failures."""
-        group = await _create_group(num_cells=1)
+        controller = await _create_controller(num_cells=1)
         await asyncio.sleep(_POLL_INTERVAL_SECONDS * 5)
 
-        await group.dispose()
+        await controller.dispose()
         polls_after_dispose: int = provider.poll_count
         await asyncio.sleep(_POLL_INTERVAL_SECONDS * 5)
 
         assert provider.poll_count == polls_after_dispose
-        assert group._watcher_disposer is None
+        assert controller._watcher_disposer is None
 
     async def test_dispose_is_idempotent(self, provider):
         """Teardown paths overlap, so a second dispose must not raise."""
-        group = await _create_group(num_cells=1)
+        controller = await _create_controller(num_cells=1)
 
-        await group.dispose()
-        await group.dispose()
+        await controller.dispose()
+        await controller.dispose()

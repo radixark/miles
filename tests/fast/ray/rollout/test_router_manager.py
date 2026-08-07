@@ -115,7 +115,7 @@ class TestWaitSessionServerReady:
         assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
 
     async def test_servers_on_different_hosts_raise(self):
-        """A session server fleet spread across hosts violates the single-ip contract."""
+        """A session server pool spread across hosts violates the single-ip contract."""
 
         class _FakeProvider:
             def __init__(self):

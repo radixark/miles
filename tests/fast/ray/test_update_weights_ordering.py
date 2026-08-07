@@ -108,10 +108,10 @@ async def test_start_update_weights_initializes_colocated_cells_before_snapshott
     assert init_counts_at_snapshot == [1]
 
 
-def _make_group(order: list[str]):
-    from miles.ray.train.group import TrainerController as FaultTolerantTrainGroup
+def _make_controller(order: list[str]):
+    from miles.ray.train.controller import TrainerController
 
-    group = FaultTolerantTrainGroup.__new__(FaultTolerantTrainGroup)
+    group = TrainerController.__new__(TrainerController)
     group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
     group._inference_controller = _OrderRecordingInferenceController(order)
 
@@ -127,7 +127,7 @@ def _make_group(order: list[str]):
 async def test_the_trainer_brackets_the_broadcast_with_start_and_end_update_weights():
     """The fault-tolerant trainer runs the actual update RPC strictly inside the update window."""
     order: list[str] = []
-    group = _make_group(order)
+    group = _make_controller(order)
 
     await group.update_weights()
 
@@ -139,7 +139,7 @@ async def test_the_trainer_brackets_the_broadcast_with_start_and_end_update_weig
 async def test_the_trainer_hands_end_update_weights_the_snapshot_start_returned():
     """The snapshot start_update_weights returned is handed back to end_update_weights unchanged."""
     order: list[str] = []
-    group = _make_group(order)
+    group = _make_controller(order)
 
     await group.update_weights()
 

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
 from miles.ray.specs.rollout import (
-    ROLLOUT_EXECUTOR_SPEC_NAME,
+    ROLLOUT_EXECUTOR_POOL,
     ROLLOUT_EXECUTOR_WORKER_CLASS,
     rollout_executor_cell_id,
     rollout_executor_worker_name,
@@ -27,7 +27,7 @@ class TestRolloutExecutorSpec:
         """One executor per run, and it must claim no gpu or the scheduler would reserve a whole slot."""
         spec = spec_rollout_executor(_args())
 
-        assert spec.name == ROLLOUT_EXECUTOR_SPEC_NAME
+        assert spec.name == ROLLOUT_EXECUTOR_POOL
         assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (1, 1)
         assert spec.scheduling.num_gpus_per_worker == 0
 

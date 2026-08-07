@@ -8,7 +8,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.naming import parse_cell_id
 
 if TYPE_CHECKING:
-    from miles.ray.train.group import TrainerController
+    from miles.ray.train.controller import TrainerController
     from miles.utils.workers.cell_operations.base import BaseCellOperations
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ class FTTestAction(FrozenStrictBaseModel):
 
 _ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestAction])
 
-_GROUP_ACTIONS = {"stop_cell_at_end", "start_cell_at_end"}
+_CONTROLLER_ACTIONS = {"stop_cell_at_end", "start_cell_at_end"}
 _ACTOR_ACTIONS = {"crash_before_allreduce"}
 
 
@@ -46,20 +46,20 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
     return actions
 
 
-class FTTestActionGroupExecutor:
+class FTTestActionControllerExecutor:
     def __init__(
-        self, *, actions: list[FTTestAction], group: "TrainerController", cell_operations: "BaseCellOperations"
+        self, *, actions: list[FTTestAction], controller: "TrainerController", cell_operations: "BaseCellOperations"
     ) -> None:
         self._actions = actions
-        self._group = group
+        self._controller = controller
         self._cell_operations = cell_operations
 
     @staticmethod
     def from_args(
-        args: object, *, group: "TrainerController", cell_operations: "BaseCellOperations"
-    ) -> "FTTestActionGroupExecutor":
-        return FTTestActionGroupExecutor(
-            actions=_load_actions(args, _GROUP_ACTIONS), group=group, cell_operations=cell_operations
+        args: object, *, controller: "TrainerController", cell_operations: "BaseCellOperations"
+    ) -> "FTTestActionControllerExecutor":
+        return FTTestActionControllerExecutor(
+            actions=_load_actions(args, _CONTROLLER_ACTIONS), controller=controller, cell_operations=cell_operations
         )
 
     async def run_after_step(self, rollout_id: int) -> None:
@@ -76,13 +76,13 @@ class FTTestActionGroupExecutor:
 
     def _check_action_target(self, action: FTTestAction) -> None:
         parsed = parse_cell_id(action.cell_id)
-        assert parsed.spec_name == self._group.spec_name, (
-            f"FT test action targets spec {parsed.spec_name!r} but this group is {self._group.spec_name!r} "
+        assert parsed.pool_id == self._controller.pool_id, (
+            f"FT test action targets pool_id {parsed.pool_id!r} but this controller drives {self._controller.pool_id!r} "
             f"(action={action})"
         )
-        assert parsed.cell_index < self._group.expected_num_cells, (
-            f"FT test action targets cell index {parsed.cell_index} but the group only has "
-            f"{self._group.expected_num_cells} cells (action={action})"
+        assert parsed.cell_index < self._controller.expected_num_cells, (
+            f"FT test action targets cell index {parsed.cell_index} but the pool only has "
+            f"{self._controller.expected_num_cells} cells (action={action})"
         )
 
 

@@ -7,14 +7,14 @@ from pydantic import ValidationError
 
 from miles.utils.test_utils.ft_test_actions import (
     _ACTOR_ACTIONS,
-    _GROUP_ACTIONS,
+    _CONTROLLER_ACTIONS,
     FTTestAction,
     FTTestActionActorExecutor,
-    FTTestActionGroupExecutor,
+    FTTestActionControllerExecutor,
     _load_actions,
 )
 
-_SPEC_NAME = "trainer-actor"
+_POOL_ID = "trainer-actor"
 
 
 def _args(ci_ft_test_actions: object) -> SimpleNamespace:
@@ -23,7 +23,7 @@ def _args(ci_ft_test_actions: object) -> SimpleNamespace:
 
 def test_load_actions_returns_empty_when_attr_is_none() -> None:
     """None ci_ft_test_actions yields an empty action list without parsing."""
-    assert _load_actions(_args(None), _GROUP_ACTIONS) == []
+    assert _load_actions(_args(None), _CONTROLLER_ACTIONS) == []
 
 
 def test_load_actions_returns_empty_when_attr_is_empty_string() -> None:
@@ -33,7 +33,7 @@ def test_load_actions_returns_empty_when_attr_is_empty_string() -> None:
 
 def test_load_actions_returns_empty_when_attr_missing() -> None:
     """A missing ci_ft_test_actions attribute defaults to None and yields []."""
-    assert _load_actions(SimpleNamespace(), _GROUP_ACTIONS) == []
+    assert _load_actions(SimpleNamespace(), _CONTROLLER_ACTIONS) == []
 
 
 def test_load_actions_parses_single_crash_action_with_defaults() -> None:
@@ -59,7 +59,7 @@ def test_load_actions_filters_to_only_matching_actions() -> None:
             {"at_rollout": 3, "action": "start_cell_at_end", "cell_id": "trainer-actor-0"},
         ]
     )
-    group_actions = _load_actions(_args(raw), _GROUP_ACTIONS)
+    group_actions = _load_actions(_args(raw), _CONTROLLER_ACTIONS)
     assert [a.action for a in group_actions] == ["stop_cell_at_end", "start_cell_at_end"]
     actor_actions = _load_actions(_args(raw), _ACTOR_ACTIONS)
     assert [a.action for a in actor_actions] == ["crash_before_allreduce"]
@@ -68,61 +68,61 @@ def test_load_actions_filters_to_only_matching_actions() -> None:
 def test_load_actions_returns_empty_when_no_action_matches_filter() -> None:
     """Valid actions that fall outside the filter set produce an empty result."""
     raw = json.dumps([{"at_rollout": 1, "action": "crash_before_allreduce", "cell_id": "trainer-actor-1"}])
-    assert _load_actions(_args(raw), _GROUP_ACTIONS) == []
+    assert _load_actions(_args(raw), _CONTROLLER_ACTIONS) == []
 
 
 def test_load_actions_rejects_extra_field() -> None:
     """An unexpected JSON field is rejected because the model forbids extras."""
     raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-actor-0", "bogus": 5}])
     with pytest.raises(ValidationError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_rejects_invalid_action_literal() -> None:
     """An action string outside the allowed Literal set raises a validation error."""
     raw = json.dumps([{"at_rollout": 1, "action": "not_a_real_action", "cell_id": "trainer-actor-0"}])
     with pytest.raises(ValidationError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_rejects_missing_cell_id() -> None:
     """cell_id is required, so an action that omits it fails to load instead of guessing a target."""
     raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end"}])
     with pytest.raises(ValidationError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_rejects_legacy_cell_index_field() -> None:
     """The retired cell_index field is an extra field now, so stale JSON fails loudly."""
     raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_index": -1}])
     with pytest.raises(ValidationError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_rejects_cell_id_without_index_suffix() -> None:
     """A cell_id that carries no trailing index cannot be parsed and is rejected at load time."""
     raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "traineractor"}])
     with pytest.raises(ValueError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_rejects_cell_id_with_non_numeric_index() -> None:
     """A cell_id whose suffix is not an integer is rejected at load time."""
     raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-actor-last"}])
     with pytest.raises(ValueError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_validates_cell_id_of_actions_outside_the_filter() -> None:
     """Validation runs over every action, so a typo in another executor's action still fails here."""
     raw = json.dumps([{"at_rollout": 1, "action": "crash_before_allreduce", "cell_id": "bogus"}])
     with pytest.raises(ValueError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
-class FakeGroup:
-    def __init__(self, num_cells: int, *, spec_name: str = _SPEC_NAME) -> None:
-        self.spec_name = spec_name
+class FakeController:
+    def __init__(self, num_cells: int, *, pool_id: str = _POOL_ID) -> None:
+        self.pool_id = pool_id
         self.expected_num_cells = num_cells
 
 
@@ -144,8 +144,8 @@ class TestRunAfterStep:
         """stop_cell_at_end suspends the action's cell_id through the backend's operations."""
         operations = FakeCellOperations()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-actor-1")
-        executor = FTTestActionGroupExecutor(
-            actions=[action], group=FakeGroup(num_cells=3), cell_operations=operations
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
         )
 
         await executor.run_after_step(5)
@@ -158,8 +158,8 @@ class TestRunAfterStep:
         """run_after_step does nothing when no action's at_rollout matches the given rollout."""
         operations = FakeCellOperations()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-actor-1")
-        executor = FTTestActionGroupExecutor(
-            actions=[action], group=FakeGroup(num_cells=3), cell_operations=operations
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
         )
 
         await executor.run_after_step(4)
@@ -172,8 +172,8 @@ class TestRunAfterStep:
         """start_cell_at_end resumes exactly the cell_id the action names."""
         operations = FakeCellOperations()
         action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_id="trainer-actor-2")
-        executor = FTTestActionGroupExecutor(
-            actions=[action], group=FakeGroup(num_cells=3), cell_operations=operations
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
         )
 
         await executor.run_after_step(2)
@@ -186,8 +186,8 @@ class TestRunAfterStep:
         """A stopped cell no longer being live does not change the cell_id the action names."""
         operations = FakeCellOperations()
         action = FTTestAction(at_rollout=3, action="start_cell_at_end", cell_id="trainer-actor-1")
-        executor = FTTestActionGroupExecutor(
-            actions=[action], group=FakeGroup(num_cells=2), cell_operations=operations
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=2), cell_operations=operations
         )
 
         await executor.run_after_step(3)
@@ -201,8 +201,8 @@ class TestRunAfterStep:
         operations = FakeCellOperations()
         stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_id="trainer-actor-0")
         start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_id="trainer-actor-2")
-        executor = FTTestActionGroupExecutor(
-            actions=[stop_action, start_action], group=FakeGroup(num_cells=3), cell_operations=operations
+        executor = FTTestActionControllerExecutor(
+            actions=[stop_action, start_action], controller=FakeController(num_cells=3), cell_operations=operations
         )
 
         await executor.run_after_step(7)
@@ -214,7 +214,9 @@ class TestRunAfterStep:
     async def test_empty_actions_is_noop(self):
         """An executor with no actions performs no cell operations."""
         operations = FakeCellOperations()
-        executor = FTTestActionGroupExecutor(actions=[], group=FakeGroup(num_cells=3), cell_operations=operations)
+        executor = FTTestActionControllerExecutor(
+            actions=[], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
         await executor.run_after_step(5)
 
@@ -226,8 +228,8 @@ class TestRunAfterStep:
         """An action aimed at a different spec is a misconfiguration and must fail, not silently no-op."""
         operations = FakeCellOperations()
         action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="rollout-engine-0")
-        executor = FTTestActionGroupExecutor(
-            actions=[action], group=FakeGroup(num_cells=3), cell_operations=operations
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
         )
 
         with pytest.raises(AssertionError):
@@ -240,8 +242,8 @@ class TestRunAfterStep:
         """A cell index the group can never have is a misconfiguration and must fail at dispatch."""
         operations = FakeCellOperations()
         action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="trainer-actor-9")
-        executor = FTTestActionGroupExecutor(
-            actions=[action], group=FakeGroup(num_cells=3), cell_operations=operations
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
         )
 
         with pytest.raises(AssertionError):
