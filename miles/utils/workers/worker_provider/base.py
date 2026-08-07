@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 
 @dataclass(frozen=True)
@@ -23,9 +23,6 @@ StopWatchFn = Callable[[], Awaitable[None]]
 
 
 class BaseWorkerProvider(abc.ABC):
-    @abc.abstractmethod
-    async def get_addr(self, worker_name: str) -> HostAndPort: ...
-
     @abc.abstractmethod
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts: ...
 

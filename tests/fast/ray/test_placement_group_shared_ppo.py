@@ -9,7 +9,7 @@ from miles.ray.placement_group import _get_placement_group_layout
 from miles.ray.train.group import TrainerController
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, ReconcileFn, StopWatchFn
-from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 
 def _layout_args(**overrides):
@@ -67,9 +67,6 @@ class _RecordingWorkerProvider(BaseWorkerProvider):
     def __init__(self) -> None:
         self.built_for: list[list[str]] = []
         self.watch_count = 0
-
-    async def get_addr(self, worker_name: str) -> HostAndPort:
-        raise NotImplementedError
 
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         raise NotImplementedError
