@@ -1,6 +1,7 @@
 # ruff: noqa
 # Adapted from https://github.com/tile-ai/tilelang/blob/e666d2d3cc483829c57618c9ebf2e4f4ada0819d/examples/deepseek_v32/sparse_mla_fwd.py
 import tilelang
+import torch
 from tilelang import language as T
 
 
@@ -23,6 +24,7 @@ def sparse_mla_fwd(
     block_I=64,
     num_stages=2,
     threads=256,
+    h_per_block=None,
 ):
     assert dim == tilelang.math.next_power_of_2(dim), f"haven't check padding correctness yet, dim={dim}"
     assert tail_dim == tilelang.math.next_power_of_2(
@@ -61,13 +63,19 @@ def sparse_mla_fwd(
     D = dim
     D_tail = tail_dim
 
-    if head_kv > 64:
-        assert head_kv % 64 == 0, "head_kv should be a multiple of 64"
-        REPLICATE_H = head_kv // 64
-    else:
-        REPLICATE_H = 1
-
-    H_per_block = padded_H if REPLICATE_H == 1 else 64
+    # H_per_block controls Q_shared/O_shared LDS footprint (H_per_block * D * 2 bytes).
+    # Original behavior pins it to padded_H (or 64 when head_kv > 64), which works on
+    # H100 (228KB LDS). On gfx950 (160KB LDS) the wrapper passes h_per_block=32 so
+    # Q_shared+O_shared drop from 128KB to 64KB. Pass h_per_block=None for the
+    # original H100-tuned behavior.
+    if h_per_block is None:
+        h_per_block = padded_H if head_kv <= 64 else 64
+    # Cap at padded_H so callers passing a larger override don't trip the
+    # divisibility assert below (e.g. h_per_block=32 with head_kv=16, padded_H=16).
+    h_per_block = min(h_per_block, padded_H)
+    assert padded_H % h_per_block == 0, f"padded_H={padded_H} must be divisible by h_per_block={h_per_block}"
+    H_per_block = h_per_block
+    REPLICATE_H = padded_H // H_per_block
 
     @T.prim_func
     def main(
@@ -108,7 +116,7 @@ def sparse_mla_fwd(
             q_i = s_i
             max_kv_i = q_i
 
-            H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64)
+            H0 = g_i * padded_H + (0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * H_per_block)
             H1 = H0 + H_per_block
 
             T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared)
@@ -170,8 +178,25 @@ def sparse_mla_fwd(
 
 
 def sparse_mla_fwd_interface(
-    q, kv, indices, sm_scale=None, return_p_sum: bool = False, d_v=512, block_I=64, num_stages=2, threads=256
+    q,
+    kv,
+    indices,
+    sm_scale=None,
+    return_p_sum: bool = False,
+    d_v=512,
+    block_I=64,
+    num_stages=2,
+    threads=256,
+    h_per_block=None,
 ):
+    # gfx950 (MI300/MI355) has 160KB LDS per workgroup; the default tile
+    # (h_per_block=64, num_stages=2) needs ~231KB. Shrink the H tile and
+    # disable double-buffering on ROCm. NV path unchanged.
+    if torch.version.hip is not None:
+        if h_per_block is None:
+            h_per_block = 32
+        if num_stages > 1:
+            num_stages = 1
     q = q.unsqueeze(0)
     kv = kv.unsqueeze(0)
     indices = indices.unsqueeze(0)
@@ -202,6 +227,7 @@ def sparse_mla_fwd_interface(
         block_I=block_I,
         num_stages=num_stages,
         threads=threads,
+        h_per_block=h_per_block,
     )
     out, lse = kernel(q, kv, indices)
     out = out.squeeze(0)
