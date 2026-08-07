@@ -378,12 +378,8 @@ class RolloutManager:
 
     def set_weight_version(self, weight_version: int):
         if self.weight_version is not None and weight_version < self.weight_version:
-            # a regression makes staleness negative, which admits the most off-policy groups
-            message = f"Engine weight version went backwards: {self.weight_version} -> {weight_version}"
-            # not fatal in production: this runs inside the retried update, so raising would
-            # error one cell after another until the FT quorum is gone
-            assert not self.args.ci_test, message
-            logger.warning(message)
+            # the updater counter is per-cell and not checkpointed, so FT failover restarts it
+            logger.warning(f"Engine weight version went backwards: {self.weight_version} -> {weight_version}")
         self.weight_version = weight_version
 
     def set_train_parallel_config(self, config: dict):

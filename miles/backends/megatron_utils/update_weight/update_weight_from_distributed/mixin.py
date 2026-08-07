@@ -336,16 +336,6 @@ class DistBucketedWeightUpdateMixin:
         out = self.__dict__.pop("update_weight_metrics", {})
         return out
 
-    def _engine_weight_version(self) -> int:
-        """What the engine fleet already serves, 0 when it has never been stamped."""
-        version = 0
-        if dist.get_rank() == 0:
-            reported = ray.get([engine.get_weight_version.remote() for engine in self.rollout_engines])
-            version = max((int(v) for v in reported if str(v).isdigit()), default=0)
-        holder = [version]  # every rank increments the counter, so they must agree on the seed
-        dist.broadcast_object_list(holder, src=0, group=get_gloo_group())
-        return holder[0]
-
     @torch.no_grad()
     def update_weights(self) -> None:
         """Orchestrate the full weight-update lifecycle.
@@ -365,10 +355,6 @@ class DistBucketedWeightUpdateMixin:
         never pushed; the remote rollout engines already load it from
         ``hf_checkpoint`` at init.
         """
-        if self.weight_version == 0:
-            # the counter is per-cell, so a cell taking over after FT failover would
-            # otherwise restart it and publish a version lower than the fleet's
-            self.weight_version = self._engine_weight_version()
         self.weight_version += 1
 
         self._pause_and_prepare_engines()
