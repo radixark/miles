@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,8 @@ def fake_tools(tmp_path, monkeypatch):
     failing_path.write_text("")
     refused_path = tmp_path / "refused"
     refused_path.write_text("")
+    pods_path = tmp_path / "pods"
+    pods_path.write_text("")
 
     for binary in ("helm", "kubectl"):
         (bin_dir / binary).write_text(
@@ -36,12 +39,17 @@ def fake_tools(tmp_path, monkeypatch):
             "    $pattern*) exit 1 ;;\n"
             "  esac\n"
             f"done < {failing_path}\n"
+            f'if [ "{binary} $1 $2" = "kubectl get pods" ]; then\n'
+            f'  case "$command" in\n'
+            f"    *' -o name'*) cat {pods_path} ;;\n"
+            "  esac\n"
+            "fi\n"
             "exit 0\n"
         )
         (bin_dir / binary).chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
 
-    return dict(calls_path=calls_path, failing_path=failing_path, refused_path=refused_path)
+    return dict(calls_path=calls_path, failing_path=failing_path, refused_path=refused_path, pods_path=pods_path)
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess:
@@ -170,6 +178,37 @@ class TestInstall:
         first_upgrade = min(index for index, call in enumerate(calls) if call.startswith("helm upgrade"))
         assert first_can_i < first_upgrade
 
+    def test_it_waits_for_the_pod_with_a_bounded_timeout(self, fake_tools):
+        """An unbounded wait hangs a CI job forever when the image cannot be pulled."""
+        run_cli("install", "-n", "rl", "-r", "wb", "--skip-doctor", "--timeout", "42")
+
+        assert "kubectl rollout status statefulset/wb-miles-workbench -n rl --timeout=42s" in calls_of(fake_tools)
+
+    def test_the_wait_has_a_timeout_even_when_none_is_asked_for(self, fake_tools):
+        """The default matters more than the flag: almost nobody passes --timeout."""
+        run_cli("install", "-n", "rl", "-r", "wb", "--skip-doctor")
+
+        assert "kubectl rollout status statefulset/wb-miles-workbench -n rl --timeout=600s" in calls_of(fake_tools)
+
+    def test_a_pod_that_never_becomes_ready_fails_and_shows_why(self, fake_tools):
+        """Exiting zero on a pending pod sends the user to exec into a pod that is not there."""
+        fake_tools["failing_path"].write_text("kubectl rollout status")
+
+        result = run_cli("install", "-n", "rl", "-r", "wb", "--skip-doctor")
+        calls = calls_of(fake_tools)
+
+        assert result.returncode != 0
+        assert "was not ready within 600s" in result.stderr
+        assert "kubectl get pods -n rl" in calls
+        assert "kubectl describe statefulset wb-miles-workbench -n rl" in calls
+
+    def test_a_successful_install_prints_the_command_that_gets_a_shell(self, fake_tools):
+        """The install is only half the workflow; the next step must not need the README."""
+        result = run_cli("install", "-n", "rl", "-r", "wb", "--skip-doctor")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"{CLI_PATH} exec -n rl -r wb" in result.stdout
+
 
 class TestNamespaceOccupancy:
     def test_the_check_spans_the_kinds_that_kubectl_get_all_leaves_out(self, fake_tools):
@@ -189,6 +228,116 @@ class TestNamespaceOccupancy:
         assert result.returncode == 1
         assert "could not list secret" in result.stderr
         assert "helm upgrade" not in fake_tools["calls_path"].read_text()
+
+
+class TestUninstall:
+    def test_it_removes_the_release_and_keeps_the_namespace(self, fake_tools):
+        """The namespace usually predates the release and may hold a colleague's work."""
+        result = run_cli("uninstall", "-n", "rl", "-r", "wb")
+        calls = calls_of(fake_tools)
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "helm uninstall wb --namespace rl" in calls
+        assert not any("delete namespace" in call for call in calls)
+
+
+class TestCollectDiagnosis:
+    def test_it_writes_one_directory_holding_logs_describes_and_events(self, fake_tools, tmp_path):
+        """A support request is one directory to attach, not a list of kubectl commands to re-run by hand."""
+        fake_tools["pods_path"].write_text("pod/wb-0\npod/orchestrator-0\n")
+        output_dir = tmp_path / "out"
+
+        result = run_cli("collect-diagnosis", "-n", "rl", "-r", "wb", "--output-dir", str(output_dir))
+        written = Path(result.stdout.strip())
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert written.parent == output_dir
+        assert [path.name for path in output_dir.iterdir()] == [written.name]
+        assert {path.name for path in written.iterdir()} == {
+            "events.txt",
+            "wb-0.log",
+            "wb-0.previous.log",
+            "wb-0.describe.txt",
+            "orchestrator-0.log",
+            "orchestrator-0.previous.log",
+            "orchestrator-0.describe.txt",
+        }
+
+    def test_a_container_that_never_restarted_leaves_no_empty_previous_log(self, fake_tools, tmp_path):
+        """kubectl fails on --previous for a first-boot container, and an empty file reads as a lost log."""
+        fake_tools["pods_path"].write_text("pod/wb-0\n")
+        fake_tools["failing_path"].write_text("kubectl logs wb-0 -n rl --all-containers --previous")
+
+        result = run_cli("collect-diagnosis", "-n", "rl", "-r", "wb", "--output-dir", str(tmp_path))
+        written = Path(result.stdout.strip())
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (written / "wb-0.previous.log").exists() is False
+        assert (written / "wb-0.log").exists()
+
+    def test_a_restarted_container_keeps_the_log_that_explains_the_restart(self, fake_tools, tmp_path):
+        """The crash is in the previous container's log, not in the one the running container is writing."""
+        fake_tools["pods_path"].write_text("pod/wb-0\n")
+
+        result = run_cli("collect-diagnosis", "-n", "rl", "-r", "wb", "--output-dir", str(tmp_path))
+
+        assert (Path(result.stdout.strip()) / "wb-0.previous.log").exists()
+
+    def test_the_run_verdict_is_left_out_when_no_run_directory_is_named(self, fake_tools, tmp_path):
+        """Most diagnoses are of the workbench itself, where no orchestrator has ever written a verdict."""
+        fake_tools["pods_path"].write_text("pod/wb-0\n")
+
+        result = run_cli("collect-diagnosis", "-n", "rl", "-r", "wb", "--output-dir", str(tmp_path))
+
+        assert (Path(result.stdout.strip()) / "orchestrator.exit").exists() is False
+
+    def test_a_named_run_directory_contributes_its_verdict(self, fake_tools, tmp_path):
+        """Whether the orchestrator exited cleanly is the first question asked of any failed run."""
+        fake_tools["pods_path"].write_text("pod/wb-0\n")
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        (run_dir / "orchestrator.exit").write_text("1\n")
+
+        result = run_cli(
+            "collect-diagnosis", "-n", "rl", "-r", "wb", "--output-dir", str(tmp_path), "--run-dir", str(run_dir)
+        )
+
+        assert (Path(result.stdout.strip()) / "orchestrator.exit").read_text() == "1\n"
+
+    def test_an_unreadable_cluster_still_produces_a_directory(self, fake_tools, tmp_path):
+        """It is run when things are broken, so a failed pod listing must not cost the events and the verdict."""
+        fake_tools["failing_path"].write_text("kubectl get pods")
+
+        result = run_cli("collect-diagnosis", "-n", "rl", "-r", "wb", "--output-dir", str(tmp_path))
+        written = Path(result.stdout.strip())
+
+        assert result.returncode != 0
+        assert "could not list pods" in result.stderr
+        assert "pod listing in namespace rl" in result.stderr
+        assert {path.name for path in written.iterdir()} == {"events.txt"}
+
+    def test_pod_logs_cover_every_container_in_the_pod(self, fake_tools, tmp_path):
+        """The orchestrator pod runs sidecars, and the default single-container log would silently drop them."""
+        fake_tools["pods_path"].write_text("pod/wb-0\n")
+
+        run_cli("collect-diagnosis", "-n", "rl", "-r", "wb", "--output-dir", str(tmp_path))
+        calls = calls_of(fake_tools)
+
+        assert "kubectl logs wb-0 -n rl --all-containers" in calls
+        assert "kubectl logs wb-0 -n rl --all-containers --previous" in calls
+
+    def test_a_failed_collection_step_is_reported_and_fails_the_run(self, fake_tools, tmp_path):
+        """A caller that branches on the exit code must not read a half-collected directory as a whole one."""
+        fake_tools["pods_path"].write_text("pod/wb-0\n")
+        fake_tools["failing_path"].write_text("kubectl logs wb-0 -n rl --all-containers\nkubectl get events")
+
+        result = run_cli("collect-diagnosis", "-n", "rl", "-r", "wb", "--output-dir", str(tmp_path))
+        written = Path(result.stdout.strip())
+
+        assert result.returncode != 0
+        assert "logs of wb-0" in result.stderr
+        assert "events" in result.stderr
+        assert {path.name for path in written.iterdir()} == {"events.txt", "wb-0.log", "wb-0.describe.txt"}
 
 
 class TestDryRun:
@@ -309,3 +458,15 @@ class TestCli:
         }
 
         assert imports <= set(sys.stdlib_module_names) | {"__future__"}
+
+    def test_it_offers_exactly_these_subcommands(self):
+        """The subcommand set is the cli's whole contract with a runbook, so a rename must be deliberate."""
+        result = subprocess.run([str(CLI_PATH), "--help"], capture_output=True, text=True)
+
+        assert result.returncode == 0, result.stderr
+        assert set(result.stdout.split("{", 1)[1].split("}", 1)[0].split(",")) == {
+            "install",
+            "exec",
+            "uninstall",
+            "collect-diagnosis",
+        }

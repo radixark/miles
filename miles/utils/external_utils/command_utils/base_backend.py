@@ -49,11 +49,17 @@ class BaseCommandBackend(ABC):
     def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None: ...
 
     @abstractmethod
-    def exec_command_gpu(self, cmd: str, capture_output: bool = False) -> str | None: ...
+    def exec_command_gpu(
+        self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
+    ) -> str | None: ...
 
     @abstractmethod
     def exec_command_multi_node(
-        self, cmd: str, capture_output: bool = False, num_nodes: int | None = None
+        self,
+        cmd: str,
+        capture_output: bool = False,
+        num_nodes: int | None = None,
+        num_gpus_per_node: int | None = None,
     ) -> list[str | None]: ...
 
 
@@ -68,9 +74,11 @@ def use_backend(backend: BaseCommandBackend) -> None:
 def active_backend() -> BaseCommandBackend:
     global _active_backend
     if _active_backend is None:
-        from miles.utils.external_utils.command_utils.ray_backend import RayCommandBackend
+        from miles.utils.external_utils.command_utils import install_cluster_backend
+        from miles.utils.external_utils.command_utils.env_config import config_from_env
 
-        _active_backend = RayCommandBackend()
+        install_cluster_backend(config_from_env())
+        assert _active_backend is not None, "installing a backend is what makes one active"
     return _active_backend
 
 
@@ -78,9 +86,13 @@ def exec_command_cpu(cmd: str, capture_output: bool = False) -> str | None:
     return active_backend().exec_command_cpu(cmd, capture_output=capture_output)
 
 
-def exec_command_gpu(cmd: str, capture_output: bool = False) -> str | None:
-    return active_backend().exec_command_gpu(cmd, capture_output=capture_output)
+def exec_command_gpu(cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None) -> str | None:
+    return active_backend().exec_command_gpu(cmd, capture_output=capture_output, num_gpus_per_node=num_gpus_per_node)
 
 
-def exec_command_multi_node(cmd: str, capture_output: bool = False, num_nodes: int | None = None) -> list[str | None]:
-    return active_backend().exec_command_multi_node(cmd, capture_output=capture_output, num_nodes=num_nodes)
+def exec_command_multi_node(
+    cmd: str, capture_output: bool = False, num_nodes: int | None = None, num_gpus_per_node: int | None = None
+) -> list[str | None]:
+    return active_backend().exec_command_multi_node(
+        cmd, capture_output=capture_output, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node
+    )

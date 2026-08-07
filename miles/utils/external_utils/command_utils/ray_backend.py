@@ -56,11 +56,17 @@ class RayCommandBackend(BaseCommandBackend):
     def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None:
         return run_shell_command(cmd, capture_output=capture_output)
 
-    def exec_command_gpu(self, cmd: str, capture_output: bool = False) -> str | None:
+    def exec_command_gpu(
+        self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
+    ) -> str | None:
         return run_shell_command(cmd, capture_output=capture_output)
 
     def exec_command_multi_node(
-        self, cmd: str, capture_output: bool = False, num_nodes: int | None = None
+        self,
+        cmd: str,
+        capture_output: bool = False,
+        num_nodes: int | None = None,
+        num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
         return exec_command_all_ray_nodes(cmd, capture_output=capture_output, num_nodes=num_nodes)
 

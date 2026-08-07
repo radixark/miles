@@ -1,5 +1,6 @@
 import ast
 import inspect
+import re
 import typing
 from pathlib import Path
 
@@ -11,12 +12,30 @@ from miles.utils.typer_utils import dataclass_cli
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FRAMEWORK_ROOT = REPO_ROOT / "miles"
 REPLACEABLE_PACKAGE = "miles.utils.external_utils"
+RUNBOOK_DOC = REPO_ROOT / "docs" / "developer" / "kubernetes-e2e.md"
+
+KUBERNETES_ONLY_OPTIONS = (
+    "--cluster-backend",
+    "--namespace",
+    "--run-id",
+    "--infra-values",
+    "--shared-root",
+    "--stage-to-local",
+    "--node-local-root",
+    "--force",
+    "--ci-run",
+)
+
+_BASH_BLOCK = re.compile(r"```bash\n(.*?)```", re.DOTALL)
+_FLAG = re.compile(r"(?<![\w-])--[a-z0-9][a-z0-9-]*")
 
 _TOOLING_DIRS = (
     FRAMEWORK_ROOT / "utils" / "external_utils",
     FRAMEWORK_ROOT / "utils" / "debug_utils",
     FRAMEWORK_ROOT / "utils" / "test_utils",
 )
+
+TRAIN_ONLY_SUBCOMMAND = "train"
 
 ORCHESTRATION_SCRIPTS = ("train.py", "train_async.py", "train_multi_lora_async.py")
 
@@ -73,6 +92,12 @@ def launcher_options() -> set[str]:
         if typing.get_args(parameter.annotation)[0] is bool:
             options.add("--no-" + flag.removeprefix("--"))
     return options
+
+
+def documented_launch_flags(doc: Path) -> set[str]:
+    blocks = [match.group(1) for match in _BASH_BLOCK.finditer(doc.read_text()) if ".py train" in match.group(1)]
+    assert blocks, f"{doc} documents no launch command"
+    return {flag for block in blocks for flag in _FLAG.findall(block)}
 
 
 def _framework_modules() -> list[Path]:
@@ -187,3 +212,41 @@ class TestImportDirection:
         launcher = FRAMEWORK_ROOT / "utils" / "external_utils" / "command_utils" / "helm_backend" / "launcher.py"
 
         assert any(module.startswith("miles.utils.workers") for module in _imported_modules(launcher))
+
+
+class TestLaunchScriptContract:
+    @pytest.mark.parametrize("script", sorted((REPO_ROOT / "scripts").glob("run_*.py")), ids=lambda path: path.name)
+    def test_a_train_subcommand_only_trains(self, script):
+        """The Kubernetes backend runs this subcommand in a pod, where preparation has already happened."""
+        tree = ast.parse(script.read_text(), filename=str(script))
+        train = next(
+            (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == TRAIN_ONLY_SUBCOMMAND),
+            None,
+        )
+        if train is None:
+            pytest.skip(f"{script.name} has no {TRAIN_ONLY_SUBCOMMAND} subcommand, so it stays Ray only")
+
+        called = {
+            node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            for node in ast.walk(train)
+            if isinstance(node, ast.Call)
+        }
+        prepared = {name for name in called if "prepare" in name or "download" in name or "convert" in name}
+
+        assert prepared == set(), f"{script.name} prepares data inside {TRAIN_ONLY_SUBCOMMAND}: {prepared}"
+
+
+class TestRunbookLaunchCommand:
+    def test_every_flag_of_the_documented_launch_command_is_a_real_launcher_option(self):
+        """The runbook is meant to be copy-pasted, and a renamed field would make it fail at argument parsing."""
+        invented = documented_launch_flags(RUNBOOK_DOC) - launcher_options()
+
+        assert invented == set(), invented
+
+    def test_the_runbook_names_every_kubernetes_only_option(self):
+        """These options exist only for this backend, so the runbook is the one page that has to carry them."""
+        options = launcher_options()
+        runbook = RUNBOOK_DOC.read_text()
+
+        assert [flag for flag in KUBERNETES_ONLY_OPTIONS if flag not in options] == []
+        assert [flag for flag in KUBERNETES_ONLY_OPTIONS if flag not in runbook] == []

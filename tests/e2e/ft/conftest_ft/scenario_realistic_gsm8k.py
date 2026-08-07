@@ -51,10 +51,17 @@ def run_ci(
     train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
     train_args += f"--save-debug-event-data {dump_dir}/events "
 
-    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval, cell_type="actor")
+    config = U.default_config()
+    injector = spawn_fault_injector(
+        base_url=U.api_server_url(config, port=API_SERVER_PORT),
+        seed=seed,
+        mean_interval_seconds=mean_interval,
+        cell_type="actor",
+    )
 
     try:
         U.execute_train(
+            config=config,
             train_args=train_args,
             num_gpus_per_node=_TRAIN_GPUS + _ROLLOUT_GPUS,
             megatron_model_type=_MODEL_TYPE,

@@ -16,7 +16,7 @@ OS, same image, same paths as the training pods.
 - Every subcommand takes `-n/--namespace` and `-r/--release`.
 - `install` creates the namespace only if it is missing, checks that your identity
   may install the chart into an otherwise empty namespace, vendors the library
-  chart, then runs `helm upgrade --install`.
+  chart, runs `helm upgrade --install`, then waits for the pod to be Ready.
 
 ```bash
 ./charts/miles-workbench/cli.py install -n <ns> -r <release> --image-tag <tag> -f my-cluster.yaml
@@ -40,10 +40,24 @@ Run any command in it instead:
 ./charts/miles-workbench/cli.py exec -n <ns> -r <release> -- python -c 'print(1)'
 ```
 
+Collect pod logs, describes and events into one directory:
+
+```bash
+./charts/miles-workbench/cli.py collect-diagnosis -n <ns> -r <release> --output-dir . --run-dir <run state dir>
+```
+
+Remove the release, keeping the namespace:
+
+```bash
+./charts/miles-workbench/cli.py uninstall -n <ns> -r <release>
+```
+
 | Subcommand | Extra flags |
 | --- | --- |
-| `install` | `--dry-run`, `--image-tag`, `-f/--values` (repeatable), `--set` (repeatable), `--skip-doctor`, `--no-rbac`, `--no-lws` |
+| `install` | `--dry-run`, `--image-tag`, `-f/--values` (repeatable), `--set` (repeatable), `--skip-doctor`, `--timeout` (seconds, default 600), `--no-rbac`, `--no-lws` |
 | `exec` | trailing command, `bash` by default |
+| `collect-diagnosis` | `--output-dir` (default the working directory), `--run-dir` |
+| `uninstall` | none |
 
 ## Values
 

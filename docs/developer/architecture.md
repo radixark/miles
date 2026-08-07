@@ -83,6 +83,14 @@ Three invariants hold the split up:
   `helm_backend/values.py` and the pod reads labels and hostnames back through `helm/`, both
   against the same constants, so the two halves cannot drift.
 
+A served worker's environment is computed **in its own pod**, not at render time: the serve
+command carries `--env-var-fn`, and `serve.py` evaluates the spec's `env_var` against the rank
+it actually is before exec'ing the server. A values entry describes a whole pool, so anything
+per-cell or per-rank — a disk-offload directory, for instance — would otherwise be baked to one
+value and shared by every cell. The chart's container env therefore carries only run-level
+static settings (`run.env`) and the environment of command-launched pools, which is checked at
+render time to be independent of cell and rank.
+
 `helm/builder.py :: compute_capability` is the single place that joins the two: it takes the
 chart's default label keys and the run's specs, and returns the `KubernetesBackendCapability`
 every process in the release is answered by. Describing a different deployment layer means

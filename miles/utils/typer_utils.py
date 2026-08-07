@@ -9,6 +9,8 @@ import typer
 
 _F = TypeVar("_F", bound=Callable[..., object])
 
+SCRIPT_ENV_VAR_PREFIX = "MILES_SCRIPT_"
+
 _post_init_hooks: list[Callable[[object], None]] = []
 
 
@@ -24,14 +26,14 @@ def dataclass_cli(func: _F) -> _F: ...
 def dataclass_cli(
     func: None = None,
     *,
-    env_var_prefix: str = "MILES_SCRIPT_",
+    env_var_prefix: str = SCRIPT_ENV_VAR_PREFIX,
 ) -> Callable[[_F], _F]: ...
 
 
 def dataclass_cli(
     func: _F | None = None,
     *,
-    env_var_prefix: str = "MILES_SCRIPT_",
+    env_var_prefix: str = SCRIPT_ENV_VAR_PREFIX,
 ) -> _F | Callable[[_F], _F]:
     """Turn a function whose first param is a dataclass into a typer-compatible CLI.
 
