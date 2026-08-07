@@ -52,6 +52,7 @@ class MultiLoRAAsyncDataSource(DataSource):
                 logger.info(f"Created data source for adapter '{name}'")
                 # Post-filter dataset length; the controller derives num_step
                 # from num_epoch for adapters that didn't set it.
+                assert source.dataset is not None, "multi-LoRA rollout requires a global dataset"
                 ray.get(get_multi_lora_controller().resolve_num_step.remote(name, len(source.dataset)))
         self.update_queue(set(adapters))
 
