@@ -30,6 +30,24 @@ from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 
 logger = logging.getLogger(__name__)
 
+
+def _log_nonidentical_replay_acceptance(
+    *,
+    selector: str,
+    session_version: str,
+    session_id: str,
+    message_indices: tuple[int, ...],
+) -> None:
+    if message_indices:
+        logger.info(
+            "Accepted non-identical replay prefix: matcher=%s version=%s " "session_id=%s message_indices=%s",
+            selector,
+            session_version,
+            session_id,
+            message_indices,
+        )
+
+
 JSON_MEDIA_TYPE = "application/json"
 
 # Hop-by-hop / length-framing headers dropped from the upstream response so the
@@ -335,13 +353,24 @@ class SessionCore:
                 body, self.args, self.registry.tito_tokenizer
             )
 
-            request_messages = request_body.get("messages", [])
-            prompt_token_ids = session.prepare_pretokenized(
-                request_messages,
+            replayed_messages = request_body.get("messages", [])
+            prepared = session.plan_pretokenized(
+                replayed_messages,
                 tools=request_body.get("tools"),
                 tito_tokenizer=tito_tokenizer,
+                message_matcher=self.registry.message_matcher,
             )
+            session.apply_prepared_request(prepared)
+            request_messages = prepared.effective_messages
+            prompt_token_ids = prepared.prompt_token_ids
+            request_body["messages"] = request_messages
             request_body["input_ids"] = prompt_token_ids
+            _log_nonidentical_replay_acceptance(
+                selector=self.registry.message_matcher_selector,
+                session_version="v1",
+                session_id=session_id,
+                message_indices=prepared.accepted_replay_indices,
+            )
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
             proxy_body = json.dumps(request_body).encode()
@@ -391,6 +420,7 @@ class SessionCore:
                 status_code=result["status_code"],
                 request=request_body,
                 response=response,
+                replayed_messages=prepared.replayed_messages,
             )
             session.append_record(record)
         # --- lock released ---

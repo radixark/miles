@@ -8,8 +8,9 @@ concurrency, and tokenization live one layer up in ``session_state``.
 from dataclasses import dataclass, field
 from typing import Any
 
+from miles.rollout.session.message_matching import MessageMatchCache
 from miles.rollout.session.types import SessionRecord
-from miles.utils.chat_template_utils import message_matches
+from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, message_matches
 
 MAX_NODES = 1024
 
@@ -101,13 +102,19 @@ class SessionTree:
             parent.children.append(node)
         return node
 
-    def find_attach_point(self, request_messages: list[dict[str, Any]]) -> AttachPoint:
+    def find_attach_point(
+        self,
+        request_messages: list[dict[str, Any]],
+        *,
+        message_matcher: SessionMessageMatcher = message_matches,
+    ) -> AttachPoint:
         """Deepest node whose full path messages are a prefix of the request.
 
         A node is only entered after its parent's delta is fully consumed;
         ties on depth (twins whose deltas both match) go to the latest ``seq``.
         Pure judgment — never mutates the forest.
         """
+        match_cache = MessageMatchCache(message_matcher)
         best: TrajectoryNode | None = None
         best_matched = -1
         best_overlap = 0
@@ -120,7 +127,7 @@ class SessionTree:
             while (
                 i < len(delta)
                 and offset + i < len(request_messages)
-                and message_matches(delta[i], request_messages[offset + i])
+                and match_cache.matches(delta[i], request_messages[offset + i])
             ):
                 i += 1
             best_overlap = max(best_overlap, offset + i)

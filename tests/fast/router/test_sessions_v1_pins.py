@@ -126,7 +126,7 @@ class TestRollbackPins:
         assert resend.status_code == 200
         assert len(self._get(router_env.url, session_id)["records"]) == 2
 
-    def test_disallowed_append_role_400_with_rollback_side_effect(self, router_env):
+    def test_disallowed_append_role_400_preserves_state(self, router_env):
         session_id, a1, _ = self._two_turn_session(router_env)
 
         resp = _post_chat(
@@ -136,10 +136,8 @@ class TestRollbackPins:
         assert resp.status_code == 400
         error = resp.json()["error"]
         assert error.endswith("; the selected TITO fixed template does not support appending this role")
-        # Characterization: today the rollback mutates BEFORE the append-only
-        # check rejects, and the 400 leaves the rolled-back state behind. Any
-        # future rework of v1 must keep this order.
-        assert len(self._get(router_env.url, session_id)["records"]) == 1
+        # Planning validates TITO before applying the proposed rollback.
+        assert len(self._get(router_env.url, session_id)["records"]) == 2
 
     def test_collect_samples_after_rollback_single_sample(self, router_env):
         from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample

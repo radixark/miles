@@ -19,8 +19,10 @@ from typing import Any
 
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
+from miles.rollout.session.message_matching import build_authoritative_message_history
 from miles.rollout.session.types import SessionRecord
-from miles.rollout.session.v2.tree_trajectory import SessionTree, TrajectoryNode
+from miles.rollout.session.v2.tree_trajectory import AttachPoint, SessionTree, TrajectoryNode
+from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 logger = logging.getLogger(__name__)
@@ -54,10 +56,18 @@ class SessionStateV2:
         return self.active_leaf.token_ids if self.active_leaf is not None else []
 
 
-def position_for_request(state: SessionStateV2, request_messages: list[dict[str, Any]]) -> None:
-    """Move the view (``active_leaf``) to the attach point for *request_messages*."""
-    attach = state.tree.find_attach_point(request_messages)
+@dataclass(frozen=True)
+class PreparedTreeRequest:
+    """Pure v2 attach plan, ready to apply after TITO succeeds."""
 
+    attach: AttachPoint
+    effective_messages: list[dict[str, Any]]
+    replayed_messages: list[dict[str, Any]] | None
+    accepted_replay_indices: tuple[int, ...]
+    prompt_token_ids: list[int]
+
+
+def _validate_attach_point(attach: AttachPoint) -> None:
     if attach.node is not None and attach.node.truncated:
         raise TruncatedGenerationError(
             "truncated generation cannot be extended: the matched node ended with "
@@ -65,17 +75,102 @@ def position_for_request(state: SessionStateV2, request_messages: list[dict[str,
             "branch before the cut instead"
         )
 
+
+def _apply_attach_point(
+    state: SessionStateV2,
+    attach: AttachPoint,
+    *,
+    request_message_count: int,
+) -> None:
     if attach.node is not state.active_leaf:
         logger.info(
             "Branching: request(%d msgs) attaches at node seq=%s "
             "(matched %d msgs, best overlap %d), tree has %d nodes",
-            len(request_messages),
+            request_message_count,
             attach.node.seq if attach.node is not None else "<new root>",
             attach.matched_messages,
             attach.best_overlap,
             len(state.tree.nodes),
         )
     state.active_leaf = attach.node
+
+
+def position_for_request(
+    state: SessionStateV2,
+    request_messages: list[dict[str, Any]],
+    *,
+    message_matcher: SessionMessageMatcher = message_matches,
+) -> None:
+    """Compatibility surface: find, validate, and apply an attach point."""
+    attach = state.tree.find_attach_point(
+        request_messages,
+        message_matcher=message_matcher,
+    )
+    _validate_attach_point(attach)
+    _apply_attach_point(
+        state,
+        attach,
+        request_message_count=len(request_messages),
+    )
+
+
+def plan_pretokenized_request(
+    state: SessionStateV2,
+    request_messages: list[dict[str, Any]],
+    *,
+    tools: list[dict[str, Any]] | None,
+    tito_tokenizer: TITOTokenizer,
+    message_matcher: SessionMessageMatcher = message_matches,
+) -> PreparedTreeRequest:
+    """Plan attach, authoritative history, and prompt tokens without mutation."""
+    attach = state.tree.find_attach_point(
+        request_messages,
+        message_matcher=message_matcher,
+    )
+    _validate_attach_point(attach)
+    stored_messages = attach.node.path_messages() if attach.node is not None else []
+    history = build_authoritative_message_history(
+        stored_messages,
+        request_messages,
+        reuse_prefix_len=attach.matched_messages,
+    )
+    if attach.node is None:
+        prompt_token_ids = tito_tokenizer.apply_chat_template(
+            history.effective_messages,
+            tools=tools,
+            add_generation_prompt=True,
+            tokenize=True,
+        )
+    else:
+        _validate_suffix_roles(
+            history.effective_messages[attach.matched_messages :],
+            tito_tokenizer,
+        )
+        prompt_token_ids = tito_tokenizer.merge_tokens(
+            old_messages=history.effective_messages[: attach.matched_messages],
+            new_messages=history.effective_messages,
+            pretokenized_token_ids=attach.node.token_ids,
+            tools=tools,
+        )
+    return PreparedTreeRequest(
+        attach=attach,
+        effective_messages=history.effective_messages,
+        replayed_messages=history.replayed_messages,
+        accepted_replay_indices=history.accepted_replay_indices,
+        prompt_token_ids=prompt_token_ids,
+    )
+
+
+def apply_prepared_request(
+    state: SessionStateV2,
+    prepared: PreparedTreeRequest,
+) -> None:
+    """Apply a fully validated attach plan without further fallible work."""
+    _apply_attach_point(
+        state,
+        prepared.attach,
+        request_message_count=len(prepared.effective_messages),
+    )
 
 
 def prepare_pretokenized(

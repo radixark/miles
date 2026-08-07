@@ -14,11 +14,12 @@ try:
     from enum import StrEnum
 except ImportError:
     from backports.strenum import StrEnum
+
 from pathlib import Path
 from typing import Any
 
 from miles.utils.chat_template_utils import deepseek, template
-from miles.utils.chat_template_utils.template import assert_messages_append_only_with_allowed_role
+from miles.utils.chat_template_utils.message_matcher_hub import assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 logger = logging.getLogger(__name__)

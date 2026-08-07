@@ -14,6 +14,7 @@ from miles.rollout.session.core import SessionCore
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.utils.chat_template_utils import get_tito_tokenizer
+from miles.utils.chat_template_utils.message_matcher_hub import resolve_session_message_matcher
 from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,17 @@ def setup_session_routes(app, backend, args):
         return
 
     session_server_instance_id = getattr(args, "session_server_instance_id", None)
+    message_matcher_selector = getattr(args, "session_message_matcher", "strict")
+    message_matcher = resolve_session_message_matcher(message_matcher_selector)
+    matcher_name = (
+        f"{getattr(message_matcher, '__module__', '<unknown>')}."
+        f"{getattr(message_matcher, '__qualname__', type(message_matcher).__name__)}"
+    )
+    logger.info(
+        "[session] Using message matcher selector=%r callable=%s",
+        message_matcher_selector,
+        matcher_name,
+    )
 
     tokenizer = load_tokenizer(
         hf_checkpoint, chat_template_path=getattr(args, "chat_template_path", None), trust_remote_code=True
@@ -42,10 +54,22 @@ def setup_session_routes(app, backend, args):
         from miles.rollout.session.v2.core import SessionCoreV2
         from miles.rollout.session.v2.session_state import SessionRegistryV2
 
-        registry = SessionRegistryV2(args, tokenizer, tito_tokenizer=tito_tokenizer)
+        registry = SessionRegistryV2(
+            args,
+            tokenizer,
+            tito_tokenizer=tito_tokenizer,
+            message_matcher=message_matcher,
+            message_matcher_selector=message_matcher_selector,
+        )
         core = SessionCoreV2(backend, registry, args, session_server_instance_id)
     else:
-        registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
+        registry = SessionRegistry(
+            args,
+            tokenizer,
+            tito_tokenizer=tito_tokenizer,
+            message_matcher=message_matcher,
+            message_matcher_selector=message_matcher_selector,
+        )
         core = SessionCore(backend, registry, args, session_server_instance_id)
 
     @app.exception_handler(SessionError)
