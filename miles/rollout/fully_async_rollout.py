@@ -30,7 +30,6 @@ from miles.rollout.base_types import (
     RolloutFnOutput,
     RolloutFnTrainOutput,
 )
-from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.fully_async_data_buffer import (
     DataBuffer,
     DataBufferConstructorInput,
@@ -38,8 +37,6 @@ from miles.rollout.fully_async_data_buffer import (
     DefaultDataBuffer,
     Group,
     first_sample,
-    group_oldest_weight_version,
-    iter_samples,
 )
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
@@ -86,9 +83,9 @@ class FullyAsyncRolloutFn:
     """Continuous rollout generation decoupled from training steps.
 
     The worker runs as a long-lived task on the shared rollout event loop, created
-    lazily on the first train call. Groups that never reach training — aborted,
-    beyond ``--max-weight-staleness``, or evicted by the data buffer — go to
-    ``--async-unused-samples-handler``.
+    lazily on the first train call. Which finished groups reach training is the
+    data buffer's call (see ``fully_async_data_buffer.py``); this class assembles
+    what it hands back into a batch.
     """
 
     def __init__(self, input: RolloutFnConstructorInput):
@@ -102,7 +99,6 @@ class FullyAsyncRolloutFn:
         self._handle_unused = (
             self._recycle if input.args.async_unused_samples_handler == "retry" else (lambda prompt_group: None)
         )
-        self._dynamic_filter = load_function(input.args.dynamic_sampling_filter_path)
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._weight_version = _CachedWeightVersion()
         self._worker: asyncio.Task | None = None
@@ -181,8 +177,8 @@ class FullyAsyncRolloutFn:
 
     # -------------------------- consumer --------------------------
 
-    async def _next_group(self) -> DataBufferInput:
-        queue_get = asyncio.create_task(self._output.get())
+    async def _next_group(self, current_version: int | None) -> DataBufferInput:
+        queue_get = asyncio.create_task(self._output.get(current_version))
         try:
             while True:
                 done, _ = await asyncio.wait(
@@ -208,53 +204,21 @@ class FullyAsyncRolloutFn:
 
         target_data_size = args.rollout_batch_size
         data: list[Group] = []
-        aborted_groups_filtered = 0
-        stale_groups_filtered = 0
-        staleness_values: list[int] = []
-        metric_gatherer = MetricGatherer()
         do_print = True
 
         while len(data) < target_data_size:
-            entry = await self._next_group()
-            group = entry.group
-            assert len(group) == args.n_samples_per_prompt
-
-            # Corner case (weight updates retract rather than abort): the generate
-            # function gave up on the group, e.g. an agentic collect timeout.
-            if any(s.status == Sample.Status.ABORTED for s in iter_samples(group)):
-                self._handle_unused(entry.prompt_group)
-                aborted_groups_filtered += 1
-                continue
-
-            oldest = group_oldest_weight_version(group)
-            current = await self._weight_version.get(args)
-            if oldest is not None and current is not None:
-                staleness = current - oldest
-                staleness_values.append(staleness)
-                if args.max_weight_staleness is not None and staleness > args.max_weight_staleness:
-                    self._handle_unused(entry.prompt_group)
-                    stale_groups_filtered += 1
-                    logger.info(
-                        f"Filtered stale group (oldest_version={oldest}, current={current}, "
-                        f"staleness={staleness} > max={args.max_weight_staleness})"
-                    )
-                    continue
-
-            filter_output = call_dynamic_filter(self._dynamic_filter, args, group)
-            if not filter_output.keep:
-                # Dropped, not recycled: no usable gradient signal.
-                metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
-                continue
+            entry = await self._next_group(await self._weight_version.get(args))
+            assert len(entry.group) == args.n_samples_per_prompt
 
             if do_print:
-                sample = first_sample(group)
+                sample = first_sample(entry.group)
                 logger.info(
                     f"First rollout sample: {[str(sample.prompt) + sample.response]}, "
                     f"label: {sample.label}, reward: {sample.reward}"
                 )
                 do_print = False
 
-            data.append(group)
+            data.append(entry.group)
 
         sample = first_sample(data[-1])
         logger.info(
@@ -267,17 +231,7 @@ class FullyAsyncRolloutFn:
         if self._sample_filter is not None:
             self._sample_filter(args, data)
 
-        metrics = {
-            "rollout/fully_async/aborted_groups_filtered": aborted_groups_filtered,
-            "rollout/fully_async/stale_groups_filtered": stale_groups_filtered,
-            **{f"rollout/fully_async/{key}": value for key, value in self._output.get_metrics().items()},
-            **metric_gatherer.collect(),
-        }
-        if staleness_values:
-            metrics["rollout/fully_async/avg_staleness"] = sum(staleness_values) / len(staleness_values)
-            metrics["rollout/fully_async/max_staleness"] = max(staleness_values)
-
-        return RolloutFnTrainOutput(samples=data, metrics=metrics)
+        return RolloutFnTrainOutput(samples=data, metrics=self._output.get_metrics())
 
     def _recycle(self, prompt_group: list[Sample]) -> None:
         for sample in prompt_group:

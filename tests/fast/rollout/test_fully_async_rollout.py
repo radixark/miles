@@ -357,22 +357,22 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     assert len(output.samples) == 1
 
 
+def reject_group_1(args, group, **kwargs):
+    keep = group[0].group_index != 1
+    return DynamicFilterOutput(keep=keep, reason=None if keep else "rejected")
+
+
 async def test_dynamic_filter_drops_group_without_recycling(monkeypatch):
     rejected = make_group(1)
     data_source = FakeDataSource(scripted=[rejected])
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
-
-    def reject_group_1(args, group, **kwargs):
-        keep = group[0].group_index != 1
-        return DynamicFilterOutput(keep=keep, reason=None if keep else "rejected")
-
-    fn._dynamic_filter = reject_group_1
+    args = make_args(rollout_batch_size=1, dynamic_sampling_filter_path=f"{__name__}.reject_group_1")
+    fn = make_fn(monkeypatch, args, data_source)
 
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
     assert len(output.samples) == 1
     assert output.samples[0][0].group_index != 1
-    # Unlike a recycle, a filtered group is not returned to the data source for re-sampling.
+    # The default "drop" handler discards it instead of returning it to the data source.
     assert data_source.recycled == []
     assert output.metrics["rollout/dynamic_filter/drop_rejected"] == 1
 
@@ -456,9 +456,9 @@ async def test_buffer_evicts_stalest_on_overflow():
 
     assert evicted == [oldest]
     metrics = buffer.get_metrics()
-    assert metrics["queue_size"] == 2
-    assert metrics["evicted_overflow_groups"] == 1
-    assert (await buffer.get()).group[0].group_index == 2
+    assert metrics["rollout/fully_async/queue_size"] == 2
+    assert metrics["rollout/fully_async/evicted_overflow_groups"] == 1
+    assert (await buffer.get(None)).group[0].group_index == 2
 
 
 async def test_buffer_overflow_tie_broken_by_summed_staleness():
@@ -486,20 +486,32 @@ async def test_buffer_threshold_evicts_all_over_staleness_first():
 
     assert evicted == [over_a, over_b]
     metrics = buffer.get_metrics()
-    assert metrics["evicted_stale_groups"] == 2
-    assert metrics["evicted_overflow_groups"] == 0
-    assert metrics["queue_size"] == 2
+    assert metrics["rollout/fully_async/evicted_stale_groups"] == 2
+    assert metrics["rollout/fully_async/evicted_overflow_groups"] == 0
+    assert metrics["rollout/fully_async/queue_size"] == 2
+
+
+async def test_buffer_get_skips_groups_stale_at_consumption_time():
+    """Both groups were fresh when buffered; only the version passed to get() decides."""
+    buffer, unused = make_buffer(max_staleness=2)
+    stale = make_group(1, weight_versions=["5"])
+    await put_group(buffer, stale, weight_version=5)
+    await put_group(buffer, make_group(2, weight_versions=["9"]), weight_version=9)
+
+    assert (await buffer.get(current_version=10)).group[0].group_index == 2
+    assert unused == [stale]
+    assert buffer.get_metrics()["rollout/fully_async/stale_groups_filtered"] == 1
 
 
 async def test_buffer_staleness_metrics():
     buffer, _ = make_buffer(max_groups=8)
     await put_group(buffer, make_group(1, weight_versions=["4"]))
-    assert "buffer_avg_staleness" not in buffer.get_metrics()  # engine version never seen
+    assert "rollout/fully_async/buffer_avg_staleness" not in buffer.get_metrics()  # engine version never seen
 
     await put_group(buffer, make_group(2, weight_versions=["8"]), weight_version=10)
     metrics = buffer.get_metrics()
-    assert metrics["buffer_avg_staleness"] == 4.0
-    assert metrics["buffer_max_staleness"] == 6
+    assert metrics["rollout/fully_async/buffer_avg_staleness"] == 4.0
+    assert metrics["rollout/fully_async/buffer_max_staleness"] == 6
 
 
 async def test_drain_reports_eviction_metrics(monkeypatch):
