@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import shlex
 import sys
 
@@ -95,24 +94,20 @@ class TestLoraTargetModules:
 
         assert sorted(targets) == ["k_proj", "q_proj", "v_proj"]
 
-    def test_targets_the_cli_cannot_spell_fall_back_to_auto_detection(self):
-        """GDN attention maps to names outside SGLang's CLI whitelist, and naming one anyway
-        makes the engine's own argument parser reject the whole launch command."""
+    def test_gdn_attention_targets_are_named_one_by_one(self):
+        """Qwen3.5 GDN adapters must reach the engine as the exact fused slices, not as the
+        auto-detecting shorthand that would cover every compatible module instead."""
         targets = self._parsed_lora_targets(["layers.*.self_attention.in_proj"])
 
-        assert set(targets) == {"all"}
+        assert sorted(targets) == ["in_proj_ba", "in_proj_qkvz"]
 
-    def test_the_widening_that_auto_detection_costs_is_announced(self, caplog):
-        """Auto-detection is not the requested set -- it covers every compatible module the
-        base model exposes -- so a run whose adapter is wider than --target-modules asked for
-        must be able to find out why from its own log."""
-        with caplog.at_level(logging.WARNING):
-            self._parsed_lora_targets(["layers.*.self_attention.in_proj"])
-
-        assert any("no SGLang command-line spelling" in record.message for record in caplog.records)
-
-    def test_a_target_the_lora_runtime_does_not_know_aborts_the_launch(self):
-        """An unmapped module name would otherwise widen to auto-detection, training adapters
-        on every module while the trainer fills none of them for that name."""
-        with pytest.raises(AssertionError, match="nor supported by its LoRA runtime"):
+    def test_an_unmapped_target_aborts_the_launch(self):
+        """A typo or an unmapped Megatron path must not reach the engine either."""
+        with pytest.raises(AssertionError, match="no spelling on SGLang's command line"):
             self._parsed_lora_targets(["layers.*.self_attention.linear_typo"])
+
+    def test_asking_for_every_module_is_still_honoured(self):
+        """The shorthand is legitimate when --target-modules is what asked for everything."""
+        targets = self._parsed_lora_targets(["all"])
+
+        assert set(targets) == {"all"}

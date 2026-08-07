@@ -5,7 +5,6 @@ import os
 import shlex
 import sys
 
-from sglang.srt.lora.utils import _KNOWN_LORA_TARGET_MODULES as KNOWN_LORA_TARGET_MODULES
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils.common import LORA_TARGET_ALL_MODULES, SUPPORTED_LORA_TARGET_MODULES
 
@@ -213,36 +212,21 @@ def _compute_server_args(
 
 
 def _compute_lora_target_modules(args) -> list[str]:
-    # The engine now parses a rendered command line, so a module name outside SGLang's CLI
-    # whitelist aborts the launch even though the LoRA runtime handles it. Inkling was the
-    # first checkpoint family to need the auto-detecting shorthand instead; GDN attention
-    # (Qwen3.5) needs it for the same reason, so ask for it whenever the mapped names
-    # cannot be spelled rather than naming each family.
+    # Only --target-modules asking for everything may produce the auto-detecting shorthand.
     if sglang_lora_target_all_sentinel(args):
         return [LORA_TARGET_ALL_MODULES]
 
     hf_modules = convert_target_modules_to_hf(args.target_modules)
     unspellable = sorted(set(hf_modules) - set(SUPPORTED_LORA_TARGET_MODULES))
-    if not unspellable:
-        return hf_modules
 
-    # Auto-detection targets every module the base model exposes, so it is only worth its
-    # cost for names the LoRA runtime really does support. Anything else is a typo or an
-    # unmapped Megatron path, which must keep aborting the launch instead of silently
-    # training adapters the trainer never fills.
-    unsupported = sorted(set(unspellable) - KNOWN_LORA_TARGET_MODULES)
-    assert not unsupported, (
-        f"LoRA target modules {unsupported} are neither spellable on SGLang's command line nor "
-        f"supported by its LoRA runtime; check --target-modules"
+    # Substituting the auto-detecting shorthand here would launch, but it is not the set that
+    # was asked for: SGLang then scans every compatible module the base model exposes, so the
+    # adapter covers modules the trainer never fills. A run that silently trains something
+    # other than what --target-modules named is worse than one that does not start, so refuse.
+    # Widening SGLang's command-line whitelist is the fix; this is only where it is detected.
+    assert not unspellable, (
+        f"LoRA target modules {unspellable} have no spelling on SGLang's command line "
+        f"(it accepts {sorted(SUPPORTED_LORA_TARGET_MODULES)}), so this launch cannot ask for "
+        f"exactly {sorted(hf_modules)}; check --target-modules"
     )
-
-    # Auto-detection is not the requested set: SGLang scans every compatible module the base
-    # model exposes, so asking for it widens the adapter beyond what --target-modules named.
-    # That is the price of launching at all here, but it is a real deviation from the user's
-    # request and must not be silent.
-    logger.warning(
-        f"LoRA targets {unspellable} have no SGLang command-line spelling, so the launch asks for "
-        f"'{LORA_TARGET_ALL_MODULES}' instead of {sorted(hf_modules)}. SGLang will allocate adapter "
-        f"buffers for every compatible module it finds, including ones the trainer never fills."
-    )
-    return [LORA_TARGET_ALL_MODULES]
+    return hf_modules
