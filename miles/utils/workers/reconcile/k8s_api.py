@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from typing import Any, Protocol
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.k8s_types import Pod, WatchFrame
 
 logger = logging.getLogger(__name__)
 
@@ -18,25 +19,28 @@ EVENT_TYPE_DELETED = "DELETED"
 EVENT_TYPE_BOOKMARK = "BOOKMARK"
 EVENT_TYPE_ERROR = "ERROR"
 
+POD_EVENT_TYPES = (EVENT_TYPE_ADDED, EVENT_TYPE_MODIFIED, EVENT_TYPE_DELETED)
+
 
 class PodListPage(FrozenStrictBaseModel):
-    pods: list[Any]
+    pods: list[Pod]
     resource_version: str
 
 
 class PodWatchEvent(FrozenStrictBaseModel):
     type: str
-    obj: Any
+    pod: Pod | None
     resource_version: str | None
     rejects_cursor: bool
 
     @classmethod
     def from_frame(cls, *, event_type: str, obj: Any) -> PodWatchEvent:
+        frame = WatchFrame.model_validate(obj)
         return cls(
             type=event_type,
-            obj=obj,
-            resource_version=_read_resource_version(obj),
-            rejects_cursor=event_type == EVENT_TYPE_ERROR and _status_rejects_cursor(obj),
+            pod=Pod.model_validate(obj) if event_type in POD_EVENT_TYPES else None,
+            resource_version=frame.metadata.resource_version,
+            rejects_cursor=event_type == EVENT_TYPE_ERROR and _frame_rejects_cursor(frame),
         )
 
 
@@ -87,16 +91,5 @@ def exception_rejects_cursor(exception: BaseException) -> bool:
     return getattr(exception, "status", None) in _CURSOR_REJECTED_CODES
 
 
-def _read_resource_version(obj: Any) -> str | None:
-    metadata = _field(obj, "metadata")
-    if isinstance(metadata, dict):
-        return metadata.get("resourceVersion")
-    return getattr(metadata, "resource_version", None)
-
-
-def _status_rejects_cursor(obj: Any) -> bool:
-    return _field(obj, "code") in _CURSOR_REJECTED_CODES or _field(obj, "reason") in _CURSOR_REJECTED_REASONS
-
-
-def _field(obj: Any, name: str) -> Any:
-    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+def _frame_rejects_cursor(frame: WatchFrame) -> bool:
+    return frame.code in _CURSOR_REJECTED_CODES or frame.reason in _CURSOR_REJECTED_REASONS
