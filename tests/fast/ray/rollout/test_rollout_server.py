@@ -212,10 +212,6 @@ class TestAddCellInitTiming:
             await srv.dispose()
 
 
-def _make_lock() -> ContextLock:
-    return ContextLock("InferenceController")
-
-
 class TestRemoveCell:
     @pytest.mark.asyncio
     async def test_removing_a_cell_detaches_it_from_every_view_derived_from_the_fleet(self, monkeypatch):
