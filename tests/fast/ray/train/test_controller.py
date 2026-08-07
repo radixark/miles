@@ -738,7 +738,7 @@ class TestHeartbeatMonitor:
             await _cell(group, 0).health_checker._check_fn()
 
     async def test_the_group_activeness_flag_reaches_every_cell_checker(self):
-        """Checkers pull activeness from the group, so one flag governs the whole fleet."""
+        """Checkers pull activeness from the group, so one flag governs the whole pool."""
         group = await _make_alive_controller(num_cells=2)
 
         group._health_checker_activeness.bump_active(False)

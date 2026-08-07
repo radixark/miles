@@ -180,7 +180,7 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> _AutoAdvancingClock:
 
 class TestWaitExpectedNumCells:
     async def test_waiting_keeps_polling_until_the_late_cells_are_observed(self, fake_clock: _AutoAdvancingClock):
-        """Training must not start against half a fleet, so the wait retries until the missing cells arrive."""
+        """Training must not start against half a pool, so the wait retries until the missing cells arrive."""
         group = _make_controller(num_cells=4, indep_dp=True)
         await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0))
 
@@ -199,7 +199,7 @@ class TestWaitExpectedNumCells:
     async def test_waiting_returns_immediately_when_every_cell_is_already_observed(
         self, fake_clock: _AutoAdvancingClock
     ):
-        """A complete fleet must not cost a single retry sleep."""
+        """A complete pool must not cost a single retry sleep."""
         group = _make_controller(num_cells=4, indep_dp=True)
         for cell_index in range(4):
             await group._reconcile(f"{_POOL_ID}-{cell_index}", _make_cell_info(cell_index))
