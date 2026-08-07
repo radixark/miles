@@ -378,10 +378,8 @@ class RolloutManager:
 
     def set_weight_version(self, weight_version: int):
         if self.weight_version is not None and weight_version < self.weight_version:
-            # a regression makes staleness negative, which admits the most off-policy groups
             message = f"Engine weight version went backwards: {self.weight_version} -> {weight_version}"
-            # only indep_dp can do this legitimately: the counter is per-cell, so a cell taking
-            # over after failover restarts it
+            # warning instead of assert when use indep_dp ft
             assert self.args.indep_dp, message
             logger.warning(message)
         self.weight_version = weight_version
