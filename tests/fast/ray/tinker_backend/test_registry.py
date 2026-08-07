@@ -1,0 +1,143 @@
+"""Tinker run lifecycle under fixed residency: PENDING -> READY -> RETIRING
+-> CLEANUP -> COMPLETED; readiness decoupled from serving; dirty-gradient
+pins; the client-set num_step bound."""
+
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-cpu")
+
+import pytest
+
+from miles.ray.tinker_backend.config import AdapterRunConfig
+from miles.ray.tinker_backend.registry import AdapterRegistry, AdapterState
+from miles.ray.tinker_backend.slot_pool import SlotPool
+
+
+class TestSlotPool:
+    def test_binds_lowest_free_and_queues_when_full(self):
+        pool = SlotPool(2)
+        assert pool.bind_immediately(("a", "r1")) == 0
+        assert pool.bind_immediately(("b", "r1")) == 1
+        assert pool.bind_immediately(("c", "r1")) is None  # fixed residency: queue, never evict
+        assert pool.release(("a", "r1")) == 0
+        assert pool.bind_immediately(("c", "r1")) == 0
+
+    def test_release_clears_pins(self):
+        pool = SlotPool(1)
+        pool.bind_immediately(("a", "r1"))
+        pool.pin(("a", "r1"), "dirty-grads")
+        assert pool.is_pinned(("a", "r1"), "dirty-grads")
+        pool.release(("a", "r1"))
+        pool.bind_immediately(("b", "r1"))
+        assert not pool.is_pinned(("b", "r1"), "dirty-grads")  # nothing leaks to the next tenant
+
+    def test_occupied_ids(self):
+        pool = SlotPool(3)
+        pool.bind_immediately(("a", "r1"))
+        pool.bind_immediately(("b", "r1"))
+        assert pool.occupied_slot_ids() == [0, 1]
+        assert pool.free_slot_ids() == {2}
+
+
+def config(**overrides) -> AdapterRunConfig:
+    return AdapterRunConfig(**overrides)
+
+
+def register_ready(registry, name):
+    registry.register(name, config())
+    registry.mark_ready([name])
+    return registry.find(name)
+
+
+class TestLifecycle:
+    def test_ready_comes_from_trainer_load_not_from_a_publish(self):
+        registry = AdapterRegistry(2)
+        registry.register("A", config())
+        assert registry.find("A").state is AdapterState.PENDING
+        # A weight push bumps serving_version but never promotes.
+        registry.record_weight_update(["A"])
+        assert registry.find("A").state is AdapterState.PENDING
+        assert registry.find("A").serving_version == 1
+        registry.mark_ready(["A"])
+        assert registry.find("A").state is AdapterState.READY
+
+    def test_unbound_pending_cannot_become_ready(self):
+        registry = AdapterRegistry(1)
+        registry.register("A", config())
+        registry.register("B", config())
+        assert registry.find("B").slot is None
+        registry.mark_ready(["B"])
+        assert registry.find("B").state is AdapterState.PENDING
+
+    def test_queue_drains_at_retirement(self):
+        registry = AdapterRegistry(1)
+        registry.register("A", config())
+        registry.register("B", config())
+        registry.deregister("A")
+        assert registry.retire_adapters() == ["A"]
+        assert registry.free_slot("A") == 0
+        assert registry.bootstrap_pending() == ["B"]
+        assert registry.find("B").slot == 0
+
+    def test_duplicate_and_invalid_names_rejected(self):
+        registry = AdapterRegistry(2)
+        registry.register("A", config())
+        with pytest.raises(ValueError, match="already registered"):
+            registry.register("A", config())
+        with pytest.raises(ValueError, match="invalid"):
+            registry.register("bad name", config())
+
+    def test_save_dir_conflict_rejected(self):
+        registry = AdapterRegistry(2)
+        registry.register("A", config(save="/tmp/x"))
+        with pytest.raises(ValueError, match="already used"):
+            registry.register("B", config(save="/tmp/x"))
+
+
+class TestClocksAndPins:
+    def test_step_clock_and_dirty_pin_lifecycle(self):
+        registry = AdapterRegistry(1)
+        record = register_ready(registry, "A")
+        registry.mark_accumulated(["A"])
+        assert registry.is_dirty("A")
+        assert registry.commit_tinker_step("A") == 1
+        assert not registry.is_dirty("A")  # step consumed the gradients
+        assert record.step == 1
+
+    def test_veto_path_clears_dirty_without_advancing(self):
+        registry = AdapterRegistry(1)
+        record = register_ready(registry, "A")
+        registry.mark_accumulated(["A"])
+        registry.clear_dirty("A")
+        assert not registry.is_dirty("A")
+        assert record.step == 0
+
+    def test_num_step_bound_deregisters(self):
+        registry = AdapterRegistry(1)
+        registry.register("A", config(num_step=2))
+        registry.mark_ready(["A"])
+        registry.commit_tinker_step("A")
+        assert registry.find("A").state is AdapterState.READY
+        registry.commit_tinker_step("A")
+        assert registry.records["A"].state is AdapterState.RETIRING
+
+    def test_set_step_repositions_baseline(self):
+        registry = AdapterRegistry(1)
+        registry.register("A", config(num_step=2))
+        registry.mark_ready(["A"])
+        registry.set_step("A", 10)  # load_state resume
+        registry.commit_tinker_step("A")
+        assert registry.records["A"].state is AdapterState.READY  # 11-10 < 2
+        registry.commit_tinker_step("A")
+        assert registry.records["A"].state is AdapterState.RETIRING
+
+
+class TestViews:
+    def test_snapshot_vocabulary(self):
+        registry = AdapterRegistry(2)
+        register_ready(registry, "A")
+        registry.register("B", config())
+        snap = registry.snapshot()
+        assert list(snap["ready"]) == ["A"] and list(snap["pending"]) == ["B"]
+        assert snap["ready"]["A"].registration_id
+        assert registry.ready_adapters()["A"].slot == 0
