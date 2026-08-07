@@ -16,6 +16,8 @@ import ray
 from miles.utils.workers.ray_worker_manager import _ACTOR_NAME, RayWorkerManager
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
 
+PLACEMENT_GROUP_READY_TIMEOUT = 120.0
+
 _PROBE_SOURCE = """
 import json, os, socket, sys, time
 
@@ -206,18 +208,16 @@ def placement_group_factory(ray_local_mode) -> Callable[..., Any]:
     def _make(*, num_bundles: int, first_gpu_id: int = 0):
         from miles.ray.placement_group import PlacementGroupInfo
 
-        # ray_local_mode only declares logical GPUs when it is the one to call ray.init. It
-        # joins an existing cluster under RAY_ADDRESS, and in a shard that runs many files in
-        # one process any earlier ray call auto-initializes a GPU-less cluster first. Either
-        # way a GPU-less cluster leaves pg.ready() waiting forever, which reads as the whole
-        # suite hanging rather than as a skip.
-        available_gpus = ray.cluster_resources().get("GPU", 0)
-        needed_gpus = 0.5 * num_bundles
-        if available_gpus < needed_gpus:
-            pytest.skip(f"placement group needs {needed_gpus} logical GPUs, cluster has {available_gpus}")
-
         pg = ray.util.placement_group([{"CPU": 0.4, "GPU": 0.5} for _ in range(num_bundles)], strategy="PACK")
-        ray.get(pg.ready())
+        # Bounded, because a cluster without the logical GPUs ray_local_mode declares leaves
+        # this pending forever, and a hung shard is far harder to read than a named failure.
+        try:
+            ray.get(pg.ready(), timeout=PLACEMENT_GROUP_READY_TIMEOUT)
+        except ray.exceptions.GetTimeoutError:
+            raise AssertionError(
+                f"placement group of {num_bundles} bundles never became ready; the cluster offers "
+                f"{ray.cluster_resources()} and each bundle needs a 0.5 GPU slot"
+            ) from None
         created.append(pg)
         return PlacementGroupInfo(
             pg=pg,

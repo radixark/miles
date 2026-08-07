@@ -34,13 +34,12 @@ def _args(tmp_path) -> Namespace:
     )
 
 
-def test_tracking_backend_end_to_end_local_ray(tmp_path):
-    ray = pytest.importorskip("ray")
+def test_tracking_backend_end_to_end_local_ray(tmp_path, ray_local_mode):
+    pytest.importorskip("ray")
     from miles.dashboard import backend, hooks
     from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
     from miles.utils.tracking_utils.tracking import log as tracking_log
 
-    ray.init(num_cpus=2, include_dashboard=False, ignore_reinit_error=True, logging_level="ERROR")
     saved_sinks = list(Timer().event_sinks)
     args = _args(tmp_path)
     try:
@@ -61,7 +60,6 @@ def test_tracking_backend_end_to_end_local_ray(tmp_path):
         finish_tracking()  # flushes sink + synchronous collector shutdown
     finally:
         Timer().event_sinks[:] = saved_sinks
-        ray.shutdown()
 
     store = MetricStore.load(tmp_path / "dashboard")
     assert store.meta.run_name == "wiring-e2e"
