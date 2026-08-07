@@ -1459,6 +1459,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "If not set, we will use the logprobs from the actor model."
                 ),
             )
+            parser.add_argument(
+                "--skip-actor-logprobs-forward",
+                action="store_true",
+                default=False,
+                help=(
+                    "Skip the actor's standalone forward-only log-probs pass before training and use the "
+                    "training forward's own detached log probs as the old-policy log probs, making the "
+                    "importance sampling ratio exactly 1. Only valid for strictly on-policy runs with "
+                    "exactly one optimizer step per rollout; incompatible with every feature that consumes "
+                    "the recomputed log probs (see the validation in this file)."
+                ),
+            )
             # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
             parser.add_argument(
                 "--use-tis",
@@ -3295,6 +3307,9 @@ def miles_validate_args(args):
             )
         args.global_batch_size = global_batch_size
 
+    if args.skip_actor_logprobs_forward:
+        validate_skip_actor_logprobs_forward(args)
+
     # Multi-LoRA adapters carry their own n_samples_per_prompt; the per-group
     # normalization path already skips std for singleton groups.
     if args.n_samples_per_prompt == 1 and not args.multi_lora:
@@ -3376,6 +3391,63 @@ def miles_validate_args(args):
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
     _maybe_apply_dumper_overrides(args)
+
+
+def validate_skip_actor_logprobs_forward(args) -> None:
+    """Reject every configuration that still needs the actor's forward-only log probs.
+
+    With the skip, the training forward's own detached log probs stand in for the
+    old-policy log probs, which is only exact when (a) the training weights are the
+    policy that generated the batch's single optimizer step and (b) nothing else
+    consumes the recomputed log probs.
+    """
+    assert args.train_backend == "megatron", "--skip-actor-logprobs-forward only supports --train-backend megatron"
+    assert (
+        not args.use_rollout_logprobs
+    ), "--skip-actor-logprobs-forward is redundant with --use-rollout-logprobs, which already skips the forward pass"
+    assert (
+        not args.use_tis
+    ), "--skip-actor-logprobs-forward is incompatible with --use-tis, which reads the recomputed log probs"
+    assert (
+        not args.get_mismatch_metrics
+    ), "--skip-actor-logprobs-forward is incompatible with --get-mismatch-metrics, whose metrics are the recomputed log probs"
+    assert (
+        not args.use_opd
+    ), "--skip-actor-logprobs-forward is incompatible with --use-opd, which reads the recomputed log probs as student log probs"
+    assert (
+        not args.keep_old_actor
+    ), "--skip-actor-logprobs-forward is incompatible with --keep-old-actor, whose old-actor log probs differ from the training forward"
+    assert (
+        not args.use_critic
+    ), "--skip-actor-logprobs-forward is incompatible with the critic, whose PP data sync uses the recomputed log probs"
+    assert (
+        args.kl_coef == 0
+    ), "--skip-actor-logprobs-forward requires --kl-coef 0; KL-in-reward reads the recomputed log probs"
+    assert (
+        not args.use_rollout_entropy
+    ), "--skip-actor-logprobs-forward is incompatible with --use-rollout-entropy, whose entropy comes from the skipped pass"
+    assert (
+        not args.true_on_policy_mode
+    ), "--skip-actor-logprobs-forward is incompatible with --true-on-policy-mode; use --use-rollout-logprobs there instead"
+    assert (
+        not args.log_correct_samples
+    ), "--skip-actor-logprobs-forward is incompatible with --log-correct-samples, which reads the recomputed log probs"
+    assert (
+        args.custom_megatron_before_log_prob_hook_path is None
+    ), "--skip-actor-logprobs-forward skips the actor log-probs pass the before-log-prob hook would run in"
+    assert (
+        args.dump_details is None
+    ), "--skip-actor-logprobs-forward removes the forward-only phase that --dump-details captures"
+    assert getattr(args, "attention_dropout", 0.0) == 0.0 and getattr(args, "hidden_dropout", 0.0) == 0.0, (
+        "--skip-actor-logprobs-forward requires dropout disabled; with dropout the training forward is "
+        "stochastic and cannot stand in for the old-policy log probs"
+    )
+    if args.global_batch_size is not None and not args.use_dynamic_global_batch_size:
+        num_steps = args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+        assert num_steps == 1, (
+            f"--skip-actor-logprobs-forward requires exactly one optimizer step per rollout, got {num_steps}; "
+            "the importance sampling ratio is only identically 1 for the first step after a rollout"
+        )
 
 
 def validate_async_off_policy_correction(args) -> None:

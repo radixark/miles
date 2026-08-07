@@ -464,6 +464,19 @@ class MegatronTrainRayActor(TrainRayActor):
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
 
+        if self.args.skip_actor_logprobs_forward:
+            if len(num_microbatches) != 1:
+                raise ValueError(
+                    f"--skip-actor-logprobs-forward requires exactly one optimizer step per rollout, "
+                    f"got {len(num_microbatches)} steps"
+                )
+            enabled_replays = [m.name for m in all_replay_managers if m.enabled]
+            if enabled_replays:
+                raise ValueError(
+                    f"--skip-actor-logprobs-forward cannot record replay data for {enabled_replays} "
+                    f"without the actor log-probs forward pass"
+                )
+
         for m in all_replay_managers:
             if self._use_rollout_replay(m):
                 fill_replay_data(
@@ -505,7 +518,9 @@ class MegatronTrainRayActor(TrainRayActor):
                         )
                     )
                 self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
-                if not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics:
+                if not self.args.skip_actor_logprobs_forward and (
+                    not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics
+                ):
                     for m in all_replay_managers:
                         if m.enabled:
                             if self._use_rollout_replay(m):

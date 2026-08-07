@@ -76,9 +76,10 @@ def policy_loss_function(
     Args:
         args: Configuration controlling advantage estimator, clipping thresholds,
             entropy/KL coefficients, and TIS settings.
-        batch: Mini-batch containing "advantages", "log_probs" (old policy),
-            "unconcat_tokens", "response_lengths", "total_lengths", "loss_masks",
-            and optionally "ref_log_probs" and "rollout_log_probs".
+        batch: Mini-batch containing "advantages", "log_probs" (old policy;
+            absent when `args.skip_actor_logprobs_forward`), "unconcat_tokens",
+            "response_lengths", "total_lengths", "loss_masks", and optionally
+            "ref_log_probs" and "rollout_log_probs".
         logits: Policy logits with shape `[1, T, V]`.
         sum_of_sample_mean: Reduction function that averages per-sample values.
 
@@ -91,7 +92,6 @@ def policy_loss_function(
     """
     parallel_state = get_parallel_state()
     advantages = torch.cat(batch["advantages"], dim=0)
-    old_log_probs = batch["rollout_log_probs"] if args.use_rollout_logprobs else batch["log_probs"]
 
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
@@ -110,6 +110,11 @@ def policy_loss_function(
     )
 
     log_probs = log_probs_and_entropy["log_probs"]
+    if args.skip_actor_logprobs_forward:
+        # Strictly on-policy single-step: the training forward itself is the old policy.
+        old_log_probs = [x.detach() for x in log_probs]
+    else:
+        old_log_probs = batch["rollout_log_probs"] if args.use_rollout_logprobs else batch["log_probs"]
     train_log_probs_list = log_probs
     old_log_probs_list = old_log_probs
 

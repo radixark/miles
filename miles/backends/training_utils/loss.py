@@ -3,7 +3,7 @@ from argparse import Namespace
 import torch
 from torch.utils.checkpoint import checkpoint
 
-from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
+from miles.backends.training_utils.cp_utils import get_local_response_loss_masks, get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
 from miles.backends.training_utils.loss_hub.losses import get_loss_function
@@ -28,7 +28,9 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     data-parallel group using masked statistics.
 
     Early returns if both `log_probs` and `values` are None (intermediate
-    pipeline stages).
+    pipeline stages), except when `args.skip_actor_logprobs_forward` left the
+    actor log probs uncomputed on purpose — the last pipeline stage then builds
+    the zero KL from the CP-local response loss masks instead.
 
     Args:
         args: Configuration specifying estimator type, KL coefficient,
@@ -47,11 +49,18 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
     total_lengths: list[int] = rollout_data.get("total_lengths")
     max_seq_lens: list[int] | None = rollout_data.get("max_seq_lens", None)
 
-    # return when not the last pp stage.
     if log_probs is None and values is None:
-        return
-
-    if args.kl_coef == 0 or not log_probs:
+        if not (args.skip_actor_logprobs_forward and get_parallel_state().is_pp_last_stage):
+            # not the last pp stage.
+            return
+        # The actor log-probs forward pass was intentionally skipped (the ratio is
+        # identically 1); build the zero KL on the CP-local response shapes the log
+        # probs would have had.
+        local_masks = get_local_response_loss_masks(
+            total_lengths, response_lengths, loss_masks, args.qkv_format, max_seq_lens
+        )
+        kl = [torch.zeros_like(mask, dtype=torch.float32) for mask in local_masks]
+    elif args.kl_coef == 0 or not log_probs:
         # when kl_coef is 0, we won't compute ref_log_prob
         xs = log_probs if log_probs is not None else values
         kl = [torch.zeros_like(x, dtype=torch.float32, device=x.device) for x in xs]

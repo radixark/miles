@@ -15,6 +15,7 @@ from miles.utils.arguments import (
     miles_validate_args,
     resolve_rollout_function_paths,
     validate_async_off_policy_correction,
+    validate_skip_actor_logprobs_forward,
 )
 from miles.utils.misc import function_registry
 
@@ -695,3 +696,64 @@ class TestValidateAsyncOffPolicyCorrection:
 
     def test_non_ppo_estimators_are_unaffected(self):
         validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))
+
+
+def _make_skip_actor_logprobs_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        train_backend="megatron",
+        use_rollout_logprobs=False,
+        use_tis=False,
+        get_mismatch_metrics=False,
+        use_opd=False,
+        keep_old_actor=False,
+        use_critic=False,
+        kl_coef=0,
+        use_rollout_entropy=False,
+        true_on_policy_mode=False,
+        log_correct_samples=False,
+        custom_megatron_before_log_prob_hook_path=None,
+        dump_details=None,
+        attention_dropout=0.0,
+        hidden_dropout=0.0,
+        global_batch_size=64,
+        use_dynamic_global_batch_size=False,
+        rollout_batch_size=8,
+        n_samples_per_prompt=8,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class TestValidateSkipActorLogprobsForward:
+    def test_strictly_on_policy_single_step_passes(self):
+        validate_skip_actor_logprobs_forward(_make_skip_actor_logprobs_args())
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            dict(train_backend="fsdp"),
+            dict(use_rollout_logprobs=True),
+            dict(use_tis=True),
+            dict(get_mismatch_metrics=True),
+            dict(use_opd=True),
+            dict(keep_old_actor=True),
+            dict(use_critic=True),
+            dict(kl_coef=0.05),
+            dict(use_rollout_entropy=True),
+            dict(true_on_policy_mode=True),
+            dict(log_correct_samples=True),
+            dict(custom_megatron_before_log_prob_hook_path="pkg.mod:hook"),
+            dict(dump_details="/tmp/dump"),
+            dict(attention_dropout=0.1),
+            dict(hidden_dropout=0.1),
+            dict(global_batch_size=32),  # 8 * 8 / 32 = 2 steps per rollout
+        ],
+    )
+    def test_consumers_of_recomputed_log_probs_are_rejected(self, overrides):
+        with pytest.raises(AssertionError):
+            validate_skip_actor_logprobs_forward(_make_skip_actor_logprobs_args(**overrides))
+
+    def test_dynamic_global_batch_size_defers_step_check_to_runtime(self):
+        validate_skip_actor_logprobs_forward(
+            _make_skip_actor_logprobs_args(global_batch_size=32, use_dynamic_global_batch_size=True)
+        )
