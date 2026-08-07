@@ -61,14 +61,14 @@ class TestEventLoggerAutoFillsMetadata:
         assert before <= ts <= after
 
     def test_source_auto_filled(self, tmp_path: Path) -> None:
-        source = TrainProcessIdentity(component="actor", cell_index=2, rank_within_cell=3)
+        source = TrainProcessIdentity(component="actor", cell_id="trainer-actor-2", rank_within_cell=3)
         logger = EventLogger(log_dir=tmp_path, source=source)
         logger.log(_EVENT_CLS, _EVENT_PARTIAL)
         logger.close()
 
         parsed = json.loads((tmp_path / "events.jsonl").read_text().strip())
         assert parsed["source"]["component"] == "actor"
-        assert parsed["source"]["cell_index"] == 2
+        assert parsed["source"]["cell_id"] == "trainer-actor-2"
         assert parsed["source"]["rank_within_cell"] == 3
 
 

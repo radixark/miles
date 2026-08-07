@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class WitnessDataMismatchIssue(FrozenStrictBaseModel):
     rollout_id: int
-    cell_index: int
+    cell_id: str
     description: str
     expected_witness_ids: list[int]
     actual_witness_ids: list[int]
@@ -26,7 +26,7 @@ class WitnessDataMismatchIssue(FrozenStrictBaseModel):
 
 class WitnessMissingSnapshotIssue(FrozenStrictBaseModel):
     rollout_id: int
-    cell_index: int
+    cell_id: str
     description: str
 
 
@@ -42,7 +42,7 @@ def check(events: list[Event]) -> list[WitnessIssue]:
     * TrainGroupStepEndEvent: after each train() step in TrainerController
 
     Check:
-    1. For each (rollout_id, cell_index),
+    1. For each (rollout_id, cell_id),
        if TrainGroupStepEndEvent claims the cell ends with TrainStepOutcome.NORMAL,
        then its WitnessSnapshotParamEvent should observe *EXACTLY* the training data in rollout_id=0~curr.
 
@@ -84,7 +84,7 @@ def _compute_zero_advantage_witness_ids(
     Unioned across cells: under indep_dp the per-cell weight snapshot reflects the
     GLOBAL (allreduced) gradient, so a zero-advantage sample contributes nothing
     and its witness is absent from EVERY cell — even cells that never owned it.
-    Keying per (rollout_id, cell_index) would let a cell excuse only its own shard,
+    Keying per (rollout_id, cell_id) would let a cell excuse only its own shard,
     falsely flagging peers' zero-advantage witnesses as missing.
 
     Snapshot checks excuse these ids cumulatively (see _zero_adv_excused_ids_at): a
@@ -141,29 +141,27 @@ def _find_mismatches(
     zero_adv_witness_ids_by_rollout: dict[int, set[int]],
 ) -> Iterator[WitnessIssue]:
     latest_attempt_witness_events = _filter_to_latest_attempt(
-        all_witness_events, group_key=lambda e: (e.rollout_id, e.source.cell_index)
+        all_witness_events, group_key=lambda e: (e.rollout_id, e.source.cell_id)
     )
 
     for step_event in all_step_events:
         rollout_id = step_event.rollout_id
 
-        for cell_index, cell_outcome in step_event.cell_outcomes.items():
+        for cell_id, cell_outcome in step_event.cell_outcomes.items():
             if cell_outcome == "error":
                 continue
             if not all(r == TrainStepOutcome.NORMAL for r in cell_outcome):
                 continue
 
             witness_events_of_cell = [
-                e
-                for e in latest_attempt_witness_events
-                if e.rollout_id == rollout_id and e.source.cell_index == cell_index
+                e for e in latest_attempt_witness_events if e.rollout_id == rollout_id and e.source.cell_id == cell_id
             ]
 
             if not witness_events_of_cell:
                 yield WitnessMissingSnapshotIssue(
                     rollout_id=rollout_id,
-                    cell_index=cell_index,
-                    description=f"Cell {cell_index} reported NORMAL for rollout {rollout_id} but no WitnessSnapshotParamEvent was found",
+                    cell_id=cell_id,
+                    description=f"Cell {cell_id} reported NORMAL for rollout {rollout_id} but no WitnessSnapshotParamEvent was found",
                 )
                 continue
 
@@ -178,7 +176,7 @@ def _find_mismatches(
                     event=event,
                     expected=expected_witness_ids_of_step.get(rollout_id, set()),
                     rollout_id=rollout_id,
-                    cell_index=cell_index,
+                    cell_id=cell_id,
                     zero_adv_excused_ids=zero_adv_excused_ids,
                 )
                 if issue is not None:
@@ -227,7 +225,7 @@ def _compare_snapshot(
     event: WitnessSnapshotParamEvent,
     expected: set[int],
     rollout_id: int,
-    cell_index: int,
+    cell_id: str,
     zero_adv_excused_ids: set[int],
 ) -> WitnessDataMismatchIssue | None:
     stale_set = set(event.stale_ids)
@@ -239,7 +237,7 @@ def _compare_snapshot(
 
     return WitnessDataMismatchIssue(
         rollout_id=rollout_id,
-        cell_index=cell_index,
+        cell_id=cell_id,
         description=(
             f"Witness data mismatch for instance {event.instance_id}: "
             f"missing={sorted(filtered_expected - filtered_actual)}, "

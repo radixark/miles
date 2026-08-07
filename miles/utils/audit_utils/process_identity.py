@@ -22,11 +22,11 @@ class RolloutExecutorProcessIdentity(_ProcessIdentityBase):
 
 class TrainProcessIdentity(_ProcessIdentityBase):
     component: Literal["actor", "critic"]
-    cell_index: NonNegativeInt
+    cell_id: str
     rank_within_cell: NonNegativeInt
 
     def to_name(self) -> str:
-        return f"{self.component}_cell{self.cell_index}_rank{self.rank_within_cell}"
+        return f"{self.component}_{self.cell_id}_rank{self.rank_within_cell}"
 
 
 ProcessIdentity = Annotated[

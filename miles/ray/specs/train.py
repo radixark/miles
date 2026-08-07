@@ -169,10 +169,10 @@ def _compute_spec_trainer(
             rank=ctx.worker_in_cell_index,
             indep_dp_store_addr=indep_dp_store_addr,
             role=role,
-            cell_index=ctx.cell_index,
+            cell_id=ctx.cell_id,
         ),
         concurrency_groups=TRAINER_CONCURRENCY_GROUPS,
-        meta=lambda ctx: dict(role=role, cell_index=ctx.cell_index),
+        meta=lambda ctx: dict(role=role),
     )
 
 
@@ -209,7 +209,7 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext) -> dict[str, str]:
             env_vars["TMS_INIT_ENABLE_DISK_BACKUP"] = "1"
             env_vars["TMS_DISK_BACKUP_CHUNK_MB"] = str(args.offload_train_disk_chunk_mb)
             env_vars["TMS_DISK_BACKUP_DIR"] = os.path.join(
-                args.offload_train_disk_dir, f"cell{ctx.cell_index}_rank{ctx.worker_in_cell_index}"
+                args.offload_train_disk_dir, f"{ctx.cell_id}_rank{ctx.worker_in_cell_index}"
             )
         else:
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"

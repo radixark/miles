@@ -57,7 +57,7 @@ class WitnessAllocateIdEvent(EventBase):
 class TrainGroupStepEndEvent(EventBase):
     type: Literal["train_group_step_end"] = "train_group_step_end"
     rollout_id: int
-    cell_outcomes: dict[int, Literal["error"] | list[TrainStepOutcome]]
+    cell_outcomes: dict[str, Literal["error"] | list[TrainStepOutcome]]
 
 
 class CellReconfigureEvent(EventBase):

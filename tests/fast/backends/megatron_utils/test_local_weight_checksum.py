@@ -237,7 +237,7 @@ class TestDumpLocalWeightChecksums:
         dump_local_weight_checksums(args=args, model=model, optimizer=optimizer)
 
     def test_dumps_when_enabled(self, tmp_path: Path) -> None:
-        source = TrainProcessIdentity(component="actor", cell_index=2, rank_within_cell=7)
+        source = TrainProcessIdentity(component="actor", cell_id="trainer-actor-2", rank_within_cell=7)
         event_logger = EventLogger(log_dir=tmp_path, source=source)
         set_event_logger(event_logger)
         try:
@@ -254,7 +254,7 @@ class TestDumpLocalWeightChecksums:
             events = read_events(tmp_path)
             checksum_events = [e for e in events if isinstance(e, TrainEngineLocalWeightChecksumEvent)]
             assert len(checksum_events) == 1
-            assert checksum_events[0].source.cell_index == 2
+            assert checksum_events[0].source.cell_id == "trainer-actor-2"
             assert checksum_events[0].source.rank_within_cell == 7
         finally:
             set_event_logger(None)

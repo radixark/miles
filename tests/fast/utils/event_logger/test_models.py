@@ -18,7 +18,7 @@ _event_adapter = TypeAdapter(Event)
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _FIXED_SOURCE = MainProcessIdentity()
-_TRAIN_SOURCE = TrainProcessIdentity(component="actor", cell_index=0, rank_within_cell=0)
+_TRAIN_SOURCE = TrainProcessIdentity(component="actor", cell_id="trainer-actor-0", rank_within_cell=0)
 
 
 class TestEventModelsDiscriminatedUnion:
@@ -48,7 +48,7 @@ class TestEventModelsDiscriminatedUnion:
             timestamp=_FIXED_TS,
             source=_FIXED_SOURCE,
             rollout_id=0,
-            cell_outcomes={0: [TrainStepOutcome.NORMAL]},
+            cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]},
         )
         p1 = _event_adapter.validate_json(e1.model_dump_json())
         p2 = _event_adapter.validate_json(e2.model_dump_json())
@@ -93,13 +93,13 @@ class TestTrainGroupStepEndEvent:
             timestamp=_FIXED_TS,
             source=_FIXED_SOURCE,
             rollout_id=3,
-            cell_outcomes={0: [TrainStepOutcome.NORMAL], 1: "error"},
+            cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL], "trainer-actor-1": "error"},
         )
         parsed = _event_adapter.validate_json(event.model_dump_json())
         assert isinstance(parsed, TrainGroupStepEndEvent)
         assert parsed.rollout_id == 3
-        assert parsed.cell_outcomes[0] == [TrainStepOutcome.NORMAL]
-        assert parsed.cell_outcomes[1] == "error"
+        assert parsed.cell_outcomes["trainer-actor-0"] == [TrainStepOutcome.NORMAL]
+        assert parsed.cell_outcomes["trainer-actor-1"] == "error"
 
 
 class TestCellReconfigureEvent:
@@ -190,7 +190,7 @@ class TestDiscriminatedUnionParsesAllEvents:
                 timestamp=_FIXED_TS,
                 source=_FIXED_SOURCE,
                 rollout_id=0,
-                cell_outcomes={0: [TrainStepOutcome.NORMAL]},
+                cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]},
             ),
             InferenceEngineWeightChecksumEvent(
                 timestamp=_FIXED_TS,

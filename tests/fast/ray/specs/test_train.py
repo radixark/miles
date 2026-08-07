@@ -189,9 +189,10 @@ class TestEnvironmentVariables:
         (spec,) = specs_trainer(args)
 
         directories = [
-            spec.env_var(_make_context(cell_index=1, worker_in_cell_index=i))["TMS_DISK_BACKUP_DIR"] for i in range(2)
+            spec.env_var(_make_context(cell_id="trainer-actor-1", worker_in_cell_index=i))["TMS_DISK_BACKUP_DIR"]
+            for i in range(2)
         ]
-        assert directories == ["/tmp/offload/cell1_rank0", "/tmp/offload/cell1_rank1"]
+        assert directories == ["/tmp/offload/trainer-actor-1_rank0", "/tmp/offload/trainer-actor-1_rank1"]
 
     def test_no_disk_directory_without_disk_offload(self):
         """The cpu backup path must not be told to write to disk."""

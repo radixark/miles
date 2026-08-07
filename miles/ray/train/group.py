@@ -239,7 +239,7 @@ class TrainerController(NodeProbeMixin):
     def _log_step_end_event(self, *, rollout_id: int, snapshot_alive_cells: list, results: list):
         if is_event_logger_initialized():
             cell_outcomes = {
-                cell.cell_index: (
+                cell.cell_id: (
                     "error" if isinstance(cell_results, BaseException) else [r.outcome for r in cell_results]
                 )
                 for cell, cell_results in zip(snapshot_alive_cells, results, strict=True)

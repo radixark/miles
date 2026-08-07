@@ -25,22 +25,22 @@ _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _MAIN_SOURCE = MainProcessIdentity()
 
 
-def _make_source(cell_index: int = 0, rank_within_cell: int = 0) -> TrainProcessIdentity:
-    return TrainProcessIdentity(component="actor", cell_index=cell_index, rank_within_cell=rank_within_cell)
+def _make_source(cell_id: str = "trainer-actor-0", rank_within_cell: int = 0) -> TrainProcessIdentity:
+    return TrainProcessIdentity(component="actor", cell_id=cell_id, rank_within_cell=rank_within_cell)
 
 
 def _make_snapshot(
     rollout_id: int,
     nonzero_witness_ids: list[int],
     instance_id: str = "pp0.head",
-    cell_index: int = 0,
+    cell_id: str = "trainer-actor-0",
     rank_within_cell: int = 0,
     stale_ids: list[int] | None = None,
     attempt: int = 0,
 ) -> WitnessSnapshotParamEvent:
     return WitnessSnapshotParamEvent(
         timestamp=_FIXED_TS,
-        source=_make_source(cell_index=cell_index, rank_within_cell=rank_within_cell),
+        source=_make_source(cell_id=cell_id, rank_within_cell=rank_within_cell),
         rollout_id=rollout_id,
         attempt=attempt,
         instance_id=instance_id,
@@ -66,7 +66,7 @@ def _make_allocate(
 
 def _make_step_end(
     rollout_id: int,
-    cell_outcomes: dict[int, str | list[TrainStepOutcome]],
+    cell_outcomes: dict[str, str | list[TrainStepOutcome]],
 ) -> TrainGroupStepEndEvent:
     return TrainGroupStepEndEvent(
         timestamp=_FIXED_TS,
@@ -80,12 +80,12 @@ def _make_advantage(
     rollout_id: int,
     advantages: list[list[float]],
     witness_ids: list[list[int]],
-    cell_index: int = 0,
+    cell_id: str = "trainer-actor-0",
     attempt: int = 0,
 ) -> TrainAdvantageComputationEvent:
     return TrainAdvantageComputationEvent(
         timestamp=_FIXED_TS,
-        source=_make_source(cell_index=cell_index),
+        source=_make_source(cell_id=cell_id),
         rollout_id=rollout_id,
         attempt=attempt,
         advantages=advantages,
@@ -101,7 +101,7 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -109,7 +109,7 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
@@ -121,7 +121,7 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11, 99]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
@@ -132,7 +132,7 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.DISCARDED_SHOULD_RETRY]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.DISCARDED_SHOULD_RETRY]}),
         ]
         assert check(events) == []
 
@@ -141,7 +141,7 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={2: 0, 5: 1, 8: 2}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[5, 8], stale_ids=[0, 1, 2]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -149,9 +149,15 @@ class TestWitnessCheck:
         """Each cell is checked independently."""
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], cell_index=0),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], cell_index=1),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL], 1: [TrainStepOutcome.NORMAL]}),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], cell_id="trainer-actor-0"),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], cell_id="trainer-actor-1"),
+            _make_step_end(
+                rollout_id=0,
+                cell_outcomes={
+                    "trainer-actor-0": [TrainStepOutcome.NORMAL],
+                    "trainer-actor-1": [TrainStepOutcome.NORMAL],
+                },
+            ),
         ]
         assert check(events) == []
 
@@ -161,7 +167,7 @@ class TestWitnessCheck:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}, attempt=0),
             _make_allocate(rollout_id=0, witness_id_to_sample_index={20: 0, 21: 1}, attempt=1),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[20, 21]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -171,7 +177,7 @@ class TestWitnessCheck:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={20: 0, 21: 1}, attempt=1),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], attempt=0),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[20, 21], attempt=1),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -181,7 +187,7 @@ class TestWitnessCheck:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}, attempt=1),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], attempt=0),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[99], attempt=1),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
@@ -194,10 +200,10 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={11: 1}),
             _make_snapshot(rollout_id=1, nonzero_witness_ids=[10, 11]),
-            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=1, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -205,19 +211,19 @@ class TestWitnessCheck:
         """Cell claims NORMAL but has no WitnessSnapshotParamEvent — should return WitnessMissingSnapshotIssue."""
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0}),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
         assert isinstance(issues[0], WitnessMissingSnapshotIssue)
         assert issues[0].rollout_id == 0
-        assert issues[0].cell_index == 0
+        assert issues[0].cell_id == "trainer-actor-0"
 
     def test_error_cell_outcome_is_skipped(self) -> None:
         """cell_outcomes with 'error' string should not produce any issue."""
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0}),
-            _make_step_end(rollout_id=0, cell_outcomes={0: "error"}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": "error"}),
         ]
         assert check(events) == []
 
@@ -228,7 +234,7 @@ class TestWitnessCheck:
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[]),
             _make_step_end(
                 rollout_id=0,
-                cell_outcomes={0: [TrainStepOutcome.NORMAL, TrainStepOutcome.DISCARDED_SHOULD_RETRY]},
+                cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL, TrainStepOutcome.DISCARDED_SHOULD_RETRY]},
             ),
         ]
         assert check(events) == []
@@ -239,7 +245,7 @@ class TestWitnessCheck:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11], instance_id="pp0.head"),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10], instance_id="pp0.tail"),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
@@ -253,7 +259,7 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={i: i for i in range(8)}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=list(range(8))),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={8: 8, 9: 9, 0: 10, 1: 11, 2: 12}),
             # After wrap: stale_ids=[3,4,5] (old IDs cleaned), actual nonzero = [0,1,2,6,7,8,9]
             _make_snapshot(
@@ -261,7 +267,7 @@ class TestWitnessCheck:
                 nonzero_witness_ids=[0, 1, 2, 6, 7, 8, 9],
                 stale_ids=[3, 4, 5],
             ),
-            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=1, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         # expected cumulative = {0..9}, minus stale {3,4,5} = {0,1,2,6,7,8,9} — matches actual
         assert check(events) == []
@@ -271,7 +277,7 @@ class TestWitnessCheck:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={i: i for i in range(8)}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=list(range(8))),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={8: 8, 9: 9, 0: 10, 1: 11, 2: 12}),
             # ID 7 is NOT stale but missing from actual — should be caught
             _make_snapshot(
@@ -279,7 +285,7 @@ class TestWitnessCheck:
                 nonzero_witness_ids=[0, 1, 2, 6, 8, 9],  # missing 7
                 stale_ids=[3, 4, 5],
             ),
-            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=1, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
@@ -293,7 +299,7 @@ class TestWitnessEventSerialization:
             rollout_id=5,
             nonzero_witness_ids=[10, 20],
             instance_id="pp0.tail",
-            cell_index=1,
+            cell_id="trainer-actor-1",
             stale_ids=[0, 1, 2],
         )
         parsed = _event_adapter.validate_json(event.model_dump_json())
@@ -311,7 +317,7 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_advantage(rollout_id=0, advantages=[[0.0, 0.0], [2.0, 3.0]], witness_ids=[[10], [11]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[11]),  # 10 missing but zero-adv
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -321,10 +327,10 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_advantage(rollout_id=0, advantages=[[0.5, 0.5], [0.0, 0.0]], witness_ids=[[10], [11]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={12: 0}),
             _make_snapshot(rollout_id=1, nonzero_witness_ids=[10, 12]),
-            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=1, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -334,7 +340,7 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_advantage(rollout_id=0, advantages=[[0.5, 0.5], [0.0, 0.0]], witness_ids=[[10], [11]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
@@ -358,7 +364,7 @@ class TestZeroAdvantageExclusion:
             # CP rank without sample 1's response tokens: empty advantage shard, full witness_ids.
             _make_advantage(rollout_id=0, advantages=[[0.5, 0.5], []], witness_ids=[[10, 10], [11, 11]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10, 11]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -369,7 +375,7 @@ class TestZeroAdvantageExclusion:
             _make_advantage(rollout_id=0, advantages=[[0.0], [0.0]], witness_ids=[[10], [11]], attempt=0),
             _make_advantage(rollout_id=0, advantages=[[5.0], [0.0]], witness_ids=[[10], [11]], attempt=1),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -379,7 +385,7 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_advantage(rollout_id=0, advantages=[[5.0], [3.0]], witness_ids=[[10], [11]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),  # 11 missing, nonzero adv
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
@@ -392,12 +398,20 @@ class TestZeroAdvantageExclusion:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             # Cell 0 owns sample 10 and observes zero advantage for it.
-            _make_advantage(rollout_id=0, advantages=[[0.0, 0.0], [5.0]], witness_ids=[[10], [11]], cell_index=0),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[11], cell_index=0),
+            _make_advantage(
+                rollout_id=0, advantages=[[0.0, 0.0], [5.0]], witness_ids=[[10], [11]], cell_id="trainer-actor-0"
+            ),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[11], cell_id="trainer-actor-0"),
             # Cell 1 never owned sample 10; its snapshot also lacks it and must not be flagged.
-            _make_advantage(rollout_id=0, advantages=[[5.0]], witness_ids=[[11]], cell_index=1),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[11], cell_index=1),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL], 1: [TrainStepOutcome.NORMAL]}),
+            _make_advantage(rollout_id=0, advantages=[[5.0]], witness_ids=[[11]], cell_id="trainer-actor-1"),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[11], cell_id="trainer-actor-1"),
+            _make_step_end(
+                rollout_id=0,
+                cell_outcomes={
+                    "trainer-actor-0": [TrainStepOutcome.NORMAL],
+                    "trainer-actor-1": [TrainStepOutcome.NORMAL],
+                },
+            ),
         ]
         assert check(events) == []
 
@@ -406,7 +420,7 @@ class TestZeroAdvantageExclusion:
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
@@ -417,7 +431,7 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_advantage(rollout_id=0, advantages=[[0.0, 2.0], [3.0, 3.0]], witness_ids=[[10], [11]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[11]),  # 10 missing but only partially zero-adv
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
@@ -430,7 +444,7 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0, 11: 1}),
             _make_advantage(rollout_id=0, advantages=[[0.0, 0.0], [5.0]], witness_ids=[[10, 10], [11]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[11]),  # 10 missing but zero-adv
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -440,11 +454,11 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={0: 0}),
             _make_advantage(rollout_id=0, advantages=[[0.0]], witness_ids=[[0]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={0: 1}),  # id 0 reused after wrap
             _make_advantage(rollout_id=1, advantages=[[5.0]], witness_ids=[[0]]),
             _make_snapshot(rollout_id=1, nonzero_witness_ids=[0]),
-            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=1, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -454,11 +468,11 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={0: 0}),
             _make_advantage(rollout_id=0, advantages=[[0.0]], witness_ids=[[0]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={0: 1}),  # id 0 reused after wrap
             _make_advantage(rollout_id=1, advantages=[[5.0]], witness_ids=[[0]]),
             _make_snapshot(rollout_id=1, nonzero_witness_ids=[]),
-            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=1, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         issues = check(events)
         assert len(issues) == 1
@@ -472,11 +486,11 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={0: 0}),
             _make_advantage(rollout_id=0, advantages=[[0.0]], witness_ids=[[0]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={0: 1}),  # id 0 reused after wrap
             _make_advantage(rollout_id=1, advantages=[[0.0]], witness_ids=[[0]]),
             _make_snapshot(rollout_id=1, nonzero_witness_ids=[]),
-            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=1, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -486,15 +500,15 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={0: 0}),
             _make_advantage(rollout_id=0, advantages=[[0.0]], witness_ids=[[0]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={0: 1}),
             _make_advantage(rollout_id=1, advantages=[[5.0]], witness_ids=[[0]]),
             _make_snapshot(rollout_id=1, nonzero_witness_ids=[0]),
-            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=1, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
             _make_allocate(rollout_id=2, witness_id_to_sample_index={0: 2}),
             _make_advantage(rollout_id=2, advantages=[[0.0]], witness_ids=[[0]]),
             _make_snapshot(rollout_id=2, nonzero_witness_ids=[]),
-            _make_step_end(rollout_id=2, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=2, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []
 
@@ -502,20 +516,32 @@ class TestZeroAdvantageExclusion:
         """After reuse with nonzero adv the id is required on every cell — missing on one cell is flagged."""
         events: list[Event] = [
             _make_allocate(rollout_id=0, witness_id_to_sample_index={0: 0}),
-            _make_advantage(rollout_id=0, advantages=[[0.0]], witness_ids=[[0]], cell_index=0),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[], cell_index=0),
-            _make_snapshot(rollout_id=0, nonzero_witness_ids=[], cell_index=1),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL], 1: [TrainStepOutcome.NORMAL]}),
+            _make_advantage(rollout_id=0, advantages=[[0.0]], witness_ids=[[0]], cell_id="trainer-actor-0"),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[], cell_id="trainer-actor-0"),
+            _make_snapshot(rollout_id=0, nonzero_witness_ids=[], cell_id="trainer-actor-1"),
+            _make_step_end(
+                rollout_id=0,
+                cell_outcomes={
+                    "trainer-actor-0": [TrainStepOutcome.NORMAL],
+                    "trainer-actor-1": [TrainStepOutcome.NORMAL],
+                },
+            ),
             _make_allocate(rollout_id=1, witness_id_to_sample_index={0: 1}),  # id 0 reused after wrap
-            _make_advantage(rollout_id=1, advantages=[[5.0]], witness_ids=[[0]], cell_index=0),
-            _make_snapshot(rollout_id=1, nonzero_witness_ids=[0], cell_index=0),
-            _make_snapshot(rollout_id=1, nonzero_witness_ids=[], cell_index=1),  # missing on cell 1
-            _make_step_end(rollout_id=1, cell_outcomes={0: [TrainStepOutcome.NORMAL], 1: [TrainStepOutcome.NORMAL]}),
+            _make_advantage(rollout_id=1, advantages=[[5.0]], witness_ids=[[0]], cell_id="trainer-actor-0"),
+            _make_snapshot(rollout_id=1, nonzero_witness_ids=[0], cell_id="trainer-actor-0"),
+            _make_snapshot(rollout_id=1, nonzero_witness_ids=[], cell_id="trainer-actor-1"),  # missing on cell 1
+            _make_step_end(
+                rollout_id=1,
+                cell_outcomes={
+                    "trainer-actor-0": [TrainStepOutcome.NORMAL],
+                    "trainer-actor-1": [TrainStepOutcome.NORMAL],
+                },
+            ),
         ]
         issues = check(events)
         assert len(issues) == 1
         assert issues[0].rollout_id == 1
-        assert issues[0].cell_index == 1
+        assert issues[0].cell_id == "trainer-actor-1"
 
     def test_zero_advantage_id_never_allocated_has_no_effect(self) -> None:
         """A zero-adv observation for an id that was never allocated neither excuses nor expects anything."""
@@ -523,6 +549,6 @@ class TestZeroAdvantageExclusion:
             _make_allocate(rollout_id=0, witness_id_to_sample_index={10: 0}),
             _make_advantage(rollout_id=0, advantages=[[5.0], [0.0]], witness_ids=[[10], [99]]),
             _make_snapshot(rollout_id=0, nonzero_witness_ids=[10]),
-            _make_step_end(rollout_id=0, cell_outcomes={0: [TrainStepOutcome.NORMAL]}),
+            _make_step_end(rollout_id=0, cell_outcomes={"trainer-actor-0": [TrainStepOutcome.NORMAL]}),
         ]
         assert check(events) == []

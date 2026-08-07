@@ -34,8 +34,8 @@ def _log_checksum_event(
     )
 
 
-def _make_source(*, cell_index: int = 0, rank: int = 0) -> TrainProcessIdentity:
-    return TrainProcessIdentity(component="actor", cell_index=cell_index, rank_within_cell=rank)
+def _make_source(*, cell_id: str = "trainer-actor-0", rank: int = 0) -> TrainProcessIdentity:
+    return TrainProcessIdentity(component="actor", cell_id=cell_id, rank_within_cell=rank)
 
 
 class TestRunAnalysis:
@@ -43,12 +43,16 @@ class TestRunAnalysis:
         assert run_analysis(event_dir=tmp_path) == []
 
     def test_delegates_to_rules_and_returns_issues(self, tmp_path: Path) -> None:
-        # Cross-replica rule compares same rank across DIFFERENT cells, so use cell_index 0/1.
-        logger_a = EventLogger(log_dir=tmp_path, file_name="a.jsonl", source=_make_source(cell_index=0, rank=0))
+        # Cross-replica rule compares same rank across DIFFERENT cells, so use two cell ids.
+        logger_a = EventLogger(
+            log_dir=tmp_path, file_name="a.jsonl", source=_make_source(cell_id="trainer-actor-0", rank=0)
+        )
         _log_checksum_event(logger_a, rollout_id=0, param_hashes={"pp0.w": "aaa"})
         logger_a.close()
 
-        logger_b = EventLogger(log_dir=tmp_path, file_name="b.jsonl", source=_make_source(cell_index=1, rank=0))
+        logger_b = EventLogger(
+            log_dir=tmp_path, file_name="b.jsonl", source=_make_source(cell_id="trainer-actor-1", rank=0)
+        )
         _log_checksum_event(logger_b, rollout_id=0, param_hashes={"pp0.w": "zzz"})
         logger_b.close()
 
@@ -101,11 +105,15 @@ class TestRunAnalysisFromArgs:
         run_analysis_from_args(args)
 
     def test_raises_on_mismatch(self, tmp_path: Path) -> None:
-        logger_a = EventLogger(log_dir=tmp_path, file_name="a.jsonl", source=_make_source(cell_index=0, rank=0))
+        logger_a = EventLogger(
+            log_dir=tmp_path, file_name="a.jsonl", source=_make_source(cell_id="trainer-actor-0", rank=0)
+        )
         _log_checksum_event(logger_a, rollout_id=0, param_hashes={"pp0.w": "aaa"})
         logger_a.close()
 
-        logger_b = EventLogger(log_dir=tmp_path, file_name="b.jsonl", source=_make_source(cell_index=1, rank=0))
+        logger_b = EventLogger(
+            log_dir=tmp_path, file_name="b.jsonl", source=_make_source(cell_id="trainer-actor-1", rank=0)
+        )
         _log_checksum_event(logger_b, rollout_id=0, param_hashes={"pp0.w": "zzz"})
         logger_b.close()
 
