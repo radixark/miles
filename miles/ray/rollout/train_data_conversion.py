@@ -282,7 +282,22 @@ def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: di
     else:
         shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
     store = object_store.get_instance()
-    return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+    published_refs: list[object_store.StoreObjectRef] = []
+    try:
+        for shard in shards:
+            published_refs.append(store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC))
+    except BaseException as publication_error:
+        cleanup_error: BaseException | None = None
+        for ref in published_refs:
+            try:
+                store.remove(ref)
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+        if cleanup_error is not None:
+            raise publication_error from cleanup_error
+        raise
+    return published_refs
 
 
 def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_config: dict | None) -> bool:
