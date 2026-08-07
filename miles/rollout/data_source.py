@@ -1,18 +1,23 @@
 import abc
 import copy
+import hashlib
 import logging
 import os
 import random
+import tempfile
 import threading
 from collections.abc import Sequence
 from pathlib import Path
-from typing import NamedTuple, NewType
+from typing import Annotated, Literal, NamedTuple, NewType
 
 import torch
+from pydantic import Field
 
 from miles.utils.data import Dataset
 from miles.utils.misc import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.source_fingerprint import canonical_source_digest
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -32,8 +37,24 @@ class SourceReservation(NamedTuple):
     samples: tuple[Sample, ...]
 
 
-class _SourceReservationRecord(NamedTuple):
-    group_index: int
+class _SourceReservationRecord(FrozenStrictBaseModel):
+    group_index: Annotated[int, Field(strict=True, ge=0)]
+
+
+class _SourceCompatibility(FrozenStrictBaseModel):
+    materialization_schema_version: Literal[1]
+    materialized_samples_sha256: Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{64}$")]
+    dataset_size: Annotated[int, Field(strict=True, ge=0)]
+    rollout_shuffle: Annotated[bool, Field(strict=True)]
+    shuffle_seed: Annotated[int, Field(strict=True)] | None
+    shuffle_schema_version: Literal[1]
+    n_samples_per_prompt: Annotated[int, Field(strict=True, ge=1)]
+
+
+class _SourceReservationCheckpoint(FrozenStrictBaseModel):
+    schema_version: Literal[1]
+    source_compatibility: _SourceCompatibility
+    replay: tuple[_SourceReservationRecord, ...]
 
 
 class _OutstandingReservation(NamedTuple):
@@ -41,10 +62,16 @@ class _OutstandingReservation(NamedTuple):
     attempt: SourceReservation
 
 
+class _AcknowledgedReservation(NamedTuple):
+    record: _SourceReservationRecord
+    rollout_id: int
+
+
 class DataSource(abc.ABC):
     # Whether ``reserve_samples`` hands out durable source reservations. Fully
     # async rollout schedules owned work only for sources that declare support;
-    # overriding ``reserve_samples`` alone is not a capability signal.
+    # overriding ``reserve_samples`` alone is not a capability signal. A source
+    # declares support here; a configured instance may still report False.
     supports_source_reservations: bool = False
 
     @abc.abstractmethod
@@ -85,8 +112,11 @@ class DataSource(abc.ABC):
             Reservations that require explicit settlement.
 
         Implementations must return exactly ``num_groups`` reservations with
-        unique identities and declare ``supports_source_reservations = True``.
-        If this method raises, it must not transfer source ownership.
+        unique identities and declare ``supports_source_reservations = True``
+        at class level. A configured instance may still report False when its
+        arguments rule reservations out, and callers must read the attribute
+        off the instance. If this method raises, it must not transfer source
+        ownership.
 
         Raises:
             RuntimeError: If this data source does not support reservations.
@@ -138,10 +168,19 @@ class RolloutDataSource(DataSource):
         self.metadata = {}
         self._reservation_lock = threading.RLock()
         self._outstanding_reservations: dict[SourceReservationId, _OutstandingReservation] = {}
+        self._acknowledged_reservations: dict[SourceReservationId, _AcknowledgedReservation] = {}
         self._replay_reservations: list[_SourceReservationRecord] = []
+        self._last_saved_rollout_id: int | None = None
+        self._reservation_checkpoints_enabled = self.args.save_interval is not None
+        # The class declares the capability; this configuration may still rule it out.
+        self.supports_source_reservations = (
+            type(self).supports_source_reservations and self._durable_reservations_gate_error() is None
+        )
         self._durable_reservations_started = False
         self._permutation_epoch_id: int | None = None
         self._permutation: tuple[int, ...] = ()
+        self._source_compatibility: _SourceCompatibility | None = None
+        self.dataset: Dataset | None
 
         if args.rollout_global_dataset:
             tokenizer = load_tokenizer(
@@ -197,6 +236,7 @@ class RolloutDataSource(DataSource):
                 return []
             if self.dataset is not None and len(self.dataset) == 0:
                 raise ValueError("Cannot reserve samples from an empty rollout dataset.")
+            self._get_source_compatibility()
 
             replay_count = min(num_groups, len(self._replay_reservations))
             replay_records = self._replay_reservations[:replay_count]
@@ -233,10 +273,19 @@ class RolloutDataSource(DataSource):
         self._require_durable_reservations()
         self._validate_rollout_id(rollout_id)
         with self._reservation_lock:
+            if self._last_saved_rollout_id is not None and rollout_id <= self._last_saved_rollout_id:
+                raise ValueError(
+                    f"Reservation rollout_id {rollout_id} must be newer than published checkpoint {self._last_saved_rollout_id}."
+                )
             outstanding = self._get_outstanding_reservations_locked(reservations)
             for owned in outstanding:
                 reservation_id = owned.attempt.reservation_id
                 del self._outstanding_reservations[reservation_id]
+                if self._reservation_checkpoints_enabled:
+                    self._acknowledged_reservations[reservation_id] = _AcknowledgedReservation(
+                        record=owned.record,
+                        rollout_id=rollout_id,
+                    )
 
     def requeue_reservations(self, reservations: Sequence[SourceReservation]) -> None:
         """Return exact outstanding attempts for pristine replay.
@@ -276,11 +325,18 @@ class RolloutDataSource(DataSource):
             raise RuntimeError(f"Source reservations are not the current outstanding attempts: {invalid}.")
         return outstanding
 
-    def _require_durable_reservations(self) -> None:
+    def _durable_reservations_gate_error(self) -> str | None:
+        """Why this configuration rules out durable reservations, or None."""
         if not self.args.rollout_global_dataset:
-            raise RuntimeError(
-                f"{self.__class__.__name__} does not support durable source reservations when rollout_global_dataset is disabled."
-            )
+            return f"{self.__class__.__name__} does not support durable source reservations when rollout_global_dataset is disabled."
+        if not self._reservation_checkpoints_enabled and self.args.save_trigger_sentinel is not None:
+            return "Durable source reservations require a periodic save interval when a save trigger is configured."
+        return None
+
+    def _require_durable_reservations(self) -> None:
+        error = self._durable_reservations_gate_error()
+        if error is not None:
+            raise RuntimeError(error)
 
     @staticmethod
     def _validate_rollout_id(rollout_id: int) -> None:
@@ -339,6 +395,34 @@ class RolloutDataSource(DataSource):
         self.dataset.samples = [self.dataset.origin_samples[index] for index in permutation]
         self.dataset.epoch_id = epoch_id
 
+    def _build_source_compatibility(self) -> _SourceCompatibility | None:
+        if self.dataset is None:
+            return None
+        return _SourceCompatibility(
+            materialization_schema_version=1,
+            materialized_samples_sha256=self._processed_samples_sha256(),
+            dataset_size=len(self.dataset),
+            rollout_shuffle=self.args.rollout_shuffle,
+            shuffle_seed=self.args.rollout_seed if self.args.rollout_shuffle else None,
+            shuffle_schema_version=1,
+            n_samples_per_prompt=self.args.n_samples_per_prompt,
+        )
+
+    def _get_source_compatibility(self) -> _SourceCompatibility:
+        if self._source_compatibility is None:
+            source_compatibility = self._build_source_compatibility()
+            if source_compatibility is None:
+                raise RuntimeError("Durable source reservations require rollout_global_dataset.")
+            self._source_compatibility = source_compatibility
+        return self._source_compatibility
+
+    def _processed_samples_sha256(self) -> str:
+        assert self.dataset is not None
+        digest = hashlib.sha256()
+        for sample in self.dataset.origin_samples:
+            digest.update(canonical_source_digest(sample.to_dict()))
+        return digest.hexdigest()
+
     def get_samples(self, num_samples):
         with self._reservation_lock:
             if self._durable_reservations_started:
@@ -379,12 +463,8 @@ class RolloutDataSource(DataSource):
         if not self.args.rollout_global_dataset:
             return
 
+        self._validate_rollout_id(rollout_id)
         with self._reservation_lock:
-            if self._durable_reservations_started:
-                raise RuntimeError(
-                    "Cannot save source state after durable source reservations have started "
-                    "until reservation checkpointing is available."
-                )
             state_dict = {
                 "sample_offset": self.sample_offset,
                 "epoch_id": self.epoch_id,
@@ -395,7 +475,55 @@ class RolloutDataSource(DataSource):
             path = os.path.join(self.args.save, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
             directory = os.path.dirname(path)
             os.makedirs(directory, exist_ok=True)
-            torch.save(state_dict, path)
+            if self._last_saved_rollout_id is not None and rollout_id < self._last_saved_rollout_id:
+                raise ValueError(
+                    f"Source checkpoint rollout_id must not move backward from {self._last_saved_rollout_id} to {rollout_id}."
+                )
+            if not self._durable_reservations_started:
+                torch.save(state_dict, path)
+                self._last_saved_rollout_id = rollout_id
+                return
+
+            if self._durable_reservations_started and not self._reservation_checkpoints_enabled:
+                raise RuntimeError("Cannot save durable source reservations without --save-interval.")
+
+            replay = [
+                *self._replay_reservations,
+                *(owned.record for owned in self._outstanding_reservations.values()),
+                *(
+                    acknowledged.record
+                    for acknowledged in self._acknowledged_reservations.values()
+                    if acknowledged.rollout_id > rollout_id
+                ),
+            ]
+            replay.sort(key=lambda record: record.group_index)
+            reservation_ids = [self._reservation_id(record) for record in replay]
+            if len(reservation_ids) != len(set(reservation_ids)):
+                raise RuntimeError(f"Source reservation ownership is duplicated at checkpoint: {reservation_ids}.")
+
+            state_dict["source_reservations"] = _SourceReservationCheckpoint(
+                schema_version=1,
+                source_compatibility=self._get_source_compatibility(),
+                replay=tuple(replay),
+            ).model_dump(mode="python")
+            descriptor, temporary_path = tempfile.mkstemp(
+                dir=directory,
+                prefix=f".{os.path.basename(path)}.",
+                suffix=".tmp",
+            )
+            os.close(descriptor)
+            try:
+                torch.save(state_dict, temporary_path)
+                os.replace(temporary_path, path)
+            finally:
+                Path(temporary_path).unlink(missing_ok=True)
+
+            self._acknowledged_reservations = {
+                reservation_id: acknowledged
+                for reservation_id, acknowledged in self._acknowledged_reservations.items()
+                if acknowledged.rollout_id > rollout_id
+            }
+            self._last_saved_rollout_id = rollout_id
 
     def load(self, rollout_id=None):
         if not self.args.rollout_global_dataset:
@@ -404,6 +532,10 @@ class RolloutDataSource(DataSource):
         if self.args.load is None:
             return
 
+        if isinstance(rollout_id, int) and not isinstance(rollout_id, bool) and rollout_id == -1:
+            return
+        if rollout_id is not None:
+            self._validate_rollout_id(rollout_id)
         path = os.path.join(self.args.load, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         if not os.path.exists(path):
             logger.info(f"Checkpoint {path} does not exist.")
@@ -413,16 +545,88 @@ class RolloutDataSource(DataSource):
             if self._durable_reservations_started:
                 raise RuntimeError("Cannot load source state after durable source reservations have started.")
             logger.info(f"load metadata from {path}")
-            logger.info(f"load metadata: {self.metadata}")
             state_dict = torch.load(path)
-            self.sample_offset = state_dict.get("sample_offset", 0)
-            self.epoch_id = state_dict.get("epoch_id", 0)
-            self.sample_group_index = state_dict.get("sample_group_index", 0)
-            self.sample_index = state_dict.get("sample_index", 0)
+            if "source_reservations" in state_dict:
+                cursor_fields = ("sample_offset", "epoch_id", "sample_group_index", "sample_index")
+                missing_cursor_fields = [field for field in cursor_fields if field not in state_dict]
+                if missing_cursor_fields:
+                    raise ValueError(f"Checkpoint is missing source cursor fields: {missing_cursor_fields}.")
+            sample_group_index = state_dict.get("sample_group_index", 0)
+            if "source_reservations" in state_dict:
+                if not self.supports_source_reservations:
+                    reason = self._durable_reservations_gate_error()
+                    if reason is None:
+                        reason = f"{self.__class__.__name__} does not support durable source reservations."
+                    raise ValueError(f"Source reservation checkpoint cannot be loaded: {reason}")
+                reservation_state = _SourceReservationCheckpoint.model_validate(state_dict["source_reservations"])
+                if reservation_state.source_compatibility != self._get_source_compatibility():
+                    raise ValueError(
+                        "Source reservation checkpoint configuration does not match the current data source."
+                    )
+                epoch_id = state_dict.get("epoch_id", 0)
+                sample_offset = state_dict.get("sample_offset", 0)
+                replay = list(reservation_state.replay)
+            else:
+                epoch_id, sample_offset = self._normalize_legacy_cursor(sample_group_index)
+                replay = []
+            sample_index = state_dict.get("sample_index", 0)
+            if "source_reservations" in state_dict:
+                for field, value in (
+                    ("sample_offset", sample_offset),
+                    ("epoch_id", epoch_id),
+                    ("sample_group_index", sample_group_index),
+                    ("sample_index", sample_index),
+                ):
+                    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                        raise ValueError(f"Checkpoint {field} must be a nonnegative integer, got {value!r}.")
+                assert self.dataset is not None
+                dataset_size = len(self.dataset)
+                if sample_offset > dataset_size:
+                    raise ValueError(f"Checkpoint sample offset {sample_offset} exceeds dataset size {dataset_size}.")
+                if dataset_size == 0:
+                    if epoch_id != 0 or sample_offset != 0 or sample_group_index != 0:
+                        raise ValueError("An empty rollout dataset requires a zero source cursor.")
+                else:
+                    expected_group_frontier = epoch_id * dataset_size + sample_offset
+                    if sample_group_index != expected_group_frontier:
+                        raise ValueError(
+                            f"Checkpoint group frontier {sample_group_index} does not match dataset cursor at epoch {epoch_id} offset {sample_offset} for dataset size {dataset_size}."
+                        )
+                expected_sample_frontier = sample_group_index * self.args.n_samples_per_prompt
+                if sample_index != expected_sample_frontier:
+                    raise ValueError(
+                        f"Checkpoint sample frontier {sample_index} does not match group frontier {sample_group_index} with {self.args.n_samples_per_prompt} samples per prompt."
+                    )
+
+            reservation_ids = [self._reservation_id(record) for record in replay]
+            if len(reservation_ids) != len(set(reservation_ids)):
+                raise ValueError(f"Checkpoint contains duplicate source reservation identities: {reservation_ids}.")
+            if any(record.group_index < 0 or record.group_index >= sample_group_index for record in replay):
+                raise ValueError("Checkpoint contains a source reservation outside the saved group frontier.")
+
+            self.sample_offset = sample_offset
+            self.epoch_id = epoch_id
+            self.sample_group_index = sample_group_index
+            self.sample_index = sample_index
             self.metadata = state_dict.get("metadata", {})
+            self._replay_reservations = sorted(replay, key=lambda record: record.group_index)
+            self._outstanding_reservations = {}
+            self._acknowledged_reservations = {}
+            self._last_saved_rollout_id = rollout_id
+            self._durable_reservations_started = "source_reservations" in state_dict
 
             if self.args.rollout_shuffle:
                 self._set_dataset_epoch(self.epoch_id)
+
+    def _normalize_legacy_cursor(self, sample_group_index: int) -> tuple[int, int]:
+        assert self.dataset is not None
+        if len(self.dataset) == 0:
+            return 0, 0
+        return divmod(sample_group_index, len(self.dataset))
+
+    @staticmethod
+    def _reservation_id(record: _SourceReservationRecord) -> SourceReservationId:
+        return SourceReservationId(str(record.group_index))
 
 
 class RolloutDataSourceWithBuffer(RolloutDataSource):
