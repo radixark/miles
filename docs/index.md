@@ -45,17 +45,19 @@ needed to run RL at trillion-parameter scale.
 
 ### Design, support & user experience
 
-- **Coding-agent sandboxes and examples.** [Harbor](/user-guide/harbor) and
-  [OpenEnv](/user-guide/openenv) integrations with local CPU sandboxes or Daytona
-  cloud sandboxes, plus [AgentENV](https://github.com/kvcache-ai/AgentENV) support.
+- **Coding-agent sandboxes and examples.** [Harbor](/user-guide/harbor),
+  [OpenEnv](/user-guide/openenv), and [NeMo-Gym](/user-guide/nemo-gym) integrations,
+  running local CPU sandboxes or per-episode sandboxes on
+  [Daytona](https://www.daytona.io/), [E2B](https://e2b.dev/), and self-hosted
+  [AgentENV](https://github.com/kvcache-ai/AgentENV) — see
+  [Environments](/user-guide/environments) for the support matrix.
 - **Highly customizable pipeline.** Shape every workload through
   [twenty-plus plug-points](/user-guide/customization), from reward computation to
   the full rollout function.
 - **Megatron or FSDP.**
   [Switch training backends](/developer/experimental-features#fsdp-backend) without
   rewriting your training loop.
-- **Wide recipe support.** RL (GRPO, PPO), [SFT](/examples/openhermes-sft), and
-  on-policy distillation.
+- **Wide recipe support.** RL (GRPO, PPO), SFT, and on-policy distillation.
 - **Verified on multiple hardware generations.** GB300, GB200, B200, H200, H100,
   and AMD MI355X — see [Platforms](/platforms/index).
 - **[Miles dashboard](/user-guide/dashboard).** A self-hosted web UI for a run's
