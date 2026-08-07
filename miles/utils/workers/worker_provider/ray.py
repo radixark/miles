@@ -7,7 +7,7 @@ import ray.actor
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
-from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +33,6 @@ class RayWorkerProvider(BaseWorkerProvider):
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         refs = [self._worker_manager_handle.get_worker_infos.remote(cell_id) for cell_id in cell_ids]
         return ray.get(refs)
-
-    async def get_addr(self, worker_name: str) -> HostAndPort:
-        return (await self.get_addrs(worker_name=worker_name))["primary"]
 
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return await self._worker_manager_handle.get_worker_addrs.remote(worker_name)

@@ -8,7 +8,7 @@ from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _get_placement_group_layout
 from miles.ray.train.group import TrainerController
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, ReconcileFn, StopWatchFn
-from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 
 def _layout_args(**overrides):
@@ -65,9 +65,6 @@ async def _stop_watch() -> None:
 class _RecordingWorkerProvider(BaseWorkerProvider):
     def __init__(self) -> None:
         self.watched_spec_names: list[list[str]] = []
-
-    async def get_addr(self, worker_name: str) -> HostAndPort:
-        raise NotImplementedError
 
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         raise NotImplementedError

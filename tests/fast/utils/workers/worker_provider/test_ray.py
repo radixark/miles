@@ -52,14 +52,14 @@ class TestRayWorkerProviderCreate:
         monkeypatch.setattr(ray_worker_manager_mod, "ray", _FakeRay)
 
         provider = RayWorkerProvider.create()
-        addr = await provider.get_addr(worker_name="router-0-0")
+        addr = (await provider.get_addrs(worker_name="router-0-0"))["primary"]
 
         assert looked_up == ["ray_worker_manager"]
         assert handle.get_worker_addrs.requested_names == ["router-0-0"]
         assert addr == HostAndPort(host="10.0.0.7", port=15000)
 
 
-class TestRayWorkerProviderGetAddr:
+class TestRayWorkerProviderAddressLookup:
     async def test_every_lookup_asks_the_manager_again(self):
         """Addresses are never cached, so a relaunched worker is not answered with a stale endpoint."""
         handle = _make_handle(
@@ -68,8 +68,8 @@ class TestRayWorkerProviderGetAddr:
         )
         provider = RayWorkerProvider(worker_manager_handle=handle, spec_names=["inference-engine-0-0"])
 
-        first = await provider.get_addr(worker_name="router-0-0")
-        second = await provider.get_addr(worker_name="router-0-0")
+        first = (await provider.get_addrs(worker_name="router-0-0"))["primary"]
+        second = (await provider.get_addrs(worker_name="router-0-0"))["primary"]
 
         assert (first.port, second.port) == (15000, 15001)
         assert handle.get_worker_addrs.requested_names == ["router-0-0", "router-0-0"]
@@ -86,15 +86,6 @@ class TestRayWorkerProviderGetAddrs:
         provider = RayWorkerProvider(worker_manager_handle=handle, spec_names=["inference-engine-0-0"])
 
         assert await provider.get_addrs(worker_name="engine-0-0") == addrs
-
-    async def test_the_primary_shortcut_reads_from_the_same_map(self):
-        """``get_addr`` is just the primary entry, so the two views can never disagree."""
-        handle = _make_handle(
-            {"primary": HostAndPort(host="10.0.0.7", port=15000), "nccl": HostAndPort(host="10.0.0.7", port=16000)}
-        )
-        provider = RayWorkerProvider(worker_manager_handle=handle, spec_names=["inference-engine-0-0"])
-
-        assert await provider.get_addr(worker_name="engine-0-0") == HostAndPort(host="10.0.0.7", port=15000)
 
 
 @dataclass
