@@ -111,7 +111,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Which backend provides the worker processes: "
                     "`ray` launches them from the driver, `kubernetes` expects the platform to have "
-                    "created them already and observes them by their pod labels."
+                    "created them already and observes them by their pod labels; see "
+                    "charts/miles-run/README.md for what a platform has to provide."
                 ),
             )
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")

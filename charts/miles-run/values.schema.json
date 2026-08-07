@@ -1,0 +1,188 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "miles-run values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["infra", "run"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "description": "Helm injects the umbrella chart's global values into every subchart, so a strict root has to accept them."
+    },
+    "miles-common": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"global": {"type": "object"}},
+      "description": "Helm reserves a values section per dependency; the library chart itself consumes none."
+    },
+    "infra": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "sharedStorage"],
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "tag"],
+          "properties": {
+            "repository": {"type": "string", "minLength": 1},
+            "tag": {"type": "string", "minLength": 1},
+            "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]},
+            "pullSecrets": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"}}
+          }
+        },
+        "sharedStorage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "mountPath"],
+          "properties": {
+            "type": {"enum": ["hostPath", "pvc", "none"]},
+            "hostPath": {"type": "string", "pattern": "^(/.*)?$", "not": {"pattern": "(^|/)\\.\\.(/|$)"}},
+            "pvcClaimName": {"type": "string", "maxLength": 253, "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"},
+            "mountPath": {"type": "string", "pattern": "^/", "not": {"pattern": "(^|/)\\.\\.(/|$)"}}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"type": {"const": "hostPath"}}, "required": ["type"]},
+              "then": {"properties": {"hostPath": {"minLength": 1}}, "required": ["hostPath"]}
+            },
+            {
+              "if": {"properties": {"type": {"const": "pvc"}}, "required": ["type"]},
+              "then": {"properties": {"pvcClaimName": {"minLength": 1}}, "required": ["pvcClaimName"]}
+            }
+          ]
+        },
+        "paths": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "runsSubPath": {"type": "string", "pattern": "^([^/].*)?$", "not": {"pattern": "(^|/)\\.\\.(/|$)"}},
+            "repos": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "miles": {"type": "string", "pattern": "^([^/].*)?$", "not": {"pattern": "(^|/)\\.\\.(/|$)"}},
+                "megatron": {"type": "string", "pattern": "^([^/].*)?$", "not": {"pattern": "(^|/)\\.\\.(/|$)"}},
+                "sglang": {"type": "string", "pattern": "^([^/].*)?$", "not": {"pattern": "(^|/)\\.\\.(/|$)"}}
+              }
+            }
+          }
+        },
+        "nodeLocalStorage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "hostPath": {"type": "string", "pattern": "^(/.*)?$", "not": {"pattern": "(^|/)\\.\\.(/|$)"}},
+            "mountPath": {"type": "string", "pattern": "^/", "not": {"pattern": "(^|/)\\.\\.(/|$)"}}
+          }
+        },
+        "scheduling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+            "tolerations": {"type": "array", "items": {"type": "object"}},
+            "affinity": {"type": "object"}
+          }
+        },
+        "env": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[ -<>-~]+$", "not": {"const": "PYTHONPATH"}},
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "objectNames"],
+      "properties": {
+        "id": {"type": "string", "maxLength": 40, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "objectNames": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["orchestrator", "mooncakeMaster", "colocatePairing"],
+          "properties": {
+            "orchestrator": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+            "mooncakeMaster": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+            "colocatePairing": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"}
+          }
+        },
+        "orchestrator": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "command": {"type": "array", "items": {"type": "string"}},
+            "resources": {"type": "object"}
+          }
+        },
+        "staticWorkers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "objectName", "command"],
+            "properties": {
+              "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+              "objectName": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+              "command": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+              "env": {"type": "object", "additionalProperties": {"type": "string"}},
+              "ports": {"$ref": "#/definitions/portList"},
+              "replicas": {"type": "integer", "minimum": 1},
+              "resources": {"type": "object"},
+              "poolId": {"type": "string"}
+            }
+          }
+        },
+        "env": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[ -<>-~]+$", "not": {"const": "PYTHONPATH"}},
+          "additionalProperties": {"type": "string"}
+        },
+        "mooncake": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "rpcPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "metricsPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "resources": {"type": "object"}
+          }
+        },
+        "inferenceEngines": {"type": "array", "items": {"$ref": "#/definitions/pool"}},
+        "trainers": {"type": "array", "items": {"$ref": "#/definitions/pool"}}
+      }
+    }
+  },
+  "definitions": {
+    "pool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "objectName", "command"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 40, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "objectName": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+        "replicas": {"type": "integer", "minimum": 1},
+        "size": {"type": "integer", "minimum": 1},
+        "command": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "env": {"type": "object", "additionalProperties": {"type": "string"}},
+        "ports": {"$ref": "#/definitions/portList"},
+        "resources": {"type": "object"},
+        "poolId": {"type": "string"},
+        "meta": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "portList": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "port"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 15},
+          "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+        }
+      }
+    }
+  }
+}

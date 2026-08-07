@@ -1,21 +1,28 @@
-image:
-  repository: radixark/miles
-  tag: dev
-  pullPolicy: Always
-  pullSecrets: []
-
-sharedStorage:
-  type: hostPath
-  hostPath: /cluster-storage
-  pvcClaimName: ""
-  mountPath: /cluster-storage
-
-scheduling:
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-
-env: {}
+infra:
+  image:
+    repository: radixark/miles
+    tag: dev
+    pullPolicy: Always
+    pullSecrets: []
+  sharedStorage:
+    type: hostPath
+    hostPath: /cluster-storage
+    pvcClaimName: ""
+    mountPath: /cluster-storage
+  paths:
+    runsSubPath: miles_data
+    repos:
+      miles: ""
+      megatron: ""
+      sglang: ""
+  nodeLocalStorage:
+    hostPath: ""
+    mountPath: /scratch
+  scheduling:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  env: {}
 
 resources:
   requests:

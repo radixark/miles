@@ -24,7 +24,7 @@ NO_DELEGATION = " ".join(
 )
 
 
-class TestDoctor:
+class TestPreflightChecks:
     @pytest.fixture
     def fake_cluster(self, tmp_path, monkeypatch):
         bin_dir = tmp_path / "bin"
@@ -42,6 +42,16 @@ class TestDoctor:
         forbidden_path.write_text("")
         deny_all_path = tmp_path / "deny-all"
         deny_all_path.write_text("")
+        foreign_path = tmp_path / "foreign"
+        foreign_path.write_text("")
+        unmanaged_path = tmp_path / "unmanaged"
+        unmanaged_path.write_text("")
+        family_path = tmp_path / "family"
+        family_path.write_text("")
+        served_apis_path = tmp_path / "served-apis"
+        served_apis_path.write_text(f"{LWS_RESOURCE}\n")
+        controller_path = tmp_path / "controller"
+        controller_path.write_text("True")
 
         (bin_dir / "kubectl").write_text(
             "#!/usr/bin/env bash\n"
@@ -69,6 +79,10 @@ class TestDoctor:
             "    esac\n"
             "  done\n"
             "fi\n"
+            'if [ "$1" = "api-resources" ]; then\n'
+            f"  cat {served_apis_path}\n"
+            "  exit 0\n"
+            "fi\n"
             'if [ "$1" = "get" ] && [ "$2" = "--raw" ]; then\n'
             f"  if [ -s {unreachable_path} ]; then\n"
             f"    cat {unreachable_path} >&2\n"
@@ -76,14 +90,29 @@ class TestDoctor:
             "  fi\n"
             "  exit 0\n"
             "fi\n"
+            'if [ "$1" = "get" ] && [ "$2" = "all" ]; then\n'
+            '  if [[ "$*" == *"managed-by=Helm"* ]]; then\n'
+            f"    cat {foreign_path}\n"
+            '    if [[ "$*" != *"notin (miles-workbench,miles-run)"* ]]; then\n'
+            f"      cat {family_path}\n"
+            "    fi\n"
+            "  else\n"
+            f"    cat {unmanaged_path}\n"
+            "  fi\n"
+            "  exit 0\n"
+            "fi\n"
             'if [ "$1" = "get" ]; then\n'
             "  terminated=0\n"
+            "  skip=0\n"
             '  for arg in "${@:3}"; do\n'
+            '    if [ "$skip" -eq 1 ]; then skip=0; continue; fi\n'
             '    if [ "$arg" = "--" ]; then terminated=1; continue; fi\n'
             '    if [ "$terminated" -eq 0 ]; then\n'
-            '      case "$arg" in -*)\n'
-            '        echo "error: unknown shorthand flag in $arg" >&2\n'
-            "        exit 1 ;;\n"
+            '      case "$arg" in\n'
+            "        -n|--namespace|-l|--selector|-o|--output) skip=1 ;;\n"
+            "        -*)\n"
+            '          echo "error: unknown shorthand flag in $arg" >&2\n'
+            "          exit 1 ;;\n"
             "      esac\n"
             "    fi\n"
             "  done\n"
@@ -106,11 +135,32 @@ class TestDoctor:
             "      exit 1\n"
             "    fi\n"
             "  done\n"
+            f'  if [ "$2" = "deployment.apps" ]; then cat {controller_path}; fi\n'
             "  exit 0\n"
             "fi\n"
             "exit 0\n"
         )
-        (bin_dir / "helm").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (bin_dir / "helm").write_text(
+            "#!/usr/bin/env bash\n"
+            'if [ "$1" != "template" ]; then exit 0; fi\n'
+            "create=1\n"
+            "lws=1\n"
+            'for arg in "$@"; do\n'
+            '  case "$arg" in\n'
+            "    rbac.create=false) create=0 ;;\n"
+            "    rbac.create=true) create=1 ;;\n"
+            "    rbac.leaderWorkerSets=false) lws=0 ;;\n"
+            "    rbac.leaderWorkerSets=true) lws=1 ;;\n"
+            "  esac\n"
+            "done\n"
+            'if [ "$create" = "1" ]; then\n'
+            '  echo "---"\n'
+            '  echo "kind: Role"\n'
+            '  echo "rules:"\n'
+            '  if [ "$lws" = "1" ]; then echo "  - resources: [leaderworkersets]"; fi\n'
+            "fi\n"
+            "exit 0\n"
+        )
         for binary in ("kubectl", "helm"):
             (bin_dir / binary).chmod(0o755)
         monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
@@ -124,11 +174,22 @@ class TestDoctor:
             broken_path=broken_path,
             forbidden_path=forbidden_path,
             deny_all_path=deny_all_path,
+            foreign_path=foreign_path,
+            unmanaged_path=unmanaged_path,
+            family_path=family_path,
+            served_apis_path=served_apis_path,
+            controller_path=controller_path,
         )
 
-    def run_doctor(self, *args: str) -> subprocess.CompletedProcess:
+    def run_preflight(self, *args: str) -> subprocess.CompletedProcess:
         release = [] if {"-r", "--release"} & set(args) else ["-r", "miles-workbench-alice"]
-        return subprocess.run([str(CLI_PATH), "doctor", *release, *args], capture_output=True, text=True, timeout=60)
+        return subprocess.run(
+            [str(CLI_PATH), "install", "--dry-run", *release, *args], capture_output=True, text=True, timeout=60
+        )
+
+    def permission_queries(self, fake_cluster: dict) -> str:
+        calls = fake_cluster["calls_path"].read_text().splitlines()
+        return "\n".join(line for line in calls if line.startswith("auth"))
 
     def test_it_asks_for_exactly_the_rights_the_install_and_the_workflow_need(self, fake_cluster):
         """Pinned in full: a missing check is a false pass, and a spurious one turns away a legitimate installer."""
@@ -144,17 +205,17 @@ class TestDoctor:
             }
         )
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
         calls = fake_cluster["calls_path"].read_text().splitlines()
         queries = {
             line.removeprefix("auth can-i ").removesuffix(" -n rl") for line in calls if line.startswith("auth")
         }
 
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "doctor passed" in result.stdout
+        assert "preflight checks passed" in result.stdout
         assert queries == expected
         assert "get namespace -- rl" in calls
-        assert f"get crd -- {LWS_RESOURCE}" in calls
+        assert f"api-resources --api-group {cli.LWS_API_GROUP} -o name" in calls
 
     @requires_helm
     @pytest.mark.parametrize("release", ["miles-workbench-alice", "wb", "a" * 53])
@@ -172,7 +233,7 @@ class TestDoctor:
 
     @requires_helm
     def test_the_checked_grants_are_exactly_the_role_the_chart_ships(self):
-        """The doctor exists to predict the install, so its rule table cannot drift from the rendered Role."""
+        """The checks exist to predict the install, so their rule table cannot drift from the rendered Role."""
         rendered = {}
         for rule in single_object_of_kind(render(), "Role")["rules"]:
             for group in rule["apiGroups"]:
@@ -186,11 +247,65 @@ class TestDoctor:
 
         assert rendered == checked
 
+    def test_an_empty_namespace_passes_and_the_check_spans_the_whole_chart_family(self, fake_cluster):
+        """Reinstalling over your own workbench is the normal case and must not read as a shared namespace."""
+        result = self.run_preflight("-n", "rl")
+        calls = fake_cluster["calls_path"].read_text()
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "get all -n rl -l app.kubernetes.io/managed-by!=Helm -o name" in calls
+        assert (
+            "get all -n rl -l app.kubernetes.io/managed-by=Helm,"
+            "app.kubernetes.io/name notin (miles-workbench,miles-run) -o name" in calls
+        )
+
+    def test_another_teams_helm_release_fails_the_run(self, fake_cluster):
+        """The Role covers the whole namespace, so a neighbour's workload would be under this workbench's control."""
+        (fake_cluster["foreign_path"]).write_text("statefulset.apps/someone-elses-database\n")
+
+        result = self.run_preflight("-n", "rl")
+
+        assert result.returncode == 1
+        assert "holds nothing but Miles releases" in result.stderr
+        assert "someone-elses-database" in result.stderr
+
+    def test_a_resource_nobody_manages_fails_the_run(self, fake_cluster):
+        """A hand-applied workload carries no chart labels, and this workbench would still be able to delete it."""
+        (fake_cluster["unmanaged_path"]).write_text("deployment.apps/hand-rolled\n")
+
+        result = self.run_preflight("-n", "rl")
+
+        assert result.returncode == 1
+        assert "hand-rolled" in result.stderr
+
+    def test_a_live_miles_run_beside_the_workbench_passes(self, fake_cluster):
+        """Reinstalling the workbench must not require tearing down the experiment it was installed to drive."""
+        fake_cluster["family_path"].write_text(
+            "statefulset.apps/myrun-miles-run-orchestrator\nservice/myrun-miles-run-engine\n"
+        )
+
+        result = self.run_preflight("-n", "rl")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "holds nothing but Miles releases" in result.stdout
+        assert "myrun-miles-run-orchestrator" not in result.stderr
+
+    def test_a_foreign_release_still_fails_while_a_miles_run_is_live(self, fake_cluster):
+        """The exemption is for the two Miles charts by name, not a blanket pass for a busy namespace."""
+        fake_cluster["family_path"].write_text("statefulset.apps/myrun-miles-run-orchestrator\n")
+        fake_cluster["foreign_path"].write_text("statefulset.apps/someone-elses-database\n")
+
+        result = self.run_preflight("-n", "rl")
+
+        assert result.returncode == 1
+        assert "someone-elses-database" in result.stderr
+        assert "myrun-miles-run-orchestrator" not in result.stderr
+
     def test_a_denied_rule_fails_the_run(self, fake_cluster):
         """Preflight exists to catch missing rights before install, so a denial must be a hard failure."""
         (fake_cluster["denied_path"]).write_text(f"configmaps {NO_DELEGATION}")
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
         assert "configmaps" in result.stderr
@@ -199,7 +314,7 @@ class TestDoctor:
         """Those are the two verbs Kubernetes checks: escalate for the Role, bind for its RoleBinding."""
         (fake_cluster["denied_path"]).write_text("configmaps")
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 0, result.stdout + result.stderr
         assert "WARN" in result.stderr
@@ -209,7 +324,7 @@ class TestDoctor:
         """helm applies the Role server-side, so Kubernetes checks both verbs against the object's name."""
         (fake_cluster["denied_path"]).write_text(f"configmaps {verb}:roles.rbac.authorization.k8s.io")
 
-        result = self.run_doctor("-n", "rl", "-r", "miles-workbench-alice")
+        result = self.run_preflight("-n", "rl", "-r", "miles-workbench-alice")
 
         assert result.returncode == 0, result.stdout + result.stderr
         assert (
@@ -224,7 +339,7 @@ class TestDoctor:
             " bind:roles.rbac.authorization.k8s.io/miles-workbench-alice"
         )
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
         assert "may grant the workbench its Role" in result.stderr
@@ -233,7 +348,7 @@ class TestDoctor:
         """Without escalate the Role can only carry rules the installer holds, so the install would be rejected."""
         (fake_cluster["denied_path"]).write_text(f"configmaps {NO_DELEGATION}")
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
         assert "may grant the workbench its Role" in result.stderr
@@ -242,7 +357,7 @@ class TestDoctor:
         """LWS rights come from a cluster admin, so that denial must point there rather than at the user."""
         (fake_cluster["denied_path"]).write_text(f"{LWS_RESOURCE} {NO_DELEGATION}")
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
         assert "cluster admin" in result.stderr
@@ -251,7 +366,7 @@ class TestDoctor:
         """Sending a user to their cluster admin over their own missing configmap rights wastes everyone's time."""
         (fake_cluster["denied_path"]).write_text(f"configmaps {NO_DELEGATION}")
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
         assert "cluster admin" not in result.stderr
@@ -260,55 +375,137 @@ class TestDoctor:
         """With rbac.create=false an admin pre-creates the identity, so none of that is the installer's to do."""
         (fake_cluster["denied_path"]).write_text("roles.rbac.authorization.k8s.io serviceaccounts configmaps")
 
-        result = self.run_doctor("-n", "rl", "--no-rbac")
-        calls = fake_cluster["calls_path"].read_text()
+        result = self.run_preflight("-n", "rl", "--no-rbac")
+        permission_queries = self.permission_queries(fake_cluster)
 
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "roles.rbac.authorization.k8s.io" not in calls
-        assert "serviceaccounts" not in calls
-        assert "configmaps" not in calls
+        assert "roles.rbac.authorization.k8s.io" not in permission_queries
+        assert "serviceaccounts" not in permission_queries
+        assert "configmaps" not in permission_queries
 
     def test_turning_off_leaderworkersets_drops_those_checks(self, fake_cluster):
         """A cluster without LWS installed cannot grant those rights, and must still get a workbench."""
         (fake_cluster["denied_path"]).write_text(LWS_RESOURCE)
 
-        result = self.run_doctor("-n", "rl", "--no-lws")
-        calls = fake_cluster["calls_path"].read_text()
+        result = self.run_preflight("-n", "rl", "--no-lws")
+        permission_queries = self.permission_queries(fake_cluster)
 
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "leaderworkersets" not in calls
+        assert "leaderworkersets" not in permission_queries
+
+    def test_a_values_file_that_switches_rbac_off_drops_those_checks_too(self, fake_cluster, tmp_path):
+        """-f decides the install as surely as --no-rbac does, and checking for rights it will not need fails it."""
+        values = tmp_path / "cluster.yaml"
+        values.write_text("rbac:\n  create: false\n")
+        (fake_cluster["denied_path"]).write_text("roles.rbac.authorization.k8s.io serviceaccounts")
+
+        result = self.run_preflight("-n", "rl", "-f", str(values), "--set", "rbac.create=false")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "serviceaccounts" not in self.permission_queries(fake_cluster)
+
+    def test_a_set_that_switches_rbac_back_on_restores_those_checks(self, fake_cluster):
+        """--no-rbac then --set rbac.create=true is what helm installs, so it is what has to be checked."""
+        (fake_cluster["denied_path"]).write_text(f"serviceaccounts {NO_DELEGATION}")
+
+        result = self.run_preflight("-n", "rl", "--no-rbac", "--set", "rbac.create=true")
+
+        assert result.returncode == 1
+        assert "serviceaccounts" in result.stderr
+
+    def test_a_set_that_switches_leaderworkersets_back_on_restores_those_checks(self, fake_cluster):
+        """The Role helm renders would carry LWS rights, so skipping the LWS checks would install a broken one."""
+        fake_cluster["served_apis_path"].write_text("")
+
+        result = self.run_preflight("-n", "rl", "--no-lws", "--set", "rbac.leaderWorkerSets=true")
+
+        assert result.returncode == 1
+        assert f"the cluster serves {LWS_RESOURCE}" in result.stderr
+
+    def test_values_that_do_not_render_stop_the_checks_from_guessing(self, fake_cluster, tmp_path):
+        """A values file helm rejects fails the install, and reporting on defaults it will never use is a lie."""
+        fake_cluster["bin_dir"].joinpath("helm").write_text(
+            '#!/usr/bin/env bash\nif [ "$1" = "template" ]; then echo "Error: bad value" >&2; exit 1; fi\nexit 0\n'
+        )
+        fake_cluster["bin_dir"].joinpath("helm").chmod(0o755)
+
+        result = self.run_preflight("-n", "rl")
+
+        assert result.returncode == 1
+        assert "your values render the chart" in result.stderr
+
+    @requires_helm
+    @pytest.mark.parametrize(
+        "overrides,expected",
+        [
+            ([], (True, True)),
+            (["--set", "rbac.create=false"], (False, False)),
+            (["--set", "rbac.leaderWorkerSets=false"], (True, False)),
+        ],
+    )
+    def test_the_plan_it_derives_is_what_the_chart_actually_renders(self, overrides, expected):
+        """The whole point is to read helm's answer, so the parse has to hold against the real chart."""
+        rendered = subprocess.run(
+            ["helm", "template", "wb", str(CHART_DIR), "-n", NAMESPACE, *overrides],
+            capture_output=True,
+            text=True,
+        )
+
+        assert rendered.returncode == 0, rendered.stderr
+        assert tuple(cli_module().rbac_plan_of(rendered.stdout)) == expected
 
     def test_a_missing_namespace_fails(self, fake_cluster):
         """A mistyped -n is the likeliest user error, and every can-i answer would still look fine."""
         (fake_cluster["absent_path"]).write_text("rl")
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
         assert "namespace rl exists" in result.stderr
 
-    def test_a_missing_lws_crd_fails(self, fake_cluster):
-        """Without the CRD the Role would grant rights over a resource that does not exist."""
-        (fake_cluster["absent_path"]).write_text(LWS_RESOURCE)
+    def test_an_lws_api_the_cluster_does_not_serve_fails(self, fake_cluster):
+        """Discovery answers every authenticated caller, so an empty api group is a real, readable absence."""
+        fake_cluster["served_apis_path"].write_text("")
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
-        assert f"crd {LWS_RESOURCE} exists" in result.stderr
+        assert f"the cluster serves {LWS_RESOURCE}" in result.stderr
 
-    def test_a_lookup_that_is_merely_forbidden_is_ignored(self, fake_cluster):
-        """A namespace-scoped user cannot read cluster-scoped objects, which is not a reason to fail."""
-        (fake_cluster["forbidden_path"]).write_text(f"rl {LWS_RESOURCE}")
+    def test_an_lws_controller_that_is_not_available_fails(self, fake_cluster):
+        """The CRD alone accepts LeaderWorkerSets that nothing will ever turn into pods."""
+        fake_cluster["controller_path"].write_text("False")
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
+
+        assert result.returncode == 1
+        assert "lws-controller-manager is available" in result.stderr
+
+    def test_an_lws_controller_nobody_may_read_is_reported_as_unverifiable(self, fake_cluster):
+        """A namespace-scoped user cannot read lws-system, and a silent pass would certify a dead controller."""
+        fake_cluster["forbidden_path"].write_text("lws-controller-manager")
+
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 0, result.stdout + result.stderr
+        assert "UNKNOWN" in result.stdout
+        assert "lws-controller-manager is available" in result.stdout
+
+    def test_a_lookup_that_is_merely_forbidden_is_not_reported_as_a_pass(self, fake_cluster):
+        """A namespace-scoped user cannot read cluster-scoped objects, and unreadable is not the same as present."""
+        (fake_cluster["forbidden_path"]).write_text("rl")
+
+        result = self.run_preflight("-n", "rl")
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "UNKNOWN  namespace rl exists" in result.stdout
+        assert "PASS  namespace rl exists" not in result.stdout
 
     def test_a_lookup_that_fails_for_any_other_reason_is_not_a_pass(self, fake_cluster):
         """Treating an unreadable answer as "present" is how a transient outage certifies a missing object."""
         (fake_cluster["broken_path"]).write_text("rl")
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
         assert "namespace rl exists" in result.stderr
@@ -317,14 +514,14 @@ class TestDoctor:
         """The Forbidden test must key off the server's status, not off text that a name can contain."""
         (fake_cluster["absent_path"]).write_text("forbidden-ns")
 
-        result = self.run_doctor("--namespace=forbidden-ns")
+        result = self.run_preflight("--namespace=forbidden-ns")
 
         assert result.returncode == 1
         assert "namespace forbidden-ns exists" in result.stderr
 
     def test_names_are_looked_up_after_the_option_terminator(self, fake_cluster):
         """kubectl would read a dash-leading name as flags, so lookups must pass it after "--"."""
-        self.run_doctor("--namespace=-dashed")
+        self.run_preflight("--namespace=-dashed")
 
         assert "get namespace -- -dashed" in fake_cluster["calls_path"].read_text()
 
@@ -340,7 +537,7 @@ class TestDoctor:
         """/version is served to every authenticated caller, so a failure here is never a permission problem."""
         (fake_cluster["unreachable_path"]).write_text(error)
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
         assert "cluster is reachable" in result.stderr
@@ -351,7 +548,7 @@ class TestDoctor:
         """A mistyped namespace denies everything, and a namespace-scoped user cannot look the namespace up."""
         (fake_cluster["deny_all_path"]).write_text("1")
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
         assert "confirm the namespace name and your kubectl context" in result.stderr
@@ -360,7 +557,7 @@ class TestDoctor:
         """Without helm there is nothing to check, and the message must say which binary is missing."""
         (fake_cluster["bin_dir"] / "helm").unlink()
 
-        result = self.run_doctor("-n", "rl")
+        result = self.run_preflight("-n", "rl")
 
         assert result.returncode == 1
         assert "helm is installed" in result.stderr
@@ -368,7 +565,7 @@ class TestDoctor:
 
     def test_the_namespace_is_required(self, fake_cluster):
         """Every check is namespace-scoped, so a missing namespace is a usage error, not a failed check."""
-        result = self.run_doctor()
+        result = self.run_preflight()
 
         assert result.returncode == 2
         assert "--namespace" in result.stderr
@@ -378,28 +575,28 @@ class TestDoctor:
     )
     def test_a_flag_without_its_value_is_a_usage_error(self, fake_cluster, args):
         """A dangling flag must fail loudly instead of consuming the next flag or spinning in the parser."""
-        result = self.run_doctor(*args)
+        result = self.run_preflight(*args)
 
         assert result.returncode == 2
 
     def test_an_unknown_argument_is_a_usage_error(self, fake_cluster):
         """A mistyped flag must not silently degrade into a partial check."""
-        result = self.run_doctor("-n", "rl", "--deploy")
+        result = self.run_preflight("-n", "rl", "--deploy")
 
         assert result.returncode == 2
         assert "--deploy" in result.stderr
 
     def test_asking_for_help_succeeds(self, fake_cluster):
-        """--help is not an error, and scripts wrapping the doctor read its exit code."""
-        result = self.run_doctor("--help")
+        """--help is not an error, and scripts wrapping the install read its exit code."""
+        result = self.run_preflight("--help")
 
         assert result.returncode == 0
-        assert "usage: cli.py doctor" in result.stdout
+        assert "usage: cli.py install" in result.stdout
 
     def test_captured_output_keeps_the_checks_in_order(self, fake_cluster):
         """Users redirect this into a ticket; block-buffered stdout would float the failures to the top."""
         result = subprocess.run(
-            [str(CLI_PATH), "doctor", "-n", "rl", "-r", "wb"],
+            [str(CLI_PATH), "install", "--dry-run", "-n", "rl", "-r", "wb"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

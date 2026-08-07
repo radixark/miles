@@ -1,4 +1,5 @@
 from miles.ray.specs import inference, multi_lora, rollout, train
+from miles.utils.arguments import parse_args_from_argv
 from miles.utils.workers.worker_spec import BaseWorkerSpec
 
 
@@ -14,3 +15,7 @@ def compute_specs(args) -> list[BaseWorkerSpec]:
         *([train.spec_trainer_controller_critic(args)] if args.use_critic else []),
         *train.specs_trainer(args),
     ]
+
+
+def compute_specs_from_argv(argv: list[str]) -> list[BaseWorkerSpec]:
+    return compute_specs(parse_args_from_argv(argv))

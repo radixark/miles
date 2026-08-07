@@ -1,7 +1,3 @@
-"""
-This file is not for miles framework itself, but as an optional utility to easily launch miles jobs and tests.
-"""
-
 import base64
 import datetime
 import json
@@ -9,19 +5,16 @@ import os
 import random
 import shlex
 import socket
-from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainRequest
 from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.http_utils import wait_for_server_ready
-from miles.utils.typer_utils import dataclass_cli
 
-_ = exec_command_cpu, exec_command_gpu, exec_command_multi_node, dataclass_cli
-
-repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
+repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[4]
 
 
 def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | None) -> str:
@@ -77,9 +70,15 @@ def convert_checkpoint(
 
 
 def rsync_simple(path_src: str, path_dst: str, num_nodes: int | None = None):
-    exec_command_multi_node(
-        f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}", num_nodes=num_nodes
-    )
+    exec_command_multi_node(rsync_command(path_src=path_src, path_dst=path_dst), num_nodes=num_nodes)
+
+
+def rsync_command(*, path_src: str, path_dst: str, lock_path: str | None = None) -> str:
+    copy = f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}"
+    if lock_path is None:
+        return copy
+    lock_dir = shlex.quote(str(Path(lock_path).parent))
+    return f"mkdir -p {lock_dir} && flock {shlex.quote(lock_path)} bash -c {shlex.quote(copy)}"
 
 
 def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
@@ -100,84 +99,20 @@ def fp8_cast_bf16(path_src, path_dst):
     )
 
 
-# This class can be extended by concrete scripts
-@dataclass
-class ExecuteTrainConfig:
-    cuda_core_dump: bool = False
-    num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
-    extra_env_vars: str = ""
-    output_dir: str = "/root/shared_data"
-
-
-def execute_train(
-    train_args: str,
-    num_gpus_per_node: int,
-    megatron_model_type: str | None,
-    train_script: str = "train.py",
-    before_ray_job_submit=None,
-    extra_env_vars=None,
-    config: ExecuteTrainConfig | None = None,
-    megatron_path: str = "/root/Megatron-LM",
-):
-    if extra_env_vars is None:
-        extra_env_vars = {}
-    if config is None:
-        config = ExecuteTrainConfig()
-    if not os.path.isabs(train_script):
-        train_script = f"{repo_base_dir}/{train_script}"
-    external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
-    master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-
-    train_backend_fsdp = "--train-backend fsdp" in train_args
-    assert train_backend_fsdp == (megatron_model_type is None)
-
-    exec_command_cpu(
-        "pkill -9 sglang; "
-        "sleep 3; "
-        f"{'' if external_ray else 'ray stop --force; '}"
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # cannot be run in CI, o/w kill the parent script
-        # TODO: do we really need this kill? (or can we instead kill miles)
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "sleep 3; "
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "pkill -9 redis; "
-        "true; "
-    )
-
-    if not external_ray:
-        exec_command_cpu(
-            # will prevent ray from buffering stdout/stderr
-            f"export PYTHONUNBUFFERED=1 && "
-            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
-        )
-
-    if (f := before_ray_job_submit) is not None:
-        f()
-
-    runtime_env_vars = {
+def build_train_env_vars(request: ExecuteTrainRequest, backend_env_vars: dict[str, str]) -> dict[str, str]:
+    config = request.config
+    return {
         # exported for the submitting client too, but only the runtime env reaches the ray workers
         "PYTHONUNBUFFERED": "1",
         # If setting this in FSDP, the computation communication overlapping may have issues
         **(
             {}
-            if train_backend_fsdp
+            if request.train_backend_fsdp
             else {
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             }
         ),
-        "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
-        **{
-            k: os.environ[k]
-            for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")
-            if k in os.environ
-        },
-        "no_proxy": f"127.0.0.1,{master_addr}",
-        # This is needed by megatron / torch distributed in multi-node setup
-        "MASTER_ADDR": master_addr,
+        **backend_env_vars,
         **(
             {
                 "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
@@ -188,22 +123,9 @@ def execute_train(
             if config.cuda_core_dump
             else {}
         ),
-        **extra_env_vars,
+        **request.extra_env_vars,
         **_parse_extra_env_vars(config.extra_env_vars),
     }
-    runtime_env_vars["PYTHONPATH"] = _pythonpath_with_sources(megatron_path, runtime_env_vars.get("PYTHONPATH"))
-    runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
-
-    if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
-        model_args = shell_safe_model_args(megatron_model_type)
-        exec_command_cpu(
-            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
-            f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
-            f"--runtime-env-json={shlex.quote(runtime_env_json)} "
-            f"-- python3 {train_script} "
-            f"{model_args} "
-            f"{train_args}"
-        )
 
 
 def _parse_extra_env_vars(text: str):

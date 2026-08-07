@@ -60,6 +60,9 @@ class SchedulingSpec(FrozenStrictBaseModel):
         ), f"a cell wants {gpus_per_cell} gpus, which is not a whole number of {self.num_gpus_per_node}-gpu nodes"
         return gpus_per_cell // self.num_gpus_per_node
 
+    def gpus_per_pod(self) -> int:
+        return self.gpus_per_cell() // self.pods_per_cell()
+
     def ranks_per_pod(self) -> int:
         pods_per_cell = self.pods_per_cell()
         assert self.num_workers_per_cell % pods_per_cell == 0, (
@@ -145,3 +148,16 @@ class ServeWorkerSpec(BaseWorkerSpec):
                 PortInfo(name=RPC_PORT_NAME, static_port=DEFAULT_RPC_PORT, mode="per_worker", allow_dynamic=True)
             )
         return {**values, "port_infos": port_infos}
+
+
+def assert_rank_ports_fit(spec: ServeWorkerSpec) -> None:
+    ranks_per_pod = spec.scheduling.ranks_per_pod()
+    rpc_port = next(port.static_port for port in spec.port_infos if port.name == RPC_PORT_NAME)
+    for port in spec.port_infos:
+        if port.name == RPC_PORT_NAME:
+            continue
+        assert rpc_port + ranks_per_pod <= port.static_port or port.static_port + port.num_consecutive <= rpc_port, (
+            f"spec '{spec.name}' serves {ranks_per_pod} ranks per pod from {RPC_PORT_NAME} port {rpc_port} "
+            f"upwards, which reaches into the {port.num_consecutive} port(s) '{port.name}' claims from "
+            f"{port.static_port}"
+        )

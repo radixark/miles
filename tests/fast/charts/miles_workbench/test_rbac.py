@@ -1,12 +1,32 @@
+import json
+from typing import Any
+
 from tests.fast.charts.utils import (
     NAMESPACE,
     RELEASE_NAME,
     objects_of_kind,
     pod_spec,
     render,
+    render_run,
     requires_helm,
     single_object_of_kind,
 )
+
+A_RUN = (
+    "--set-json",
+    f'run.inferenceEngines={json.dumps([{"name": "engine", "replicas": 1, "size": 1, "command": ["python"]}])}',
+    "--set-json",
+    f'run.trainers={json.dumps([{"name": "trainer", "replicas": 1, "size": 1, "command": ["python"]}])}',
+)
+
+
+def granted_verbs(role: dict[str, Any]) -> dict[tuple[str, str], set[str]]:
+    return {
+        (group, resource): set(rule["verbs"])
+        for rule in role["rules"]
+        for group in rule["apiGroups"]
+        for resource in rule["resources"]
+    }
 
 
 @requires_helm
@@ -26,16 +46,9 @@ class TestRbacTemplates:
 
     def test_the_role_stays_inside_what_installing_miles_run_needs(self):
         """Least privilege is the point of shipping our own Role, so the rule set is pinned in full."""
-        rules = single_object_of_kind(render(), "Role")["rules"]
-        granted = {
-            (group, resource): set(rule["verbs"])
-            for rule in rules
-            for group in rule["apiGroups"]
-            for resource in rule["resources"]
-        }
         write = {"create", "delete", "get", "list", "patch", "update", "watch"}
 
-        assert granted == {
+        assert granted_verbs(single_object_of_kind(render(), "Role")) == {
             ("", "configmaps"): write,
             ("", "secrets"): write,
             ("", "serviceaccounts"): write,
@@ -47,19 +60,42 @@ class TestRbacTemplates:
             ("", "persistentvolumeclaims"): {"get", "list", "watch"},
             ("apps", "statefulsets"): write,
             ("batch", "jobs"): write,
+            ("rbac.authorization.k8s.io", "roles"): write,
+            ("rbac.authorization.k8s.io", "rolebindings"): write,
             ("leaderworkerset.x-k8s.io", "leaderworkersets"): write,
         }
 
-    def test_the_role_can_neither_grant_nor_escalate_permissions(self):
-        """A workbench that can write RBAC or reach cluster scope would be as dangerous as binding admin."""
-        rules = single_object_of_kind(render(), "Role")["rules"]
-        groups = {group for rule in rules for group in rule["apiGroups"]}
-        resources = {resource for rule in rules for resource in rule["resources"]}
+    def test_the_role_covers_every_object_kind_miles_run_installs(self):
+        """A kind miles-run renders but the Role omits turns every install into an apiserver rejection."""
+        granted = granted_verbs(single_object_of_kind(render(), "Role"))
+        installed = {
+            ("" if group in ("", "v1") else group, obj["kind"].lower() + "s")
+            for obj in render_run(*A_RUN)
+            for group in [obj["apiVersion"].rpartition("/")[0]]
+        }
 
-        assert "rbac.authorization.k8s.io" not in groups
-        assert not {"roles", "rolebindings", "clusterroles", "clusterrolebindings"} & resources
-        assert "*" not in resources and "*" not in groups
-        assert not any("*" in rule["verbs"] for rule in rules)
+        assert installed <= set(granted), sorted(installed - set(granted))
+        assert all("create" in granted[key] for key in installed)
+
+    def test_the_role_is_a_superset_of_the_role_miles_run_asks_it_to_create(self):
+        """Kubernetes refuses a Role or RoleBinding carrying rules its creator does not already hold."""
+        granted = granted_verbs(single_object_of_kind(render(), "Role"))
+        created = [granted_verbs(role) for role in objects_of_kind(render_run(*A_RUN), "Role")]
+
+        assert created
+        for rules in created:
+            assert all(verbs <= granted.get(key, set()) for key, verbs in rules.items())
+
+    def test_the_role_can_neither_escalate_nor_reach_cluster_scope(self):
+        """It may write namespaced RBAC only because it holds those rules; escalate or bind would lift that ceiling."""
+        rules = single_object_of_kind(render(), "Role")["rules"]
+        resources = {resource for rule in rules for resource in rule["resources"]}
+        verbs = {verb for rule in rules for verb in rule["verbs"]}
+
+        assert not {"clusterroles", "clusterrolebindings"} & resources
+        assert not {"escalate", "bind", "impersonate", "*"} & verbs
+        assert "*" not in resources
+        assert "*" not in {group for rule in rules for group in rule["apiGroups"]}
 
     def test_the_leaderworkerset_rules_can_be_turned_off(self):
         """A cluster without LWS installed cannot grant rights over it, and must still get a workbench."""

@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -6,34 +8,72 @@ from tests.fast.charts.utils import (
     SHARED_INFRA_SCHEMA_PATH,
     chart_directories,
     container,
+    only_container_of,
     pod_spec,
+    pod_spec_of,
     render,
+    render_run,
     requires_helm,
 )
 
+CLUSTER_VALUES = dict(
+    infra=dict(
+        image=dict(repository="registry.local/miles", tag="v1"),
+        sharedStorage=dict(type="pvc", pvcClaimName="shared", mountPath="/cluster-storage"),
+        paths=dict(runsSubPath="teamdata", repos=dict(miles="myuser/miles")),
+        nodeLocalStorage=dict(hostPath="/local", mountPath="/scratch"),
+        scheduling=dict(nodeSelector={"pool": "cpu"}),
+        env={"HF_ENDPOINT": "https://mirror"},
+    )
+)
+
+MILES_CODE_MOUNT = {"name": "shared-storage", "mountPath": "/root/miles", "subPath": "myuser/miles"}
+
+
+def shared_infra_schema() -> dict[str, Any]:
+    return json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]["infra"]
+
+
+def cluster_values_file(tmp_path: Path) -> Path:
+    values_file = tmp_path / "cluster.yaml"
+    values_file.write_text(yaml.safe_dump(CLUSTER_VALUES))
+    return values_file
+
+
+def chart_infra_defaults(chart_dir: Path) -> dict[str, Any]:
+    return yaml.safe_load((chart_dir / "values.yaml").read_text())["infra"]
+
 
 class TestSharedInfraContract:
-    def test_the_contract_is_exactly_the_four_cluster_shaped_sections(self):
-        """A fifth section would have no helper behind it and would never reach a pod."""
-        shared = json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]
+    def test_the_contract_is_the_single_infra_subtree(self):
+        """One top-level key is what lets a cluster values file be handed to any chart unchanged."""
+        assert set(json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]) == {"infra"}
 
-        assert set(shared) == {"image", "sharedStorage", "scheduling", "env"}
+    def test_the_infra_subtree_is_exactly_the_cluster_shaped_sections(self):
+        """A section with no helper behind it would be accepted by the schema and never reach a pod."""
+        assert set(shared_infra_schema()["properties"]) == {
+            "image",
+            "sharedStorage",
+            "paths",
+            "nodeLocalStorage",
+            "scheduling",
+            "env",
+        }
 
     def test_every_chart_inlines_the_shared_infra_schema_verbatim(self):
-        """One cluster values file must fit every Miles chart, so no chart may let the shared keys drift."""
-        shared = json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]
+        """Helm cannot $ref across files, so the copies only stay equal if something pins them equal."""
+        shared = shared_infra_schema()
 
         for chart_dir in chart_directories():
             properties = json.loads((chart_dir / "values.schema.json").read_text())["properties"]
-            assert {key: properties.get(key) for key in shared} == shared, chart_dir
+            assert properties["infra"] == shared, chart_dir
 
     def test_every_chart_defaults_every_shared_infra_key(self):
         """A shared values file is only partly honoured by a chart that leaves one of the keys undefaulted."""
-        shared = json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]
+        sections = set(shared_infra_schema()["properties"])
 
         for chart_dir in chart_directories():
-            defaults = yaml.safe_load((chart_dir / "values.yaml").read_text())
-            assert set(shared) <= set(defaults), chart_dir
+            assert sections <= set(chart_infra_defaults(chart_dir)), chart_dir
 
     def test_every_chart_ships_the_files_the_contract_is_pinned_through(self):
         """A chart shipping no values.schema.json would silently escape the two assertions above."""
@@ -43,28 +83,28 @@ class TestSharedInfraContract:
 
     def test_no_chart_leaves_a_shared_key_undefined(self):
         """A chart that defaults a shared section to null accepts the file and then renders nothing from it."""
-        shared = json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]
+        sections = set(shared_infra_schema()["properties"])
 
         for chart_dir in chart_directories():
-            defaults = yaml.safe_load((chart_dir / "values.yaml").read_text())
-            for key in shared:
-                assert defaults[key] is not None, (chart_dir, key)
+            defaults = chart_infra_defaults(chart_dir)
+            for section in sections:
+                assert defaults[section] is not None, (chart_dir, section)
 
     @requires_helm
-    def test_a_shared_cluster_values_file_renders_the_chart(self, tmp_path):
-        """The shared sections alone must drive this chart, so the same file can be passed to every Miles chart."""
-        values_file = tmp_path / "cluster.yaml"
-        values_file.write_text(
-            yaml.safe_dump(
-                dict(
-                    image=dict(repository="registry.local/miles", tag="v1"),
-                    sharedStorage=dict(type="pvc", pvcClaimName="shared", mountPath="/cluster-storage"),
-                    scheduling=dict(nodeSelector={"pool": "cpu"}),
-                    env={"HF_ENDPOINT": "https://mirror"},
-                )
-            )
-        )
-        objects = render("-f", str(values_file))
+    def test_one_infra_nested_cluster_file_renders_the_workbench_chart(self, tmp_path):
+        """The infra section alone must drive the chart, or a cluster file would need per-chart edits."""
+        objects = render("-f", str(cluster_values_file(tmp_path)))
 
         assert container(objects)["image"] == "registry.local/miles:v1"
         assert pod_spec(objects)["nodeSelector"] == {"pool": "cpu"}
+        assert MILES_CODE_MOUNT in container(objects)["volumeMounts"]
+
+    @requires_helm
+    def test_the_very_same_cluster_file_renders_the_run_chart(self, tmp_path):
+        """Two charts reading the same file differently is exactly what the shared schema exists to prevent."""
+        objects = render_run("-f", str(cluster_values_file(tmp_path)))
+        orchestrator = only_container_of(objects, "StatefulSet", "myrun-miles-run-orchestrator")
+
+        assert orchestrator["image"] == "registry.local/miles:v1"
+        assert pod_spec_of(objects, "StatefulSet", "myrun-miles-run-orchestrator")["nodeSelector"] == {"pool": "cpu"}
+        assert MILES_CODE_MOUNT in orchestrator["volumeMounts"]

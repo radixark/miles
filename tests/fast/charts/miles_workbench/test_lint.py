@@ -12,8 +12,8 @@ class TestChartLint:
     @pytest.mark.parametrize(
         "overrides",
         [
-            ["--set", "sharedStorage.type=pvc", "--set", "sharedStorage.pvcClaimName=shared"],
-            ["--set", "sharedStorage.type=none"],
+            ["--set", "infra.sharedStorage.type=pvc", "--set", "infra.sharedStorage.pvcClaimName=shared"],
+            ["--set", "infra.sharedStorage.type=none"],
             ["--set", "rbac.leaderWorkerSets=false"],
             ["--set", "rbac.create=false", "--set", "serviceAccount.name=preexisting"],
         ],

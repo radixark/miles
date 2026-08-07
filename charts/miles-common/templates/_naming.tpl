@@ -6,13 +6,6 @@
 {{- end }}
 {{- end }}
 
-{{- define "miles-common.componentName" -}}
-{{- $context := .context -}}
-{{- $budget := sub 52 (add1 (len .component)) -}}
-{{- $prefix := include "miles-common.fullname" $context | trunc (int $budget) | trimSuffix "-" -}}
-{{- printf "%s-%s" $prefix .component }}
-{{- end }}
-
 {{- define "miles-common.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}

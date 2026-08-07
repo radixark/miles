@@ -13,29 +13,53 @@ OS, same image, same paths as the training pods.
 
 ## Use
 
+- Every subcommand takes `-n/--namespace` and `-r/--release`.
+- `install` creates the namespace only if it is missing, checks that your identity
+  may install the chart into an otherwise empty namespace, vendors the library
+  chart, then runs `helm upgrade --install`.
+
 ```bash
-# check whether your identity may install the chart and use the workbench
-./charts/miles-workbench/cli.py doctor -n <ns> -r <release>
-
-# doctor with matching options, vendor the library chart, then helm upgrade --install
 ./charts/miles-workbench/cli.py install -n <ns> -r <release> --image-tag <tag> -f my-cluster.yaml
+```
 
-# shell into the pod, or run any command in it
+Run only those checks, changing nothing in the cluster:
+
+```bash
+./charts/miles-workbench/cli.py install --dry-run -n <ns> -r <release>
+```
+
+Shell into the pod:
+
+```bash
 ./charts/miles-workbench/cli.py exec -n <ns> -r <release>
 ```
+
+Run any command in it instead:
+
+```bash
+./charts/miles-workbench/cli.py exec -n <ns> -r <release> -- python -c 'print(1)'
+```
+
+| Subcommand | Extra flags |
+| --- | --- |
+| `install` | `--dry-run`, `--image-tag`, `-f/--values` (repeatable), `--set` (repeatable), `--skip-doctor`, `--no-rbac`, `--no-lws` |
+| `exec` | trailing command, `bash` by default |
 
 ## Values
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `image.repository` / `.tag` | `radixark/miles` / `dev` | Same image and tag as the training pods. |
-| `image.pullPolicy` / `.pullSecrets` | `Always` / `[]` | Standard pull settings. |
-| `sharedStorage.type` | `hostPath` | `hostPath`, `pvc`, or `none`. |
-| `sharedStorage.hostPath` | `/cluster-storage` | Host path to bind. |
-| `sharedStorage.pvcClaimName` | `""` | Pre-existing RWX claim. |
-| `sharedStorage.mountPath` | `/cluster-storage` | Keep identical to the training pods; no path translation. |
-| `scheduling.nodeSelector` / `.tolerations` / `.affinity` | `{}` / `[]` / `{}` | Node-pool placement. |
-| `env` | `{}` | Extra environment variables. |
+| `infra.image.repository` / `.tag` | `radixark/miles` / `dev` | Same image and tag as the training pods. |
+| `infra.image.pullPolicy` / `.pullSecrets` | `Always` / `[]` | Standard pull settings. |
+| `infra.sharedStorage.type` | `hostPath` | `hostPath`, `pvc`, or `none`. |
+| `infra.sharedStorage.hostPath` | `/cluster-storage` | Host path to bind. |
+| `infra.sharedStorage.pvcClaimName` | `""` | Pre-existing RWX claim. |
+| `infra.sharedStorage.mountPath` | `/cluster-storage` | Keep identical to the training pods; no path translation. |
+| `infra.paths.runsSubPath` | `miles_data` | Sub-path of the shared volume that `miles-run` writes run directories under. |
+| `infra.paths.repos.miles` / `.megatron` / `.sglang` | `""` | Sub-path of a checkout to mount over `/root/miles`, `/root/Megatron-LM`, `/sgl-workspace/sglang` and put on `PYTHONPATH`. Empty keeps the image's own copy. |
+| `infra.nodeLocalStorage.hostPath` / `.mountPath` | `""` / `/scratch` | Node-local scratch disk for `miles-run` pods; empty mounts none. |
+| `infra.scheduling.nodeSelector` / `.tolerations` / `.affinity` | `{}` / `[]` / `{}` | Node-pool placement. |
+| `infra.env` | `{}` | Extra environment variables. |
 | `resources` | 2 CPU / 8Gi requests | It parses args, renders values, follows logs. |
 | `rbac.create` | `true` | Create the ServiceAccount, Role and RoleBinding. |
 | `rbac.leaderWorkerSets` | `true` | Include the LeaderWorkerSet rules `miles-run` needs. |
@@ -43,8 +67,8 @@ OS, same image, same paths as the training pods.
 
 ## Shared values with `miles-run`
 
-- `image`, `sharedStorage`, `scheduling`, `env` sit under the same paths in every
-  Miles chart, so one per-cluster file drives all of them.
+- The whole `infra` subtree sits under the same paths in every Miles chart, so one
+  per-cluster file drives all of them.
 - `charts/shared-infra.schema.json` is the contract; helm cannot `$ref` across
   files, so each chart inlines it and a test pins them equal.
 - `charts/miles-common` renders those sections plus naming and labels.
@@ -57,10 +81,17 @@ OS, same image, same paths as the training pods.
 | 2, per namespace | You | `helm install`. Needs every rule in the Role, or both `escalate` and `bind` on roles — either cluster-wide or restricted to this release's Role by name. |
 | 3, daily | The pod | Installs and uninstalls `miles-run` releases as its ServiceAccount. |
 
-- The Role carries what `miles-run` is made of — ConfigMaps, Secrets, Services,
-  ServiceAccounts, StatefulSets, Jobs, LeaderWorkerSets — plus `pods`,
-  `pods/log`, `pods/exec`, read-only `events`. Nothing over RBAC objects, nothing
-  cluster-scoped, no `scale`. It is fixed: another object type gets added here.
-- The boundary is the namespace, not the Role: anything that may create
+- The Role lists exactly the object kinds `miles-run` is made of — ConfigMaps,
+  Secrets, Services, ServiceAccounts, StatefulSets, Jobs, LeaderWorkerSets, and
+  the namespaced Roles and RoleBindings its orchestrator needs — plus `pods`,
+  `pods/exec`, `pods/log` and read-only `events` and `persistentvolumeclaims`;
+  nothing cluster-scoped and no `scale`.
+  Adding a new object kind to the chart means adding it here too.
+- It grants no `escalate` and no `bind`: Kubernetes admits a namespaced Role or
+  RoleBinding write only when the writer already holds every rule being granted,
+  so this Role must stay a superset of the Role `miles-run` creates for its
+  orchestrator or the install breaks.
+- The real boundary is the namespace, not the Role: anything that may create
   workloads may name another ServiceAccount and read its token. Keep privileged
-  accounts out of the namespace; use an admission policy for a hard boundary.
+  accounts out of the namespace, and use an admission policy if you need a hard
+  boundary.

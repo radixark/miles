@@ -37,15 +37,15 @@ class TestLibraryChart:
         """The library chart owns image, scheduling, env and storage rendering for every chart."""
         objects = render(
             "--set",
-            "image.repository=registry.local/miles",
+            "infra.image.repository=registry.local/miles",
             "--set",
-            "image.tag=v1",
+            "infra.image.tag=v1",
             "--set",
-            "image.pullSecrets[0]=cred",
+            "infra.image.pullSecrets[0]=cred",
             "--set",
-            "scheduling.nodeSelector.pool=cpu",
+            "infra.scheduling.nodeSelector.pool=cpu",
             "--set",
-            "env.HTTP_PROXY=http://proxy:7890",
+            "infra.env.HTTP_PROXY=http://proxy:7890",
         )
         spec = pod_spec(objects)
 
@@ -74,7 +74,7 @@ class TestLibraryChart:
         (umbrella / "values.yaml").write_text(yaml.safe_dump({"global": {"imageRegistry": "registry.local"}}))
 
         result = subprocess.run(
-            ["helm", "template", "rel", str(umbrella), "-n", NAMESPACE], capture_output=True, text=True
+            ["helm", "template", "myrel", str(umbrella), "-n", NAMESPACE], capture_output=True, text=True
         )
 
         assert result.returncode == 0, result.stderr
