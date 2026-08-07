@@ -2606,6 +2606,10 @@ def _validate_rematerialize_param_from_master_weight(args):
         "run. Lift this once all cells update weights."
     )
     assert args.colocate and args.offload_train
+    assert args.offload_train_target == "cpu", (
+        "--offload-train-target=disk streams the weights to NVMe and reads them back from GPU after "
+        "resume, so there is no backup for the rebuild to replace"
+    )
     assert args.use_distributed_optimizer
     assert args.enable_weights_backuper
     assert not args.keep_old_actor
