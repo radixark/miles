@@ -1,3 +1,6 @@
+import types
+
+import pytest
 import torch
 
 from miles.backends.training_utils import cp_utils
@@ -72,3 +75,24 @@ def test_local_response_masks_use_sequence_shards_for_sglang_ulysses(monkeypatch
     local_masks = cp_utils.get_local_response_loss_masks([11], [7], masks)
 
     torch.testing.assert_close(local_masks[0], torch.ones(2))
+
+
+@pytest.mark.parametrize("requires_grad", [False, True])
+def test_redistribute_empty_fill_inherits_requires_grad(monkeypatch, requires_grad):
+    monkeypatch.setattr(
+        cp_utils, "get_parallel_state", lambda: _parallel_state(cp_size=2, cp_rank=1, cp_comm_type="p2p")
+    )
+    monkeypatch.setattr(cp_utils.dist.nn, "all_reduce", lambda tensor, group=None: tensor)
+
+    # Rank 1 owns no response tokens for this length, so redistribution inserts a fill tensor.
+    value = torch.zeros(4, requires_grad=requires_grad)
+    result = {"entropy": [value]}
+    cp_utils.allgather_cp_redistribute(
+        result,
+        logits=torch.zeros(1, 8, 1),
+        args=types.SimpleNamespace(qkv_format="thd"),
+        total_lengths=[8],
+        response_lengths=[4],
+    )
+
+    assert result["entropy"][0].requires_grad is requires_grad
