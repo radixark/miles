@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import types
 import uuid
 from pathlib import Path
@@ -13,10 +14,11 @@ from unittest.mock import patch
 import pytest
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
-from miles.utils.audit_utils.event_logger.models import EditablePackageInfo, EnvReportEvent, NodeEnvReport
+from miles.utils.audit_utils.event_logger.models import EditablePackageInfo, EnvReportEvent, GitRepoInfo, NodeEnvReport
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.env_report import (
     LAUNCHER_REPORT_ENV_VAR,
+    EnvReporter,
     _collect_git_info,
     _collect_pip_info,
     _is_editable,
@@ -66,7 +68,7 @@ _SAMPLE_PIP_INSPECT = {
 
 
 def _args(**overrides) -> argparse.Namespace:
-    return argparse.Namespace(**{"env_report": "", **overrides})
+    return argparse.Namespace(**{"env_report": "", "env_report_interval_seconds": 3600.0, **overrides})
 
 
 def _mock_pip_inspect() -> subprocess.CompletedProcess:
@@ -93,12 +95,6 @@ def without_event_logger():
     set_event_logger(None)
     yield
     set_event_logger(None)
-
-
-def _join_reporter_threads(timeout: float = 30.0) -> None:
-    for thread in threading.enumerate():
-        if thread.name == "env-report":
-            thread.join(timeout=timeout)
 
 
 class TestParsePipEntry:
@@ -442,36 +438,105 @@ class TestLogEnvReport:
         assert "stored=false" in caplog.text
 
 
-class TestStartEnvReporting:
+class TestEnvReporter:
+    def _reporter(self, *, interval_seconds: float) -> EnvReporter:
+        return EnvReporter(snapshot=collect_process_env_snapshot(_args()), interval_seconds=interval_seconds)
+
     def test_reports_from_a_background_thread(self, mocked_pip_inspect, event_log_dir: Path) -> None:
         """Collection shells out, so it must not sit on the caller's startup path."""
-        start_env_reporting(_args())
-        _join_reporter_threads()
+        collecting = threading.Event()
+        release = threading.Event()
 
-        assert len(read_events(event_log_dir)) == 1
+        def block(*, snapshot):
+            collecting.set()
+            release.wait(timeout=30.0)
+
+        with patch("miles.utils.env_report.log_env_report", side_effect=block):
+            reporter = start_env_reporting(_args())
+            assert collecting.wait(timeout=30.0)
+            release.set()
+            reporter.stop()
 
     def test_snapshots_the_environment_before_the_caller_changes_it(
         self, mocked_pip_inspect, event_log_dir: Path
     ) -> None:
         """The reporting thread must not read args or os.environ while the caller is still mutating them."""
-        args = _args(lr=1.0)
+        tags = ["a"]
+        args = _args(lr=1.0, tags=tags)
 
-        start_env_reporting(args)
+        reporter = start_env_reporting(args)
         args.lr = 2.0
-        _join_reporter_threads()
+        tags.append("b")
+        reporter.stop()
 
-        event = read_events(event_log_dir)[0]
-        assert event.report.process.args.values["lr"] == 1.0
+        recorded = read_events(event_log_dir)[0].report.process.args
+        assert recorded.values["lr"] == 1.0
+        assert recorded.values["tags"] == ["a"]
 
-    def test_a_failing_collection_only_warns(self, event_log_dir: Path, caplog) -> None:
-        """A broken environment probe must never take the process down with it."""
-        with patch("miles.utils.env_report.log_env_report", side_effect=RuntimeError("boom")):
+    def test_reports_again_after_the_interval(self, mocked_pip_inspect, event_log_dir: Path) -> None:
+        """Code can be swapped under a long-lived process, so one report at startup is not enough."""
+        reported_twice = threading.Event()
+        commits = iter(["commit-one", "commit-two"])
+
+        def changing_git_info(*, package_name: str, location: str):
+            try:
+                commit = next(commits)
+            except StopIteration:
+                reported_twice.set()
+                return None
+            return GitRepoInfo(package_name=package_name, location=location, commit=commit, dirty=False, diff_stat="")
+
+        reporter = self._reporter(interval_seconds=0.01)
+        with patch("miles.utils.env_report._collect_git_info", side_effect=changing_git_info):
+            reporter.start()
+            assert reported_twice.wait(timeout=30.0)
+            reporter.stop()
+
+        reports = [event.report for event in read_events(event_log_dir)]
+        assert [repo.commit for report in reports[:2] for repo in report.git_repos][:2] == [
+            "commit-one",
+            "commit-two",
+        ]
+
+    @pytest.mark.parametrize("interval_seconds", [0.0, -1.0])
+    def test_a_non_positive_interval_reports_only_at_startup(
+        self, mocked_pip_inspect, event_log_dir: Path, interval_seconds: float
+    ) -> None:
+        reporter = self._reporter(interval_seconds=interval_seconds)
+
+        reporter.start()
+        reporter.stop()
+        time.sleep(0.2)
+
+        assert len(read_events(event_log_dir)) == 1
+
+    @pytest.mark.parametrize("interval_seconds", [float("nan"), float("inf")])
+    def test_a_non_finite_interval_is_refused(self, interval_seconds: float) -> None:
+        """nan never waits and inf overflows the wait, so both silently break the reporter."""
+        with pytest.raises(AssertionError):
+            self._reporter(interval_seconds=interval_seconds)
+
+    def test_a_failing_report_does_not_stop_the_reporter(
+        self, mocked_pip_inspect, event_log_dir: Path, caplog
+    ) -> None:
+        """A broken environment probe must never take the process, or the next report, down with it."""
+        succeeded = threading.Event()
+        outcomes = iter([RuntimeError("boom")])
+
+        def fail_once(*, snapshot):
+            try:
+                raise next(outcomes)
+            except StopIteration:
+                succeeded.set()
+
+        reporter = self._reporter(interval_seconds=0.01)
+        with patch("miles.utils.env_report.log_env_report", side_effect=fail_once):
             with caplog.at_level(logging.WARNING, logger="miles.utils.env_report"):
-                start_env_reporting(_args())
-                _join_reporter_threads()
+                reporter.start()
+                assert succeeded.wait(timeout=30.0)
+                reporter.stop()
 
         assert "Failed to log the env report" in caplog.text
-        assert read_events(event_log_dir) == []
 
 
 class TestCollectGitInfo:

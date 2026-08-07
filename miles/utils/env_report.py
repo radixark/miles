@@ -2,8 +2,10 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import os
 import platform
+import random
 import re
 import socket
 import subprocess
@@ -39,6 +41,8 @@ _SECRET_ENV_VAR_PATTERN = re.compile(
 _SECRET_ARG_NAMES = frozenset({"wandb_key"})
 _SECRET_ARG_FLAGS = frozenset(f"--{name.replace('_', '-')}" for name in _SECRET_ARG_NAMES)
 _REPORTER_THREAD_NAME = "env-report"
+_INTERVAL_JITTER_RATIO = 0.5
+_STOP_TIMEOUT_SECONDS = 5.0
 LAUNCHER_REPORT_ENV_VAR = "MILES_SCRIPT_ENV_REPORT"
 _REDACTED_PREFIX = "redacted-sha256:"
 _REDACTED_HASH_CHARS = 16
@@ -69,18 +73,45 @@ def decode_env_report(raw: str) -> dict[str, Any] | None:
             return None
 
 
-def start_env_reporting(args: Any) -> None:
-    snapshot = collect_process_env_snapshot(args)
-    threading.Thread(
-        target=_log_env_report_safely, kwargs={"snapshot": snapshot}, name=_REPORTER_THREAD_NAME, daemon=True
-    ).start()
+def start_env_reporting(args: Any) -> "EnvReporter":
+    reporter = EnvReporter(
+        snapshot=collect_process_env_snapshot(args),
+        interval_seconds=args.env_report_interval_seconds,
+    )
+    reporter.start()
+    return reporter
 
 
-def _log_env_report_safely(*, snapshot: ProcessEnvSnapshot) -> None:
-    try:
-        log_env_report(snapshot=snapshot)
-    except Exception:
-        logger.warning("Failed to log the env report", exc_info=True)
+class EnvReporter:
+    def __init__(self, *, snapshot: ProcessEnvSnapshot, interval_seconds: float) -> None:
+        assert math.isfinite(interval_seconds), (
+            f"--env-report-interval-seconds is {interval_seconds}, which is neither a delay nor a way to say "
+            f"'only at startup'; pass a finite number"
+        )
+
+        self._snapshot = snapshot
+        self._interval_seconds = interval_seconds
+        self._stopped = threading.Event()
+        self._thread = threading.Thread(target=self._run, name=_REPORTER_THREAD_NAME, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stopped.set()
+        self._thread.join(timeout=_STOP_TIMEOUT_SECONDS)
+
+    def _run(self) -> None:
+        while True:
+            try:
+                log_env_report(snapshot=self._snapshot)
+            except Exception:
+                logger.warning("Failed to log the env report", exc_info=True)
+            if self._interval_seconds <= 0 or self._stopped.wait(self._next_delay_seconds()):
+                return
+
+    def _next_delay_seconds(self) -> float:
+        return self._interval_seconds * (1.0 + random.random() * _INTERVAL_JITTER_RATIO)
 
 
 def log_env_report(*, snapshot: ProcessEnvSnapshot) -> NodeEnvReport:

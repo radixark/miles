@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+from miles.utils import logging_utils
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.logging_utils import configure_logger, configure_strict_async_warnings
 
@@ -46,10 +47,27 @@ def _constructor_source(klass: type) -> str | None:
 
 
 class TestConfigureLogger:
+    @pytest.fixture(autouse=True)
+    def _forget_reporter(self):
+        logging_utils._ENV_REPORTER = None
+        yield
+        logging_utils._ENV_REPORTER = None
+
+    def _configure(self) -> None:
+        configure_logger(argparse.Namespace(save_debug_event_data=None), source=MainProcessIdentity())
+
     def test_reports_the_environment_of_this_process(self) -> None:
         """Configuring a process's logger is what makes it record the environment it runs in."""
         with patch("miles.utils.logging_utils.start_env_reporting") as start:
-            configure_logger(argparse.Namespace(save_debug_event_data=None), source=MainProcessIdentity())
+            self._configure()
+
+        assert start.call_count == 1
+
+    def test_a_second_call_does_not_start_a_second_reporter(self) -> None:
+        """A process that configures its logger twice would otherwise report everything twice, forever."""
+        with patch("miles.utils.logging_utils.start_env_reporting") as start:
+            self._configure()
+            self._configure()
 
         assert start.call_count == 1
 
