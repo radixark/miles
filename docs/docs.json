@@ -260,6 +260,7 @@
        "developer/migration",
        "developer/architecture",
        "developer/reconcile-loop",
+       "developer/kubernetes-e2e",
        "developer/experimental-features"
       ]
      }

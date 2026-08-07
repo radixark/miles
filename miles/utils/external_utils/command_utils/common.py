@@ -53,9 +53,9 @@ def convert_checkpoint(
         )
 
     if multinode:
-        fn = partial(base_backend.exec_command_multi_node, num_nodes=num_nodes)
+        fn = partial(base_backend.exec_command_multi_node, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node)
     else:
-        fn = base_backend.exec_command_gpu
+        fn = partial(base_backend.exec_command_gpu, num_gpus_per_node=num_gpus_per_node)
     pythonpath = shlex.quote(_pythonpath_with_sources(megatron_path))
     fn(
         f"PYTHONPATH={pythonpath} "

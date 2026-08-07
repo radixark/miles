@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 import shlex
 from typing import Any
 
@@ -9,12 +8,10 @@ from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.arguments import parse_args_from_argv
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend, ExecuteTrainRequest, use_backend
 from miles.utils.external_utils.command_utils.common import repo_base_dir
-from miles.utils.external_utils.command_utils.helm_backend import adhoc, helm, launcher
+from miles.utils.external_utils.command_utils.helm_backend import adhoc, helm, launcher, naming
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.run_uuid import RUN_UUID_LENGTH
 from miles.utils.workers.types import ClusterBackend
-
-_RUN_ID_PATTERN = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?")
 
 CLUSTER_BACKEND_FLAG = "--cluster-backend"
 
@@ -73,13 +70,19 @@ class KubernetesCommandBackend(BaseCommandBackend):
     def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None:
         return adhoc.run_locally(cmd, capture_output=capture_output)
 
-    def exec_command_gpu(self, cmd: str, capture_output: bool = False) -> str | None:
-        return adhoc.run_on_one_gpu_node(self._context(), cmd, capture_output=capture_output)
+    def exec_command_gpu(
+        self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
+    ) -> str | None:
+        return adhoc.run_on_one_gpu_node(self._context(num_gpus_per_node), cmd, capture_output=capture_output)
 
     def exec_command_multi_node(
-        self, cmd: str, capture_output: bool = False, num_nodes: int | None = None
+        self,
+        cmd: str,
+        capture_output: bool = False,
+        num_nodes: int | None = None,
+        num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
-        context = self._context()
+        context = self._context(num_gpus_per_node)
         return adhoc.run_on_nodes(
             context,
             cmd,
@@ -89,12 +92,14 @@ class KubernetesCommandBackend(BaseCommandBackend):
             step="step",
         )
 
-    def _context(self) -> adhoc.AdhocContext:
+    def _context(self, num_gpus_per_node: int | None = None) -> adhoc.AdhocContext:
         assert self._adhoc_context is not None, (
             "the Kubernetes backend runs adhoc commands as Jobs on the namespace of the run it is "
             "launching, so execute_train has to have chosen that namespace first"
         )
-        return self._adhoc_context
+        if num_gpus_per_node is None:
+            return self._adhoc_context
+        return self._adhoc_context.model_copy(update={"gpus_per_node": num_gpus_per_node})
 
 
 def stable_run_id(config: Any) -> str:
@@ -102,9 +107,9 @@ def stable_run_id(config: Any) -> str:
         "set ExecuteTrainConfig.run_id: it names the helm release and the run directory, so a generated one "
         "would open a new release every time the same run is relaunched and break the elastic upgrade"
     )
-    assert _RUN_ID_PATTERN.fullmatch(
+    assert naming.RUN_ID_PATTERN.fullmatch(
         config.run_id
-    ), f"run_id {config.run_id!r} is not a valid kubernetes object name; it has to match {_RUN_ID_PATTERN.pattern}"
+    ), f"run_id {config.run_id!r} is not a valid kubernetes object name; it has to match {naming.RUN_ID_PATTERN.pattern}"
     return config.run_id
 
 

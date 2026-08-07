@@ -3,6 +3,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
+from miles.utils.external_utils.command_utils.api_server import api_server_url
 from miles.utils.external_utils.command_utils.base_backend import (
     BaseCommandBackend,
     ExecuteTrainConfig,
@@ -35,6 +36,7 @@ from miles.utils.external_utils.command_utils.common import (
     rsync_simple,
     start_mooncake_master,
 )
+from miles.utils.external_utils.command_utils.env_config import config_from_env, default_config
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.http_utils import wait_for_server_ready
@@ -53,6 +55,9 @@ __all__ = [
     "MOONCAKE_MASTER_PORT",
     "NUM_GPUS_OF_HARDWARE",
     "RayCommandBackend",
+    "api_server_url",
+    "config_from_env",
+    "default_config",
     "_parse_extra_env_vars",
     "_pythonpath_with_sources",
     "check_has_nvlink",
@@ -134,7 +139,7 @@ def execute_train(
     megatron_path: str = "/root/Megatron-LM",
 ):
     if config is None:
-        config = ExecuteTrainConfig()
+        config = default_config()
     if not os.path.isabs(train_script):
         train_script = f"{repo_base_dir}/{train_script}"
 

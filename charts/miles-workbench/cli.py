@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import shutil
 import subprocess
 import sys
@@ -425,6 +426,16 @@ def install(args: argparse.Namespace) -> int:
         code = run(command)
         if code != 0:
             return code
+
+    code = wait_until_ready(namespace=args.namespace, release=args.release, timeout=args.timeout)
+    if code != 0:
+        return code
+
+    print(
+        f"the workbench is ready; get a shell with: {CHART_DIR / 'cli.py'} exec "
+        f"-n {args.namespace} -r {args.release}",
+        flush=True,
+    )
     return 0
 
 
@@ -473,11 +484,102 @@ def probe_namespace_from_inside(namespace: str) -> int:
     return 0
 
 
+def wait_until_ready(namespace: str, release: str, timeout: int) -> int:
+    fullname = role_name(release)
+    code = run(["kubectl", "rollout", "status", f"statefulset/{fullname}", "-n", namespace, f"--timeout={timeout}s"])
+    if code != 0:
+        print(f"the workbench was not ready within {timeout}s", file=sys.stderr, flush=True)
+        run(["kubectl", "get", "pods", "-n", namespace])
+        run(["kubectl", "describe", "statefulset", fullname, "-n", namespace])
+    return code
+
+
 def exec_shell(args: argparse.Namespace) -> int:
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     return run(
         ["kubectl", "exec", "-it", f"statefulset/{role_name(args.release)}", "-n", args.namespace, "--", *command]
     )
+
+
+def uninstall(args: argparse.Namespace) -> int:
+    return run(["helm", "uninstall", args.release, "--namespace", args.namespace])
+
+
+def collect_diagnosis(args: argparse.Namespace) -> int:
+    if shutil.which("kubectl") is None:
+        print("FAIL  kubectl is installed", file=sys.stderr, flush=True)
+        return 1
+
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_dir = args.output_dir / f"miles-diagnosis-{args.namespace}-{stamp}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    failed: list[str] = []
+    if not capture(
+        path=output_dir / "events.txt",
+        command=["kubectl", "get", "events", "-n", args.namespace, "--sort-by=.lastTimestamp"],
+    ):
+        failed.append("events")
+
+    listing = list_pods(namespace=args.namespace)
+    if not listing.listed:
+        failed.append(f"pod listing in namespace {args.namespace}")
+    for pod in listing.names:
+        if not capture(
+            path=output_dir / f"{pod}.log",
+            command=["kubectl", "logs", pod, "-n", args.namespace, "--all-containers"],
+        ):
+            failed.append(f"logs of {pod}")
+        capture(
+            path=output_dir / f"{pod}.previous.log",
+            command=["kubectl", "logs", pod, "-n", args.namespace, "--all-containers", "--previous"],
+            skip_when_it_fails=True,
+        )
+        if not capture(
+            path=output_dir / f"{pod}.describe.txt",
+            command=["kubectl", "describe", "pod", pod, "-n", args.namespace],
+        ):
+            failed.append(f"describe of {pod}")
+    if args.run_dir is not None:
+        verdict = args.run_dir / "orchestrator.exit"
+        text = verdict.read_text() if verdict.is_file() else f"{verdict} does not exist\n"
+        (output_dir / "orchestrator.exit").write_text(text)
+
+    print(str(output_dir), flush=True)
+    if failed:
+        print(
+            f"FAIL  the diagnosis is incomplete, these could not be collected: {', '.join(failed)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+    return 0
+
+
+class PodListing(NamedTuple):
+    listed: bool
+    names: list[str]
+
+
+def list_pods(namespace: str) -> PodListing:
+    result = subprocess.run(
+        ["kubectl", "get", "pods", "-n", namespace, "-o", "name"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"WARN  could not list pods in namespace {namespace}", file=sys.stderr, flush=True)
+        return PodListing(listed=False, names=[])
+    return PodListing(listed=True, names=[line.partition("/")[2] for line in result.stdout.split() if line])
+
+
+def capture(path: Path, command: list[str], skip_when_it_fails: bool = False) -> bool:
+    print("+ " + " ".join(command), file=sys.stderr, flush=True)
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0 and skip_when_it_fails:
+        return True
+    path.write_text(result.stdout + result.stderr)
+    return result.returncode == 0
 
 
 # ========================================= CLI =========================================
@@ -491,8 +593,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     subcommands = parser.add_subparsers(dest="subcommand", required=True)
 
     for name, help_text in [
-        ("install", "check, then helm upgrade --install"),
+        ("install", "check, then helm upgrade --install, then wait for the pod"),
         ("exec", "shell into the pod"),
+        ("uninstall", "helm uninstall the release, keeping the namespace"),
+        ("collect-diagnosis", "write pod logs, describes and events into one directory"),
     ]:
         subcommand = subcommands.add_parser(name, help=help_text)
         subcommand.add_argument("-n", "--namespace", required=True, help="namespace the workbench lives in")
@@ -513,9 +617,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     installer.add_argument("-f", "--values", action="append", default=[], type=Path, help="values file, repeatable")
     installer.add_argument("--set", action="append", default=[], help="raw helm --set override, repeatable")
     installer.add_argument("--skip-doctor", action="store_true", help="install without checking permissions first")
+    installer.add_argument(
+        "--timeout", type=int, default=600, help="seconds to wait for the workbench pod to become ready"
+    )
 
     shell = subcommands.choices["exec"]
     shell.add_argument("command", nargs=argparse.REMAINDER, help="command to run, bash by default")
+
+    diagnosis = subcommands.choices["collect-diagnosis"]
+    diagnosis.add_argument(
+        "--output-dir", type=Path, default=Path.cwd(), help="directory the diagnosis directory is created in"
+    )
+    diagnosis.add_argument("--run-dir", type=Path, help="run directory whose orchestrator.exit verdict to copy")
 
     args = parser.parse_args(argv)
     if not args.namespace:
@@ -529,7 +642,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    return {"install": install, "exec": exec_shell}[args.subcommand](args)
+    return {
+        "install": install,
+        "exec": exec_shell,
+        "uninstall": uninstall,
+        "collect-diagnosis": collect_diagnosis,
+    }[
+        args.subcommand
+    ](args)
 
 
 if __name__ == "__main__":

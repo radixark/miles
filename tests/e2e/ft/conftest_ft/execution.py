@@ -186,6 +186,7 @@ def run_training(
     *,
     dump_dir: str | None = None,
     extra_env_vars: dict[str, str] | None = None,
+    config: U.ExecuteTrainConfig | None = None,
 ) -> None:
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
@@ -207,6 +208,7 @@ def run_training(
         **(extra_env_vars or {}),
     }
     U.execute_train(
+        config=config,
         train_args=train_args,
         num_gpus_per_node=mode.total_node_gpus,
         megatron_model_type=mode.megatron_model_type,

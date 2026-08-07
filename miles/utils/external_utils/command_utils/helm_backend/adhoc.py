@@ -23,7 +23,7 @@ class AdhocContext(FrozenStrictBaseModel):
     chart_dir: str
     infra_values_files: tuple[str, ...] = ()
     release: str = "miles-run-adhoc"
-    gpus_per_node: int
+    gpus_per_node: int = 1
     timeout_seconds: float = _TIMEOUT_SECONDS
 
 

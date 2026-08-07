@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import re
+
 CHART_NAME = "miles-run"
 NAME_BUDGET = 52
+ORCHESTRATOR_COMPONENT = "orchestrator"
+RUN_ID_PATTERN = re.compile(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?")
 
 
 def release_name(run_id: str) -> str:
@@ -27,6 +31,10 @@ def static_worker_host(release: str, component: str, cell_index: int = 0) -> str
 def cell_leader_host(release: str, component: str, cell_ordinal: int) -> str:
     name = component_name(release, component)
     return f"{name}-{cell_ordinal}.{name}"
+
+
+def orchestrator_host(release: str, namespace: str) -> str:
+    return f"{component_name(release, ORCHESTRATOR_COMPONENT)}.{namespace}.svc.cluster.local"
 
 
 def _trunc(value: str, count: int) -> str:
