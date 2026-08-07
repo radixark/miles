@@ -7,6 +7,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.backend_capability.base import BackendCapability
 
 RPC_PORT_NAME = "rpc"
+GPU_OFFSET_META = "gpu_offset"
 MASTER_PORT_NAME = "master"
 DEFAULT_RPC_PORT = 8000
 

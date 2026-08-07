@@ -11,7 +11,7 @@ from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayC
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.command_actor import CommandActor
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.ray_worker_manager import RayWorkerManager, compute_cell_meta
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
 
 
@@ -1216,3 +1216,50 @@ class TestInjectFault:
 
         with pytest.raises(AssertionError):
             manager.inject_fault("engine-7", mode="sigkill", worker_in_cell_index=0)
+
+
+class TestComputeCellMeta:
+    def _spec(self, *, gpu_offset: int, num_workers_per_cell: int, num_gpu_slots_per_worker: int):
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=num_workers_per_cell,
+            num_gpu_slots_per_worker=num_gpu_slots_per_worker,
+        )
+        return spec.model_copy(update={"meta": lambda _ctx: {"gpu_offset": gpu_offset, "role": "engine"}})
+
+    def test_a_spec_without_meta_reports_none(self):
+        """Most specs describe nothing beyond their command, and an empty dict is what consumers expect."""
+        assert compute_cell_meta(_make_spec("engine"), cell_id="engine-0", cell_index=0) == {}
+
+    def test_meta_that_names_no_gpu_span_is_passed_through(self):
+        """Only gpu_offset is a resource decision; every other fact belongs to the spec alone."""
+        spec = _make_spec("engine").model_copy(update={"meta": lambda _ctx: {"role": "engine"}})
+
+        assert compute_cell_meta(spec, cell_id="engine-a", cell_index=3) == {"role": "engine"}
+
+    def test_single_gpu_cells_carry_contiguous_gpu_offsets(self):
+        """Every cell must claim its own gpu span, otherwise two engines share the same devices."""
+        spec = self._spec(gpu_offset=0, num_workers_per_cell=1, num_gpu_slots_per_worker=1)
+        offsets = [
+            compute_cell_meta(spec, cell_id=f"engine-{index}", cell_index=index)["gpu_offset"] for index in range(8)
+        ]
+
+        assert offsets == list(range(8))
+
+    def test_multi_node_cells_advance_by_a_whole_engine(self):
+        """The per-cell stride is workers x slots, so a 16-gpu engine advances the offset by 16, not by 1."""
+        spec = self._spec(gpu_offset=0, num_workers_per_cell=2, num_gpu_slots_per_worker=8)
+        offsets = [
+            compute_cell_meta(spec, cell_id=f"engine-{index}", cell_index=index)["gpu_offset"] for index in range(2)
+        ]
+
+        assert offsets == [0, 16]
+
+    def test_the_specs_own_offset_shifts_every_cell(self):
+        """A group placed after another starts counting from that group's end, per cell as well as overall."""
+        spec = self._spec(gpu_offset=8, num_workers_per_cell=1, num_gpu_slots_per_worker=1)
+        offsets = [
+            compute_cell_meta(spec, cell_id=f"engine-{index}", cell_index=index)["gpu_offset"] for index in range(16)
+        ]
+
+        assert offsets == list(range(8, 24))

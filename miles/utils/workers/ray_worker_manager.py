@@ -21,6 +21,7 @@ from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
+    GPU_OFFSET_META,
     BaseWorkerSpec,
     CommandWorkerSpec,
     HostAndPort,
@@ -212,11 +213,7 @@ class _CellManager(Generic[SpecT]):
             alive=self.alive,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
             workers_hash=f"pseudo-hash-{self.generation}",
-            meta=(
-                f(WorkerMetaContext(cell_id=self.cell_id, cell_index=self.cell_index))
-                if (f := self.spec.meta) is not None
-                else {}
-            ),
+            meta=compute_cell_meta(self.spec, cell_id=self.cell_id, cell_index=self.cell_index),
         )
 
     @property
@@ -371,6 +368,20 @@ class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
 
     async def post_setup(self) -> None:
         pass
+
+
+def compute_cell_meta(spec: BaseWorkerSpec, *, cell_id: str, cell_index: int) -> dict[str, Any]:
+    compute_meta = spec.meta
+    if compute_meta is None:
+        return {}
+
+    meta = compute_meta(WorkerMetaContext(cell_id=cell_id, cell_index=cell_index))
+    if GPU_OFFSET_META not in meta:
+        return meta
+
+    scheduling = spec.scheduling
+    gpus_per_cell = scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker
+    return meta | {GPU_OFFSET_META: meta[GPU_OFFSET_META] + cell_index * gpus_per_cell}
 
 
 def bootstrapped_worker_class(worker_class_path: str) -> type:
