@@ -229,6 +229,12 @@ async def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     await hooks.register_engines(servers)  # recovery: same worker, new generation
     assert len(handle.update_topology.calls) == 2
 
+    # Counting the repush says it fired, not what it carried: the fingerprint watches the
+    # worker while the addr comes from the cell, so a repush can still publish stale engines.
+    ([republished], _) = handle.update_topology.calls[1]
+    assert [e.addr for e in republished.engines] == ["http://a:1", "http://b:1"]
+    assert republished.engines[1].gpus == [["node-a", 2], ["node-a", 3]]
+
 
 async def test_register_engines_skips_dead_cells(monkeypatch):
     """Cells that are not alive are left out of the snapshot and never queried."""

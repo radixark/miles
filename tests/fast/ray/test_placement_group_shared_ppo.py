@@ -124,8 +124,12 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
     assert actor._role == "actor"
     assert actor.args is args
     assert actor.args.kl_coef == 0.1
+    # Derived from the actor's kl_coef, not passed in: flip it and the KL term is silently zero.
+    assert actor._with_ref is True
 
     assert critic._role == "critic"
+    # A reference model on the critic would be a second full model on its GPUs.
+    assert critic._with_ref is False
     assert critic.args is not args
     assert critic.args.kl_coef == 0
     assert critic.args.use_opd is False

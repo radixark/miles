@@ -31,7 +31,7 @@ class _RawServerGroupConfig(FrozenStrictBaseModel):
     """
 
     worker_type: Literal["regular", "prefill", "decode", "placeholder"]
-    num_gpus: int
+    num_gpus: pydantic.PositiveInt
     num_gpus_per_engine: int | None = None
     overrides: dict = {}
 

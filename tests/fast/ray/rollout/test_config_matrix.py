@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pydantic
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
@@ -76,8 +77,8 @@ class TestResolveSglangConfigPaths:
 
 class TestServerGroupValidation:
     def test_invalid_worker_type_raises(self, tmp_path):
-        """An unknown worker_type is rejected no matter which layer validates it."""
-        with pytest.raises((AssertionError, ValueError), match="worker_type"):
+        """An unknown worker_type is rejected while parsing, by name."""
+        with pytest.raises(pydantic.ValidationError, match="server_groups.0.worker_type"):
             _resolve_yaml(
                 tmp_path,
                 "sglang:\n"
@@ -89,8 +90,9 @@ class TestServerGroupValidation:
             )
 
     def test_zero_num_gpus_raises(self, tmp_path):
-        """A zero-gpu group is rejected no matter which layer validates it."""
-        with pytest.raises((AssertionError, ValueError), match="num_gpus"):
+        """The group's own count is rejected, not merely the job total: matching on the total
+        would let a zero-gpu group through whenever rollout_num_gpus happens to agree."""
+        with pytest.raises(pydantic.ValidationError, match="server_groups.0.num_gpus"):
             _resolve_yaml(
                 tmp_path,
                 "sglang:\n"
@@ -121,6 +123,38 @@ class TestResolveDefaults:
             "  - name: ref\n"
             "    model_path: /actor/model\n"
             "    update_weights: false\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=8,
+            hf_checkpoint="/actor/model",
+        )
+        assert cfg.models[0].update_weights is False
+
+    def test_a_model_serving_the_trained_checkpoint_receives_weight_updates(self, tmp_path):
+        """Left unset this is inferred from the paths, and inferring False for the actor trains
+        against a frozen policy behind nothing louder than a warning."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: actor\n"
+            "    model_path: /actor/model\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n",
+            rollout_num_gpus=8,
+            hf_checkpoint="/actor/model",
+        )
+        assert cfg.models[0].update_weights is True
+
+    def test_a_model_serving_another_checkpoint_is_left_frozen(self, tmp_path):
+        """Inferring True for a reference model would let weight sync overwrite the frozen
+        baseline the KL term is measured against."""
+        cfg = _resolve_yaml(
+            tmp_path,
+            "sglang:\n"
+            "  - name: ref\n"
+            "    model_path: /ref/model\n"
             "    server_groups:\n"
             "      - worker_type: regular\n"
             "        num_gpus: 8\n",

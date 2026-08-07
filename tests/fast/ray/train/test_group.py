@@ -683,10 +683,12 @@ class TestRefreshCellsErrorHandling:
         # Step 3: Refresh — healing init fails, cell auto-marks errored
         await group._refresh_cells(rollout_id=0)
 
-        # Step 4: Cell 2 errored, cells 0 and 1 still alive
+        # Step 4: Cell 2 errored, cells 0 and 1 still alive. _was_stopped would already be true
+        # from step 1, so it says nothing about the healing failure; the kill does.
         assert _cell(group, 0).is_alive
         assert _cell(group, 1).is_alive
-        assert _was_stopped(group, 2)
+        assert _cell(group, 2).is_errored
+        assert _was_killed(group, 2)
 
 
 class TestHeartbeatMonitor:
