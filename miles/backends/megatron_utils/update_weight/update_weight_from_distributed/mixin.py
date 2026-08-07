@@ -320,7 +320,7 @@ class DistBucketedWeightUpdateMixin:
     def _finalize_and_resume_engines(self) -> None:
         """Close the weight-update session and resume rollout engines."""
         if dist.get_rank() == 0:
-            # here, not per transport: the LoRA push carries no version
+            # stamp centrally: the LoRA push has no weight_version of its own
             ray.get(
                 [
                     engine.update_weight_version.remote(weight_version=str(self.weight_version))
