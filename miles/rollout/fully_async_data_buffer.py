@@ -2,8 +2,8 @@
 
 ``DataBuffer`` is the contract (put / get / get_metrics); ``DefaultDataBuffer``
 is the built-in implementation, replaceable via ``--custom-async-data-buffer-path``.
-Every group-level decision lives here — what to keep, what to evict, what to hand
-to ``--async-unused-samples-handler`` — so a custom buffer owns all of it. Only
+Every group-level decision lives here — what to keep, what to hand to
+``--async-unused-samples-handler`` — so a custom buffer owns all of it. Only
 ``--rollout-sample-filter-path`` stays outside: it runs on the assembled batch.
 """
 
@@ -53,7 +53,6 @@ class DataBufferConstructorInput:
 class DataBufferInput:
     prompt_group: list[Sample]  # resubmittable, for recycling
     group: Group  # finished samples
-    weight_version: int | None  # engine version when the group finished
 
 
 class DataBuffer(ABC):
@@ -93,13 +92,13 @@ class DefaultDataBuffer(DataBuffer):
 
     Dataflow control options:
 
-    (1) max groups: use ``--async-data-buffer-capacity-factor`` to set the max
-        size of the buffer, floor(factor * rollout_batch_size) groups. On
-        overflow the most stale groups are evicted.
+    (1) capacity: ``--async-data-buffer-capacity-factor`` bounds the buffer at
+        floor(factor * rollout_batch_size) groups; when full, put blocks until
+        training consumes.
     (2) unused handling: ``--async-unused-samples-handler`` decides what happens
-        to aborted, stale, and evicted groups: drop discards them, retry
-        recycles their prompts for regeneration. Dynamic-filter groups are
-        processed per the filter's ``keep``.
+        to aborted and stale groups: drop discards them, retry recycles their
+        prompts for regeneration. Dynamic-filter groups are processed per the
+        filter's ``keep``.
     """
 
     def __init__(self, input: DataBufferConstructorInput):
@@ -117,16 +116,11 @@ class DefaultDataBuffer(DataBuffer):
         self._current_version: int | None = None
 
         self._metric_gatherer = MetricGatherer()
-        self._metric_entered_groups = 0
         self._metric_aborted_groups = 0
         self._metric_stale_groups = 0
-        self._metric_evicted_stale_groups = 0
-        self._metric_evicted_overflow_groups = 0
         self._metric_consumed_staleness: list[int] = []
 
     async def put(self, input: DataBufferInput) -> None:
-        self._track_version(input.weight_version)
-
         # filters at receiving sample: abort filter, dynamic filter
         if any(s.status == Sample.Status.ABORTED for s in iter_samples(input.group)):
             self._metric_aborted_groups += 1
@@ -139,10 +133,9 @@ class DefaultDataBuffer(DataBuffer):
             return
 
         async with self._cond:
+            while len(self._buffer) >= self._capacity:
+                await self._cond.wait()
             self._buffer.append(input)
-            if len(self._buffer) > self._capacity:
-                self._evict_overflow()
-            self._metric_entered_groups += 1
             self._cond.notify_all()
 
     async def get(self, current_version: int | None) -> DataBufferInput:
@@ -152,6 +145,7 @@ class DefaultDataBuffer(DataBuffer):
                 while not self._buffer:
                     await self._cond.wait()
                 entry = self._buffer.pop(0)
+                self._cond.notify_all()  # wake producers blocked on a full buffer
 
                 # filters at retrieving sample: staleness filter
                 staleness = self._staleness(entry.group, current_version)
@@ -170,13 +164,8 @@ class DefaultDataBuffer(DataBuffer):
             f"{prefix}queue_size": len(self._buffer),
             f"{prefix}aborted_groups_filtered": self._metric_aborted_groups,
             f"{prefix}stale_groups_filtered": self._metric_stale_groups,
-            f"{prefix}evicted_stale_groups": self._metric_evicted_stale_groups,
-            f"{prefix}evicted_overflow_groups": self._metric_evicted_overflow_groups,
             **self._metric_gatherer.collect(),
         }
-        if self._metric_entered_groups:
-            evicted = self._metric_evicted_stale_groups + self._metric_evicted_overflow_groups
-            metrics[f"{prefix}evict_rate"] = evicted / self._metric_entered_groups
         if consumed := self._metric_consumed_staleness:
             metrics[f"{prefix}avg_staleness"] = sum(consumed) / len(consumed)
             metrics[f"{prefix}max_staleness"] = max(consumed)
@@ -189,8 +178,7 @@ class DefaultDataBuffer(DataBuffer):
 
         self._metric_gatherer = MetricGatherer()
         self._metric_consumed_staleness = []
-        self._metric_entered_groups = self._metric_aborted_groups = self._metric_stale_groups = 0
-        self._metric_evicted_stale_groups = self._metric_evicted_overflow_groups = 0
+        self._metric_aborted_groups = self._metric_stale_groups = 0
         return metrics
 
     def _track_version(self, version: int | None) -> None:
@@ -203,31 +191,3 @@ class DefaultDataBuffer(DataBuffer):
         if oldest is None or current_version is None:
             return None
         return current_version - oldest
-
-    @staticmethod
-    def _eviction_key(group: Group) -> tuple[float, float]:
-        """Stalest-first sort key: (min, sum) of weight versions; versionless groups rank freshest."""
-        versions = [v for s in iter_samples(group) if (v := s.oldest_weight_version) is not None]
-        if not versions:
-            return (float("inf"), float("inf"))
-        return (min(versions), sum(versions))
-
-    def _evict_overflow(self) -> None:
-        """Evict stalest-first until nothing is beyond ``max_staleness`` and the buffer fits."""
-        while self._buffer:
-            keys = [self._eviction_key(entry.group) for entry in self._buffer]
-            index = keys.index(min(keys))
-            staleness = self._staleness(self._buffer[index].group, self._current_version)
-            if_exceed_staleness = (
-                self._args.max_weight_staleness is not None
-                and staleness is not None
-                and staleness > self._args.max_weight_staleness
-            )
-            if not if_exceed_staleness and len(self._buffer) <= self._capacity:
-                return
-            entry = self._buffer.pop(index)
-            if if_exceed_staleness:
-                self._metric_evicted_stale_groups += 1
-            else:
-                self._metric_evicted_overflow_groups += 1
-            self._unused_handler_fn(entry.prompt_group)

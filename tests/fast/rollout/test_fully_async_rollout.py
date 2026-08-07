@@ -321,7 +321,7 @@ async def test_worker_failure_beats_queued_groups(monkeypatch):
 
     fn._output = make_buffer()[0]
     group = make_group(1)
-    await fn._output.put(data_buffer.DataBufferInput(prompt_group=group, group=group, weight_version=None))
+    await fn._output.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
     fn._worker = asyncio.create_task(boom())
     await asyncio.sleep(0)
 
@@ -434,73 +434,45 @@ async def test_weight_version_maps_non_numeric_to_none(monkeypatch):
 
 
 def make_buffer(max_groups=None, max_staleness=None):
-    evicted = []
+    unused = []
     args = make_args(
         rollout_batch_size=1,  # capacity is factor * batch size; batch size 1 makes it count groups
         async_data_buffer_capacity_factor=max_groups or 1000.0,
         max_weight_staleness=max_staleness,
     )
     buffer = data_buffer.DefaultDataBuffer(
-        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=evicted.append)
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=unused.append)
     )
-    return buffer, evicted
+    return buffer, unused
 
 
-async def put_group(buffer, group, weight_version=None):
+async def put_group(buffer, group):
     """These tests reuse one group as both the prompt group and the finished group."""
-    await buffer.put(data_buffer.DataBufferInput(prompt_group=group, group=group, weight_version=weight_version))
+    await buffer.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
 
 
-async def test_buffer_evicts_stalest_on_overflow():
-    buffer, evicted = make_buffer(max_groups=2)
-    oldest = make_group(1, weight_versions=["5"])
-    await put_group(buffer, oldest)
-    await put_group(buffer, make_group(2, weight_versions=["7"]))
-    await put_group(buffer, make_group(3, weight_versions=["9"]))
+async def test_buffer_blocks_producer_when_full():
+    buffer, _ = make_buffer(max_groups=2)
+    await put_group(buffer, make_group(1))
+    await put_group(buffer, make_group(2))
 
-    assert evicted == [oldest]
-    metrics = buffer.get_metrics()
-    assert metrics["rollout/fully_async/queue_size"] == 2
-    assert metrics["rollout/fully_async/evicted_overflow_groups"] == 1
+    blocked = asyncio.create_task(put_group(buffer, make_group(3)))
+    await asyncio.sleep(0.01)
+    assert not blocked.done()
+    assert buffer.get_metrics()["rollout/fully_async/queue_size"] == 2
+
+    assert (await buffer.get(None)).group[0].group_index == 1
+    await blocked
     assert (await buffer.get(None)).group[0].group_index == 2
-
-
-async def test_buffer_overflow_tie_broken_by_summed_staleness():
-    buffer, evicted = make_buffer(max_groups=2)
-    # Same stalest sample (version 5); the first group's other sample is also
-    # at 5, so its summed staleness is larger and it loses the tie.
-    all_old = make_group(1, weight_versions=["5"])
-    one_old = make_group(2, weight_versions=["5"])
-    one_old[1].weight_versions = ["9"]
-    await put_group(buffer, all_old)
-    await put_group(buffer, one_old)
-    await put_group(buffer, make_group(3, weight_versions=["9"]))
-
-    assert evicted == [all_old]
-
-
-async def test_buffer_threshold_evicts_all_over_staleness_first():
-    buffer, evicted = make_buffer(max_groups=3, max_staleness=2)
-    over_a = make_group(1, weight_versions=["5"])
-    over_b = make_group(2, weight_versions=["6"])
-    await put_group(buffer, over_a, weight_version=10)
-    await put_group(buffer, over_b, weight_version=10)
-    await put_group(buffer, make_group(3, weight_versions=["9"]), weight_version=10)
-    await put_group(buffer, make_group(4, weight_versions=["10"]), weight_version=10)
-
-    assert evicted == [over_a, over_b]
-    metrics = buffer.get_metrics()
-    assert metrics["rollout/fully_async/evicted_stale_groups"] == 2
-    assert metrics["rollout/fully_async/evicted_overflow_groups"] == 0
-    assert metrics["rollout/fully_async/queue_size"] == 2
+    assert (await buffer.get(None)).group[0].group_index == 3
 
 
 async def test_buffer_get_skips_groups_stale_at_consumption_time():
     """Both groups were fresh when buffered; only the version passed to get() decides."""
     buffer, unused = make_buffer(max_staleness=2)
     stale = make_group(1, weight_versions=["5"])
-    await put_group(buffer, stale, weight_version=5)
-    await put_group(buffer, make_group(2, weight_versions=["9"]), weight_version=9)
+    await put_group(buffer, stale)
+    await put_group(buffer, make_group(2, weight_versions=["9"]))
 
     assert (await buffer.get(current_version=10)).group[0].group_index == 2
     assert unused == [stale]
@@ -512,36 +484,13 @@ async def test_buffer_staleness_metrics():
     await put_group(buffer, make_group(1, weight_versions=["4"]))
     assert "rollout/fully_async/buffer_avg_staleness" not in buffer.get_metrics()  # engine version never seen
 
-    await put_group(buffer, make_group(2, weight_versions=["8"]), weight_version=10)
+    await put_group(buffer, make_group(2, weight_versions=["6"]))
+    await put_group(buffer, make_group(3, weight_versions=["8"]))
+    await buffer.get(current_version=10)  # pops group 1 and tracks the engine version clock
     metrics = buffer.get_metrics()
-    assert metrics["rollout/fully_async/buffer_avg_staleness"] == 4.0
-    assert metrics["rollout/fully_async/buffer_max_staleness"] == 6
-
-
-async def test_drain_reports_eviction_metrics(monkeypatch):
-    fn = make_fn(
-        monkeypatch,
-        make_args(async_data_buffer_capacity_factor=4, async_unused_samples_handler="retry"),
-        FakeDataSource(),
-    )
-    await fn(RolloutFnTrainInput(rollout_id=0))
-
-    # Evictions land in the buffer counters between drains; the racy overflow
-    # path itself is covered by the DataBuffer tests above.
-    assert fn._output._unused_handler_fn == fn._recycle
-    fn._output._metric_entered_groups += 8
-    fn._output._metric_evicted_stale_groups = 1
-    fn._output._metric_evicted_overflow_groups = 2
-    output = await fn(RolloutFnTrainInput(rollout_id=1))
-
-    assert output.metrics["rollout/fully_async/evicted_stale_groups"] == 1
-    assert output.metrics["rollout/fully_async/evicted_overflow_groups"] == 2
-    # 3 evictions over >= 8 seeded + 2 consumed entries
-    assert 0 < output.metrics["rollout/fully_async/evict_rate"] <= 3 / 10
-    assert fn._output._metric_evicted_stale_groups == 0  # counters reset per drain
-
-    output2 = await fn(RolloutFnTrainInput(rollout_id=2))
-    assert output2.metrics["rollout/fully_async/evicted_overflow_groups"] == 0
+    assert metrics["rollout/fully_async/avg_staleness"] == 6.0  # consumed group 1: 10 - 4
+    assert metrics["rollout/fully_async/buffer_avg_staleness"] == 3.0  # buffered groups 2, 3: (4 + 2) / 2
+    assert metrics["rollout/fully_async/buffer_max_staleness"] == 4
 
 
 class RecordingBuffer(data_buffer.DefaultDataBuffer):

@@ -172,8 +172,7 @@ class FullyAsyncRolloutFn:
             done, active = await self._scheduler.wait_for_progress(active)
             for task in done:
                 prompt_group, group = task.result()
-                version = await self._weight_version.get(self.args)
-                await self._output.put(DataBufferInput(prompt_group=prompt_group, group=group, weight_version=version))
+                await self._output.put(DataBufferInput(prompt_group=prompt_group, group=group))
 
     # -------------------------- consumer --------------------------
 

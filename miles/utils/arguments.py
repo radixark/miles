@@ -691,11 +691,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Capacity of the finished-group data buffer between rollout production and "
                     "training consumption in fully async mode, as a multiple of rollout_batch_size "
-                    "(floor(factor * rollout_batch_size) groups). "
-                    "When production outruns consumption past this bound, the stalest groups are "
-                    "evicted (groups beyond --max-weight-staleness first) and handed to "
-                    "--async-unused-samples-handler, so the producer never blocks and queued data "
-                    "stays fresh."
+                    "(floor(factor * rollout_batch_size) groups). When the buffer is full the "
+                    "producer blocks until training consumes, so generation cannot run "
+                    "unboundedly ahead of training."
                 ),
             )
             parser.add_argument(
@@ -705,7 +703,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default="drop",
                 help=(
                     "What to do with a finished group fully async mode does not train on "
-                    "(aborted, beyond --max-weight-staleness, evicted by the data buffer): drop "
+                    "(aborted, or beyond --max-weight-staleness): drop "
                     "(default) discards the group; retry recycles its prompts into the data "
                     "source for regeneration. Groups rejected by "
                     "--dynamic-sampling-filter-path are always dropped."
