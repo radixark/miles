@@ -41,7 +41,6 @@ def _args() -> ScriptArgs:
         extra_args=(
             "--ci-test "
             "--ci-disable-logprobs-checker "
-            "--disable-weights-backuper "
             "--use-rollout-indexer-replay "
             "--rollout-max-response-len 4096 "
             # preserve to avoid CPU OOM

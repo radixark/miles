@@ -226,9 +226,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.args,
                 self.model,
                 convert_to_global_name=args.megatron_to_hf_mode == "raw",
-                translate_gpu_to_cpu=not self.args.enable_weights_backuper,
             ),
-            single_tag=None if args.enable_weights_backuper else "actor",
             main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"

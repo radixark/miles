@@ -21,19 +21,60 @@ from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
 
+_MULTI_TURN_REDUCTION_BY_KEY = {
+    "raw_response_length/response_length_max": "max",
+    "raw_response_length/response_length_min": "min",
+    "wo_obs_response_length/response_length_max": "max",
+    "wo_obs_response_length/response_length_min": "min",
+    "multi_turn_metric/round_number_max": "max",
+    "multi_turn_metric/round_number_min": "min",
+}
 
-def reduce_gathered_log_dict(gathered: list[dict], dp_size: int) -> dict[str, float]:
-    """Per-key reduction: ``(sum, count)`` tuples as ``Σsum / Σcount``, scalars as mean."""
+
+def reduce_gathered_log_dict(
+    gathered: list[dict],
+    dp_size: int,
+    reduction_by_key: dict[str, str] | None = None,
+) -> dict[str, float]:
+    """Reduce already-gathered per-rank metrics without adding another collective.
+
+    ``(sum, count)`` tuples reduce as ``Σsum / Σcount``. Scalars reduce by the
+    reduction named in ``reduction_by_key`` ("mean", "min" or "max");
+    unspecified keys reduce by mean. Metric names do not implicitly determine
+    their reduction semantics. Rank-local extrema must be reduced as extrema:
+    averaging per-rank maxima under-reports the global maximum (and
+    over-reports the global minimum).
+    """
+    if not gathered:
+        return {}
+
+    expected_keys = gathered[0].keys()
+    if reduction_by_key is not None:
+        for rank, rank_metrics in enumerate(gathered[1:], start=1):
+            if rank_metrics.keys() != expected_keys:
+                raise ValueError(
+                    f"Metric keys differ across ranks: rank 0={list(expected_keys)}, "
+                    f"rank {rank}={list(rank_metrics.keys())}."
+                )
+    reduction_by_key = reduction_by_key or {}
+
     reduced: dict[str, float] = {}
-    for key in gathered[0]:
+    for key in expected_keys:
         values = [d[key] for d in gathered]
         first = values[0]
+        reduction = reduction_by_key.get(key, "mean")
+        if reduction not in ("mean", "min", "max"):
+            raise ValueError(f"Unsupported metric reduction {reduction!r} for {key!r}.")
         if isinstance(first, tuple) and len(first) == 2:
             total_sum = sum(v[0] for v in values)
             total_count = sum(v[1] for v in values)
             reduced[key] = total_sum / total_count if total_count else 0.0
-        else:
+        elif reduction == "mean":
             reduced[key] = sum(values) / dp_size
+        elif reduction == "min":
+            reduced[key] = min(values)
+        else:
+            reduced[key] = max(values)
     return reduced
 
 
@@ -42,11 +83,15 @@ def gather_log_data(
     args: Namespace,
     rollout_id: int,
     log_dict: dict[str, "float | tuple[float, float]"],
+    reduction_by_key: dict[str, str] | None = None,
 ) -> dict[str, float] | None:
     """
     Gather per-rank metrics, reduce on the DP source rank, and log.
 
-    Returns the reduced dict on the DP source rank; returns None on others.
+    ``(sum, count)`` tuple values reduce as ``Σsum / Σcount``; scalar keys
+    reduce by mean unless `reduction_by_key` explicitly selects "min" or
+    "max" for them. Returns the reduced dict on the DP source rank; returns
+    None on others.
     """
 
     parallel_state = get_parallel_state()
@@ -73,7 +118,7 @@ def gather_log_data(
         return None
 
     if pg.rank == 0:
-        reduced = reduce_gathered_log_dict(gathered_log_dict, pg.size)
+        reduced = reduce_gathered_log_dict(gathered_log_dict, pg.size, reduction_by_key)
         reduced_log_dict = {f"{metric_name}/{key}": value for key, value in reduced.items()}
         logger.info(f"{metric_name} {rollout_id}: {reduced_log_dict}")
 
@@ -351,7 +396,13 @@ def log_multi_turn_data(rollout_id: int, args: Namespace, rollout_data: RolloutB
                 log_dict["multi_turn_metric/round_number_mean"] = np.mean(round_number_array)
                 log_dict["multi_turn_metric/round_number_max"] = np.max(round_number_array)
                 log_dict["multi_turn_metric/round_number_min"] = np.min(round_number_array)
-        gather_log_data("multi_turn", args, rollout_id, log_dict)
+        gather_log_data(
+            "multi_turn",
+            args,
+            rollout_id,
+            log_dict,
+            reduction_by_key=_MULTI_TURN_REDUCTION_BY_KEY,
+        )
 
 
 def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None = None) -> None:

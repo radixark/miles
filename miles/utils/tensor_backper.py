@@ -21,13 +21,10 @@ class MainCastContext:
 
 class TensorBackuper(ABC):
     @staticmethod
-    def create(source_getter, single_tag, main_cast_ctx: "MainCastContext | None" = None):
+    def create(source_getter, main_cast_ctx: "MainCastContext | None" = None):
         if main_cast_ctx is not None:
             return _TensorBackuperMainCast(source_getter=source_getter, ctx=main_cast_ctx)
-        if single_tag is None:
-            return _TensorBackuperNormal(source_getter=source_getter)
-        else:
-            return _TensorBackuperNoop(source_getter=source_getter, single_tag=single_tag)
+        return _TensorBackuperNormal(source_getter=source_getter)
 
     def __init__(self, source_getter: _SourceGetter):
         self._source_getter = source_getter
@@ -177,51 +174,7 @@ class _TensorBackuperMainCast(TensorBackuper):
             )
 
 
-class _TensorBackuperNoop(TensorBackuper):
-    def __init__(self, source_getter, single_tag):
-        super().__init__(source_getter=source_getter)
-        self._single_tag = single_tag
-        # Sanity check for safety
-        self._backup_hash_dict = None
-
-    @property
-    def backup_tags(self):
-        return [self._single_tag]
-
-    def get(self, tag: str):
-        ans = dict(self._source_getter())
-        ans = {k: v.detach() for k, v in ans.items()}
-        assert _compute_hash_dict(ans) == self._backup_hash_dict
-        return ans
-
-    def backup(self, tag: str) -> None:
-        assert tag == self._single_tag
-        self._backup_hash_dict = _compute_hash_dict(dict(self._source_getter()))
-        torch.cuda.synchronize()
-
-    def restore(self, tag: str) -> None:
-        assert tag == self._single_tag
-        assert _compute_hash_dict(dict(self._source_getter())) == self._backup_hash_dict
-        torch.cuda.synchronize()
-
-
 def _hash_tensor_sha256(x: torch.Tensor) -> str:
-    """Real hash, unlike _compute_hash_tensor: a mismatch here has to mean a bug."""
+    """Real (cryptographic) hash: a mismatch here has to mean a bug."""
     data = x.detach().cpu().contiguous()
     return hashlib.sha256(data.reshape(-1).view(torch.uint8).numpy().tobytes()).hexdigest()
-
-
-def _compute_hash_dict(tensors: dict[str, torch.Tensor]):
-    return {k: _compute_hash_tensor(v) for k, v in tensors.items()}
-
-
-def _compute_hash_tensor(x: torch.Tensor):
-    # Not a real/good hash, but pretty fast
-    x = x.contiguous().view(-1).view(torch.uint8)
-
-    alignment = 4
-    if (remainder := (x.numel() % alignment)) != 0:
-        x = torch.nn.functional.pad(x, (0, alignment - remainder))
-
-    x = x.view(torch.uint32).sum()
-    return x.item()

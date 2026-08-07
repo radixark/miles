@@ -1,8 +1,10 @@
 """qwen3_moe adaptations: the train->rollout weight transform (unfuse transformers>=5.6 batched experts
-into the per-expert names sglang expects, via HF's own reverse conversion) and the true-on-policy
-config-time MoE-block patch."""
+into the per-expert names sglang expects, via HF's own reverse conversion), the true-on-policy
+config-time MoE-block patch, and the rollout-routing-replay hook."""
 
+from miles.backends.experimental.fsdp_utils.models.replay_routers import install_qwen3_router_replay
 from ..class_patches import ModelPatchHook, register_model_patch
+from ..routing_replay import RoutingReplayAdapter, register_routing_replay_adapter
 from ..weight_bridge import _batched_experts_matches, _hf_unfuse_experts_expand, register_param_transform
 
 register_param_transform("qwen3_moe", _batched_experts_matches, _hf_unfuse_experts_expand)
@@ -23,3 +25,13 @@ def _apply_moe_patch(hf_config, args) -> None:
 
 
 register_model_patch(ModelPatchHook("qwen3_moe_moe_patch", _is_qwen3_moe, _apply_moe_patch))
+
+
+register_routing_replay_adapter(
+    RoutingReplayAdapter(
+        name="qwen3_moe",
+        applies_to=_is_qwen3_moe,
+        module_cls_name="Qwen3MoeTopKRouter",
+        install=install_qwen3_router_replay,
+    )
+)

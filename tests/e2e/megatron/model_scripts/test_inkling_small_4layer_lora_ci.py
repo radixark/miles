@@ -43,7 +43,6 @@ def _args() -> ScriptArgs:
             # frozen towers and the engine-derived adapter buffers never match the snapshot
             "--check-weight-update-skip-list visual. audio. ._w1_delta ._a_cat "
             "--ci-disable-logprobs-checker "
-            "--disable-weights-backuper "
             "--check-lora-weight-equal "
         ),
     )

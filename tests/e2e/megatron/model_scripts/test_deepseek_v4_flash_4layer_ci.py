@@ -29,11 +29,7 @@ def _args() -> ScriptArgs:
         skip_saving=True,
         use_fault_tolerance=False,
         extra_args=(
-            "--ci-test "
-            "--check-weight-update-allow-quant-error "
-            "--ci-disable-logprobs-checker "
-            "--disable-weights-backuper "
-            "--num-rollout 2 "
+            "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
         ),
     )
 

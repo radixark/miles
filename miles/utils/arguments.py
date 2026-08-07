@@ -333,17 +333,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--disable-weights-backuper",
-                action="store_false",
-                dest="enable_weights_backuper",
-                help=(
-                    "Applies to `megatron` training backend only. "
-                    "Disables the system that backups model weights (Actor, Ref, Old Actor) to CPU RAM. "
-                    "Disabling saves significant host memory but prevents features that rely on weight-swapping, such as computing KL-divergence against a reference model. "
-                    "Note: do not set `--ref-load` and `--keep-old-actor` if disable weights backuper."
-                ),
-            )
-            parser.add_argument(
                 "--rematerialize-param-from-master-weight",
                 action="store_true",
                 help=(
@@ -2666,6 +2655,9 @@ def parse_args(add_custom_arguments=None):
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
+        if args.hf_checkpoint:
+            args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
+
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
 
     # On iff the CI harness injected MILES_CI_GATE_RECORD_DIR (the same env var
@@ -2792,7 +2784,6 @@ def _validate_rematerialize_param_from_master_weight(args):
         "resume, so there is no backup for the rebuild to replace"
     )
     assert args.use_distributed_optimizer
-    assert args.enable_weights_backuper
     assert not args.keep_old_actor
     assert not args.use_precision_aware_optimizer or args.optimizer_cpu_offload, (
         "--use-precision-aware-optimizer on GPU keeps the master weights inside TE FusedAdam, stored as "
@@ -3291,7 +3282,9 @@ def miles_validate_args(args):
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
-        args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
+        args.disable_param_buffers_cpu_backup = True
+
+    _validate_rematerialize_param_from_master_weight(args)
 
     _validate_rematerialize_param_from_master_weight(args)
 
@@ -3300,11 +3293,6 @@ def miles_validate_args(args):
         assert (
             args.train_backend == "megatron"
         ), "--offload-train-target=disk is only supported on the megatron backend"
-        assert args.enable_weights_backuper, (
-            "--offload-train-target=disk requires the weights backuper (do not pass "
-            "--disable-weights-backuper): disk-offloaded weights are read from GPU after resume, "
-            "not from a CPU backup."
-        )
         assert args.offload_train_disk_chunk_mb > 0, "--offload-train-disk-chunk-mb must be positive"
         if args.offload_train_disk_dir is None:
             uid = os.getuid() if hasattr(os, "getuid") else 0
@@ -3529,6 +3517,23 @@ def _maybe_apply_dumper_overrides(args) -> None:
     args.save = None
     args.save_interval = None
     args.save_retain_interval = None
+
+
+def resolve_fsdp_num_layers(hf_config) -> int | None:
+    """Decoder-layer count for the FSDP path.
+
+    ``num_layers`` comes from the Megatron parser, but backend-agnostic code reads it:
+    ``sglang_rollout`` reshapes the R3 routing buffer as ``[num_tokens, num_layers, topk]``. The
+    text config wins when present, since a top-level ``num_hidden_layers`` may describe a vision
+    tower instead.
+    """
+    getter = getattr(hf_config, "get_text_config", None)
+    text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
+
+    num_layers = getattr(text_config, "num_hidden_layers", None)
+    if num_layers is None:
+        num_layers = getattr(hf_config, "num_hidden_layers", None)
+    return num_layers
 
 
 def hf_validate_args(args, hf_config):

@@ -44,7 +44,6 @@ def _args() -> ScriptArgs:
             "--ci-disable-kl-checker "
             "--check-weight-update-skip-list visual. audio. "
             "--ci-disable-logprobs-checker "
-            "--disable-weights-backuper "
             "--offload-train-target cpu "
         ),
     )

@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.experimental.fsdp_utils.adaptations import routing_replay
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
@@ -116,6 +117,8 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
 
+        routing_replay.enable(args)
+
         # FSDP trains stock HF modeling: HF-compat patches + config-lifetime packing, before construction.
         apply_class_patches(self.hf_config, self.args)
         apply_packing(None, self.hf_config, "config")
@@ -133,6 +136,7 @@ class FSDPTrainRayActor(TrainRayActor):
             )
 
         apply_model_instance_patches(model, self.hf_config, self.args)
+        routing_replay.install(model, self.hf_config)
         if self.precision_policy.keep_fp32_master:
             model = apply_fp32_master(model, self.precision_policy.sync_dtype_resolver)
 
@@ -442,6 +446,9 @@ class FSDPTrainRayActor(TrainRayActor):
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+
+        routing_replay.fill(self.args, self.model, data_iterator, num_microbatches, rollout_data)
+
         data_iterator = data_iterator[0]
 
         assert (
@@ -449,17 +456,20 @@ class FSDPTrainRayActor(TrainRayActor):
         ), f"Invalid num_microbatches {num_microbatches} for micro_batch_size {self.args.micro_batch_size} and global_batch_size {self.args.global_batch_size}"
 
         if self.ref_model is not None:
-            ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
+            with routing_replay.stage(routing_replay.FALLTHROUGH):
+                ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
             rollout_data.update(ref_results)
 
-        actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
+        with routing_replay.stage(routing_replay.log_prob_stage(self.args)):
+            actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
+        routing_replay.rewind()
         rollout_data.update(actor_results)
 
         compute_advantages_and_returns(self.args, rollout_data)
 
         log_rollout_data(rollout_id, self.args, rollout_data)
 
-        with timer("actor_train"):
+        with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
             data_iterator.reset()
             num_steps_per_rollout = len(num_microbatches)
 
@@ -530,6 +540,8 @@ class FSDPTrainRayActor(TrainRayActor):
                     extra_metrics=extra_metrics,
                 )
 
+        routing_replay.reset()
+
         self.prof.step(rollout_id=rollout_id)
 
         if self.args.save_debug_train_data is not None:
@@ -549,7 +561,7 @@ class FSDPTrainRayActor(TrainRayActor):
     def _train_step(self, batch, step_id, num_microbatches):
         model_args = self._get_model_inputs_args(batch)
         # bf16 logits (see log_probs phase); per-response chunks are upcast to fp32 in the loss path.
-        with precision_forward_context(self.precision_policy):
+        with routing_replay.stage(routing_replay.REPLAY_FORWARD), precision_forward_context(self.precision_policy):
             logits = self.model(**model_args).logits
 
         loss, normalizer, log_dict = loss_function(

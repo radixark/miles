@@ -40,7 +40,7 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=4,
         num_rollout=2,
         enable_optimizer_offload=True,
-        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
+        extra_args=("--ci-test " "--ci-disable-logprobs-checker "),
     )
 
 

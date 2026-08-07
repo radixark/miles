@@ -438,6 +438,7 @@ def _execute_train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
+        "--rematerialize-param-from-master-weight "
     )
 
     if args.megatron_use_deepep:

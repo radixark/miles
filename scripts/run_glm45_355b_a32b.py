@@ -293,7 +293,6 @@ def _execute_train(args: ScriptArgs):
         "--colocate "
         "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
-        "--disable-weights-backuper "
         # TODO if good, also configure to other scripts
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "

@@ -30,7 +30,7 @@ def _args(shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
         experts_shared_outer_loras=shared_outer,
         enable_wandb=False,
         extra_args=(
-            "--ci-test --ci-disable-logprobs-checker --disable-weights-backuper "
+            "--ci-test --ci-disable-logprobs-checker "
             + ("" if virtual_experts else "--no-sglang-lora-use-virtual-experts ")
         ),
     )
