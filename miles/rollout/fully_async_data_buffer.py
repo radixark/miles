@@ -72,8 +72,7 @@ class DataBuffer(ABC):
     async def get(self, **context) -> DataBufferInput:
         """Return one group to train on, waiting until one is available.
 
-        ``context`` is the consumer's view right now (the driver sends
-        ``current_version``); name the keys you use and absorb the rest.
+        ``context`` is the extra information for sample processing at get() time.
         """
 
     @abstractmethod
