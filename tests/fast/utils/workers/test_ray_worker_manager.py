@@ -522,7 +522,8 @@ class TestMasterPorts:
         addrs = manager.get_addrs()["engine"]
         assert addrs[0]["dist_init"].port == 9123
         assert "dist_init" not in addrs[1]
-        assert len(fake_ray_cluster.calls_of("_get_free_port_block")) == 2
+        # Straight from the spec rather than from the cursor, which hands out ports from 20000 up.
+        assert all(addr["primary"].port >= 20000 for addr in addrs)
 
     async def test_every_worker_of_a_cell_launches_with_that_cells_master_addr(self, fake_ray_cluster: FakeRayCluster):
         """All ranks of a cell must be told the same master endpoint, and never another cell's."""

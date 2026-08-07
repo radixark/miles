@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.router_manager import start_session_server, wait_router_ready
+from miles.ray.rollout.router_manager import start_session_server, wait_router_ready, wait_worker_serving
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -19,14 +19,17 @@ class TestWaitRouterReady:
                 requested.append(worker_name)
                 return HostAndPort(host="10.0.0.9", port=12345)
 
+            async def is_worker_alive(self, worker_name: str) -> bool:
+                return True
+
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.RayWorkerProvider",
             SimpleNamespace(create=lambda: _FakeProvider()),
         )
         monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.wait_tcp_ready",
-            lambda host, port, timeout: waited.append((host, port)),
+            "miles.ray.rollout.router_manager.is_tcp_ready",
+            lambda host, port: bool(waited.append((host, port)) or True),
         )
 
         addr = await wait_router_ready(model_idx=1)
@@ -57,14 +60,17 @@ class TestStartSessionServer:
                 requested.append(worker_name)
                 return HostAndPort(host="10.0.0.9", port=5004 + len(requested))
 
+            async def is_worker_alive(self, worker_name: str) -> bool:
+                return True
+
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.RayWorkerProvider",
             SimpleNamespace(create=lambda: _FakeProvider()),
         )
         monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.wait_tcp_ready",
-            lambda host, port, timeout: waited.append((host, port)),
+            "miles.ray.rollout.router_manager.is_tcp_ready",
+            lambda host, port: bool(waited.append((host, port)) or True),
         )
 
         args = make_args(
@@ -95,14 +101,17 @@ class TestStartSessionServer:
                 self._counter += 1
                 return HostAndPort(host=f"10.0.0.{self._counter}", port=5005)
 
+            async def is_worker_alive(self, worker_name: str) -> bool:
+                return True
+
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
             "miles.ray.rollout.router_manager.RayWorkerProvider",
             SimpleNamespace(create=lambda: _FakeProvider()),
         )
         monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.wait_tcp_ready",
-            lambda host, port, timeout: waited.append((host, port)),
+            "miles.ray.rollout.router_manager.is_tcp_ready",
+            lambda host, port: bool(waited.append((host, port)) or True),
         )
 
         args = make_args(
@@ -119,3 +128,48 @@ class TestStartSessionServer:
             "10.0.0.2:5005": "00112233445566aa-1",
         }
         assert waited == [("10.0.0.1", 5005), ("10.0.0.2", 5005)]
+
+
+class TestWaitWorkerServing:
+    async def test_a_worker_that_dies_before_its_port_opens_is_reported_at_once(self, monkeypatch):
+        """A server that dies at import time never opens the port, and waiting out the timeout
+        reports a network problem for what is a crashed child with a traceback of its own."""
+
+        class _DeadProvider:
+            async def is_worker_alive(self, worker_name: str) -> bool:
+                return False
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.is_tcp_ready", lambda host, port: False)
+
+        with pytest.raises(RuntimeError, match="died before 10.0.0.9:12345 accepted connections"):
+            await wait_worker_serving(
+                provider=_DeadProvider(),
+                worker_name="inference-router-0-0-0",
+                addr=HostAndPort(host="10.0.0.9", port=12345),
+                timeout=30.0,
+            )
+
+    async def test_a_live_worker_that_is_merely_slow_is_waited_out(self, monkeypatch):
+        """Its port opens late, so giving up on the first closed connection would abort a launch
+        that was about to succeed."""
+        probes: list[int] = []
+
+        class _LiveProvider:
+            async def is_worker_alive(self, worker_name: str) -> bool:
+                return True
+
+        def _ready(host, port) -> bool:
+            probes.append(port)
+            return len(probes) > 2
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.is_tcp_ready", _ready)
+        monkeypatch.setattr("miles.ray.rollout.router_manager.WAIT_SERVING_POLL_INTERVAL_SECONDS", 0.0)
+
+        await wait_worker_serving(
+            provider=_LiveProvider(),
+            worker_name="inference-router-0-0-0",
+            addr=HostAndPort(host="10.0.0.9", port=12345),
+            timeout=30.0,
+        )
+
+        assert len(probes) == 3
