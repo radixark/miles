@@ -59,9 +59,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import torch
 import typer
 
 import miles.utils.external_utils.command_utils as U
+
+IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
 
 app = typer.Typer()
 
@@ -213,6 +216,10 @@ def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
 
 
 def _execute_train(args: ScriptArgs):
+    if IS_ROCM:
+        args.use_deepep = False
+        args.megatron_use_deepep = False
+
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     hf_name = f"{args.model_name}_fp8" if args.fp8_rollout else args.model_name
     ckpt_args = (
@@ -340,13 +347,13 @@ def _execute_train(args: ScriptArgs):
         )
     if args.enable_pd:
         sglang_args += "--prefill-num-servers 1 "
+    nsa_backend = "tilelang" if IS_ROCM else "flashmla_sparse"
     sglang_args += (
-        # use flashmla backend for better precision
-        "--sglang-nsa-decode-backend flashmla_sparse "
-        "--sglang-nsa-prefill-backend flashmla_sparse "
-        "--sglang-kv-cache-dtype bf16 "
-        "--sglang-attention-backend nsa "
-        "--sglang-page-size 64 "
+        f"--sglang-nsa-decode-backend {nsa_backend} "
+        f"--sglang-nsa-prefill-backend {nsa_backend} "
+        + ("--sglang-kv-cache-dtype bf16 " if not IS_ROCM else "")
+        + "--sglang-attention-backend nsa "
+        f"--sglang-page-size {1 if IS_ROCM else 64} "
         f"--sglang-cuda-graph-max-bs {sglang_decode_max_bs} "
         # concurrency
         f"--sglang-max-running-requests 512 "
@@ -359,10 +366,12 @@ def _execute_train(args: ScriptArgs):
             sglang_args += "--sglang-moe-runner-backend flashinfer_trtllm_routed "
         else:
             sglang_args += "--sglang-moe-runner-backend triton "
-    sglang_extra_env_vars = {
-        "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": f"{32 if args.enable_pd else 256}",
-        "SGLANG_NSA_FORCE_MLA": "1",
-    }
+            
+    sglang_extra_env_vars = {"SGLANG_NSA_FORCE_MLA": "1"}
+    if not IS_ROCM:
+        sglang_extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = (
+            f"{32 if args.enable_pd else 256}"
+        )
 
     misc_args = (
         # default dropout in megatron is 0.1
@@ -400,16 +409,19 @@ def _execute_train(args: ScriptArgs):
         f"{args.extra_args} "
     )
 
+    extra_env_vars = {
+        **sglang_extra_env_vars,
+        "INDEXER_ROPE_NEOX_STYLE": "0",
+    }
+    if not IS_ROCM:
+        extra_env_vars["NVSHMEM_DISABLE_NCCL"] = "1"
+
     U.execute_train(
         train_args=train_args,
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
-        extra_env_vars={
-            **sglang_extra_env_vars,
-            "INDEXER_ROPE_NEOX_STYLE": "0",
-            "NVSHMEM_DISABLE_NCCL": "1",
-        },
+        extra_env_vars=extra_env_vars,
         megatron_path=args.megatron_path,
     )
 
