@@ -50,7 +50,7 @@ def check_grad_norm(
             rollout_id=rollout_id,
             step_id=step_id,
         )
-        expected_grad_norm = torch.load(ci_load_grad_norm_path, weights_only=False)
+        expected_grad_norm = torch.load(ci_load_grad_norm_path, weights_only=True)
         assert math.isclose(
             grad_norm,
             expected_grad_norm,
