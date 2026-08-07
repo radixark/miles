@@ -153,6 +153,13 @@ class TestMerge:
             actual_sample_count=4,
             actual_rollout_count=4,  # classic 1:1 — every sample is its own execution
             prompt_group_sizes=[2, 2],
+            # Multi-LoRA dataset batches carry no operation and keep the fused
+            # step-after-backward path.
+            operation_id=None,
+            operation_kind="multi_lora_train",
+            batch_id=None,
+            step_after_backward=True,
+            loss_spec=None,
         )
         assert plan["B"]["actual_sample_count"] == 3
         assert output.metadata["train_txn_id"]

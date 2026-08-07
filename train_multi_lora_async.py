@@ -14,7 +14,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.logging_utils import configure_logger
-from miles.utils.multi_lora import EmptyBatchTimeoutError, define_new_adapter_metrics
+from miles.utils.multi_lora import EmptyBatchTimeoutError, define_new_adapter_metrics, serving_lora_name
 from miles.utils.tracking_utils.tracking import init_tracking
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,46 @@ async def main(args):
         # and only then does the data source sample them. The actor pushes only
         # stale adapter weights (newly loaded, or stepped by the last batch).
         await actor_model.reconcile_adapters()
+
+        # Control phase: data-less thinker operations execute every iteration —
+        # including the idle paths below — so a client waiting on a step never
+        # depends on another adapter generating data. publish_snapshot is the
+        # exception: its barrier semantics complete only after this iteration's
+        # weight push is live, with the new serving version in the result.
+        control_ops = await get_multi_lora_controller().claim_ready_control_operations.remote()
+        pending_publishes: list[dict] = []
+        if control_ops:
+            results = await actor_model.execute_adapter_controls(control_ops)
+            publish_ids = {op["operation_id"] for op in control_ops if op["kind"] == "publish_snapshot"}
+            deferred = {
+                op_id: outcome for op_id, outcome in results.items() if op_id in publish_ids and outcome.get("ok")
+            }
+            immediate = {op_id: outcome for op_id, outcome in results.items() if op_id not in deferred}
+            if immediate:
+                await get_multi_lora_controller().complete_control_operations.remote(immediate)
+            pending_publishes = [op for op in control_ops if op["operation_id"] in deferred]
+
         await actor_model.update_weights()
+
+        if pending_publishes:
+            post_push = await get_multi_lora_controller().snapshot.remote()
+            live = {**post_push["active"], **post_push["retiring"]}
+            completions = {}
+            for op in pending_publishes:
+                run = live.get(op["name"])
+                if run is None or run.registration_id != op["registration_id"]:
+                    completions[op["operation_id"]] = dict(
+                        ok=False, error=f"adapter '{op['name']}' retired before the publish landed", category="user"
+                    )
+                else:
+                    completions[op["operation_id"]] = dict(
+                        ok=True,
+                        result=dict(
+                            serving_version=run.version,
+                            serving_name=serving_lora_name(op["name"], op["registration_id"]),
+                        ),
+                    )
+            await get_multi_lora_controller().complete_control_operations.remote(completions)
 
         # With nothing active, generate would wait forever.
         post_update = await get_multi_lora_controller().snapshot.remote()

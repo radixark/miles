@@ -250,6 +250,40 @@ class AdapterRegistry:
             self.deregister(name)
         return stepped
 
+    # ---------------- thinker operations ----------------
+
+    def mark_accumulated(self, names: list[str]) -> None:
+        """A thinker forward_backward landed: the slot holds unstepped
+        gradients, which no sidecar carries — pin it against eviction until an
+        optim_step consumes them (or a veto clears them)."""
+        for name in names:
+            record = self.find(name)
+            if record is not None:
+                self.slot_pool.pin(record.tenant, "dirty-grads")
+
+    def clear_dirty(self, name: str) -> None:
+        record = self.find(name)
+        if record is not None:
+            self.slot_pool.unpin(record.tenant, "dirty-grads")
+
+    def commit_thinker_step(self, name: str) -> int:
+        """One thinker optim_step applied: advance the step clock (num_step
+        remains an optional client-set bound) without scheduling any publish —
+        thinker weights reach the engines only via an explicit snapshot."""
+        record = self.find(name)
+        if record is None:
+            return -1
+        record.step += 1
+        self.slot_pool.unpin(record.tenant, "dirty-grads")
+        if (
+            getattr(record.config, "num_step", None) is not None
+            and record.state is AdapterState.ACTIVE
+            and (record.step - record.start_step) >= record.config.num_step
+        ):
+            logger.info(f"Thinker adapter '{name}' reached num_step={record.config.num_step}, deregistering")
+            self.deregister(name)
+        return record.step
+
     def resolve_num_step(self, name: str, dataset_rows: int) -> None:
         """Derive num_step from num_epoch once the data source knows the
         post-filter dataset length. No-op when num_step was set explicitly."""

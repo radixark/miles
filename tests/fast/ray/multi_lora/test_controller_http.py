@@ -19,7 +19,6 @@ from miles.ray.multi_lora.http_server import MultiLoRAHTTPServer
 from miles.utils.adapter_config import AdapterRunConfig
 from miles.utils.multi_lora import RID_SEPARATOR
 
-
 # Registration validates that the data path exists; the test file itself is a
 # convenient always-present stand-in.
 DATA_FILE = __file__
@@ -168,8 +167,11 @@ async def test_register_json_config_validates_to_adapter_config():
         assert Path(record.config.save) == Path("/tmp/adapters/A")
         assert record.config.input_key == "text"  # dataclass default
 
-        status, _ = await ctl.api_post("/adapter_runs", {"name": "B", "config": {"rank": 8}})
-        assert status == 422  # data is required
+        # 'data' is schema-optional (thinker mode has none) but mandatory for
+        # dataset mode, so the rejection is the backend's 400, not pydantic's 422.
+        status, body = await ctl.api_post("/adapter_runs", {"name": "B", "config": {"rank": 8}})
+        assert status == 400
+        assert "needs a dataset path" in body["detail"]
 
         status, _ = await ctl.api_post("/adapter_runs", {"name": "C"})
         assert status == 400  # exactly one of config/yaml_path

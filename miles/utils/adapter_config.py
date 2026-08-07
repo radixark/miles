@@ -15,7 +15,13 @@ import yaml
 @dataclass(frozen=True)
 class AdapterRunConfig:
 
-    data: str
+    # Dataset path for input_mode="multi-lora"; must be None for "thinker".
+    data: str | None = None
+
+    # "multi-lora": the server generates and trains from `data` + a reward.
+    # "thinker": a client pushes token-level batches and optimizer operations
+    # through the controller's operation queue; no dataset, no reward.
+    input_mode: str = "multi-lora"
 
     # resolves them to CLI defaults if None (--lora-rank / --lora-alpha) on register.
     rank: int | None = None
@@ -79,7 +85,8 @@ def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:
     return AdapterRunConfig(
         rank=raw.get("rank"),
         alpha=raw.get("alpha"),
-        data=raw["data"],
+        data=raw.get("data"),
+        input_mode=raw.get("input_mode", "multi-lora"),
         rollout_batch_size=raw.get("rollout_batch_size"),
         n_samples_per_prompt=raw.get("n_samples_per_prompt"),
         save=Path(raw["save"]) if raw.get("save", None) else None,

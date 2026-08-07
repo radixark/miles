@@ -11,6 +11,7 @@ from miles.utils.adapter_config import AdapterRunConfig, parse_adapter_run_yaml
 # the dataclass but missed by the parser (or this table) fails the round-trip.
 _YAML_VALUES = {
     "data": "/data/prompts.jsonl",
+    "input_mode": "multi-lora",
     "rank": 8,
     "alpha": 16,
     "rollout_batch_size": 4,

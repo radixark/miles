@@ -470,16 +470,58 @@ def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id:
 def commit_trained_batch(rollout_data, rollout_id: int, pending_push: set) -> None:
     """A train call landed: schedule the stepped adapters' engine push and
     commit the batch on the controller (main rank only). The stepped set ships
-    with the train data, identical on all ranks."""
+    with the train data, identical on all ranks. Thinker batches step nothing
+    and publish nothing here: they pin their slots dirty and complete their
+    forward_backward operations instead."""
     from miles.backends.megatron_utils.initialize import is_first_replica_megatron_main_rank
 
     pending_push.update(rollout_data.get("step_adapter_names", []))
+    thinker = rollout_data.get("batch_kind") == "thinker"
+    logprobs_by_op = _gather_thinker_logprobs(rollout_data) if thinker else None
     if is_first_replica_megatron_main_rank():
+        if thinker:
+            name_by_slot = rollout_data.get("adapter_name_by_slot", {})
+            # forward-only adapters accumulated nothing: no dirty pin for them.
+            forward_only = set(rollout_data.get("forward_only_slots") or ())
+            accumulated = sorted(name for slot, name in name_by_slot.items() if slot not in forward_only)
+            ray.get(
+                get_multi_lora_controller().commit_thinker_batch.remote(
+                    accumulated,
+                    [op_id for op_id in rollout_data.get("operation_by_slot", {}).values() if op_id],
+                    logprobs_by_op,
+                )
+            )
         ray.get(
             get_multi_lora_controller().commit_train_selection.remote(
                 rollout_id, list(rollout_data.get("vetoed_adapter_names", []))
             )
         )
+
+
+def _gather_thinker_logprobs(rollout_data) -> dict[str, list[list[float]]]:
+    """Merge every rank's (slot, row) logprob shards and group them per
+    operation in row order. TP/CP duplicates carry identical values, so the
+    merge is an idempotent dict union; rows live on exactly one DP rank."""
+    from miles.utils.distributed_utils import get_gloo_group
+
+    collector = rollout_data.get("thinker_logprob_collector") or {}
+    if dist.is_initialized():
+        shards = [None] * dist.get_world_size(get_gloo_group())
+        dist.all_gather_object(shards, collector, group=get_gloo_group())
+        merged: dict = {}
+        for shard in shards:
+            merged.update(shard or {})
+    else:
+        merged = dict(collector)
+
+    op_by_slot = rollout_data.get("operation_by_slot", {})
+    logprobs_by_op: dict[str, list[list[float]]] = {}
+    for op_id_slot, op_id in op_by_slot.items():
+        if op_id is None:
+            continue
+        rows = sorted((row, lp) for (slot, row), lp in merged.items() if slot == op_id_slot)
+        logprobs_by_op[op_id] = [lp for _, lp in rows]
+    return logprobs_by_op
 
 
 def save_due_adapter_checkpoints(args, model) -> bool:

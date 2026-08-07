@@ -17,6 +17,7 @@ from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
+    batch_plan_to_metadata,
     convert_samples_to_train_data,
     split_train_data_by_dp,
 )
@@ -156,14 +157,7 @@ class RolloutManager:
         log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         if batch_plan := control_metadata.get("batch_plan"):
             # The BatchPlan is authoritative for step decisions.
-            metadata["step_slots"] = sorted(entry["bound_slot"] for entry in batch_plan)
-            metadata["step_adapter_names"] = sorted(entry["name"] for entry in batch_plan)
-            # Normalization counts rollout executions (matching the loss), so K
-            # sibling trajectories from one execution count once.
-            metadata["step_adapter_actual_counts"] = {
-                entry["bound_slot"]: entry["actual_rollout_count"] for entry in batch_plan
-            }
-            metadata["adapter_name_by_slot"] = {entry["bound_slot"]: entry["name"] for entry in batch_plan}
+            metadata.update(batch_plan_to_metadata(batch_plan))
         data = convert_samples_to_train_data(
             self.args,
             data,

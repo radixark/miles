@@ -461,6 +461,11 @@ class MegatronTrainRayActor(TrainRayActor):
         witness_info: WitnessInfo | None,
         attempt: int,
     ) -> TrainStepOutcome:
+        # Thinker batches collect per-datum logprobs for the operation result
+        # plane; the loss fills this shared side channel during the forward.
+        if rollout_data.get("batch_kind") == "thinker":
+            rollout_data["thinker_logprob_collector"] = {}
+
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
 
@@ -480,7 +485,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
 
         with inverse_timer("train_wait"), timer("train"):
-            if self.args.compute_advantages_and_returns:
+            # Thinker batches carry client-supplied logprobs/advantages; the
+            # ref/old-policy passes and advantage computation are RL machinery.
+            if self.args.compute_advantages_and_returns and rollout_data.get("batch_kind") != "thinker":
                 if "ref" in self.weights_backuper.backup_tags:
                     self._set_replay_stage("fallthrough")
                     self._switch_model("ref")
@@ -599,6 +606,109 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self._heartbeat.bump()
         return train_step_outcome
+
+    @with_logs
+    @timer
+    def execute_adapter_controls(self, operations: list[dict]) -> dict:
+        """Run data-less thinker operations on this rank; every rank receives
+        the identical list, and the fixed per-kind, slot-sorted order keeps the
+        collective sequence identical. optim_step applies the operation's
+        AdamParams and steps the slot's accumulated gradients with sum
+        semantics (no count normalization — the loss weights own the scale);
+        publish_snapshot stages the adapter for the next weight push (the
+        driver completes it after the push lands); save_state/load_state move
+        the slot's full training state through named immutable checkpoints."""
+        from miles.backends.megatron_utils.multi_lora_utils.optimizer import step_adapter_slots
+
+        results: dict[str, dict] = {}
+        optim_ops = sorted((op for op in operations if op["kind"] == "optim_step"), key=lambda op: op["slot"])
+        if optim_ops:
+            adam_by_slot = {op["slot"]: (op.get("payload") or {}).get("adam_params") or {} for op in optim_ops}
+            grad_norms, vetoed = step_adapter_slots(
+                self.optimizer,
+                self.model,
+                {op["slot"]: 1 for op in optim_ops},
+                clip_grad=0.0,
+                normalize_by_count=False,
+                adam_params_by_slot=adam_by_slot,
+            )
+            for op in optim_ops:
+                slot = op["slot"]
+                if slot in vetoed:
+                    results[op["operation_id"]] = dict(
+                        ok=False, error="non-finite gradients; step vetoed and gradients cleared", category="server"
+                    )
+                else:
+                    results[op["operation_id"]] = dict(
+                        ok=True,
+                        result=dict(
+                            grad_norm=grad_norms.get(slot),
+                            learning_rate=adam_by_slot[slot].get("learning_rate", 1e-4),
+                        ),
+                    )
+
+        for op in sorted(
+            (op for op in operations if op["kind"] in ("publish_snapshot", "save_state", "load_state")),
+            key=lambda op: (op["kind"], op["slot"]),
+        ):
+            results[op["operation_id"]] = self._execute_thinker_state_op(op)
+
+        for op in operations:
+            if op["operation_id"] not in results:
+                results[op["operation_id"]] = dict(
+                    ok=False, error=f"operation kind '{op['kind']}' has no executor yet", category="server"
+                )
+        return results
+
+    def _execute_thinker_state_op(self, op: dict) -> dict:
+        import re
+        from dataclasses import replace as dataclass_replace
+        from pathlib import Path
+
+        from miles.backends.megatron_utils.multi_lora_utils.checkpoint import (
+            load_slot_state,
+            named_state_dir,
+            save_slot_state,
+        )
+
+        name, kind = op["name"], op["kind"]
+        run = self.loaded_adapters.get(name)
+        if run is None or run.slot != op["slot"]:
+            return dict(ok=False, error=f"adapter '{name}' is not resident in slot {op['slot']}", category="server")
+        # The registry's clocks are authoritative; the loaded view can lag.
+        run = dataclass_replace(run, step=op.get("step", run.step), version=op.get("serving_version", run.version))
+
+        if kind == "publish_snapshot":
+            # Stage the push; the driver's update_weights lands it and the
+            # operation completes with the new serving version afterwards.
+            self._multi_lora_pending_push.add(name)
+            return dict(ok=True, deferred="publish")
+
+        payload = op.get("payload") or {}
+        if kind == "save_state":
+            tag = str(payload.get("tag") or f"step_{run.step}")
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", tag):
+                return dict(ok=False, error=f"invalid state tag '{tag}'", category="user")
+            base = named_state_dir(run, tag)
+            if base is None:
+                return dict(ok=False, error=f"adapter '{name}' has no save dir", category="user")
+            if (base / "manifest.pt").exists():
+                return dict(ok=False, error=f"state '{tag}' already exists; states are immutable", category="user")
+            save_slot_state(self.args, self.model, self.optimizer, run, reason=f"state:{tag}", base=base)
+            return dict(ok=True, result=dict(path=str(base), step=run.step))
+
+        assert kind == "load_state"
+        path = payload.get("path")
+        if not path:
+            return dict(ok=False, error="load_state needs a 'path'", category="user")
+        restored_step = load_slot_state(self.args, self.model, self.optimizer, run, base=Path(path))
+        if restored_step is None:
+            return dict(ok=False, error=f"no loadable state at '{path}' for adapter '{name}'", category="user")
+        # Serving invalidation: engines must never keep sampling pre-restore
+        # weights, so the restored adapter re-publishes on this iteration's push.
+        self._multi_lora_pending_push.add(name)
+        self.weights_backuper.backup("actor")
+        return dict(ok=True, result=dict(step=restored_step, path=str(path)))
 
     @with_logs
     @timer

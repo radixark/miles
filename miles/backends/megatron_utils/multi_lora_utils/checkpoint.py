@@ -48,14 +48,23 @@ def sidecar_dir(adapter) -> Path | None:
     return Path(save) / "slot_state" if save is not None else None
 
 
+def named_state_dir(adapter, tag: str) -> Path | None:
+    """Immutable named training-state checkpoint (thinker save_state): same
+    shard format as the swap sidecar, but never overwritten by swaps."""
+    save = adapter.config.save
+    return Path(save) / "states" / tag if save is not None else None
+
+
 def _shard_path(base: Path, rank: int) -> Path:
     return base / f"shard_rank{rank:05d}.pt"
 
 
-def save_slot_state(args, model, optimizer, adapter, *, reason: str = "swap") -> Path | None:
+def save_slot_state(args, model, optimizer, adapter, *, reason: str = "swap", base: Path | None = None) -> Path | None:
     """Write-through sidecar: the durable record of the slot's full
-    training state. Returns the manifest path (rank 0) or the shard path."""
-    base = sidecar_dir(adapter)
+    training state. Returns the manifest path (rank 0) or the shard path.
+    ``base`` overrides the destination (named immutable states); the default
+    is the swap sidecar dir."""
+    base = base if base is not None else sidecar_dir(adapter)
     if base is None:
         # Adapters without a save dir are not swap-eligible; callers
         # must pin them instead. Reaching here is a caller bug for swaps.
@@ -117,10 +126,10 @@ def save_slot_state(args, model, optimizer, adapter, *, reason: str = "swap") ->
     return manifest if rank == 0 else shard
 
 
-def find_slot_state(adapter) -> Path | None:
+def find_slot_state(adapter, base: Path | None = None) -> Path | None:
     """The sidecar base dir, only if a committed manifest matches this
     registration's world topology."""
-    base = sidecar_dir(adapter)
+    base = base if base is not None else sidecar_dir(adapter)
     if base is None or not (base / "manifest.pt").exists():
         return None
     manifest = torch.load(base / "manifest.pt", map_location="cpu", weights_only=True)
@@ -135,15 +144,16 @@ def find_slot_state(adapter) -> Path | None:
     return base
 
 
-def load_slot_state(args, model, optimizer, adapter) -> int | None:
+def load_slot_state(args, model, optimizer, adapter, *, base: Path | None = None) -> int | None:
     """Restore a slot from its sidecar (weights -> rank/alpha -> optimizer
     children, in that order). Returns the restored optimizer step, or None when
-    no sidecar exists — a real step-0 sidecar must not be re-initialized."""
+    no sidecar exists — a real step-0 sidecar must not be re-initialized.
+    ``base`` restores from a named state instead of the swap sidecar."""
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
 
     from miles.backends.megatron_utils.multi_lora_utils.optimizer import _slot_children
 
-    base = find_slot_state(adapter)
+    base = find_slot_state(adapter, base)
     if base is None:
         return None
     rank = dist.get_rank() if dist.is_initialized() else 0

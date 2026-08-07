@@ -60,6 +60,7 @@ class MultiLoRAHTTPServer:
 
     def add_routes(self, app: FastAPI) -> None:
         app.get("/health")(self.health)
+        app.get("/info")(self.service_info)
         app.get("/adapter_runs")(self.list_adapters)
         app.get("/adapter_runs/state")(self.adapter_states)  # before /adapter_runs/{name}
         app.get("/adapter_runs/{name}")(self.get_adapter)
@@ -111,6 +112,9 @@ class MultiLoRAHTTPServer:
             if status["name"] == name:
                 return status
         raise HTTPException(status_code=404, detail=f"Adapter '{name}' not registered")
+
+    async def service_info(self) -> dict:
+        return self.backend.service_info()
 
     async def register_adapter(self, request: RegisterAdapterRequest) -> dict:
         if (request.config is None) == (request.yaml_path is None):

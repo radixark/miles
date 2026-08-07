@@ -63,7 +63,11 @@ def build_slot_scheduler(args: Namespace, optimizer, adapter, resume_step: int) 
 
 
 def install_slot_scheduler(args: Namespace, optimizer, adapter, resume_step: int) -> None:
-    """Attach the adapter's scheduler to the optimizer, keyed by slot."""
+    """Attach the adapter's scheduler to the optimizer, keyed by slot.
+    Thinker adapters install none: per-operation AdamParams own the LR, and a
+    schedule tick would overwrite the client's value right after each step."""
+    if getattr(adapter.config, "input_mode", "multi-lora") == "thinker":
+        return
     if not hasattr(optimizer, "miles_slot_schedulers"):
         optimizer.miles_slot_schedulers = {}
     optimizer.miles_slot_schedulers[adapter.slot] = build_slot_scheduler(args, optimizer, adapter, resume_step)
@@ -79,7 +83,10 @@ def step_slot_schedulers(optimizer, stepped_slots) -> dict[int, float]:
     Returns slot -> new learning rate, for logging."""
     lr_by_slot: dict[int, float] = {}
     for slot in stepped_slots:
-        scheduler = optimizer.miles_slot_schedulers[slot]
+        # Thinker slots carry no scheduler (per-operation AdamParams own the LR).
+        scheduler = getattr(optimizer, "miles_slot_schedulers", {}).get(slot)
+        if scheduler is None:
+            continue
         scheduler.step(increment=1)
         if scheduler.optimizer.param_groups:  # empty on ranks owning none of the slot's params
             lr_by_slot[slot] = scheduler.optimizer.param_groups[0]["lr"]

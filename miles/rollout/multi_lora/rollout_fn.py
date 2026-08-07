@@ -32,6 +32,10 @@ DEFAULT_CHILD_ROLLOUT_PATH = "miles.rollout.inference_rollout.inference_rollout_
 Tenant = tuple[str, str]
 
 
+def _runtime_kind(runtime: "AdapterRolloutRuntime") -> str:
+    return getattr(runtime.run.config, "input_mode", "multi-lora") or "multi-lora"
+
+
 def leaf_sample_count(node) -> int:
     """Recursive leaf counter: multi-agent children may nest groups, so
     ``len(group)`` is not the sample count."""
@@ -142,11 +146,18 @@ class AdapterRolloutRuntime:
 
     def __init__(self, args, run: AdapterRun):
         self.run = run
-        self.data_source = _AdapterDataSource(args, run)
-        path = run.config.rollout_function_path or DEFAULT_CHILD_ROLLOUT_PATH
-        fn = load_function(path)
-        child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)
-        self.child_fn = fn(child_input) if inspect.isclass(fn) else fn
+        if getattr(run.config, "input_mode", "multi-lora") == "thinker":
+            from miles.rollout.multi_lora.queue_rollout_fn import QueueChildRolloutFn, ThinkerOperationSource
+
+            self.data_source = ThinkerOperationSource(args, run)
+            child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)
+            self.child_fn = QueueChildRolloutFn(child_input)
+        else:
+            self.data_source = _AdapterDataSource(args, run)
+            path = run.config.rollout_function_path or DEFAULT_CHILD_ROLLOUT_PATH
+            fn = load_function(path)
+            child_input = RolloutFnConstructorInput(args=self.data_source.args, data_source=self.data_source)
+            self.child_fn = fn(child_input) if inspect.isclass(fn) else fn
         self.state = self.IDLE
         self.ready_output: RolloutFnTrainOutput | None = None
         self.task: asyncio.Task | None = None
@@ -228,10 +239,13 @@ class MultiLoRARolloutFn:
                 continue
             runtime = AdapterRolloutRuntime(self.args, run)
             self.runtimes[tenant] = runtime
-            await asyncio.to_thread(
-                ray.get,
-                get_multi_lora_controller().resolve_num_step.remote(name, len(runtime.data_source.dataset)),
-            )
+            if getattr(run.config, "input_mode", "multi-lora") != "thinker":
+                # Thinker runs have no dataset: num_step is client-set or
+                # unbounded, never derived from num_epoch x rows.
+                await asyncio.to_thread(
+                    ray.get,
+                    get_multi_lora_controller().resolve_num_step.remote(name, len(runtime.data_source.dataset)),
+                )
             logger.info(f"[multilora] created child runtime for '{name}' ({run.registration_id[:8]})")
         self._sync_rotation()
 
@@ -319,9 +333,15 @@ class MultiLoRARolloutFn:
         collected = 0
         coalesce_deadline: float | None = None
 
+        selected_kind: str | None = None
         while True:
-            runtime = self._pop_next_ready()
+            runtime = self._pop_next_ready(kind=selected_kind)
             if runtime is not None:
+                # One selection = one kind: reward post-processing, advantage
+                # computation and loss dispatch all gate per train call, so an
+                # thinker batch must never share a selection with a dataset
+                # batch. Mismatched READY runtimes wait for the next selection.
+                selected_kind = _runtime_kind(runtime)
                 selected.append(runtime)
                 # Leave READY immediately or the round-robin would re-select
                 # the same batch until the target is met (duplicated samples).
@@ -358,14 +378,17 @@ class MultiLoRARolloutFn:
                 continue
         return selected
 
-    def _pop_next_ready(self) -> AdapterRolloutRuntime | None:
+    def _pop_next_ready(self, kind: str | None = None) -> AdapterRolloutRuntime | None:
         """Persistent round-robin over READY runtimes: the cursor survives
-        across selections so fast adapters cannot starve slow ones."""
+        across selections so fast adapters cannot starve slow ones. With a
+        kind, only matching runtimes qualify (selection kind partitioning)."""
         for _ in range(len(self.rotation)):
             tenant = self.rotation.popleft()
             self.rotation.append(tenant)
             runtime = self.runtimes.get(tenant)
             if runtime is not None and runtime.state == AdapterRolloutRuntime.READY:
+                if kind is not None and _runtime_kind(runtime) != kind:
+                    continue
                 return runtime
         return None
 
@@ -401,6 +424,9 @@ class MultiLoRARolloutFn:
             run = runtime.run
             data.extend(output.samples)
             plan_entry = plan_by_tenant[runtime.tenant]
+            # Operation directives from a thinker queue child; multi-LoRA
+            # dataset batches keep the fused step-after-backward behavior.
+            op_meta = output.metadata or {}
             batch_plan.append(
                 dict(
                     name=run.name,
@@ -410,6 +436,11 @@ class MultiLoRARolloutFn:
                     actual_sample_count=leaf_sample_count(output.samples),
                     actual_rollout_count=leaf_rollout_count(output.samples),
                     prompt_group_sizes=[leaf_sample_count([group]) for group in output.samples],
+                    operation_id=op_meta.get("operation_id"),
+                    operation_kind=op_meta.get("operation_kind", "multi_lora_train"),
+                    batch_id=op_meta.get("batch_id"),
+                    step_after_backward=op_meta.get("step_after_backward", True),
+                    loss_spec=op_meta.get("loss_spec"),
                 )
             )
             for key, value in (output.metrics or {}).items():
@@ -429,7 +460,9 @@ class MultiLoRARolloutFn:
                 metrics[f"{run.name}/rollout_reward_mean"] = reward_mean
                 logger.info(f"[multilora] ({run.name}) selected batch: n={len(rewards)} reward_mean={reward_mean:.4f}")
 
-        step_names = sorted(entry["name"] for entry in batch_plan)
+        # Accumulate-only batches (thinker forward_backward) are selections
+        # without a step: the registry books a step only for stepping entries.
+        step_names = sorted(entry["name"] for entry in batch_plan if entry["step_after_backward"])
         await asyncio.to_thread(
             ray.get,
             get_multi_lora_controller().record_train_selection.remote(rollout_id, step_names),

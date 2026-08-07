@@ -174,6 +174,24 @@ def _found_inf_anywhere(found_inf: bool) -> bool:
     return flag.item() > 0
 
 
+# Tinker-compatible per-call Adam defaults (thinker adapters).
+_ADAM_PARAM_DEFAULTS = dict(learning_rate=1e-4, beta1=0.9, beta2=0.95, eps=1e-12, weight_decay=0.0, grad_clip_norm=0.0)
+
+
+def apply_adam_params_to_slot(optimizer, slot: int, adam_params: dict) -> dict:
+    """Write one operation's AdamParams onto the slot's param groups; returns
+    the resolved values. Thinker adapters install no scheduler, so nothing
+    overwrites these between operations."""
+    resolved = {**_ADAM_PARAM_DEFAULTS, **{k: v for k, v in (adam_params or {}).items() if v is not None}}
+    for child in _slot_children(optimizer, slot):
+        for group in child.param_groups:
+            group["lr"] = resolved["learning_rate"]
+            group["betas"] = (resolved["beta1"], resolved["beta2"])
+            group["eps"] = resolved["eps"]
+            group["weight_decay"] = resolved["weight_decay"]
+    return resolved
+
+
 def step_adapter_slots(
     optimizer,
     model,
@@ -181,21 +199,31 @@ def step_adapter_slots(
     clip_grad: float,
     *,
     normalize_by_count: bool = True,
+    adam_params_by_slot: dict[int, dict] | None = None,
 ) -> tuple[dict[int, float], set[int]]:
     """Step exactly the slots in ``step_counts`` (slot -> rollout-execution
     count, the loss's aggregation unit), retaining all other slots' gradients.
     Returns (grad norms, vetoed slots): a found-inf/NaN slot is not stepped,
-    its grads are cleared, and the caller must not commit or publish it."""
+    its grads are cleared, and the caller must not commit or publish it.
+
+    A slot with an ``adam_params_by_slot`` entry follows the client's contract
+    instead of the server's: its AdamParams land on the param groups first,
+    its gradient sum is never count-normalized (the loss weights own the
+    scale), and its clip is the per-call ``grad_clip_norm`` (0.0 = none)."""
     grad_norms: dict[int, float] = {}
     vetoed: set[int] = set()
+    adam_params_by_slot = adam_params_by_slot or {}
 
     for slot in sorted(step_counts):
         children = _slot_children(optimizer, slot)
+        adam = adam_params_by_slot.get(slot)
+        if adam is not None:
+            adam = apply_adam_params_to_slot(optimizer, slot, adam)
         # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the per-execution mean.
         found_inf = False
         for child in children:
             found_inf = bool(child.prepare_grads()) or found_inf
-            if normalize_by_count:
+            if normalize_by_count and adam is None:
                 for main_param in child.get_parameters():
                     if main_param.grad is not None:
                         main_param.grad.mul_(1.0 / step_counts[slot])
@@ -220,8 +248,9 @@ def step_adapter_slots(
             zero_adapter_slot_grads(model, slot)
             continue
 
-        if clip_grad > 0.0 and slot_params:
-            clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
+        slot_clip = adam["grad_clip_norm"] if adam is not None else clip_grad
+        if slot_clip > 0.0 and slot_params:
+            clip_grad_by_total_norm_fp32(slot_params, slot_clip, slot_norm, False)
         grad_norms[slot] = float(slot_norm)
 
         for child in children:

@@ -116,6 +116,49 @@ class MultiLoRAController:
     def abort_bind(self, txn_id: str) -> None:
         self.backend.registry.abort_bind(txn_id)
 
+    # ---------------- thinker operations ----------------
+
+    def enqueue_operation(
+        self, name: str, operation_id: str, ordinal: int, kind: str, payload: dict | None = None
+    ) -> dict:
+        return self.backend.enqueue_operation(name, operation_id, ordinal, kind, payload)
+
+    def claim_data_operation(self, name: str, registration_id: str) -> dict | None:
+        return self.backend.operations.claim_data_operation(name, registration_id)
+
+    def claim_control_operation(self, name: str, registration_id: str) -> dict | None:
+        return self.backend.operations.claim_control_operation(name, registration_id)
+
+    def claimable_control_tenants(self) -> list:
+        return self.backend.operations.claimable_control_tenants()
+
+    def complete_operation(self, operation_id: str, result: dict | None = None) -> None:
+        self.backend.operations.complete(operation_id, result)
+
+    def fail_operation(self, operation_id: str, error: str, category: str = "server") -> None:
+        self.backend.operations.fail(operation_id, error, category)
+
+    def cancel_operation(self, operation_id: str) -> dict:
+        return self.backend.operations.cancel(operation_id)
+
+    def get_operation(self, operation_id: str) -> dict | None:
+        return self.backend.operations.get(operation_id)
+
+    def ack_operation(self, operation_id: str) -> None:
+        self.backend.operations.ack(operation_id)
+
+    def claim_ready_control_operations(self) -> list[dict]:
+        return self.backend.claim_ready_control_operations()
+
+    def complete_control_operations(self, results: dict) -> None:
+        self.backend.complete_control_operations(results)
+
+    def commit_thinker_batch(self, names: list, operation_ids: list, logprobs_by_op: dict | None = None) -> None:
+        self.backend.commit_thinker_batch(list(names), list(operation_ids), logprobs_by_op)
+
+    def service_info(self) -> dict:
+        return self.backend.service_info()
+
     def set_adapter_step(self, name: str, step: int) -> None:
         self.backend.registry.set_step(name, step)
 
