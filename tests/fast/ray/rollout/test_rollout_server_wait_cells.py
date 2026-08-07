@@ -49,7 +49,7 @@ class TestWaitExpectedNumCellsWhenColocated:
         await asyncio.wait_for(srv.wait_expected_num_cells(), timeout=1)
 
     async def test_it_waits_while_cells_are_still_missing(self):
-        """Starting a rollout with half the fleet would run the first step on far too few engines."""
+        """Starting a rollout with half the pool would run the first step on far too few engines."""
         cells: dict = {"a": _FakeCell()}
         srv = _make_server(colocate=True, expected_num_cells=2, cells=cells)
 
@@ -91,7 +91,7 @@ class TestWaitExpectedNumCellsEdges:
         await asyncio.wait_for(srv.wait_expected_num_cells(), timeout=1)
 
     async def test_more_cells_than_expected_do_not_hang_the_wait(self):
-        """An exact-match check would stall forever the moment the fleet is bigger than planned."""
+        """An exact-match check would stall forever the moment the pool is bigger than planned."""
         srv = _make_server(
             colocate=True, expected_num_cells=1, cells={"a": _FakeCell(), "b": _FakeCell(), "c": _FakeCell()}
         )
@@ -99,7 +99,7 @@ class TestWaitExpectedNumCellsEdges:
         await asyncio.wait_for(srv.wait_expected_num_cells(), timeout=1)
 
     async def test_it_gives_up_instead_of_waiting_forever(self):
-        """A fleet that never comes up must surface as a failure rather than a silent hang."""
+        """A pool that never comes up must surface as a failure rather than a silent hang."""
         srv = _make_server(colocate=True, expected_num_cells=1)
 
         with pytest.raises(Exception, match="Only 0/1 cells"):

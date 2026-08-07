@@ -14,7 +14,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.specs.train import compute_trainer_spec_name
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
@@ -117,10 +117,10 @@ class MegatronTrainRayActor(TrainRayActor):
             indep_dp_info=indep_dp_info,
         )
 
-        trainer_spec_name = compute_trainer_spec_name(role)
+        trainer_pool_id = compute_trainer_pool_id(role)
         self._ft_test_action_executor = FTTestActionActorExecutor.from_args(
             args,
-            cell_id=compute_cell_id(spec_name=trainer_spec_name, cell_index=indep_dp_info.cell_index),
+            cell_id=compute_cell_id(pool_id=trainer_pool_id, cell_index=indep_dp_info.cell_index),
             rank=self._rank,
         )
 

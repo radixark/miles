@@ -94,7 +94,7 @@ Same pattern applies to `offload`, `onload` and `clear_memory`.
 ```
 
 - Both halves are workers of the run, and the driver only ever holds handles to them. The
-  controller is constructed inside its own process from the providers its spec names, and
+  controller is constructed inside its own process from the providers for its pools, and
   the driver starts it with `await inference_controller.init()`; every later call is rpc.
 - Train actors no longer hold the executor handle. The driver reads
   `get_train_parallel_config()` off the trainer and writes it into the executor.

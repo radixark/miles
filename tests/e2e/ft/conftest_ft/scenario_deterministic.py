@@ -8,7 +8,7 @@ from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
-from miles.ray.specs.train import compute_trainer_spec_name
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.test_utils.comparisons.dumps import (
     INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     INPUT_TENSORS_SKIP_PATTERN,
@@ -27,7 +27,7 @@ PHASE_START_ROLLOUT_IDS: dict[str, int] = {"phase_a": 0, "phase_b": NUM_ROLLOUTS
 
 def _build_actions(*, phase_start_rollout_id: int, num_cells: int) -> list[dict]:
     heal_trigger_rollout_id: int = phase_start_rollout_id + 1
-    target_cell_id: str = compute_cell_id(spec_name=compute_trainer_spec_name("actor"), cell_index=num_cells - 1)
+    target_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
     return [
         {"at_rollout": heal_trigger_rollout_id, "action": "stop_cell_at_end", "cell_id": target_cell_id},
         {"at_rollout": heal_trigger_rollout_id, "action": "start_cell_at_end", "cell_id": target_cell_id},

@@ -11,10 +11,10 @@ if TYPE_CHECKING:
 
 class BackendCapability(abc.ABC):
     @abc.abstractmethod
-    def dynamic_worker_provider(self, *, spec_names: Sequence[str]) -> BaseWorkerProvider: ...
+    def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider: ...
 
     @abc.abstractmethod
-    def static_worker_provider(self, *, spec_name: str) -> BaseWorkerProvider: ...
+    def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider: ...
 
     @abc.abstractmethod
     def cell_operations(self) -> BaseCellOperations: ...
@@ -25,11 +25,11 @@ class DeferredBackendCapability(BackendCapability):
         self._create = create
         self._inner: BackendCapability | None = None
 
-    def dynamic_worker_provider(self, *, spec_names: Sequence[str]) -> BaseWorkerProvider:
-        return self._resolve().dynamic_worker_provider(spec_names=spec_names)
+    def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider:
+        return self._resolve().dynamic_worker_provider(pool_ids=pool_ids)
 
-    def static_worker_provider(self, *, spec_name: str) -> BaseWorkerProvider:
-        return self._resolve().static_worker_provider(spec_name=spec_name)
+    def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider:
+        return self._resolve().static_worker_provider(pool_id=pool_id)
 
     def cell_operations(self) -> BaseCellOperations:
         return self._resolve().cell_operations()

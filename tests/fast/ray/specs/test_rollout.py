@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
 from miles.ray.specs.rollout import (
-    ROLLOUT_EXECUTOR_SPEC_NAME,
+    ROLLOUT_EXECUTOR_POOL,
     ROLLOUT_EXECUTOR_WORKER_CLASS,
     rollout_executor_cell_id,
     rollout_executor_worker_name,
@@ -27,7 +27,7 @@ class TestRolloutExecutorSpec:
         """One executor per run, and it must claim no gpu or the scheduler would reserve a whole slot."""
         spec = spec_rollout_executor(_args())
 
-        assert spec.name == ROLLOUT_EXECUTOR_SPEC_NAME
+        assert spec.name == ROLLOUT_EXECUTOR_POOL
         assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (1, 1)
         assert spec.scheduling.num_gpus_per_worker == 0
 
@@ -45,7 +45,7 @@ class TestRolloutExecutorSpec:
         assert sorted(kwargs) == ["args", "router_provider", "session_server_provider"]
         assert kwargs["router_provider"] is capability.static_provider
         assert kwargs["session_server_provider"] is capability.static_provider
-        assert capability.requested_static_spec_names == ["inference-router-0", "session-server"]
+        assert capability.requested_static_pool_ids == ["inference-router-0", "session-server"]
 
     def test_a_run_without_session_servers_is_given_no_session_provider(self):
         """Nothing is deployed to wait for, and a provider would make the executor wait for it anyway."""

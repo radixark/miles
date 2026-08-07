@@ -1,17 +1,17 @@
-from miles.ray.specs.inference import compute_router_spec_name
+from miles.ray.specs.inference import compute_router_pool_id
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
 
-MULTI_LORA_CONTROLLER_SPEC_NAME = "multi-lora-controller"
+MULTI_LORA_CONTROLLER_POOL_ID = "multi-lora-controller"
 MULTI_LORA_CONTROLLER_WORKER_CLASS = "miles.ray.multi_lora.controller.MultiLoRAController"
 
 
 def spec_multi_lora_controller(args) -> ServeWorkerSpec:
     return ServeWorkerSpec(
-        name=MULTI_LORA_CONTROLLER_SPEC_NAME,
+        name=MULTI_LORA_CONTROLLER_POOL_ID,
         port_infos=[],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
@@ -25,20 +25,20 @@ def spec_multi_lora_controller(args) -> ServeWorkerSpec:
         worker_class=MULTI_LORA_CONTROLLER_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
             args=args,
-            router_provider=ctx.capability.static_worker_provider(spec_name=compute_router_spec_name(0)),
+            router_provider=ctx.capability.static_worker_provider(pool_id=compute_router_pool_id(0)),
         ),
     )
 
 
 def create_multi_lora_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
     worker_name = multi_lora_controller_worker_name()
-    provider = capability.static_worker_provider(spec_name=MULTI_LORA_CONTROLLER_SPEC_NAME)
+    provider = capability.static_worker_provider(pool_id=MULTI_LORA_CONTROLLER_POOL_ID)
     return provider.get_handle(worker_name)
 
 
 def multi_lora_controller_worker_name() -> str:
-    return compute_worker_name(spec_name=MULTI_LORA_CONTROLLER_SPEC_NAME)
+    return compute_worker_name(pool_id=MULTI_LORA_CONTROLLER_POOL_ID)
 
 
 def multi_lora_controller_cell_id() -> str:
-    return compute_cell_id(spec_name=MULTI_LORA_CONTROLLER_SPEC_NAME, cell_index=0)
+    return compute_cell_id(pool_id=MULTI_LORA_CONTROLLER_POOL_ID, cell_index=0)

@@ -25,7 +25,7 @@ from miles.utils.workers.cell_operations.ray import RayCellOperations
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import NamedHostAndPorts
 
-_SPEC_NAME = "inference-engine-0"
+_POOL_ID = "inference-engine-0"
 _CELL_IDS = ["inference-engine-0-0-0", "inference-engine-0-0-1"]
 
 
@@ -91,7 +91,7 @@ class _FakeWorkerManager:
         index = _CELL_IDS.index(cell_id)
         return CellInfo(
             cell_id=cell_id,
-            spec_name=_SPEC_NAME,
+            pool_id=_POOL_ID,
             alive=self._alive[cell_id],
             worker_names=[f"{cell_id}-0"],
             workers_hash=f"hash-{cell_id}-{self._generation[cell_id]}",
@@ -110,7 +110,7 @@ class _FakeWorkerManager:
         for cell_id in _CELL_IDS:
             await self._reconcile(cell_id, self.cell_info(cell_id))
 
-    async def _get_cell_infos(self, *, spec_names: list[str]) -> dict[str, CellInfo]:
+    async def _get_cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
         return {cell_id: self.cell_info(cell_id) for cell_id in _CELL_IDS}
 
     async def _stop_cells(self, cell_ids: list[str]) -> None:
@@ -185,7 +185,7 @@ class _Harness:
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=self.worker_manager),
             controller=self.controller,
-            spec_names=[_SPEC_NAME],
+            pool_ids=[_POOL_ID],
         )
         self.ft_controller = _MiniFTController(
             get_cells=self._get_cell_snapshots,

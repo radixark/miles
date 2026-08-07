@@ -58,8 +58,8 @@ class RayWorkerManager:
 
     async def init(self, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
         self.pgs = pgs
-        self._group_infos = {spec.name: _GroupManager.initial(spec, self) for spec in specs}
-        assert len(self._group_infos) == len(specs)
+        self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
+        assert len(self._pools) == len(specs)
 
         await self.start_cells([c.cell_id for c in self._all_cells()])
 
@@ -92,9 +92,7 @@ class RayWorkerManager:
         return self._find_actor(worker_name).self_addrs
 
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
-        return {
-            name: [a.self_addrs for c in g.cells if c.alive for a in c.actors] for name, g in self._group_infos.items()
-        }
+        return {name: [a.self_addrs for c in g.cells if c.alive for a in c.actors] for name, g in self._pools.items()}
 
     def get_worker_infos(self, cell_id: str) -> list[WorkerInfo]:
         cell = self._find_cell(cell_id)
@@ -109,11 +107,11 @@ class RayWorkerManager:
             for actor in cell.actors
         ]
 
-    def get_cell_infos(self, *, spec_names: list[str]) -> dict[str, CellInfo]:
+    def get_cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
         # TODO: about `get_worker_infos` (which is only used by dashboard)
-        unknown = set(spec_names) - set(self._group_infos)
-        assert not unknown, f"{unknown=} {sorted(self._group_infos)=}"
-        infos = [c.get_info() for name in spec_names for c in self._group_infos[name].cells]
+        unknown = set(pool_ids) - set(self._pools)
+        assert not unknown, f"{unknown=} {sorted(self._pools)=}"
+        infos = [c.get_info() for name in pool_ids for c in self._pools[name].cells]
         return {info.cell_id: info for info in infos}
 
     def _find_actor(self, worker_name: str) -> _BaseActorManager:
@@ -127,16 +125,16 @@ class RayWorkerManager:
         return matches[0]
 
     def _all_cells(self) -> list[_CellManager]:
-        return [c for g in self._group_infos.values() for c in g.cells]
+        return [c for g in self._pools.values() for c in g.cells]
 
 
 @dataclass(kw_only=True)
-class _GroupManager:
+class _PoolManager:
     spec: BaseWorkerSpec
     cells: list[_CellManager]
 
     @classmethod
-    def initial(cls, spec: BaseWorkerSpec, manager: RayWorkerManager) -> _GroupManager:
+    def initial(cls, spec: BaseWorkerSpec, manager: RayWorkerManager) -> _PoolManager:
         return cls(
             spec=spec,
             cells=[
@@ -204,7 +202,7 @@ class _CellManager(Generic[SpecT]):
     def get_info(self) -> CellInfo:
         return CellInfo(
             cell_id=self.cell_id,
-            spec_name=self.spec.name,
+            pool_id=self.spec.name,
             alive=self.alive,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
             workers_hash=f"pseudo-hash-{self.generation}",
@@ -213,7 +211,7 @@ class _CellManager(Generic[SpecT]):
 
     @property
     def cell_id(self) -> str:
-        return compute_cell_id(spec_name=self.spec.name, cell_index=self.cell_index)
+        return compute_cell_id(pool_id=self.spec.name, cell_index=self.cell_index)
 
     @property
     def alive(self) -> bool:
@@ -305,7 +303,7 @@ class _BaseActorManager(Generic[SpecT]):
     @property
     def name(self) -> str:
         return compute_worker_name(
-            spec_name=self.spec.name,
+            pool_id=self.spec.name,
             cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
         )

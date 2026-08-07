@@ -42,7 +42,7 @@ class TestRayWorkerProviderAddressLookup:
             {"primary": HostAndPort(host="10.0.0.7", port=15000)},
             {"primary": HostAndPort(host="10.0.0.7", port=15001)},
         )
-        provider = RayWorkerProvider(worker_manager_handle=handle, spec_names=["inference-engine-0-0"])
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["inference-engine-0-0"])
 
         first = (await provider.get_addrs(worker_name="router-0-0"))["primary"]
         second = (await provider.get_addrs(worker_name="router-0-0"))["primary"]
@@ -59,7 +59,7 @@ class TestRayWorkerProviderGetAddrs:
             "disaggregation_bootstrap": HostAndPort(host="10.0.0.7", port=15001),
         }
         handle = _make_handle(addrs)
-        provider = RayWorkerProvider(worker_manager_handle=handle, spec_names=["inference-engine-0-0"])
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["inference-engine-0-0"])
 
         assert await provider.get_addrs(worker_name="engine-0-0") == addrs
 
@@ -69,8 +69,8 @@ class _FakeCellInfosMethod:
     answers: list[Any]
     calls: list[list[str]] = field(default_factory=list)
 
-    def remote(self, *, spec_names: list[str]) -> Any:
-        self.calls.append(list(spec_names))
+    def remote(self, *, pool_ids: list[str]) -> Any:
+        self.calls.append(list(pool_ids))
         answer = self.answers[min(len(self.calls) - 1, len(self.answers) - 1)]
         if isinstance(answer, Exception):
             return _raised(answer)
@@ -93,7 +93,7 @@ def _make_watching_handle(*answers: Any) -> _WatchingManagerHandle:
 def _cell_info(cell_id: str, *, alive: bool = True, workers_hash: str = "hash-0") -> CellInfo:
     return CellInfo(
         cell_id=cell_id,
-        spec_name="inference-engine-0-0",
+        pool_id="inference-engine-0-0",
         alive=alive,
         worker_names=[f"{cell_id}-0"],
         workers_hash=workers_hash,
@@ -130,9 +130,9 @@ class _FailingOnceReconciler(_RecordingReconciler):
 
 class TestRayWorkerProviderWatchCellsInitialSync:
     async def test_every_initial_cell_is_reconciled_before_the_watch_is_established(self):
-        """Callers may assume the fleet is fully observed once watch_cells returns."""
+        """Callers may assume the pool is fully observed once watch_cells returns."""
         handle = _make_watching_handle({"cell-a": _cell_info("cell-a"), "cell-b": _cell_info("cell-b")})
-        provider = RayWorkerProvider(worker_manager_handle=handle, spec_names=["inference-engine-0-0"])
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["inference-engine-0-0"])
         reconciler = _RecordingReconciler()
 
         stop = await provider.watch_cells(reconciler)
@@ -142,17 +142,17 @@ class TestRayWorkerProviderWatchCellsInitialSync:
             await stop()
 
     async def test_a_failing_initial_sync_propagates_instead_of_starting_the_loop(self):
-        """A fleet we never managed to read must not look like an empty fleet."""
+        """A pool we never managed to read must not look like an empty pool."""
         handle = _make_watching_handle(RuntimeError("manager unreachable"))
-        provider = RayWorkerProvider(worker_manager_handle=handle, spec_names=["inference-engine-0-0"])
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["inference-engine-0-0"])
 
         with pytest.raises(RuntimeError, match="manager unreachable"):
             await provider.watch_cells(_RecordingReconciler())
 
-    async def test_only_the_requested_spec_names_are_asked_for(self):
+    async def test_only_the_requested_pools_are_asked_for(self):
         """The controller must not observe cells belonging to someone else."""
         handle = _make_watching_handle({})
-        provider = RayWorkerProvider(worker_manager_handle=handle, spec_names=["inference-engine-0-0"])
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["inference-engine-0-0"])
 
         stop = await provider.watch_cells(_RecordingReconciler())
         try:
@@ -167,7 +167,7 @@ class TestRayWorkerProviderWatchCellsPolling:
         info = _cell_info("cell-a")
         handle = _make_watching_handle({"cell-a": info}, {"cell-a": info})
         provider = RayWorkerProvider(
-            worker_manager_handle=handle, spec_names=["inference-engine-0-0"], poll_interval_seconds=0.001
+            worker_manager_handle=handle, pool_ids=["inference-engine-0-0"], poll_interval_seconds=0.001
         )
         reconciler = _RecordingReconciler()
 
@@ -183,7 +183,7 @@ class TestRayWorkerProviderWatchCellsPolling:
         alive = _cell_info("cell-a")
         handle = _make_watching_handle({"cell-a": alive}, {"cell-a": _cell_info("cell-a", alive=False)})
         provider = RayWorkerProvider(
-            worker_manager_handle=handle, spec_names=["inference-engine-0-0"], poll_interval_seconds=0.001
+            worker_manager_handle=handle, pool_ids=["inference-engine-0-0"], poll_interval_seconds=0.001
         )
         reconciler = _RecordingReconciler()
 
@@ -200,7 +200,7 @@ class TestRayWorkerProviderWatchCellsPolling:
         second = _cell_info("cell-a", workers_hash="hash-1")
         handle = _make_watching_handle({"cell-a": first}, {"cell-a": second})
         provider = RayWorkerProvider(
-            worker_manager_handle=handle, spec_names=["inference-engine-0-0"], poll_interval_seconds=0.001
+            worker_manager_handle=handle, pool_ids=["inference-engine-0-0"], poll_interval_seconds=0.001
         )
         reconciler = _RecordingReconciler()
 
@@ -212,11 +212,11 @@ class TestRayWorkerProviderWatchCellsPolling:
             await stop()
 
     async def test_a_failing_poll_is_retried_instead_of_killing_the_watch(self):
-        """One unreachable manager call must not silently end fleet observation."""
+        """One unreachable manager call must not silently end pool observation."""
         info = _cell_info("cell-a")
         handle = _make_watching_handle({}, RuntimeError("transient"), {"cell-a": info})
         provider = RayWorkerProvider(
-            worker_manager_handle=handle, spec_names=["inference-engine-0-0"], poll_interval_seconds=0.001
+            worker_manager_handle=handle, pool_ids=["inference-engine-0-0"], poll_interval_seconds=0.001
         )
         reconciler = _RecordingReconciler()
 
@@ -232,7 +232,7 @@ class TestRayWorkerProviderWatchCellsPolling:
         info_b = _cell_info("cell-b")
         handle = _make_watching_handle({}, {"cell-a": info_a, "cell-b": info_b}, {"cell-b": info_b})
         provider = RayWorkerProvider(
-            worker_manager_handle=handle, spec_names=["inference-engine-0-0"], poll_interval_seconds=0.001
+            worker_manager_handle=handle, pool_ids=["inference-engine-0-0"], poll_interval_seconds=0.001
         )
         reconciler = _FailingOnceReconciler(failing_cell_id="cell-b")
 
@@ -249,7 +249,7 @@ class TestRayWorkerProviderWatchCellsStop:
         """The returned stop function must actually stop the loop, not just detach from it."""
         handle = _make_watching_handle({})
         provider = RayWorkerProvider(
-            worker_manager_handle=handle, spec_names=["inference-engine-0-0"], poll_interval_seconds=0.001
+            worker_manager_handle=handle, pool_ids=["inference-engine-0-0"], poll_interval_seconds=0.001
         )
 
         stop = await provider.watch_cells(_RecordingReconciler())

@@ -7,7 +7,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
-from miles.ray.specs.inference import compute_engine_spec_name, specs_inference_engine
+from miles.ray.specs.inference import compute_engine_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
@@ -156,7 +156,7 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
         assert servers["actor"].expected_num_cells == 2
 
     async def test_every_model_gets_its_own_barrier_target(self, tmp_path: Path) -> None:
-        """Sharing one fleet-size across models would block the small model behind the big one."""
+        """Sharing one pool size across models would block the small model behind the big one."""
         args = _make_args_with_config(models=_CONFIG_MULTI_MODEL, tmp_path=tmp_path)
 
         servers = await _create_servers(args, _CONFIG_MULTI_MODEL)
@@ -166,6 +166,6 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
 
 
 class TestEngineSpecNamingUsedByTheCrossCheck:
-    def test_spec_names_carry_the_model_index_the_cross_check_parses(self) -> None:
+    def test_pool_names_carry_the_model_index_the_cross_check_parses(self) -> None:
         """The cross-check maps specs back to models by name, so that encoding must stay stable."""
-        assert compute_engine_spec_name(model_idx=3, group_index=7) == "inference-engine-3-7"
+        assert compute_engine_pool_id(model_idx=3, group_index=7) == "inference-engine-3-7"
