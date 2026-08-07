@@ -10,7 +10,15 @@ import subprocess
 import sys
 from typing import Any
 
-from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
+from miles.utils.audit_utils.event_logger.models import (
+    ArgsDump,
+    EditablePackageInfo,
+    EnvReportEvent,
+    GitRepoInfo,
+    NodeEnvReport,
+)
+from miles.utils.tracking_utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
 
@@ -33,39 +41,6 @@ _KEY_PACKAGE_NAMES = (
 )
 
 
-class EditablePackageInfo(FrozenStrictBaseModel):
-    name: str
-    version: str
-    location: str
-
-
-class GitRepoInfo(FrozenStrictBaseModel):
-    package_name: str
-    location: str
-    commit: str
-    dirty: bool
-    diff_stat: str
-
-
-class ArgsDump(FrozenStrictBaseModel):
-    values: dict[str, Any]
-    skipped_names: list[str]
-
-
-class NodeEnvReport(FrozenStrictBaseModel):
-    role: str
-    rank: int
-    hostname: str
-    argv: list[str]
-    args: ArgsDump
-    env_vars: dict[str, str]
-    key_versions: dict[str, str]
-    launcher_env_report: dict[str, Any] | None
-    editable_packages: list[EditablePackageInfo]
-    git_repos: list[GitRepoInfo]
-    full_pip_list: list[dict[str, str]]
-
-
 def decode_env_report(raw: str) -> dict[str, Any] | None:
     """Decode an env report string (base64-encoded JSON or raw JSON)."""
     if not raw:
@@ -81,13 +56,31 @@ def decode_env_report(raw: str) -> dict[str, Any] | None:
             return None
 
 
-def collect_and_print_node_env_report(*, role: str, rank: int, args: Any) -> NodeEnvReport:
-    report = collect_node_env_report(role=role, rank=rank, args=args)
-    _print_report(report)
+def log_env_report(*, args: Any) -> NodeEnvReport:
+    report = collect_node_env_report(args=args)
+
+    if is_event_logger_initialized():
+        get_event_logger().log(EnvReportEvent, {"report": report}, print_log=False)
+    _log_report_summary(report)
+
     return report
 
 
-def collect_node_env_report(*, role: str, rank: int, args: Any) -> NodeEnvReport:
+def _log_report_summary(report: NodeEnvReport) -> None:
+    log_structured(
+        logger.info,
+        tag="audit",
+        op="env_report",
+        hostname=report.hostname,
+        versions=report.key_versions,
+        repos={repo.package_name: f"{repo.commit}{'-dirty' if repo.dirty else ''}" for repo in report.git_repos},
+        num_packages=len(report.full_pip_list),
+        num_env_vars=len(report.env_vars),
+        stored=is_event_logger_initialized(),
+    )
+
+
+def collect_node_env_report(*, args: Any) -> NodeEnvReport:
     editable_packages, full_pip_list = _collect_pip_info()
 
     git_repos = [
@@ -95,8 +88,6 @@ def collect_node_env_report(*, role: str, rank: int, args: Any) -> NodeEnvReport
     ]
 
     return NodeEnvReport(
-        role=role,
-        rank=rank,
         hostname=socket.gethostname(),
         argv=redact_argv(sys.argv),
         args=dump_args(args),
@@ -264,10 +255,3 @@ def _collect_git_info(*, package_name: str, location: str) -> GitRepoInfo | None
     except Exception:
         logger.warning("Failed to collect git info for %s at %s", package_name, location, exc_info=True)
         return None
-
-
-ENV_REPORT_PREFIX = "ENV_REPORT_JSON="
-
-
-def _print_report(report: NodeEnvReport) -> None:
-    print(f"{ENV_REPORT_PREFIX}{report.model_dump_json()}")

@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -10,18 +11,19 @@ from unittest.mock import patch
 
 import pytest
 
+from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
+from miles.utils.audit_utils.event_logger.models import EditablePackageInfo, EnvReportEvent, NodeEnvReport
+from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.env_report import (
-    ENV_REPORT_PREFIX,
-    EditablePackageInfo,
-    NodeEnvReport,
     _collect_git_info,
     _collect_pip_info,
     _is_editable,
     _parse_pip_entry,
-    collect_and_print_node_env_report,
     collect_key_versions,
+    collect_node_env_report,
     decode_env_report,
     dump_args,
+    log_env_report,
     redact,
     redact_argv,
     redact_env_vars,
@@ -302,7 +304,7 @@ class TestCollectKeyVersions:
             assert "torch_cuda" not in collect_key_versions([])
 
 
-class TestCollectAndPrintNodeEnvReport:
+class TestCollectNodeEnvReport:
     def _mock_pip_inspect(self) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(
             args=["pip", "inspect"],
@@ -313,14 +315,12 @@ class TestCollectAndPrintNodeEnvReport:
 
     def _collect(self, **overrides) -> NodeEnvReport:
         with patch("miles.utils.env_report.subprocess.run", return_value=self._mock_pip_inspect()):
-            return collect_and_print_node_env_report(role="training", rank=0, args=_args(**overrides))
+            return collect_node_env_report(args=_args(**overrides))
 
     def test_returns_structured_report(self) -> None:
         report = self._collect(env_report='{"flavor": "test"}')
 
         assert isinstance(report, NodeEnvReport)
-        assert report.role == "training"
-        assert report.rank == 0
         assert report.launcher_env_report == {"flavor": "test"}
         assert len(report.editable_packages) == 2
         assert len(report.full_pip_list) == 4
@@ -343,16 +343,6 @@ class TestCollectAndPrintNodeEnvReport:
         report = self._collect()
         assert report.key_versions["sglang"] == "0.4.0"
 
-    def test_prints_single_line_json(self, capsys) -> None:
-        self._collect(env_report="")
-
-        captured = capsys.readouterr()
-        lines = [line for line in captured.out.splitlines() if line.startswith(ENV_REPORT_PREFIX)]
-        assert len(lines) == 1
-        parsed = json.loads(lines[0].removeprefix(ENV_REPORT_PREFIX))
-        assert parsed["role"] == "training"
-        assert parsed["rank"] == 0
-
     def test_empty_partial_env_report(self) -> None:
         assert self._collect(env_report="").launcher_env_report is None
 
@@ -364,6 +354,54 @@ class TestCollectAndPrintNodeEnvReport:
         parsed = json.loads(report.model_dump_json())
         assert parsed["editable_packages"][0]["name"] == "miles"
         assert parsed["args"]["skipped_names"] == ["model"]
+
+
+class TestLogEnvReport:
+    @pytest.fixture(autouse=True)
+    def _no_event_logger(self):
+        set_event_logger(None)
+        yield
+        set_event_logger(None)
+
+    def _log(self, **overrides) -> None:
+        mock_result = subprocess.CompletedProcess(
+            args=["pip", "inspect"], returncode=0, stdout=json.dumps(_SAMPLE_PIP_INSPECT), stderr=""
+        )
+        with patch("miles.utils.env_report.subprocess.run", return_value=mock_result):
+            log_env_report(args=_args(**overrides))
+
+    def test_writes_one_event_the_analyzer_can_read_back(self, tmp_path: Path) -> None:
+        """The report is stored as a normal event, so replaying a run's jsonl recovers its environment."""
+        set_event_logger(EventLogger(log_dir=tmp_path, source=MainProcessIdentity()))
+
+        self._log(lr=1.0)
+
+        events = read_events(tmp_path)
+        assert len(events) == 1
+        event = events[0]
+        assert isinstance(event, EnvReportEvent)
+        assert event.source == MainProcessIdentity()
+        assert event.report.args.values["lr"] == 1.0
+        assert event.report.hostname
+
+    def test_summarises_the_report_on_stdout_instead_of_dumping_it(self, tmp_path: Path, caplog) -> None:
+        """A full report is tens of kilobytes; logging it per process per interval would drown the logs."""
+        set_event_logger(EventLogger(log_dir=tmp_path, source=MainProcessIdentity()))
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.env_report"):
+            self._log(lr=1.0)
+
+        assert "op=env_report" in caplog.text
+        assert "num_packages=4" in caplog.text
+        assert "PYTHONUNBUFFERED" not in caplog.text
+
+    def test_summarises_the_report_when_no_event_logger_is_configured(self, caplog) -> None:
+        """A run without an event dir still leaves a trace instead of silently dropping the report."""
+        with caplog.at_level(logging.INFO, logger="miles.utils.env_report"):
+            self._log()
+
+        assert "op=env_report" in caplog.text
+        assert "stored=false" in caplog.text
 
 
 class TestCollectGitInfo:
@@ -456,14 +494,14 @@ def editable_package(tmp_path: Path):
 class TestRealEditablePackage:
     """Integration tests: create a real editable package, pip install -e, run env report."""
 
-    def test_detects_clean_editable_package(self, editable_package, capsys) -> None:
+    def test_detects_clean_editable_package(self, editable_package) -> None:
         """Verify env report finds the package with correct git commit, not dirty."""
         pkg_name = editable_package["pkg_name"]
         repo = editable_package["repo"]
         expected_commit = editable_package["commit"]
 
         # Step 1: Run the full collection (no mocks)
-        report = collect_and_print_node_env_report(role="training", rank=0, args=_args(env_report='{"test": true}'))
+        report = collect_node_env_report(args=_args(env_report='{"test": true}'))
 
         # Step 2: Verify the package appears in editable_packages
         editable_names = {pkg.name for pkg in report.editable_packages}
@@ -482,18 +520,7 @@ class TestRealEditablePackage:
         assert git_info.dirty is False
         assert git_info.diff_stat == ""
 
-        # Step 4: Verify single-line JSON output is parseable and contains this package
-        captured = capsys.readouterr()
-        report_lines = [line for line in captured.out.splitlines() if line.startswith(ENV_REPORT_PREFIX)]
-        assert len(report_lines) == 1
-        parsed = json.loads(report_lines[0].removeprefix(ENV_REPORT_PREFIX))
-        parsed_editable_names = {p["name"] for p in parsed["editable_packages"]}
-        assert pkg_name in parsed_editable_names
-        parsed_git = {r["package_name"]: r for r in parsed["git_repos"]}
-        assert parsed_git[pkg_name]["commit"] == expected_commit
-        assert parsed_git[pkg_name]["dirty"] is False
-
-        # Step 5: Verify package also in full_pip_list
+        # Step 4: Verify package also in full_pip_list
         full_names = {p["name"] for p in report.full_pip_list}
         assert pkg_name in full_names
 
@@ -508,7 +535,7 @@ class TestRealEditablePackage:
         _git(repo, "add", "staged_change.txt")
 
         # Step 2: Run collection
-        report = collect_and_print_node_env_report(role="training", rank=0, args=_args())
+        report = collect_node_env_report(args=_args())
 
         # Step 3: Verify dirty + diff_stat mentions the file
         git_info = next(
@@ -530,7 +557,7 @@ class TestRealEditablePackage:
         init_py.write_text('__version__ = "0.0.2"\n')
 
         # Step 2: Run collection
-        report = collect_and_print_node_env_report(role="training", rank=0, args=_args())
+        report = collect_node_env_report(args=_args())
 
         # Step 3: Verify dirty
         git_info = next(

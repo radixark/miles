@@ -8,6 +8,37 @@ from miles.utils.audit_utils.process_identity import ProcessIdentity
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
+class EditablePackageInfo(FrozenStrictBaseModel):
+    name: str
+    version: str
+    location: str
+
+
+class GitRepoInfo(FrozenStrictBaseModel):
+    package_name: str
+    location: str
+    commit: str
+    dirty: bool
+    diff_stat: str
+
+
+class ArgsDump(FrozenStrictBaseModel):
+    values: dict[str, Any]
+    skipped_names: list[str]
+
+
+class NodeEnvReport(FrozenStrictBaseModel):
+    hostname: str
+    argv: list[str]
+    args: ArgsDump
+    env_vars: dict[str, str]
+    key_versions: dict[str, str]
+    launcher_env_report: dict[str, Any] | None
+    editable_packages: list[EditablePackageInfo]
+    git_repos: list[GitRepoInfo]
+    full_pip_list: list[dict[str, str]]
+
+
 class EventBase(FrozenStrictBaseModel):
     timestamp: datetime
     source: ProcessIdentity
@@ -84,6 +115,11 @@ class TrainAdvantageComputationEvent(_ActorTrainEventBase):
     witness_ids: list[list[int]]
 
 
+class EnvReportEvent(EventBase):
+    type: Literal["env_report"] = "env_report"
+    report: NodeEnvReport
+
+
 class MetricEvent(EventBase):
     type: Literal["metric"] = "metric"
     rollout_id: int | None = None
@@ -99,6 +135,7 @@ Event = Annotated[
     | CellReconfigureEvent
     | InferenceEngineWeightChecksumEvent
     | TrainAdvantageComputationEvent
+    | EnvReportEvent
     | MetricEvent,
     Discriminator("type"),
 ]
