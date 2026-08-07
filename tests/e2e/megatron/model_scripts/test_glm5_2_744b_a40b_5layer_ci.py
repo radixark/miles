@@ -10,6 +10,7 @@ from scripts.run_glm5_2_744b_a40b import (
 )
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
+from tests.ci.rocm_utils import IS_ROCM
 
 import miles.utils.external_utils.command_utils as U
 
@@ -34,13 +35,26 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
+    extra_args = "--ci-test " "--ci-disable-logprobs-checker "
+    if IS_ROCM:
+        # HIP-only indexer buffers (deepseek_v4.py registers rotary_emb.{cos,sin}_cache
+        # under `if _is_hip`) are derived from freqs_cis, so the trainer never re-ships
+        # them; their names miss sglang's `cos_sin_cache` exemption pattern.
+        extra_args += "--check-weight-update-skip-list rotary_emb. "
+        # Colocate would default both to on; the torch_memory_saver free path they rely on
+        # deadlocks in the HSA runtime, so keep trainer and rollout engine resident instead.
+        # Disabling offload also leaves the memory saver un-preloaded, so the weights
+        # backuper cannot source CPU backups from it and has to keep its own host copy.
+        extra_args += "--no-offload-train --no-offload-rollout "
+    else:
+        extra_args += "--disable-weights-backuper "
     return ScriptArgs(
         model_name="GLM-5.2_5layer",
         num_nodes=1,
         num_gpus_per_node=4,
         num_rollout=2,
         enable_optimizer_offload=True,
-        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
+        extra_args=extra_args,
     )
 
 
