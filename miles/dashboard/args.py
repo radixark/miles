@@ -47,7 +47,7 @@ def add_dashboard_arguments(parser) -> None:
         type=str,
         choices=["auto", "router", "direct"],
         default="auto",
-        help="auto scrapes {router}/engine_metrics, or each engine's /metrics under --use-miles-router",
+        help="auto scrapes each engine's /metrics; router scrapes {router}/engine_metrics",
     )
     group.add_argument(
         "--dashboard-sglang-metrics",

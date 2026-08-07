@@ -2,6 +2,8 @@ import logging
 import time
 from pathlib import Path
 
+import pytest
+
 from tests.fast.dashboard.dummy_telemetry import BASE_TS, dump_dummy_telemetry
 
 from miles.dashboard.collector import CollectorConfig, DashboardCollector
@@ -136,17 +138,40 @@ def test_shutdown_flushes_and_stops_scraper(tmp_path):
     assert len(loaded.records[Stream.METRICS]) == 1
 
 
-def test_scraper_mode_resolution_and_repoint(tmp_path):
+@pytest.mark.parametrize("use_miles_router", [False, True])
+def test_auto_scrape_mode_is_direct_for_either_router(tmp_path, use_miles_router):
+    """Neither router serves per-engine sglang samples at ``router_addr``, so
+    auto must scrape the engines regardless of which router is in front."""
     collector = make_collector(tmp_path, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
+    collector.set_router("http://router:3000", use_miles_router=use_miles_router)
+    assert collector._scraper.mode == ScrapeMode.DIRECT
+    collector.shutdown()
+
+
+def test_explicit_router_scrape_mode_is_honoured(tmp_path):
+    config = CollectorConfig(
+        dashboard_dir=str(tmp_path / "dashboard"), run_name="collector-test", start_ts=1.0, scrape_mode="router"
+    )
+    collector = make_collector(tmp_path, config=config, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
     collector.set_router("http://router:3000", use_miles_router=False)
     assert collector._scraper.mode == ScrapeMode.ROUTER
+    collector.shutdown()
+
+
+def test_scraper_repoint(tmp_path):
+    config = CollectorConfig(
+        dashboard_dir=str(tmp_path / "dashboard"), run_name="collector-test", start_ts=1.0, scrape_mode="router"
+    )
+    collector = make_collector(tmp_path, config=config, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
+    collector.set_router("http://router:3000", use_miles_router=False)
     first = collector._scraper
 
     collector.set_router("http://router:3000", use_miles_router=False)  # no-op
     assert collector._scraper is first
 
     collector.update_topology(TopologySnapshot(ts=1.0, engines=[_engine("http://e:1")]))
-    collector.set_router("http://router2:3000", use_miles_router=True)  # router restarted, miles router now
+    collector.config.scrape_mode = "direct"
+    collector.set_router("http://router2:3000", use_miles_router=False)  # router restarted
     assert collector._scraper is not first
     assert first._stop_event.is_set()
     assert collector._scraper.mode == ScrapeMode.DIRECT
