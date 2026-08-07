@@ -38,7 +38,9 @@ class TestRolloutExecutorSpec:
     def test_the_ctor_kwargs_hand_the_worker_the_providers_it_resolves_with(self):
         """The executor resolves its own addresses in init(), so its spec names exactly what that takes."""
         capability = FakeBackendCapability(static_provider=object())
-        context = WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+        context = WorkerCtorContext(
+            cell_id="cell-0", cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability
+        )
 
         kwargs = spec_rollout_executor(_args(use_session_server=True)).ctor_kwargs(context)
 
@@ -50,7 +52,9 @@ class TestRolloutExecutorSpec:
     def test_a_run_without_session_servers_is_given_no_session_provider(self):
         """Nothing is deployed to wait for, and a provider would make the executor wait for it anyway."""
         capability = FakeBackendCapability(static_provider=object())
-        context = WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+        context = WorkerCtorContext(
+            cell_id="cell-0", cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability
+        )
 
         kwargs = spec_rollout_executor(_args(use_session_server=False)).ctor_kwargs(context)
 

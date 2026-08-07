@@ -16,7 +16,7 @@ from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.command_actor import CommandActor
-from miles.utils.workers.naming import compute_cell_id, compute_worker_name
+from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
@@ -128,6 +128,10 @@ class RayWorkerManager:
         return [c for g in self._pools.values() for c in g.cells]
 
 
+def compute_ray_cell_id(*, pool_id: str, cell_index: int) -> str:
+    return f"{pool_id}-{cell_index}"
+
+
 @dataclass(kw_only=True)
 class _PoolManager:
     spec: BaseWorkerSpec
@@ -140,6 +144,7 @@ class _PoolManager:
             cells=[
                 _CellManager(
                     manager=manager,
+                    cell_id=compute_ray_cell_id(pool_id=spec.name, cell_index=cell_index),
                     cell_index=cell_index,
                     spec=spec,
                     actors=None,
@@ -155,6 +160,7 @@ SpecT = TypeVar("SpecT", bound=BaseWorkerSpec)
 @dataclass(kw_only=True)
 class _CellManager(Generic[SpecT]):
     manager: RayWorkerManager
+    cell_id: str
     cell_index: int
     spec: SpecT
     actors: list[_BaseActorManager] | None
@@ -206,12 +212,12 @@ class _CellManager(Generic[SpecT]):
             alive=self.alive,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
             workers_hash=f"pseudo-hash-{self.generation}",
-            meta=f(WorkerMetaContext(cell_index=self.cell_index)) if (f := self.spec.meta) is not None else {},
+            meta=(
+                f(WorkerMetaContext(cell_id=self.cell_id, cell_index=self.cell_index))
+                if (f := self.spec.meta) is not None
+                else {}
+            ),
         )
-
-    @property
-    def cell_id(self) -> str:
-        return compute_cell_id(pool_id=self.spec.name, cell_index=self.cell_index)
 
     @property
     def alive(self) -> bool:
@@ -256,6 +262,7 @@ class _BaseActorManager(Generic[SpecT]):
     @property
     def launch_context(self) -> WorkerLaunchContext:
         return WorkerLaunchContext(
+            cell_id=self.parent.cell_id,
             cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
             gpu_ids=self.gpu_ids,
@@ -383,6 +390,7 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
 
 def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
     return WorkerCtorContext(
+        cell_id=launch_context.cell_id,
         cell_index=launch_context.cell_index,
         worker_in_cell_index=launch_context.worker_in_cell_index,
         gpu_ids=launch_context.gpu_ids,
