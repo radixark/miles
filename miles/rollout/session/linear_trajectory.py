@@ -5,13 +5,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.rollout.session.message_matching import MessageMatchCache, build_authoritative_message_history
 from miles.rollout.session.types import SessionRecord
-from miles.utils.chat_template_utils.message_matcher_hub import (
-    SessionMessageMatcher,
-    assert_messages_append_only_with_allowed_role,
-    message_matches,
-)
+from miles.utils.chat_template_utils import assert_messages_append_only_with_allowed_role, message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 logger = logging.getLogger(__name__)
@@ -54,19 +49,6 @@ def assert_pretokenized_prefix(
         )
 
 
-@dataclass(frozen=True)
-class PreparedLinearRequest:
-    """Pure v1 request plan, ready to apply after TITO succeeds."""
-
-    effective_messages: list[dict[str, Any]]
-    replayed_messages: list[dict[str, Any]] | None
-    accepted_replay_indices: tuple[int, ...]
-    common_match_len: int
-    reuse_checkpoint_index: int
-    reuse_prefix_len: int
-    prompt_token_ids: list[int]
-
-
 @dataclass
 class LinearTrajectory:
     """State for a linear trajectory.
@@ -100,119 +82,53 @@ class LinearTrajectory:
     def append_record(self, record: SessionRecord) -> None:
         self.records.append(record)
 
-    def plan_pretokenized(
-        self,
-        request_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        *,
-        tito_tokenizer: TITOTokenizer,
-        message_matcher: SessionMessageMatcher = message_matches,
-    ) -> PreparedLinearRequest:
-        """Plan rollback, authoritative history, and prompt tokens without mutation."""
-        match_cache = MessageMatchCache(message_matcher)
-        common_match_len = 0
-        for index in range(min(len(request_messages), len(self.messages))):
-            if not match_cache.matches(self.messages[index], request_messages[index]):
-                break
-            common_match_len = index + 1
-
-        checkpoint_index = len(self.generated_checkpoint_message_ends) - 1
-        reuse_prefix_len = len(self.messages) if self.token_ids else 0
-        if self.token_ids and common_match_len < len(self.messages):
-            checkpoint_index = -1
-            for index in reversed(range(len(self.generated_checkpoint_message_ends))):
-                if self.generated_checkpoint_message_ends[index] <= common_match_len:
-                    checkpoint_index = index
-                    break
-            reuse_prefix_len = self.generated_checkpoint_message_ends[checkpoint_index] if checkpoint_index >= 0 else 0
-            discard_count = self.num_assistant - (checkpoint_index + 1)
-            if discard_count > MAX_ASSISTANT_ROLLBACK_STEPS:
-                raise MessageValidationError(
-                    f"rollback failed: discard_count={discard_count} exceeds "
-                    f"max_assistant_rollback_steps={MAX_ASSISTANT_ROLLBACK_STEPS} "
-                    f"(stored has {len(self.messages)} messages, "
-                    f"request has {len(request_messages)} messages)"
-                )
-
-        history = build_authoritative_message_history(
-            self.messages,
-            request_messages,
-            reuse_prefix_len=reuse_prefix_len,
-        )
-        if reuse_prefix_len == 0:
-            prompt_token_ids = tito_tokenizer.apply_chat_template(
-                history.effective_messages,
-                tools=tools,
-                add_generation_prompt=True,
-                tokenize=True,
-            )
-        else:
-            stored_prefix = history.effective_messages[:reuse_prefix_len]
-            try:
-                assert_messages_append_only_with_allowed_role(
-                    stored_prefix,
-                    history.effective_messages,
-                    tito_tokenizer.allowed_append_roles,
-                )
-            except ValueError as exc:
-                raise MessageValidationError(
-                    f"{exc}; the selected TITO fixed template does not support " "appending this role"
-                ) from exc
-            prompt_token_ids = tito_tokenizer.merge_tokens(
-                old_messages=stored_prefix,
-                new_messages=history.effective_messages,
-                pretokenized_token_ids=self.trajectory_token_ids[checkpoint_index],
-                tools=tools,
-            )
-
-        return PreparedLinearRequest(
-            effective_messages=history.effective_messages,
-            replayed_messages=history.replayed_messages,
-            accepted_replay_indices=history.accepted_replay_indices,
-            common_match_len=common_match_len,
-            reuse_checkpoint_index=checkpoint_index,
-            reuse_prefix_len=reuse_prefix_len,
-            prompt_token_ids=prompt_token_ids,
-        )
-
-    def apply_prepared_request(self, prepared: PreparedLinearRequest) -> None:
-        """Apply only the rollback selected by a fully validated request plan."""
-        if prepared.reuse_prefix_len >= len(self.messages):
-            return
-        discard_count = self.num_assistant - (prepared.reuse_checkpoint_index + 1)
-        logger.info(
-            "Rolling back session: stored %d messages / %d checkpoints -> "
-            "checkpoint %d (messages[:%d]), discarding %d generated checkpoint(s)",
-            len(self.messages),
-            self.num_assistant,
-            prepared.reuse_checkpoint_index,
-            prepared.reuse_prefix_len,
-            discard_count,
-        )
-        self.messages = list(prepared.effective_messages[: prepared.reuse_prefix_len])
-        end = prepared.reuse_checkpoint_index + 1
-        self.trajectory_token_ids = self.trajectory_token_ids[:end]
-        self.records = self.records[:end]
-        self.generated_checkpoint_message_ends = self.generated_checkpoint_message_ends[:end]
-        self.num_assistant = len(self.generated_checkpoint_message_ends)
-
     def prepare_pretokenized(
         self,
         request_messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         *,
         tito_tokenizer: TITOTokenizer,
-        message_matcher: SessionMessageMatcher = message_matches,
     ) -> list[int]:
-        """Compatibility surface: plan, atomically apply rollback, return tokens."""
-        prepared = self.plan_pretokenized(
-            request_messages,
-            tools,
-            tito_tokenizer=tito_tokenizer,
-            message_matcher=message_matcher,
+        """Build the full prompt input_ids for *request_messages*.
+
+        Validates that *request_messages* extends the stored history, rolling
+        back at most one assistant step on agent retries, then reuses the
+        stored token_ids as the pretokenized prefix.  When no stored checkpoint
+        is left to build on — the first turn, or a retry of the first turn that
+        rolled the session back to empty — renders *request_messages* from
+        scratch via the chat template instead.
+
+        Must be called under ``self.lock``.
+        """
+        # 1. Detect agent retries and roll back (at most one assistant step). Retrying the
+        #    first turn rolls back to the empty checkpoint, clearing token_ids.
+        self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
+
+        if not self.token_ids:
+            return tito_tokenizer.apply_chat_template(
+                request_messages,
+                tools=tools,
+                add_generation_prompt=True,
+                tokenize=True,
+            )
+
+        # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
+        #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
+        try:
+            assert_messages_append_only_with_allowed_role(
+                self.messages, request_messages, tito_tokenizer.allowed_append_roles
+            )
+        except ValueError as e:
+            raise MessageValidationError(
+                f"{e}; the selected TITO fixed template does not support appending this role"
+            ) from e
+
+        return tito_tokenizer.merge_tokens(
+            old_messages=self.messages,
+            new_messages=request_messages,
+            pretokenized_token_ids=self.token_ids,
+            tools=tools,
         )
-        self.apply_prepared_request(prepared)
-        return prepared.prompt_token_ids
 
     def update_pretokenized_state(
         self,
@@ -243,6 +159,117 @@ class LinearTrajectory:
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
 
+    def _try_detect_and_rollback_to_assistant_checkpoint(
+        self,
+        request_messages: list[dict[str, Any]],
+    ) -> None:
+        """Detect if *request_messages* diverges from stored history and roll back.
+
+        In agentic workflows the agent may retry from an earlier point — for
+        example, re-running a tool call with different arguments.  When that
+        happens the new request shares a common prefix with the stored messages
+        but diverges before the end.  This method truncates session state back
+        to the last generated assistant checkpoint within the matching prefix,
+        or to the empty checkpoint when the matching prefix holds no generated
+        checkpoint at all.
+
+        Only a single-step rollback is allowed (controlled by
+        ``MAX_ASSISTANT_ROLLBACK_STEPS``).  Discarding exactly one generated
+        checkpoint means the agent is retrying from the preceding checkpoint —
+        the request shares the stored prefix up to that generated response and
+        then continues with whatever the agent chooses (same or different tool
+        result, additional messages, etc.).  Any request that would need to
+        discard more than one generated checkpoint (i.e. jump back across
+        multiple turns) is rejected with ``MessageValidationError`` and no
+        state is modified.
+
+        Example — agent retries after the first tool call::
+
+            stored:  [sys, user, assistant₁, tool₁, assistant₂]
+                      ───────────────────── ▲
+                      checkpoint 0 (assistant₁)   checkpoint 1 (assistant₂)
+
+            request: [sys, user, assistant₁, tool₁_different, ...]
+                                             ↑ diverges here (index 3)
+
+            match_len = 3  (sys, user, assistant₁ all match)
+            Last generated checkpoint in matched prefix → assistant₁ (checkpoint 0)
+            discard_count = 2 - 1 = 1  (≤ MAX_ASSISTANT_ROLLBACK_STEPS)
+
+            After rollback:
+              messages           = [sys, user, assistant₁]
+              trajectory_token_ids = [checkpoint_0_ids]
+              records              = [record_0]
+              num_assistant        = 1
+
+        Example — agent retries the very first turn::
+
+            stored:  [user, assistant₁]
+            request: [user]
+                           ↑ stored continues past the request (index 1)
+
+            match_len = 1  (user matches), no generated checkpoint in the matched prefix
+            Rollback target → the empty checkpoint (index -1)
+            discard_count = 1 - 0 = 1  (≤ MAX_ASSISTANT_ROLLBACK_STEPS)
+
+            After rollback the session is empty and the caller re-renders the
+            prompt from scratch, so turn 1 regenerates like any later turn.
+
+        No rollback occurs when:
+        - The stored history is empty.
+        - *request_messages* is a strict extension of stored messages
+          (``match_len >= len(stored)``).
+        """
+        stored = self.messages
+        if not stored or not self.trajectory_token_ids:
+            return
+
+        match_len = 0
+        for i in range(min(len(request_messages), len(stored))):
+            if message_matches(stored[i], request_messages[i]):
+                match_len = i + 1
+            else:
+                break
+
+        if match_len >= len(stored):
+            return
+
+        # Only responses generated by this session create checkpoints.
+        # Assistant messages won't create new checkpoints.
+        checkpoint_index = -1
+        for i in reversed(range(len(self.generated_checkpoint_message_ends))):
+            if self.generated_checkpoint_message_ends[i] <= match_len:
+                checkpoint_index = i
+                break
+
+        # No generated checkpoint in the matched prefix means the agent is retrying the
+        # first turn, so roll back to the empty checkpoint and retain no messages.
+        rollback_msg_end = self.generated_checkpoint_message_ends[checkpoint_index] if checkpoint_index >= 0 else 0
+        discard_count = self.num_assistant - (checkpoint_index + 1)
+        if discard_count > MAX_ASSISTANT_ROLLBACK_STEPS:
+            raise MessageValidationError(
+                f"rollback failed: discard_count={discard_count} exceeds "
+                f"max_assistant_rollback_steps={MAX_ASSISTANT_ROLLBACK_STEPS} "
+                f"(stored has {len(stored)} messages, "
+                f"request has {len(request_messages)} messages)"
+            )
+
+        logger.info(
+            "Rolling back session: stored %d messages / %d checkpoints -> "
+            "checkpoint %d (messages[:%d]), discarding %d generated checkpoint(s)",
+            len(stored),
+            self.num_assistant,
+            checkpoint_index,
+            rollback_msg_end,
+            discard_count,
+        )
+
+        self.messages = stored[:rollback_msg_end]
+        self.trajectory_token_ids = self.trajectory_token_ids[: checkpoint_index + 1]
+        self.records = self.records[: checkpoint_index + 1]
+        self.generated_checkpoint_message_ends = self.generated_checkpoint_message_ends[: checkpoint_index + 1]
+        self.num_assistant = len(self.generated_checkpoint_message_ends)
+
 
 class SessionRegistry:
     """Session ID -> trajectory mapping with shared tokenizer resources.
@@ -252,21 +279,11 @@ class SessionRegistry:
     LinearTrajectory; called by the route handler under session.lock.
     """
 
-    def __init__(
-        self,
-        args,
-        tokenizer: Any,
-        *,
-        tito_tokenizer: TITOTokenizer,
-        message_matcher: SessionMessageMatcher = message_matches,
-        message_matcher_selector: str = "strict",
-    ):
+    def __init__(self, args, tokenizer: Any, *, tito_tokenizer: TITOTokenizer):
         self.sessions: dict[str, LinearTrajectory] = {}
         self.args = args
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
-        self.message_matcher = message_matcher
-        self.message_matcher_selector = message_matcher_selector
         self.comparator = tito_tokenizer.create_comparator()
 
     def create_session(self) -> str:

@@ -13,7 +13,7 @@ Your harness only ever sends and receives **OpenAI chat messages**, never tokens
 
 Your rollout loop must keep two invariants, or TITO is rejected at runtime:
 
-- **Append-only effective history.** Each turn replays the prior history plus a new tail. Accepted differences do not rewrite history: Miles keeps the reusable stored prefix authoritative and appends only the raw unmatched replay suffix. For differences the configured `--session-message-matcher` rejects, v1 only permits retrying the latest assistant checkpoint (or the empty first turn) and rejects deeper rollback; v2 follows its normal tree-branching rules.
+- **Append-only messages.** Each turn = previous messages + new ones on the tail; past turns are never edited. The only exception is retrying the latest turn — a single-step rollback to the last assistant checkpoint, or to an empty session when the retried turn is the first one. Diverging earlier, or rolling back more than one turn, is rejected.
 - **Appended roles follow the chat template.** After the first assistant message, the selected model's chat template determines which roles may be appended; users do not configure this separately.
 
 ## Pick your `--tito-model`
@@ -43,21 +43,6 @@ ROLLOUT_ARGS+=(
    --tito-model qwen3
 )
 ```
-
-## Choose replay matching
-
-`--session-message-matcher` is process-wide and defaults to `strict`. It accepts a built-in selector or a trusted dotted import path. Changing it requires restarting the session server.
-
-| Selector | Behavior |
-|---|---|
-| `strict` | Preserves the existing comparison of `role`, `content`, `reasoning_content`, and `tool_calls`, including empty-value and tool-call `index` normalization. |
-| `loose_tool_call` | Accepts everything `strict` accepts, plus equivalent JSON-object representations of `tool_calls[].function.arguments`. Call IDs, types, function names, order, unknown fields, and `reasoning_content` still have to match. |
-| `role_content_only` | Compares only normalized `role` and `content`. **High risk:** different tool-call or reasoning histories can collapse into one session lineage. |
-| dotted import path | Loads a trusted synchronous custom matcher; see [Customization](/user-guide/customization#session-message-matcher). |
-
-The matcher decides replay identity only; it does not disable TITO. When a non-identical replay is accepted inside the reusable prefix, Miles keeps the stored prefix authoritative, runs TITO on that effective history, and appends the untouched replay suffix.
-
-Miles does not reconcile tool-call IDs across the stored/replayed boundary. A stored call ID `A` can therefore be followed by a replayed tool result for `B`. The corresponding `GET /sessions/{id}` record keeps the authoritative history in `request` and preserves the full client replay in `replayed_messages`; that audit field is omitted for an exact replay.
 
 ## Example
 

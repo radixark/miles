@@ -9,7 +9,6 @@ from miles.rollout.session.core import (
     ProxyRequest,
     SessionCore,
     _chat_client_response,
-    _log_nonidentical_replay_acceptance,
     _render_json,
     _samples_response,
     extract_completion,
@@ -21,9 +20,9 @@ from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_sampl
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
-    apply_prepared_request,
     commit_generation,
-    plan_pretokenized_request,
+    position_for_request,
+    prepare_pretokenized,
 )
 from miles.rollout.session.v2.utils import build_leaf_material, tree_metadata
 from miles.utils.misc import load_function
@@ -144,29 +143,19 @@ class SessionCoreV2(SessionCore):
                 body, self.args, self.registry.tito_tokenizer
             )
 
-            replayed_messages = request_body.get("messages", [])
-            prepared = plan_pretokenized_request(
+            request_messages = request_body.get("messages", [])
+            position_for_request(session, request_messages)
+            prompt_token_ids = prepare_pretokenized(
                 session,
-                replayed_messages,
+                request_messages,
                 tools=request_body.get("tools"),
                 tito_tokenizer=tito_tokenizer,
-                message_matcher=self.registry.message_matcher,
             )
-            apply_prepared_request(session, prepared)
-            request_messages = prepared.effective_messages
-            prompt_token_ids = prepared.prompt_token_ids
-            request_body["messages"] = request_messages
             request_body["input_ids"] = prompt_token_ids
-            _log_nonidentical_replay_acceptance(
-                selector=self.registry.message_matcher_selector,
-                session_version="v2",
-                session_id=session_id,
-                message_indices=prepared.accepted_replay_indices,
-            )
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
             proxy_body = json.dumps(request_body).encode()
-            attach_parent = prepared.attach.node
+            attach_parent = session.active_leaf
         # --- lock released ---
 
         # --- Phase 2: proxy to backend (NO lock held) ---
@@ -196,7 +185,6 @@ class SessionCoreV2(SessionCore):
                 status_code=result["status_code"],
                 request=request_body,
                 response=response,
-                replayed_messages=prepared.replayed_messages,
             )
             commit_generation(
                 session,
