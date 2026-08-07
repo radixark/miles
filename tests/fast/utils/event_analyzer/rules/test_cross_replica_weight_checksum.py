@@ -24,7 +24,9 @@ def _make_event(
 ) -> TrainEngineLocalWeightChecksumEvent:
     return TrainEngineLocalWeightChecksumEvent(
         timestamp=_FIXED_TS,
-        source=TrainProcessIdentity(component="actor", cell_index=cell_index, rank_within_cell=rank_within_cell),
+        source=TrainProcessIdentity(
+            component="actor", cell_id=f"trainer-actor-{cell_index}", rank_within_cell=rank_within_cell
+        ),
         rollout_id=rollout_id,
         state=TrainEngineLocalWeightChecksumState(
             param_hashes=param_hashes or {},

@@ -37,7 +37,7 @@ def create_multi_lora_controller_handle(*, capability: BackendCapability) -> Bas
 
 
 def multi_lora_controller_worker_name() -> str:
-    return compute_worker_name(pool_id=MULTI_LORA_CONTROLLER_POOL_ID)
+    return compute_worker_name(cell_id=multi_lora_controller_cell_id())
 
 
 def multi_lora_controller_cell_id() -> str:

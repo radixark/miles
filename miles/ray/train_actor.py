@@ -45,11 +45,9 @@ class TrainRayActor(NodeProbeMixin):
         rank: int,
         indep_dp_store_addr: str,
         role: Literal["actor", "critic"],
-        cell_index: int,
+        cell_id: str,
     ):
-        configure_logger(
-            args, source=TrainProcessIdentity(component=role, cell_index=cell_index, rank_within_cell=rank)
-        )
+        configure_logger(args, source=TrainProcessIdentity(component=role, cell_id=cell_id, rank_within_cell=rank))
         self.args = args
 
         self._heartbeat = SimpleHeartbeat()

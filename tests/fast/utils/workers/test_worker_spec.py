@@ -19,14 +19,15 @@ from miles.utils.workers.worker_spec import (
 
 
 def _make_launch_context(**overrides) -> WorkerLaunchContext:
-    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[])
+    kwargs = dict(cell_id="cell-0", cell_ordinal=0, worker_in_cell_index=0, gpu_ids=[])
     kwargs.update(overrides)
     return WorkerLaunchContext(**kwargs)
 
 
 def _make_launch_command_context(**overrides) -> LaunchCommandContext:
     kwargs = dict(
-        cell_index=0,
+        cell_id="cell-0",
+        cell_ordinal=0,
         worker_in_cell_index=0,
         gpu_ids=[],
         self_addrs={"http": HostAndPort(host="127.0.0.1", port=8000)},
@@ -37,7 +38,9 @@ def _make_launch_command_context(**overrides) -> LaunchCommandContext:
 
 
 def _make_ctor_context(**overrides) -> WorkerCtorContext:
-    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=FakeBackendCapability())
+    kwargs = dict(
+        cell_id="cell-0", cell_ordinal=0, worker_in_cell_index=0, gpu_ids=[], capability=FakeBackendCapability()
+    )
     kwargs.update(overrides)
     return WorkerCtorContext(**kwargs)
 

@@ -42,7 +42,7 @@ def _get_rank_key(event: TrainEngineLocalWeightChecksumEvent) -> int:
 
 
 def _check_one_step(events: list[TrainEngineLocalWeightChecksumEvent]) -> Iterable[ChecksumMismatchIssue]:
-    # Group events by rank_within_cell so we only compare across replicas (cell_index),
+    # Group events by rank_within_cell so we only compare across replicas (cell_id),
     # not across TP/PP/EP ranks within the same cell (which have different param shards).
     # TODO: group by (component, rank_within_cell) once critic checksum events are supported.
     #  Currently only actor emits TrainEngineLocalWeightChecksumEvent.

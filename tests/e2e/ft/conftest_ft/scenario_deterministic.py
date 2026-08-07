@@ -38,9 +38,12 @@ def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> li
     def heal_at(phase_name: str) -> ReconfigureInfo:
         return ReconfigureInfo(
             rollout_id=PHASE_START_ROLLOUT_IDS[phase_name] + 2,
-            src_cell_index=0,
-            healed_cell_indices=[num_cells - 1],
-            alive_cell_indices_after=list(range(num_cells)),
+            src_cell_id=compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=0),
+            healed_cell_ids=[compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)],
+            alive_cell_ids_after=[
+                compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=index)
+                for index in range(num_cells)
+            ],
         )
 
     if not is_target:

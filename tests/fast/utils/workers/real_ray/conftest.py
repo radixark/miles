@@ -56,15 +56,15 @@ class WorkerProbe:
                 sys.executable,
                 "-c",
                 _PROBE_SOURCE,
-                str(self.record_path(cell_index=ctx.cell_index, worker_in_cell_index=ctx.worker_in_cell_index)),
+                str(self.record_path(cell_ordinal=ctx.cell_ordinal, worker_in_cell_index=ctx.worker_in_cell_index)),
                 json.dumps(ctx.model_dump(mode="json")),
                 str(bind_port),
                 *self.env_names,
             ]
         )
 
-    def record_path(self, *, cell_index: int, worker_in_cell_index: int) -> Path:
-        return Path(self.record_dir) / f"{cell_index}-{worker_in_cell_index}.json"
+    def record_path(self, *, cell_ordinal: int, worker_in_cell_index: int) -> Path:
+        return Path(self.record_dir) / f"{cell_ordinal}-{worker_in_cell_index}.json"
 
     def wait_for_records(self, count: int, *, timeout: float = 120.0) -> dict[str, dict[str, Any]]:
         deadline = time.monotonic() + timeout
@@ -78,8 +78,8 @@ class WorkerProbe:
     def read_records(self) -> dict[str, dict[str, Any]]:
         return {path.stem: json.loads(path.read_text()) for path in sorted(Path(self.record_dir).glob("*.json"))}
 
-    def context_of(self, *, cell_index: int, worker_in_cell_index: int) -> dict[str, Any]:
-        return self.read_records()[f"{cell_index}-{worker_in_cell_index}"]["context"]
+    def context_of(self, *, cell_ordinal: int, worker_in_cell_index: int) -> dict[str, Any]:
+        return self.read_records()[f"{cell_ordinal}-{worker_in_cell_index}"]["context"]
 
     def wait_until_gone(self, pids: list[int], *, timeout: float = 60.0) -> None:
         deadline = time.monotonic() + timeout

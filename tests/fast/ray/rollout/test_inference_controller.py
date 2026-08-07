@@ -336,7 +336,7 @@ class TestEngineMetaContract:
             alive=True,
             worker_names=["inference-engine-0-0-1-0"],
             workers_hash="pseudo-hash-0",
-            meta=spec.meta(WorkerMetaContext(cell_index=1)),
+            meta=spec.meta(WorkerMetaContext(cell_id="cell-b")),
         )
 
         assert _compute_server_cell_meta_from_info(info) == ServerCellMetadata(

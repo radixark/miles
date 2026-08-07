@@ -96,7 +96,7 @@ class TrainerController(NodeProbeMixin):
 
     @property
     def _cells(self) -> list[TrainerCell]:
-        return sorted(self._cells_by_id.values(), key=lambda cell: cell.cell_index)
+        return sorted(self._cells_by_id.values(), key=lambda cell: cell.cell_id)
 
     @property
     def cell_ids(self) -> list[str]:
@@ -128,22 +128,19 @@ class TrainerController(NodeProbeMixin):
         )
 
     async def _add_cell(self, cell_id: str, observed: CellInfo) -> None:
-        self._cells_by_id[cell_id] = self._create_cell(
-            cell_id, cell_index=observed.meta["cell_index"], workers_hash=observed.workers_hash
-        )
+        self._cells_by_id[cell_id] = self._create_cell(cell_id, workers_hash=observed.workers_hash)
 
     async def _remove_cell(self, cell_id: str) -> None:
         cell = self._cells_by_id.pop(cell_id)
         cell.health_checker.stop()
 
-    def _create_cell(self, cell_id: str, *, cell_index: int, workers_hash: str) -> TrainerCell:
+    def _create_cell(self, cell_id: str, *, workers_hash: str) -> TrainerCell:
         cell = TrainerCell(
             args=self.args,
             role=self._role,
             with_ref=self._with_ref,
             with_opd_teacher=self._with_opd_teacher,
             cell_id=cell_id,
-            cell_index=cell_index,
             workers_hash=workers_hash,
             health_checker=NoopHealthChecker(),
             provider=self._provider,
@@ -239,7 +236,7 @@ class TrainerController(NodeProbeMixin):
     def _log_step_end_event(self, *, rollout_id: int, snapshot_alive_cells: list, results: list):
         if is_event_logger_initialized():
             cell_outcomes = {
-                cell.cell_index: (
+                cell.cell_id: (
                     "error" if isinstance(cell_results, BaseException) else [r.outcome for r in cell_results]
                 )
                 for cell, cell_results in zip(snapshot_alive_cells, results, strict=True)
@@ -280,14 +277,14 @@ class TrainerController(NodeProbeMixin):
     @staticmethod
     def _compute_attempt_outcomes(snapshot_alive_cells, results) -> dict[str, list[int]]:
         paired = list(zip(snapshot_alive_cells, results, strict=True))
-        errored = [c.cell_index for c, r in paired if isinstance(r, BaseException)]
+        errored = [c.cell_id for c, r in paired if isinstance(r, BaseException)]
         discarded = [
-            c.cell_index
+            c.cell_id
             for c, r in paired
             if not isinstance(r, BaseException)
             and any(o.outcome == TrainStepOutcome.DISCARDED_SHOULD_RETRY for o in r)
         ]
-        normal = [c.cell_index for c, r in paired if c.cell_index not in errored and c.cell_index not in discarded]
+        normal = [c.cell_id for c, r in paired if c.cell_id not in errored and c.cell_id not in discarded]
         return {"errored": errored, "discarded": discarded, "normal": normal}
 
     # ------------------------ API :: others ------------------------
@@ -304,9 +301,9 @@ class TrainerController(NodeProbeMixin):
             *[
                 cell.init(
                     indep_dp_info=self._compute_indep_dp_info(
-                        cell_index=cell.cell_index,
+                        cell_id=cell.cell_id,
                         # all cells will be alive for this first initialization
-                        alive_cell_indices=list(range(len(self._cells))),
+                        alive_cell_ids=[c.cell_id for c in self._cells],
                     )
                 )
                 for cell in self._cells
@@ -425,31 +422,31 @@ class TrainerController(NodeProbeMixin):
     # ------------------------ internals for stop/start ------------------------
 
     async def _refresh_cells(self, *, rollout_id: int) -> None:
-        snapshotted_healing_indices = [c.cell_index for c in self._cells if c.is_uninitialized]
-        snapshotted_alive_indices = [c.cell_index for c in self._cells if c.is_alive]
-        will_alive_indices = sorted(list(set(snapshotted_healing_indices + snapshotted_alive_indices)))
-        all_states = [(c.cell_index, c.state_name) for c in self._cells]
+        snapshotted_healing_cell_ids = [c.cell_id for c in self._cells if c.is_uninitialized]
+        snapshotted_alive_cell_ids = [c.cell_id for c in self._cells if c.is_alive]
+        will_alive_cell_ids = sorted(list(set(snapshotted_healing_cell_ids + snapshotted_alive_cell_ids)))
+        all_states = [(c.cell_id, c.state_name) for c in self._cells]
         log_structured(
             logger.info,
             tag="ft",
             op="refresh",
             phase="start",
             rollout=rollout_id,
-            alive=snapshotted_alive_indices,
-            healing=snapshotted_healing_indices,
+            alive=snapshotted_alive_cell_ids,
+            healing=snapshotted_healing_cell_ids,
             all_states=all_states,
             quorum=self._indep_dp_quorum_id,
         )
-        if not snapshotted_alive_indices:
+        if not snapshotted_alive_cell_ids:
             raise NonRetryableError("Cannot recover when all cells are dead")
 
         # Step 0: Determine whether need to reconfigure
         exists_alive_cell_changed_config = any(
-            cell.indep_dp_info.alive_cell_indices != will_alive_indices
+            cell.indep_dp_info.alive_cell_ids != will_alive_cell_ids
             for cell in self._cells
-            if cell.cell_index in snapshotted_alive_indices
+            if cell.cell_id in snapshotted_alive_cell_ids
         )
-        exists_healing_cell = len(snapshotted_healing_indices) != 0
+        exists_healing_cell = len(snapshotted_healing_cell_ids) != 0
         needs_reconfigure = exists_healing_cell or exists_alive_cell_changed_config
         if not needs_reconfigure:
             log_structured(
@@ -479,7 +476,7 @@ class TrainerController(NodeProbeMixin):
             rollout=rollout_id,
             needs_reconfigure=True,
             reason=reason,
-            will_alive=will_alive_indices,
+            will_alive=will_alive_cell_ids,
             quorum_from=self._indep_dp_quorum_id,
             quorum_to=self._indep_dp_quorum_id + 1,
         )
@@ -488,30 +485,26 @@ class TrainerController(NodeProbeMixin):
         self._indep_dp_quorum_id += 1
 
         # Step 2: Cooperatively prepare
-        src_cell_index = snapshotted_alive_indices[0]  # TODO make it balanced, and support multi-src-to-one-dst
-        src_alive_rank = will_alive_indices.index(src_cell_index)
-        ckpt_dst_alive_ranks = [will_alive_indices.index(x) for x in snapshotted_healing_indices]
+        src_cell_id = snapshotted_alive_cell_ids[0]  # TODO make it balanced, and support multi-src-to-one-dst
+        src_alive_rank = will_alive_cell_ids.index(src_cell_id)
+        ckpt_dst_alive_ranks = [will_alive_cell_ids.index(x) for x in snapshotted_healing_cell_ids]
 
         with self._paused_health_checkers():
             coop_prepare_outputs = await asyncio.gather(
                 *[
                     (
                         c.prepare_indep_dp_mode_alive(
-                            indep_dp_info=self._compute_indep_dp_info(
-                                c.cell_index, alive_cell_indices=will_alive_indices
-                            ),
-                            send_ckpt_dst_ranks=ckpt_dst_alive_ranks if c.cell_index == src_cell_index else [],
+                            indep_dp_info=self._compute_indep_dp_info(c.cell_id, alive_cell_ids=will_alive_cell_ids),
+                            send_ckpt_dst_ranks=ckpt_dst_alive_ranks if c.cell_id == src_cell_id else [],
                         )
-                        if c.cell_index in snapshotted_alive_indices
+                        if c.cell_id in snapshotted_alive_cell_ids
                         else c.prepare_indep_dp_mode_healing(
-                            indep_dp_info=self._compute_indep_dp_info(
-                                c.cell_index, alive_cell_indices=will_alive_indices
-                            ),
-                            recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_healing_indices else None,
+                            indep_dp_info=self._compute_indep_dp_info(c.cell_id, alive_cell_ids=will_alive_cell_ids),
+                            recv_ckpt_src_rank=src_alive_rank if c.cell_id in snapshotted_healing_cell_ids else None,
                         )
                     )
                     for c in self._cells
-                    if c.cell_index in will_alive_indices
+                    if c.cell_id in will_alive_cell_ids
                 ],
                 return_exceptions=True,
             )
@@ -519,7 +512,7 @@ class TrainerController(NodeProbeMixin):
         AsyncioGatherUtils.log_error(coop_prepare_outputs, debug_name="refresh_cells#cooperatively_prepare")
 
         if not AsyncioGatherUtils.has_error(coop_prepare_outputs):
-            assert [c.cell_index for c in self._cells if c.is_alive] == will_alive_indices
+            assert [c.cell_id for c in self._cells if c.is_alive] == will_alive_cell_ids
             log_structured(
                 logger.info,
                 tag="ft",
@@ -527,15 +520,15 @@ class TrainerController(NodeProbeMixin):
                 phase="end",
                 rollout=rollout_id,
                 quorum=self._indep_dp_quorum_id,
-                alive=will_alive_indices,
-                healed=snapshotted_healing_indices,
+                alive=will_alive_cell_ids,
+                healed=snapshotted_healing_cell_ids,
                 reconfigured=True,
             )
             self._log_reconfigure_event(
                 rollout_id=rollout_id,
-                src_cell_index=src_cell_index if snapshotted_healing_indices else None,
-                healed_cell_indices=snapshotted_healing_indices,
-                alive_cell_indices_after=will_alive_indices,
+                src_cell_id=src_cell_id if snapshotted_healing_cell_ids else None,
+                healed_cell_ids=snapshotted_healing_cell_ids,
+                alive_cell_ids_after=will_alive_cell_ids,
             )
         else:
             log_structured(
@@ -553,9 +546,9 @@ class TrainerController(NodeProbeMixin):
         self,
         *,
         rollout_id: int,
-        src_cell_index: int | None,
-        healed_cell_indices: list[int],
-        alive_cell_indices_after: list[int],
+        src_cell_id: int | None,
+        healed_cell_ids: list[int],
+        alive_cell_ids_after: list[int],
     ) -> None:
         if is_event_logger_initialized():
             get_event_logger().log(
@@ -563,20 +556,20 @@ class TrainerController(NodeProbeMixin):
                 dict(
                     rollout_id=rollout_id,
                     quorum_id=self._indep_dp_quorum_id,
-                    src_cell_index=src_cell_index,
-                    healed_cell_indices=healed_cell_indices,
-                    alive_cell_indices_after=alive_cell_indices_after,
+                    src_cell_id=src_cell_id,
+                    healed_cell_ids=healed_cell_ids,
+                    alive_cell_ids_after=alive_cell_ids_after,
                 ),
             )
 
-    def _compute_indep_dp_info(self, cell_index: int, alive_cell_indices: list[int]) -> IndepDPInfo:
+    def _compute_indep_dp_info(self, cell_id: str, alive_cell_ids: list[str]) -> IndepDPInfo:
         return IndepDPInfo(
-            cell_index=cell_index,
+            cell_id=cell_id,
             num_cells=len(self._cells),
-            alive_rank=alive_cell_indices.index(cell_index),
-            alive_size=len(alive_cell_indices),
+            alive_rank=alive_cell_ids.index(cell_id),
+            alive_size=len(alive_cell_ids),
             quorum_id=self._indep_dp_quorum_id,
-            alive_cell_indices=alive_cell_indices,
+            alive_cell_ids=alive_cell_ids,
         )
 
     # ------------------------ misc states and utils ------------------------

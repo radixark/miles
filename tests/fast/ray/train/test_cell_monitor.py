@@ -16,12 +16,12 @@ def _make_worker_handle_mock() -> MagicMock:
 
 def _make_indep_dp_info() -> IndepDPInfo:
     return IndepDPInfo(
-        cell_index=0,
+        cell_id="trainer-actor-0",
         num_cells=1,
         alive_rank=0,
         alive_size=1,
         quorum_id=1,
-        alive_cell_indices=[0],
+        alive_cell_ids=["trainer-actor-0"],
     )
 
 
@@ -86,7 +86,7 @@ class TestComputeCellStatusOtherStates:
 def _make_cell_mock(*, is_alive: bool, execute: AsyncMock) -> MagicMock:
     cell = MagicMock()
     cell.is_alive = is_alive
-    cell.cell_index = 0
+    cell.cell_id = "trainer-actor-0"
     cell.execute = execute
     return cell
 

@@ -48,7 +48,9 @@ def _make_args(**overrides) -> SimpleNamespace:
 
 
 def _make_context(**overrides) -> WorkerCtorContext:
-    kwargs = dict(cell_index=0, worker_in_cell_index=0, gpu_ids=[0], capability=FakeBackendCapability())
+    kwargs = dict(
+        cell_id="cell-0", cell_ordinal=0, worker_in_cell_index=0, gpu_ids=[0], capability=FakeBackendCapability()
+    )
     kwargs.update(overrides)
     return WorkerCtorContext(**kwargs)
 
@@ -188,9 +190,10 @@ class TestEnvironmentVariables:
         (spec,) = specs_trainer(args)
 
         directories = [
-            spec.env_var(_make_context(cell_index=1, worker_in_cell_index=i))["TMS_DISK_BACKUP_DIR"] for i in range(2)
+            spec.env_var(_make_context(cell_id="trainer-actor-1", worker_in_cell_index=i))["TMS_DISK_BACKUP_DIR"]
+            for i in range(2)
         ]
-        assert directories == ["/tmp/offload/cell1_rank0", "/tmp/offload/cell1_rank1"]
+        assert directories == ["/tmp/offload/trainer-actor-1_rank0", "/tmp/offload/trainer-actor-1_rank1"]
 
     def test_no_disk_directory_without_disk_offload(self):
         """The cpu backup path must not be told to write to disk."""
@@ -249,7 +252,9 @@ class _FakeStaticProvider:
 
 
 def _controller_context(capability: FakeBackendCapability) -> WorkerCtorContext:
-    return WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+    return WorkerCtorContext(
+        cell_id=f"cell-{0}", cell_ordinal=0, worker_in_cell_index=0, gpu_ids=[], capability=capability
+    )
 
 
 def _controller_providers() -> FakeBackendCapability:

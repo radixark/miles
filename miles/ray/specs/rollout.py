@@ -40,7 +40,7 @@ def create_rollout_executor_handle(*, capability: BackendCapability) -> BaseWork
 
 
 def rollout_executor_worker_name() -> str:
-    return compute_worker_name(pool_id=ROLLOUT_EXECUTOR_POOL_ID)
+    return compute_worker_name(cell_id=rollout_executor_cell_id())
 
 
 def rollout_executor_cell_id() -> str:

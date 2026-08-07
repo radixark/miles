@@ -65,9 +65,7 @@ async def _launch_engines(
 
     def _recording_spec(spec: CommandWorkerSpec) -> CommandWorkerSpec:
         def _record(ctx: LaunchCommandContext) -> str:
-            worker_name = compute_worker_name(
-                pool_id=spec.name, cell_index=ctx.cell_index, worker_in_cell_index=ctx.worker_in_cell_index
-            )
+            worker_name = compute_worker_name(cell_id=ctx.cell_id, worker_in_cell_index=ctx.worker_in_cell_index)
             contexts[worker_name] = ctx
             return f"launch {worker_name}"
 

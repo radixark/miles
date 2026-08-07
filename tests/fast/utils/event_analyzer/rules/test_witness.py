@@ -26,7 +26,9 @@ _MAIN_SOURCE = MainProcessIdentity()
 
 
 def _make_source(cell_index: int = 0, rank_within_cell: int = 0) -> TrainProcessIdentity:
-    return TrainProcessIdentity(component="actor", cell_index=cell_index, rank_within_cell=rank_within_cell)
+    return TrainProcessIdentity(
+        component="actor", cell_id=f"trainer-actor-{cell_index}", rank_within_cell=rank_within_cell
+    )
 
 
 def _make_snapshot(
@@ -211,7 +213,7 @@ class TestWitnessCheck:
         assert len(issues) == 1
         assert isinstance(issues[0], WitnessMissingSnapshotIssue)
         assert issues[0].rollout_id == 0
-        assert issues[0].cell_index == 0
+        assert issues[0].cell_id == "trainer-actor-0"
 
     def test_error_cell_outcome_is_skipped(self) -> None:
         """cell_outcomes with 'error' string should not produce any issue."""
@@ -515,7 +517,7 @@ class TestZeroAdvantageExclusion:
         issues = check(events)
         assert len(issues) == 1
         assert issues[0].rollout_id == 1
-        assert issues[0].cell_index == 1
+        assert issues[0].cell_id == "trainer-actor-1"
 
     def test_zero_advantage_id_never_allocated_has_no_effect(self) -> None:
         """A zero-adv observation for an id that was never allocated neither excuses nor expects anything."""

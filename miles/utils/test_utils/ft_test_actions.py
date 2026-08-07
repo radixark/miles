@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import TypeAdapter
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.workers.naming import parse_cell_id
 
 if TYPE_CHECKING:
     from miles.ray.train.controller import TrainerController
@@ -35,10 +34,7 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
     all_actions = _ACTION_LIST_ADAPTER.validate_json(raw)
 
     for action in all_actions:
-        try:
-            parse_cell_id(action.cell_id)
-        except ValueError as e:
-            raise ValueError(f"FT test action has malformed cell_id {action.cell_id!r} (action={action})") from e
+        assert action.cell_id, f"FT test action names no cell to act on (action={action})"
 
     actions = [a for a in all_actions if a.action in action_filter]
     if actions:
@@ -48,18 +44,18 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
 
 class FTTestActionControllerExecutor:
     def __init__(
-        self, *, actions: list[FTTestAction], controller: "TrainerController", cell_operations: "BaseCellOperations"
+        self, *, actions: list[FTTestAction], group: "TrainerController", cell_operations: "BaseCellOperations"
     ) -> None:
         self._actions = actions
-        self._controller = controller
+        self._controller = group
         self._cell_operations = cell_operations
 
     @staticmethod
     def from_args(
-        args: object, *, controller: "TrainerController", cell_operations: "BaseCellOperations"
+        args: object, *, group: "TrainerController", cell_operations: "BaseCellOperations"
     ) -> "FTTestActionControllerExecutor":
         return FTTestActionControllerExecutor(
-            actions=_load_actions(args, _CONTROLLER_ACTIONS), controller=controller, cell_operations=cell_operations
+            actions=_load_actions(args, _CONTROLLER_ACTIONS), group=group, cell_operations=cell_operations
         )
 
     async def run_after_step(self, rollout_id: int) -> None:
@@ -75,14 +71,10 @@ class FTTestActionControllerExecutor:
                     await operations.resume(cell_id=action.cell_id)
 
     def _check_action_target(self, action: FTTestAction) -> None:
-        parsed = parse_cell_id(action.cell_id)
-        assert parsed.pool_id == self._controller.pool_id, (
-            f"FT test action targets pool_id {parsed.pool_id!r} but this controller drives {self._controller.pool_id!r} "
-            f"(action={action})"
-        )
-        assert parsed.cell_index < self._controller.expected_num_cells, (
-            f"FT test action targets cell index {parsed.cell_index} but the pool only has "
-            f"{self._controller.expected_num_cells} cells (action={action})"
+        cell_ids = self._controller.cell_ids
+        assert action.cell_id in cell_ids, (
+            f"FT test action targets cell {action.cell_id!r}, which this group does not hold; it observed "
+            f"{sorted(cell_ids)} (action={action})"
         )
 
 

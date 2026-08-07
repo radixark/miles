@@ -7,17 +7,17 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 class ReconfigureInfo(FrozenStrictBaseModel):
     rollout_id: int
-    src_cell_index: int | None
-    healed_cell_indices: list[int]
-    alive_cell_indices_after: list[int]
+    src_cell_id: str | None
+    healed_cell_ids: list[int]
+    alive_cell_ids_after: list[int]
 
     @staticmethod
     def from_event(event: CellReconfigureEvent) -> "ReconfigureInfo":
         return ReconfigureInfo(
             rollout_id=event.rollout_id,
-            src_cell_index=event.src_cell_index,
-            healed_cell_indices=event.healed_cell_indices,
-            alive_cell_indices_after=event.alive_cell_indices_after,
+            src_cell_id=event.src_cell_id,
+            healed_cell_ids=event.healed_cell_ids,
+            alive_cell_ids_after=event.alive_cell_ids_after,
         )
 
 
@@ -44,7 +44,7 @@ def assert_min_soak_injections(num_successful_injections: int, *, context: str) 
 def assert_soak_reconfigure_events(event_dir: Path, *, num_successful_injections: int) -> None:
     assert event_dir.is_dir(), f"Event directory {event_dir} does not exist or is not a directory"
     events = load_reconfigure_events(event_dir)
-    healings = [event for event in events if event.healed_cell_indices]
+    healings = [event for event in events if event.healed_cell_ids]
 
     assert_min_soak_injections(num_successful_injections, context=str(event_dir))
     assert len(healings) >= MIN_SOAK_HEALINGS, (

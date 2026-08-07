@@ -77,15 +77,21 @@ def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> li
     return [
         ReconfigureInfo(
             rollout_id=NUM_PHASE_A_STEPS + 1,
-            src_cell_index=None,
-            healed_cell_indices=[],
-            alive_cell_indices_after=list(range(num_cells - 1)),
+            src_cell_id=None,
+            healed_cell_ids=[],
+            alive_cell_ids_after=[
+                compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=index)
+                for index in range(num_cells - 1)
+            ],
         ),
         ReconfigureInfo(
             rollout_id=NUM_PHASE_A_STEPS + 2,
-            src_cell_index=0,
-            healed_cell_indices=[num_cells - 1],
-            alive_cell_indices_after=list(range(num_cells)),
+            src_cell_id=compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=0),
+            healed_cell_ids=[compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)],
+            alive_cell_ids_after=[
+                compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=index)
+                for index in range(num_cells)
+            ],
         ),
     ]
 

@@ -70,7 +70,7 @@ def _make_controller(
         inference_controller=inference_controller,
     )
     for cell_index in range(num_cells):
-        cell = group._create_cell(f"{group._pool}-{cell_index}", cell_index=cell_index, workers_hash="pseudo-hash-1")
+        cell = group._create_cell(f"{group._pool}-{cell_index}", workers_hash="pseudo-hash-1")
         group._cells_by_id[cell.cell_id] = cell
     return group
 
@@ -89,7 +89,7 @@ def _cell(group: TrainerController, cell_index: int) -> object:
 def _start_cell(group: TrainerController, cell_index: int) -> None:
     """The manager relaunches the cell, so reconcile hands the controller a fresh object."""
     cell_id = f"{group._pool}-{cell_index}"
-    group._cells_by_id[cell_id] = group._create_cell(cell_id, cell_index=cell_index, workers_hash="pseudo-hash-2")
+    group._cells_by_id[cell_id] = group._create_cell(cell_id, workers_hash="pseudo-hash-2")
 
 
 def _was_stopped(group: TrainerController, cell_index: int) -> bool:
@@ -123,7 +123,7 @@ class TestInit:
         group = _make_controller(num_cells=3)
 
         assert len(group._cells) == 3
-        assert [c.cell_index for c in group._cells] == [0, 1, 2]
+        assert [c.cell_id for c in group._cells] == [f"{group._pool}-{i}" for i in range(3)]
 
     def test_cells_are_allocated_after_init(self):
         group = _make_controller(num_cells=2)
@@ -153,7 +153,7 @@ class TestInit:
 
         for cell in group._cells:
             assert cell.is_alive
-            assert cell.indep_dp_info.alive_cell_indices == [0, 1, 2]
+            assert cell.indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 1, 2]]
             assert cell.indep_dp_info.alive_size == 3
 
         assert _cell(group, 0).indep_dp_info.alive_rank == 0
@@ -233,16 +233,20 @@ class TestComputeIndepDPInfo:
     def test_all_alive(self):
         group = _make_controller(num_cells=3)
 
-        info = group._compute_indep_dp_info(cell_index=2, alive_cell_indices=[0, 1, 2])
+        info = group._compute_indep_dp_info(
+            cell_id="trainer-actor-2", alive_cell_ids=[f"trainer-actor-{i}" for i in range(3)]
+        )
 
         assert info.alive_rank == 2
         assert info.alive_size == 3
-        assert info.cell_index == 2
+        assert info.cell_id == "trainer-actor-2"
 
     def test_with_gap(self):
         group = _make_controller(num_cells=3)
 
-        info = group._compute_indep_dp_info(cell_index=2, alive_cell_indices=[0, 2])
+        info = group._compute_indep_dp_info(
+            cell_id="trainer-actor-2", alive_cell_ids=["trainer-actor-0", "trainer-actor-2"]
+        )
 
         assert info.alive_rank == 1
         assert info.alive_size == 2
@@ -284,7 +288,7 @@ class TestRefreshCellsReconfigure:
 
         # Step 4: Remaining alive cells have updated indep_dp_info
         assert _cell(group, 0).is_alive
-        assert _cell(group, 0).indep_dp_info.alive_cell_indices == [0, 2]
+        assert _cell(group, 0).indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 2]]
         assert _cell(group, 0).indep_dp_info.alive_rank == 0
         assert _cell(group, 0).indep_dp_info.alive_size == 2
 
@@ -325,7 +329,7 @@ class TestRefreshCellsHealing:
 
         # Step 4: All cells have consistent indep_dp_info
         for cell in group._cells:
-            assert cell.indep_dp_info.alive_cell_indices == [0, 1, 2]
+            assert cell.indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 1, 2]]
             assert cell.indep_dp_info.alive_size == 3
 
         # Step 5: Healed cell's actors received init
@@ -352,7 +356,7 @@ class TestRefreshCellsHealing:
 
         assert all(c.is_alive for c in group._cells)
         for cell in group._cells:
-            assert cell.indep_dp_info.alive_cell_indices == [0, 1, 2]
+            assert cell.indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 1, 2]]
 
         # Source (cell 0) sent ckpt to both healed cells
         for handle in get_raw_actor_handles(_cell(group, 0)):
@@ -377,7 +381,7 @@ class TestRefreshCellsHealing:
         assert _was_stopped(group, 1)
         assert _cell(group, 2).is_alive
 
-        assert _cell(group, 0).indep_dp_info.alive_cell_indices == [0, 2]
+        assert _cell(group, 0).indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 2]]
         assert _cell(group, 0).indep_dp_info.alive_size == 2
         assert _cell(group, 2).indep_dp_info.alive_rank == 1
 
@@ -407,9 +411,9 @@ class TestRefreshCellsReconfigureEvent:
         assert len(events) == 1
         assert events[0].rollout_id == 7
         assert events[0].quorum_id == 1
-        assert events[0].src_cell_index == 0
-        assert events[0].healed_cell_indices == [2]
-        assert events[0].alive_cell_indices_after == [0, 1, 2]
+        assert events[0].src_cell_id == "trainer-actor-0"
+        assert events[0].healed_cell_ids == ["trainer-actor-2"]
+        assert events[0].alive_cell_ids_after == [f"trainer-actor-{i}" for i in range(3)]
 
     async def test_shrink_emits_event_without_src(self, _event_log_dir: Path):
         """A pure-shrink reconfigure emits one CellReconfigureEvent with no src and no healed cells."""
@@ -421,9 +425,9 @@ class TestRefreshCellsReconfigureEvent:
         events = self._read_reconfigure_events(_event_log_dir)
         assert len(events) == 1
         assert events[0].rollout_id == 4
-        assert events[0].src_cell_index is None
-        assert events[0].healed_cell_indices == []
-        assert events[0].alive_cell_indices_after == [0, 2]
+        assert events[0].src_cell_id is None
+        assert events[0].healed_cell_ids == []
+        assert events[0].alive_cell_ids_after == ["trainer-actor-0", "trainer-actor-2"]
 
     async def test_noop_refresh_emits_no_event(self, _event_log_dir: Path):
         """A refresh that needs no reconfigure emits no CellReconfigureEvent."""
@@ -437,7 +441,7 @@ class TestRefreshCellsReconfigureEvent:
         """When cooperative prepare fails, no CellReconfigureEvent is emitted (witness stays absent)."""
         group = await _make_alive_controller(num_cells=3)
         await _stop_cell(group, 2)
-        train_conftest.fake_worker_manager.fail_init_for_cell(2)
+        train_conftest.fake_worker_manager.fail_init_for_cell(f"{group._pool}-2")
         _start_cell(group, 2)
 
         await group._refresh_cells(rollout_id=5)
@@ -487,13 +491,13 @@ class TestConsecutiveStopStartCycles:
         await _stop_cell(group, 1)
         await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 1
-        assert _cell(group, 0).indep_dp_info.alive_cell_indices == [0, 2]
+        assert _cell(group, 0).indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 2]]
 
         # Step 2: Stop cell 2 (only cell 0 alive)
         await _stop_cell(group, 2)
         await group._refresh_cells(rollout_id=0)
         assert group._indep_dp_quorum_id == 2
-        assert _cell(group, 0).indep_dp_info.alive_cell_indices == [0]
+        assert _cell(group, 0).indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0]]
         assert _cell(group, 0).indep_dp_info.alive_size == 1
 
         # Step 3: Start cell 1 (cells 0 and 1 alive)
@@ -503,8 +507,8 @@ class TestConsecutiveStopStartCycles:
         assert _cell(group, 0).is_alive
         assert _cell(group, 1).is_alive
         assert _was_stopped(group, 2)
-        assert _cell(group, 0).indep_dp_info.alive_cell_indices == [0, 1]
-        assert _cell(group, 1).indep_dp_info.alive_cell_indices == [0, 1]
+        assert _cell(group, 0).indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 1]]
+        assert _cell(group, 1).indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 1]]
 
 
 class TestTrain:
@@ -565,7 +569,7 @@ class TestTrain:
 
         assert all(c.is_alive for c in group._cells)
         for cell in group._cells:
-            assert cell.indep_dp_info.alive_cell_indices == [0, 1, 2]
+            assert cell.indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 1, 2]]
 
     async def test_full_lifecycle_through_train(self):
         """End-to-end: normal → degraded → steady degraded → healing → full."""
@@ -579,7 +583,7 @@ class TestTrain:
         await _stop_cell(group, 2)
         await group.train(rollout_id=1, rollout_data_pack=_DUMMY_DATA_PACK)
         assert group._indep_dp_quorum_id == 1
-        assert _cell(group, 0).indep_dp_info.alive_cell_indices == [0, 1]
+        assert _cell(group, 0).indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 1]]
 
         # Step 3: Steady degraded (no reconfigure)
         await group.train(rollout_id=2, rollout_data_pack=_DUMMY_DATA_PACK)
@@ -590,7 +594,7 @@ class TestTrain:
         await group.train(rollout_id=3, rollout_data_pack=_DUMMY_DATA_PACK)
         assert group._indep_dp_quorum_id == 2
         assert all(c.is_alive for c in group._cells)
-        assert _cell(group, 2).indep_dp_info.alive_cell_indices == [0, 1, 2]
+        assert _cell(group, 2).indep_dp_info.alive_cell_ids == [f"trainer-actor-{i}" for i in [0, 1, 2]]
 
         # Step 5: Full training again (no reconfigure)
         await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
@@ -683,7 +687,7 @@ class TestRefreshCellsErrorHandling:
         await _stop_cell(group, 2)
 
         # Step 2: Replace actor factory so new actors fail on init
-        train_conftest.fake_worker_manager.fail_init_for_cell(2)
+        train_conftest.fake_worker_manager.fail_init_for_cell(f"{group._pool}-2")
         _start_cell(group, 2)
 
         # Step 3: Refresh — healing init fails, cell auto-marks errored
@@ -734,7 +738,7 @@ class TestHeartbeatMonitor:
             await _cell(group, 0).health_checker._check_fn()
 
     async def test_the_group_activeness_flag_reaches_every_cell_checker(self):
-        """Checkers pull activeness from the group, so one flag governs the whole pool."""
+        """Checkers pull activeness from the group, so one flag governs the whole fleet."""
         group = await _make_alive_controller(num_cells=2)
 
         group._health_checker_activeness.bump_active(False)
@@ -764,8 +768,8 @@ _ERR2 = ValueError("boom2")
 
 
 def _alive_cells_for(results) -> list[SimpleNamespace]:
-    """Mock alive cells aligned with a `results` list; only `.cell_index` is read."""
-    return [SimpleNamespace(cell_index=i) for i in range(len(results))]
+    """Mock alive cells aligned with a `results` list; only `.cell_id` is read."""
+    return [SimpleNamespace(cell_id=f"trainer-actor-{i}") for i in range(len(results))]
 
 
 class TestCheckTrainOneAttempt:
@@ -927,11 +931,11 @@ class TestLogStepEndEvent:
         group = _make_controller(num_cells=3)
 
         mock_cell_0 = MagicMock()
-        mock_cell_0.cell_index = 0
+        mock_cell_0.cell_id = "trainer-actor-0"
         mock_cell_1 = MagicMock()
-        mock_cell_1.cell_index = 1
+        mock_cell_1.cell_id = "trainer-actor-1"
         mock_cell_2 = MagicMock()
-        mock_cell_2.cell_index = 2
+        mock_cell_2.cell_id = "trainer-actor-2"
 
         snapshot_alive_cells = [mock_cell_0, mock_cell_1, mock_cell_2]
         results = [

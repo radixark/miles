@@ -33,8 +33,9 @@ class TestLaunchOnRealRay:
         assert all(is_process_running(record["pid"]) for record in records.values())
         assert len({record["pid"] for record in records.values()}) == 4
         for name, record in records.items():
-            cell_index, worker_in_cell_index = (int(part) for part in name.split("-"))
-            assert record["context"]["cell_index"] == cell_index
+            cell_ordinal, worker_in_cell_index = (int(part) for part in name.split("-"))
+            assert record["context"]["cell_ordinal"] == cell_ordinal
+            assert record["context"]["cell_id"] == f"engine-{cell_ordinal}"
             assert record["context"]["worker_in_cell_index"] == worker_in_cell_index
             advertised = ray.get(handle.get_worker_addrs.remote(f"engine-{name}"))["primary"]
             assert record["context"]["self_addrs"]["primary"] == {

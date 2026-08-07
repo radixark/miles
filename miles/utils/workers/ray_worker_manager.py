@@ -21,6 +21,7 @@ from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
+    GPU_OFFSET_META,
     BaseWorkerSpec,
     CommandWorkerSpec,
     HostAndPort,
@@ -140,11 +141,12 @@ class _PoolManager:
             cells=[
                 _CellManager(
                     manager=manager,
-                    cell_index=cell_index,
+                    cell_id=compute_cell_id(pool_id=spec.name, cell_index=cell_ordinal),
+                    cell_ordinal=cell_ordinal,
                     spec=spec,
                     actors=None,
                 )
-                for cell_index in range(spec.scheduling.num_cells)
+                for cell_ordinal in range(spec.scheduling.num_cells)
             ],
         )
 
@@ -155,7 +157,8 @@ SpecT = TypeVar("SpecT", bound=BaseWorkerSpec)
 @dataclass(kw_only=True)
 class _CellManager(Generic[SpecT]):
     manager: RayWorkerManager
-    cell_index: int
+    cell_id: str
+    cell_ordinal: int
     spec: SpecT
     actors: list[_BaseActorManager] | None
     generation: int = 0
@@ -174,7 +177,7 @@ class _CellManager(Generic[SpecT]):
                 actor_handle=None,
                 gpu_slot_index=(
                     scheduling.pg_slot_offset
-                    + (self.cell_index * scheduling.num_workers_per_cell + worker_in_cell_index)
+                    + (self.cell_ordinal * scheduling.num_workers_per_cell + worker_in_cell_index)
                     * scheduling.num_gpu_slots_per_worker
                     if scheduling.pg_name is not None
                     else None
@@ -206,12 +209,8 @@ class _CellManager(Generic[SpecT]):
             alive=self.alive,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
             workers_hash=f"pseudo-hash-{self.generation}",
-            meta=f(WorkerMetaContext(cell_index=self.cell_index)) if (f := self.spec.meta) is not None else {},
+            meta=compute_cell_meta(self.spec, cell_id=self.cell_id, cell_ordinal=self.cell_ordinal),
         )
-
-    @property
-    def cell_id(self) -> str:
-        return compute_cell_id(pool_id=self.spec.name, cell_index=self.cell_index)
 
     @property
     def alive(self) -> bool:
@@ -249,14 +248,15 @@ class _BaseActorManager(Generic[SpecT]):
                     self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
                 )
                 if port_info.allow_dynamic
-                else port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
+                else port_info.static_port + (self.parent.cell_ordinal if port_info.offset_by_cell else 0)
             )
             self.self_addrs[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
 
     @property
     def launch_context(self) -> WorkerLaunchContext:
         return WorkerLaunchContext(
-            cell_index=self.parent.cell_index,
+            cell_id=self.parent.cell_id,
+            cell_ordinal=self.parent.cell_ordinal,
             worker_in_cell_index=self.worker_in_cell_index,
             gpu_ids=self.gpu_ids,
         )
@@ -302,11 +302,7 @@ class _BaseActorManager(Generic[SpecT]):
 
     @property
     def name(self) -> str:
-        return compute_worker_name(
-            pool_id=self.spec.name,
-            cell_index=self.parent.cell_index,
-            worker_in_cell_index=self.worker_in_cell_index,
-        )
+        return compute_worker_name(cell_id=self.parent.cell_id, worker_in_cell_index=self.worker_in_cell_index)
 
     @property
     def generation(self) -> int:
@@ -366,6 +362,20 @@ class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
         pass
 
 
+def compute_cell_meta(spec: BaseWorkerSpec, *, cell_id: str, cell_ordinal: int) -> dict[str, Any]:
+    compute_meta = spec.meta
+    if compute_meta is None:
+        return {}
+
+    meta = compute_meta(WorkerMetaContext(cell_id=cell_id))
+    if GPU_OFFSET_META not in meta:
+        return meta
+
+    scheduling = spec.scheduling
+    gpus_per_cell = scheduling.num_workers_per_cell * scheduling.num_gpu_slots_per_worker
+    return meta | {GPU_OFFSET_META: meta[GPU_OFFSET_META] + cell_ordinal * gpus_per_cell}
+
+
 def bootstrapped_worker_class(worker_class_path: str) -> type:
     worker_class = load_function(worker_class_path)
 
@@ -383,7 +393,8 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
 
 def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
     return WorkerCtorContext(
-        cell_index=launch_context.cell_index,
+        cell_id=launch_context.cell_id,
+        cell_ordinal=launch_context.cell_ordinal,
         worker_in_cell_index=launch_context.worker_in_cell_index,
         gpu_ids=launch_context.gpu_ids,
         capability=DeferredBackendCapability(create=_create_ray_backend_capability),

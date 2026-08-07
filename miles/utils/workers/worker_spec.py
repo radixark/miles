@@ -7,6 +7,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.backend_capability.base import BackendCapability
 
 RPC_PORT_NAME = "rpc"
+GPU_OFFSET_META = "gpu_offset"
 MASTER_PORT_NAME = "master"
 DEFAULT_RPC_PORT = 8000
 
@@ -53,11 +54,12 @@ class SchedulingSpec(FrozenStrictBaseModel):
 
 # TODO: improve meta computation logic later
 class WorkerMetaContext(FrozenStrictBaseModel):
-    cell_index: int
+    cell_id: str
 
 
 class WorkerLaunchContext(FrozenStrictBaseModel):
-    cell_index: int
+    cell_id: str
+    cell_ordinal: int
     worker_in_cell_index: int
     gpu_ids: list[int]
 
