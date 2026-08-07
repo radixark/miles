@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+import torch
 import typer
 
 import miles.utils.external_utils.command_utils as U
@@ -639,6 +640,9 @@ def _train(args: ScriptArgs):
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe mxfp8 "
     elif args.train_fp8:
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
+        if torch.version.hip is not None:
+            # ROCm TE grouped blockwise FP8 does not support fused wgrad accumulation.
+            misc_args += "--no-gradient-accumulation-fusion "
 
     if (args.train_fp8 or args.train_mxfp8) and "--te-precision-config-file" not in args.extra_args:
         misc_args += f"--te-precision-config-file " f"{U.save_to_temp_file(_DSV4_TE_PRECISION_CONFIG, 'yaml')} "
