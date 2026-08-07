@@ -41,7 +41,7 @@ def _make_actor_handler(
         cell_type="actor",
         operations=RayCellOperations(worker_manager_handle=manager),
         controller=group,
-        spec_names=["trainer-actor"],
+        pool_ids=["trainer-actor"],
     )
     return handler, group, manager
 
@@ -125,8 +125,8 @@ class TestActorCellHandler:
 ENGINE_CELL_ID = "inference-engine-0-0-0"
 
 
-def _spec_names_of(manager: MockWorkerManager) -> list[str]:
-    return sorted({summary.spec_name for summary in manager._summaries.values()})
+def _pool_ids_of(manager: MockWorkerManager) -> list[str]:
+    return sorted({summary.pool_id for summary in manager._summaries.values()})
 
 
 def _make_rollout_handler(
@@ -145,7 +145,7 @@ def _make_rollout_handler(
         cell_type="rollout",
         operations=RayCellOperations(worker_manager_handle=manager),
         controller=controller,
-        spec_names=[cell_id.rsplit("-", 1)[0]],
+        pool_ids=[cell_id.rsplit("-", 1)[0]],
     )
 
 
@@ -226,7 +226,7 @@ class TestRolloutCellHandler:
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
             controller=controller,
-            spec_names=_spec_names_of(manager),
+            pool_ids=_pool_ids_of(manager),
         )
 
         await handler.get_cell(ENGINE_CELL_ID)
@@ -241,7 +241,7 @@ class TestRolloutCellHandler:
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
             controller=MockInferenceController(),
-            spec_names=_spec_names_of(manager),
+            pool_ids=_pool_ids_of(manager),
         )
 
         await handler.suspend(ENGINE_CELL_ID)
@@ -256,7 +256,7 @@ class TestRolloutCellHandler:
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
             controller=MockInferenceController(),
-            spec_names=_spec_names_of(manager),
+            pool_ids=_pool_ids_of(manager),
         )
 
         await handler.resume(ENGINE_CELL_ID)
@@ -294,7 +294,7 @@ class TestRolloutCellHandler:
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
             controller=controller,
-            spec_names=_spec_names_of(manager),
+            pool_ids=_pool_ids_of(manager),
         )
         await handler.resume(ENGINE_CELL_ID)
 
@@ -321,7 +321,7 @@ class TestRolloutCellHandler:
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
             controller=MockInferenceController(),
-            spec_names=["inference-engine-0-0"],
+            pool_ids=["inference-engine-0-0"],
         )
 
         assert await handler.list_cell_ids() == ["inference-engine-0-0-0"]
@@ -340,7 +340,7 @@ class TestRolloutCellHandler:
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
             controller=controller,
-            spec_names=_spec_names_of(manager),
+            pool_ids=_pool_ids_of(manager),
         )
 
         cells = await handler.list_cells()
@@ -359,7 +359,7 @@ class TestRolloutCellHandlerInjectFault:
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=manager),
             controller=MockInferenceController(),
-            spec_names=_spec_names_of(manager),
+            pool_ids=_pool_ids_of(manager),
         )
 
         await handler.inject_fault(ENGINE_CELL_ID, mode=FailureMode.SIGKILL, sub_index=1)

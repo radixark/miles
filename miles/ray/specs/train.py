@@ -54,20 +54,20 @@ def spec_trainer_controller_critic(args) -> ServeWorkerSpec:
 
 def create_trainer_controller_handle(*, capability: BackendCapability, role: str) -> BaseWorkerHandle:
     worker_name = trainer_controller_worker_name(role)
-    provider = capability.static_worker_provider(spec_name=compute_trainer_controller_spec_name(role))
+    provider = capability.static_worker_provider(pool_id=compute_trainer_controller_pool_id(role))
     return provider.get_handle(worker_name)
 
 
-def compute_trainer_controller_spec_name(role: str) -> str:
+def compute_trainer_controller_pool_id(role: str) -> str:
     return f"trainer-controller-{role}"
 
 
 def trainer_controller_worker_name(role: str) -> str:
-    return compute_worker_name(spec_name=compute_trainer_controller_spec_name(role))
+    return compute_worker_name(pool_id=compute_trainer_controller_pool_id(role))
 
 
 def trainer_controller_cell_id(role: str) -> str:
-    return compute_cell_id(spec_name=compute_trainer_controller_spec_name(role), cell_index=0)
+    return compute_cell_id(pool_id=compute_trainer_controller_pool_id(role), cell_index=0)
 
 
 def _compute_spec_trainer_controller(
@@ -79,7 +79,7 @@ def _compute_spec_trainer_controller(
     drives_inference: bool,
 ) -> ServeWorkerSpec:
     return ServeWorkerSpec(
-        name=compute_trainer_controller_spec_name(role),
+        name=compute_trainer_controller_pool_id(role),
         port_infos=[],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
@@ -94,7 +94,7 @@ def _compute_spec_trainer_controller(
             role=role,
             with_ref=with_ref,
             with_opd_teacher=with_opd_teacher,
-            cell_provider=ctx.capability.dynamic_worker_provider(spec_names=[compute_trainer_spec_name(role)]),
+            cell_provider=ctx.capability.dynamic_worker_provider(pool_ids=[compute_trainer_pool_id(role)]),
             cell_operations=ctx.capability.cell_operations(),
             inference_controller=(
                 create_inference_controller_handle(capability=ctx.capability) if drives_inference else None
@@ -124,7 +124,7 @@ def specs_trainer(args) -> list[ServeWorkerSpec]:
     return specs
 
 
-def compute_trainer_spec_name(role: str) -> str:
+def compute_trainer_pool_id(role: str) -> str:
     return f"trainer-{role}"
 
 
@@ -161,7 +161,7 @@ def _compute_spec_trainer(
     indep_dp_store_addr = _create_indep_dp_store_addr() if num_cells > 1 else None
 
     return ServeWorkerSpec(
-        name=compute_trainer_spec_name(role),
+        name=compute_trainer_pool_id(role),
         port_infos=[PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True)],
         env_var=lambda ctx: compute_trainer_env_vars(args, ctx),
         scheduling=SchedulingSpec(

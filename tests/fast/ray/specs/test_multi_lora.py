@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from miles.ray.specs.multi_lora import (
-    MULTI_LORA_CONTROLLER_SPEC_NAME,
+    MULTI_LORA_CONTROLLER_POOL_ID,
     MULTI_LORA_CONTROLLER_WORKER_CLASS,
     multi_lora_controller_cell_id,
     multi_lora_controller_worker_name,
@@ -20,7 +20,7 @@ class TestMultiLoraControllerSpec:
         """The control API must sit at a port-forwardable address, so the worker pins to the head node."""
         spec = spec_multi_lora_controller(_args(multi_lora=True))
 
-        assert spec.name == MULTI_LORA_CONTROLLER_SPEC_NAME
+        assert spec.name == MULTI_LORA_CONTROLLER_POOL_ID
         assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (1, 1)
         assert spec.scheduling.num_gpus_per_worker == 0
         assert spec.scheduling.pin_to_head

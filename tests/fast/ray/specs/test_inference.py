@@ -11,11 +11,11 @@ from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
 from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
-    INFERENCE_CONTROLLER_SPEC_NAME,
+    INFERENCE_CONTROLLER_POOL_ID,
     INFERENCE_CONTROLLER_WORKER_CLASS,
     _compute_spec_router,
-    compute_engine_spec_names,
-    compute_router_spec_name,
+    compute_engine_pool_ids,
+    compute_router_pool_id,
     inference_controller_cell_id,
     inference_controller_worker_name,
     spec_inference_controller,
@@ -121,7 +121,7 @@ class TestComputeSpecSessionServer:
             cell_index=1,
             worker_in_cell_index=0,
             self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
-            spec_addrs={compute_router_spec_name(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
+            spec_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
             gpu_ids=[],
         )
         argv = shlex.split(spec.launch_command(ctx))
@@ -194,7 +194,7 @@ class TestComputeEngineSpecNames:
         )
         args = make_args(sglang_config=str(config_path), rollout_num_gpus=16)
 
-        assert compute_engine_spec_names(args) == ["inference-engine-0-0", "inference-engine-0-2"]
+        assert compute_engine_pool_ids(args) == ["inference-engine-0-0", "inference-engine-0-2"]
 
 
 class TestInferenceSpecPinToHead:
@@ -460,7 +460,7 @@ class TestSpecInferenceController:
         """It is a control-plane worker on both backends; a gpu request would reserve a whole node for it."""
         spec = spec_inference_controller(self._args(tmp_path))
 
-        assert spec.name == INFERENCE_CONTROLLER_SPEC_NAME
+        assert spec.name == INFERENCE_CONTROLLER_POOL_ID
         assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (1, 1)
         assert spec.scheduling.num_gpus_per_worker == 0
         assert spec.scheduling.num_gpu_slots_per_worker == 0
@@ -476,14 +476,14 @@ class TestSpecInferenceController:
         assert inference_controller_worker_name() == "inference-controller-0-0"
         assert inference_controller_cell_id() == "inference-controller-0"
 
-    def test_it_asks_for_a_provider_over_the_engine_fleets_it_will_observe(self, tmp_path):
-        """The controller never learns which backend reports those cells, only which fleets it wants reported."""
+    def test_it_asks_for_a_provider_over_the_engine_pools_it_will_observe(self, tmp_path):
+        """The controller never learns which backend reports those cells, only which pools it wants reported."""
         args = self._args(tmp_path)
         capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
 
         kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
 
-        assert capability.requested_spec_names == [compute_engine_spec_names(args)]
+        assert capability.requested_pool_ids == [compute_engine_pool_ids(args)]
         assert kwargs["engine_provider"] is capability.cells_provider
 
     def test_it_asks_for_a_provider_that_can_address_the_router(self, tmp_path):
@@ -492,14 +492,14 @@ class TestSpecInferenceController:
 
         kwargs = spec_inference_controller(self._args(tmp_path)).ctor_kwargs(self._ctor_context(capability))
 
-        assert capability.requested_static_spec_names == [compute_router_spec_name(0)]
+        assert capability.requested_static_pool_ids == [compute_router_pool_id(0)]
         assert kwargs["router_provider"] is capability.static_provider
 
-    def test_a_train_only_run_builds_a_controller_over_an_empty_fleet(self, tmp_path):
-        """--debug-train-only deploys no engines, so the controller observes a fleet of nothing."""
+    def test_a_train_only_run_builds_a_controller_over_an_empty_pool(self, tmp_path):
+        """--debug-train-only deploys no engines, so the controller observes no pools at all."""
         args = self._args(tmp_path, debug_train_only=True)
         capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
 
         spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
 
-        assert capability.requested_spec_names == [[]]
+        assert capability.requested_pool_ids == [[]]

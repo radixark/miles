@@ -101,7 +101,7 @@ class TestReplace:
         assert [pod.metadata.name for pod in store.get_by_parent("cell-a")] == ["pod-0"]
 
     def test_an_empty_replace_clears_the_store(self):
-        """A relist that returns nothing means the fleet is gone, not that nothing changed."""
+        """A relist that returns nothing means the pool is gone, not that nothing changed."""
         store = make_store()
         store.handle_event(UpsertEvent(key="pod-0", obj=make_pod("pod-0", cell="cell-a")))
 

@@ -18,11 +18,11 @@ class RayWorkerProvider(BaseWorkerProvider):
         self,
         worker_manager_handle: ray.actor.ActorHandle,
         *,
-        spec_names: list[str] | None = None,
+        pool_ids: list[str] | None = None,
         poll_interval_seconds: float = 5.0,
     ):
         self._worker_manager_handle = worker_manager_handle
-        self._spec_names = spec_names
+        self._pool_ids = pool_ids
         self._poll_interval_seconds = poll_interval_seconds
 
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
@@ -33,31 +33,31 @@ class RayWorkerProvider(BaseWorkerProvider):
         return await self._worker_manager_handle.get_worker_addrs.remote(worker_name)
 
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
-        spec_names = self._watched_spec_names()
+        pool_ids = self._watched_pool_ids()
         seen_infos: dict[str, CellInfo] = {}
         # the initial sync must complete (and raise on failure) before the watch is considered established
-        await self._poll_once(reconcile, seen_infos=seen_infos, spec_names=spec_names)
-        task = asyncio.create_task(self._watch_loop(reconcile, seen_infos, spec_names=spec_names))
+        await self._poll_once(reconcile, seen_infos=seen_infos, pool_ids=pool_ids)
+        task = asyncio.create_task(self._watch_loop(reconcile, seen_infos, pool_ids=pool_ids))
         return partial(_cancel_and_await_task, task)
 
-    def _watched_spec_names(self) -> list[str]:
-        assert self._spec_names is not None, "this provider was built without the fleets it is meant to observe"
-        return self._spec_names
+    def _watched_pool_ids(self) -> list[str]:
+        assert self._pool_ids is not None, "this provider was built without the pool_ids it is meant to observe"
+        return self._pool_ids
 
     async def _watch_loop(
-        self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, spec_names: list[str]
+        self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, pool_ids: list[str]
     ) -> None:
         while True:
             await asyncio.sleep(self._poll_interval_seconds)
             try:
-                await self._poll_once(reconcile, seen_infos=seen_infos, spec_names=spec_names)
+                await self._poll_once(reconcile, seen_infos=seen_infos, pool_ids=pool_ids)
             except Exception:
                 logger.exception("Worker provider poll failed; retrying")
 
     async def _poll_once(
-        self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, spec_names: list[str]
+        self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, pool_ids: list[str]
     ) -> None:
-        all_infos = await self._worker_manager_handle.get_cell_infos.remote(spec_names=spec_names)
+        all_infos = await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids)
         observed_infos: dict[str, CellInfo] = {cell_id: info for cell_id, info in all_infos.items() if info.alive}
         for cell_id in sorted(set(seen_infos) | set(observed_infos)):
             observed_info = observed_infos.get(cell_id)

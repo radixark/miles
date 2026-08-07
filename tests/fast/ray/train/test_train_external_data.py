@@ -18,7 +18,7 @@ pytestmark = pytest.mark.asyncio
 _DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
 
 
-def _make_group(cells: list) -> TrainerController:
+def _make_controller(cells: list) -> TrainerController:
     group = object.__new__(TrainerController)
     group._cells_by_id = {cell.cell_id: cell for cell in cells}
     group.args = SimpleNamespace(enable_event_analyzer=False, save_debug_event_data=None)
@@ -104,11 +104,11 @@ class TestCellDistributesExternalData:
             )
 
 
-class TestGroupExternalData:
+class TestControllerExternalData:
     async def test_train_forwards_external_data_to_the_cell(self):
         """The group hands the driver-provided payloads down to its only cell."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
-        group = _make_group([cell])
+        group = _make_controller([cell])
         payloads = [{"values": ["v0"]}, {"values": ["v1"]}]
 
         await group.train(3, _DUMMY_DATA_PACK, external_data=payloads)
@@ -119,7 +119,7 @@ class TestGroupExternalData:
     async def test_external_data_is_rejected_with_multiple_cells(self):
         """Independent DP has no defined mapping from payloads to cells yet."""
         cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
-        group = _make_group(cells)
+        group = _make_controller(cells)
 
         with pytest.raises(AssertionError, match="single cell"):
             await group.train(3, _DUMMY_DATA_PACK, external_data=[{"values": []}])
@@ -127,7 +127,7 @@ class TestGroupExternalData:
     async def test_a_payload_count_mismatch_fails_immediately_without_backoff(self, monkeypatch: pytest.MonkeyPatch):
         """A deterministic argument error must abort the first attempt instead of burning the retry budget."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
-        group = _make_group([cell])
+        group = _make_controller([cell])
         sleeps = _record_retry_sleeps(monkeypatch)
         attempts = _count_cell_train_calls(monkeypatch, cell)
 

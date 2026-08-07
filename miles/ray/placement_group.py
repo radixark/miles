@@ -8,8 +8,8 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import (
-    SESSION_SERVER_SPEC_NAME,
-    compute_router_spec_name,
+    SESSION_SERVER_POOL_ID,
+    compute_router_pool_id,
     create_inference_controller_handle,
 )
 from miles.ray.specs.rollout import create_rollout_executor_handle
@@ -183,12 +183,10 @@ async def create_rollout_components(args) -> RolloutComponents:
     capability = get_backend_capability(args)
 
     if not args.debug_train_only:
-        await resolve_router_addrs(
-            args, provider=capability.static_worker_provider(spec_name=compute_router_spec_name(0))
-        )
+        await resolve_router_addrs(args, provider=capability.static_worker_provider(pool_id=compute_router_pool_id(0)))
 
         session_server_provider = (
-            capability.static_worker_provider(spec_name=SESSION_SERVER_SPEC_NAME) if args.use_session_server else None
+            capability.static_worker_provider(pool_id=SESSION_SERVER_POOL_ID) if args.use_session_server else None
         )
         await wait_session_server_ready(args, provider=session_server_provider)
 

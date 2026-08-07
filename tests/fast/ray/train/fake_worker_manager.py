@@ -35,14 +35,14 @@ class FakeWorkerManager:
     def fail_init_for_cell(self, cell_index: int) -> None:
         self._cell_indices_failing_init.add(cell_index)
 
-    def _get_cell_infos(self, *, spec_names: list[str]) -> dict[str, CellInfo]:
+    def _get_cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
         infos: dict[str, CellInfo] = {}
-        for spec_name in spec_names:
+        for pool_id in pool_ids:
             for cell_index in range(self.num_cells):
-                cell_id = compute_cell_id(spec_name=spec_name, cell_index=cell_index)
+                cell_id = compute_cell_id(pool_id=pool_id, cell_index=cell_index)
                 infos[cell_id] = CellInfo(
                     cell_id=cell_id,
-                    spec_name=spec_name,
+                    pool_id=pool_id,
                     alive=True,
                     worker_names=[f"{cell_id}-{worker_index}" for worker_index in range(self.actor_count_per_cell)],
                     workers_hash=f"pseudo-hash-{1 + len(self.started_cell_ids)}",

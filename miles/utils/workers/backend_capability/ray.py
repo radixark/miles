@@ -15,10 +15,10 @@ class RayBackendCapability(BackendCapability):
     def __init__(self, *, worker_manager_handle: ray.actor.ActorHandle) -> None:
         self._worker_manager_handle = worker_manager_handle
 
-    def dynamic_worker_provider(self, *, spec_names: Sequence[str]) -> BaseWorkerProvider:
-        return RayWorkerProvider(worker_manager_handle=self._worker_manager_handle, spec_names=list(spec_names))
+    def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider:
+        return RayWorkerProvider(worker_manager_handle=self._worker_manager_handle, pool_ids=list(pool_ids))
 
-    def static_worker_provider(self, *, spec_name: str) -> BaseWorkerProvider:
+    def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider:
         return RayWorkerProvider(worker_manager_handle=self._worker_manager_handle)
 
     def cell_operations(self) -> BaseCellOperations:
