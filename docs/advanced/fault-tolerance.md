@@ -52,7 +52,11 @@ Registered by `SimpleHealthCheckerConfig.add_arguments(prefix="rollout-health-ch
 | `--rollout-health-check-interval` | `30.0` |
 | `--rollout-health-check-timeout` | `30.0` |
 | `--rollout-health-check-first-wait` | `0.0` |
-| `--rollout-health-check-failure-threshold` | `3` |
+| `--rollout-health-check-failure-threshold` | `1` |
+
+A rollout engine that fails one `health_generate` is gone rather than blipping,
+so the rollout threshold is `1`: debouncing it over three 30s intervals leaves a
+dead engine taking routed traffic for another minute.
 
 The trainer side registers the same four options under
 `--trainer-heartbeat-checker-*` with the config defaults (`10.0` / `10.0` /
@@ -136,9 +140,20 @@ Writes map straight onto the worker manager: `suspend` → `stop_cells`, `resume
 restarts the process; the cell comes back gated and rejoins through the next
 weight-update window.
 
-`--mini-ft-controller-enable` starts the built-in controller that polls those
-cells and heals unhealthy ones (`--mini-ft-controller-poll-interval`,
-`--mini-ft-controller-resume-delay`).
+## Mini FT controller
+
+The health checkers only publish a status; this controller is the only thing
+in-tree that acts on it. It polls the same `_CellRegistry` the api server serves
+— directly, in-process — so healing does not depend on `--api-server-port`; that
+port exists to let an *external* controller drive the run.
+
+- Left unset it follows `--ft-components`, so `--use-fault-tolerance` heals on
+  its own. Pass `--no-mini-ft-controller-enable` to keep the health reporting
+  without the healing.
+- `--mini-ft-controller-poll-interval` and `--mini-ft-controller-resume-delay`
+  tune the loop.
+- An unhealthy cell is suspended, then resumed after the delay, with exponential
+  backoff per cell on repeated failure.
 
 ## P2P weight transfer timeouts
 

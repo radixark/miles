@@ -9,9 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-import httpx
-
-from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, CellPatchSpec, TriState
+from miles.utils.ft_utils.api_server.models import Cell, TriState
+from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -21,12 +20,15 @@ logger = logging.getLogger(__name__)
 # ------------------------ entrypoint ------------------------
 
 
-def maybe_start_mini_ft_controller(args: Any) -> None:
+def maybe_start_mini_ft_controller(args: Any, registry: _CellRegistry) -> None:
     if not args.mini_ft_controller_enable:
         return
 
+    # The registry is driven directly rather than over the api server's own HTTP port, so that
+    # healing does not depend on --api-server-port being set: the port exists to let an external
+    # controller drive the run, not to let this one reach cells in its own process.
     runner = _MiniFTControllerRunner(
-        api_server_url=f"http://127.0.0.1:{args.api_server_port}",
+        registry=registry,
         poll_interval=args.mini_ft_controller_poll_interval,
         resume_delay=args.mini_ft_controller_resume_delay,
     )
@@ -39,19 +41,18 @@ def maybe_start_mini_ft_controller(args: Any) -> None:
     logger.info("Started mini FT controller on daemon thread")
 
 
-# ------------------------ HTTP transport + thread runner ------------------------
+# ------------------------ registry transport + thread runner ------------------------
 
 
 class _MiniFTControllerRunner:
     def __init__(
         self,
         *,
-        api_server_url: str,
+        registry: _CellRegistry,
         poll_interval: float,
         resume_delay: float,
     ) -> None:
-        url = api_server_url.rstrip("/")
-        self._client = httpx.AsyncClient(base_url=url, timeout=30.0)
+        self._registry = registry
         self._controller = _MiniFTController(
             get_cells=self._get_cells,
             suspend_cell=self._suspend_cell,
@@ -61,31 +62,16 @@ class _MiniFTControllerRunner:
         )
 
     async def run(self) -> None:
-        try:
-            await self._controller.run()
-        finally:
-            await self._client.aclose()
+        await self._controller.run()
 
     async def _get_cells(self) -> list[_CellSnapshot]:
-        resp = await self._client.get("/api/v1/cells")
-        resp.raise_for_status()
-        cell_list = CellList.model_validate(resp.json())
-        return [_compute_cell_snapshot(cell) for cell in cell_list.items]
+        return [_compute_cell_snapshot(cell) for cell in await self._registry.list_cells()]
 
     async def _suspend_cell(self, name: str) -> None:
-        await self._patch_cell_suspend(name=name, suspend=True)
+        await (await self._registry.resolve(name)).suspend(name)
 
     async def _resume_cell(self, name: str) -> None:
-        await self._patch_cell_suspend(name=name, suspend=False)
-
-    async def _patch_cell_suspend(self, *, name: str, suspend: bool) -> None:
-        patch = CellPatch(spec=CellPatchSpec(suspend=suspend))
-        resp = await self._client.patch(
-            f"/api/v1/cells/{name}",
-            content=patch.model_dump_json(),
-            headers={"Content-Type": "application/json"},
-        )
-        resp.raise_for_status()
+        await (await self._registry.resolve(name)).resume(name)
 
 
 def _compute_cell_snapshot(cell: Cell) -> _CellSnapshot:

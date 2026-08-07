@@ -21,14 +21,17 @@ logger = logging.getLogger(__name__)
 # -------------------------- entrypoint ------------------------------
 
 
-def start_api_server(
+def start_api_server(registry: _CellRegistry, *, port: int) -> None:
+    _start_api_server_raw(registry=registry, port=port)
+
+
+def compute_cell_registry(
     *,
     args,
     actor_model: TrainerController,
     inference_controller: object,
-    port: int,
     ft_components: list[str],
-) -> None:
+) -> _CellRegistry:
     handlers: list[_CellHandler] = []
 
     if "train" in ft_components:
@@ -51,7 +54,7 @@ def start_api_server(
             )
         )
 
-    _start_api_server_raw(registry=_CellRegistry(handlers), port=port)
+    return _CellRegistry(handlers)
 
 
 def _start_api_server_raw(registry: _CellRegistry, port: int) -> None:

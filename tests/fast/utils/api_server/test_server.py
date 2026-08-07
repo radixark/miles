@@ -241,23 +241,17 @@ class TestStartApiServerRegistration:
         debug_train_only: bool = False,
     ) -> _CellRegistry:
         manager = MockWorkerManager(make_cell_summaries(*cell_ids))
-        registries: list[_CellRegistry] = []
 
         monkeypatch.setattr(server, "RayWorkerManager", SimpleNamespace(get_handle=lambda: manager))
-        monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
 
-        server.start_api_server(
+        return server.compute_cell_registry(
             args=make_rollout_args(debug_train_only=debug_train_only),
             actor_model=make_mock_controller(actor_cells if actor_cells is not None else []),
             inference_controller=MockInferenceController(
                 {cell_id: compute_pending_rollout_cell_status() for cell_id in cell_ids}
             ),
-            port=0,
             ft_components=ft_components,
         )
-
-        (registry,) = registries
-        return registry
 
     @pytest.mark.asyncio
     async def test_the_rollout_handler_enumerates_every_engine_cell(self, monkeypatch: pytest.MonkeyPatch) -> None:

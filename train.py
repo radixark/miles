@@ -11,7 +11,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
-from miles.utils.ft_utils.api_server.server import start_api_server
+from miles.utils.ft_utils.api_server.server import compute_cell_registry, start_api_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
@@ -35,16 +35,17 @@ async def train(args):
     # create the actor and critic models
     actor_model, critic_model = await create_training_models(args, inference_controller, rollout_executor)
 
-    if args.api_server_port:
-        start_api_server(
-            args=args,
-            actor_model=actor_model,
-            inference_controller=inference_controller,
-            port=args.api_server_port,
-            ft_components=args.ft_components,
-        )
+    cell_registry = compute_cell_registry(
+        args=args,
+        actor_model=actor_model,
+        inference_controller=inference_controller,
+        ft_components=args.ft_components,
+    )
 
-    maybe_start_mini_ft_controller(args)
+    if args.api_server_port:
+        start_api_server(cell_registry, port=args.api_server_port)
+
+    maybe_start_mini_ft_controller(args, cell_registry)
 
     # always update weight first so that sglang has the loaded weights from training.
     await actor_model.update_weights()
