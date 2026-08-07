@@ -274,7 +274,12 @@ class DumpReader:
                 response_length_mean=pl.col("response_length").mean(),
                 truncated_frac=pl.col("truncated").cast(pl.Float64).mean(),
             )
-            .with_columns(zero_std=pl.col("reward_std").fill_null(0.0) <= 1e-12)
+            # a null mean is absent reward data (train dumps missing), not a
+            # degenerate group; a null std with a mean present is a 1-sample
+            # group, which IS degenerate
+            .with_columns(
+                zero_std=pl.col("reward_mean").is_not_null() & (pl.col("reward_std").fill_null(0.0) <= 1e-12)
+            )
             .sort("group_index")
         )
 

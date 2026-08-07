@@ -2,6 +2,7 @@ import os
 import statistics
 import time
 
+import polars as pl
 import pytest
 from tests.fast.dashboard.dummy_dump import dump_dummy_run
 
@@ -231,3 +232,18 @@ def test_staleness_and_agentic_columns(reader):
 
     aggregates = reader.step_aggregates()
     assert 0 < aggregates["mixed_version_frac"][0] < 1
+
+
+def test_groups_null_rewards_are_not_zero_std(tmp_path):
+    # missing train dumps leave raw_reward null for every sample; that is
+    # absent data, not a degenerate group
+    reader = DumpReader(tmp_path)
+    reader.summary = lambda rollout_id, evaluation=False: pl.DataFrame(
+        {
+            "group_index": [0, 0, 1, 1],
+            "raw_reward": pl.Series([None] * 4, dtype=pl.Float64),
+            "response_length": [1, 2, 3, 4],
+            "truncated": [False] * 4,
+        }
+    )
+    assert not reader.groups(0)["zero_std"].any()
