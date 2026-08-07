@@ -127,8 +127,6 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--sglang-speculative-eagle-topk 1 "
         "--sglang-speculative-num-draft-tokens 3 "
     )
-    if IS_ROCM:
-        sglang_args += "--use-miles-router "
 
     if case.use_deepep:
         sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
