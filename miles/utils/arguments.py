@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 from typing import Any
 
 import yaml
@@ -2456,6 +2457,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         return parser
 
     return add_miles_arguments
+
+
+def parse_args_from_argv(argv: list[str], add_custom_arguments=None):
+    original_argv = sys.argv
+    sys.argv = [original_argv[0], *argv]
+    try:
+        return parse_args(add_custom_arguments)
+    finally:
+        sys.argv = original_argv
 
 
 def parse_args(add_custom_arguments=None):

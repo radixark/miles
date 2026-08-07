@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from miles.ray import wiring
+from miles.utils.workers.backend_capability import factory
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.types import ClusterBackend
 from miles.utils.workers.worker_provider.kubernetes.helm.labels import DEFAULT_LABEL_KEYS
@@ -34,7 +35,7 @@ class TestGetBackendCapability:
     def test_a_ray_run_is_answered_from_the_worker_manager(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The manager was launched by the driver's own first line; the capability only looks it up."""
         monkeypatch.setattr(wiring, "_launch_ray_worker_manager", _refuse_ray)
-        monkeypatch.setattr(wiring.RayWorkerManager, "get_handle", staticmethod(lambda: object()))
+        monkeypatch.setattr(factory.RayWorkerManager, "get_handle", staticmethod(lambda: object()))
 
         args = SimpleNamespace(cluster_backend=ClusterBackend.RAY.value)
 
@@ -60,10 +61,10 @@ def stub_kubernetes_capability(monkeypatch: pytest.MonkeyPatch) -> KubernetesCap
     stub = KubernetesCapabilityStub(capability=object())
 
     monkeypatch.setattr(wiring, "compute_specs", lambda args: stub.specs_computed_from.append(args) or [])
-    monkeypatch.setattr(wiring, "current_namespace", lambda: "test-namespace")
-    monkeypatch.setattr(wiring, "current_release", lambda: "test-release")
-    monkeypatch.setattr(wiring, "current_label_keys", lambda: DEFAULT_LABEL_KEYS)
-    monkeypatch.setattr(wiring, "compute_capability", lambda **kwargs: stub.capability)
+    monkeypatch.setattr(factory, "current_namespace", lambda: "test-namespace")
+    monkeypatch.setattr(factory, "current_release", lambda: "test-release")
+    monkeypatch.setattr(factory, "current_label_keys", lambda: DEFAULT_LABEL_KEYS)
+    monkeypatch.setattr(factory, "compute_capability", lambda **kwargs: stub.capability)
     monkeypatch.setattr(wiring, "_launch_ray_worker_manager", _refuse_ray)
 
     return stub

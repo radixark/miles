@@ -2,24 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Any
 
 import pytest
+from tests.fast.fixtures.kubernetes_fixtures import NAMESPACE, ROUTER_HOST, install_workers
 from tests.fast.utils.workers.worker_provider.kubernetes import fake_pod_api
 from tests.fast.utils.workers.worker_provider.kubernetes.core.test_pod_view import make_pod
-from tests.fast.utils.workers.worker_provider.kubernetes.core.test_provider import FakePodApi
-from tests.fast.utils.workers.worker_provider.kubernetes.run_specs import RELEASE, make_engine_spec, make_router_spec
 
-from miles.utils.workers.backend_capability.kubernetes import KubernetesBackendCapability
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
 from miles.utils.workers.worker_provider.kubernetes.core import provider as core_provider
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesWorkerProvider
-from miles.utils.workers.worker_provider.kubernetes.helm.builder import compute_capability
-from miles.utils.workers.worker_provider.kubernetes.helm.naming import static_worker_host
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider
 
-NAMESPACE = "team-a"
-ROUTER_HOST = static_worker_host(RELEASE, "inference-router-0", 0)
 RAY_WORKER_MANAGER_MODULE = "miles.utils.workers.ray_worker_manager"
 
 
@@ -38,16 +31,6 @@ def deleted(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, list[str]]]:
 def _fake_pod_api(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_pod_api.reset()
     monkeypatch.setattr(core_provider, "_create_kubernetes_client", fake_pod_api.installed)
-
-
-def install_workers(*, pods: list[Any] | None = None) -> KubernetesBackendCapability:
-    fake_pod_api.install(FakePodApi(pods=list(pods or [])))
-
-    return compute_capability(
-        specs=[make_router_spec(), make_engine_spec()],
-        namespace=NAMESPACE,
-        release=RELEASE,
-    )
 
 
 class TestKubernetesAssembly:
