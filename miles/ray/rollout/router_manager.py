@@ -2,12 +2,13 @@ import logging
 
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.specs.inference import (
+    SESSION_SERVER_POOL_ID,
     compute_router_worker_name,
     compute_session_server_instance_id,
-    session_server_worker_name,
 )
 from miles.utils.http_utils import wait_tcp_ready
-from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.retry_utils import retry_until_deadline
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo
 from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
@@ -65,22 +66,46 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
         raise ValueError("--use-session-server requires --hf-checkpoint to be set.")
 
     assert provider is not None
-    addrs = [
-        (await provider.get_addrs(worker_name=session_server_worker_name(index)))["primary"]
-        for index in range(args.num_session_servers)
-    ]
+    cell_infos = await _wait_expected_num_cell_infos(
+        provider, expected=args.num_session_servers, pool_id=SESSION_SERVER_POOL_ID
+    )
+    cell_ids = sorted(cell_infos)
+    worker_names = [cell_infos[cell_id].worker_names[0] for cell_id in cell_ids]
+    addrs = [(await provider.get_addrs(worker_name=worker_name))["primary"] for worker_name in worker_names]
     # The canonical driver-side value; rollout code picks from this list. Instances may sit on
     # different hosts, so each one is addressed in full rather than by a port under a shared ip.
     args.session_server_addrs = [f"{x.host}:{x.port}" for x in addrs]
 
     # Spawn all children before waiting on any: each child pays the ~10s
     # transformers import, so N servers start in ~one import of wall-time.
-    instance_ids: dict[str, str] = {}
-    for instance_index, addr in enumerate(args.session_server_addrs):
-        instance_ids[addr] = compute_session_server_instance_id(args, instance_index)
+    instance_ids: dict[str, str] = {
+        addr: compute_session_server_instance_id(args, cell_id)
+        for addr, cell_id in zip(args.session_server_addrs, cell_ids, strict=True)
+    }
     # The per-address map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
     for addr in addrs:
         wait_tcp_ready(addr.host, addr.port, timeout=30)
     logger.info(f"Session servers ready at {args.session_server_addrs} ({len(addrs)} instances)")
+
+
+async def _wait_expected_num_cell_infos(
+    provider: BaseWorkerProvider, *, expected: int, pool_id: str
+) -> dict[str, CellInfo]:
+    async def _once(remaining_seconds: float) -> dict[str, CellInfo]:
+        cell_infos = await provider.get_cell_infos(pool_id=pool_id)
+        assert len(cell_infos) == expected, (
+            f"pool {pool_id} should have {expected} cells but the backend reports "
+            f"{len(cell_infos)}: {sorted(cell_infos)}"
+        )
+        return cell_infos
+
+    return await retry_until_deadline(
+        _once,
+        total_seconds=600.0,
+        retry_on=AssertionError,
+        initial_delay=2.0,
+        max_delay=2.0,
+        log_fields=dict(pool_id=pool_id),
+    )

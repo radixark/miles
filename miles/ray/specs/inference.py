@@ -57,10 +57,6 @@ def create_inference_controller_handle(*, capability: BackendCapability) -> Base
     return provider.get_handle(worker_name)
 
 
-def session_server_worker_name(cell_index: int) -> str:
-    return compute_worker_name(pool_id=SESSION_SERVER_POOL_ID, cell_index=cell_index)
-
-
 def inference_controller_worker_name() -> str:
     return compute_worker_name(pool_id=INFERENCE_CONTROLLER_POOL_ID)
 
@@ -136,8 +132,7 @@ def spec_session_server(args) -> CommandWorkerSpec:
             args,
             host=args.session_server_ip or ctx.self_addrs["primary"].host,
             port=ctx.self_addrs["primary"].port,
-            # TODO: make the indexing it k8s native compatible
-            instance_id=compute_session_server_instance_id(args, ctx.cell_index),
+            instance_id=compute_session_server_instance_id(args, ctx.cell_id),
             backend_url=ctx.spec_addrs[compute_router_pool_id(0)][0]["primary"].addr,
         )
         launch_argv = [sys.executable, "-m", "miles.rollout.session.server", *config_to_argv(config)]
@@ -165,8 +160,8 @@ def _compute_session_server_primary_port_info(args) -> PortInfo:
     return PortInfo(name="primary", static_port=args.session_server_port, offset_by_cell=True)
 
 
-def compute_session_server_instance_id(args, instance_index: int) -> str:
-    return f"{args.run_uuid}-{instance_index}"
+def compute_session_server_instance_id(args, cell_id: str) -> str:
+    return f"{args.run_uuid}-{cell_id}"
 
 
 def compute_engine_pool_id(model_idx: int, group_index: int) -> str:

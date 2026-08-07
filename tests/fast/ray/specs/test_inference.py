@@ -133,7 +133,7 @@ class TestComputeSpecSessionServer:
         assert config.backend_url == "http://127.0.0.1:3000"
         assert config.host == "127.0.0.1"
         assert config.port == 5006
-        assert config.instance_id == f"{args.run_uuid}-1"
+        assert config.instance_id == f"{args.run_uuid}-cell-1"
 
     def test_disabled_schedules_zero_cells(self):
         """Disabling the session server removes its cells instead of launching idle servers."""
