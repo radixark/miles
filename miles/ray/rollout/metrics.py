@@ -166,8 +166,7 @@ def _compute_perf_metrics_from_samples(args, samples, rollout_time):
 
 
 def _compute_zero_std_metrics(args, all_samples: list[Sample]):
-    # only compute in GRPO-like algorithms where one prompt has multiple responses
-    if args.advantage_estimator == "ppo":
+    if args.advantage_estimator == "ppo" or args.loss_type == "opsd_loss":
         return {}
 
     def _is_zero_std(samples: list[Sample]):
@@ -215,6 +214,9 @@ def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):
 
 
 def _compute_reward_cat_metrics(args, all_samples: list[Sample]):
+    if args.loss_type == "opsd_loss":
+        return {}
+
     reward_cat_key = args.log_reward_category
     if reward_cat_key is None:
         return {}
@@ -237,6 +239,9 @@ def _compute_passrate_from_samples(args, all_samples: list[Sample]) -> dict[str,
     Called on the rollout side (before convert_samples_to_train_data), so
     normally all samples are present and every group is complete.
     """
+    if args.loss_type == "opsd_loss":
+        return {}
+
     group_size = args.n_samples_per_prompt
     if group_size <= 1:
         return {}

@@ -69,6 +69,7 @@ class FSDPTrainRayActor(TrainRayActor):
         indep_dp_info: IndepDPInfo,
     ) -> int | None:  # type: ignore[override]
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+        self._is_opsd = args.loss_type == "opsd_loss"
 
         # Unsupported
         assert recv_ckpt_src_rank is None
@@ -448,14 +449,15 @@ class FSDPTrainRayActor(TrainRayActor):
             len(num_microbatches) > 0
         ), f"Invalid num_microbatches {num_microbatches} for micro_batch_size {self.args.micro_batch_size} and global_batch_size {self.args.global_batch_size}"
 
-        if self.ref_model is not None:
-            ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
-            rollout_data.update(ref_results)
+        if not self._is_opsd:
+            if self.ref_model is not None:
+                ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
+                rollout_data.update(ref_results)
 
-        actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
-        rollout_data.update(actor_results)
+            actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
+            rollout_data.update(actor_results)
 
-        compute_advantages_and_returns(self.args, rollout_data)
+            compute_advantages_and_returns(self.args, rollout_data)
 
         log_rollout_data(rollout_id, self.args, rollout_data)
 
@@ -484,6 +486,8 @@ class FSDPTrainRayActor(TrainRayActor):
                             "returns",
                             "ref_log_probs",
                             "rollout_log_probs",
+                            "opsd_teacher_token_ids",
+                            "opsd_teacher_scores",
                         ],
                         self.args.data_pad_size_multiplier,
                         self.args.qkv_format,

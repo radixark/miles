@@ -1348,11 +1348,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--loss-type",
                 type=str,
-                choices=["policy_loss", "sft_loss", "custom_loss"],
+                choices=["policy_loss", "sft_loss", "opsd_loss", "custom_loss"],
                 default="policy_loss",
                 help=(
-                    "Choose loss type, currently support ppo policy_loss or sft_loss, "
-                    "if custom_loss is set, we will use the function path from `--custom-loss-function-path`."
+                    "Training objective: policy gradient, supervised fine-tuning, pure on-policy "
+                    "self-distillation, or the function from --custom-loss-function-path."
                 ),
             )
             parser.add_argument(
@@ -1647,6 +1647,43 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--opd-teacher-ckpt-step", type=int, default=None, help="The checkpoint step for OPD teacher model."
+            )
+            return parser
+
+        def add_on_policy_self_distillation_arguments(parser):
+            parser.add_argument(
+                "--opsd-type",
+                choices=["sglang"],
+                default=None,
+                help="OPSD fixed-teacher execution backend.",
+            )
+            parser.add_argument(
+                "--opsd-teacher-top-k",
+                type=int,
+                default=64,
+                help="Teacher-selected vocabulary support size for truncated forward KL.",
+            )
+            parser.add_argument(
+                "--opsd-pointwise-kl-clip",
+                type=float,
+                default=0.05,
+                help="Maximum OPSD forward-KL contribution per vocabulary entry. Set to 0 to disable.",
+            )
+            parser.add_argument(
+                "--opsd-teacher-prompt-function-path",
+                default=None,
+                help="Optional function path for building the privileged teacher prompt.",
+            )
+            parser.add_argument(
+                "--opsd-teacher-chat-template-kwargs",
+                type=json.loads,
+                default="{}",
+                help="JSON kwargs applied only when rendering the privileged teacher prompt.",
+            )
+            parser.add_argument(
+                "--opsd-teacher-url",
+                default=None,
+                help="SGLang /generate endpoint for the frozen initial-policy OPSD teacher.",
             )
             return parser
 
@@ -2547,6 +2584,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_eval_arguments(parser)
         parser = add_algo_arguments(parser)
         parser = add_on_policy_distillation_arguments(parser)
+        parser = add_on_policy_self_distillation_arguments(parser)
         parser = add_lora_arguments(parser)
         parser = add_wandb_arguments(parser)
         parser = add_mlflow_arguments(parser)
@@ -2896,6 +2934,12 @@ def miles_validate_args(args):
             raise FileNotFoundError(f"--chat-template-path file not found: {args.chat_template_path}")
         args.sglang_chat_template = args.chat_template_path
 
+    opsd_enabled = args.loss_type == "opsd_loss"
+    if opsd_enabled and (args.kl_coef != 0 or args.use_kl_loss or args.entropy_coef != 0):
+        raise ValueError("OPSD is a pure objective and cannot be combined with KL or entropy objective terms.")
+    if opsd_enabled and args.use_opd:
+        raise ValueError("Pure OPSD cannot be combined with --use-opd.")
+
     if args.kl_coef != 0 or args.use_kl_loss:
         if not os.path.exists(args.ref_load):
             raise FileNotFoundError(f"ref_load {args.ref_load} does not exist, please check the path.")
@@ -2949,6 +2993,43 @@ def miles_validate_args(args):
             raise ValueError("--opd-teacher-load is set but --use-opd is not enabled. Please add --use-opd flag.")
         if args.opd_teacher_urls:
             raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
+
+    opsd_configured = any(
+        value is not None
+        for value in (
+            args.opsd_type,
+            args.opsd_teacher_url,
+            args.opsd_teacher_prompt_function_path,
+        )
+    )
+    if not opsd_enabled and opsd_configured:
+        raise ValueError("OPSD arguments require --loss-type opsd_loss.")
+    if opsd_enabled:
+        if args.compute_advantages_and_returns:
+            raise ValueError("--loss-type opsd_loss requires --disable-compute-advantages-and-returns.")
+        if args.opsd_type is None:
+            raise ValueError("--loss-type opsd_loss requires --opsd-type.")
+        if args.opsd_teacher_top_k < 2:
+            raise ValueError("--opsd-teacher-top-k must be at least 2.")
+        if args.opsd_pointwise_kl_clip < 0:
+            raise ValueError("--opsd-pointwise-kl-clip must be non-negative.")
+        if not isinstance(args.opsd_teacher_chat_template_kwargs, dict):
+            raise ValueError("--opsd-teacher-chat-template-kwargs must decode to a JSON object.")
+        if args.label_key is None:
+            raise ValueError("--loss-type opsd_loss requires --label-key.")
+        if not args.rollout_global_dataset:
+            raise ValueError("OPSD currently requires the built-in global rollout dataset.")
+        if args.multimodal_keys:
+            raise ValueError("OPSD currently supports text-only datasets.")
+        if args.use_session_server:
+            raise ValueError("OPSD does not currently support session rollouts.")
+        if args.multi_lora_n_adapters > 0:
+            raise ValueError("OPSD does not currently support Multi-LoRA.")
+        if args.custom_reward_post_process_path is not None:
+            raise ValueError("OPSD owns reward post-processing and does not accept --custom-reward-post-process-path.")
+
+        if args.opsd_teacher_url is None:
+            raise ValueError("--opsd-type sglang requires --opsd-teacher-url.")
 
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":

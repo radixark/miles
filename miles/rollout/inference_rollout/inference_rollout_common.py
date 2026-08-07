@@ -107,14 +107,19 @@ async def generate_and_rm(
 
         # for multi agent system, the reward of some sample is calculated during generation.
         samples_need_reward = [sample for sample in samples if sample.reward is None]
-        await batched_async_rm(args, samples_need_reward, inplace_set_reward_field=True)
+        await batched_async_rm(
+            args,
+            samples_need_reward,
+            inplace_set_reward_field=True,
+            evaluation=evaluation,
+        )
         return samples
     else:
         if sample.status == Sample.Status.ABORTED:
             return sample
         # for multi-turn environment, a reward could be assigned to the agent.
         if sample.reward is None:
-            sample.reward = await async_rm(args, sample)
+            sample.reward = await async_rm(args, sample, evaluation=evaluation)
 
     logger.debug(f"{log_prefix} generate_and_rm complete")
     return sample
@@ -164,7 +169,7 @@ async def generate_and_rm_group(
         return group
 
     if args.group_rm:
-        await batched_async_rm(args, group, inplace_set_reward_field=True)
+        await batched_async_rm(args, group, inplace_set_reward_field=True, evaluation=evaluation)
 
     return group
 

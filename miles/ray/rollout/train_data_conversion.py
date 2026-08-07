@@ -3,6 +3,7 @@ from typing import Any
 
 import torch
 
+from miles.rollout.on_policy_self_distillation import post_process_rewards as post_process_opsd_rewards
 from miles.utils import object_store
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 from miles.utils.multi_lora import is_multi_lora_enabled
@@ -19,6 +20,8 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "rollout_log_probs": "float32",
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
+    "opsd_teacher_token_ids": "int32",
+    "opsd_teacher_scores": "float32",
     "rollout_routed_experts": "int32",
     "rollout_indexer_topk": "int32",
 }
@@ -151,6 +154,18 @@ def convert_samples_to_train_data(
     if samples[0].opd_reverse_kl is not None:
         train_data["opd_reverse_kl"] = [sample.opd_reverse_kl for sample in samples]
 
+    has_opsd_ids = [sample.opsd_teacher_token_ids is not None for sample in samples]
+    has_opsd_scores = [sample.opsd_teacher_scores is not None for sample in samples]
+    if has_opsd_ids != has_opsd_scores or any(has_opsd_ids) != all(has_opsd_ids):
+        raise ValueError("OPSD compact support requires both token ids and scores for every sample in the batch.")
+    if all(has_opsd_ids):
+        train_data["opsd_teacher_token_ids"] = [
+            torch.as_tensor(sample.opsd_teacher_token_ids, dtype=torch.int32).reshape(-1) for sample in samples
+        ]
+        train_data["opsd_teacher_scores"] = [
+            torch.as_tensor(sample.opsd_teacher_scores, dtype=torch.float32).reshape(-1) for sample in samples
+        ]
+
     x = metadata.get("dynamic_global_batch_size")
     assert args.use_dynamic_global_batch_size == (x is not None)
     if x is not None:
@@ -175,6 +190,9 @@ def _post_process_rewards(
     custom_reward_post_process_func,
     prompt_group_sizes: list[int] | None = None,
 ):
+    if getattr(args, "loss_type", None) == "opsd_loss" and getattr(args, "opsd_type", None) == "sglang":
+        return post_process_opsd_rewards(args, samples)
+
     if (f := custom_reward_post_process_func) is not None:
         return f(args, samples)
 
@@ -316,6 +334,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
+            "opsd_teacher_token_ids",
+            "opsd_teacher_scores",
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",

@@ -105,3 +105,27 @@ class TestStripLastOutputTokens:
         original_tokens = list(s.tokens)
         s.strip_last_output_tokens(-1, tokenizer)
         assert s.tokens == original_tokens
+
+
+class TestOPSDFields:
+    def test_validate_and_strip_response_aligned_teacher_support(self, tokenizer):
+        sample = _make_sample([1, 2], [3, 4, 5])
+        sample.privileged_prompt_tokens = [7, 8, 9]
+        sample.opsd_teacher_token_ids = numpy.array([[10, 11], [20, 21], [30, 31]], dtype=numpy.int64)
+        sample.opsd_teacher_scores = numpy.array([[-0.1, -0.2], [-0.3, -0.4], [-0.5, -0.6]])
+
+        sample.validate()
+        sample.strip_last_output_tokens(1, tokenizer)
+        sample.validate()
+
+        assert sample.privileged_prompt_tokens == [7, 8, 9]
+        assert sample.opsd_teacher_token_ids.tolist() == [[10, 11], [20, 21]]
+        assert sample.opsd_teacher_scores.tolist() == [[-0.1, -0.2], [-0.3, -0.4]]
+
+    def test_validate_rejects_mismatched_teacher_support_shapes(self):
+        sample = _make_sample([1], [2, 3])
+        sample.opsd_teacher_token_ids = numpy.array([[10, 11], [20, 21]])
+        sample.opsd_teacher_scores = numpy.array([[-0.1, -0.2]])
+
+        with pytest.raises(AssertionError, match="matching shapes"):
+            sample.validate()

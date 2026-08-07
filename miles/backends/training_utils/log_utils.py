@@ -209,6 +209,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "step_adapter_names",
                 "step_adapter_batch_sizes",
                 "prompt_group_sizes",
+                "opsd_teacher_token_ids",
+                "opsd_teacher_scores",
             ]:
                 continue
             if isinstance(val, (list, tuple)):

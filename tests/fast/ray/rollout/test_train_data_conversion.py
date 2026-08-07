@@ -120,6 +120,47 @@ class TestConvertSamplesToTrainData:
         )
         assert out["rollout_log_probs"][0] == [-0.1, -0.2, -0.3, -0.4]
 
+    def test_opsd_teacher_support_is_flattened_for_typed_ragged_transport(self):
+        args = make_args(
+            loss_type="opsd_loss",
+            opsd_type="sglang",
+            opsd_teacher_top_k=2,
+            rewards_normalization=False,
+        )
+        sample = make_sample(
+            response_length=2, reward={"token_ids": [[4, 2], [1, 3]], "scores": [[0.5, -0.5], [0.2, -0.2]]}
+        )
+
+        out = convert_samples_to_train_data(
+            args,
+            [sample],
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["opsd_teacher_token_ids"][0].tolist() == [4, 2, 1, 3]
+        assert out["opsd_teacher_scores"][0].tolist() == pytest.approx([0.5, -0.5, 0.2, -0.2])
+        assert out["rewards"] == [0.0]
+
+    @pytest.mark.parametrize("present_field", ["ids", "scores"])
+    def test_opsd_teacher_support_requires_both_fields_for_every_sample(self, present_field):
+        args = make_args(rewards_normalization=False)
+        sample = make_sample()
+        if present_field == "ids":
+            sample.opsd_teacher_token_ids = torch.tensor([[4, 2], [1, 3]])
+        else:
+            sample.opsd_teacher_scores = torch.tensor([[0.5, -0.5], [0.2, -0.2]])
+
+        with pytest.raises(ValueError, match="both token ids and scores"):
+            convert_samples_to_train_data(
+                args,
+                [sample],
+                metadata={},
+                custom_convert_samples_to_train_data_func=None,
+                custom_reward_post_process_func=None,
+            )
+
     def test_optional_field_round_number_from_metadata(self):
         args = make_args(rewards_normalization=False)
         s = make_sample()
@@ -211,6 +252,17 @@ class TestConvertSamplesToTrainData:
 
 
 class TestPostProcessRewards:
+    def test_defaults_to_standard_rewards_when_opsd_fields_are_absent(self):
+        args = make_args(advantage_estimator="ppo", rewards_normalization=True)
+        del args.loss_type
+        del args.opsd_type
+        samples = make_samples_grouped(1, 2, rewards=[1.0, 2.0])
+
+        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert raw == [1.0, 2.0]
+        assert processed == raw
+
     def test_ppo_path_returns_raw_rewards_unchanged(self):
         args = make_args(advantage_estimator="ppo", rewards_normalization=True)
         samples = make_samples_grouped(2, 4, rewards=[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
@@ -540,7 +592,7 @@ class TestSplitTrainDataRaw:
         assert len(result[0]["seq_witness_ids"]) == 2
         assert len(result[1]["seq_witness_ids"]) == 2
 
-    def test_indexer_topk_and_opd_reverse_kl_split_across_dp(self) -> None:
+    def test_indexer_topk_and_distillation_fields_split_across_dp(self) -> None:
         """Keys from the rollout-side split (rollout_indexer_topk, opd_reverse_kl) partition per sample."""
         data = {
             "tokens": [[1, 2], [3, 4], [5, 6], [7, 8]],
@@ -548,6 +600,8 @@ class TestSplitTrainDataRaw:
             "loss_masks": [[0, 1], [0, 1], [0, 1], [0, 1]],
             "rollout_indexer_topk": [torch.tensor([i]) for i in range(4)],
             "opd_reverse_kl": [[float(i)] for i in range(4)],
+            "opsd_teacher_token_ids": [torch.tensor([i, i + 1]) for i in range(4)],
+            "opsd_teacher_scores": [torch.tensor([float(i), float(i + 1)]) for i in range(4)],
         }
 
         args = MagicMock()
@@ -559,6 +613,8 @@ class TestSplitTrainDataRaw:
         for part in result:
             assert len(part["rollout_indexer_topk"]) == 2
             assert len(part["opd_reverse_kl"]) == 2
+            assert len(part["opsd_teacher_token_ids"]) == 2
+            assert len(part["opsd_teacher_scores"]) == 2
 
     def test_no_witness_ids_when_absent(self) -> None:
         tokens = [[1, 2], [3, 4]]

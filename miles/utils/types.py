@@ -53,6 +53,9 @@ class Sample:
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
     opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
+    privileged_prompt_tokens: list[int] | None = None
+    opsd_teacher_token_ids: torch.Tensor | numpy.ndarray | None = None
+    opsd_teacher_scores: torch.Tensor | numpy.ndarray | None = None
 
     class Status(Enum):
         PENDING = "pending"
@@ -202,6 +205,22 @@ class Sample:
             assert (
                 len(self.opd_reverse_kl) == self.response_length
             ), f"opd_reverse_kl length ({len(self.opd_reverse_kl)}) != response_length ({self.response_length})"
+        assert (self.opsd_teacher_token_ids is None) == (
+            self.opsd_teacher_scores is None
+        ), "opsd_teacher_token_ids and opsd_teacher_scores must be set together"
+        if self.opsd_teacher_token_ids is not None:
+            assert (
+                self.opsd_teacher_token_ids.shape == self.opsd_teacher_scores.shape
+            ), "OPSD teacher token ids and scores must have matching shapes"
+            assert (
+                len(self.opsd_teacher_token_ids.shape) == 2
+            ), "OPSD teacher token ids and scores must have shape [response_length, top_k]"
+            assert (
+                self.opsd_teacher_token_ids.shape[0] == self.response_length
+            ), f"OPSD teacher support length ({self.opsd_teacher_token_ids.shape[0]}) != response_length ({self.response_length})"
+            assert (
+                self.opsd_teacher_token_ids.shape[1] >= 2
+            ), "OPSD teacher top-k support must contain at least 2 tokens"
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
@@ -233,6 +252,9 @@ class Sample:
             self.teacher_log_probs = self.teacher_log_probs[:-n]
         if self.opd_reverse_kl is not None:
             self.opd_reverse_kl = self.opd_reverse_kl[:-n]
+        if self.opsd_teacher_token_ids is not None:
+            self.opsd_teacher_token_ids = self.opsd_teacher_token_ids[:-n]
+            self.opsd_teacher_scores = self.opsd_teacher_scores[:-n]
         if self.metadata and "opd_student_top_logprobs" in self.metadata:
             self.metadata["opd_student_top_logprobs"] = self.metadata["opd_student_top_logprobs"][:-n]
         if self.loss_mask is not None:
@@ -260,6 +282,8 @@ class Sample:
         self.rollout_log_probs = None
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None
+        self.opsd_teacher_token_ids = None
+        self.opsd_teacher_scores = None
         self.status = Sample.Status.ABORTED
         self.non_generation_time = 0.0
         self.spec_info = Sample.SpecInfo()

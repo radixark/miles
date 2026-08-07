@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import miles.rollout.rm_hub as rm_hub
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.async_utils import run
 from miles.utils.types import Sample
@@ -17,6 +18,22 @@ def mock_args():
 
 
 class TestAsyncRm:
+    def test_training_opsd_uses_teacher_scorer_but_evaluation_uses_task_reward(self, mock_args, monkeypatch):
+        async def score_opsd(args, sample, **kwargs):
+            return {"token_ids": [[7, 8]], "scores": [[-0.1, -2.0]]}
+
+        mock_args.loss_type = "opsd_loss"
+        mock_args.opsd_type = "sglang"
+        mock_args.rm_type = "math"
+        monkeypatch.setattr(rm_hub, "score_opsd_sample", score_opsd)
+        sample = Sample(prompt="", response=r"\boxed{42}", label="42")
+
+        train_reward = run(async_rm(mock_args, sample))
+        eval_reward = run(async_rm(mock_args, sample, evaluation=True))
+
+        assert train_reward == {"token_ids": [[7, 8]], "scores": [[-0.1, -2.0]]}
+        assert eval_reward == 1
+
     @pytest.mark.parametrize(
         "rm_type,response,label,expected",
         [

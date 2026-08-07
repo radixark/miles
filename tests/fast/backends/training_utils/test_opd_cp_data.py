@@ -36,6 +36,7 @@ def _args(qkv_format: str) -> Namespace:
         true_on_policy_mode=False,
         bf16=False,
         fp16=False,
+        opsd_teacher_top_k=2,
     )
 
 
@@ -147,3 +148,69 @@ def test_multimodal_cp_reslices_precomputed_opd_reverse_kl(monkeypatch: pytest.M
 
     assert len(gathered_keys) == 1
     assert gathered_keys[0] is rollout_data["opd_reverse_kl"][0]
+
+
+@pytest.mark.parametrize("support_key", ["opsd_teacher_token_ids", "opsd_teacher_scores"])
+def test_opsd_rollout_data_rejects_partial_compact_support(
+    monkeypatch: pytest.MonkeyPatch,
+    support_key: str,
+) -> None:
+    rollout_data = {
+        "tokens": [list(range(4))],
+        "loss_masks": [[1, 1]],
+        "total_lengths": [4],
+        "response_lengths": [2],
+        support_key: [torch.zeros(4)],
+    }
+    monkeypatch.setattr(data_utils, "process_rollout_data", lambda *args, **kwargs: (rollout_data, object()))
+    monkeypatch.setattr(data_utils, "get_parallel_state", lambda: _parallel_state(cp_size=1))
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
+
+    with pytest.raises(ValueError, match="both teacher token ids and scores"):
+        data_utils.get_rollout_data(_args("thd"), object())
+
+
+@pytest.mark.parametrize(
+    ("qkv_format", "cp_size", "cp_rank", "expected_indices"),
+    [
+        ("thd", 1, 0, [0, 1, 2, 3, 4, 5, 6]),
+        ("thd", 2, 0, [6]),
+        ("thd", 2, 1, [0, 1, 2, 3, 4, 5]),
+        ("bshd", 2, 0, [0]),
+        ("bshd", 2, 1, [1, 2, 3, 4, 5, 6]),
+    ],
+)
+def test_opsd_support_reshapes_before_response_cp_slice(
+    monkeypatch: pytest.MonkeyPatch,
+    qkv_format: str,
+    cp_size: int,
+    cp_rank: int,
+    expected_indices: list[int],
+) -> None:
+    teacher_ids = torch.arange(14, dtype=torch.int32).reshape(7, 2)
+    teacher_scores = torch.arange(14, dtype=torch.float32).reshape(7, 2) / 10
+    rollout_data = {
+        "tokens": [list(range(11))],
+        "loss_masks": [[1] * 7],
+        "total_lengths": [11],
+        "response_lengths": [7],
+        "opsd_teacher_token_ids": [teacher_ids.flatten()],
+        "opsd_teacher_scores": [teacher_scores.flatten()],
+    }
+    parallel_state = _parallel_state(cp_size=cp_size, cp_rank=cp_rank)
+    monkeypatch.setattr(data_utils, "process_rollout_data", lambda *args, **kwargs: (rollout_data, object()))
+    monkeypatch.setattr(data_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: torch.device("cpu"))
+
+    loaded, _ = data_utils.get_rollout_data(_args(qkv_format), object())
+    expected_indices_tensor = torch.tensor(expected_indices)
+
+    torch.testing.assert_close(
+        loaded["opsd_teacher_token_ids"][0],
+        teacher_ids[expected_indices_tensor].long(),
+    )
+    torch.testing.assert_close(
+        loaded["opsd_teacher_scores"][0],
+        teacher_scores[expected_indices_tensor],
+    )
