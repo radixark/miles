@@ -198,7 +198,7 @@ class TestInitAllocatesPorts:
         assert [call.kwargs["count"] for call in fake_ray_cluster.calls_of("_get_free_port_block")] == [5, 5]
 
     async def test_static_ports_bypass_the_allocator(self, fake_ray_cluster: FakeRayCluster):
-        """A port the worker cannot choose is taken from the spec verbatim, without probing the node."""
+        """A port the worker cannot choose is taken from the spec verbatim, not from the cursor."""
         spec = _make_spec(
             "router",
             port_infos=[
@@ -209,7 +209,15 @@ class TestInitAllocatesPorts:
         manager = await _launch([spec])
 
         assert manager.get_worker_addrs("router-0-0")["primary"].port == 7777
-        assert len(fake_ray_cluster.calls_of("_get_free_port_block")) == 1
+
+    async def test_a_pinned_port_that_is_already_taken_stops_the_launch(self, fake_ray_cluster: FakeRayCluster):
+        """It cannot move, so the new process fails to bind and dies while whoever waits for the
+        port connects to the occupant instead -- the run then talks to a stranger's server."""
+        fake_ray_cluster.occupy_ports("10.0.0.1", 7777)
+        spec = _make_spec("router", port_infos=[PortInfo(name="primary", static_port=7777, allow_dynamic=False)])
+
+        with pytest.raises(AssertionError, match="is pinned by the launch arguments but is already taken"):
+            await _launch([spec])
 
     async def test_ports_are_tracked_per_node(self, fake_ray_cluster: FakeRayCluster):
         """Workers on different nodes may reuse the same port number."""

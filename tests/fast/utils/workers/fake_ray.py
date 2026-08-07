@@ -129,6 +129,10 @@ class FakeRayCluster:
     def __post_init__(self) -> None:
         self._node_ip_cycle = itertools.cycle(self.node_ips)
 
+    def occupy_ports(self, node_ip: str, *ports: int) -> None:
+        """Stand in for a process from an earlier run still listening on the node."""
+        self._used_ports.setdefault(node_ip, set()).update(ports)
+
     def use_node_ips(self, *node_ips: str) -> None:
         self.node_ips = node_ips
         self._node_ip_cycle = itertools.cycle(node_ips)
@@ -186,7 +190,9 @@ class FakeRayCluster:
 
     def _alloc_port_block(self, *, node_ip: str, start_port: int, count: int) -> int:
         used = self._used_ports.setdefault(node_ip, set())
-        port = max(start_port, self.base_port)
+        # Exactly start_port when it is free, like the real get_free_port: the floor lives in
+        # PortAllocator, and clamping here would make a pinned port look occupied.
+        port = start_port
         while any(port + offset in used for offset in range(count)):
             port += 1
         used.update(range(port, port + count))

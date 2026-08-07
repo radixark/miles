@@ -96,6 +96,9 @@ class RayWorkerManager:
     def get_worker_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return self._find_actor(worker_name).self_addrs
 
+    def get_worker_handle(self, worker_name: str) -> BaseWorkerHandle:
+        return RayWorkerHandle(self._find_actor(worker_name).actor_handle)
+
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
         return {
             name: [a.self_addrs for c in g.cells if c.alive for a in c.actors] for name, g in self._group_infos.items()
@@ -256,9 +259,26 @@ class _BaseActorManager(Generic[SpecT]):
                     self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
                 )
                 if port_info.allow_dynamic
-                else port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
+                else await self._claim_static_port(port_info)
             )
             self.self_addrs[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
+
+    async def _claim_static_port(self, port_info: PortInfo) -> int:
+        """A pinned port cannot move, so an occupant is fatal rather than something to route around.
+
+        Left unchecked the new process fails to bind and dies, while whoever waits for the port
+        connects to the occupant instead and the run proceeds against a stranger's server.
+        """
+        port = port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
+        first_free = await self.actor_handle._get_free_port_block.remote(
+            start_port=port, count=port_info.num_consecutive
+        )
+        assert first_free == port, (
+            f"port {port} of {self.name!r} is pinned by the launch arguments but is already taken on "
+            f"{self.spec.name}'s node (the next free block starts at {first_free}); a stale process from "
+            f"an earlier run may still be listening"
+        )
+        return port
 
     @property
     def launch_context(self) -> WorkerLaunchContext:
