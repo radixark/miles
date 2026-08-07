@@ -21,6 +21,8 @@ from sglang.srt.entrypoints.openai.protocol import Tool
 
 from miles.utils.chat_template_utils.templates import encoding_dsv32
 
+THINKING_MODE_KWARG_ALIASES = frozenset({"thinking_mode", "enable_thinking", "thinking"})
+
 _ASSISTANT_SP_TOKEN = "<｜Assistant｜>"
 
 
