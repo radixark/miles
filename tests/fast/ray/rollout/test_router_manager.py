@@ -53,10 +53,15 @@ class TestResolveRouterAddrs:
 
 class TestWaitRouterReady:
     async def test_returns_the_provider_addr_after_the_tcp_wait(self, monkeypatch):
-        """The router address is looked up from the worker manager by the spec worker name."""
+        """The router is whichever worker its pool deploys, so its name is asked for, never minted."""
         requested: list[str] = []
+        asked_pools: list[str] = []
 
         class _FakeProvider:
+            def single_worker_name(self, *, pool_id: str) -> str:
+                asked_pools.append(pool_id)
+                return "a-router-the-backend-named-itself"
+
             async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
                 requested.append(worker_name)
                 return {"primary": HostAndPort(host="10.0.0.9", port=12345)}
@@ -69,7 +74,8 @@ class TestWaitRouterReady:
 
         addr = await wait_router_ready(model_idx=1, provider=_FakeProvider())
 
-        assert requested == ["inference-router-1-0-0"]
+        assert asked_pools == ["inference-router-1"]
+        assert requested == ["a-router-the-backend-named-itself"]
         assert waited == [("10.0.0.9", 12345)]
         assert addr == HostAndPort(host="10.0.0.9", port=12345)
 

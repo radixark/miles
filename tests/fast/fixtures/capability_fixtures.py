@@ -7,6 +7,18 @@ from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 
+class SingleWorkerProvider:
+    """A static provider that answers with the one worker of the pool it is asked about."""
+
+    def __init__(self, handle: Any) -> None:
+        self._handle = handle
+        self.single_handle_pool_ids: list[str] = []
+
+    def get_single_handle(self, *, pool_id: str) -> Any:
+        self.single_handle_pool_ids.append(pool_id)
+        return self._handle
+
+
 class FakeBackendCapability(BackendCapability):
     def __init__(
         self,

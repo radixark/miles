@@ -8,7 +8,6 @@ from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.ft_utils.indep_dp import create_tcp_store
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.workers.backend_capability.base import BackendCapability
-from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_spec import (
     MASTER_PORT_NAME,
@@ -53,21 +52,12 @@ def spec_trainer_controller_critic(args) -> ServeWorkerSpec:
 
 
 def create_trainer_controller_handle(*, capability: BackendCapability, role: str) -> BaseWorkerHandle:
-    worker_name = trainer_controller_worker_name(role)
-    provider = capability.static_worker_provider(pool_id=compute_trainer_controller_pool_id(role))
-    return provider.get_handle(worker_name)
+    pool_id = compute_trainer_controller_pool_id(role)
+    return capability.static_worker_provider(pool_id=pool_id).get_single_handle(pool_id=pool_id)
 
 
 def compute_trainer_controller_pool_id(role: str) -> str:
     return f"trainer-controller-{role}"
-
-
-def trainer_controller_worker_name(role: str) -> str:
-    return compute_worker_name(pool_id=compute_trainer_controller_pool_id(role))
-
-
-def trainer_controller_cell_id(role: str) -> str:
-    return compute_cell_id(pool_id=compute_trainer_controller_pool_id(role), cell_index=0)
 
 
 def _compute_spec_trainer_controller(

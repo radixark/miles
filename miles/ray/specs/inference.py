@@ -13,7 +13,6 @@ from miles.utils import dumper_utils
 from miles.utils.workers.argv_utils import config_to_argv
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
-from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_spec import (
     CommandWorkerSpec,
@@ -52,17 +51,8 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
 
 
 def create_inference_controller_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
-    worker_name = inference_controller_worker_name()
     provider = capability.static_worker_provider(pool_id=INFERENCE_CONTROLLER_POOL_ID)
-    return provider.get_handle(worker_name)
-
-
-def inference_controller_worker_name() -> str:
-    return compute_worker_name(pool_id=INFERENCE_CONTROLLER_POOL_ID)
-
-
-def inference_controller_cell_id() -> str:
-    return compute_cell_id(pool_id=INFERENCE_CONTROLLER_POOL_ID, cell_index=0)
+    return provider.get_single_handle(pool_id=INFERENCE_CONTROLLER_POOL_ID)
 
 
 def specs_router(args) -> list[CommandWorkerSpec]:
@@ -75,10 +65,6 @@ def specs_router(args) -> list[CommandWorkerSpec]:
 
 def compute_router_pool_id(model_idx: int) -> str:
     return f"inference-router-{model_idx}"
-
-
-def compute_router_worker_name(model_idx: int) -> str:
-    return compute_worker_name(pool_id=compute_router_pool_id(model_idx))
 
 
 def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> CommandWorkerSpec:

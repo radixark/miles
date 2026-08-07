@@ -3,6 +3,17 @@ from collections.abc import Awaitable, Callable
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
+def single_worker_name_of(cell_infos: dict[str, CellInfo], *, pool_id: str) -> str:
+    assert (
+        len(cell_infos) == 1
+    ), f"pool {pool_id} is addressed as a single-cell pool, but the backend reports {sorted(cell_infos)}"
+    (info,) = cell_infos.values()
+    assert (
+        len(info.worker_names) == 1
+    ), f"cell {info.cell_id} is addressed as a single-worker cell, but it runs {info.worker_names}"
+    return info.worker_names[0]
+
+
 async def apply_cell_observation(
     *,
     cell_id: str,

@@ -4,18 +4,17 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability, SingleWorkerProvider
 
 from miles.ray.specs.train import (
     TRAINER_CONCURRENCY_GROUPS,
     TRAINER_CONTROLLER_WORKER_CLASS,
     compute_trainer_controller_pool_id,
     compute_trainer_pool_id,
+    create_trainer_controller_handle,
     spec_trainer_controller_actor,
     spec_trainer_controller_critic,
     specs_trainer,
-    trainer_controller_cell_id,
-    trainer_controller_worker_name,
 )
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.workers.worker_spec import WorkerCtorContext
@@ -280,10 +279,14 @@ class TestSpecTrainerController:
 
         assert spec.worker_class == TRAINER_CONTROLLER_WORKER_CLASS
 
-    def test_the_worker_and_cell_names_are_stable(self):
-        """The driver looks the controller up by name, so these names are part of the release's contract."""
-        assert trainer_controller_worker_name("actor") == "trainer-controller-actor-0-0"
-        assert trainer_controller_cell_id("actor") == "trainer-controller-actor-0"
+    def test_the_handle_is_whichever_worker_the_pool_deploys(self):
+        """Nothing may guess the controller's worker name, so the handle comes from the pool it was asked for."""
+        handle = object()
+        provider = SingleWorkerProvider(handle)
+        capability = FakeBackendCapability(static_provider=provider)
+
+        assert create_trainer_controller_handle(capability=capability, role="actor") is handle
+        assert provider.single_handle_pool_ids == ["trainer-controller-actor"]
 
     def test_it_asks_for_a_provider_over_its_own_trainer_pool(self):
         """A controller that watched both pools would try to heal the other role's cells."""

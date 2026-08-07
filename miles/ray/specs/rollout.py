@@ -1,6 +1,5 @@
 from miles.ray.specs.inference import SESSION_SERVER_POOL_ID, compute_router_pool_id
 from miles.utils.workers.backend_capability.base import BackendCapability
-from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
 
@@ -34,14 +33,5 @@ def spec_rollout_executor(args) -> ServeWorkerSpec:
 
 
 def create_rollout_executor_handle(*, capability: BackendCapability) -> BaseWorkerHandle:
-    worker_name = rollout_executor_worker_name()
     provider = capability.static_worker_provider(pool_id=ROLLOUT_EXECUTOR_POOL_ID)
-    return provider.get_handle(worker_name)
-
-
-def rollout_executor_worker_name() -> str:
-    return compute_worker_name(pool_id=ROLLOUT_EXECUTOR_POOL_ID)
-
-
-def rollout_executor_cell_id() -> str:
-    return compute_cell_id(pool_id=ROLLOUT_EXECUTOR_POOL_ID, cell_index=0)
+    return provider.get_single_handle(pool_id=ROLLOUT_EXECUTOR_POOL_ID)

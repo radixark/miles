@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability, SingleWorkerProvider
 
 from miles.ray.specs.rollout import (
-    ROLLOUT_EXECUTOR_POOL,
+    ROLLOUT_EXECUTOR_POOL_ID,
     ROLLOUT_EXECUTOR_WORKER_CLASS,
-    rollout_executor_cell_id,
-    rollout_executor_worker_name,
+    create_rollout_executor_handle,
     spec_rollout_executor,
 )
 from miles.utils.workers.worker_spec import WorkerCtorContext
@@ -27,7 +26,7 @@ class TestRolloutExecutorSpec:
         """One executor per run, and it must claim no gpu or the scheduler would reserve a whole slot."""
         spec = spec_rollout_executor(_args())
 
-        assert spec.name == ROLLOUT_EXECUTOR_POOL
+        assert spec.name == ROLLOUT_EXECUTOR_POOL_ID
         assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (1, 1)
         assert spec.scheduling.num_gpus_per_worker == 0
 
@@ -60,7 +59,11 @@ class TestRolloutExecutorSpec:
 
         assert kwargs["session_server_provider"] is None
 
-    def test_the_worker_and_cell_names_are_stable(self):
-        """The driver looks the executor up by name, so these names are part of the release's contract."""
-        assert rollout_executor_worker_name() == "rollout-executor-0-0"
-        assert rollout_executor_cell_id() == "rollout-executor-0"
+    def test_the_handle_is_whichever_worker_the_pool_deploys(self):
+        """Nothing may guess the executor's worker name, so the handle comes from the pool it was asked for."""
+        handle = object()
+        provider = SingleWorkerProvider(handle)
+        capability = FakeBackendCapability(static_provider=provider)
+
+        assert create_rollout_executor_handle(capability=capability) is handle
+        assert provider.single_handle_pool_ids == [ROLLOUT_EXECUTOR_POOL_ID]

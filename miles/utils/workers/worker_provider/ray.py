@@ -6,6 +6,7 @@ import ray.actor
 
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_provider.utils import single_worker_name_of
 from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,10 @@ class RayWorkerProvider(BaseWorkerProvider):
     async def get_cell_infos(self, *, pool_id: str) -> dict[str, CellInfo]:
         infos = await self._worker_manager_handle.get_cell_infos.remote(pool_ids=[pool_id])
         return {cell_id: info for cell_id, info in infos.items() if info.alive}
+
+    def single_worker_name(self, *, pool_id: str) -> str:
+        infos = ray.get(self._worker_manager_handle.get_cell_infos.remote(pool_ids=[pool_id]))
+        return single_worker_name_of(infos, pool_id=pool_id)
 
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
         pool_ids = self._watched_pool_ids()

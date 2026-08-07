@@ -3,7 +3,7 @@ import logging
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.specs.inference import (
     SESSION_SERVER_POOL_ID,
-    compute_router_worker_name,
+    compute_router_pool_id,
     compute_session_server_instance_id,
 )
 from miles.utils.http_utils import wait_tcp_ready
@@ -43,7 +43,7 @@ async def resolve_router_addrs(args, *, provider: BaseWorkerProvider) -> dict[st
 
 async def wait_router_ready(*, model_idx: int, provider: BaseWorkerProvider) -> HostAndPort:
     """Wait until the model's router, launched by the platform, is reachable and return its address."""
-    worker_name = compute_router_worker_name(model_idx)
+    worker_name = provider.single_worker_name(pool_id=compute_router_pool_id(model_idx))
     router_addr = (await provider.get_addrs(worker_name=worker_name))["primary"]
     wait_tcp_ready(router_addr.host, router_addr.port, timeout=30)
     logger.info(f"Router ready at {router_addr}")

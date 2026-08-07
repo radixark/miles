@@ -5,7 +5,7 @@ import sys
 from argparse import Namespace
 
 import pytest
-from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability, SingleWorkerProvider
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
@@ -16,8 +16,7 @@ from miles.ray.specs.inference import (
     _compute_spec_router,
     compute_engine_pool_ids,
     compute_router_pool_id,
-    inference_controller_cell_id,
-    inference_controller_worker_name,
+    create_inference_controller_handle,
     spec_inference_controller,
     spec_session_server,
     specs_inference_engine,
@@ -483,10 +482,14 @@ class TestSpecInferenceController:
 
         assert spec.worker_class == INFERENCE_CONTROLLER_WORKER_CLASS
 
-    def test_the_worker_and_cell_names_are_stable(self, tmp_path):
-        """The driver looks the controller up by name, so these names are part of the release's contract."""
-        assert inference_controller_worker_name() == "inference-controller-0-0"
-        assert inference_controller_cell_id() == "inference-controller-0"
+    def test_the_handle_is_whichever_worker_the_pool_deploys(self, tmp_path):
+        """Nothing may guess the controller's worker name, so the handle comes from the pool it was asked for."""
+        handle = object()
+        provider = SingleWorkerProvider(handle)
+        capability = FakeBackendCapability(static_provider=provider)
+
+        assert create_inference_controller_handle(capability=capability) is handle
+        assert provider.single_handle_pool_ids == [INFERENCE_CONTROLLER_POOL_ID]
 
     def test_it_asks_for_a_provider_over_the_engine_pools_it_will_observe(self, tmp_path):
         """The controller never learns which backend reports those cells, only which pools it wants reported."""

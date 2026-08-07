@@ -37,6 +37,12 @@ class BaseWorkerProvider(abc.ABC):
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
         raise NotImplementedError(f"{type(self).__name__} answers addresses, it does not observe cells")
 
+    def single_worker_name(self, *, pool_id: str) -> str:
+        raise NotImplementedError(f"{type(self).__name__} cannot tell which workers a pool deploys")
+
+    def get_single_handle(self, *, pool_id: str) -> BaseWorkerHandle:
+        return self.get_handle(self.single_worker_name(pool_id=pool_id))
+
     def get_handle(self, worker_name: str) -> BaseWorkerHandle:
         pool_id, cell_index, _worker_in_cell_index = parse_worker_name(worker_name)
         cell_id = compute_cell_id(pool_id=pool_id, cell_index=cell_index)
