@@ -18,16 +18,16 @@ needed to run RL at trillion-parameter scale.
   customizable async rollout and eval modes. See
   [Fully Async Rollout](/user-guide/fully-async).
 - **Fast agentic rollout.** High-throughput generation on
-  [SGLang](https://github.com/sgl-project/sglang) behind the SGLang router, tuned
-  for multi-turn agentic workloads.
+  [SGLang](https://github.com/sgl-project/sglang), optimized for multi-turn
+  agentic workloads.
 - **Fast weight updates.** Updated weights sync back in-loop without pausing
-  rollout — under 10 seconds for a model like Kimi-K2.6 — with
+  rollout — under 10 seconds for a model with 1 T parameters — with
   [P2P RDMA](/advanced/p2p-weight-transfer) as a fast path for disaggregated setups.
 - **Unified low-precision training.** [MXFP8 and NVFP4](/advanced/fp8-low-precision)
   training with a numerically stable RL recipe that reduces precision-induced
   divergence; FP8, [INT4 QAT](/advanced/int4-qat), BF16, and FP16 are also supported.
 - **Token-in-token-out (TITO).** Supported for
-  [all models and any black-box agent harness](/user-guide/agentic-chat-template) —
+  [all models and all black-box agent harnesses](/user-guide/agentic-chat-template) —
   no detokenize/retokenize round-trips between rollout and training.
 - **Rollout Routing Replay (R3).** Expert routing recorded during rollout is
   [replayed in the trainer's forward pass](/advanced/miles-router), eliminating the
