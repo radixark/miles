@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
@@ -24,19 +24,40 @@ class TestStartRouter:
 
     def test_pd_disagg_with_miles_router_asserts(self):
         args = make_args(use_miles_router=True, sglang_router_ip=None, sglang_router_port=None)
-        with patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")), patch(
-            "miles.ray.rollout.router_manager.find_available_port", return_value=20000
+        with (
+            patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")),
+            patch("miles.ray.rollout.router_manager.find_available_port", return_value=20000),
         ):
             with pytest.raises(AssertionError, match="miles router does not support PD"):
                 start_router(args, has_pd_disaggregation=True, force_new=False)
 
     def test_port_conflict_raises_runtime_error(self):
         args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
-        with patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")), patch(
-            "miles.ray.rollout.router_manager.find_available_port", return_value=20000
-        ), patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
+        with (
+            patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")),
+            patch("miles.ray.rollout.router_manager.find_available_port", return_value=20000),
+            patch("miles.ray.rollout.router_manager.is_port_available", return_value=False),
+        ):
             with pytest.raises(RuntimeError, match="already in use"):
                 start_router(args)
+
+    def test_allows_120_seconds_for_router_startup(self):
+        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+        process = MagicMock()
+        process_context = MagicMock()
+        process_context.Process.return_value = process
+
+        with (
+            patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")),
+            patch("miles.ray.rollout.router_manager.find_available_port", side_effect=[20000, 20001]),
+            patch("miles.ray.rollout.router_manager.is_port_available", return_value=True),
+            patch("miles.ray.rollout.router_manager.RouterArgs.from_cli_args", return_value=MagicMock()),
+            patch("miles.ray.rollout.router_manager.multiprocessing.get_context", return_value=process_context),
+            patch("miles.ray.rollout.router_manager.wait_for_server_ready") as wait_for_server_ready,
+        ):
+            assert start_router(args) == ("127.0.0.1", 20000)
+
+        wait_for_server_ready.assert_called_once_with("127.0.0.1", 20000, process, timeout=120)
 
 
 class TestStartSessionServer:
