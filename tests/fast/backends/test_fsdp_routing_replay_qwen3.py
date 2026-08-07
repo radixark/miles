@@ -7,10 +7,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from miles.backends.experimental.fsdp_utils.models.routing_replay_qwen3 import (
-    install_qwen3_topk_router_replay,
-)
+from miles.backends.experimental.fsdp_utils.models.routing_replay import install_qwen3_router_replay
 from miles.utils.replay_base import routing_replay_manager
+from tests.fast.fixtures.replay_fixtures import reset_routing_replay_manager, wire_replay
 
 
 class _Qwen3MoeTopKRouter(nn.Module):
@@ -35,58 +34,15 @@ class _Qwen3MoeTopKRouter(nn.Module):
         return router_logits, router_top_value, router_indices
 
 
-class _CpuReplay:
-    """Device-neutral stand-in for ``Replay``.
-
-    The real one pins its host buffer and hands indices back on ``torch.cuda.current_device()``;
-    this suite is registered stage-a-cpu, so it keeps everything on CPU. The two independent
-    cursors are the behaviour under test and are reproduced exactly.
-    """
-
-    def __init__(self, stream_idx=0):
-        self.stream_idx = stream_idx
-        self.recorded = []
-        self.forward_index = 0
-        self.backward_index = 0
-
-    def record(self, top_indices):
-        self.recorded.append(top_indices.detach().clone())
-
-    def pop_forward(self):
-        top_indices = self.recorded[self.forward_index]
-        self.forward_index += 1
-        return top_indices
-
-    def pop_backward(self):
-        top_indices = self.recorded[self.backward_index]
-        self.backward_index += 1
-        return top_indices
-
-    def clear_forward(self):
-        self.forward_index = 0
-
-
 @pytest.fixture(autouse=True)
 def _reset_manager():
-    routing_replay_manager.enabled = True
-    routing_replay_manager.enable_check_replay_result = False
-    routing_replay_manager.replays = []
-    routing_replay_manager.current = None
-    routing_replay_manager.stage = "fallthrough"
+    reset_routing_replay_manager(enabled=True)
     yield
-    routing_replay_manager.enabled = False
-    routing_replay_manager.replays = []
-    routing_replay_manager.current = None
-    routing_replay_manager.stage = "fallthrough"
+    reset_routing_replay_manager(enabled=False)
 
 
 def _wire(router):
-    """Install the hook and make a CPU replay the manager's current stream."""
-    install_qwen3_topk_router_replay(router)
-    replay = _CpuReplay()
-    routing_replay_manager.replays.append(replay)
-    routing_replay_manager.set_current(replay)
-    return replay
+    return wire_replay(router, install_qwen3_router_replay)
 
 
 def test_fallthrough_matches_stock_forward():
@@ -114,7 +70,6 @@ def test_replay_forward_returns_the_recorded_indices():
 
     routing_replay_manager.clear_all_forward()
     routing_replay_manager.stage = "replay_forward"
-    # A different input must still route to the recorded experts.
     _, weights, replayed = router(torch.randn(6, 4))
 
     assert torch.equal(replayed.cpu(), recorded.cpu())
@@ -136,8 +91,6 @@ def test_forward_and_backward_cursors_are_independent():
     routing_replay_manager.stage = "replay_backward"
     _, _, bwd0 = router(torch.randn(3, 4))
 
-    # The backward cursor starts at 0 regardless of how far the forward cursor advanced;
-    # this is what lets activation-checkpoint recompute replay the same routing.
     assert torch.equal(fwd0.cpu(), first.cpu())
     assert torch.equal(bwd0.cpu(), first.cpu())
 
@@ -162,7 +115,6 @@ def test_weights_stay_differentiable_under_replay():
 def test_qwen3_5_variant_without_norm_topk_prob_attribute():
     torch.manual_seed(0)
     router = _Qwen3MoeTopKRouter()
-    # qwen3_5's router has no norm_topk_prob attribute and always renormalizes.
     del router.norm_topk_prob
     _wire(router)
 
@@ -175,7 +127,6 @@ def test_qwen3_5_variant_without_norm_topk_prob_attribute():
 def test_specs_register_adapters_for_the_real_model_types():
     from types import SimpleNamespace
 
-    # Importing the spec package is what registers every arch adapter.
     import miles.backends.experimental.fsdp_utils.adaptations.specs  # noqa: F401
     from miles.backends.experimental.fsdp_utils.adaptations.routing_replay import (
         resolve_routing_replay_adapter,
@@ -189,7 +140,6 @@ def test_specs_register_adapters_for_the_real_model_types():
     assert qwen3_5 is not None
     assert qwen3_5.module_cls_name == "Qwen3_5MoeTopKRouter"
 
-    # Qwen3.5 dense must not resolve to the MoE adapter.
     assert resolve_routing_replay_adapter(SimpleNamespace(model_type="qwen3_5_text")) is None
 
 

@@ -8,10 +8,9 @@ import pytest
 import torch
 import torch.nn as nn
 
-from miles.backends.experimental.fsdp_utils.models.routing_replay_glm4_moe_lite import (
-    install_glm4_moe_lite_routing_replay,
-)
+from miles.backends.experimental.fsdp_utils.models.routing_replay import install_glm4_moe_lite_router_replay
 from miles.utils.replay_base import routing_replay_manager
+from tests.fast.fixtures.replay_fixtures import reset_routing_replay_manager, wire_replay
 
 
 class _Gate(nn.Module):
@@ -59,52 +58,15 @@ class _Glm4MoeLiteMoE(nn.Module):
         return topk_indices, topk_weights
 
 
-class _CpuReplay:
-    """Device-neutral stand-in for ``Replay``; see test_fsdp_routing_replay_qwen3."""
-
-    def __init__(self, stream_idx=0):
-        self.stream_idx = stream_idx
-        self.recorded = []
-        self.forward_index = 0
-        self.backward_index = 0
-
-    def record(self, top_indices):
-        self.recorded.append(top_indices.detach().clone())
-
-    def pop_forward(self):
-        top_indices = self.recorded[self.forward_index]
-        self.forward_index += 1
-        return top_indices
-
-    def pop_backward(self):
-        top_indices = self.recorded[self.backward_index]
-        self.backward_index += 1
-        return top_indices
-
-    def clear_forward(self):
-        self.forward_index = 0
-
-
 @pytest.fixture(autouse=True)
 def _reset_manager():
-    routing_replay_manager.enabled = True
-    routing_replay_manager.enable_check_replay_result = False
-    routing_replay_manager.replays = []
-    routing_replay_manager.current = None
-    routing_replay_manager.stage = "fallthrough"
+    reset_routing_replay_manager(enabled=True)
     yield
-    routing_replay_manager.enabled = False
-    routing_replay_manager.replays = []
-    routing_replay_manager.current = None
-    routing_replay_manager.stage = "fallthrough"
+    reset_routing_replay_manager(enabled=False)
 
 
 def _wire(block):
-    install_glm4_moe_lite_routing_replay(block)
-    replay = _CpuReplay()
-    routing_replay_manager.replays.append(replay)
-    routing_replay_manager.set_current(replay)
-    return replay
+    return wire_replay(block, install_glm4_moe_lite_router_replay)
 
 
 def test_fallthrough_matches_stock_routing():
@@ -139,8 +101,6 @@ def test_replay_forward_overrides_expert_selection():
 
 
 def test_replayed_weights_gather_from_the_sigmoid_logits():
-    # The weight for a replayed expert must be sigmoid(logit) at that expert, scaled -- not a
-    # value read out of the masked group-routing scores, which are -inf outside the chosen groups.
     torch.manual_seed(0)
     block = _Glm4MoeLiteMoE()
     block.norm_topk_prob = False
@@ -159,8 +119,6 @@ def test_replayed_weights_gather_from_the_sigmoid_logits():
 
 
 def test_replay_can_select_experts_outside_the_recomputed_groups():
-    # The point of R3: the training-side group mask may exclude the rollout's experts, and the
-    # replayed indices must win anyway with finite weights.
     torch.manual_seed(0)
     block = _Glm4MoeLiteMoE()
     block.norm_topk_prob = False

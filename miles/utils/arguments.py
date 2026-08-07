@@ -3432,12 +3432,10 @@ def _maybe_apply_dumper_overrides(args) -> None:
 def resolve_fsdp_num_layers(hf_config) -> int | None:
     """Decoder-layer count for the FSDP path.
 
-    ``num_layers`` is supplied by the Megatron parser, but it is read on backend-agnostic
-    code: ``sglang_rollout`` reshapes the R3 routing buffer as
-    ``[num_tokens, num_layers, topk]`` regardless of training backend. Multimodal and
-    text-split configs (Qwen3.5) carry the decoder depth only under ``text_config``, and a
-    top-level ``num_hidden_layers`` there can describe the vision tower instead, so the
-    text config wins whenever it has one.
+    ``num_layers`` comes from the Megatron parser, but backend-agnostic code reads it:
+    ``sglang_rollout`` reshapes the R3 routing buffer as ``[num_tokens, num_layers, topk]``. The
+    text config wins when present, since a top-level ``num_hidden_layers`` may describe a vision
+    tower instead.
     """
     getter = getattr(hf_config, "get_text_config", None)
     text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config

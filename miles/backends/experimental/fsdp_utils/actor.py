@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_routing_replay_enabled(args) -> bool:
-    """True when R3 is on: --use-rollout-routing-replay sets use_routing_replay in validation."""
+    """--use-rollout-routing-replay sets use_routing_replay during arg validation."""
     return bool(getattr(args, "use_routing_replay", False))
 
 
@@ -61,9 +61,8 @@ def resolve_routing_replay_enabled(args) -> bool:
 def routing_replay_stage(stage: str):
     """Run a block with the replay manager in ``stage``, restoring the previous stage after.
 
-    The training forward runs as ``replay_forward`` while the surrounding step stays in
-    ``replay_backward``, so activation-checkpoint recompute during backward draws from the
-    independent backward cursor. This mirrors megatron_utils/model.py's forward_step.
+    Nesting a ``replay_forward`` forward inside a ``replay_backward`` step is what lets
+    activation-checkpoint recompute draw from the independent backward cursor.
     """
     previous = routing_replay_manager.stage
     routing_replay_manager.stage = stage
@@ -140,8 +139,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
 
-        # R3 state must be settled before the model is built: install_routing_replay is a
-        # no-op while disabled, so a non-R3 run keeps the stock HF forward untouched.
+        # Settled before the model is built, since install_routing_replay reads it.
         routing_replay_manager.enabled = resolve_routing_replay_enabled(args)
         routing_replay_manager.enable_check_replay_result = routing_replay_manager.enabled and args.ci_test
         routing_replay_manager.register_replay_list_func = register_replay_list_sequential
@@ -163,9 +161,8 @@ class FSDPTrainRayActor(TrainRayActor):
             )
 
         apply_model_instance_patches(model, self.hf_config, self.args)
-        # Actor only. _create_ref_model deliberately does not install: the ref pass runs as
-        # fallthrough, and a second registration would double manager.replays and break
-        # every stream_idx during fill_replay_data.
+        # Actor only: a second registration from _create_ref_model would double manager.replays
+        # and invalidate every stream_idx.
         install_routing_replay(model, self.hf_config)
         if self.precision_policy.keep_fp32_master:
             model = apply_fp32_master(model, self.precision_policy.sync_dtype_resolver)
@@ -474,24 +471,32 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self._heartbeat.bump()
 
+    def _fill_routing_replay(self, data_iterator, num_microbatches, rollout_data) -> None:
+        """Load the rollout's routing into the per-layer replay queues.
+
+        Takes the iterator list rather than a single iterator: fill_replay_data resets every
+        element and reads through element 0.
+        """
+        if not getattr(self.args, "use_rollout_routing_replay", False):
+            return
+
+        fill_replay_data(
+            args=self.args,
+            models=self.model,
+            data_iterator=data_iterator,
+            num_microbatches=num_microbatches,
+            rollout_data=rollout_data,
+            data_key=routing_replay_manager.data_key,
+            replay_list=routing_replay_manager.replays,
+            register_replay_list_func=routing_replay_manager.register_replay_list_func,
+            if_sp_region=routing_replay_manager.if_sp_region,
+            indices_are_token_positions=routing_replay_manager.replay_indices_are_token_positions,
+        )
+
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
 
-        if getattr(self.args, "use_rollout_routing_replay", False):
-            # Must run before data_iterator is unwrapped below: fill_replay_data resets the
-            # whole list and reads through element 0.
-            fill_replay_data(
-                args=self.args,
-                models=self.model,
-                data_iterator=data_iterator,
-                num_microbatches=num_microbatches,
-                rollout_data=rollout_data,
-                data_key=routing_replay_manager.data_key,
-                replay_list=routing_replay_manager.replays,
-                register_replay_list_func=routing_replay_manager.register_replay_list_func,
-                if_sp_region=routing_replay_manager.if_sp_region,
-                indices_are_token_positions=routing_replay_manager.replay_indices_are_token_positions,
-            )
+        self._fill_routing_replay(data_iterator, num_microbatches, rollout_data)
 
         data_iterator = data_iterator[0]
 
@@ -500,14 +505,12 @@ class FSDPTrainRayActor(TrainRayActor):
         ), f"Invalid num_microbatches {num_microbatches} for micro_batch_size {self.args.micro_batch_size} and global_batch_size {self.args.global_batch_size}"
 
         if self.ref_model is not None:
-            # The ref model has no replay streams; keep routing untouched for its forward.
             with routing_replay_stage("fallthrough"):
                 ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
             rollout_data.update(ref_results)
 
         with routing_replay_stage("replay_forward" if routing_replay_manager.enabled else "fallthrough"):
             actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
-        # This pass consumed the forward queue; rewind it for the training forward.
         routing_replay_manager.clear_all_forward()
         rollout_data.update(actor_results)
 
@@ -515,9 +518,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         log_rollout_data(rollout_id, self.args, rollout_data)
 
-        # The region stays in replay_backward so activation-checkpoint recompute inside
-        # backward reads the backward cursor; _train_step flips only its forward to
-        # replay_forward.
         with routing_replay_stage("replay_backward"), timer("actor_train"):
             data_iterator.reset()
             num_steps_per_rollout = len(num_microbatches)
@@ -610,8 +610,6 @@ class FSDPTrainRayActor(TrainRayActor):
     def _train_step(self, batch, step_id, num_microbatches):
         model_args = self._get_model_inputs_args(batch)
         # bf16 logits (see log_probs phase); per-response chunks are upcast to fp32 in the loss path.
-        # Only the forward replays off the forward cursor -- loss.backward() below runs in the
-        # caller's replay_backward region so recomputed layers read the backward cursor.
         with routing_replay_stage("replay_forward"), precision_forward_context(self.precision_policy):
             logits = self.model(**model_args).logits
 

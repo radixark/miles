@@ -45,8 +45,6 @@ def _model_with_layers(kinds):
 
 @pytest.fixture(autouse=True)
 def _reset_manager():
-    # The adapter registry is module-global and populated at spec-import time; snapshot it so
-    # ad-hoc test adapters cannot leak into the next test's resolution.
     saved_adapters = list(rr._ADAPTERS)
     routing_replay_manager.enabled = False
     routing_replay_manager.replays = []
@@ -59,21 +57,18 @@ def _reset_manager():
 
 
 def test_discover_returns_global_layer_index_skipping_dense():
-    # GLM-4.7-Flash shape: layer 0 dense, the rest MoE.
     model = _model_with_layers(["dense"] + ["moe"] * 4)
     found = discover_moe_modules(model, "_FakeRouter")
     assert [idx for idx, _ in found] == [1, 2, 3, 4]
 
 
 def test_discover_is_sorted_by_layer_index():
-    # named_modules yields "layers.10" before "layers.2" is not guaranteed, so pin the order.
     model = _model_with_layers(["moe"] * 12)
     found = discover_moe_modules(model, "_FakeRouter")
     assert [idx for idx, _ in found] == list(range(12))
 
 
 def test_discover_finds_layers_behind_an_extra_wrapper():
-    # Qwen3.5's multimodal wrapper nests decoder layers under model.language_model.layers.
     model = _model_with_layers(["moe"] * 3)
     outer = nn.Module()
     outer.language_model = model

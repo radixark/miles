@@ -13,19 +13,16 @@ def test_resolve_num_layers_from_flat_config():
 
 
 def test_resolve_num_layers_unwraps_text_config():
-    # Qwen3.5 nests the decoder config under text_config; num_hidden_layers is only there.
     cfg = SimpleNamespace(text_config=SimpleNamespace(num_hidden_layers=40))
     assert resolve_fsdp_num_layers(cfg) == 40
 
 
 def test_resolve_num_layers_prefers_text_config_when_both_present():
-    # A multimodal config's top-level num_hidden_layers can describe the vision tower.
     cfg = SimpleNamespace(num_hidden_layers=1, text_config=SimpleNamespace(num_hidden_layers=40))
     assert resolve_fsdp_num_layers(cfg) == 40
 
 
 def test_resolve_num_layers_uses_get_text_config_when_available():
-    # Real HF configs expose get_text_config(); prefer it over poking at attributes.
     text = SimpleNamespace(num_hidden_layers=47)
     cfg = SimpleNamespace(num_hidden_layers=1, get_text_config=lambda: text)
     assert resolve_fsdp_num_layers(cfg) == 47
