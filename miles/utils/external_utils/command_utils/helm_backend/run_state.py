@@ -13,6 +13,7 @@ RUNS_DIR_NAME = "miles-runs"
 STATE_DIR_NAME = "state"
 ORCHESTRATOR_EXIT_FILE_NAME = "orchestrator.exit"
 VALUES_FILE_NAME = "values.yaml"
+LAUNCHES_DIR_NAME = "launches"
 
 STATUS_STARTED = "started"
 STATUS_EXITED = "exited"
@@ -48,6 +49,10 @@ def orchestrator_exit_path(run_directory: str | Path) -> Path:
 
 def values_path(run_directory: str | Path) -> Path:
     return Path(run_directory) / VALUES_FILE_NAME
+
+
+def launch_record_path(run_directory: str | Path, *, generation: int) -> Path:
+    return Path(run_directory) / LAUNCHES_DIR_NAME / f"generation-{generation}.json"
 
 
 class OrchestratorState(FrozenStrictBaseModel):

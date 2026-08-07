@@ -10,11 +10,13 @@ from typing import Any
 
 import yaml
 
+from miles.utils.env_report import redact_argv, redact_env_vars
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend import (
     elastic,
     helm,
     kube,
+    launch_record,
     mooncake,
     naming,
     observe,
@@ -62,15 +64,26 @@ def launch(
     exit_file = run_state.orchestrator_exit_path(run_directory)
 
     pod_argv = mooncake.with_cluster_master(train_argv, mooncake.master_service_host(release, namespace))
+    pod_command = orchestrator_command(request, pod_argv)
+    pod_env = runtime_env(request)
+    record = launch_record.LaunchRecord(
+        run_id=run_id,
+        release=release,
+        namespace=namespace,
+        train_argv=redact_argv(train_argv),
+        worker_argv=redact_argv(pod_argv),
+        orchestrator_command=redact_argv(pod_command),
+        env=redact_env_vars(pod_env),
+    )
     values = build_values(
         specs,
         RunLayout(
             run_id=run_id,
             release=release,
-            orchestrator_command=orchestrator_command(request, pod_argv),
+            orchestrator_command=pod_command,
             worker_argv=pod_argv,
             num_gpus_per_node=request.num_gpus_per_node,
-            env=runtime_env(request),
+            env=launch_record.env_with_launch_record(pod_env, record=record),
             colocate=colocate,
             uses_mooncake=mooncake.uses_mooncake(train_argv),
             mooncake_port=mooncake.master_port_of(train_argv, default_port=0),
@@ -108,6 +121,7 @@ def launch(
         )
     )
     generation = run_state.reset_for_new_generation(exit_file, baseline)
+    launch_record.write_launch_record(run_directory, record=record, generation=generation)
 
     return LaunchedRun(release=release, namespace=namespace, exit_file=exit_file, generation=generation)
 

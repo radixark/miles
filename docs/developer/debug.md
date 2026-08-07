@@ -111,6 +111,53 @@ Where to look:
 * `WorkerCrashed` / `RaySystemError` — ranks died.
 * `forward_logp_max_diff` — FP8 train/inference alignment.
 
+## Env report
+
+Every miles process records the environment it runs in, as an `env_report` event.
+Use it when a run's behaviour changed but the launch command did not: a healed
+cell restarted onto a node with different packages, or the shared disk the code
+is mounted from was updated mid-run.
+
+What one report contains:
+
+* Hostname, `argv`, and the parsed args of that process.
+* All environment variables; a value whose name *ends in* `_KEY`, `_TOKEN`,
+  `_SECRET`, `_PASSWORD`, `_PASSWD` or `_CREDENTIALS` is replaced by a stable
+  `redacted-sha256:` digest, which still shows whether the value changed. Args
+  are not matched by that heuristic — `--reward-key` names a dataset column, not
+  a secret — so a secret arg is redacted only if it is declared as one.
+* The git commit and uncommitted diffstat of every editable package, the full
+  pip list, and explicit versions of the packages an audit reaches for first.
+* `launcher_env_report`: what the launcher knew, passed in via `--env-report`.
+
+Where it goes:
+
+| Sink | Condition |
+|---|---|
+| `<dump-details>/events/<process>.jsonl`, in full | `--dump-details` is set |
+| A one-line summary in the process log (`tag=audit op=env_report`) | always |
+| wandb config (`launcher_env_report`) | `--env-report` is set |
+
+The full report is tens of kilobytes, so only the summary — host, key versions,
+repo commits, counts — is logged; grep the jsonl for everything else.
+
+Knobs:
+
+```bash
+--env-report-interval-seconds 3600       # re-record this often; non-positive records only at startup
+--env-report '{"...": "..."}'            # what the launcher knows (MILES_SCRIPT_ENV_REPORT)
+```
+
+Collection shells out to `pip inspect` and `git diff`, so it runs on a daemon
+thread, and each interval is jittered so the ranks of a run do not all probe the
+shared disk in the same second. `argv`, args and the environment are snapshotted
+at process start and do not change between reports.
+
+On Kubernetes the launcher fills `--env-report` itself: it writes the argv it
+computed to `<shared-root>/miles-runs/<run-id>/launches/generation-<n>.json`, one
+file per launch, and passes the same record to the pods, so it reaches every
+process's env report and the wandb config.
+
 ## When all else fails
 
 * Drop to a tiny model (Qwen2.5-0.5B) on a known-good recipe (Reproducibility) to

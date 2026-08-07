@@ -8,6 +8,7 @@ helm upgrade --install miles-run-260101-000000-000 /repo/charts/miles-run --name
 run:
   env:
     CUDA_DEVICE_MAX_CONNECTIONS: '1'
+    MILES_SCRIPT_ENV_REPORT: '{"run_id":"260101-000000-000","release":"miles-run-260101-000000-000","namespace":"rl","train_argv":["--rollout-num-gpus","8"],"worker_argv":["--rollout-num-gpus","8"],"orchestrator_command":["python","/repo/train.py","--rollout-num-gpus","8"],"env":{"CUDA_DEVICE_MAX_CONNECTIONS":"1","PYTHONUNBUFFERED":"1"}}'
     PYTHONUNBUFFERED: '1'
   id: 260101-000000-000
   inferenceEngines:

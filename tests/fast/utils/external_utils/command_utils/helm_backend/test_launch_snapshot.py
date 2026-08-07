@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -61,14 +62,14 @@ def _trainer() -> ServeWorkerSpec:
     )
 
 
-def _request() -> ExecuteTrainRequest:
+def _request(extra_env_vars: dict[str, str] | None = None) -> ExecuteTrainRequest:
     return ExecuteTrainRequest(
         train_args="--rollout-num-gpus 8",
         num_gpus_per_node=8,
         megatron_model_type="qwen3-4B",
         train_script="/repo/train.py",
         train_backend_fsdp=False,
-        extra_env_vars={},
+        extra_env_vars=extra_env_vars or {},
         config=ExecuteTrainConfig(cluster_backend="kubernetes", namespace=NAMESPACE, run_id=FROZEN_RUN_ID),
         megatron_path="/root/Megatron-LM",
         before_ray_job_submit=None,
@@ -95,7 +96,13 @@ def infra_values_file(sandbox: Path) -> Path:
     return values_file
 
 
-def record_launch(monkeypatch, sandbox: Path) -> list[str]:
+def record_launch(
+    monkeypatch,
+    sandbox: Path,
+    *,
+    train_argv: list[str] | None = None,
+    extra_env_vars: dict[str, str] | None = None,
+) -> list[str]:
     recorded: list[str] = []
 
     def fake_run(command: list[str], capture_output: bool = False) -> Any:
@@ -106,15 +113,19 @@ def record_launch(monkeypatch, sandbox: Path) -> list[str]:
     monkeypatch.setattr(helm, "release_exists", lambda release, namespace: False)
 
     launcher.launch(
-        _request(),
+        _request(extra_env_vars),
         specs=[_router(), _engine(), _trainer()],
         run_id=FROZEN_RUN_ID,
         namespace=NAMESPACE,
         infra_values_files=[str(infra_values_file(sandbox))],
         repo_base_dir="/repo",
-        train_argv=["--rollout-num-gpus", "8"],
+        train_argv=train_argv or ["--rollout-num-gpus", "8"],
     )
     return recorded
+
+
+def run_dir(sandbox: Path) -> Path:
+    return sandbox / "cluster-storage" / "miles_data" / "miles-runs" / FROZEN_RUN_ID
 
 
 def freeze(text: str, sandbox: Path) -> str:
@@ -133,11 +144,51 @@ def format_launch(commands: list[str], values_text: str, sandbox: Path) -> str:
     return "\n".join(lines)
 
 
+class TestLaunchRecordRedaction:
+    def test_the_record_carries_no_secret_the_launcher_was_given(self, monkeypatch, tmp_path):
+        """The record lands on a shared disk and in the wandb config, so a key in the argv would leak twice."""
+        record_launch(
+            monkeypatch,
+            tmp_path,
+            train_argv=["--rollout-num-gpus", "8", "--wandb-key", "s3cret"],
+            extra_env_vars={"HF_TOKEN": "t0ken", "PYTHONUNBUFFERED": "1"},
+        )
+        values = yaml.safe_load((run_dir(tmp_path) / "values.yaml").read_text())
+
+        on_disk = (run_dir(tmp_path) / "launches" / "generation-1.json").read_text()
+        passed_to_pods = values["run"]["env"]["MILES_SCRIPT_ENV_REPORT"]
+
+        for recorded in (on_disk, passed_to_pods):
+            assert "s3cret" not in recorded
+            assert "t0ken" not in recorded
+            assert "redacted-sha256:" in recorded
+
+    def test_the_pods_still_receive_the_credentials_they_run_with(self, monkeypatch, tmp_path):
+        """Only the audit copy is redacted; redacting the pods' own environment would break the run."""
+        record_launch(monkeypatch, tmp_path, extra_env_vars={"HF_TOKEN": "t0ken"})
+        values = yaml.safe_load((run_dir(tmp_path) / "values.yaml").read_text())
+
+        assert values["run"]["env"]["HF_TOKEN"] == "t0ken"
+
+
+class TestLaunchRecord:
+    def test_the_launcher_leaves_a_record_of_what_it_launched(self, monkeypatch, tmp_path):
+        """The pods' argv is computed here, so this is the only place it can be recorded from."""
+        record_launch(monkeypatch, tmp_path)
+
+        recorded = json.loads((run_dir(tmp_path) / "launches" / "generation-1.json").read_text())
+
+        assert recorded["run_id"] == FROZEN_RUN_ID
+        assert recorded["namespace"] == NAMESPACE
+        assert recorded["orchestrator_command"][1] == "/repo/train.py"
+        assert recorded["worker_argv"] == ["--rollout-num-gpus", "8"]
+
+
 class TestKubernetesLaunchSnapshot:
     def test_the_helm_argv_and_the_generated_values_match_the_recording(self, monkeypatch, tmp_path):
         """The values file is the whole training recipe, so a snapshot of only the argv would prove little."""
         commands = record_launch(monkeypatch, tmp_path)
-        values_file = tmp_path / "cluster-storage" / "miles_data" / "miles-runs" / FROZEN_RUN_ID / "values.yaml"
+        values_file = run_dir(tmp_path) / "values.yaml"
 
         recorded = format_launch(commands, values_file.read_text(), tmp_path)
 
@@ -146,7 +197,7 @@ class TestKubernetesLaunchSnapshot:
     def test_the_generated_values_carry_no_infra_section(self, monkeypatch, tmp_path):
         """infra is the user's half of the contract; the launcher writing it would silently override a cluster."""
         record_launch(monkeypatch, tmp_path)
-        values_file = tmp_path / "cluster-storage" / "miles_data" / "miles-runs" / FROZEN_RUN_ID / "values.yaml"
+        values_file = run_dir(tmp_path) / "values.yaml"
 
         assert set(yaml.safe_load(values_file.read_text())) == {"run"}
 
