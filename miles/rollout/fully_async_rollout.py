@@ -34,16 +34,12 @@ from miles.rollout.inference_rollout.inference_rollout_common import GenerateSta
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils.misc import load_function
-from miles.utils.types import Sample
+from miles.utils.types import Group, Sample
 
 logger = logging.getLogger(__name__)
 
 OUTPUT_QUEUE_MAX_GROUPS = 1000
 NO_PROGRESS_WARN_SECS = 30.0
-
-# A finished group is list[Sample], or list[list[Sample]] when a generate function
-# returns multiple samples per trajectory (e.g. multi-agent).
-Group = list[Sample | list[Sample]]
 
 
 def _iter_samples(group: Group) -> Iterator[Sample]:
