@@ -1,0 +1,101 @@
+{{- if .Values.run.colocate.enabled }}
+{{- $name := .Values.run.objectNames.colocatePairing }}
+{{- $labels := dict "context" . "component" "colocate-pairing" }}
+{{- $engine := dict }}
+{{- range .Values.run.inferenceEngines }}{{- if eq .name $.Values.run.colocate.enginePool }}{{- $engine = . }}{{- end }}{{- end }}
+{{- $trainer := dict }}
+{{- range .Values.run.trainers }}{{- if eq .name $.Values.run.colocate.trainerPool }}{{- $trainer = . }}{{- end }}{{- end }}
+{{- if not $engine.name }}{{- fail (printf "run.colocate.enginePool %q names no entry of run.inferenceEngines" .Values.run.colocate.enginePool) }}{{- end }}
+{{- if not $trainer.name }}{{- fail (printf "run.colocate.trainerPool %q names no entry of run.trainers" .Values.run.colocate.trainerPool) }}{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name | quote }}
+    namespace: {{ .Release.Namespace | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "miles-run.selectorLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "miles-run.labels" $labels | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $name | quote }}
+      automountServiceAccountToken: true
+      {{- include "miles-run.podDefaults" . | nindent 6 }}
+      containers:
+        - name: pairing
+          {{- include "miles-run.containerDefaults" . | nindent 10 }}
+          command:
+            - python
+            - -m
+            - miles.utils.external_utils.colocate_pairing
+            - --namespace
+            - {{ .Release.Namespace | quote }}
+            - --release
+            - {{ .Release.Name | quote }}
+            - --engine-component
+            - {{ $engine.objectName | quote }}
+            - --trainer-component
+            - {{ $trainer.objectName | quote }}
+            - --engine-cells
+            - {{ default 1 $engine.replicas | quote }}
+            - --trainer-cells
+            - {{ default 1 $trainer.replicas | quote }}
+            - --pods-per-engine-cell
+            - {{ default 1 $engine.size | quote }}
+            - --pods-per-trainer-cell
+            - {{ default 1 $trainer.size | quote }}
+          {{- with include "miles-run.env" (dict "context" . "entry" dict) }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 256Mi
+      {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" . | trim) (include "miles-run.nodeLocalVolume" . | trim)) | join "\n" }}
+      {{- with $volumes }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -45,6 +45,7 @@ def _make_model_cfg(*worker_types: str) -> ModelConfig:
             num_gpus=4,
             num_gpus_per_engine=4,
             gpu_offset=group_index * 4,
+            colocated_with_trainer=False,
             needs_offload=False,
         )
         for group_index, worker_type in enumerate(worker_types)
@@ -189,7 +190,7 @@ class TestSpecsInferenceEngine:
         assert specs_inference_engine(args) == []
 
 
-class TestComputeEngineSpecNames:
+class TestComputeEnginePools:
     def test_only_engine_specs_are_named(self, tmp_path):
         """These names are what the controller watches, so a router in the list would be reconciled as an engine."""
         config_path = tmp_path / "sglang.yaml"
@@ -451,6 +452,88 @@ class TestEngineCellChunking:
         spec = self._spec_for(tmp_path, num_gpus=16, num_gpus_per_engine=1, gpu_offset=8)
         offsets = [spec.meta(WorkerMetaContext(cell_index=index))["gpu_offset"] for index in range(16)]
         assert offsets == list(range(8, 24))
+
+
+class TestColocatedEngineDeclaration:
+    def _pd_args(self, tmp_path, **overrides) -> Namespace:
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[
+                    {"worker_type": "prefill", "num_gpus": 8, "num_gpus_per_engine": 8},
+                    {"worker_type": "decode", "num_gpus": 8, "num_gpus_per_engine": 8},
+                ]
+            )
+        )
+        return make_args(sglang_config=str(config_path), rollout_num_gpus=16, **{"colocate": True, **overrides})
+
+    def _colocated_names(self, args: Namespace) -> list[str]:
+        return [spec.name for spec in specs_inference_engine(args) if spec.scheduling.colocate_with_trainer]
+
+    def test_a_disaggregated_run_colocates_its_decode_pool(self, tmp_path):
+        """Both pool_ids have the same shape, so nothing downstream could tell them apart on its own."""
+        assert self._colocated_names(self._pd_args(tmp_path)) == ["inference-engine-0-1"]
+
+    def test_the_named_spec_is_the_colocated_one_instead(self, tmp_path):
+        """A run that puts its prefill engines on the trainer's nodes has to be able to say so."""
+        args = self._pd_args(tmp_path, colocate_engine_pool="inference-engine-0-0")
+
+        assert self._colocated_names(args) == ["inference-engine-0-0"]
+
+    def test_a_name_no_engine_answers_to_stops_the_run(self, tmp_path):
+        """Otherwise the run would install without a pairing and only fail once weights are transferred."""
+        args = self._pd_args(tmp_path, colocate_engine_pool="inference-engine-9-9")
+
+        with pytest.raises(AssertionError, match="colocate-engine-spec"):
+            specs_inference_engine(args)
+
+    def test_a_run_that_does_not_colocate_declares_no_pool(self, tmp_path):
+        """A disaggregated run's engines have their own gpus, and pinning them to the trainer would strand them."""
+        args = self._pd_args(tmp_path, colocate=False)
+
+        assert self._colocated_names(args) == []
+
+    def test_a_frozen_model_is_never_the_colocated_pool(self, tmp_path):
+        """Colocation exists for weight transfer, which a model that takes no updates never receives."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 8\n"
+            "  - name: reward\n"
+            "    model_path: /models/reward\n"
+            "    update_weights: false\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 8\n"
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=16, colocate=True)
+
+        assert self._colocated_names(args) == ["inference-engine-0-0"]
+
+    def test_two_weight_updated_models_leave_the_choice_to_the_run(self, tmp_path):
+        """Guessing here would pin the wrong pool_id silently; the values then ask for --colocate-engine-pool."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            "sglang:\n"
+            "  - name: actor\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 8\n"
+            "  - name: twin\n"
+            "    server_groups:\n"
+            "      - worker_type: regular\n"
+            "        num_gpus: 8\n"
+            "        num_gpus_per_engine: 8\n"
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=16, colocate=True)
+
+        assert self._colocated_names(args) == []
 
 
 class TestSpecInferenceController:

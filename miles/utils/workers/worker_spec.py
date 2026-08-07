@@ -41,6 +41,7 @@ class SchedulingSpec(FrozenStrictBaseModel):
     pg_name: str | None = None
     pg_slot_offset: int = 0
     pin_to_head: bool = False
+    colocate_with_trainer: bool = False
 
     def gpus_per_cell(self) -> int:
         return self.num_workers_per_cell * self.num_gpu_slots_per_worker

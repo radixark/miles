@@ -35,6 +35,7 @@ def _engine(
     num_cells: int = 2,
     gpus_per_engine: int = 32,
     name: str = "inference-engine-0-0",
+    colocate_with_trainer: bool = False,
 ) -> CommandWorkerSpec:
     return CommandWorkerSpec(
         name=name,
@@ -50,6 +51,7 @@ def _engine(
             num_gpus_per_worker=0.2,
             num_gpu_slots_per_worker=min(gpus_per_engine, 8),
             num_gpus_per_node=8,
+            colocate_with_trainer=colocate_with_trainer,
         ),
         launch_command=lambda ctx: (
             f"python -m sglang.launch_server --node-rank {ctx.worker_in_cell_index} "
@@ -288,6 +290,90 @@ class TestBuildValues:
         command = values_module.build_values([spec], LAYOUT)["run"]["inferenceEngines"][0]["command"]
 
         assert str(values_module._WORKER_INDEX_SENTINEL) not in " ".join(command)
+
+
+COLOCATE_LAYOUT = LAYOUT.model_copy(update={"colocate": True})
+
+
+def _disaggregated_engines(*, colocated: str | None) -> list[CommandWorkerSpec]:
+    return [
+        _engine(
+            num_cells=4,
+            gpus_per_engine=8,
+            name=name,
+            colocate_with_trainer=name == colocated,
+        )
+        for name in ("inference-engine-0-0", "inference-engine-0-1")
+    ]
+
+
+class TestColocateSection:
+    def test_pairs_the_pool_a_disaggregated_run_declares(self):
+        """Prefill and decode are the same shape, so only the run itself knows which one shares the gpus."""
+        specs = [*_disaggregated_engines(colocated="inference-engine-0-1"), _trainer(num_cells=4, gpus_per_cell=8)]
+
+        built = values_module.build_values(specs, COLOCATE_LAYOUT)["run"]
+
+        assert built["colocate"] == {
+            "enabled": True,
+            "enginePool": "inference-engine-0-1",
+            "trainerPool": "trainer-actor",
+        }
+
+    def test_refuses_a_disaggregated_run_that_names_no_pool(self):
+        """Guessing the pool_id from its shape found none of a prefill/decode pair, and silently so."""
+        specs = [*_disaggregated_engines(colocated=None), _trainer(num_cells=4, gpus_per_cell=8)]
+
+        with pytest.raises(AssertionError, match="--colocate-engine-pool"):
+            values_module.build_values(specs, COLOCATE_LAYOUT)
+
+    def test_refuses_two_pools_that_both_claim_the_trainer(self):
+        """One pairing controller pins one pool_id, so a second claim would leave half the engines adrift."""
+        specs = [
+            _engine(num_cells=4, gpus_per_engine=8, name="inference-engine-0-0", colocate_with_trainer=True),
+            _engine(num_cells=4, gpus_per_engine=8, name="inference-engine-0-1", colocate_with_trainer=True),
+            _trainer(num_cells=4, gpus_per_cell=8),
+        ]
+
+        with pytest.raises(AssertionError, match="--colocate-engine-pool"):
+            values_module.build_values(specs, COLOCATE_LAYOUT)
+
+    def test_pairs_a_decode_pool_that_leaves_trainer_gpus_to_themselves(self):
+        """Prefill runs on its own nodes, so the colocated decode pool_id covers only part of the trainer."""
+        specs = [
+            _engine(num_cells=2, gpus_per_engine=8, colocate_with_trainer=True),
+            _trainer(num_cells=1, gpus_per_cell=32),
+        ]
+
+        built = values_module.build_values(specs, COLOCATE_LAYOUT)["run"]
+
+        assert built["colocate"]["enginePool"] == "inference-engine-0-0"
+
+    def test_refuses_more_engine_cells_than_the_trainer_can_seat(self):
+        """An engine rank on a gpu no trainer shares would receive nothing from a weight update."""
+        specs = [
+            _engine(num_cells=8, gpus_per_engine=8, colocate_with_trainer=True),
+            _trainer(num_cells=1, gpus_per_cell=32),
+        ]
+
+        with pytest.raises(AssertionError, match="do not fit"):
+            values_module.build_values(specs, COLOCATE_LAYOUT)
+
+    def test_rejects_a_declared_pool_whose_cell_is_smaller_than_a_node(self):
+        """The device plugin picks the cards, so a sub-node engine's base gpu id cannot be rendered."""
+        specs = [
+            _engine(num_cells=1, gpus_per_engine=4, colocate_with_trainer=True),
+            _trainer(num_cells=1, gpus_per_cell=4),
+        ]
+
+        with pytest.raises(AssertionError, match="sub-node"):
+            values_module.build_values(specs, COLOCATE_LAYOUT)
+
+    def test_leaves_a_run_that_does_not_colocate_without_the_section(self):
+        """A disaggregated run must not gain a pairing controller with pod write rights."""
+        specs = [*_disaggregated_engines(colocated=None), _trainer(num_cells=4, gpus_per_cell=8)]
+
+        assert "colocate" not in values_module.build_values(specs, LAYOUT)["run"]
 
 
 STAGING_LAYOUT = values_module.RunLayout(

@@ -82,15 +82,15 @@ Run any command in it instead:
 | 3, daily | The pod | Installs and uninstalls `miles-run` releases as its ServiceAccount. |
 
 - The Role lists exactly the object kinds `miles-run` is made of — ConfigMaps,
-  Secrets, Services, ServiceAccounts, StatefulSets, Jobs, LeaderWorkerSets, and
-  the namespaced Roles and RoleBindings its orchestrator needs — plus `pods`,
-  `pods/exec`, `pods/log` and read-only `events` and `persistentvolumeclaims`;
-  nothing cluster-scoped and no `scale`.
+  Secrets, Services, ServiceAccounts, Deployments, StatefulSets, Jobs,
+  LeaderWorkerSets, and the namespaced Roles and RoleBindings its colocate
+  pairing controller needs — plus `pods`, `pods/exec`, `pods/log` and read-only
+  `events` and `persistentvolumeclaims`; nothing cluster-scoped and no `scale`.
   Adding a new object kind to the chart means adding it here too.
 - It grants no `escalate` and no `bind`: Kubernetes admits a namespaced Role or
   RoleBinding write only when the writer already holds every rule being granted,
-  so this Role must stay a superset of the Role `miles-run` creates for its
-  orchestrator or the install breaks.
+  so this Role must stay a superset of the pairing controller's Role or the
+  install breaks.
 - The real boundary is the namespace, not the Role: anything that may create
   workloads may name another ServiceAccount and read its token. Keep privileged
   accounts out of the namespace, and use an admission policy if you need a hard

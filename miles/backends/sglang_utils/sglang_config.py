@@ -9,8 +9,15 @@ import pydantic
 import yaml
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.types import ClusterBackend
 
 logger = logging.getLogger(__name__)
+
+_COLOCATED_WORKER_TYPES = ("regular", "decode")
+
+
+def compute_engine_pool_id(model_idx: int, group_index: int) -> str:
+    return f"inference-engine-{model_idx}-{group_index}"
 
 
 # ---------------------------- raw config -----------------------------
@@ -145,6 +152,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
     num_gpus_per_engine: int = pydantic.Field(gt=0)
     gpu_offset: int = pydantic.Field(ge=0)
     overrides: dict = pydantic.Field(default_factory=dict)
+    colocated_with_trainer: bool
     needs_offload: bool
 
     @property
@@ -159,6 +167,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         default_gpus_per_engine: int,
         default_model_path: str,
         gpu_offset_cursor: "_MutableBox",
+        colocated_with_trainer: bool,
     ) -> "ServerGroupConfig":
         assert not ({"host", "port"} & set(raw.overrides)), (
             f"sglang_overrides must not override host/port ({raw.overrides=}): the rollout process derives "
@@ -168,9 +177,18 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         rollout_pg_offset = _compute_rollout_offset(args)
         megatron_num_gpus = _compute_megatron_num_gpus(args)
 
+        if args.colocate and gpu_offset_cursor.value > 0 and gpu_offset_cursor.value < megatron_num_gpus:
+            gpu_offset_cursor.skipped += megatron_num_gpus - gpu_offset_cursor.value
+            gpu_offset_cursor.value = megatron_num_gpus
+
         gpu_offset = gpu_offset_cursor.value
         group_abs_start = rollout_pg_offset + gpu_offset
-        needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
+        shares_trainer_gpus = (
+            colocated_with_trainer
+            if ClusterBackend(args.cluster_backend) is ClusterBackend.KUBERNETES
+            else group_abs_start < megatron_num_gpus
+        )
+        needs_offload = args.offload_rollout and shares_trainer_gpus
 
         ans = cls(
             worker_type=raw.worker_type,
@@ -182,6 +200,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
                 **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
                 **raw.overrides,
             },
+            colocated_with_trainer=colocated_with_trainer,
             needs_offload=needs_offload,
         )
 
@@ -196,7 +215,14 @@ class ModelConfig(FrozenStrictBaseModel):
     update_weights: bool
 
     @classmethod
-    def resolve(cls, raw: _RawModelConfig, args, gpu_offset_cursor: "_MutableBox") -> "ModelConfig":
+    def resolve(
+        cls,
+        raw: _RawModelConfig,
+        args,
+        gpu_offset_cursor: "_MutableBox",
+        model_idx: int,
+        colocated_pool_id: str | None,
+    ) -> "ModelConfig":
         """Resolve per-group defaults from model-level then args-level values."""
         default_model_path = raw.model_path or args.hf_checkpoint
         server_groups = [
@@ -206,31 +232,21 @@ class ModelConfig(FrozenStrictBaseModel):
                 default_gpus_per_engine=raw.num_gpus_per_engine or args.rollout_num_gpus_per_engine,
                 default_model_path=default_model_path,
                 gpu_offset_cursor=gpu_offset_cursor,
+                colocated_with_trainer=(
+                    compute_engine_pool_id(model_idx=model_idx, group_index=group_index) == colocated_pool_id
+                ),
             )
-            for g in raw.server_groups
+            for group_index, g in enumerate(raw.server_groups)
         ]
 
-        if server_groups:
-            model_paths = {g.overrides["model_path"] for g in server_groups}
-            assert len(model_paths) == 1, (
-                f"Model '{raw.name}' has server groups with different model_path values: "
-                f"{model_paths}. All server groups within a model must use the same model_path."
+        effective_model_path = _compute_effective_model_path(raw, args)
+        update_weights = _compute_update_weights(raw, args)
+        if raw.update_weights is None and not update_weights:
+            logger.warning(
+                f"Model '{raw.name}' uses model_path='{effective_model_path}' which differs "
+                f"from hf_checkpoint='{args.hf_checkpoint}'. Defaulting update_weights to False. "
+                f"Set update_weights explicitly in the config to suppress this warning."
             )
-            effective_model_path = model_paths.pop()
-        else:
-            effective_model_path = default_model_path
-
-        update_weights = raw.update_weights
-        if update_weights is None:
-            if effective_model_path != args.hf_checkpoint:
-                logger.warning(
-                    f"Model '{raw.name}' uses model_path='{effective_model_path}' which differs "
-                    f"from hf_checkpoint='{args.hf_checkpoint}'. Defaulting update_weights to False. "
-                    f"Set update_weights explicitly in the config to suppress this warning."
-                )
-                update_weights = False
-            else:
-                update_weights = True
 
         return cls(
             name=raw.name,
@@ -249,26 +265,87 @@ class SglangConfig(FrozenStrictBaseModel):
 
     @classmethod
     def resolve(cls, raw: _RawSglangConfig, args) -> "SglangConfig":
+        colocated_pool_id = compute_colocated_engine_pool_id(raw, args)
         gpu_offset_cursor = _MutableBox(value=0)
-        model_configs = [ModelConfig.resolve(m, args, gpu_offset_cursor) for m in raw.models]
+        model_configs = [
+            ModelConfig.resolve(
+                m,
+                args,
+                gpu_offset_cursor=gpu_offset_cursor,
+                model_idx=model_idx,
+                colocated_pool_id=colocated_pool_id,
+            )
+            for model_idx, m in enumerate(raw.models)
+        ]
 
-        assert gpu_offset_cursor.value == raw.total_num_gpus
+        assert gpu_offset_cursor.value == raw.total_num_gpus + gpu_offset_cursor.skipped
         return cls(models=model_configs)
 
     @property
     def has_pd_disaggregation(self) -> bool:
         return any(m.has_pd_disaggregation for m in self.models)
 
+    @property
+    def gpu_span(self) -> int:
+        return max(
+            (group.gpu_offset + group.num_gpus for model in self.models for group in model.server_groups),
+            default=0,
+        )
+
 
 @dataclass
 class _MutableBox:
     value: int
+    skipped: int = 0
 
 
 def resolve_sglang_config(args) -> SglangConfig:
     """Build a SglangConfig from args, choosing the right source."""
     raw = _compute_raw_sglang_config(args)
     return SglangConfig.resolve(raw, args)
+
+
+def compute_colocated_engine_pool_id(raw: _RawSglangConfig, args) -> str | None:
+    if not args.colocate:
+        return None
+
+    deployed = [
+        (compute_engine_pool_id(model_idx=model_idx, group_index=group_index), raw_model, raw_group)
+        for model_idx, raw_model in enumerate(raw.models)
+        for group_index, raw_group in enumerate(raw_model.server_groups)
+        if raw_group.worker_type != "placeholder"
+    ]
+
+    if args.colocate_engine_pool is not None:
+        names = [name for name, _raw_model, _raw_group in deployed]
+        assert args.colocate_engine_pool in names, (
+            f"--colocate-engine-pool '{args.colocate_engine_pool}' names no inference engine of this run, "
+            f"which deploys {names}"
+        )
+        return args.colocate_engine_pool
+
+    candidates = [
+        name
+        for name, raw_model, raw_group in deployed
+        if _compute_update_weights(raw_model, args) and raw_group.worker_type in _COLOCATED_WORKER_TYPES
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _compute_update_weights(raw: _RawModelConfig, args) -> bool:
+    if raw.update_weights is not None:
+        return raw.update_weights
+    return _compute_effective_model_path(raw, args) == args.hf_checkpoint
+
+
+def _compute_effective_model_path(raw: _RawModelConfig, args) -> str:
+    default_model_path = raw.model_path or args.hf_checkpoint
+    model_paths = {group.overrides.get("model_path", default_model_path) for group in raw.server_groups}
+    assert len(model_paths) <= 1, (
+        f"Model '{raw.name}' has server groups with different model_path values: "
+        f"{model_paths}. All server groups within a model must use the same model_path."
+    )
+    return model_paths.pop() if model_paths else default_model_path
 
 
 def _compute_raw_sglang_config(args) -> _RawSglangConfig:

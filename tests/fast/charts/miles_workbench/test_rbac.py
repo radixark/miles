@@ -12,11 +12,17 @@ from tests.fast.charts.utils import (
     single_object_of_kind,
 )
 
-A_RUN = (
+COLOCATED_RUN = (
     "--set-json",
     f'run.inferenceEngines={json.dumps([{"name": "engine", "replicas": 1, "size": 1, "command": ["python"]}])}',
     "--set-json",
     f'run.trainers={json.dumps([{"name": "trainer", "replicas": 1, "size": 1, "command": ["python"]}])}',
+    "--set",
+    "run.colocate.enabled=true",
+    "--set",
+    "run.colocate.enginePool=engine",
+    "--set",
+    "run.colocate.trainerPool=trainer",
 )
 
 
@@ -53,11 +59,12 @@ class TestRbacTemplates:
             ("", "secrets"): write,
             ("", "serviceaccounts"): write,
             ("", "services"): write,
-            ("", "pods"): {"delete", "get", "list", "watch"},
+            ("", "pods"): {"delete", "get", "list", "patch", "update", "watch"},
             ("", "pods/exec"): {"create"},
             ("", "pods/log"): {"get"},
             ("", "events"): {"get", "list", "watch"},
             ("", "persistentvolumeclaims"): {"get", "list", "watch"},
+            ("apps", "deployments"): write,
             ("apps", "statefulsets"): write,
             ("batch", "jobs"): write,
             ("rbac.authorization.k8s.io", "roles"): write,
@@ -66,11 +73,11 @@ class TestRbacTemplates:
         }
 
     def test_the_role_covers_every_object_kind_miles_run_installs(self):
-        """A kind miles-run renders but the Role omits turns every install into an apiserver rejection."""
+        """A kind miles-run renders but the Role omits turns every colocated install into an apiserver rejection."""
         granted = granted_verbs(single_object_of_kind(render(), "Role"))
         installed = {
             ("" if group in ("", "v1") else group, obj["kind"].lower() + "s")
-            for obj in render_run(*A_RUN)
+            for obj in render_run(*COLOCATED_RUN)
             for group in [obj["apiVersion"].rpartition("/")[0]]
         }
 
@@ -80,7 +87,7 @@ class TestRbacTemplates:
     def test_the_role_is_a_superset_of_the_role_miles_run_asks_it_to_create(self):
         """Kubernetes refuses a Role or RoleBinding carrying rules its creator does not already hold."""
         granted = granted_verbs(single_object_of_kind(render(), "Role"))
-        created = [granted_verbs(role) for role in objects_of_kind(render_run(*A_RUN), "Role")]
+        created = [granted_verbs(role) for role in objects_of_kind(render_run(*COLOCATED_RUN), "Role")]
 
         assert created
         for rules in created:

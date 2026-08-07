@@ -18,6 +18,8 @@ def _make_args(**overrides) -> Namespace:
         debug_train_only=False,
         debug_rollout_only=False,
         colocate=False,
+        colocate_engine_pool=None,
+        cluster_backend="ray",
         actor_num_nodes=1,
         actor_num_gpus_per_node=8,
         critic_num_nodes=0,
@@ -257,6 +259,71 @@ class TestNeedsOffload:
         group = cfg.models[0].server_groups[0]
         assert group.needs_offload is False
         assert group.overrides["enable_memory_saver"] is True
+
+
+_PINNED_PD_YAML = (
+    "sglang:\n"
+    "  - name: default\n"
+    "    server_groups:\n"
+    "      - worker_type: prefill\n"
+    "        num_gpus: 16\n"
+    "        num_gpus_per_engine: 16\n"
+    "      - worker_type: decode\n"
+    "        num_gpus: 32\n"
+    "        num_gpus_per_engine: 8\n"
+)
+
+
+class TestNeedsOffloadFollowsTheColocatedPool:
+    def _resolve_pinned_pd(self, tmp_path, **args_overrides):
+        args = dict(
+            rollout_num_gpus=48,
+            offload_rollout=True,
+            colocate=True,
+            cluster_backend="kubernetes",
+            actor_num_nodes=4,
+            actor_num_gpus_per_node=8,
+        )
+        args.update(args_overrides)
+        return _resolve_yaml(tmp_path, _PINNED_PD_YAML, **args)
+
+    def test_the_colocated_decode_pool_offloads_even_though_prefill_is_declared_first(self, tmp_path):
+        """Decode shares the trainer's gpus, so it is the pool that has to make room for training."""
+        prefill, decode = self._resolve_pinned_pd(tmp_path).models[0].server_groups
+
+        assert decode.colocated_with_trainer is True
+        assert decode.needs_offload is True
+        assert "enable_memory_saver" not in decode.overrides
+        assert prefill.colocated_with_trainer is False
+        assert prefill.needs_offload is False
+
+    def test_the_uncolocated_prefill_pool_keeps_its_memory_and_disables_the_memory_saver(self, tmp_path):
+        """Prefill has its own nodes, so paying for memory-saver bookkeeping would buy nothing."""
+        prefill, _decode = self._resolve_pinned_pd(tmp_path).models[0].server_groups
+
+        assert prefill.overrides["enable_memory_saver"] is False
+
+    def test_naming_prefill_as_the_colocated_pool_moves_the_offload_to_it(self, tmp_path):
+        """The offload decision has to follow the declared pairing, whichever pool that names."""
+        prefill, decode = (
+            self._resolve_pinned_pd(tmp_path, colocate_engine_pool="inference-engine-0-0").models[0].server_groups
+        )
+
+        assert (prefill.needs_offload, decode.needs_offload) == (True, False)
+        assert decode.overrides["enable_memory_saver"] is False
+
+    def test_a_run_that_does_not_colocate_offloads_nothing(self, tmp_path):
+        """Without colocation every pool owns its gpus outright, so nothing has to yield them."""
+        groups = self._resolve_pinned_pd(tmp_path, colocate=False).models[0].server_groups
+
+        assert [group.needs_offload for group in groups] == [False, False]
+
+    def test_ray_placement_still_decides_offload_by_the_gpu_ranges_it_hands_out(self, tmp_path):
+        """Ray lays the whole rollout pool over the trainer's bundles, so the gpu offsets are the truth there."""
+        prefill, decode = self._resolve_pinned_pd(tmp_path, cluster_backend="ray").models[0].server_groups
+
+        assert prefill.needs_offload is True
+        assert decode.needs_offload is False
 
 
 class TestHostPortOverrideRejection:

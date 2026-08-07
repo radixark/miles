@@ -150,7 +150,25 @@
           }
         },
         "inferenceEngines": {"type": "array", "items": {"$ref": "#/definitions/pool"}},
-        "trainers": {"type": "array", "items": {"$ref": "#/definitions/pool"}}
+        "trainers": {"type": "array", "items": {"$ref": "#/definitions/pool"}},
+        "colocate": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "enginePool": {"type": "string"},
+            "trainerPool": {"type": "string"}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+              "then": {
+                "required": ["enginePool", "trainerPool"],
+                "properties": {"enginePool": {"minLength": 1}, "trainerPool": {"minLength": 1}}
+              }
+            }
+          ]
+        }
       }
     },
     "adhoc": {

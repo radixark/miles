@@ -75,6 +75,7 @@ def make_args(**overrides: Any) -> Namespace:
         debug_rollout_only=False,
         debug_skip_weight_update=False,
         colocate=False,
+        colocate_engine_pool=None,
         actor_num_nodes=1,
         actor_num_gpus_per_node=8,
         indep_dp=False,

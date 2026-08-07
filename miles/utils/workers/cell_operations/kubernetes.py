@@ -26,7 +26,6 @@ class KubernetesCellOperations(BaseCellOperations):
 
         pods = self._provider.pod_names(cell_id)
         assert pods, f"cannot suspend {cell_id}, which has no pods"
-
         await _delete_pods(namespace=self._namespace, pod_names=pods)
 
     async def resume(self, *, cell_id: str) -> None:

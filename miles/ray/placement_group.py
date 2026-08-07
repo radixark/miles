@@ -6,6 +6,7 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import (
     SESSION_SERVER_POOL_ID,
@@ -107,8 +108,17 @@ def _get_placement_group_layout(args) -> tuple[int, int]:
     if args.debug_rollout_only:
         return args.rollout_num_gpus, 0
     if args.colocate:
-        return max(actor_num_gpus, args.rollout_num_gpus), 0
+        return max(actor_num_gpus, _colocated_rollout_span(args)), 0
     return actor_num_gpus + args.rollout_num_gpus, actor_num_gpus
+
+
+def _colocated_rollout_span(args) -> int:
+    declares_own_rollout_pools = (
+        getattr(args, "sglang_config", None) is not None or getattr(args, "prefill_num_servers", None) is not None
+    )
+    if not declares_own_rollout_pools:
+        return args.rollout_num_gpus
+    return resolve_sglang_config(args).gpu_span
 
 
 def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:

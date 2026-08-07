@@ -19,7 +19,11 @@
 {{- end }}
 
 {{- define "miles-run.podDefaults" -}}
-{{- $context := . -}}
+{{- include "miles-run.podDefaultsFor" (dict "context" . "gated" false) }}
+{{- end }}
+
+{{- define "miles-run.podDefaultsFor" -}}
+{{- $context := .context -}}
 {{- $scheduling := $context.Values.infra.scheduling | default dict -}}
 enableServiceLinks: false
 {{- with include "miles-common.imagePullSecrets" $context }}
@@ -33,9 +37,11 @@ nodeSelector:
 tolerations:
   {{- toYaml . | nindent 2 }}
 {{- end }}
+{{- if not .gated }}
 {{- with $scheduling.affinity }}
 affinity:
   {{- toYaml . | nindent 2 }}
+{{- end }}
 {{- end }}
 {{- end }}
 
@@ -114,3 +120,4 @@ volumeMounts:
   {{- . | nindent 2 }}
 {{- end }}
 {{- end }}
+
