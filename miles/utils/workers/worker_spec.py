@@ -37,9 +37,36 @@ class SchedulingSpec(FrozenStrictBaseModel):
     num_gpus_per_worker: float
     num_cpus_per_worker: float = 0.2
     num_gpu_slots_per_worker: int = 0
+    num_gpus_per_node: int = 0
     pg_name: str | None = None
     pg_slot_offset: int = 0
     pin_to_head: bool = False
+
+    def gpus_per_cell(self) -> int:
+        return self.num_workers_per_cell * self.num_gpu_slots_per_worker
+
+    def pods_per_cell(self) -> int:
+        gpus_per_cell = self.gpus_per_cell()
+        if gpus_per_cell == 0:
+            return 1
+        assert self.num_gpus_per_node > 0, (
+            f"a cell claiming {gpus_per_cell} gpus must say how many gpus a node has, because nothing else "
+            f"could decide how many pods it takes"
+        )
+        if gpus_per_cell <= self.num_gpus_per_node:
+            return 1
+        assert (
+            gpus_per_cell % self.num_gpus_per_node == 0
+        ), f"a cell wants {gpus_per_cell} gpus, which is not a whole number of {self.num_gpus_per_node}-gpu nodes"
+        return gpus_per_cell // self.num_gpus_per_node
+
+    def ranks_per_pod(self) -> int:
+        pods_per_cell = self.pods_per_cell()
+        assert self.num_workers_per_cell % pods_per_cell == 0, (
+            f"a cell of {self.num_workers_per_cell} workers cannot be packed into the {pods_per_cell} pods its "
+            f"{self.gpus_per_cell()} gpus need on {self.num_gpus_per_node}-gpu nodes"
+        )
+        return self.num_workers_per_cell // pods_per_cell
 
     @classmethod
     def single(cls, num_gpus_per_worker: float, pin_to_head: bool = False) -> "SchedulingSpec":

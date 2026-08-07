@@ -62,6 +62,32 @@ miles/
 `train.py` and `train_async.py` are the two entry points. They're thin: ~200 lines
 each. Most logic lives in the modules above.
 
+### Observing workers a platform created
+
+`miles/utils/workers/worker_provider/kubernetes/` is two sibling packages, and the split is
+what lets miles run under a deployment layer it did not write:
+
+```text
+kubernetes/
+├── core/   # kubernetes in general: watch pods, project them into cells and workers
+└── helm/   # everything specific to the chart this repo ships
+```
+
+Three invariants hold the split up:
+
+- **`core/` spells no chart literal.** Which label says "this pod is pod p of cell c of pool s"
+  arrives as a `CellLabelKeys` parameter; the strings themselves live only in `helm/labels.py`.
+- **Imports point one way.** `helm/` imports `core/`; no module under `core/` imports `helm/`.
+  `tests/fast/utils/workers/worker_provider/kubernetes/test_layering.py` fails the build otherwise.
+- **`helm/` is the only home of the pod-to-chart contract.** The launcher writes values through
+  `helm_backend/values.py` and the pod reads labels and hostnames back through `helm/`, both
+  against the same constants, so the two halves cannot drift.
+
+`helm/builder.py :: compute_capability` is the single place that joins the two: it takes the
+chart's default label keys and the run's specs, and returns the `KubernetesBackendCapability`
+every process in the release is answered by. Describing a different deployment layer means
+writing another builder, not editing `core/`.
+
 ## A request's life
 
 For a single GRPO iteration:

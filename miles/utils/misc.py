@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import Any, TypeVar
 
 import ray
 
@@ -9,6 +9,15 @@ from miles.utils.function_registry import load_function
 from miles.utils.http_utils import is_port_available
 
 logger = logging.getLogger(__name__)
+
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+
+
+def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V]:
+    conflicts = {key: (a[key], b[key]) for key in a.keys() & b.keys() if a[key] != b[key]}
+    assert not conflicts, f"cannot merge two dicts that disagree: {conflicts}"
+    return a | b
 
 
 async def call_agent_abort_hook(args) -> None:
