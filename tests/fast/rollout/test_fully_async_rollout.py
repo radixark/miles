@@ -76,7 +76,7 @@ def make_args(**overrides) -> Namespace:
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
         async_data_buffer_max_batches=0,
-        async_stale_samples_handler="drop",
+        async_unused_samples_handler="drop",
         custom_async_data_buffer_path=None,
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
@@ -120,7 +120,7 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     indices = [group[0].index for group in output.samples]
     assert indices == sorted(indices)
     assert all(len(group) == N_SAMPLES_PER_PROMPT for group in output.samples)
-    assert output.metrics["rollout/fully_async/aborted_groups_recycled"] == 0
+    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 0
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 0
 
     # The worker persists across calls; a second drain works on the same instance.
@@ -205,7 +205,8 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
 async def test_aborted_group_recycled(monkeypatch):
     aborted = make_group(1, status=Sample.Status.ABORTED)
     data_source = FakeDataSource(scripted=[aborted])
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
+    args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
+    fn = make_fn(monkeypatch, args, data_source)
 
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
@@ -213,7 +214,7 @@ async def test_aborted_group_recycled(monkeypatch):
     # reset_for_retry cleared generated outputs so the prompt can be re-sampled
     assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
     assert output.samples[0][0].group_index != 1
-    assert output.metrics["rollout/fully_async/aborted_groups_recycled"] == 1
+    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
 
 
 async def test_stale_group_recycled(monkeypatch):
@@ -233,7 +234,7 @@ async def test_stale_group_recycled(monkeypatch):
 
     data_source.get_samples = get_samples_with_fresh_versions
 
-    args = make_args(rollout_batch_size=1, max_weight_staleness=2, async_stale_samples_handler="retry")
+    args = make_args(rollout_batch_size=1, max_weight_staleness=2, async_unused_samples_handler="retry")
     fn = make_fn(monkeypatch, args, data_source)
 
     class FakeWeightVersion:
@@ -346,7 +347,8 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
             expanded.append([aborted, replace(sample)])
         return expanded
 
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source, generate=multi_sample_generate)
+    args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
+    fn = make_fn(monkeypatch, args, data_source, generate=multi_sample_generate)
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
     assert data_source.recycled == [prompt_group]
@@ -427,18 +429,17 @@ async def test_weight_version_maps_non_numeric_to_none(monkeypatch):
 # ── DataBuffer: staleness-bounded buffering ─────────────────────────
 
 
-def make_buffer(max_groups=None, max_staleness=None, stale_handler="retry"):
-    recycled = []
+def make_buffer(max_groups=None, max_staleness=None):
+    evicted = []
     args = make_args(
         rollout_batch_size=1,  # capacity is in batches; batch size 1 makes it count groups
         async_data_buffer_max_batches=max_groups or 0,
         max_weight_staleness=max_staleness,
-        async_stale_samples_handler=stale_handler,
     )
     buffer = data_buffer.DefaultDataBuffer(
-        data_buffer.DataBufferConstructorInput(args=args, recycle_fn=recycled.append)
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=evicted.append)
     )
-    return buffer, recycled
+    return buffer, evicted
 
 
 async def put_group(buffer, group, weight_version=None):
@@ -490,17 +491,6 @@ async def test_buffer_threshold_evicts_all_over_staleness_first():
     assert metrics["queue_size"] == 2
 
 
-async def test_buffer_drop_handler_discards_stale_without_recycle():
-    buffer, recycled = make_buffer(max_groups=1, max_staleness=2, stale_handler="drop")
-    await put_group(buffer, make_group(1, weight_versions=["5"]), weight_version=10)
-    await put_group(buffer, make_group(2, weight_versions=["10"]), weight_version=10)
-
-    assert recycled == []
-    metrics = buffer.get_metrics()
-    assert metrics["evicted_stale_groups"] == 1
-    assert metrics["queue_size"] == 1
-
-
 async def test_buffer_staleness_metrics():
     buffer, _ = make_buffer(max_groups=8)
     await put_group(buffer, make_group(1, weight_versions=["4"]))
@@ -514,13 +504,13 @@ async def test_buffer_staleness_metrics():
 
 async def test_drain_reports_eviction_metrics(monkeypatch):
     fn = make_fn(
-        monkeypatch, make_args(async_data_buffer_max_batches=4, async_stale_samples_handler="retry"), FakeDataSource()
+        monkeypatch, make_args(async_data_buffer_max_batches=4, async_unused_samples_handler="retry"), FakeDataSource()
     )
     await fn(RolloutFnTrainInput(rollout_id=0))
 
     # Evictions land in the buffer counters between drains; the racy overflow
     # path itself is covered by the DataBuffer tests above.
-    assert fn._output._stale_handler_fn == fn._recycle
+    assert fn._output._unused_handler_fn == fn._recycle
     fn._output._metric_entered_groups += 8
     fn._output._metric_evicted_stale_groups = 1
     fn._output._metric_evicted_overflow_groups = 2
@@ -546,12 +536,13 @@ class RecordingBuffer(data_buffer.DefaultDataBuffer):
 
 async def test_custom_data_buffer_path_replaces_default(monkeypatch):
     path = f"{__name__}.RecordingBuffer"
-    fn = make_fn(monkeypatch, make_args(custom_async_data_buffer_path=path), FakeDataSource())
+    args = make_args(custom_async_data_buffer_path=path, async_unused_samples_handler="retry")
+    fn = make_fn(monkeypatch, args, FakeDataSource())
 
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
     assert type(fn._output) is RecordingBuffer
-    assert RecordingBuffer.constructed_with.recycle_fn == fn._recycle
+    assert RecordingBuffer.constructed_with.unused_handler_fn == fn._recycle
     assert len(output.samples) == 2
 
 

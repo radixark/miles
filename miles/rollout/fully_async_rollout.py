@@ -86,9 +86,9 @@ class FullyAsyncRolloutFn:
     """Continuous rollout generation decoupled from training steps.
 
     The worker runs as a long-lived task on the shared rollout event loop, created
-    lazily on the first train call. Groups whose samples were aborted (e.g. by a
-    weight update pausing generation) or whose weights are older than
-    ``--max-weight-staleness`` are recycled back into the data source.
+    lazily on the first train call. Groups that never reach training — aborted,
+    beyond ``--max-weight-staleness``, or evicted by the data buffer — go to
+    ``--async-unused-samples-handler``.
     """
 
     def __init__(self, input: RolloutFnConstructorInput):
@@ -97,6 +97,11 @@ class FullyAsyncRolloutFn:
         self.state = GenerateState(input.args)
         # default to sample level backfill for fully async rollout
         self._scheduler = make_submission_scheduler(input.args, default="sample")
+        assert input.args.async_unused_samples_handler in ("retry", "drop")
+        # applied to every group we do not train on; "drop" discards instead of recycling
+        self._handle_unused = (
+            self._recycle if input.args.async_unused_samples_handler == "retry" else (lambda prompt_group: None)
+        )
         self._dynamic_filter = load_function(input.args.dynamic_sampling_filter_path)
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._weight_version = _CachedWeightVersion()
@@ -111,7 +116,9 @@ class FullyAsyncRolloutFn:
             return await self._call_eval(input)
         if self._worker is None:
             buffer_cls = load_function(self.args.custom_async_data_buffer_path) or DefaultDataBuffer
-            self._output = buffer_cls(DataBufferConstructorInput(args=self.args, recycle_fn=self._recycle))
+            self._output = buffer_cls(
+                DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
+            )
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
         return await self._drain(input.rollout_id)
@@ -201,7 +208,7 @@ class FullyAsyncRolloutFn:
 
         target_data_size = args.rollout_batch_size
         data: list[Group] = []
-        aborted_groups_recycled = 0
+        aborted_groups_filtered = 0
         stale_groups_filtered = 0
         staleness_values: list[int] = []
         metric_gatherer = MetricGatherer()
@@ -215,8 +222,8 @@ class FullyAsyncRolloutFn:
             # Corner case (weight updates retract rather than abort): the generate
             # function gave up on the group, e.g. an agentic collect timeout.
             if any(s.status == Sample.Status.ABORTED for s in iter_samples(group)):
-                self._recycle(entry.prompt_group)
-                aborted_groups_recycled += 1
+                self._handle_unused(entry.prompt_group)
+                aborted_groups_filtered += 1
                 continue
 
             oldest = group_oldest_weight_version(group)
@@ -225,13 +232,11 @@ class FullyAsyncRolloutFn:
                 staleness = current - oldest
                 staleness_values.append(staleness)
                 if args.max_weight_staleness is not None and staleness > args.max_weight_staleness:
-                    retry = args.async_stale_samples_handler == "retry"
-                    if retry:
-                        self._recycle(entry.prompt_group)
+                    self._handle_unused(entry.prompt_group)
                     stale_groups_filtered += 1
                     logger.info(
-                        f"{'Recycled' if retry else 'Dropped'} stale group (oldest_version={oldest}, "
-                        f"current={current}, staleness={staleness} > max={args.max_weight_staleness})"
+                        f"Filtered stale group (oldest_version={oldest}, current={current}, "
+                        f"staleness={staleness} > max={args.max_weight_staleness})"
                     )
                     continue
 
@@ -263,7 +268,7 @@ class FullyAsyncRolloutFn:
             self._sample_filter(args, data)
 
         metrics = {
-            "rollout/fully_async/aborted_groups_recycled": aborted_groups_recycled,
+            "rollout/fully_async/aborted_groups_filtered": aborted_groups_filtered,
             "rollout/fully_async/stale_groups_filtered": stale_groups_filtered,
             **{f"rollout/fully_async/{key}": value for key, value in self._output.get_metrics().items()},
             **metric_gatherer.collect(),

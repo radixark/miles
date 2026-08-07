@@ -699,14 +699,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--async-stale-samples-handler",
+                "--async-unused-samples-handler",
                 type=str,
                 choices=["retry", "drop"],
                 default="drop",
                 help=(
-                    "What to do with a finished group the fully async data buffer evicts or the "
-                    "drain filters as older than --max-weight-staleness: drop (default) discards "
-                    "the group; retry recycles its prompts into the data source for regeneration."
+                    "What to do with a finished group fully async mode does not train on, whatever "
+                    "the reason (aborted, beyond --max-weight-staleness, evicted by the data "
+                    "buffer): drop (default) discards the group; retry recycles its prompts into "
+                    "the data source for regeneration."
                 ),
             )
             parser.add_argument(

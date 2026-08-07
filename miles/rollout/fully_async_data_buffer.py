@@ -38,7 +38,7 @@ def group_oldest_weight_version(group: Group) -> int | None:
 @dataclass(frozen=True)
 class DataBufferConstructorInput:
     args: Namespace
-    recycle_fn: Callable[[list[Sample]], None]  # resets prompts and returns them to the data source
+    unused_handler_fn: Callable[[list[Sample]], None]  # --async-unused-samples-handler, applied to evicted groups
 
 
 @dataclass
@@ -78,7 +78,7 @@ class DefaultDataBuffer(DataBuffer):
         of the buffer, in multiples of rollout_batch_size. On overflow the most
         stale groups are evicted; 0 disables eviction and blocks the producer
         when the buffer is full.
-    (2) eviction handling: ``--async-stale-samples-handler`` decides what
+    (2) eviction handling: ``--async-unused-samples-handler`` decides what
         happens to an evicted group: drop discards it, retry recycles its
         prompts for regeneration.
     """
@@ -86,17 +86,13 @@ class DefaultDataBuffer(DataBuffer):
     def __init__(self, input: DataBufferConstructorInput):
         args = input.args
         assert args.async_data_buffer_max_batches >= 0
-        assert args.async_stale_samples_handler in ("retry", "drop")
         self._args = args
         self._capacity = (
             args.async_data_buffer_max_batches * args.rollout_batch_size
             if args.async_data_buffer_max_batches
             else 1000  # legacy blocking bound
         )
-        # "drop" discards evicted groups instead of recycling them
-        self._stale_handler_fn = (
-            input.recycle_fn if args.async_stale_samples_handler == "retry" else (lambda prompt_group: None)
-        )
+        self._unused_handler_fn = input.unused_handler_fn
         self._buffer: list[DataBufferInput] = []
         self._cond = asyncio.Condition()
         self._latest_weight_version: int | None = None
@@ -176,4 +172,4 @@ class DefaultDataBuffer(DataBuffer):
                 self._metric_evicted_stale_groups += 1
             else:
                 self._metric_evicted_overflow_groups += 1
-            self._stale_handler_fn(entry.prompt_group)
+            self._unused_handler_fn(entry.prompt_group)
