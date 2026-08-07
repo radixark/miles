@@ -75,7 +75,7 @@ def make_args(**overrides) -> Namespace:
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
-        async_data_buffer_max_batches=0,
+        async_data_buffer_capacity_factor=1000.0,
         async_unused_samples_handler="drop",
         custom_async_data_buffer_path=None,
         rollout_submission_granularity=None,
@@ -365,14 +365,18 @@ def reject_group_1(args, group, **kwargs):
 async def test_dynamic_filter_drops_group_without_recycling(monkeypatch):
     rejected = make_group(1)
     data_source = FakeDataSource(scripted=[rejected])
-    args = make_args(rollout_batch_size=1, dynamic_sampling_filter_path=f"{__name__}.reject_group_1")
+    args = make_args(
+        rollout_batch_size=1,
+        dynamic_sampling_filter_path=f"{__name__}.reject_group_1",
+        async_unused_samples_handler="retry",
+    )
     fn = make_fn(monkeypatch, args, data_source)
 
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
     assert len(output.samples) == 1
     assert output.samples[0][0].group_index != 1
-    # The default "drop" handler discards it instead of returning it to the data source.
+    # Dropped even with handler="retry": filter rejections bypass the unused handler.
     assert data_source.recycled == []
     assert output.metrics["rollout/dynamic_filter/drop_rejected"] == 1
 
@@ -432,8 +436,8 @@ async def test_weight_version_maps_non_numeric_to_none(monkeypatch):
 def make_buffer(max_groups=None, max_staleness=None):
     evicted = []
     args = make_args(
-        rollout_batch_size=1,  # capacity is in batches; batch size 1 makes it count groups
-        async_data_buffer_max_batches=max_groups or 0,
+        rollout_batch_size=1,  # capacity is factor * batch size; batch size 1 makes it count groups
+        async_data_buffer_capacity_factor=max_groups or 1000.0,
         max_weight_staleness=max_staleness,
     )
     buffer = data_buffer.DefaultDataBuffer(
@@ -516,7 +520,9 @@ async def test_buffer_staleness_metrics():
 
 async def test_drain_reports_eviction_metrics(monkeypatch):
     fn = make_fn(
-        monkeypatch, make_args(async_data_buffer_max_batches=4, async_unused_samples_handler="retry"), FakeDataSource()
+        monkeypatch,
+        make_args(async_data_buffer_capacity_factor=4, async_unused_samples_handler="retry"),
+        FakeDataSource(),
     )
     await fn(RolloutFnTrainInput(rollout_id=0))
 

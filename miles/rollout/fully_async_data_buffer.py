@@ -93,29 +93,29 @@ class DefaultDataBuffer(DataBuffer):
 
     Dataflow control options:
 
-    (1) max groups: use ``--async-data-buffer-max-batches`` to set the max size
-        of the buffer, in multiples of rollout_batch_size. On overflow the most
-        stale groups are evicted; 0 disables eviction and blocks the producer
-        when the buffer is full.
+    (1) max groups: use ``--async-data-buffer-capacity-factor`` to set the max
+        size of the buffer, floor(factor * rollout_batch_size) groups. On
+        overflow the most stale groups are evicted.
     (2) unused handling: ``--async-unused-samples-handler`` decides what happens
-        to every group above: drop discards it, retry recycles its prompts for
-        regeneration.
+        to aborted, stale, and evicted groups: drop discards them, retry
+        recycles their prompts for regeneration. Dynamic-filter groups are
+        processed per the filter's ``keep``.
     """
 
     def __init__(self, input: DataBufferConstructorInput):
         args = input.args
-        assert args.async_data_buffer_max_batches >= 0
         self._args = args
-        self._capacity = (
-            args.async_data_buffer_max_batches * args.rollout_batch_size
-            if args.async_data_buffer_max_batches
-            else 1000  # legacy blocking bound
-        )
+
+        self._buffer: list[DataBufferInput] = []
+        assert args.async_data_buffer_capacity_factor > 0
+        self._capacity = int(args.async_data_buffer_capacity_factor * args.rollout_batch_size)
+        assert self._capacity >= 1
+
         self._unused_handler_fn = input.unused_handler_fn
         self._dynamic_filter = load_function(args.dynamic_sampling_filter_path)
-        self._buffer: list[DataBufferInput] = []
         self._cond = asyncio.Condition()
         self._current_version: int | None = None
+
         self._metric_gatherer = MetricGatherer()
         self._metric_entered_groups = 0
         self._metric_aborted_groups = 0
@@ -126,25 +126,22 @@ class DefaultDataBuffer(DataBuffer):
 
     async def put(self, input: DataBufferInput) -> None:
         self._track_version(input.weight_version)
+
+        # filters at receiving sample: abort filter, dynamic filter
         if any(s.status == Sample.Status.ABORTED for s in iter_samples(input.group)):
             self._metric_aborted_groups += 1
             self._unused_handler_fn(input.prompt_group)
             return
         filter_output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
         if not filter_output.keep:
+            # Dropped, not recycled: no usable gradient signal.
             self._metric_gatherer.on_dynamic_filter_drop(reason=filter_output.reason)
-            self._unused_handler_fn(input.prompt_group)
             return
 
         async with self._cond:
-            if self._args.async_data_buffer_max_batches > 0:
-                self._buffer.append(input)
-                if len(self._buffer) > self._capacity:
-                    self._evict_overflow()
-            else:
-                while len(self._buffer) >= self._capacity:
-                    await self._cond.wait()
-                self._buffer.append(input)
+            self._buffer.append(input)
+            if len(self._buffer) > self._capacity:
+                self._evict_overflow()
             self._metric_entered_groups += 1
             self._cond.notify_all()
 
@@ -155,8 +152,8 @@ class DefaultDataBuffer(DataBuffer):
                 while not self._buffer:
                     await self._cond.wait()
                 entry = self._buffer.pop(0)
-                self._cond.notify_all()
 
+                # filters at retrieving sample: staleness filter
                 staleness = self._staleness(entry.group, current_version)
                 if staleness is None:
                     return entry

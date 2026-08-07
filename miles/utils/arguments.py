@@ -685,17 +685,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--async-data-buffer-max-batches",
-                type=int,
-                default=2,
+                "--async-data-buffer-capacity-factor",
+                type=float,
+                default=2.0,
                 help=(
                     "Capacity of the finished-group data buffer between rollout production and "
-                    "training consumption in fully async mode, in multiples of rollout_batch_size. "
+                    "training consumption in fully async mode, as a multiple of rollout_batch_size "
+                    "(floor(factor * rollout_batch_size) groups). "
                     "When production outruns consumption past this bound, the stalest groups are "
-                    "evicted and their prompts recycled for regeneration (groups beyond "
-                    "--max-weight-staleness first), so the producer never blocks and queued data "
-                    "stays fresh. 0 disables the cap and restores the legacy behavior: a large "
-                    "bound that blocks the producer when full."
+                    "evicted (groups beyond --max-weight-staleness first) and handed to "
+                    "--async-unused-samples-handler, so the producer never blocks and queued data "
+                    "stays fresh."
                 ),
             )
             parser.add_argument(
@@ -704,10 +704,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=["retry", "drop"],
                 default="drop",
                 help=(
-                    "What to do with a finished group fully async mode does not train on, whatever "
-                    "the reason (aborted, beyond --max-weight-staleness, evicted by the data "
-                    "buffer): drop (default) discards the group; retry recycles its prompts into "
-                    "the data source for regeneration."
+                    "What to do with a finished group fully async mode does not train on "
+                    "(aborted, beyond --max-weight-staleness, evicted by the data buffer): drop "
+                    "(default) discards the group; retry recycles its prompts into the data "
+                    "source for regeneration. Groups rejected by "
+                    "--dynamic-sampling-filter-path are always dropped."
                 ),
             )
             parser.add_argument(
