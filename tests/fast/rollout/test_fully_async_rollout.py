@@ -7,7 +7,6 @@ from argparse import Namespace
 from collections import deque
 from dataclasses import replace
 
-import httpx
 import pytest
 
 import miles.rollout.fully_async_rollout as fully_async
@@ -220,13 +219,7 @@ async def test_stale_group_recycled(monkeypatch):
 
     fn = make_fn(monkeypatch, make_args(rollout_batch_size=1, max_weight_staleness=2), data_source)
 
-    class FakeWeightVersion:
-        async def get(self, args):
-            return 10
-
-    fn._weight_version = FakeWeightVersion()
-
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
+    output = await fn(RolloutFnTrainInput(rollout_id=0, weight_version=10))
 
     assert data_source.recycled == [stale]
     assert output.metrics["rollout/fully_async/stale_groups_recycled"] == 1
@@ -362,27 +355,17 @@ async def test_sample_filter_marks_samples_without_shrinking_the_batch(monkeypat
     assert [sample.remove_sample for sample in output.samples[0]] == [True, False]
 
 
-async def test_weight_version_throttles_failed_queries(monkeypatch):
-    """A drain queries once per group, so an unreachable router must not cost one timeout each."""
-    calls = []
+async def test_staleness_filter_off_before_the_first_weight_update(monkeypatch):
+    """weight_version is None until the trainer pushes weights; staleness is unknown, not zero."""
+    stale = make_group(1, weight_versions=["5"])
+    data_source = FakeDataSource(scripted=[stale])
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1, max_weight_staleness=0), data_source)
 
-    async def unreachable_router(url):
-        calls.append(url)
-        raise httpx.ConnectError("router down")
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
 
-    monkeypatch.setattr(fully_async, "get", unreachable_router)
-    args = make_args()
-
-    throttled = fully_async._CachedWeightVersion(ttl=60.0)
-    assert await throttled.get(args) is None
-    assert await throttled.get(args) is None
-    assert len(calls) == 1
-
-    calls.clear()
-    expired = fully_async._CachedWeightVersion(ttl=0.0)
-    assert await expired.get(args) is None
-    assert await expired.get(args) is None
-    assert len(calls) == 2
+    assert data_source.recycled == []
+    assert output.samples[0][0].group_index == 1
+    assert "rollout/fully_async/max_staleness" not in output.metrics
 
 
 async def test_worker_defaults_to_sample_granularity(monkeypatch):
