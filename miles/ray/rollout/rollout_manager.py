@@ -377,9 +377,9 @@ class RolloutManager:
         )
 
     def set_weight_version(self, weight_version: int):
+        # warning instead of assert when use indep_dp ft
         if self.weight_version is not None and weight_version < self.weight_version:
             message = f"Engine weight version went backwards: {self.weight_version} -> {weight_version}"
-            # warning instead of assert when use indep_dp ft
             assert self.args.indep_dp, message
             logger.warning(message)
         self.weight_version = weight_version
