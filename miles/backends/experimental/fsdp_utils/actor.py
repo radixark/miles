@@ -2,7 +2,7 @@ import logging
 import os
 import random
 from argparse import Namespace
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
 import ray
@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
+from miles.backends.experimental.fsdp_utils.adaptations import routing_replay
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
@@ -20,7 +21,6 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.processing_utils import load_processor, load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
-from miles.utils.replay_base import routing_replay_manager
 from miles.utils.tracking_utils.tracking import init_tracking
 
 from ....utils.profile_utils import TrainProfiler
@@ -34,11 +34,9 @@ from ...training_utils.log_utils import (
 )
 from ...training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
 from ...training_utils.parallel import get_parallel_state, set_parallel_state
-from ...training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from . import checkpoint
 from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
 from .adaptations.packing import apply_packing
-from .adaptations.routing_replay import install_routing_replay
 from .adaptations.post_load_fixups import apply_post_load_fixups
 from .adaptations.precision import apply_fp32_master, precision_forward_context, resolve_precision_policy
 from .lr_scheduler import get_lr_scheduler
@@ -50,26 +48,6 @@ if TYPE_CHECKING:
     from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
-
-
-def resolve_routing_replay_enabled(args) -> bool:
-    """--use-rollout-routing-replay sets use_routing_replay during arg validation."""
-    return bool(getattr(args, "use_routing_replay", False))
-
-
-@contextmanager
-def routing_replay_stage(stage: str):
-    """Run a block with the replay manager in ``stage``, restoring the previous stage after.
-
-    Nesting a ``replay_forward`` forward inside a ``replay_backward`` step is what lets
-    activation-checkpoint recompute draw from the independent backward cursor.
-    """
-    previous = routing_replay_manager.stage
-    routing_replay_manager.stage = stage
-    try:
-        yield
-    finally:
-        routing_replay_manager.stage = previous
 
 
 class FSDPTrainRayActor(TrainRayActor):
@@ -139,10 +117,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
 
-        # Settled before the model is built, since install_routing_replay reads it.
-        routing_replay_manager.enabled = resolve_routing_replay_enabled(args)
-        routing_replay_manager.enable_check_replay_result = routing_replay_manager.enabled and args.ci_test
-        routing_replay_manager.register_replay_list_func = register_replay_list_sequential
+        routing_replay.enable(args)
 
         # FSDP trains stock HF modeling: HF-compat patches + config-lifetime packing, before construction.
         apply_class_patches(self.hf_config, self.args)
@@ -161,9 +136,7 @@ class FSDPTrainRayActor(TrainRayActor):
             )
 
         apply_model_instance_patches(model, self.hf_config, self.args)
-        # Actor only: a second registration from _create_ref_model would double manager.replays
-        # and invalidate every stream_idx.
-        install_routing_replay(model, self.hf_config)
+        routing_replay.install(model, self.hf_config)
         if self.precision_policy.keep_fp32_master:
             model = apply_fp32_master(model, self.precision_policy.sync_dtype_resolver)
 
@@ -471,32 +444,10 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self._heartbeat.bump()
 
-    def _fill_routing_replay(self, data_iterator, num_microbatches, rollout_data) -> None:
-        """Load the rollout's routing into the per-layer replay queues.
-
-        Takes the iterator list rather than a single iterator: fill_replay_data resets every
-        element and reads through element 0.
-        """
-        if not getattr(self.args, "use_rollout_routing_replay", False):
-            return
-
-        fill_replay_data(
-            args=self.args,
-            models=self.model,
-            data_iterator=data_iterator,
-            num_microbatches=num_microbatches,
-            rollout_data=rollout_data,
-            data_key=routing_replay_manager.data_key,
-            replay_list=routing_replay_manager.replays,
-            register_replay_list_func=routing_replay_manager.register_replay_list_func,
-            if_sp_region=routing_replay_manager.if_sp_region,
-            indices_are_token_positions=routing_replay_manager.replay_indices_are_token_positions,
-        )
-
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
 
-        self._fill_routing_replay(data_iterator, num_microbatches, rollout_data)
+        routing_replay.fill(self.args, self.model, data_iterator, num_microbatches, rollout_data)
 
         data_iterator = data_iterator[0]
 
@@ -505,20 +456,20 @@ class FSDPTrainRayActor(TrainRayActor):
         ), f"Invalid num_microbatches {num_microbatches} for micro_batch_size {self.args.micro_batch_size} and global_batch_size {self.args.global_batch_size}"
 
         if self.ref_model is not None:
-            with routing_replay_stage("fallthrough"):
+            with routing_replay.stage(routing_replay.FALLTHROUGH):
                 ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
             rollout_data.update(ref_results)
 
-        with routing_replay_stage("replay_forward" if routing_replay_manager.enabled else "fallthrough"):
+        with routing_replay.stage(routing_replay.log_prob_stage(self.args)):
             actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
-        routing_replay_manager.clear_all_forward()
+        routing_replay.rewind()
         rollout_data.update(actor_results)
 
         compute_advantages_and_returns(self.args, rollout_data)
 
         log_rollout_data(rollout_id, self.args, rollout_data)
 
-        with routing_replay_stage("replay_backward"), timer("actor_train"):
+        with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
             data_iterator.reset()
             num_steps_per_rollout = len(num_microbatches)
 
@@ -589,7 +540,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     extra_metrics=extra_metrics,
                 )
 
-        routing_replay_manager.clear_all()
+        routing_replay.reset()
 
         self.prof.step(rollout_id=rollout_id)
 
@@ -610,7 +561,7 @@ class FSDPTrainRayActor(TrainRayActor):
     def _train_step(self, batch, step_id, num_microbatches):
         model_args = self._get_model_inputs_args(batch)
         # bf16 logits (see log_probs phase); per-response chunks are upcast to fp32 in the loss path.
-        with routing_replay_stage("replay_forward"), precision_forward_context(self.precision_policy):
+        with routing_replay.stage(routing_replay.REPLAY_FORWARD), precision_forward_context(self.precision_policy):
             logits = self.model(**model_args).logits
 
         loss, normalizer, log_dict = loss_function(

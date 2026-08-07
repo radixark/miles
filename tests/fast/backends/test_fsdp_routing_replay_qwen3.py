@@ -6,10 +6,10 @@ import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from miles.backends.experimental.fsdp_utils.models.routing_replay import install_qwen3_router_replay
-from miles.utils.replay_base import routing_replay_manager
 from tests.fast.fixtures.replay_fixtures import reset_routing_replay_manager, wire_replay
+
+from miles.backends.experimental.fsdp_utils.models.replay_routers import install_qwen3_router_replay
+from miles.utils.replay_base import routing_replay_manager
 
 
 class _Qwen3MoeTopKRouter(nn.Module):
@@ -128,9 +128,7 @@ def test_specs_register_adapters_for_the_real_model_types():
     from types import SimpleNamespace
 
     import miles.backends.experimental.fsdp_utils.adaptations.specs  # noqa: F401
-    from miles.backends.experimental.fsdp_utils.adaptations.routing_replay import (
-        resolve_routing_replay_adapter,
-    )
+    from miles.backends.experimental.fsdp_utils.adaptations.routing_replay import resolve_routing_replay_adapter
 
     qwen3_moe = resolve_routing_replay_adapter(SimpleNamespace(model_type="qwen3_moe"))
     assert qwen3_moe is not None

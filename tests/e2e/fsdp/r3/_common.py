@@ -23,7 +23,6 @@ class CaseConfig:
     hf_repo: str
     num_gpus: int
     rollout_num_gpus_per_engine: int
-    use_r3: bool = True
 
 
 def prepare(case: CaseConfig) -> None:
@@ -76,7 +75,7 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
         "--max-tokens-per-gpu 8192 "
     )
 
-    replay_args = "--use-rollout-routing-replay " if case.use_r3 else ""
+    replay_args = "--use-rollout-routing-replay "
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} "

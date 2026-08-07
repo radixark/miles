@@ -12,7 +12,7 @@ from miles.utils.replay_base import routing_replay_manager
 def _qwen3_router_forward(self, hidden_states):
     hidden_states = hidden_states.reshape(-1, self.hidden_dim)
     router_logits = F.linear(hidden_states, self.weight)
-    router_probs = torch.nn.functional.softmax(router_logits, dtype=torch.float, dim=-1)
+    router_probs = F.softmax(router_logits, dtype=torch.float, dim=-1)
     router_top_value, router_indices = self._miles_replay_topk(router_probs, self.top_k)
     if getattr(self, "norm_topk_prob", True):
         router_top_value = router_top_value / router_top_value.sum(dim=-1, keepdim=True)

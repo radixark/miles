@@ -7,13 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch.nn as nn
 
-from miles.backends.experimental.fsdp_utils.adaptations import routing_replay as rr
-from miles.backends.experimental.fsdp_utils.adaptations.routing_replay import (
-    RoutingReplayAdapter,
-    discover_moe_modules,
-    install_routing_replay,
-    register_routing_replay_adapter,
-)
+from miles.backends.experimental.fsdp_utils.adaptations import routing_replay
 from miles.utils.replay_base import routing_replay_manager
 
 
@@ -45,12 +39,12 @@ def _model_with_layers(kinds):
 
 @pytest.fixture(autouse=True)
 def _reset_manager():
-    saved_adapters = list(rr._ADAPTERS)
+    saved_adapters = list(routing_replay._ADAPTERS)
     routing_replay_manager.enabled = False
     routing_replay_manager.replays = []
     routing_replay_manager.current = None
     yield
-    rr._ADAPTERS[:] = saved_adapters
+    routing_replay._ADAPTERS[:] = saved_adapters
     routing_replay_manager.enabled = False
     routing_replay_manager.replays = []
     routing_replay_manager.current = None
@@ -58,13 +52,13 @@ def _reset_manager():
 
 def test_discover_returns_global_layer_index_skipping_dense():
     model = _model_with_layers(["dense"] + ["moe"] * 4)
-    found = discover_moe_modules(model, "_FakeRouter")
+    found = routing_replay.discover_moe_modules(model, "_FakeRouter")
     assert [idx for idx, _ in found] == [1, 2, 3, 4]
 
 
 def test_discover_is_sorted_by_layer_index():
     model = _model_with_layers(["moe"] * 12)
-    found = discover_moe_modules(model, "_FakeRouter")
+    found = routing_replay.discover_moe_modules(model, "_FakeRouter")
     assert [idx for idx, _ in found] == list(range(12))
 
 
@@ -72,19 +66,19 @@ def test_discover_finds_layers_behind_an_extra_wrapper():
     model = _model_with_layers(["moe"] * 3)
     outer = nn.Module()
     outer.language_model = model
-    assert [idx for idx, _ in discover_moe_modules(outer, "_FakeRouter")] == [0, 1, 2]
+    assert [idx for idx, _ in routing_replay.discover_moe_modules(outer, "_FakeRouter")] == [0, 1, 2]
 
 
 def test_install_assigns_stream_idx_equal_to_global_layer_index():
     routing_replay_manager.enabled = True
-    register_routing_replay_adapter(
-        RoutingReplayAdapter(
+    routing_replay.register_routing_replay_adapter(
+        routing_replay.RoutingReplayAdapter(
             name="fake", applies_to=lambda cfg: True, module_cls_name="_FakeRouter", install=lambda m: None
         )
     )
     model = _model_with_layers(["dense", "moe", "moe"])
 
-    count = install_routing_replay(model, SimpleNamespace(model_type="fake"))
+    count = routing_replay.install(model, SimpleNamespace(model_type="fake"))
 
     assert count == 2
     assert [r.stream_idx for r in routing_replay_manager.replays] == [1, 2]
@@ -93,8 +87,8 @@ def test_install_assigns_stream_idx_equal_to_global_layer_index():
 def test_install_calls_the_adapter_once_per_moe_layer():
     routing_replay_manager.enabled = True
     installed = []
-    register_routing_replay_adapter(
-        RoutingReplayAdapter(
+    routing_replay.register_routing_replay_adapter(
+        routing_replay.RoutingReplayAdapter(
             name="fake_counted",
             applies_to=lambda cfg: getattr(cfg, "model_type", None) == "fake_counted",
             module_cls_name="_FakeRouter",
@@ -103,7 +97,7 @@ def test_install_calls_the_adapter_once_per_moe_layer():
     )
     model = _model_with_layers(["dense", "moe", "moe", "moe"])
 
-    install_routing_replay(model, SimpleNamespace(model_type="fake_counted"))
+    routing_replay.install(model, SimpleNamespace(model_type="fake_counted"))
 
     assert len(installed) == 3
     assert all(isinstance(m, _FakeRouter) for m in installed)
@@ -111,21 +105,21 @@ def test_install_calls_the_adapter_once_per_moe_layer():
 
 def test_install_is_a_noop_when_manager_disabled():
     routing_replay_manager.enabled = False
-    register_routing_replay_adapter(
-        RoutingReplayAdapter(
+    routing_replay.register_routing_replay_adapter(
+        routing_replay.RoutingReplayAdapter(
             name="fake_off", applies_to=lambda cfg: True, module_cls_name="_FakeRouter", install=lambda m: None
         )
     )
     model = _model_with_layers(["moe", "moe"])
 
-    assert install_routing_replay(model, SimpleNamespace(model_type="fake_off")) == 0
+    assert routing_replay.install(model, SimpleNamespace(model_type="fake_off")) == 0
     assert routing_replay_manager.replays == []
 
 
 def test_install_raises_when_no_adapter_matches():
     routing_replay_manager.enabled = True
-    register_routing_replay_adapter(
-        RoutingReplayAdapter(
+    routing_replay.register_routing_replay_adapter(
+        routing_replay.RoutingReplayAdapter(
             name="picky",
             applies_to=lambda cfg: getattr(cfg, "model_type", None) == "something_else",
             module_cls_name="_FakeRouter",
@@ -133,13 +127,13 @@ def test_install_raises_when_no_adapter_matches():
         )
     )
     with pytest.raises(ValueError, match="no routing-replay adapter"):
-        install_routing_replay(_model_with_layers(["moe"]), SimpleNamespace(model_type="unknown_arch"))
+        routing_replay.install(_model_with_layers(["moe"]), SimpleNamespace(model_type="unknown_arch"))
 
 
 def test_install_raises_when_adapter_matches_but_finds_no_layers():
     routing_replay_manager.enabled = True
-    register_routing_replay_adapter(
-        RoutingReplayAdapter(
+    routing_replay.register_routing_replay_adapter(
+        routing_replay.RoutingReplayAdapter(
             name="empty",
             applies_to=lambda cfg: getattr(cfg, "model_type", None) == "empty",
             module_cls_name="_NotPresent",
@@ -147,4 +141,4 @@ def test_install_raises_when_adapter_matches_but_finds_no_layers():
         )
     )
     with pytest.raises(ValueError, match="found no MoE layers"):
-        install_routing_replay(_model_with_layers(["moe"]), SimpleNamespace(model_type="empty"))
+        routing_replay.install(_model_with_layers(["moe"]), SimpleNamespace(model_type="empty"))

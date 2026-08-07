@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
-
-from miles.backends.experimental.fsdp_utils.models.routing_replay import install_glm4_moe_lite_router_replay
-from miles.utils.replay_base import routing_replay_manager
 from tests.fast.fixtures.replay_fixtures import reset_routing_replay_manager, wire_replay
+
+from miles.backends.experimental.fsdp_utils.models.replay_routers import install_glm4_moe_lite_router_replay
+from miles.utils.replay_base import routing_replay_manager
 
 
 class _Gate(nn.Module):
@@ -156,9 +156,7 @@ def test_gradients_flow_to_the_router_logits_under_replay():
 
 def test_spec_registers_the_glm_adapter():
     import miles.backends.experimental.fsdp_utils.adaptations.specs  # noqa: F401
-    from miles.backends.experimental.fsdp_utils.adaptations.routing_replay import (
-        resolve_routing_replay_adapter,
-    )
+    from miles.backends.experimental.fsdp_utils.adaptations.routing_replay import resolve_routing_replay_adapter
 
     adapter = resolve_routing_replay_adapter(SimpleNamespace(model_type="glm4_moe_lite"))
     assert adapter is not None
