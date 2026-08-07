@@ -377,6 +377,11 @@ class RolloutManager:
         )
 
     def set_weight_version(self, weight_version: int):
+        if self.weight_version is not None and weight_version < self.weight_version:
+            # The updater counter is per-actor and not checkpointed, so an FT failover to
+            # another cell restarts it; staleness would then go negative and admit the
+            # most off-policy groups instead of filtering them.
+            logger.warning(f"Engine weight version went backwards: {self.weight_version} -> {weight_version}")
         self.weight_version = weight_version
 
     def set_train_parallel_config(self, config: dict):
