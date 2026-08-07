@@ -149,7 +149,7 @@ def execute(args: ScriptArgs):
         # 0.0.0.0 so the NeMo-Gym host can dial in on any interface (e.g. a
         # tailnet address); internal calls resolve it to localhost.
         "--session-server-ip 0.0.0.0 "
-        "--session-server-port 30000 "
+        "--session-server-port 29000 "
         "--tito-model qwen3 "
     )
 

@@ -2,21 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
-import httpx
 import pytest
 
-from miles.utils.ft_utils.control_server.models import (
-    Cell,
-    CellCondition,
-    CellMetadata,
-    CellSpec,
-    CellStatus,
-    TriState,
-)
+from miles.utils.arguments import _resolve_mini_ft_controller_enable
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.ft_utils.mini_ft_controller import (
     CellHealthStatus,
     _CellSnapshot,
@@ -101,7 +93,7 @@ def _build_cell_json(
         "kind": "Cell",
         "metadata": {
             "name": name,
-            "labels": {"miles.io/cell-type": "actor", "miles.io/cell-index": "0"},
+            "labels": {"miles.io/cell-type": "actor", "miles.io/cell-id": name},
         },
         "spec": {"suspend": False},
         "status": {
@@ -114,30 +106,37 @@ def _build_cell_json(
     }
 
 
-def _build_cell_list_json(cells: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"apiVersion": "miles.io/v1", "kind": "CellList", "items": cells}
+class _FakeHandler:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def suspend(self, cell_id: str) -> None:
+        self.calls.append(("suspend", cell_id))
+
+    async def resume(self, cell_id: str) -> None:
+        self.calls.append(("resume", cell_id))
 
 
-def _create_runner() -> _MiniFTControllerRunner:
+class _FakeRegistry:
+    def __init__(self, cells: list[dict[str, Any]] | None = None) -> None:
+        self._cells = [Cell.model_validate(cell) for cell in (cells or [])]
+        self.handler = _FakeHandler()
+        self.resolved: list[str] = []
+
+    async def list_cells(self) -> list[Cell]:
+        return self._cells
+
+    async def resolve(self, cell_id: str) -> _FakeHandler:
+        self.resolved.append(cell_id)
+        return self.handler
+
+
+def _create_runner(cells: list[dict[str, Any]] | None = None) -> _MiniFTControllerRunner:
     return _MiniFTControllerRunner(
-        control_server_url="http://127.0.0.1:8080",
+        registry=_FakeRegistry(cells),
         poll_interval=10.0,
         resume_delay=5.0,
     )
-
-
-def _mock_response(*, status_code: int = 200, json_data: Any = None) -> httpx.Response:
-    response = MagicMock(spec=httpx.Response)
-    response.status_code = status_code
-    response.json.return_value = json_data
-    response.raise_for_status = MagicMock()
-    if status_code >= 400:
-        response.raise_for_status.side_effect = httpx.HTTPStatusError(
-            message=f"HTTP {status_code}",
-            request=MagicMock(),
-            response=response,
-        )
-    return response
 
 
 # ------------------------ snapshot tests ------------------------
@@ -573,103 +572,83 @@ class TestControllerLifecycle:
 
 class TestRunnerGetCells:
     @pytest.mark.asyncio
-    async def test_parses_healthy_and_unhealthy(self) -> None:
-        """Parse CellList JSON into _CellSnapshot with correct healthy bool."""
-        runner = _create_runner()
-
-        cells_json = _build_cell_list_json(
+    async def test_the_healthy_flag_of_each_cell_survives_the_translation(self) -> None:
+        """Reading the flag backwards would either heal a live engine or leave a dead one in."""
+        runner = _create_runner(
             [
                 _build_cell_json(name="actor-0", healthy_status="True"),
                 _build_cell_json(name="actor-1", healthy_status="False"),
             ]
         )
 
-        runner._client = AsyncMock()
-        runner._client.get = AsyncMock(return_value=_mock_response(json_data=cells_json))
-
         result = await runner._get_cells()
 
-        assert len(result) == 2
-        assert result[0] == _CellSnapshot(name="actor-0", status=HEALTHY)
-        assert result[1] == _CellSnapshot(name="actor-1", status=UNHEALTHY)
+        assert result == [
+            _CellSnapshot(name="actor-0", status=HEALTHY),
+            _CellSnapshot(name="actor-1", status=UNHEALTHY),
+        ]
 
     @pytest.mark.asyncio
-    async def test_missing_healthy_condition_treated_as_not_applicable(self) -> None:
-        """Cell with no Healthy condition → status=NOT_APPLICABLE (not healed)."""
-        runner = _create_runner()
-
+    async def test_a_cell_that_reports_no_health_at_all_is_left_alone(self) -> None:
+        """A cell nobody probes is not a sick cell; healing it would recycle it forever."""
         cell_json = _build_cell_json(name="actor-0")
-        # Remove the Healthy condition, keep only Allocated
         cell_json["status"]["conditions"] = [{"type": "Allocated", "status": "True"}]
 
-        cells_json = _build_cell_list_json([cell_json])
-        runner._client = AsyncMock()
-        runner._client.get = AsyncMock(return_value=_mock_response(json_data=cells_json))
+        result = await _create_runner([cell_json])._get_cells()
 
-        result = await runner._get_cells()
+        assert result == [_CellSnapshot(name="actor-0", status=NOT_APPLICABLE)]
 
-        assert len(result) == 1
-        assert result[0] == _CellSnapshot(name="actor-0", status=NOT_APPLICABLE)
 
+class TestRunnerSuspendResume:
     @pytest.mark.asyncio
-    async def test_http_error_raises(self) -> None:
-        """Verify HTTP 4xx/5xx propagated."""
+    async def test_the_cell_is_suspended_through_its_own_handler(self) -> None:
+        """The registry is driven in-process, so healing does not need the api server's port."""
         runner = _create_runner()
-        runner._client = AsyncMock()
-        runner._client.get = AsyncMock(return_value=_mock_response(status_code=500))
-
-        with pytest.raises(httpx.HTTPStatusError):
-            await runner._get_cells()
-
-
-class TestRunnerPatchCell:
-    @pytest.mark.asyncio
-    async def test_suspend_sends_correct_patch(self) -> None:
-        """Verify PATCH body for suspend uses CellPatch model."""
-        runner = _create_runner()
-        runner._client = AsyncMock()
-        runner._client.patch = AsyncMock(return_value=_mock_response())
 
         await runner._suspend_cell("actor-0")
 
-        runner._client.patch.assert_called_once()
-        call_args = runner._client.patch.call_args
-        assert call_args[0][0] == "/api/v1/cells/actor-0"
-        body = json.loads(call_args[1]["content"])
-        assert body == {"spec": {"suspend": True}}
+        assert runner._registry.resolved == ["actor-0"]
+        assert runner._registry.handler.calls == [("suspend", "actor-0")]
 
     @pytest.mark.asyncio
-    async def test_resume_sends_correct_patch(self) -> None:
-        """Verify PATCH body for resume uses CellPatch model."""
+    async def test_the_cell_is_resumed_through_its_own_handler(self) -> None:
+        """Resuming a different cell than the one suspended would strand the suspended one."""
         runner = _create_runner()
-        runner._client = AsyncMock()
-        runner._client.patch = AsyncMock(return_value=_mock_response())
 
         await runner._resume_cell("actor-0")
 
-        runner._client.patch.assert_called_once()
-        call_args = runner._client.patch.call_args
-        assert call_args[0][0] == "/api/v1/cells/actor-0"
-        body = json.loads(call_args[1]["content"])
-        assert body == {"spec": {"suspend": False}}
+        assert runner._registry.handler.calls == [("resume", "actor-0")]
 
 
 class TestArgumentValidation:
-    def test_requires_control_server_port(self) -> None:
-        """mini_ft_controller_enable=True + control_server_port=0 → error."""
-        from miles.utils.arguments import miles_validate_args
-
+    @staticmethod
+    def _resolve(**overrides) -> bool:
         args = argparse.Namespace(
-            mini_ft_controller_enable=True,
-            control_server_port=0,
-            use_fault_tolerance=False,
-            ft_components=None,
-            eval_datasets=None,
-            eval_data=None,
-            eval_config=None,
-            eval_prompt_data=None,
-            use_miles_dashboard=False,
+            **{
+                "mini_ft_controller_enable": None,
+                "api_server_port": 0,
+                "use_fault_tolerance": False,
+                "ft_components": [],
+                **overrides,
+            }
         )
+        return _resolve_mini_ft_controller_enable(args)
 
-        with pytest.raises(ValueError, match="--mini-ft-controller-enable requires --control-server-port"):
-            miles_validate_args(args)
+    def test_asking_for_fault_tolerance_turns_the_healing_loop_on(self) -> None:
+        """The health checkers only publish a status; this loop is the only thing that acts on
+        it, so without it --use-fault-tolerance watches an engine die and leaves it there."""
+        assert self._resolve(ft_components=["rollout"]) is True
+
+    def test_a_run_without_fault_tolerance_starts_no_healing_loop(self) -> None:
+        """There is nothing to heal, and the poll would be pure overhead."""
+        assert self._resolve(ft_components=[]) is False
+
+    def test_an_explicit_choice_wins_over_the_default(self) -> None:
+        """The flag is how a run opts out of healing while keeping the health reporting."""
+        assert self._resolve(ft_components=["rollout"], mini_ft_controller_enable=False) is False
+        assert self._resolve(ft_components=[], mini_ft_controller_enable=True) is True
+
+    def test_healing_no_longer_requires_the_api_server_port(self) -> None:
+        """The port exists to let an external controller drive the run, not to let the built-in
+        one reach cells living in its own process."""
+        assert self._resolve(ft_components=["rollout"], api_server_port=0) is True

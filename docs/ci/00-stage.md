@@ -55,12 +55,16 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 **Launch.** Every stage is a thin caller of the reusable workflow `_run-ci.yml` (`uses: ./.github/workflows/_run-ci.yml`). The stage passes only `execute_command`, `runs_on`, `container_image`, and `cpu_runner`; `_run-ci.yml` owns the rest — starting the container, waiting for the GPU to be ready, reconciling Miles requirements and synchronizing external source refs for GPU jobs or installing the hosted CPU requirements, verifying source resolution, then running `execute_command` twice (once `--list-only` to print the plan, then for real). The stage itself holds no test logic; it is purely "which runner, which image, which command".
 
+**Accelerator isolation.** A GPU test file runs `train.py` under Ray, so the SGLang schedulers and Ray workers holding device memory are grandchildren of the test process; a file that dies before its own teardown leaves them running, and the next file starts on a device that is already occupied. Every accelerator suite — CUDA and ROCm alike — therefore reaps between files: before each attempt it runs `ray stop --force`, kills any surviving `sglang::` and `ray::` processes, and waits for the driver to release the memory asynchronously. The kill is process-wide, which is safe here only because each GPU stage runs in its own container with its own pid namespace (`_run-ci.yml` passes `--ipc=host` but not `--pid=host`); do not lift this into a runner that shares pids across jobs. The hosted CPU suites do not reap at all — `run_unittest_files` is itself under test there, and the kill would take down the pytest process running it.
+
 **Secrets.** Stages call the reusable workflow with `secrets: inherit`, so `_run-ci.yml` receives the caller's secrets (e.g. `WANDB_API_KEY`) without re-declaring each one.
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 
+**The ROCm lane reads its stage list from `main`.** `pr-test-rocm.yml` is a `pull_request_target` workflow, so GitHub takes its definition from `main` rather than from the PR. A branch whose base predates a stage added there fails that lane with `ValueError: Unknown suite <name> for backend ROCM` no matter what the branch itself contains, and every PR stacked on that base fails it identically. Read such a failure as "this branch is behind `main` on the ROCm stage list", not as a defect in the change under review.
+
 ## Assumptions
 
 - Suite ↔ stage stays 1:1 and is kept in sync manually across `run_suite.py` and `pr-test.yml`.
-- Runner placement assumes the live fleet actually carries the requested `runs_on` labels for each GPU class and count.
+- Runner placement assumes the live fleet actually carries the requested `runs_on` labels for each GPU class and count. A job whose runner never picks it up reports `cancelled` with an empty `runner_name` and no steps, which reads like a test failure but is capacity.
 - `est_time` only affects shard balancing and per-file timeout, never pass/fail.

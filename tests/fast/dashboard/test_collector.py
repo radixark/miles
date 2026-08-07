@@ -26,7 +26,7 @@ def make_collector(tmp_path, **kwargs) -> DashboardCollector:
     config = kwargs.pop("config", None) or CollectorConfig(
         dashboard_dir=str(tmp_path / "dashboard"), run_name="collector-test", start_ts=1.0
     )
-    return DashboardCollector(config, **kwargs)
+    return DashboardCollector(config=config, **kwargs)
 
 
 def test_collector_satisfies_dummy_telemetry_contract(tmp_path):
@@ -114,7 +114,7 @@ def test_flush_thread_persists_periodically(tmp_path):
     config = CollectorConfig(
         dashboard_dir=str(tmp_path / "dashboard"), run_name="r", start_ts=0.0, flush_interval_seconds=0.05
     )
-    collector = DashboardCollector(config)
+    collector = DashboardCollector(config=config)
     collector.start()
     collector.push_metrics(MetricsRecord(ts=1.0, step_key="rollout/step", step=0, metrics={"a": 1}))
     time.sleep(0.2)
@@ -189,7 +189,7 @@ def test_prometheus_forwarding_snapshot(tmp_path):
     config = CollectorConfig(
         dashboard_dir=str(tmp_path / "dashboard"), run_name="r", start_ts=0.0, forward_prometheus=True
     )
-    collector = DashboardCollector(config, prometheus_handle_factory=lambda: FakeHandle())
+    collector = DashboardCollector(config=config, prometheus_handle_factory=lambda: FakeHandle())
     collector.push_gpu_samples(
         "10.0.0.1", [GpuSample(ts=1.0, node="10.0.0.1", gpu=0, util=87, mem_mb=1000, power_w=600)]
     )

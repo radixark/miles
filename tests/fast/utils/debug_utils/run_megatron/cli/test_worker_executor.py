@@ -182,9 +182,9 @@ class TestBuildWorkerArgs:
 
 
 class TestBuildTorchrunCmd:
-    @patch("miles.utils.debug_utils.run_megatron.cli.worker_executor.resolve_model_script")
-    def test_basic_structure(self, mock_resolve: object) -> None:
-        mock_resolve.return_value = Path("/repo/scripts/models/deepseek_v3.sh")  # type: ignore[union-attr]
+    @patch("miles.utils.debug_utils.run_megatron.cli.worker_executor.load_model_args")
+    def test_basic_structure(self, mock_load: object) -> None:
+        mock_load.return_value = "--num-layers 61"  # type: ignore[union-attr]
         cmd = build_torchrun_cmd(
             model_type="deepseek_v3",
             megatron_path=Path("/megatron"),
@@ -192,12 +192,12 @@ class TestBuildTorchrunCmd:
             worker_args="--foo bar",
         )
         assert "torchrun" in cmd
-        assert "source" in cmd
+        assert "--num-layers 61" in cmd
         assert "PYTHONPATH" in cmd
 
-    @patch("miles.utils.debug_utils.run_megatron.cli.worker_executor.resolve_model_script")
-    def test_nproc(self, mock_resolve: object) -> None:
-        mock_resolve.return_value = Path("/repo/scripts/models/test.sh")  # type: ignore[union-attr]
+    @patch("miles.utils.debug_utils.run_megatron.cli.worker_executor.load_model_args")
+    def test_nproc(self, mock_load: object) -> None:
+        mock_load.return_value = "--num-layers 61"  # type: ignore[union-attr]
         cmd = build_torchrun_cmd(
             model_type="test",
             megatron_path=Path("/megatron"),
@@ -206,9 +206,9 @@ class TestBuildTorchrunCmd:
         )
         assert "--nproc-per-node 8" in cmd
 
-    @patch("miles.utils.debug_utils.run_megatron.cli.worker_executor.resolve_model_script")
-    def test_worker_args_in_cmd(self, mock_resolve: object) -> None:
-        mock_resolve.return_value = Path("/repo/scripts/models/test.sh")  # type: ignore[union-attr]
+    @patch("miles.utils.debug_utils.run_megatron.cli.worker_executor.load_model_args")
+    def test_worker_args_in_cmd(self, mock_load: object) -> None:
+        mock_load.return_value = "--num-layers 61"  # type: ignore[union-attr]
         cmd = build_torchrun_cmd(
             model_type="test",
             megatron_path=Path("/megatron"),
@@ -217,9 +217,9 @@ class TestBuildTorchrunCmd:
         )
         assert "--my-flag 42" in cmd
 
-    @patch("miles.utils.debug_utils.run_megatron.cli.worker_executor.resolve_model_script")
-    def test_megatron_in_pythonpath(self, mock_resolve: object) -> None:
-        mock_resolve.return_value = Path("/repo/scripts/models/test.sh")  # type: ignore[union-attr]
+    @patch("miles.utils.debug_utils.run_megatron.cli.worker_executor.load_model_args")
+    def test_megatron_in_pythonpath(self, mock_load: object) -> None:
+        mock_load.return_value = "--num-layers 61"  # type: ignore[union-attr]
         cmd = build_torchrun_cmd(
             model_type="test",
             megatron_path=Path("/my/megatron"),

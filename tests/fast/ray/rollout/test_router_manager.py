@@ -1,87 +1,175 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from types import SimpleNamespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.router_manager import _resolve_session_server_ports, start_router, start_session_server
+from miles.ray.rollout.router_manager import start_session_server, wait_router_ready, wait_worker_serving
+from miles.utils.workers.worker_spec import HostAndPort
 
 
-class TestStartRouter:
-    def test_returns_existing_when_already_configured(self):
-        """Happy path: ``sglang_router_ip`` and ``sglang_router_port`` are
-        already set and ``force_new=False`` → skip subprocess launch entirely
-        and return the existing tuple."""
-        args = make_args(
-            use_miles_router=False,
-            sglang_router_ip="10.1.2.3",
-            sglang_router_port=4567,
+class TestWaitRouterReady:
+    async def test_returns_the_provider_addr_after_the_tcp_wait(self, monkeypatch):
+        """The router address is looked up from the worker manager by the spec worker name."""
+        requested: list[str] = []
+
+        class _FakeProvider:
+            async def get_addr(self, worker_name: str) -> HostAndPort:
+                requested.append(worker_name)
+                return HostAndPort(host="10.0.0.9", port=12345)
+
+            async def is_worker_alive(self, worker_name: str) -> bool:
+                return True
+
+        waited: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
         )
-        # No mocks needed — the function returns before touching anything.
-        ip, port = start_router(args, force_new=False)
-        assert (ip, port) == ("10.1.2.3", 4567)
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.is_tcp_ready",
+            lambda host, port: bool(waited.append((host, port)) or True),
+        )
 
-    def test_pd_disagg_with_miles_router_asserts(self):
-        args = make_args(use_miles_router=True, sglang_router_ip=None, sglang_router_port=None)
-        with patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")), patch(
-            "miles.ray.rollout.router_manager.find_available_port", return_value=20000
-        ):
-            with pytest.raises(AssertionError, match="miles router does not support PD"):
-                start_router(args, has_pd_disaggregation=True, force_new=False)
+        addr = await wait_router_ready(model_idx=1)
 
-    def test_port_conflict_raises_runtime_error(self):
-        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
-        with patch("miles.ray.rollout.router_manager.get_host_info", return_value=("h", "127.0.0.1")), patch(
-            "miles.ray.rollout.router_manager.find_available_port", return_value=20000
-        ), patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
-            with pytest.raises(RuntimeError, match="already in use"):
-                start_router(args)
+        assert requested == ["inference-router-1-0-0"]
+        assert waited == [("10.0.0.9", 12345)]
+        assert addr == HostAndPort(host="10.0.0.9", port=12345)
 
 
 class TestStartSessionServer:
-    def test_disabled_returns_silently(self):
-        """Happy no-op: ``use_session_server=False`` → return without raising,
-        without touching any other config."""
+    async def test_disabled_returns_silently(self):
+        """Happy no-op: ``use_session_server=False`` returns without touching any other config."""
         args = make_args(use_session_server=False)
-        start_session_server(args)
+        await start_session_server(args)
 
-    def test_enabled_without_hf_checkpoint_raises(self):
+    async def test_enabled_without_hf_checkpoint_raises(self):
+        """Enabling the session server without a tokenizer source fails fast."""
         args = make_args(use_session_server=True, hf_checkpoint=None)
         with pytest.raises(ValueError, match="hf-checkpoint"):
-            start_session_server(args)
+            await start_session_server(args)
 
-    def test_enabled_port_conflict_raises_runtime_error(self):
-        """When a configured ``session_server_port`` is already bound, fail
-        loud rather than silently re-using the stale process."""
+    async def test_publishes_the_manager_addrs_and_instance_ids(self, monkeypatch):
+        """The driver-side contract (ip, ports, instance ids) comes from the worker manager addrs."""
+        requested: list[str] = []
+
+        class _FakeProvider:
+            async def get_addr(self, worker_name: str) -> HostAndPort:
+                requested.append(worker_name)
+                return HostAndPort(host="10.0.0.9", port=5004 + len(requested))
+
+            async def is_worker_alive(self, worker_name: str) -> bool:
+                return True
+
+        waited: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
+        )
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.is_tcp_ready",
+            lambda host, port: bool(waited.append((host, port)) or True),
+        )
+
         args = make_args(
             use_session_server=True,
             hf_checkpoint="/fake/model",
-            sglang_router_ip="127.0.0.1",
-            sglang_router_port=20000,
-            session_server_ip="127.0.0.1",
-            session_server_port=[20001],
+            num_session_servers=2,
+            run_uuid="00112233445566aa",
         )
-        with patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
-            with pytest.raises(RuntimeError, match="already in use"):
-                start_session_server(args)
+        await start_session_server(args)
+
+        assert requested == ["session-server-0-0", "session-server-1-0"]
+        assert args.session_server_addrs == ["10.0.0.9:5005", "10.0.0.9:5006"]
+        assert args.session_server_instance_ids == {
+            "10.0.0.9:5005": "00112233445566aa-0",
+            "10.0.0.9:5006": "00112233445566aa-1",
+        }
+        assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
+
+    async def test_servers_on_different_hosts_are_each_addressed_in_full(self, monkeypatch):
+        """Placement may spread the fleet across hosts, so no instance may be addressed by a
+        port under a host borrowed from another one."""
+
+        class _FakeProvider:
+            def __init__(self):
+                self._counter = 0
+
+            async def get_addr(self, worker_name: str) -> HostAndPort:
+                self._counter += 1
+                return HostAndPort(host=f"10.0.0.{self._counter}", port=5005)
+
+            async def is_worker_alive(self, worker_name: str) -> bool:
+                return True
+
+        waited: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
+        )
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.is_tcp_ready",
+            lambda host, port: bool(waited.append((host, port)) or True),
+        )
+
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            num_session_servers=2,
+            run_uuid="00112233445566aa",
+        )
+        await start_session_server(args)
+
+        assert args.session_server_addrs == ["10.0.0.1:5005", "10.0.0.2:5005"]
+        assert args.session_server_instance_ids == {
+            "10.0.0.1:5005": "00112233445566aa-0",
+            "10.0.0.2:5005": "00112233445566aa-1",
+        }
+        assert waited == [("10.0.0.1", 5005), ("10.0.0.2", 5005)]
 
 
-class TestResolveSessionServerPorts:
-    def test_none_auto_allocates_one_port(self):
-        with patch("miles.ray.rollout.router_manager.find_available_port", return_value=20002):
-            assert _resolve_session_server_ports(None) == [20002]
+class TestWaitWorkerServing:
+    async def test_a_worker_that_dies_before_its_port_opens_is_reported_at_once(self, monkeypatch):
+        """A server that dies at import time never opens the port, and waiting out the timeout
+        reports a network problem for what is a crashed child with a traceback of its own."""
 
-    def test_single_value_is_a_single_server(self):
-        assert _resolve_session_server_ports([30000]) == [30000]
+        class _DeadProvider:
+            async def is_worker_alive(self, worker_name: str) -> bool:
+                return False
 
-    def test_two_values_expand_to_half_open_range(self):
-        assert _resolve_session_server_ports([30000, 30004]) == [30000, 30001, 30002, 30003]
+        monkeypatch.setattr("miles.ray.rollout.router_manager.is_tcp_ready", lambda host, port: False)
 
-    def test_empty_range_raises(self):
-        with pytest.raises(ValueError, match="empty"):
-            _resolve_session_server_ports([30004, 30000])
+        with pytest.raises(RuntimeError, match="died before 10.0.0.9:12345 accepted connections"):
+            await wait_worker_serving(
+                provider=_DeadProvider(),
+                worker_name="inference-router-0-0-0",
+                addr=HostAndPort(host="10.0.0.9", port=12345),
+                timeout=30.0,
+            )
 
-    def test_more_than_two_values_raises(self):
-        with pytest.raises(ValueError, match="one port or a start/end range"):
-            _resolve_session_server_ports([30000, 30001, 30002])
+    async def test_a_live_worker_that_is_merely_slow_is_waited_out(self, monkeypatch):
+        """Its port opens late, so giving up on the first closed connection would abort a launch
+        that was about to succeed."""
+        probes: list[int] = []
+
+        class _LiveProvider:
+            async def is_worker_alive(self, worker_name: str) -> bool:
+                return True
+
+        def _ready(host, port) -> bool:
+            probes.append(port)
+            return len(probes) > 2
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.is_tcp_ready", _ready)
+        monkeypatch.setattr("miles.ray.rollout.router_manager.WAIT_SERVING_POLL_INTERVAL_SECONDS", 0.0)
+
+        await wait_worker_serving(
+            provider=_LiveProvider(),
+            worker_name="inference-router-0-0-0",
+            addr=HostAndPort(host="10.0.0.9", port=12345),
+            timeout=30.0,
+        )
+
+        assert len(probes) == 3

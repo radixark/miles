@@ -33,16 +33,20 @@ MIN_SOAK_INJECTIONS: int = 2
 MIN_SOAK_HEALINGS: int = 2
 
 
+def assert_min_soak_injections(num_successful_injections: int, *, context: str) -> None:
+    assert num_successful_injections >= MIN_SOAK_INJECTIONS, (
+        f"Soak proved too little in {context}: the fault injector reported only "
+        f"{num_successful_injections} successful injection(s), need >= {MIN_SOAK_INJECTIONS} "
+        f"to exercise fault recovery more than once"
+    )
+
+
 def assert_soak_reconfigure_events(event_dir: Path, *, num_successful_injections: int) -> None:
     assert event_dir.is_dir(), f"Event directory {event_dir} does not exist or is not a directory"
     events = load_reconfigure_events(event_dir)
     healings = [event for event in events if event.healed_cell_indices]
 
-    assert num_successful_injections >= MIN_SOAK_INJECTIONS, (
-        f"Soak proved too little in {event_dir}: the fault injector reported only "
-        f"{num_successful_injections} successful injection(s), need >= {MIN_SOAK_INJECTIONS} "
-        f"to exercise fault recovery more than once"
-    )
+    assert_min_soak_injections(num_successful_injections, context=str(event_dir))
     assert len(healings) >= MIN_SOAK_HEALINGS, (
         f"Healing witness failed in {event_dir}: {num_successful_injections} successful injection(s) "
         f"but only {len(healings)} healing event(s), need >= {MIN_SOAK_HEALINGS} "

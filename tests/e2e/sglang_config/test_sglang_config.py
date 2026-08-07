@@ -15,7 +15,7 @@ NUM_GPUS = 8
 # Inline sglang config: same model, 2 engine groups with different sizes.
 # Group 1: 4 GPUs, 1 GPU/engine (tp=1) -> 4 engines
 # Group 2: 4 GPUs, 1 GPU/engine (tp=1) -> 4 engines
-# Tests that ServerGroup/RolloutServer correctly manages multiple groups
+# Tests that RolloutServer correctly manages multiple engine groups
 # behind a single router, with separate port cursors per group.
 SGLANG_CONFIG_YAML = """\
 sglang:
@@ -31,8 +31,8 @@ sglang:
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 

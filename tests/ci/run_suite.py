@@ -238,6 +238,7 @@ def run_a_suite(args):
         gate_store=gate_store,
         gate_nightly=gate_nightly,
         gate_provenance=gate_provenance,
+        reap_leftovers=True,
     )
 
 

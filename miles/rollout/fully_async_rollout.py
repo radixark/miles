@@ -21,11 +21,17 @@ from collections.abc import Iterator
 
 import httpx
 
-from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnInput, RolloutFnOutput, RolloutFnTrainOutput
+from miles.rollout.base_types import (
+    BaseRolloutFn,
+    RolloutFnConstructorInput,
+    RolloutFnInput,
+    RolloutFnOutput,
+    RolloutFnTrainOutput,
+)
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
+from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get
-from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
@@ -83,7 +89,7 @@ class _CachedWeightVersion:
         return self._value
 
 
-class FullyAsyncRolloutFn:
+class FullyAsyncRolloutFn(BaseRolloutFn):
     """Continuous rollout generation decoupled from training steps.
 
     The worker runs as a long-lived task on the shared rollout event loop, created
@@ -93,6 +99,7 @@ class FullyAsyncRolloutFn:
     """
 
     def __init__(self, input: RolloutFnConstructorInput):
+        super().__init__(input)
         self.args = input.args
         self.data_source = input.data_source
         self.state = GenerateState(input.args)

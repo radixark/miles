@@ -1,9 +1,14 @@
 from argparse import Namespace
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _get_placement_group_layout
+from miles.ray.train.group import TrainerController
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
 def _layout_args(**overrides):
@@ -39,27 +44,59 @@ def test_external_rollout_only_reserves_no_local_bundles():
     assert _get_placement_group_layout(_layout_args(debug_rollout_only=True, rollout_external=True)) == (0, 0)
 
 
+async def _noop_remote(*_args, **_kwargs):
+    return None
+
+
+async def _stop_watch() -> None:
+    return None
+
+
+class _RecordingWorkerProvider(BaseWorkerProvider):
+    def __init__(self) -> None:
+        self.watched_spec_names: list[list[str]] = []
+
+    async def get_addr(self, worker_name: str) -> HostAndPort:
+        raise NotImplementedError
+
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise NotImplementedError
+
+    async def is_worker_alive(self, worker_name: str) -> bool:
+        raise NotImplementedError
+
+    async def watch_cells(self, reconcile: ReconcileFn, *, spec_names: list[str]) -> StopWatchFn:
+        self.watched_spec_names.append(list(spec_names))
+        return _stop_watch
+
+
+async def _fake_init(self: TrainerController) -> list[int]:
+    return [0]
+
+
+async def _fake_set_rollout_executor(self: TrainerController) -> None:
+    return None
+
+
+_waited_roles: list[str] = []
+
+
+async def _fake_wait_expected_num_cells(self: TrainerController) -> None:
+    """The startup barrier waits for the provider to report cells, and this provider reports none.
+
+    Recording the role keeps create()'s call to the barrier under test: deleting that await
+    would otherwise go unnoticed, since nothing else drives create() end to end."""
+    _waited_roles.append(self._role)
+
+
 async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypatch):
-    groups = []
+    """Both training groups go through the real create(), and only the critic args are rewritten."""
+    provider = _RecordingWorkerProvider()
+    monkeypatch.setattr(TrainerController, "init", _fake_init)
+    monkeypatch.setattr(TrainerController, "set_rollout_executor", _fake_set_rollout_executor)
+    monkeypatch.setattr(TrainerController, "_wait_expected_num_cells", _fake_wait_expected_num_cells)
+    _waited_roles.clear()
 
-    class _Group:
-        def __init__(self, args, role, with_ref):
-            self.args = args
-            self.role = role
-            self.with_ref = with_ref
-
-        async def init(self):
-            return [0]
-
-        async def set_rollout_manager(self):
-            return None
-
-    def _allocate_train_group(*, args, role, with_ref, **_kwargs):
-        group = _Group(args, role, with_ref)
-        groups.append(group)
-        return group
-
-    monkeypatch.setattr(placement_group_module, "allocate_train_group", _allocate_train_group)
     args = Namespace(
         actor_num_nodes=1,
         actor_num_gpus_per_node=2,
@@ -73,23 +110,30 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
         disable_param_buffers_cpu_backup=True,
         start_rollout_id=None,
         rollout_global_dataset=False,
+        indep_dp=False,
+        enable_witness=False,
     )
 
-    await placement_group_module.create_training_models(
-        args,
-        pgs={"actor": object(), "critic": object()},
-        rollout_manager=object(),
-    )
+    with patch("miles.utils.workers.worker_provider.ray.RayWorkerProvider.create", lambda: provider):
+        actor, critic = await placement_group_module.create_training_models(
+            args,
+            inference_controller=object(),
+            rollout_executor=SimpleNamespace(load=SimpleNamespace(remote=_noop_remote)),
+        )
 
-    actor, critic = groups
-    assert actor.role == "actor"
+    assert provider.watched_spec_names == [["trainer-actor"], ["trainer-critic"]]
+    assert _waited_roles == ["actor", "critic"]
+
+    assert actor._role == "actor"
     assert actor.args is args
     assert actor.args.kl_coef == 0.1
-    assert actor.with_ref is True
+    # Derived from the actor's kl_coef, not passed in: flip it and the KL term is silently zero.
+    assert actor._with_ref is True
 
-    assert critic.role == "critic"
+    assert critic._role == "critic"
+    # A reference model on the critic would be a second full model on its GPUs.
+    assert critic._with_ref is False
     assert critic.args is not args
     assert critic.args.kl_coef == 0
     assert critic.args.use_opd is False
     assert critic.args.disable_param_buffers_cpu_backup is False
-    assert critic.with_ref is False

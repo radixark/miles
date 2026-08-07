@@ -11,15 +11,17 @@ from miles.backends.sglang_utils.arguments import add_sglang_arguments
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
-from miles.utils.environ import enable_experimental_ft_trainer, enable_experimental_rollout_refactor
+from miles.utils.environ import enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
+from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
-from miles.utils.misc import load_function
 from miles.utils.object_store import ObjectStoreBackend
+from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -79,10 +81,25 @@ def reset_arg(parser, name, **kwargs):
 
 
 _FT_CHOICES = ["rollout", "train"]
+_DUMPER_DISABLED_HEALTH_CHECK_INTERVAL = 1e18
 
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
+        def add_run_uuid_arguments(parser):
+            parser.add_argument(
+                "--run-uuid",
+                type=str,
+                default=None,
+                help=(
+                    f"Machine-readable identifier for this launch: exactly {RUN_UUID_LENGTH} lowercase "
+                    "hex characters, auto-generated when unset. Unlike the human-readable run "
+                    "names, two runs never share one, so anything stamped with it can be "
+                    "traced back to the launch that produced it."
+                ),
+            )
+            return parser
+
         # Ray
         def add_cluster_arguments(parser):
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
@@ -726,7 +743,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Pin the RolloutManager (and its co-located router process) to the Ray head node. "
+                    "Pin the RolloutExecutor (and the co-located router process) to the Ray head node. "
                     "Useful in K8s where the head pod has a stable Service address so that "
                     "external agent environments can reliably reach the router."
                 ),
@@ -840,35 +857,29 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="FT components to enable (requires --use-fault-tolerance). "
                 "Choices: rollout, train. Default when omitted: rollout.",
             )
-            parser.add_argument(
-                "--rollout-health-check-interval",
-                type=float,
-                default=30.0,
-                help="Interval in seconds between rollout engine /health_generate checks during generate/eval.",
+            SimpleHealthCheckerConfig.add_arguments(
+                parser,
+                prefix="rollout-health-check",
+                interval_default=30.0,
+                timeout_default=30.0,
+                first_wait_default=0.0,
+                # A rollout engine that fails one health_generate is gone, not blipping: debouncing it
+                # over three intervals keeps a dead engine taking traffic for another minute.
+                failure_threshold_default=1,
             )
             parser.add_argument(
-                "--rollout-health-check-timeout",
-                type=float,
-                default=30.0,
-                help="Timeout in seconds to wait for a rollout engine /health_generate response before killing it.",
-            )
-            parser.add_argument(
-                "--rollout-health-check-first-wait",
-                type=float,
-                default=0,
-                help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
-            )
-            parser.add_argument(
-                "--control-server-port",
+                "--api-server-port",
                 type=int,
                 default=0,
-                help="Port for HTTP control server. 0 = disabled.",
+                help="Port for HTTP api server. 0 = disabled.",
             )
             parser.add_argument(
                 "--mini-ft-controller-enable",
-                action="store_true",
-                default=False,
-                help="Enable the mini fault-tolerance controller that auto-heals Fatal cells.",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Enable the mini fault-tolerance controller that auto-heals Fatal cells. "
+                "Left unset it follows --ft-components, which is what makes --use-fault-tolerance "
+                "heal on its own.",
             )
             parser.add_argument(
                 "--mini-ft-controller-poll-interval",
@@ -1090,7 +1101,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to an OmegaConf YAML/JSON file describing evaluation datasets. "
+                    "Path to an OmegaConf YAML/JSON file describing evaluation datasets, or an "
+                    "inline `base64:<payload>` carrying the same document. "
                     "When provided, this overrides --eval-prompt-data."
                 ),
             )
@@ -2043,8 +2055,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="JSON array of fault injection actions. Each action: "
                 '{"at_rollout": N, "action": "stop_cell_at_end"|"start_cell_at_end"|"crash_before_allreduce", '
-                '"cell_index": I, "rank": 0, "attempt": 0}. '
-                "cell_index -1 means last cell.",
+                '"cell_id": "trainer-actor-2", "rank": 0, "attempt": 0}. '
+                "cell_id is the full cell id (spec name plus cell index) of the target cell.",
             )
             parser.add_argument(
                 "--ci-inject-rollout-data-path",
@@ -2335,19 +2347,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Requires --hf-checkpoint and --chat-template-path to also be set.",
             )
             parser.add_argument(
+                "--num-session-servers",
+                type=int,
+                default=1,
+                help="Number of session server instances.",
+            )
+            parser.add_argument(
                 "--session-server-ip",
                 type=str,
                 default=None,
-                help="IP address of the standalone session server. Defaults to sglang-router-ip.",
+                help="Address the session servers bind to, e.g. 0.0.0.0 to accept traffic from outside "
+                "the cluster. Peers still reach them on the address their worker was placed on. "
+                "Defaults to that placed address.",
             )
             parser.add_argument(
                 "--session-server-port",
                 type=int,
-                nargs="+",
                 default=None,
-                help="Port(s) of the standalone session servers. One value: a single server on "
-                "that port. Two values: a half-open range [start, end), one server per port. "
-                "Auto-allocates a single port if not set.",
+                help="Base port for the session servers, so a network policy can whitelist a known range. "
+                "Instance i listens on this port plus i. Defaults to a dynamically allocated port.",
             )
             parser.add_argument(
                 "--tito-model",
@@ -2381,6 +2399,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
 
+        parser = add_run_uuid_arguments(parser)
         parser = add_cluster_arguments(parser)
         parser = add_train_arguments(parser)
         parser = add_rollout_arguments(parser)
@@ -2424,7 +2443,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             "--custom-config-path",
             type=str,
             default=None,
-            help="Path to the YAML config for custom function arguments.",
+            help="Path to the YAML config for custom function arguments, or an inline `base64:<payload>`.",
         )
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
@@ -2523,7 +2542,7 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     if args.eval_config:
         from omegaconf import OmegaConf
 
-        cfg = OmegaConf.load(args.eval_config)
+        cfg = OmegaConf.create(resolve_file_arg(args.eval_config))
         cfg_dict = OmegaConf.to_container(cfg, resolve=True)
         if not isinstance(cfg_dict, dict):
             raise ValueError("--eval-config must contain a mapping at the root.")
@@ -2569,14 +2588,24 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
     return list(args.ft_components)
 
 
+def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
+    """Detection without action is not fault tolerance.
+
+    The health checkers only publish a status; this controller is the only thing in-tree that
+    acts on it. Asking for fault tolerance and getting a run that watches an engine die without
+    replacing it is the shape of the old behaviour with the recovery removed, so the default
+    follows --ft-components and the flag is left to override it either way.
+    """
+    if args.mini_ft_controller_enable is not None:
+        return args.mini_ft_controller_enable
+    return bool(args.ft_components)
+
+
 def miles_validate_args(args):
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
-
-    if args.mini_ft_controller_enable and args.control_server_port == 0:
-        raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
 
     if "train" in args.ft_components:
         args.indep_dp = True
@@ -2873,11 +2902,6 @@ def miles_validate_args(args):
         assert (
             args.megatron_to_hf_mode != "bridge"
         ), "Critic models are not supported with --megatron-to-hf-mode bridge"
-        assert not enable_experimental_ft_trainer(), (
-            "Shared Actor/Critic PPO is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: the v2 "
-            "fault-tolerant train group cannot route critic values or lifecycle options yet. "
-            "Unset MILES_EXPERIMENTAL_FT_TRAINER or use a non-PPO advantage estimator."
-        )
         assert args.kl_coef == 0, (
             "Shared Actor/Critic PPO does not support reward-level KL (--kl-coef): the critic "
             "trains before the actor and never sees ref log probs, so its value targets would "
@@ -3113,12 +3137,13 @@ def miles_validate_args(args):
         args.use_routing_replay = True
 
     if args.custom_config_path:
-        with open(args.custom_config_path) as f:
-            data = yaml.safe_load(f) or {}
+        data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
         for k, v in data.items():
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
+    args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
@@ -3148,6 +3173,12 @@ def miles_validate_args(args):
         getattr(args, "sglang_config", None) is not None and args.rollout_external
     ), "sglang_config cannot be set when rollout_external is set."
 
+    if args.rollout_external:
+        assert args.rollout_external_engine_addrs, (
+            "rollout_external needs --rollout-external-engine-addrs: miles launches no engines in "
+            "this mode, so the addresses are the only description of the fleet."
+        )
+
     assert not (
         getattr(args, "sglang_config", None) is not None and getattr(args, "prefill_num_servers", None) is not None
     ), "sglang_config and prefill_num_servers are mutually exclusive. Use server_groups in the YAML config instead."
@@ -3159,6 +3190,9 @@ def miles_validate_args(args):
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
     _maybe_apply_dumper_overrides(args)
+
+    # After the dumper overrides, not before: they clear ft_components, and this default follows it.
+    args.mini_ft_controller_enable = _resolve_mini_ft_controller_enable(args)
 
 
 def validate_async_off_policy_correction(args) -> None:
@@ -3187,12 +3221,17 @@ def _maybe_apply_dumper_overrides(args) -> None:
         return
 
     if args.use_fault_tolerance:
-        logger.info("Dumper mode: disabling --use-fault-tolerance to suppress RolloutHealthMonitor heartbeats")
+        logger.info("Dumper mode: disabling --use-fault-tolerance to suppress fault tolerance heartbeats")
         args.use_fault_tolerance = False
+        # ft_components was resolved from use_fault_tolerance long before this runs, so clearing
+        # the flag alone leaves every component still selected and its probes still firing.
+        args.ft_components = []
 
     logger.info("Dumper mode: all heartbeat mechanisms disabled")
     args.router_disable_health_check = True
-    args.rollout_health_check_interval = 1e18
+    # The miles router reads its probe cadence from here. A dump run whose engines miss three
+    # probes while writing has its engines struck from the routing pool, with no path back in.
+    args.rollout_health_check_interval = _DUMPER_DISABLED_HEALTH_CHECK_INTERVAL
 
     if args.start_rollout_id is None:
         args.start_rollout_id = 0

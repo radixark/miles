@@ -174,7 +174,6 @@ with "unrecognized arguments"), and:
 --custom-rm-path nemogym_generate.reward_func
 --dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted
 --use-session-server
---session-server-ip 0.0.0.0  # listen on all interfaces for the dial-back
 --tito-model qwen3           # match your policy model's TITO family
 ```
 

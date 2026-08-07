@@ -1,65 +1,14 @@
 import asyncio
-import importlib
 import logging
-import re
-import subprocess
-from collections.abc import Sequence
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 import ray
-from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
+from miles.utils.function_registry import load_function
 from miles.utils.http_utils import is_port_available
 
 logger = logging.getLogger(__name__)
-
-
-# Mainly used for test purpose where `load_function` needs to load many in-flight generated functions
-class FunctionRegistry:
-    def __init__(self):
-        self._registry: dict[str, object] = {}
-
-    @contextmanager
-    def temporary(self, name: str, fn: object):
-        self._register(name, fn)
-        try:
-            yield
-        finally:
-            self._unregister(name)
-
-    def get(self, name: str) -> object | None:
-        return self._registry.get(name)
-
-    def _register(self, name: str, fn: object) -> None:
-        assert name not in self._registry
-        self._registry[name] = fn
-
-    def _unregister(self, name: str) -> None:
-        assert name in self._registry
-        self._registry.pop(name)
-
-
-function_registry = FunctionRegistry()
-
-
-# TODO may rename to `load_object` since it can be used to load things like tool_specs
-def load_function(path):
-    """
-    Load a function from registry or module.
-    :param path: The path to the function, e.g. "module.submodule.function".
-    :return: The function object.
-    """
-    if path is None:
-        return None
-
-    registered = function_registry.get(path)
-    if registered is not None:
-        return registered
-
-    module_path, _, attr = path.rpartition(".")
-    module = importlib.import_module(module_path)
-    return getattr(module, attr)
 
 
 async def call_agent_abort_hook(args) -> None:
@@ -108,88 +57,6 @@ class SingletonMeta(type):
         SingletonMeta._instances.clear()
 
 
-def exec_command(cmd: str, capture_output: bool = False) -> str | None:
-    print(f"EXEC: {cmd}", flush=True)
-
-    try:
-        result = subprocess.run(
-            ["bash", "-c", cmd],
-            shell=False,
-            check=True,
-            capture_output=capture_output,
-            **(dict(text=True) if capture_output else {}),
-        )
-    except subprocess.CalledProcessError as e:
-        if capture_output:
-            print(f"{e.stdout=} {e.stderr=}")
-        raise
-
-    if capture_output:
-        print(f"Captured stdout={result.stdout} stderr={result.stderr}")
-        return result.stdout
-
-
-@ray.remote(num_cpus=0.001)
-def _exec_command_on_node(cmd: str, capture_output: bool) -> str | None:
-    return exec_command(f"unset CUDA_VISIBLE_DEVICES; {cmd}", capture_output=capture_output)
-
-
-def exec_command_all_ray_node(
-    cmd: str, capture_output: bool = False, num_nodes: int | None = None
-) -> list[str | None]:
-    """Execute a shell command on every alive Ray node in parallel.
-
-    Supported placeholders in `cmd` (replaced per-node before execution):
-        {{node_rank}}   - 0-based index of the node
-        {{nnodes}}      - total number of alive nodes (or num_nodes if specified)
-        {{master_addr}} - NodeManagerAddress of the first node
-        {{node_ip}}     - NodeManagerAddress of the current node
-
-    Args:
-        num_nodes: If set, only use the first `num_nodes` nodes instead of all alive nodes.
-    """
-    ray.init(address="auto")
-    try:
-        current_ip = get_current_node_ip()
-        nodes = sorted(
-            [n for n in ray.nodes() if n.get("Alive")],
-            key=lambda n: (n["NodeManagerAddress"] != current_ip, n["NodeManagerAddress"]),
-        )
-        assert len(nodes) > 0
-
-        if num_nodes is not None:
-            assert num_nodes <= len(nodes), f"Requested {num_nodes} nodes but only {len(nodes)} alive nodes available."
-            nodes = nodes[:num_nodes]
-
-        master_addr = nodes[0]["NodeManagerAddress"]
-        nnodes = str(len(nodes))
-
-        placeholder_pattern = re.compile(
-            "|".join(map(re.escape, ["{{node_rank}}", "{{nnodes}}", "{{master_addr}}", "{{node_ip}}"]))
-        )
-
-        refs = []
-        for rank, node in enumerate(nodes):
-            substitutions = {
-                "{{node_rank}}": str(rank),
-                "{{nnodes}}": nnodes,
-                "{{master_addr}}": master_addr,
-                "{{node_ip}}": node["NodeManagerAddress"],
-            }
-            node_cmd = placeholder_pattern.sub(lambda m, s=substitutions: s[m.group(0)], cmd)
-            refs.append(
-                _exec_command_on_node.options(
-                    scheduling_strategy=NodeAffinitySchedulingStrategy(
-                        node_id=node["NodeID"],
-                        soft=False,
-                    ),
-                ).remote(node_cmd, capture_output=capture_output)
-            )
-        return ray.get(refs)
-    finally:
-        ray.shutdown()
-
-
 def get_current_node_ip():
     address = ray._private.services.get_node_ip_address()
     # strip ipv6 address
@@ -203,6 +70,38 @@ def get_free_port(start_port=10000, consecutive=1):
     while not all(is_port_available(port + i) for i in range(consecutive)):
         port += 1
     return port
+
+
+def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+    """Best-effort NVML UUIDs so the dashboard can reconcile GPU index
+    spaces across processes; None entries when NVML is unavailable."""
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        return [str(pynvml.nvmlDeviceGetUUID(pynvml.nvmlDeviceGetHandleByIndex(i))) for i in gpu_ids]
+    except Exception:
+        return [None] * len(gpu_ids)
+
+
+class NodeProbeMixin:
+    @staticmethod
+    def _get_node_ip() -> str:
+        return get_current_node_ip()
+
+    @staticmethod
+    def _get_free_port_block(*, start_port: int, count: int) -> int:
+        return get_free_port(start_port=start_port, consecutive=count)
+
+    @staticmethod
+    def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+        return get_gpu_uuids(gpu_ids)
+
+    @staticmethod
+    def _collect_env_report(*, role: str, rank: int, partial_env_report: str) -> None:
+        from miles.utils.env_report import collect_and_print_node_env_report
+
+        collect_and_print_node_env_report(role=role, rank=rank, partial_env_report=partial_env_report)
 
 
 def should_run_periodic_action(
@@ -240,3 +139,25 @@ def filter_keys(d: dict[str, Any], interest_keys: Sequence[str]) -> dict[str, An
     except Exception:
         logger.error(f"filter_keys d.keys={list(d)} {interest_keys=}", exc_info=True)
         raise
+
+
+class SimpleTicker:
+    def __init__(self, fn: Callable[[], Awaitable[None]], *, interval_seconds: float):
+        self._fn = fn
+        self._interval_seconds = interval_seconds
+        self._task = asyncio.create_task(self._loop())
+
+    async def dispose(self) -> None:
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+
+    async def _loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._interval_seconds)
+            try:
+                await self._fn()
+            except Exception:
+                logger.exception(f"Ticking {self._fn} failed; retrying")

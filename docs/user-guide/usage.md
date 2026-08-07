@@ -106,7 +106,8 @@ the next run. Requires `--save` to be set.
 ### HuggingFace → torch_dist
 
 ```bash
-source scripts/models/<family>.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py <family>)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/<model> \
@@ -179,9 +180,14 @@ A router sits in front of the SGLang workers. Pass router-side flags with the
 --router-balance-abs-threshold 0   # force uniform distribution (lowers prefix-cache hit rate)
 ```
 
-If `--sglang-router-ip` and `--sglang-router-port` are set, Miles treats them as an
-**external** router and skips starting its own — engines register via `/add_worker`
-at startup.
+Miles starts its own router per model by default.
+
+- `--sglang-router-port` alone pins the port of the router miles starts, so a
+  firewall rule or a dial-back host can name it in advance; each further model's
+  router takes the next port up.
+- `--sglang-router-ip` together with `--sglang-router-port` attaches to a router
+  miles did not start, and miles launches none. One router describes one model,
+  so this is rejected alongside a multi-model `--sglang-config`.
 
 ---
 

@@ -29,15 +29,16 @@ off to `train.py`:
 ## MODEL_ARGS — architecture constants
 
 Megatron needs the model architecture hardcoded at launch because it cannot introspect
-a HuggingFace checkpoint. Miles therefore sources a matching bash file from
-`scripts/models/<family>.sh`:
+a HuggingFace checkpoint. Miles therefore loads a matching python file from
+`scripts/models/<family>.py`:
 
 ```bash
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/glm4-9B.sh"
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" glm4-9B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 ```
 
-The sourced file sets `MODEL_ARGS=(--num-layers ... --hidden-size ... --rotary-base ...)`.
+The loaded file prints `--num-layers ... --hidden-size ... --rotary-base ...` on one line.
 
 <Warning>
 
@@ -46,7 +47,8 @@ padding, or normalization epsilon. Diff the `config.json` against the file in
 `scripts/models/` before you run, and override anything that drifts:
 
 ```bash
-source "${SCRIPT_DIR}/models/glm4-9B.sh"
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" glm4-9B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 MODEL_ARGS+=(--rotary-base 10000)
 ```
 

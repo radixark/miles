@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.errors import (
     MessageValidationError,
     SessionNotFoundError,
@@ -145,10 +146,12 @@ def proxy_result_to_response(result: dict) -> Response:
 class SessionCore:
     """HTTP session operations over one ``SessionRegistry``."""
 
-    def __init__(self, backend, registry: SessionRegistry, args, session_server_instance_id=None):
+    def __init__(
+        self, backend, registry: SessionRegistry, config: SessionServerConfig, session_server_instance_id=None
+    ):
         self.backend = backend
         self.registry = registry
-        self.args = args
+        self.config = config
         self.instance_id = session_server_instance_id
 
     async def health(self) -> Response:
@@ -197,7 +200,7 @@ class SessionCore:
             return _samples_response(encode_samples([], metadata, empty_reason="no_records"))
         try:
             samples = compute_samples_from_openai_records(
-                self.args,
+                self.config,
                 session.records,
                 tokenizer,
                 accumulated_token_ids=metadata.get("accumulated_token_ids"),
@@ -263,16 +266,16 @@ class SessionCore:
             # setdefault) so agent-side overrides cannot break token accumulation.
             request_body["logprobs"] = True
             request_body["return_meta_info"] = True
-            if getattr(self.args, "use_rollout_routing_replay", False):
+            if self.config.use_rollout_routing_replay:
                 request_body["return_routed_experts"] = True
-            if getattr(self.args, "use_rollout_indexer_replay", False):
+            if self.config.use_rollout_indexer_replay:
                 request_body["return_indexer_topk"] = True
             # Must be False so stop-token text is trimmed from assistant content;
             # token IDs still come from logprobs below.
             request_body["no_stop_trim"] = False
             # Without this the engine serves the base weights, so the adapter being
             # trained would never shape the trajectories it is scored on.
-            if is_lora_enabled(self.args):
+            if is_lora_enabled(self.config):
                 request_body["lora_path"] = LORA_ADAPTER_NAME
             # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
             # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.

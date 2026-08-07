@@ -45,7 +45,7 @@ def _args(dsa: str, shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.output_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
 
 
@@ -60,6 +60,6 @@ if __name__ == "__main__":
     for name, dsa, shared_outer, virtual_experts in _CONFIGS:
         print(f"[glm5.1-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
-        U.exec_command("ray stop --force || true; pkill -9 sglang || true; sleep 10")
+        U.exec_command_cpu("ray stop --force || true; pkill -9 sglang || true; sleep 10")
         execute(_args(dsa, shared_outer, virtual_experts))
         print(f"[glm5.1-lora-ci] ===== combo PASSED: {name} =====", flush=True)

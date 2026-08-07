@@ -264,9 +264,8 @@ class SessionRegistry:
     LinearTrajectory; called by the route handler under session.lock.
     """
 
-    def __init__(self, args, tokenizer: Any, *, tito_tokenizer: TITOTokenizer):
+    def __init__(self, tokenizer: Any, *, tito_tokenizer: TITOTokenizer):
         self.sessions: dict[str, LinearTrajectory] = {}
-        self.args = args
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
         self.comparator = tito_tokenizer.create_comparator()

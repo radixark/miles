@@ -355,3 +355,37 @@ class TestBuildLoraSyncConfig:
 
 def test_lora_adapter_name_constant():
     assert LORA_ADAPTER_NAME == "miles_lora"
+
+
+class TestBuildLoraSyncConfigUnderMultiLora:
+    @staticmethod
+    def _args(**overrides):
+        return Namespace(
+            **{
+                "lora_rank": 8,
+                "lora_alpha": 8,
+                "lora_dropout": 0.0,
+                "target_modules": ["linear_qkv"],
+                "multi_lora": False,
+                **overrides,
+            }
+        )
+
+    def test_a_single_adapter_on_an_inkling_checkpoint_publishes_the_shorthand(self, monkeypatch):
+        """The engine was launched to auto-detect its targets, so the adapter must say the same."""
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora_utils.sglang_lora_target_all_sentinel", lambda _a: True
+        )
+
+        assert build_lora_sync_config(self._args())["target_modules"] == "all-linear"
+
+    def test_multi_lora_names_its_targets_like_the_engine_was_launched_with(self, monkeypatch):
+        """Multi-LoRA launches the engine with explicit targets; an adapter claiming more than the
+        engine hosts is rejected, or hosted as a silent subset."""
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora_utils.sglang_lora_target_all_sentinel", lambda _a: True
+        )
+
+        config = build_lora_sync_config(self._args(multi_lora=True, multi_lora_n_adapters=4))
+
+        assert set(config["target_modules"]) == {"q_proj", "k_proj", "v_proj"}

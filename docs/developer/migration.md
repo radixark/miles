@@ -9,7 +9,7 @@ launch scripts.
 
 ### What changed
 
-`train.py`, `train_async.py`, and `RayTrainGroup` now use Python `async`/`await`
+`train.py`, `train_async.py`, and `TrainerController` now use Python `async`/`await`
 instead of `ray.get()`-style sync calls.
 
 ### Why
@@ -52,8 +52,8 @@ while still letting `critic_model.train` proceed. That's hard to write with sync
 + await rollout_manager.generate.remote(rollout_id)
 ```
 
-Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
-`set_rollout_manager`.
+Same pattern applies to `offload`, `onload`, `clear_memory` and
+`set_rollout_executor`.
 
 #### 3. Dispatch handles → eager tasks
 
@@ -62,17 +62,68 @@ Same pattern applies to `offload`, `onload`, `clear_memory`, `connect`,
 - ray.get(actor.async_train(...))
 - ray.get(handle)
 
-+ task = await eager_create_task(critic.train(...))
-+ await actor.train(...)
-+ await task
++ values = await critic.train(...)
++ await actor.train(..., external_data=values)
 ```
 
 #### 4. `create_training_models` is now async
 
 ```diff
 - actor, critic = create_training_models(args, pgs, rollout_manager)
-+ actor, critic = await create_training_models(args, pgs, rollout_manager)
++ actor, critic = await create_training_models(args, pgs, inference_controller, rollout_executor)
 ```
+
+## `RolloutManager` split into `InferenceController` + `RolloutExecutor`
+
+| | Owns | Lives in |
+|---|---|---|
+| `InferenceController` | sglang servers, router, engine lock, health monitors | the driver, as a plain object |
+| `RolloutExecutor` | data source, rollout functions, data conversion | its own Ray actor |
+
+```diff
+- rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
++ inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
++     args, pgs["rollout"]
++ )
+
+- await rollout_manager.generate.remote(rollout_id)
++ await inference_controller.prepare_rollout(rollout_id)
++ await rollout_executor.get.remote(rollout_id)
+
+- await rollout_manager.onload_weights.remote()
++ await inference_controller.onload_weights()
+```
+
+The controller is not a Ray actor, so nothing inside another actor may call it. Train
+actors receive only the executor handle (`set_rollout_manager` → `set_rollout_executor`),
+and the trainer group — which runs in the driver — brackets the weight update with
+`start_update_weights` / `end_update_weights` instead of rank 0 doing it. Whether the
+trainer must reconnect is derived from the cell snapshot those calls carry, not from a
+hand-maintained flag. `start_api_server` (formerly `start_control_server`) takes
+`inference_controller=`.
+
+`RolloutExecutor.generate` is now `RolloutExecutor.get`: the executor hands over data
+the rollout already produced, it does not itself generate.
+
+## Class-based rollout functions must subclass `BaseRolloutFn`
+
+Under `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`, rollout functions gained `save` / `load`
+alongside `__call__`, and a class passed to `--rollout-function-path` or
+`--eval-function-path` now has to subclass `miles.rollout.base_types.BaseRolloutFn`;
+anything else is rejected at load time. The base supplies the constructor and no-op
+`save` / `load`, so a stateless implementation only adds the base class. Plain function
+rollout functions, and the default non-experimental path, are unaffected.
+
+## Custom data sources are now saved as well as loaded
+
+`RolloutExecutor.save` used to call `data_source.save` only under
+`--rollout-global-dataset`, while `load` was always called. A custom
+`--data-source-path` used together with `--disable-rollout-global-dataset` — the
+combination that flag exists for — was therefore restored from state it was never
+allowed to write. Both directions are now unconditional. The built-in
+`RolloutDataSource` is unchanged: it already returns early from both `save` and `load`
+when there is no global dataset. A custom source whose `save` assumed it would never be
+called now has to be a no-op explicitly.
 
 ## Other recent breakages
 

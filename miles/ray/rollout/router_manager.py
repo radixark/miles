@@ -1,101 +1,60 @@
-import copy
+import asyncio
 import logging
-import multiprocessing
-import random
-import uuid
+import time
 
-from sglang_router.launch_router import RouterArgs
-
-from miles.rollout.session.server import run_session_server
-from miles.router.router import run_router as run_miles_router
-from miles.utils.http_utils import _wrap_ipv6, find_available_port, get_host_info, is_port_available
-from miles.utils.http_utils import run_router as run_sglang_router
-from miles.utils.http_utils import wait_for_server_ready
+from miles.ray.specs.inference import compute_router_spec_name, compute_session_server_instance_id
+from miles.utils.http_utils import is_tcp_ready
+from miles.utils.workers.naming import compute_worker_name
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
 
+WAIT_SERVING_TIMEOUT_SECONDS = 30.0
+WAIT_SERVING_POLL_INTERVAL_SECONDS = 0.5
 
-def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool = False) -> tuple[str, int]:
-    """Start sgl router or miles router and return (router_ip, router_port).
 
-    If ``args.sglang_router_ip`` is already set and ``force_new`` is False,
-    skip launching and return the existing values.
+async def wait_router_ready(model_idx: int) -> HostAndPort:
+    """Wait until the model's router, launched by the RayWorkerManager, is reachable and return its address."""
+    provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
+    worker_name = compute_worker_name(spec_name=compute_router_spec_name(model_idx))
+    router_addr = await provider.get_addr(worker_name=worker_name)
+    await wait_worker_serving(provider=provider, worker_name=worker_name, addr=router_addr)
+    logger.info(f"Router ready at {router_addr}")
+    return router_addr
+
+
+async def wait_worker_serving(
+    *,
+    provider: BaseWorkerProvider,
+    worker_name: str,
+    addr: HostAndPort,
+    timeout: float = WAIT_SERVING_TIMEOUT_SECONDS,
+) -> None:
+    """Wait for a launched worker's port, giving up early once the worker itself is gone.
+
+    A server that dies at import time -- a bad template path, a missing model -- never opens the
+    port, so waiting the whole timeout reports a network problem for what is a crashed child whose
+    traceback is already in its own log.
     """
-    if not force_new and args.sglang_router_ip is not None:
-        return args.sglang_router_ip, args.sglang_router_port
-
-    router_ip = _wrap_ipv6(get_host_info()[1])
-    if force_new:
-        router_port = find_available_port(random.randint(3000, 4000))
-    else:
-        router_port = args.sglang_router_port
-        if router_port is None:
-            router_port = find_available_port(random.randint(3000, 4000))
-
-    if args.use_miles_router:
-        assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
-
-        run_router = run_miles_router
-        router_args = copy.copy(args)
-        router_args.sglang_router_ip = router_ip
-        router_args.sglang_router_port = router_port
-
-    else:
-        run_router = run_sglang_router
-        router_args = RouterArgs.from_cli_args(args, use_router_prefix=True)
-        router_args.host = router_ip
-        router_args.port = router_port
-        router_args.prometheus_port = find_available_port(random.randint(4000, 5000))
-        router_args.log_level = "warn"
-        router_args.request_timeout_secs = args.sglang_router_request_timeout_secs
-
-        if args.sglang_router_policy:
-            router_args.policy = args.sglang_router_policy
-
-        if has_pd_disaggregation:
-            router_args.pd_disaggregation = True
-
-        logger.info(f"Launch router with args: {router_args}")
-
-    port = router_port
-    if not is_port_available(port):
-        raise RuntimeError(
-            f"Port {port} is already in use — a stale router process may still be running. "
-            f"Run 'pkill -9 python' to kill it, then retry."
-        )
-
-    # spawn (not fork): the child must not inherit threads/finalizers from this
-    # Ray actor (e.g. wandb's service thread), which deadlock a forked child.
-    process = multiprocessing.get_context("spawn").Process(
-        target=run_router,
-        args=(router_args,),
-    )
-    process.daemon = True
-    process.start()
-    wait_for_server_ready(router_ip, router_port, process, timeout=30)
-    logger.info(f"Router launched at {router_ip}:{router_port}")
-    return router_ip, router_port
+    deadline = time.monotonic() + timeout
+    while True:
+        if is_tcp_ready(addr.host, addr.port):
+            return
+        if not await provider.is_worker_alive(worker_name):
+            raise RuntimeError(
+                f"Worker {worker_name} died before {addr.host}:{addr.port} accepted connections; "
+                f"its own log holds the reason it exited"
+            )
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"Worker {worker_name} is alive but {addr.host}:{addr.port} is not ready after {timeout}s"
+            )
+        await asyncio.sleep(WAIT_SERVING_POLL_INTERVAL_SECONDS)
 
 
-def _resolve_session_server_ports(raw: list[int] | None) -> list[int]:
-    """Resolve the ``--session-server-port`` value into the ports to serve on.
-
-    None: one auto-allocated port. One value: a single server on that port.
-    Two values: the half-open range [start, end), one server per port.
-    """
-    if raw is None:
-        return [find_available_port(random.randint(5000, 6000))]
-    if len(raw) == 1:
-        return raw
-    if len(raw) == 2:
-        start, end = raw
-        if start >= end:
-            raise ValueError(f"--session-server-port range [{start}, {end}) is empty.")
-        return list(range(start, end))
-    raise ValueError(f"--session-server-port takes one port or a start/end range, got {len(raw)} values: {raw}")
-
-
-def start_session_server(args):
+async def start_session_server(args):
     """Start the standalone session servers when ``--use-session-server`` is set.
 
     One independent single-process server per resolved port; the rollout side
@@ -110,41 +69,27 @@ def start_session_server(args):
     if not hf_checkpoint:
         raise ValueError("--use-session-server requires --hf-checkpoint to be set.")
 
-    if getattr(args, "session_server_ip", None) is None:
-        args.session_server_ip = args.sglang_router_ip
-
-    ip = args.session_server_ip
-    ports = _resolve_session_server_ports(getattr(args, "session_server_port", None))
-    for port in ports:
-        if not is_port_available(port):
-            raise RuntimeError(
-                f"Port {port} is already in use — a stale session server may still be running. "
-                f"Run 'pkill -9 python' to kill it, then retry."
-            )
-    # The canonical driver-side value; rollout code picks from this list.
-    args.session_server_ports = ports
-
-    router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+    provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
+    addrs = [
+        await provider.get_addr(worker_name=compute_worker_name(spec_name="session-server", cell_index=i))
+        for i in range(args.num_session_servers)
+    ]
+    # The canonical driver-side value; rollout code picks from this list. Instances may sit on
+    # different hosts, so each one is addressed in full rather than by a port under a shared ip.
+    args.session_server_addrs = [f"{x.host}:{x.port}" for x in addrs]
 
     # Spawn all children before waiting on any: each child pays the ~10s
     # transformers import, so N servers start in ~one import of wall-time.
-    # spawn (not fork): see start_router for rationale.
-    instance_ids: dict[int, str] = {}
-    processes = []
-    for port in ports:
-        child_args = copy.copy(args)
-        child_args.session_server_port = port
-        child_args.session_server_instance_id = uuid.uuid4().hex
-        instance_ids[port] = child_args.session_server_instance_id
-        process = multiprocessing.get_context("spawn").Process(
-            target=run_session_server, args=(child_args, router_url)
-        )
-        process.daemon = True
-        process.start()
-        processes.append((port, process))
-    # The per-port map OpenAIEndpointTracer.create reads instance ids from,
+    instance_ids: dict[str, str] = {}
+    for instance_index, addr in enumerate(args.session_server_addrs):
+        instance_ids[addr] = compute_session_server_instance_id(args, instance_index)
+    # The per-address map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
-    for port, process in processes:
-        wait_for_server_ready(ip, port, process, timeout=30)
-    logger.info(f"Session servers launched at {ip}, ports {ports} ({len(ports)} instances)")
+    for instance_index, addr in enumerate(addrs):
+        await wait_worker_serving(
+            provider=provider,
+            worker_name=compute_worker_name(spec_name="session-server", cell_index=instance_index),
+            addr=addr,
+        )
+    logger.info(f"Session servers launched at {args.session_server_addrs} ({len(addrs)} instances)")

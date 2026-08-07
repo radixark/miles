@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import random
 import socket
+import subprocess
 import time
 
 import httpx
@@ -45,7 +46,7 @@ def is_port_available(port):
 def wait_for_server_ready(
     host: str,
     port: int,
-    process: "multiprocessing.Process | None" = None,
+    process: "multiprocessing.Process | subprocess.Popen | None" = None,
     timeout: float = 30,
 ) -> None:
     """Poll until a TCP port is accepting connections.
@@ -54,7 +55,7 @@ def wait_for_server_ready(
     """
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if process is not None and not process.is_alive():
+        if process is not None and not _is_process_running(process):
             raise RuntimeError(f"Server process died before port {port} became ready")
         try:
             with socket.create_connection((host, port), timeout=1):
@@ -62,6 +63,31 @@ def wait_for_server_ready(
         except OSError:
             time.sleep(0.5)
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
+
+
+def is_tcp_ready(host: str, port: int) -> bool:
+    """Return whether a TCP port accepts a connection right now."""
+    try:
+        with socket.create_connection((host.strip("[]"), port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def wait_tcp_ready(host: str, port: int, *, timeout: float = 30) -> None:
+    """Poll until a TCP port accepts connections."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if is_tcp_ready(host, port):
+            return
+        time.sleep(0.5)
+    raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
+
+
+def _is_process_running(process: "multiprocessing.Process | subprocess.Popen") -> bool:
+    if isinstance(process, subprocess.Popen):
+        return process.poll() is None
+    return process.is_alive()
 
 
 def get_host_info():
@@ -183,6 +209,29 @@ def terminate_process(process: multiprocessing.Process, timeout: float = 1.0) ->
         process.join()
 
 
+class GeneralHttpClientProvider:
+    _CONNECT_TIMEOUT = 10.0
+    _TIMEOUT = httpx.Timeout(None, connect=_CONNECT_TIMEOUT)
+    _LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=None)
+
+    # TODO: entries are never evicted and the clients are never aclose()d, so a caller that keeps
+    # creating event loops (repeated asyncio.run) leaks one client and its keep-alive sockets per
+    # loop. Today's call sites use a bounded number of loops; add eviction before that stops holding.
+    _clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
+
+    @classmethod
+    def client(cls) -> httpx.AsyncClient:
+        loop = asyncio.get_running_loop()
+        client = cls._clients.get(loop)
+        if client is None:
+            client = httpx.AsyncClient(timeout=cls._TIMEOUT, limits=cls._LIMITS)
+            cls._clients[loop] = client
+        return client
+
+
+# TODO: the client below is not general — it carries a rollout-specific connection limit and an
+# optional ray-distributed POST path. Rename it (or fold it into GeneralHttpClientProvider with the
+# limit as an argument) once the rollout request path is reworked.
 _http_client: httpx.AsyncClient | None = None
 _client_concurrency: int = 0
 

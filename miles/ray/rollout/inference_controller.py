@@ -1,0 +1,332 @@
+import asyncio
+import logging
+import time
+from dataclasses import dataclass
+
+from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
+
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.dashboard import hooks as dashboard_hooks
+from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
+from miles.ray.rollout.router_manager import start_session_server
+from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.ray.specs.inference import compute_engine_spec_names
+from miles.utils.context_lock import (
+    ContextLock,
+    acquires_lock,
+    enforce_lock_discipline,
+    lock_exempt,
+    releases_lock,
+    requires_lock,
+    with_lock,
+)
+from miles.utils.ft_utils.api_server.models import CellStatus
+from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.misc import SimpleTicker
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_provider.utils import apply_cell_observation
+
+logger = logging.getLogger(__name__)
+
+TICK_INTERVAL_SECONDS = 5.0
+CELL_TICK_TIMEOUT_SECONDS = 120.0
+CELLS_READY_POLL_INTERVAL_SECONDS = 2.0
+CELLS_READY_TIMEOUT_SECONDS = 3600.0
+
+
+@enforce_lock_discipline
+class InferenceController:
+    @staticmethod
+    @lock_exempt
+    async def create(args) -> "InferenceController":
+        controller = InferenceController(args)
+        if not args.debug_train_only:
+            controller.servers = await create_rollout_servers(
+                args,
+                context_lock=controller.context_lock,
+                global_health_checker_activeness=controller._health_checker_activeness.get,
+            )
+
+            if args.rollout_external:
+                # There are no workers to watch: the engines were started outside this run, so the
+                # fleet is exactly the addresses that were named and never changes.
+                await controller._add_external_cells()
+            else:
+                # TODO: may change to InferenceController.init(engine_provider, ...) later
+                provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
+                controller._watcher_disposers.append(
+                    await provider.watch_cells(controller._reconcile, spec_names=compute_engine_spec_names(args))
+                )
+            controller._ticker = SimpleTicker(controller._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
+
+            dashboard_hooks.register_router(args)
+            await start_session_server(args)
+
+            await asyncio.gather(*[srv.wait_expected_num_cells() for srv in controller.servers.values()])
+
+        return controller
+
+    @lock_exempt
+    def __init__(self, args):
+        self.args = args
+        self.context_lock = ContextLock("InferenceController")
+        self.servers: dict[str, RolloutServer] = {}
+        self._watcher_disposers: list[StopWatchFn] = []
+        self._health_checker_activeness = ActivenessTracker(active=True)
+        self._ticker: SimpleTicker | None = None
+
+    # -------------------------- rollout lifecycle hooks -----------------------------
+
+    @with_lock
+    async def prepare_rollout(self, rollout_id):
+        await self._health_monitoring_resume()
+        await dashboard_hooks.register_engines(self.servers)
+
+    @with_lock
+    async def prepare_eval(self):
+        await self._health_monitoring_resume()
+
+    @with_lock
+    async def dispose(self):
+        if (ticker := self._ticker) is not None:
+            self._ticker = None
+            await ticker.dispose()
+
+        for disposer in self._watcher_disposers:
+            await disposer()
+        self._watcher_disposers = []
+
+        for srv in self.servers.values():
+            await srv.dispose()
+
+    # -------------------------- offload/onload -----------------------------
+
+    # TODO may parallelly execute offload/onload across services
+    @with_lock
+    async def offload(self, tags: list[str] | None = None):
+        await self._health_monitoring_pause()
+        for srv in self.servers.values():
+            await srv.offload(tags=tags)
+
+    @with_lock
+    async def onload(self, tags: list[str] | None = None):
+        await self._onload(tags=tags)
+
+    @with_lock
+    async def onload_weights(self):
+        await self._onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+
+    @with_lock
+    async def onload_kv(self):
+        await self._onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+
+    @requires_lock
+    async def _onload(self, tags: list[str] | None):
+        for srv in self.servers.values():
+            await srv.onload(tags)
+
+    # -------------------------- engine management -----------------------------
+
+    @acquires_lock
+    async def start_update_weights(self) -> "UpdatableEngines":
+        """Return engines eligible for weight updates."""
+        await self._health_monitoring_pause()
+        await self._ensure_cells_ready()
+
+        srv = self._get_updatable_server()
+        if not srv:
+            return UpdatableEngines(
+                rollout_engines=[],
+                engine_gpu_counts=[],
+                engine_gpu_offsets=[],
+                snapshot_cell_id_to_hashes={},
+            )
+
+        return UpdatableEngines(
+            rollout_engines=srv.api_clients,
+            engine_gpu_counts=srv.engine_gpu_counts,
+            engine_gpu_offsets=srv.engine_gpu_offsets,
+            snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
+        )
+
+    @releases_lock
+    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]):
+        await asyncio.gather(
+            *[
+                cell.mark_weights_ready()
+                for srv in self.servers.values()
+                for cell_id, cell in srv.server_cells.items()
+                if cell_id in snapshot_cell_id_to_hashes
+                and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
+                and cell.is_pending_weights
+            ]
+        )
+
+    @requires_lock
+    def _all_cells(self) -> list[ServerCell]:
+        return [cell for srv in self.servers.values() for cell in srv.server_cells.values()]
+
+    @requires_lock
+    async def _ensure_cells_ready(self) -> None:
+        deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
+        while True:
+            if self.args.colocate:
+                await asyncio.gather(*[cell.init() for cell in self._all_cells() if cell.is_uninitialized])
+            # Re-read after the awaits above: reconcile can add a cell while we initialize,
+            # and returning on the older list would leave that cell out of the window.
+            cells = self._all_cells()
+            pending = [cell for cell in cells if not cell.is_pending_weights_or_serving]
+            if not pending:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out after {CELLS_READY_TIMEOUT_SECONDS}s waiting for "
+                    f"{len(pending)}/{len(cells)} cells to become ready"
+                )
+            logger.info(f"Waiting for {len(pending)}/{len(cells)} cells to become ready...")
+            async with self.context_lock.with_released():
+                await asyncio.sleep(CELLS_READY_POLL_INTERVAL_SECONDS)
+
+    @requires_lock
+    def _get_updatable_server(self) -> RolloutServer | None:
+        updatable = [srv for srv in self.servers.values() if srv.update_weights]
+        match updatable:
+            case []:
+                return None
+            case [srv]:
+                return srv
+            case _:
+                raise ValueError(
+                    f"Multiple servers have update_weights=True: {[srv.model_name for srv in updatable]}. "
+                    f"Only one updatable server is supported."
+                )
+
+    # -------------------------- misc APIs -----------------------------
+
+    @lock_exempt
+    def get_cell_statuses(self) -> dict[str, CellStatus]:
+        return {
+            cell_id: cell.cell_status()
+            for srv in list(self.servers.values())
+            for cell_id, cell in list(srv.server_cells.items())
+        }
+
+    @with_lock
+    async def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
+        # Only the updatable model is re-synced; a frozen model would always mismatch.
+        srv = self._get_updatable_server()
+        if srv is None:
+            return []
+        return await srv.check_weights(
+            action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+        )
+
+    # -------------------------- tick -----------------------------
+
+    @with_lock
+    async def _tick_cells(self) -> None:
+        cells = [cell for srv in list(self.servers.values()) for cell in list(srv.server_cells.values())]
+        results = await asyncio.gather(
+            *[asyncio.wait_for(cell.tick(), timeout=CELL_TICK_TIMEOUT_SECONDS) for cell in cells],
+            return_exceptions=True,
+        )
+        for cell, result in zip(cells, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.error(f"Ticking cell {cell.meta.cell_id} failed", exc_info=result)
+
+    # -------------------------- reconcile -----------------------------
+
+    @with_lock
+    async def _add_external_cells(self) -> None:
+        # One address list cannot describe two models; --sglang-config is refused alongside
+        # --rollout-external for exactly this reason, so a second model here is a wiring bug.
+        ((model_name, srv),) = self.servers.items()
+        for cell_meta in compute_external_server_cell_metas(self.args, model_name=model_name):
+            await srv.add_cell(cell_meta)
+
+    @with_lock
+    async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
+        actual_srv: RolloutServer | None = None
+        actual_cell: ServerCell | None = None
+        for srv in self.servers.values():
+            if (c := srv.server_cells.get(cell_id)) is not None:
+                actual_srv, actual_cell = srv, c
+                break
+
+        async def _add(_cell_id: str, observed_info: CellInfo) -> None:
+            observed_cell_meta = _compute_server_cell_meta_from_info(observed_info)
+            await self.servers[observed_cell_meta.model_id].add_cell(observed_cell_meta)
+
+        async def _remove(remove_cell_id: str) -> None:
+            await actual_srv.remove_cell(remove_cell_id)
+
+        await apply_cell_observation(
+            cell_id=cell_id,
+            observed=observed,
+            actual_workers_hash=actual_cell.meta.workers_hash if actual_cell is not None else None,
+            add=_add,
+            remove=_remove,
+        )
+
+    # -------------------------- utils -----------------------------
+
+    @requires_lock
+    async def _health_monitoring_pause(self) -> None:
+        self._health_checker_activeness.bump_active(False)
+
+    @requires_lock
+    async def _health_monitoring_resume(self) -> None:
+        self._health_checker_activeness.bump_active(True)
+
+
+@dataclass(frozen=True)
+class UpdatableEngines:
+    rollout_engines: list[SGLangApiClient]
+    engine_gpu_counts: list[int]
+    engine_gpu_offsets: list[int]
+    snapshot_cell_id_to_hashes: dict[str, str]
+
+
+def compute_external_server_cell_metas(args, *, model_name: str) -> list[ServerCellMetadata]:
+    """Describe the engines named by --rollout-external-engine-addrs.
+
+    Under external rollout miles launches nothing, so there is no worker to read a cell's shape
+    from; every field the launched path would have learned from the provider is fixed here
+    instead. The addresses are the whole fleet, so the hash is constant: nothing can replace a
+    cell miles does not own.
+    """
+    return [
+        ServerCellMetadata(
+            model_id=model_name,
+            worker_type="regular",
+            cell_id=f"external-engine-{index}",
+            num_gpus_per_engine=args.rollout_num_gpus_per_engine,
+            gpu_offset=index * args.rollout_num_gpus_per_engine,
+            sglang_api_key=args.sglang_api_key,
+            worker_name=f"external-engine-{index}-0",
+            needs_offload=False,
+            update_weights=True,
+            workers_hash=f"external-{index}",
+            external_server_addr=addr,
+        )
+        for index, addr in enumerate(args.rollout_external_engine_addrs)
+    ]
+
+
+# TODO may move and generalize later
+def _compute_server_cell_meta_from_info(info: CellInfo) -> ServerCellMetadata:
+    return ServerCellMetadata(
+        model_id=info.meta["model_id"],
+        worker_type=info.meta["worker_type"],
+        cell_id=info.cell_id,
+        num_gpus_per_engine=info.meta["num_gpus_per_engine"],
+        gpu_offset=info.meta["gpu_offset"],
+        sglang_api_key=info.meta["sglang_api_key"],
+        worker_name=info.worker_names[0],
+        needs_offload=info.meta["needs_offload"],
+        update_weights=info.meta["update_weights"],
+        workers_hash=info.workers_hash,
+    )

@@ -10,6 +10,7 @@ import logging
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import SessionCore
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
@@ -19,26 +20,23 @@ from miles.utils.processing_utils import load_tokenizer
 logger = logging.getLogger(__name__)
 
 
-def setup_session_routes(app, backend, args):
-    hf_checkpoint = getattr(args, "hf_checkpoint", None)
-    if not hf_checkpoint:
+def setup_session_routes(app, backend, config: SessionServerConfig):
+    if not config.hf_checkpoint:
         logger.info("[session] Skipping session routes (hf_checkpoint not set).")
         return
 
-    session_server_instance_id = getattr(args, "session_server_instance_id", None)
-
     tokenizer = load_tokenizer(
-        hf_checkpoint, chat_template_path=getattr(args, "chat_template_path", None), trust_remote_code=True
+        config.hf_checkpoint, chat_template_path=config.chat_template_path, trust_remote_code=True
     )
 
     tito_tokenizer = get_tito_tokenizer(
         tokenizer,
-        tokenizer_type=getattr(args, "tito_model", "default"),
-        chat_template_kwargs=getattr(args, "apply_chat_template_kwargs", None),
+        tokenizer_type=config.tito_model,
+        chat_template_kwargs=config.apply_chat_template_kwargs,
     )
 
-    registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
-    core = SessionCore(backend, registry, args, session_server_instance_id)
+    registry = SessionRegistry(tokenizer, tito_tokenizer=tito_tokenizer)
+    core = SessionCore(backend, registry, config, config.instance_id)
 
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):

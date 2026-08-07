@@ -1,23 +1,17 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import ray
 
 from miles.ray.train.cell_monitor import compute_cell_status, create_trainer_cell_health_checker
-from miles.ray.train.cell_state import (
-    StateAllocatedAlive,
-    StateAllocatedErrored,
-    StateAllocatedUninitialized,
-    StatePending,
-    StateStopped,
-)
-from miles.utils.ft_utils.control_server.models import TriState
-from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
+from miles.ray.train.cell_state import StateAllocatedAlive, StateAllocatedErrored, StateAllocatedUninitialized
+from miles.utils.ft_utils.api_server.models import TriState
+from miles.utils.ft_utils.health_checker import ActiveAndEpoch, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 
 
-def _make_actor_handle_mock() -> MagicMock:
-    return MagicMock(spec=ray.actor.ActorHandle)
+def _make_worker_handle_mock() -> MagicMock:
+    return MagicMock(spec=BaseWorkerHandle)
 
 
 def _make_indep_dp_info() -> IndepDPInfo:
@@ -32,7 +26,7 @@ def _make_indep_dp_info() -> IndepDPInfo:
 
 
 def _make_alive_state() -> StateAllocatedAlive:
-    return StateAllocatedAlive(actor_handles=[_make_actor_handle_mock()], indep_dp_info=_make_indep_dp_info())
+    return StateAllocatedAlive(worker_handles=[_make_worker_handle_mock()], indep_dp_info=_make_indep_dp_info())
 
 
 def _find_condition(status, type_: str):
@@ -70,7 +64,7 @@ class TestComputeCellStatusAlive:
 class TestComputeCellStatusOtherStates:
     @pytest.mark.parametrize("health_status", [TriState.TRUE, TriState.FALSE, TriState.UNKNOWN])
     def test_uninitialized_ignores_health_checker(self, health_status: TriState):
-        state = StateAllocatedUninitialized(actor_handles=[_make_actor_handle_mock()])
+        state = StateAllocatedUninitialized(worker_handles=[_make_worker_handle_mock()])
 
         result = compute_cell_status(state, health_status)
 
@@ -80,27 +74,13 @@ class TestComputeCellStatusOtherStates:
 
     @pytest.mark.parametrize("health_status", [TriState.TRUE, TriState.FALSE, TriState.UNKNOWN])
     def test_errored_always_reports_unhealthy(self, health_status: TriState):
-        state = StateAllocatedErrored(actor_handles=[_make_actor_handle_mock()], indep_dp_info=_make_indep_dp_info())
+        state = StateAllocatedErrored(worker_handles=[_make_worker_handle_mock()], indep_dp_info=_make_indep_dp_info())
 
         result = compute_cell_status(state, health_status)
 
         healthy = _find_condition(result, "Healthy")
         assert healthy.status == TriState.FALSE
         assert healthy.reason == "ExecutionErrored"
-
-    def test_pending_reports_allocated_false_no_healthy_condition(self):
-        result = compute_cell_status(StatePending(), TriState.UNKNOWN)
-
-        assert result.phase == "Pending"
-        allocated = _find_condition(result, "Allocated")
-        assert allocated.status == TriState.FALSE
-        assert all(c.type != "Healthy" for c in result.conditions)
-
-    def test_stopped_reports_suspended_phase_no_healthy_condition(self):
-        result = compute_cell_status(StateStopped(), TriState.UNKNOWN)
-
-        assert result.phase == "Suspended"
-        assert all(c.type != "Healthy" for c in result.conditions)
 
 
 def _make_cell_mock(*, is_alive: bool, execute: AsyncMock) -> MagicMock:
@@ -125,6 +105,7 @@ class TestTrainerCellHealthCheckLiveness:
         checker = create_trainer_cell_health_checker(
             cell=cell,
             config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
+            get_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
         )
 
         await checker._check_fn()
@@ -134,15 +115,16 @@ class TestTrainerCellHealthCheckLiveness:
     async def test_rpc_error_propagates_as_unhealthy(self):
         """A dead actor makes the heartbeat RPC raise; _check propagates it so the
         checker reports unhealthy."""
-        execute = AsyncMock(side_effect=ray.exceptions.RayActorError())
+        execute = AsyncMock(side_effect=WorkerUnreachableError("worker gone"))
         cell = _make_cell_mock(is_alive=True, execute=execute)
 
         checker = create_trainer_cell_health_checker(
             cell=cell,
             config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
+            get_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
         )
 
-        with pytest.raises(ray.exceptions.RayActorError):
+        with pytest.raises(WorkerUnreachableError):
             await checker._check_fn()
 
     @pytest.mark.asyncio
@@ -154,6 +136,7 @@ class TestTrainerCellHealthCheckLiveness:
         checker = create_trainer_cell_health_checker(
             cell=cell,
             config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
+            get_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
         )
 
         await checker._check_fn()

@@ -2,9 +2,7 @@
 
 import asyncio
 import json
-import re
 import socket
-import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -12,6 +10,7 @@ import httpx
 import pytest
 import requests
 from fastapi.responses import JSONResponse
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import message_matches
@@ -19,6 +18,9 @@ from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
+
+
+_INSTANCE_ID = "0123456789abcdef-0"
 
 
 def _create_session(url: str) -> str:
@@ -62,16 +64,14 @@ def router_env():
 
     with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=patched_chat_response):
         with with_mock_server(process_fn=process_fn) as backend:
-            args = SimpleNamespace(
-                miles_router_timeout=30,
+            config = make_session_server_config(
+                backend_url=backend.url,
                 hf_checkpoint="Qwen/Qwen3-0.6B",
-                chat_template_path=None,
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
-                trajectory_manager="linear_trajectory",
-                session_server_instance_id=uuid.uuid4().hex,
+                instance_id=_INSTANCE_ID,
             )
-            server_obj = SessionServer(args, backend_url=backend.url)
+            server_obj = SessionServer(config)
 
             port = find_available_port(31000)
             server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
@@ -96,7 +96,7 @@ class TestSessionRoutes:
         second_body = second.json()
         assert first_body["status"] == "ok"
         assert second_body["status"] == "ok"
-        assert re.fullmatch(r"[0-9a-f]{32}", first_body["session_server_instance_id"])
+        assert first_body["session_server_instance_id"] == _INSTANCE_ID
         assert second_body["session_server_instance_id"] == first_body["session_server_instance_id"]
 
     def test_create_session(self, router_env):

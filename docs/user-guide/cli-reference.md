@@ -26,6 +26,7 @@ This page has two passes.
 | `--rollout-num-gpus` | derived | GPUs for SGLang rollout (ignored when `--colocate`). |
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
+| `--run-uuid` | generated | Machine-readable id for this launch; 16 lowercase hex characters. |
 
 See [Training Script Walkthrough: Colocation](/user-guide/training-script-walkthrough#colocation-share-gpus-or-dont)
 for what `--colocate` flips on under the hood.
@@ -276,8 +277,8 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--sglang-router-ip` | str | – | External router IP. Miles starts its own router if unset. |
-| `--sglang-router-port` | int | – | External router port. |
+| `--sglang-router-ip` | str | – | Attach to a router miles did not start; needs `--sglang-router-port`. Single-model only. |
+| `--sglang-router-port` | int | – | Pins the port of the router miles starts; model `i` gets `port + i`. Unset lets it move off a busy port. |
 | `--sglang-*` | passthrough | | Any flag accepted by `python -m sglang.launch_server` works with this prefix. |
 | `--router-*` | passthrough | | Any flag accepted by the active router works with this prefix. |
 
