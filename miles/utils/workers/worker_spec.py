@@ -55,12 +55,10 @@ class SchedulingSpec(FrozenStrictBaseModel):
 # TODO: improve meta computation logic later
 class WorkerMetaContext(FrozenStrictBaseModel):
     cell_id: str
-    cell_index: int
 
 
 class WorkerLaunchContext(FrozenStrictBaseModel):
     cell_id: str
-    cell_index: int
     worker_in_cell_index: int
     gpu_ids: list[int]
 

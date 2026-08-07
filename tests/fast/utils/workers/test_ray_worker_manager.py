@@ -21,13 +21,11 @@ class _LaunchRecorder:
 
     def command(self, ctx: LaunchCommandContext) -> str:
         self.contexts.append(ctx)
-        return f"run-{ctx.cell_index}-{ctx.worker_in_cell_index}"
+        return f"run-{ctx.cell_id}-{ctx.worker_in_cell_index}"
 
-    def context_of(self, *, cell_index: int, worker_in_cell_index: int) -> LaunchCommandContext:
+    def context_of(self, *, cell_id: str, worker_in_cell_index: int) -> LaunchCommandContext:
         matches = [
-            ctx
-            for ctx in self.contexts
-            if ctx.cell_index == cell_index and ctx.worker_in_cell_index == worker_in_cell_index
+            ctx for ctx in self.contexts if ctx.cell_id == cell_id and ctx.worker_in_cell_index == worker_in_cell_index
         ]
         assert len(matches) == 1, f"{matches=}"
         return matches[0]
@@ -258,7 +256,7 @@ class TestPortAllocationDetails:
         )
         await _launch([spec])
 
-        addrs = recorder.context_of(cell_index=0, worker_in_cell_index=0).self_addrs
+        addrs = recorder.context_of(cell_id="engine-0", worker_in_cell_index=0).self_addrs
         assert list(addrs) == ["primary", "nccl", "engine_info_bootstrap"]
         assert len({addr.port for addr in addrs.values()}) == 3
 
@@ -291,15 +289,15 @@ class TestInitStartsCommands:
         spec = _make_spec("engine", num_cells=2, num_workers_per_cell=2, launch_command=recorder.command)
         manager = await _launch([spec])
 
-        assert {(ctx.cell_index, ctx.worker_in_cell_index) for ctx in recorder.contexts} == {
-            (0, 0),
-            (0, 1),
-            (1, 0),
-            (1, 1),
+        assert {(ctx.cell_id, ctx.worker_in_cell_index) for ctx in recorder.contexts} == {
+            ("engine-0", 0),
+            ("engine-0", 1),
+            ("engine-1", 0),
+            ("engine-1", 1),
         }
         for cell_index in range(2):
             for worker_in_cell_index in range(2):
-                ctx = recorder.context_of(cell_index=cell_index, worker_in_cell_index=worker_in_cell_index)
+                ctx = recorder.context_of(cell_id=f"engine-{cell_index}", worker_in_cell_index=worker_in_cell_index)
                 expected = manager.get_worker_addrs(f"engine-{cell_index}-{worker_in_cell_index}")["primary"]
                 assert ctx.self_addrs["primary"] == expected
 
@@ -532,7 +530,7 @@ class TestMasterPorts:
 
         masters = {
             (cell_index, worker_in_cell_index): recorder.context_of(
-                cell_index=cell_index, worker_in_cell_index=worker_in_cell_index
+                cell_id=f"engine-{cell_index}", worker_in_cell_index=worker_in_cell_index
             ).self_addrs["dist_init"]
             for cell_index in range(2)
             for worker_in_cell_index in range(2)
@@ -556,7 +554,7 @@ class TestMasterPorts:
         )
         await _launch([spec])
 
-        peer = recorder.context_of(cell_index=0, worker_in_cell_index=1).self_addrs
+        peer = recorder.context_of(cell_id="engine-0", worker_in_cell_index=1).self_addrs
         assert peer["primary"].host == "10.0.0.2"
         assert peer["dist_init"].host == "10.0.0.1"
 
@@ -575,7 +573,7 @@ class TestMasterPorts:
         manager = await _launch([spec])
 
         for worker_in_cell_index in range(2):
-            ctx = recorder.context_of(cell_index=0, worker_in_cell_index=worker_in_cell_index)
+            ctx = recorder.context_of(cell_id="engine-0", worker_in_cell_index=worker_in_cell_index)
             assert ctx.self_addrs["primary"] == manager.get_worker_addrs(f"engine-0-{worker_in_cell_index}")["primary"]
 
 
@@ -585,11 +583,11 @@ class TestConcurrentPhases:
         from miles.utils.workers.ray_worker_manager import _CommandActorManager
 
         original_alloc_ports = _CommandActorManager.alloc_ports
-        entered: list[int] = []
+        entered: list[str] = []
         release = asyncio.Event()
 
         async def gated_alloc(self) -> None:
-            entered.append(self.parent.cell_index)
+            entered.append(self.parent.cell_id)
             if len(entered) == 3:
                 release.set()
             await asyncio.wait_for(release.wait(), timeout=5)
@@ -620,7 +618,7 @@ class TestGpuPlacement:
         await _launch([spec], _make_pgs(num_slots=10, first_gpu_id=0))
 
         assert [
-            recorder.context_of(cell_index=cell_index, worker_in_cell_index=worker_in_cell_index).gpu_ids
+            recorder.context_of(cell_id=f"engine-{cell_index}", worker_in_cell_index=worker_in_cell_index).gpu_ids
             for cell_index in range(2)
             for worker_in_cell_index in range(2)
         ] == [[2, 3], [4, 5], [6, 7], [8, 9]]
@@ -638,8 +636,8 @@ class TestGpuPlacement:
         )
         await _launch([spec], _make_pgs(num_slots=8, first_gpu_id=4))
 
-        assert recorder.context_of(cell_index=0, worker_in_cell_index=0).gpu_ids == [4, 5]
-        assert recorder.context_of(cell_index=0, worker_in_cell_index=1).gpu_ids == [6, 7]
+        assert recorder.context_of(cell_id="engine-0", worker_in_cell_index=0).gpu_ids == [4, 5]
+        assert recorder.context_of(cell_id="engine-0", worker_in_cell_index=1).gpu_ids == [6, 7]
 
     async def test_a_pg_worker_is_scheduled_on_the_bundle_its_slot_maps_to(self, fake_ray_cluster: FakeRayCluster):
         """The actor is placed on the reordered bundle of its slot, not on the raw slot index."""
@@ -669,7 +667,7 @@ class TestGpuPlacement:
 
         assert "scheduling_strategy" not in fake_ray_cluster.handles[0].options
         assert fake_ray_cluster.handles[0].options["num_gpus"] == 0
-        assert recorder.context_of(cell_index=0, worker_in_cell_index=0).gpu_ids == []
+        assert recorder.context_of(cell_id="router-0", worker_in_cell_index=0).gpu_ids == []
 
 
 class TestPgActorResources:
@@ -850,7 +848,7 @@ class TestGetWorkerInfosErrors:
         with pytest.raises(AssertionError):
             manager.get_worker_infos("router-0")
 
-    async def test_a_cell_index_beyond_the_group_is_reported(self, fake_ray_cluster: FakeRayCluster):
+    async def test_a_cell_the_group_never_created_is_reported(self, fake_ray_cluster: FakeRayCluster):
         """Asking about a cell that does not exist must fail rather than return another cell."""
         manager = await _launch([_make_spec("engine", num_cells=2)])
 

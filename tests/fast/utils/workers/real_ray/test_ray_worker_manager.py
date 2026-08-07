@@ -29,14 +29,14 @@ class TestLaunchOnRealRay:
 
         records = probe.wait_for_records(4)
 
-        assert sorted(records) == ["0-0", "0-1", "1-0", "1-1"]
+        assert sorted(records) == ["engine-0-0", "engine-0-1", "engine-1-0", "engine-1-1"]
         assert all(is_process_running(record["pid"]) for record in records.values())
         assert len({record["pid"] for record in records.values()}) == 4
         for name, record in records.items():
-            cell_index, worker_in_cell_index = (int(part) for part in name.split("-"))
-            assert record["context"]["cell_index"] == cell_index
-            assert record["context"]["worker_in_cell_index"] == worker_in_cell_index
-            advertised = ray.get(handle.get_worker_addrs.remote(f"engine-{name}"))["primary"]
+            cell_id, worker_in_cell_index = name.rsplit("-", maxsplit=1)
+            assert record["context"]["cell_id"] == cell_id
+            assert record["context"]["worker_in_cell_index"] == int(worker_in_cell_index)
+            advertised = ray.get(handle.get_worker_addrs.remote(name))["primary"]
             assert record["context"]["self_addrs"]["primary"] == {
                 "host": advertised.host,
                 "port": advertised.port,

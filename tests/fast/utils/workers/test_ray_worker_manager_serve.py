@@ -63,7 +63,7 @@ class _CtorKwargsProbe:
 
 
 def _launch_context(*, worker_in_cell_index: int = 0) -> WorkerLaunchContext:
-    return WorkerLaunchContext(cell_id="cell-0", cell_index=0, worker_in_cell_index=worker_in_cell_index, gpu_ids=[])
+    return WorkerLaunchContext(cell_id="cell-0", worker_in_cell_index=worker_in_cell_index, gpu_ids=[])
 
 
 def _make_pgs(num_slots: int = 8) -> dict[str, PlacementGroupInfo]:

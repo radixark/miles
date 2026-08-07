@@ -44,7 +44,6 @@ def _make_model_cfg(*worker_types: str) -> ModelConfig:
 def _make_router_ctx(*, port: int = 20000, prometheus_port: int = 4001) -> LaunchCommandContext:
     return LaunchCommandContext(
         cell_id="cell-0",
-        cell_index=0,
         worker_in_cell_index=0,
         self_addrs=dict(
             primary=HostAndPort(host="127.0.0.1", port=port),
@@ -119,7 +118,6 @@ class TestComputeSpecSessionServer:
 
         ctx = LaunchCommandContext(
             cell_id="cell-1",
-            cell_index=1,
             worker_in_cell_index=0,
             self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
             spec_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
@@ -326,7 +324,6 @@ class TestInferenceEngineGatedLaunch:
 def _make_engine_ctx() -> LaunchCommandContext:
     return LaunchCommandContext(
         cell_id="cell-0",
-        cell_index=0,
         worker_in_cell_index=0,
         self_addrs=dict(
             primary=HostAndPort(host="10.0.0.1", port=30000),
@@ -353,7 +350,7 @@ class TestEngineMetaApiKey:
         )
         args = make_args(sglang_config=str(config_path), rollout_num_gpus=8, **args_overrides)
         (spec,) = specs_inference_engine(args)
-        return spec.meta(WorkerMetaContext(cell_id="cell-a", cell_index=0))
+        return spec.meta(WorkerMetaContext(cell_id="cell-a"))
 
     def test_a_group_api_key_override_wins_over_the_args_key(self, tmp_path):
         """The ServerArgs-named api_key override reaches the cell meta ahead of the global args key."""
@@ -430,7 +427,7 @@ class TestEngineCellChunking:
         """The spec knows where its own group begins; splitting that span per cell is the backend's job."""
         spec = self._spec_for(tmp_path, num_gpus=16, num_gpus_per_engine=1, gpu_offset=8)
 
-        assert spec.meta(WorkerMetaContext(cell_id="cell-b", cell_index=1))["gpu_offset"] == 8
+        assert spec.meta(WorkerMetaContext(cell_id="cell-b"))["gpu_offset"] == 8
 
 
 class TestSpecInferenceController:
@@ -444,9 +441,7 @@ class TestSpecInferenceController:
         return make_args(sglang_config=str(config_path), rollout_num_gpus=8, **overrides)
 
     def _ctor_context(self, capability: FakeBackendCapability) -> WorkerCtorContext:
-        return WorkerCtorContext(
-            cell_id="cell-0", cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability
-        )
+        return WorkerCtorContext(cell_id="cell-0", worker_in_cell_index=0, gpu_ids=[], capability=capability)
 
     def test_every_run_gets_exactly_one_gpuless_controller(self, tmp_path):
         """It is a control-plane worker on both backends; a gpu request would reserve a whole node for it."""

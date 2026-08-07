@@ -260,7 +260,6 @@ class _BaseActorManager(Generic[SpecT]):
     def launch_context(self) -> WorkerLaunchContext:
         return WorkerLaunchContext(
             cell_id=self.parent.cell_id,
-            cell_index=self.parent.cell_index,
             worker_in_cell_index=self.worker_in_cell_index,
             gpu_ids=self.gpu_ids,
         )
@@ -306,11 +305,7 @@ class _BaseActorManager(Generic[SpecT]):
 
     @property
     def name(self) -> str:
-        return compute_worker_name(
-            pool_id=self.spec.name,
-            cell_index=self.parent.cell_index,
-            worker_in_cell_index=self.worker_in_cell_index,
-        )
+        return compute_worker_name(cell_id=self.parent.cell_id, worker_in_cell_index=self.worker_in_cell_index)
 
     @property
     def generation(self) -> int:
@@ -375,7 +370,7 @@ def compute_cell_meta(spec: BaseWorkerSpec, *, cell_id: str, cell_index: int) ->
     if compute_meta is None:
         return {}
 
-    meta = compute_meta(WorkerMetaContext(cell_id=cell_id, cell_index=cell_index))
+    meta = compute_meta(WorkerMetaContext(cell_id=cell_id))
     if GPU_OFFSET_META not in meta:
         return meta
 
@@ -402,7 +397,6 @@ def bootstrapped_worker_class(worker_class_path: str) -> type:
 def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
     return WorkerCtorContext(
         cell_id=launch_context.cell_id,
-        cell_index=launch_context.cell_index,
         worker_in_cell_index=launch_context.worker_in_cell_index,
         gpu_ids=launch_context.gpu_ids,
         capability=DeferredBackendCapability(create=_create_ray_backend_capability),

@@ -47,9 +47,7 @@ def _make_args(**overrides) -> SimpleNamespace:
 
 
 def _make_context(**overrides) -> WorkerCtorContext:
-    kwargs = dict(
-        cell_id="cell-0", cell_index=0, worker_in_cell_index=0, gpu_ids=[0], capability=FakeBackendCapability()
-    )
+    kwargs = dict(cell_id="cell-0", worker_in_cell_index=0, gpu_ids=[0], capability=FakeBackendCapability())
     kwargs.update(overrides)
     return WorkerCtorContext(**kwargs)
 
@@ -251,7 +249,7 @@ class _FakeStaticProvider:
 
 
 def _controller_context(capability: FakeBackendCapability) -> WorkerCtorContext:
-    return WorkerCtorContext(cell_id="cell-0", cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+    return WorkerCtorContext(cell_id="cell-0", worker_in_cell_index=0, gpu_ids=[], capability=capability)
 
 
 def _controller_providers() -> FakeBackendCapability:
