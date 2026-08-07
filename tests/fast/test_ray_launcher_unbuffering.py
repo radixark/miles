@@ -9,12 +9,25 @@ RAY_RUNTIME_ENV_MARKERS = ("runtime-env-json", "runtime_env=", "runtime_env_json
 
 
 def tracked_files() -> list[Path]:
+    """Every launcher under the checked directories.
+
+    git is only an enumeration convenience: it keeps ignored files out. A tree that is not a git
+    checkout -- a remote workspace synced without .git, for instance -- still has launchers to
+    check, and erroring there at collection time would take the whole file down.
+    """
     listing = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "ls-files", "-z", *LAUNCHER_DIRS],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    if listing.returncode != 0:
+        return sorted(
+            path
+            for directory in LAUNCHER_DIRS
+            for path in (REPO_ROOT / directory).rglob("*")
+            if path.is_file() and path.suffix in (".py", ".sh")
+        )
     return [REPO_ROOT / name for name in listing.stdout.split("\0") if name.endswith((".py", ".sh"))]
 
 

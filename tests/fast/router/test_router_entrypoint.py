@@ -8,7 +8,9 @@ def test_miles_router_module_help_exits_successfully() -> None:
         [sys.executable, "-m", "miles.router.router", "--help"],
         capture_output=True,
         text=True,
-        timeout=10,
+        # Generous because this imports the whole miles stack, and a loaded runner takes longer
+        # than the few seconds it costs idle; the bound is here to catch a hang, not to time it.
+        timeout=120,
         check=False,
     )
 
