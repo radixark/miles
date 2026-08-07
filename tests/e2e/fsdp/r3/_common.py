@@ -73,6 +73,9 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
         "--update-weight-buffer-size 536870912 "
         "--use-dynamic-batch-size "
         "--max-tokens-per-gpu 8192 "
+        # Scoped to the training process on purpose: expandable_segments disables
+        # TorchMemorySaver, which colocated SGLang engines need to release memory.
+        '--train-env-vars \'{"PYTORCH_CUDA_ALLOC_CONF":"expandable_segments:True"}\' '
     )
 
     replay_args = "--use-rollout-routing-replay "
@@ -107,7 +110,6 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
         train_args=train_args,
         num_gpus_per_node=case.num_gpus,
         megatron_model_type=None,
-        extra_env_vars={"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"},
     )
 
 
