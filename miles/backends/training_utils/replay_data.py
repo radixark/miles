@@ -1,6 +1,7 @@
 from typing import Protocol
 
 import torch
+import torch.distributed as dist
 
 from .cp_utils import slice_with_cp
 from .parallel import get_parallel_state
@@ -115,7 +116,23 @@ def fill_replay_data(
                         replay_data[i] = torch.where(r != -1, r + offset, r)
                         offset += r.shape[0]
                 replay_data = torch.cat(replay_data, dim=0)
-                pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
+                local_target = (replay_data.size(0) + pad_size - 1) // pad_size * pad_size
+                if (
+                    getattr(args, "moe_token_dispatcher_type", None) == "flex"
+                    and getattr(args, "moe_flex_dispatcher_backend", None) == "hybridep"
+                ):
+                    assert parallel_state.ep.group is not None
+                    target = torch.tensor(
+                        [local_target],
+                        dtype=torch.int64,
+                        device=torch.cuda.current_device(),
+                    )
+                    dist.all_reduce(target, op=dist.ReduceOp.MAX, group=parallel_state.ep.group)
+                    target_num_tokens = int(target.item())
+                else:
+                    target_num_tokens = local_target
+
+                pad = target_num_tokens - replay_data.size(0)
                 if pad != 0:
                     replay_data = pad_func(replay_data, pad)
 
