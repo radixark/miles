@@ -74,17 +74,19 @@ def make_args(**overrides) -> Namespace:
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
+        rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
+        eval_num_gpus=0,
     )
     defaults.update(overrides)
     return Namespace(**defaults)
 
 
 def make_fn(monkeypatch, args, data_source, generate=None):
-    async def default_generate(state, group, sampling_params, evaluation=False):
+    async def default_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await asyncio.sleep(0)
         return group
 
@@ -111,11 +113,78 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     assert len(output2.samples) == 3
 
 
-async def test_eval_raises(monkeypatch):
-    fn = make_fn(monkeypatch, make_args(), FakeDataSource())
-    with pytest.raises(ValueError, match="does not serve eval"):
-        await fn(RolloutFnEvalInput(rollout_id=0))
+async def test_eval_without_fleet_pauses_producer(monkeypatch):
+    """Shared-engine eval: producer submissions pause during eval and resume after."""
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    fn = make_fn(
+        monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate
+    )
+
+    eval_started = asyncio.Event()
+    eval_release = asyncio.Event()
+    eval_results = {"fake_ds": {"rewards": [1.0], "truncated": [False], "samples": []}}
+
+    async def fake_run_eval_datasets(state, cache):
+        assert state is fn.state  # shared-engine eval uses the train state
+        eval_started.set()
+        await eval_release.wait()
+        return eval_results
+
+    monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
+
+    # Start the producer via a train call, then run eval concurrently.
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.05)
+    submitted_before_eval = data_source.num_get_calls
+
+    eval_task = asyncio.create_task(fn(RolloutFnEvalInput(rollout_id=0)))
+    await eval_started.wait()
+    release.set()  # in-flight groups finish and buffer, but no NEW submissions
+    await asyncio.sleep(0.05)
+    assert data_source.num_get_calls == submitted_before_eval
+
+    eval_release.set()
+    output = await eval_task
+    assert output.data == eval_results
+
+    # Producer resumes and the train drain completes.
+    assert (await drain).samples
+
+
+async def test_eval_runs_on_dedicated_fleet(monkeypatch):
+    """RolloutManager (not the fn) decides fleet-vs-shared and builds the fleet's
+    GenerateState; it hands it in via RolloutFnEvalInput.generate_state. The fn must
+    use that state as-is (not self.state) and must not touch the producer/data_source.
+    Building/caching the fleet state itself is EvalFleetSession's job, covered in
+    tests/fast/rollout/test_checkpoint_eval.py.
+    """
+    args = make_args(eval_num_gpus=1, eval_num_gpus_per_engine=1)
+    data_source = FakeDataSource()
+    fn = make_fn(monkeypatch, args, data_source)
+
+    fleet_state = FakeGenerateState(args)
+    eval_results = {"fake_ds": {"rewards": [1.0], "truncated": [False], "samples": []}}
+    seen_states = []
+
+    async def fake_run_eval_datasets(state, cache):
+        seen_states.append(state)
+        return eval_results
+
+    monkeypatch.setattr(fully_async, "run_eval_datasets", fake_run_eval_datasets)
+
+    output = await fn(RolloutFnEvalInput(rollout_id=0, generate_state=fleet_state, weight_version="0"))
+
+    assert output.data == eval_results
+    assert seen_states == [fleet_state]  # used the fleet's state, not fn.state
+    # Eval must not start the producer or consume training prompts.
     assert fn._worker is None
+    assert data_source.num_get_calls == 0
 
 
 async def test_aborted_group_recycled(monkeypatch):
@@ -165,7 +234,7 @@ async def test_stale_group_recycled(monkeypatch):
 
 
 async def test_worker_error_propagates(monkeypatch):
-    async def failing_generate(state, group, sampling_params, evaluation=False):
+    async def failing_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         raise RuntimeError("generation exploded")
 
     fn = make_fn(monkeypatch, make_args(), FakeDataSource(), generate=failing_generate)
@@ -177,7 +246,7 @@ async def test_worker_error_propagates(monkeypatch):
 async def test_worker_bounds_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
@@ -196,7 +265,7 @@ async def test_worker_bounds_in_flight_groups(monkeypatch):
 async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
@@ -238,7 +307,7 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     data_source = FakeDataSource(scripted=[prompt_group])
     submitted = []
 
-    async def multi_sample_generate(state, group, sampling_params, evaluation=False):
+    async def multi_sample_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         assert all(isinstance(sample, Sample) for sample in group), "resubmitted a nested group"
         submitted.append(group)
         if len(submitted) > 1:
@@ -314,3 +383,61 @@ async def test_weight_version_throttles_failed_queries(monkeypatch):
     assert await expired.get(args) is None
     assert await expired.get(args) is None
     assert len(calls) == 2
+
+
+async def test_worker_defaults_to_sample_granularity(monkeypatch):
+    """Unset --rollout-submission-granularity: this driver backfills on sample completion."""
+    callbacks = []
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        callbacks.append(sample_done_callback)
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    args = make_args(rollout_batch_size=1)
+    fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+
+    # Report every sample of the still-pending group as finished.
+    for _ in range(N_SAMPLES_PER_PROMPT):
+        callbacks[0]()
+    await asyncio.sleep(0.01)
+
+    # A replacement group went out even though the first group has not returned.
+    assert data_source.num_get_calls == 2
+
+    release.set()
+    output = await drain
+    assert len(output.samples) == 1
+
+
+async def test_group_granularity_opts_the_worker_out_of_backfill(monkeypatch):
+    callbacks = []
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        callbacks.append(sample_done_callback)
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    args = make_args(rollout_batch_size=1, rollout_submission_granularity="group")
+    fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+    # no callback wired at group level
+    assert callbacks == [None]
+
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+
+    release.set()
+    output = await drain
+    assert len(output.samples) == 1

@@ -20,8 +20,10 @@ hook.
 The maintained end-to-end recipe is **Terminal-Bench-2 GRPO** in
 [`examples/experimental/openenv`](https://github.com/radixark/miles/tree/main/examples/experimental/openenv).
 It runs against a shared Docker env server (full per-task image fidelity) or
-per-episode [Daytona](https://www.daytona.io/) cloud sandboxes built from each
-task's official image (no resident infrastructure). Follow the
+per-episode cloud sandboxes built from each task's official image (no resident
+infrastructure) on a choice of providers: [Daytona](https://www.daytona.io/),
+[E2B](https://e2b.dev/), or a self-hosted, E2B-compatible
+[AgentENV](https://github.com/kvcache-ai/AgentENV) deployment. Follow the
 [recipe README](https://github.com/radixark/miles/blob/main/examples/experimental/openenv/README.md)
 for prompt-data preparation, env-server modes, launcher flags, and operational
 notes.

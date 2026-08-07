@@ -37,8 +37,16 @@ def setup_session_routes(app, backend, args):
         chat_template_kwargs=getattr(args, "apply_chat_template_kwargs", None),
     )
 
-    registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
-    core = SessionCore(backend, registry, args, session_server_instance_id)
+    use_v2 = getattr(args, "use_session_server", None) == "v2"
+    if use_v2:
+        from miles.rollout.session.v2.core import SessionCoreV2
+        from miles.rollout.session.v2.session_state import SessionRegistryV2
+
+        registry = SessionRegistryV2(args, tokenizer, tito_tokenizer=tito_tokenizer)
+        core = SessionCoreV2(backend, registry, args, session_server_instance_id)
+    else:
+        registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
+        core = SessionCore(backend, registry, args, session_server_instance_id)
 
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
@@ -77,10 +85,11 @@ def setup_session_routes(app, backend, args):
         # Parse here so malformed input is not reported as an assembly error (422).
         body = await request.body()
         params = json.loads(body) if body else {}
-        return await core.collect_samples(
-            session_id,
-            max_seq_len=params.get("max_seq_len"),
-        )
+        if use_v2:
+            return await core.collect_samples(
+                session_id, max_seq_len=params.get("max_seq_len"), agent_metadata=params.get("metadata")
+            )
+        return await core.collect_samples(session_id, max_seq_len=params.get("max_seq_len"))
 
     @app.api_route("/sessions/{session_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
     async def session_proxy(request: Request, session_id: str, path: str):

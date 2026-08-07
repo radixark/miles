@@ -33,7 +33,7 @@ Key modules:
 |---|---|
 | `miles/rollout/base_types.py` | `GenerateFnInput` / `GenerateFnOutput` |
 | `miles/rollout/inference_rollout/inference_rollout_common.py` | Builds a `GenerateState` and calls the generate function |
-| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/swe-agent`) |
+| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/swe-agent-harbor-docker`) |
 
 ### Generate function basics
 
@@ -162,7 +162,7 @@ Generator entry point:
 
 Example:
 
-- [`examples/swe-agent`](https://github.com/radixark/miles/tree/main/examples/swe-agent):
+- [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker):
   multi-turn agentic SWE agent on the session-server TITO path, with ready-to-run launchers.
 
 Wire-up (as used by the swe-agent example):
@@ -178,6 +178,14 @@ CUSTOM_ARGS=(
 
 **Don't apply chat template.** For OpenAI format, do **not** pass `--apply-chat-template`. The prompt must
 remain a `messages` list. SGLang handles templating server-side.
+
+</Warning>
+
+<Warning>
+
+**Session server v2 output is a `list[Sample]`.** With `--use-session-server v2`, `agentic_tool_call.generate` returns one sample for each selected tree leaf. The v1 session server returns one scalar `Sample`.
+
+A custom reward model (`--custom-rm-path`) receives the v2 samples in batch form. `--group-rm`, `--partial-rollout`, and `--recompute-logprobs-via-prefill` are not supported with this v2 agentic output and are rejected explicitly.
 
 </Warning>
 
@@ -206,7 +214,7 @@ The hook is **entirely optional and safe to omit**:
 - It only fires when `--custom-agent-function-path` is set, so non-agentic runs
   never invoke it.
 
-See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent/swe_agent_function.py)
+See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/swe_agent_function.py)
 for a reference implementation that flushes the Harbor agent server.
 
 ### Customizing the wrapper
@@ -256,6 +264,6 @@ inherited across turns. Each request is tokenized independently.
 ## Next
 
 - [Customization](/user-guide/customization): the full catalog of `--*-path` hooks.
-- [Agentic Chat Templates](/user-guide/agentic-chat-template): verifying that a template is
+- [Agentic Rollout (TITO)](/user-guide/agentic-chat-template): verifying that a template is
   append-only across turns.
 - [Multi-agent example](/examples/multi-agent): full agentic walkthrough.

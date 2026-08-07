@@ -21,6 +21,20 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 
+async def run_eval_datasets(
+    state: GenerateState,
+    prompt_dataset_cache: dict[Any, Dataset],
+) -> dict[str, dict[str, Any]]:
+    args = state.args
+    assert not args.group_rm, "Group RM is not supported for eval rollout"
+
+    coros = []
+    for dataset_cfg in args.eval_datasets:
+        coros.append(eval_rollout_single_dataset(state, dataset_cfg, prompt_dataset_cache))
+    results_list = await asyncio.gather(*coros)
+    return {k: v for r in results_list for k, v in r.items()}
+
+
 async def eval_rollout_single_dataset(
     state: GenerateState,
     dataset_cfg: EvalDatasetConfig,

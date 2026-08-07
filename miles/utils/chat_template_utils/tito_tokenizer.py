@@ -85,7 +85,7 @@ class TITOTokenizer:
     trailing_token_ids: frozenset[int] = frozenset()
     chat_template_kwarg_aliases: frozenset[str] = frozenset()
 
-    # The family's fixed renderer contract.  DEFAULT uses the model's native
+    # The family's fixed renderer contract. DEFAULT uses the model's native
     # template with the maximal best-effort append surface.
     FIXED_TEMPLATE: FixedTemplate = FixedTemplate()
 
@@ -191,7 +191,9 @@ class TITOTokenizer:
         """Compute incremental token IDs for messages appended after the
         pretokenized prefix.
 
-        Appended roles must be listed in ``self.allowed_append_roles``.  The method validates that *new_messages* is an append-only extension of *old_messages* via ``assert_messages_append_only_with_allowed_role``.
+        Appended roles must be listed in ``self.allowed_append_roles``.  The
+        method validates that *new_messages* is an append-only extension of
+        *old_messages* via ``assert_messages_append_only_with_allowed_role``.
 
         Args:
             old_messages: Previously stored messages (prefix).
@@ -666,6 +668,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
         extra_kwargs={"drop_thinking": False},
+        allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"

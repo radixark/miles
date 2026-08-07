@@ -11,6 +11,7 @@ import pytest
 from miles.utils.chat_template_utils import TEMPLATE_DIR, TITOTokenizerType, resolve_fixed_chat_template
 from miles.utils.chat_template_utils.tito_tokenizer import (
     ALL_APPEND_ROLES,
+    DeepSeekV4TITOTokenizer,
     FixedTemplate,
     MinimaxM25TITOTokenizer,
     MinimaxM27TITOTokenizer,
@@ -74,7 +75,7 @@ def test_fixed_template_rejects_unknown_role():
 
 @pytest.mark.parametrize(
     "tokenizer_cls",
-    [Qwen35TITOTokenizer, MinimaxM25TITOTokenizer, MinimaxM27TITOTokenizer],
+    [DeepSeekV4TITOTokenizer, Qwen35TITOTokenizer, MinimaxM25TITOTokenizer, MinimaxM27TITOTokenizer],
 )
 def test_restricted_fixed_template_excludes_mid_session_system(tokenizer_cls):
     assert tokenizer_cls.FIXED_TEMPLATE.allowed_append_roles == frozenset({"tool", "user", "assistant"})

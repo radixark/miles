@@ -13,6 +13,7 @@ The default behavior is exactly the same as `AutoConfig.from_pretrained`.
 
 import importlib
 from dataclasses import dataclass
+from pathlib import Path
 
 from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
@@ -112,3 +113,11 @@ def load_hf_config(
 
 def is_dsa(hf_config) -> bool:
     return getattr(hf_config, "model_type", None) in ("deepseek_v32", "glm_moe_dsa")
+
+
+# Written by HF exports after all ranks finish, so consumers can tell finished from partial.
+HF_EXPORT_COMPLETE_MARKER = ".complete"
+
+
+def is_complete_hf_export(path: str | Path) -> bool:
+    return (Path(path) / HF_EXPORT_COMPLETE_MARKER).exists()
