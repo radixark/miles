@@ -6,7 +6,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
-from miles.ray.rollout.rollout_server import _resolve_sglang_config
+from miles.ray.rollout.rollout_server import _resolve_sglang_config, _resolve_weights_backup_mode
 
 # ----------------------------- _resolve_sglang_config matrix -----------------------------
 
@@ -134,6 +134,76 @@ class TestModelConfigResolve:
         m.resolve(args)
         assert m.update_weights is False  # not flipped
 
+
+# ----------------------------- Frozen weight restoration -----------------
+
+def _frozen_ref(weights_backup_mode: str | None = None) -> ModelConfig:
+    """A frozen reference model"""
+    return ModelConfig(
+        name="ref",
+        model_path="/ref/model",
+        update_weights=False,
+        weights_backup_mode=weights_backup_mode,
+        server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=4)],
+    )
+
+class TestFrozenGroupWeightsBackupMode:
+    """A frozen colocated group must declare how its weights come back.
+    """
+
+    @pytest.mark.parametrize("mode", [None, "actor_sync"])
+    def test_frozen_colocated_without_source_is_rejected(self, mode):
+        # actor_sync is a lie for a frozen group: nothing syncs to it.
+        with pytest.raises(ValueError, match="no weight restoration source"):
+            _resolve_weights_backup_mode(
+                model_cfg=_frozen_ref(mode), needs_offload=True, group_worker_type="regular"
+            )
+
+    @pytest.mark.parametrize("mode", ["cpu", "reload"])
+    def test_frozen_colocated_accepts_explicit_source(self, mode):
+        assert (
+            _resolve_weights_backup_mode(
+                model_cfg=_frozen_ref(mode), needs_offload=True, group_worker_type="regular"
+            )
+            == mode
+        )
+
+    def test_frozen_not_colocated_needs_no_source(self):
+        # Weights are never released, so there is nothing to restore.
+        assert (
+            _resolve_weights_backup_mode(
+                model_cfg=_frozen_ref(None), needs_offload=False, group_worker_type="regular"
+            )
+            == "actor_sync"
+        )
+
+    def test_updatable_group_defaults_to_actor_sync(self):
+        m = ModelConfig(
+            name="actor",
+            update_weights=True,
+            server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=4)],
+        )
+        assert (
+            _resolve_weights_backup_mode(model_cfg=m, needs_offload=True, group_worker_type="regular")
+            == "actor_sync"
+        )
+
+class TestWeightsBackupModeResolveValidation:
+    def test_invalid_mode_rejected(self):
+        m = _frozen_ref("nvme")
+        with pytest.raises(ValueError, match="invalid weights_backup_mode"):
+            m.resolve(make_args(rollout_num_gpus_per_engine=1, hf_checkpoint="/actor/model"))
+
+    def test_updatable_group_rejects_backup_mode(self):
+        # A cpu reload on the student would overwrite freshly trained weights.
+        m = ModelConfig(
+            name="actor",
+            model_path="/actor/model",
+            weights_backup_mode="cpu",
+            server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=4)],
+        )
+        with pytest.raises(ValueError, match="conflicts with update_weights=True"):
+            m.resolve(make_args(rollout_num_gpus_per_engine=1, hf_checkpoint="/actor/model"))
 
 # ----------------------------- has_pd_disaggregation aggregation -----------------
 

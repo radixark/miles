@@ -53,9 +53,16 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             overrides = dict(group_cfg.overrides)
             if args.offload_rollout and not needs_offload:
                 overrides.setdefault("enable_memory_saver", False)
+
+            weights_backup_mode = _resolve_weights_backup_mode(
+                model_cfg=model_cfg, needs_offload=needs_offload, group_worker_type=group_cfg.worker_type
+            )
+            if weights_backup_mode == "cpu":
+                overrides.setdefault("enable_weights_cpu_backup", True)
             logger.info(
                 f"Engine group '{group_cfg.worker_type}' gpu_offset={gpu_offset} "
-                f"(abs={group_abs_start}): needs_offload={needs_offload}"
+                f"(abs={group_abs_start}): needs_offload={needs_offload} "
+                f"update_weights={model_cfg.update_weights} weights_backup_mode={weights_backup_mode}"
             )
 
             group = ServerGroup(
@@ -75,6 +82,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 router_ip=router_ip,
                 router_port=router_port,
                 update_weights=model_cfg.update_weights,
+                weights_backup_mode=weights_backup_mode,
             )
             handles, new_engine_indices = group.start_engines(port_cursors)
             all_init_handles.extend(handles)
@@ -102,6 +110,24 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
     return servers
 
+def _resolve_weights_backup_mode(*, model_cfg, needs_offload: bool, group_worker_type: str) -> str:
+    """Pick how a group's weights come back after offload, failing closed if nothing can.
+    """
+    if model_cfg.update_weights:
+        return "actor_sync"
+    if not needs_offload:
+        return "actor_sync"
+
+    mode = model_cfg.weights_backup_mode
+    if mode is None or mode == "actor_sync":
+        raise ValueError(
+            f"Frozen model '{model_cfg.name}' (group '{group_worker_type}') is colocated with training "
+            f"(needs_offload=True) but has no weight restoration source: its weights are released for the "
+            f"Megatron step and it does not receive actor weight sync, so it would serve uninitialized "
+            f"weights after resume. Set weights_backup_mode to one of 'cpu' (host RAM copy), "
+            f"or 'reload' (re-read model_path)."
+        )
+    return mode
 
 def _eval_sglang_overrides(args) -> dict:
     """Eval-fleet engine settings; anything absent is inherited from the rollout engines."""
@@ -272,10 +298,7 @@ class RolloutServer:
         return await asyncio.gather(*handles)
 
     async def onload(self, tags: list[str] | None = None):
-        handles = []
-        for g in self.server_groups:
-            handles.extend(g.onload(tags))
-        return await asyncio.gather(*handles)
+        return await asyncio.gather(*[g.onload(tags) for g in self.server_groups])
 
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
