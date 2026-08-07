@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 from typing import Any
 
+from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import PodListPage, PodWatchEvent
 from miles.utils.workers.reconcile.source_event import ParentKey, ReplaceEvent, SourceEvent
 
@@ -90,24 +91,34 @@ class EventCollector:
         assert self.error is None, f"stream failed with {self.error=}"
 
 
-def make_pod(name: str, *, cell: str = "cell-a", resource_version: str = "1") -> SimpleNamespace:
+def make_pod(name: str, *, cell: str | None = "cell-a", resource_version: str = "1") -> Pod:
+    return Pod.model_validate(wire_pod(name, cell=cell, resource_version=resource_version))
+
+
+def wire_pod(name: str, *, cell: str | None = "cell-a", resource_version: str = "1") -> SimpleNamespace:
     return SimpleNamespace(
-        metadata=SimpleNamespace(name=name, resource_version=resource_version, labels={"cell": cell})
+        metadata=SimpleNamespace(
+            name=name,
+            uid=f"uid-{name}",
+            resource_version=resource_version,
+            labels={} if cell is None else {"cell": cell},
+            annotations=None,
+        ),
+        spec=None,
+        status=None,
     )
 
 
-def replace_of(*pods: Any) -> ReplaceEvent:
+def replace_of(*pods: Pod) -> ReplaceEvent:
     return ReplaceEvent(objects={pod.metadata.name: pod for pod in pods})
 
 
-def make_pod_list(pods: list[Any], *, resource_version: str) -> PodListPage:
+def make_pod_list(pods: list[Pod], *, resource_version: str) -> PodListPage:
     return PodListPage(pods=pods, resource_version=resource_version)
 
 
-def pod_cell(pod: Any) -> str:
-    cell = pod.metadata.labels["cell"]
-    assert isinstance(cell, str), f"pod has no usable cell label {pod=}"
-    return cell
+def pod_cell(pod: Pod) -> str:
+    return pod.metadata.labels["cell"]
 
 
 class FakePodApi:

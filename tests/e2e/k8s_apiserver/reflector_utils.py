@@ -4,16 +4,16 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
 
 from tests.e2e.k8s_apiserver.utils import CELL_LABEL
 
+from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import KubernetesPodApi, PodListPage, PodWatchEvent
 from miles.utils.workers.reconcile.k8s_reflector import KubernetesReflector
 from miles.utils.workers.reconcile.loop import ReconcileLoop
 
 
-def pod_cell(pod: Any) -> str:
+def pod_cell(pod: Pod) -> str:
     return pod.metadata.labels[CELL_LABEL]
 
 
