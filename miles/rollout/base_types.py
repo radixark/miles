@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from argparse import Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
 from miles.rollout.data_source import DataSource
@@ -49,18 +51,93 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
         return True
 
 
+class TrainBatchRollbackReason(Enum):
+    """Reason that a manager could not publish a leased train batch."""
+
+    HANDOFF_FAILED = auto()
+
+
+class TrainBatchLease(ABC):
+    """Own a rollout batch until the manager's train-data publication settles.
+
+    Args:
+        rollout_id: Training rollout that requested the batch.
+
+    A successful commit records that the manager published the complete
+    train-data result. It does not confirm that a remote caller received that
+    result. Settlement may be attempted only once, including when its
+    implementation raises.
+    """
+
+    def __init__(self, rollout_id: int) -> None:
+        self._rollout_id = rollout_id
+        self._settlement_attempted = False
+
+    @property
+    def rollout_id(self) -> int:
+        """Return the rollout that acquired this batch."""
+        return self._rollout_id
+
+    def commit(self) -> None:
+        """Record successful publication of the complete train-data result.
+
+        Raises:
+            RuntimeError: If any settlement was already attempted.
+        """
+        self._claim_settlement()
+        self._commit()
+
+    @abstractmethod
+    def _commit(self) -> None:
+        """Implement publication settlement after the lease is claimed."""
+
+    def rollback(self, reason: TrainBatchRollbackReason) -> None:
+        """Return ownership after train-data publication fails.
+
+        Args:
+            reason: Why the manager could not publish the result.
+
+        Raises:
+            RuntimeError: If any settlement was already attempted.
+        """
+        self._claim_settlement()
+        self._rollback(reason)
+
+    @abstractmethod
+    def _rollback(self, reason: TrainBatchRollbackReason) -> None:
+        """Implement publication recovery after settlement is claimed."""
+
+    def _claim_settlement(self) -> None:
+        if self._settlement_attempted:
+            raise RuntimeError(f"Train batch lease for rollout {self.rollout_id} already has a settlement attempt.")
+        self._settlement_attempted = True
+
+
 # TODO make it frozen
 @dataclass
 class RolloutFnTrainOutput:
     samples: list[list[Sample]]
-    metrics: dict[str, Any] = None
+    metrics: dict[str, Any] | None = None
+
+
+@dataclass
+class LeasedRolloutFnTrainOutput(RolloutFnTrainOutput):
+    """Carry ordinary train output data with its required settlement lease.
+
+    Args:
+        samples: Generated samples grouped by source prompt.
+        metrics: Optional rollout metrics.
+        lease: Ownership to settle after the manager publishes train data.
+    """
+
+    lease: TrainBatchLease = field(kw_only=True)
 
 
 # TODO make it frozen
 @dataclass
 class RolloutFnEvalOutput:
     data: dict[str, dict[str, Any]]
-    metrics: dict[str, Any] = None
+    metrics: dict[str, Any] | None = None
 
 
 RolloutFnInput = RolloutFnTrainInput | RolloutFnEvalInput
