@@ -99,24 +99,19 @@ def test_load_actions_rejects_legacy_cell_index_field() -> None:
         _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
-def test_load_actions_rejects_cell_id_without_index_suffix() -> None:
-    """A cell_id that carries no trailing index cannot be parsed and is rejected at load time."""
-    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "traineractor"}])
-    with pytest.raises(ValueError):
-        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
+def test_load_actions_accepts_a_cell_id_of_any_shape() -> None:
+    """Cell ids are opaque, so a platform is free to name its cells without a trailing index."""
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-actor-west-a"}])
+
+    (action,) = _load_actions(_args(raw), _CONTROLLER_ACTIONS)
+
+    assert action.cell_id == "trainer-actor-west-a"
 
 
-def test_load_actions_rejects_cell_id_with_non_numeric_index() -> None:
-    """A cell_id whose suffix is not an integer is rejected at load time."""
-    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-actor-last"}])
-    with pytest.raises(ValueError):
-        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
-
-
-def test_load_actions_validates_cell_id_of_actions_outside_the_filter() -> None:
-    """Validation runs over every action, so a typo in another executor's action still fails here."""
-    raw = json.dumps([{"at_rollout": 1, "action": "crash_before_allreduce", "cell_id": "bogus"}])
-    with pytest.raises(ValueError):
+def test_load_actions_rejects_an_empty_cell_id() -> None:
+    """An action that names no cell would silently act on nothing."""
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": ""}])
+    with pytest.raises(AssertionError):
         _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
@@ -124,6 +119,7 @@ class FakeController:
     def __init__(self, num_cells: int, *, pool_id: str = _POOL_ID) -> None:
         self.pool_id = pool_id
         self.expected_num_cells = num_cells
+        self.cell_ids = [f"{pool_id}-{index}" for index in range(num_cells)]
 
 
 class FakeCellOperations:
@@ -238,8 +234,8 @@ class TestRunAfterStep:
         assert operations.stopped == []
 
     @pytest.mark.asyncio
-    async def test_action_index_beyond_expected_num_cells_raises(self):
-        """A cell index the group can never have is a misconfiguration and must fail at dispatch."""
+    async def test_action_naming_a_cell_the_group_never_observed_raises(self):
+        """A cell the group does not hold is a misconfiguration and must fail at dispatch."""
         operations = FakeCellOperations()
         action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="trainer-actor-9")
         executor = FTTestActionControllerExecutor(
