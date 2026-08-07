@@ -81,7 +81,13 @@ def cell_env(monkeypatch):
     async def _activate(gate_url: str) -> None:
         activated.append(gate_url)
 
+    real_compute_addr_info = ServerCell._compute_addr_info
+
     async def _compute_addr_info(self) -> CellAddrInfo:
+        # Only the worker-provider lookup is faked; an external cell reads its address straight
+        # out of its own metadata, which is the branch those tests are about.
+        if self.meta.external_server_addr is not None:
+            return await real_compute_addr_info(self)
         return _ADDR_INFO
 
     async def _probe(server_url: str, api_key, timeout: float = 5.0) -> bool:
@@ -139,12 +145,24 @@ class TestInit:
         with pytest.raises(AssertionError):
             await cell.init()
 
-    async def test_external_rollout_is_still_unsupported(self, cell_env):
-        """The removed external-address path must fail loudly rather than launch nothing."""
-        cell = _make_cell(args_overrides=dict(rollout_external=True))
+    async def test_an_external_engine_is_addressed_where_it_was_declared(self, cell_env):
+        """Nothing was launched for it, so its address comes from the launch arguments rather
+        than from a worker miles owns."""
+        cell = _make_cell(args_overrides=dict(rollout_external=True), external_server_addr="10.9.9.9:31000")
 
-        with pytest.raises(NotImplementedError):
-            await cell.init()
+        await cell.init()
+
+        assert cell.server_url == "http://10.9.9.9:31000"
+
+    async def test_an_external_engine_is_not_held_at_a_launch_gate(self, cell_env):
+        """The gate exists to stop an engine miles started from claiming gpu memory early; an
+        engine that was already serving before the run began has no gate to release, and dialling
+        one would hang the startup on a port nobody is listening on."""
+        cell = _make_cell(args_overrides=dict(rollout_external=True), external_server_addr="10.9.9.9:31000")
+
+        await cell.init()
+
+        assert cell_env["activated"] == []
 
 
 class TestTick:

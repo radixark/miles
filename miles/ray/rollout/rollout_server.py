@@ -23,7 +23,10 @@ async def create_rollout_servers(
     args, context_lock: ContextLock, global_health_checker_activeness: Callable[[], ActiveAndEpoch]
 ) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
-    assert args.sglang_router_ip is None and args.sglang_router_port is None, (
+    # Only the ip is refused. A port on its own never meant "attach", it pinned the router miles
+    # starts to a known port, and the spec still honours it; refusing it here broke launchers that
+    # pin one so a firewall rule or a dial-back host can name it.
+    assert args.sglang_router_ip is None, (
         "external router mode was removed: miles always starts its own routers "
         "(expected to return with the k8s-native mode)"
     )
@@ -48,16 +51,25 @@ async def create_rollout_servers(
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
             global_health_checker_activeness=global_health_checker_activeness,
-            expected_num_cells=sum(
-                group_cfg.num_gpus // group_cfg.num_gpus_per_engine
-                for group_cfg in model_cfg.server_groups
-                if group_cfg.worker_type != "placeholder"
-            ),
+            expected_num_cells=_compute_expected_num_cells(args, model_cfg=model_cfg),
         )
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
     return servers
+
+
+def _compute_expected_num_cells(args, *, model_cfg) -> int:
+    # Externally launched engines are not derived from the gpu budget; the addresses that were
+    # named are the whole fleet.
+    if args.rollout_external:
+        return len(args.rollout_external_engine_addrs)
+
+    return sum(
+        group_cfg.num_gpus // group_cfg.num_gpus_per_engine
+        for group_cfg in model_cfg.server_groups
+        if group_cfg.worker_type != "placeholder"
+    )
 
 
 @dataclasses.dataclass
@@ -129,13 +141,13 @@ class RolloutServer:
     @requires_lock
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(
-            *[cell.offload(tags=tags) for cell in self.server_cells.values() if cell.meta.needs_offload]
+            *[cell.offload(tags=tags) for cell in self._addressable_cells() if cell.meta.needs_offload]
         )
 
     @requires_lock
     async def onload(self, tags: list[str] | None = None):
         return await asyncio.gather(
-            *[cell.onload(tags=tags) for cell in self.server_cells.values() if cell.meta.needs_offload]
+            *[cell.onload(tags=tags) for cell in self._addressable_cells() if cell.meta.needs_offload]
         )
 
     @requires_lock
@@ -147,9 +159,19 @@ class RolloutServer:
                 cell.check_weights(
                     action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
                 )
-                for cell in self.server_cells.values()
+                for cell in self._addressable_cells()
             ]
         )
+
+    @requires_lock
+    def _addressable_cells(self) -> list[ServerCell]:
+        """Cells that can be dialled right now.
+
+        Reconcile runs concurrently with the weight update window, so a cell can be gated or
+        already torn down when a fan-out reaches it; addressing one asserts inside the cell and
+        takes the whole window down over an engine that was never part of it.
+        """
+        return [cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving]
 
     @lock_exempt
     async def wait_expected_num_cells(self, timeout: float = 3600):

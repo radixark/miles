@@ -48,6 +48,9 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     needs_offload: bool
     update_weights: bool
     workers_hash: str
+    # Set only under --rollout-external, where the engine is already serving and miles never
+    # launched a worker to read an address from.
+    external_server_addr: str | None = None
 
 
 @dataclass
@@ -140,13 +143,9 @@ class ServerCell:
         return SGLangApiClient(server_url=self.server_url)
 
     async def init(self) -> None:
-        if self.args.rollout_external:
-            raise NotImplementedError(
-                "external rollout address allocation was removed and a new implementation is coming"
-            )
-
         addr_info = await self._compute_addr_info()
-        await activate_launch_gate(gate_url=addr_info.gate_url)
+        if addr_info.gate_url is not None:
+            await activate_launch_gate(gate_url=addr_info.gate_url)
         self._change_state("init", StateUninitialized, StateInitializing(addr_info=addr_info))
 
     async def tick(self) -> None:
@@ -235,6 +234,12 @@ class ServerCell:
         self._registered_worker_url = None
 
     async def _compute_addr_info(self) -> CellAddrInfo:
+        if (external_addr := self.meta.external_server_addr) is not None:
+            host, port = external_addr.rsplit(":", 1)
+            return CellAddrInfo(
+                server_url=build_server_url(host=host, port=int(port)), bootstrap_port=None, gate_url=None
+            )
+
         provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
         master_addrs = await provider.get_addrs(worker_name=self.meta.worker_name)
         primary = master_addrs["primary"]

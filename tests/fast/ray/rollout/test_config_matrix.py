@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pydantic
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
+from miles.ray.rollout.inference_controller import compute_external_server_cell_metas
+from miles.ray.specs.inference import specs_inference_engine
 
 # ----------------------------- resolve_sglang_config matrix -----------------------------
 
@@ -215,27 +215,44 @@ class TestPdDisaggregation:
 
 
 class TestRolloutExternalPath:
-    @pytest.mark.asyncio
-    async def test_initializing_a_cell_in_external_mode_is_not_implemented(self):
-        """The external allocator was removed; bringing a cell up must fail loudly until the replacement lands."""
-        from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
-
-        cell = ServerCell(
-            args=make_args(num_gpus_per_node=8, rollout_external=True),
-            meta=ServerCellMetadata(
-                model_id="default",
-                worker_type="regular",
-                cell_id="inference-engine-0-0-0",
-                num_gpus_per_engine=1,
-                gpu_offset=0,
-                sglang_api_key=None,
-                worker_name="inference-engine-0-0-0-0",
-                needs_offload=False,
-                update_weights=True,
-                workers_hash="pseudo-hash-0",
+    @staticmethod
+    def _metas(addrs: list[str], **args_overrides):
+        return compute_external_server_cell_metas(
+            make_args(
+                num_gpus_per_node=8,
+                rollout_external=True,
+                rollout_external_engine_addrs=addrs,
+                **args_overrides,
             ),
-            router_api_client=MagicMock(),
+            model_name="default",
         )
 
-        with pytest.raises(NotImplementedError):
-            await cell.init()
+    def test_every_declared_address_becomes_a_cell(self):
+        """The addresses are the whole fleet: one that produced no cell is an engine the run
+        paid for and never routes to."""
+        metas = self._metas(["10.0.0.1:31000", "10.0.0.2:31000"])
+
+        assert [m.external_server_addr for m in metas] == ["10.0.0.1:31000", "10.0.0.2:31000"]
+        assert len({m.cell_id for m in metas}) == 2
+
+    def test_the_external_engines_receive_weight_updates(self):
+        """They serve the checkpoint being trained; leaving them frozen trains against a policy
+        that never moves."""
+        assert all(m.update_weights for m in self._metas(["10.0.0.1:31000"]))
+
+    def test_no_external_engine_is_asked_to_give_its_memory_back(self):
+        """Its gpus are not in this run's placement group, so there is no trainer waiting on
+        them and releasing would only drop the weights."""
+        assert not any(m.needs_offload for m in self._metas(["10.0.0.1:31000"]))
+
+    def test_the_gpu_spans_do_not_overlap(self):
+        """Weight update slices the trainer's parameters by these offsets; overlapping spans
+        send two engines the same shard and leave another with none."""
+        metas = self._metas(["10.0.0.1:31000", "10.0.0.2:31000"], rollout_num_gpus_per_engine=2)
+
+        assert [m.gpu_offset for m in metas] == [0, 2]
+
+    def test_miles_launches_no_engine_workers_for_them(self):
+        """They are already running, and the placement group reserves no rollout bundles to
+        launch a duplicate into."""
+        assert specs_inference_engine(make_args(rollout_external=True, rollout_external_engine_addrs=["h:1"])) == []

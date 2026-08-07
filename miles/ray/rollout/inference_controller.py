@@ -48,11 +48,16 @@ class InferenceController:
                 global_health_checker_activeness=controller._health_checker_activeness.get,
             )
 
-            # TODO: may change to InferenceController.init(engine_provider, ...) later
-            provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
-            controller._watcher_disposers.append(
-                await provider.watch_cells(controller._reconcile, spec_names=compute_engine_spec_names(args))
-            )
+            if args.rollout_external:
+                # There are no workers to watch: the engines were started outside this run, so the
+                # fleet is exactly the addresses that were named and never changes.
+                await controller._add_external_cells()
+            else:
+                # TODO: may change to InferenceController.init(engine_provider, ...) later
+                provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
+                controller._watcher_disposers.append(
+                    await provider.watch_cells(controller._reconcile, spec_names=compute_engine_spec_names(args))
+                )
             controller._ticker = SimpleTicker(controller._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
 
             dashboard_hooks.register_router(args)
@@ -235,6 +240,14 @@ class InferenceController:
     # -------------------------- reconcile -----------------------------
 
     @with_lock
+    async def _add_external_cells(self) -> None:
+        # One address list cannot describe two models; --sglang-config is refused alongside
+        # --rollout-external for exactly this reason, so a second model here is a wiring bug.
+        ((model_name, srv),) = self.servers.items()
+        for cell_meta in compute_external_server_cell_metas(self.args, model_name=model_name):
+            await srv.add_cell(cell_meta)
+
+    @with_lock
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
         actual_srv: RolloutServer | None = None
         actual_cell: ServerCell | None = None
@@ -275,6 +288,32 @@ class UpdatableEngines:
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
     snapshot_cell_id_to_hashes: dict[str, str]
+
+
+def compute_external_server_cell_metas(args, *, model_name: str) -> list[ServerCellMetadata]:
+    """Describe the engines named by --rollout-external-engine-addrs.
+
+    Under external rollout miles launches nothing, so there is no worker to read a cell's shape
+    from; every field the launched path would have learned from the provider is fixed here
+    instead. The addresses are the whole fleet, so the hash is constant: nothing can replace a
+    cell miles does not own.
+    """
+    return [
+        ServerCellMetadata(
+            model_id=model_name,
+            worker_type="regular",
+            cell_id=f"external-engine-{index}",
+            num_gpus_per_engine=args.rollout_num_gpus_per_engine,
+            gpu_offset=index * args.rollout_num_gpus_per_engine,
+            sglang_api_key=args.sglang_api_key,
+            worker_name=f"external-engine-{index}-0",
+            needs_offload=False,
+            update_weights=True,
+            workers_hash=f"external-{index}",
+            external_server_addr=addr,
+        )
+        for index, addr in enumerate(args.rollout_external_engine_addrs)
+    ]
 
 
 # TODO may move and generalize later

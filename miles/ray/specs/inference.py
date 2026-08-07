@@ -121,6 +121,11 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
     if args.debug_train_only:
         return []
 
+    # The engines are already running outside this run, so miles has nothing to launch and the
+    # placement group reserves no rollout bundles to launch it into.
+    if args.rollout_external:
+        return []
+
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
 
     return [
