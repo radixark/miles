@@ -65,15 +65,22 @@ def wait_for_server_ready(
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
 
+def is_tcp_ready(host: str, port: int) -> bool:
+    """Return whether a TCP port accepts a connection right now."""
+    try:
+        with socket.create_connection((host.strip("[]"), port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
 def wait_tcp_ready(host: str, port: int, *, timeout: float = 30) -> None:
     """Poll until a TCP port accepts connections."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        try:
-            with socket.create_connection((host.strip("[]"), port), timeout=1):
-                return
-        except OSError:
-            time.sleep(0.5)
+        if is_tcp_ready(host, port):
+            return
+        time.sleep(0.5)
     raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
 

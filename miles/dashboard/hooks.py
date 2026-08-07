@@ -339,10 +339,12 @@ async def register_engines(servers) -> None:
     try:
         cells = _alive_engine_cells(servers)
         worker_infos_per_cell = _collect_worker_infos(cells)
+        # The cell's url is in here because it is what gets published: it is the address the cell
+        # cached when it initialized, not one derived from the worker infos read just above, so
+        # watching the workers alone lets a repush carry a url the cell has since replaced.
         fingerprint = tuple(
-            (info.name, info.generation, info.self_addrs["primary"].host, info.self_addrs["primary"].port)
-            for worker_infos in worker_infos_per_cell
-            for info in worker_infos
+            (cell.server_url, tuple((info.name, info.generation, info.self_addrs["primary"]) for info in worker_infos))
+            for cell, worker_infos in zip(cells, worker_infos_per_cell, strict=True)
         )
         if fingerprint == _engines_fingerprint:
             return

@@ -11,6 +11,7 @@ from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 5.0
+WORKER_LIVENESS_PROBE_TIMEOUT_SECONDS = 10.0
 
 
 class RayWorkerProvider(BaseWorkerProvider):
@@ -30,6 +31,10 @@ class RayWorkerProvider(BaseWorkerProvider):
 
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return await self._worker_manager_handle.get_worker_addrs.remote(worker_name)
+
+    async def is_worker_alive(self, worker_name: str) -> bool:
+        handle = await self._worker_manager_handle.get_worker_handle.remote(worker_name)
+        return await handle.is_alive(timeout=WORKER_LIVENESS_PROBE_TIMEOUT_SECONDS)
 
     async def watch_cells(self, reconcile: ReconcileFn, *, spec_names: list[str]) -> StopWatchFn:
         seen_infos: dict[str, CellInfo] = {}

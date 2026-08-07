@@ -81,6 +81,9 @@ class RpcWorkerHandle(BaseWorkerHandle):
     async def wait_dead(self, *, timeout: float) -> None:
         raise NotImplementedError("RpcWorkerHandle cannot confirm worker death yet")
 
+    async def is_alive(self, *, timeout: float) -> bool:
+        raise NotImplementedError("RpcWorkerHandle cannot confirm worker death yet")
+
     async def _perform_call(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> Any:
         call = RpcCall(
             spec=spec,

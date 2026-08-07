@@ -25,6 +25,9 @@ class BaseWorkerHandle(abc.ABC):
     @abc.abstractmethod
     async def wait_dead(self, *, timeout: float) -> None: ...
 
+    @abc.abstractmethod
+    async def is_alive(self, *, timeout: float) -> bool: ...
+
 
 class RayWorkerHandle(BaseWorkerHandle):
     def __init__(self, actor_handle: ray.actor.ActorHandle) -> None:
@@ -49,6 +52,20 @@ class RayWorkerHandle(BaseWorkerHandle):
             raise WorkerUnreachableError(f"Worker died before becoming ready: {e!r}") from e
         except (TimeoutError, asyncio.TimeoutError) as e:
             raise WorkerUnreachableError(f"Worker not ready within {timeout}s") from e
+
+    async def is_alive(self, *, timeout: float) -> bool:
+        """A reply that does not arrive in time is a busy actor, not a dead one.
+
+        Only Ray reporting the actor gone counts: treating slowness as death would let a startup
+        wait abort a worker that is merely still importing.
+        """
+        try:
+            await asyncio.wait_for(self._actor_handle.__ray_ready__.remote(), timeout=timeout)
+        except ray.exceptions.RayActorError:
+            return False
+        except (TimeoutError, asyncio.TimeoutError):
+            return True
+        return True
 
     async def wait_dead(self, *, timeout: float) -> None:
         deadline = time.monotonic() + timeout

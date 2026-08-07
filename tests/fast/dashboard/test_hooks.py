@@ -157,6 +157,9 @@ class FakeWorkerHandle(BaseWorkerHandle):
     async def wait_dead(self, *, timeout):
         return None
 
+    async def is_alive(self, *, timeout):
+        return True
+
 
 class FakeManagerHandle:
     """Duck-typed RayWorkerManager handle serving per-cell worker infos."""
