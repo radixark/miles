@@ -16,7 +16,7 @@ from miles.utils.test_utils.comparisons.dumps import (
 )
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
 from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
-from miles.utils.workers.naming import compute_cell_id
+from miles.utils.workers.ray_worker_manager import compute_ray_cell_id
 
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
@@ -57,7 +57,7 @@ _POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
 
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
 def _build_actions(num_cells: int) -> list[dict]:
-    target_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
+    target_cell_id: str = compute_ray_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
     return [
         {
             "at_rollout": NUM_PHASE_A_STEPS + 1,
@@ -77,15 +77,21 @@ def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> li
     return [
         ReconfigureInfo(
             rollout_id=NUM_PHASE_A_STEPS + 1,
-            src_cell_index=None,
-            healed_cell_indices=[],
-            alive_cell_indices_after=list(range(num_cells - 1)),
+            src_cell_id=None,
+            healed_cell_ids=[],
+            alive_cell_ids_after=[
+                compute_ray_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=index)
+                for index in range(num_cells - 1)
+            ],
         ),
         ReconfigureInfo(
             rollout_id=NUM_PHASE_A_STEPS + 2,
-            src_cell_index=0,
-            healed_cell_indices=[num_cells - 1],
-            alive_cell_indices_after=list(range(num_cells)),
+            src_cell_id=compute_ray_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=0),
+            healed_cell_ids=[compute_ray_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)],
+            alive_cell_ids_after=[
+                compute_ray_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=index)
+                for index in range(num_cells)
+            ],
         ),
     ]
 

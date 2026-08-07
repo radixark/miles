@@ -64,10 +64,10 @@ class CellReconfigureEvent(EventBase):
     type: Literal["cell_reconfigure"] = "cell_reconfigure"
     rollout_id: int
     quorum_id: int
-    src_cell_index: int | None
+    src_cell_id: str | None
     # healing happened iff non-empty
-    healed_cell_indices: list[int]
-    alive_cell_indices_after: list[int]
+    healed_cell_ids: list[str]
+    alive_cell_ids_after: list[str]
 
 
 class InferenceEngineWeightChecksumEvent(EventBase):

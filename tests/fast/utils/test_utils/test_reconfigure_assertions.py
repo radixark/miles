@@ -16,23 +16,26 @@ from miles.utils.test_utils.reconfigure_assertions import (
 _SHRINK_PARTIAL: dict[str, Any] = dict(
     rollout_id=2,
     quorum_id=1,
-    src_cell_index=None,
-    healed_cell_indices=[],
-    alive_cell_indices_after=[0],
+    src_cell_id=None,
+    healed_cell_ids=[],
+    alive_cell_ids_after=["trainer-actor-0"],
 )
 _HEALING_PARTIAL: dict[str, Any] = dict(
     rollout_id=3,
     quorum_id=2,
-    src_cell_index=0,
-    healed_cell_indices=[1],
-    alive_cell_indices_after=[0, 1],
+    src_cell_id="trainer-actor-0",
+    healed_cell_ids=["trainer-actor-1"],
+    alive_cell_ids_after=["trainer-actor-0", "trainer-actor-1"],
 )
 
 _SHRINK_EXPECTED = ReconfigureInfo(
-    rollout_id=2, src_cell_index=None, healed_cell_indices=[], alive_cell_indices_after=[0]
+    rollout_id=2, src_cell_id=None, healed_cell_ids=[], alive_cell_ids_after=["trainer-actor-0"]
 )
 _HEALING_EXPECTED = ReconfigureInfo(
-    rollout_id=3, src_cell_index=0, healed_cell_indices=[1], alive_cell_indices_after=[0, 1]
+    rollout_id=3,
+    src_cell_id="trainer-actor-0",
+    healed_cell_ids=["trainer-actor-1"],
+    alive_cell_ids_after=["trainer-actor-0", "trainer-actor-1"],
 )
 
 

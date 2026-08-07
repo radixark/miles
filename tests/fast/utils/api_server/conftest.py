@@ -220,7 +220,6 @@ def make_mock_controller(cells: list[MockTrainerCell], *, pool_id: str = "traine
 
     group = object.__new__(TrainerController)
     for cell_index, cell in enumerate(cells):
-        cell.cell_index = cell_index
         cell.cell_id = f"{pool_id}-{cell_index}"
     group._cells_by_id = {cell.cell_id: cell for cell in cells}
     group._pool = pool_id

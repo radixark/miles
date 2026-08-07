@@ -161,7 +161,7 @@ class TestErroredCellTeardown:
         await cell._kill_workers_and_confirm_dead()
 
         train_conftest.fake_worker_manager._stop_cells([cell.cell_id])
-        replacement = make_cell(cell.cell_index)
+        replacement = make_cell(0)
         replacement._mark_as_alive(indep_dp_info=make_indep_dp_info(quorum_id=99))
 
         assert replacement.is_alive

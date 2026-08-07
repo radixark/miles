@@ -3,8 +3,8 @@
 import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
-from miles.utils.workers.naming import compute_cell_id, parse_cell_id
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
+from miles.utils.workers.ray_worker_manager import compute_ray_cell_id
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import MASTER_PORT_NAME, HostAndPort
@@ -25,35 +25,35 @@ class FakeWorkerManager:
         self.started_cell_ids: list[list[str]] = []
         self.stopped_cell_ids: list[list[str]] = []
         self._handles: dict[str, list] = {}
-        self._cell_indices_failing_init: set[int] = set()
+        self._cell_ids_failing_init: set[str] = set()
 
         self.get_cell_infos = _FakeRemoteMethod(self._get_cell_infos)
         self.get_worker_infos = _FakeRemoteMethod(self._get_worker_infos)
         self.start_cells = _FakeRemoteMethod(self.started_cell_ids.append)
         self.stop_cells = _FakeRemoteMethod(self._stop_cells)
 
-    def fail_init_for_cell(self, cell_index: int) -> None:
-        self._cell_indices_failing_init.add(cell_index)
+    def fail_init_for_cell(self, cell_id: str) -> None:
+        self._cell_ids_failing_init.add(cell_id)
 
     def _get_cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
         infos: dict[str, CellInfo] = {}
         for pool_id in pool_ids:
             for cell_index in range(self.num_cells):
-                cell_id = compute_cell_id(pool_id=pool_id, cell_index=cell_index)
+                cell_id = compute_ray_cell_id(pool_id=pool_id, cell_index=cell_index)
                 infos[cell_id] = CellInfo(
                     cell_id=cell_id,
                     pool_id=pool_id,
                     alive=True,
                     worker_names=[f"{cell_id}-{worker_index}" for worker_index in range(self.actor_count_per_cell)],
                     workers_hash=f"pseudo-hash-{1 + len(self.started_cell_ids)}",
-                    meta={"cell_index": cell_index},
+                    meta={"role": "actor"},
                 )
         return infos
 
     def _get_worker_infos(self, cell_id: str) -> list[WorkerInfo]:
         if cell_id not in self._handles:
             handles = [DummyTrainActor.remote() for _ in range(self.actor_count_per_cell)]
-            if parse_cell_id(cell_id).cell_index in self._cell_indices_failing_init:
+            if cell_id in self._cell_ids_failing_init:
                 ray.get([handle.set_fail_methods.remote(["init"]) for handle in handles])
             self._handles[cell_id] = handles
         return [

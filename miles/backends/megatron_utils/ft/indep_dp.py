@@ -40,7 +40,7 @@ def create_indep_dp_group(
         pg = pg_cls(timeout=_TIMEOUT)
         pg.configure(
             store_addr=f"{store_addr}/indep_dp/{backend_name}/{indep_dp_info.quorum_id}/{megatron_rank}",
-            replica_id=str(indep_dp_info.cell_index),
+            replica_id=indep_dp_info.cell_id,
             rank=indep_dp_info.alive_rank,
             world_size=indep_dp_info.alive_size,
             quorum_id=indep_dp_info.quorum_id,
@@ -55,7 +55,7 @@ def create_indep_dp_group(
         logger.info,
         tag="ft",
         op="create_pg",
-        cell=indep_dp_info.cell_index,
+        cell=indep_dp_info.cell_id,
         cell_rank=indep_dp_info.alive_rank,
         members=indep_dp_info.alive_size,
         quorum=indep_dp_info.quorum_id,
@@ -85,7 +85,7 @@ def reconfigure_indep_dp_group(
         tag="ft",
         op="reconfig",
         phase="start",
-        cell=indep_dp_info.cell_index,
+        cell=indep_dp_info.cell_id,
         quorum_to=indep_dp_info.quorum_id,
         alive_rank=indep_dp_info.alive_rank,
         members=indep_dp_info.alive_size,
@@ -105,7 +105,7 @@ def reconfigure_indep_dp_group(
         tag="ft",
         op="reconfig",
         phase="end",
-        cell=indep_dp_info.cell_index,
+        cell=indep_dp_info.cell_id,
         quorum=indep_dp_info.quorum_id,
     )
 

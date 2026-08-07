@@ -89,7 +89,7 @@ class TestCreate:
         controller = await _create_controller(num_cells=2)
         try:
             assert sorted(controller._cells_by_index) == [0, 1]
-            assert [cell.cell_index for cell in controller._cells] == [0, 1]
+            assert [cell.cell_id for cell in controller._cells] == [f"{controller._pool}-{i}" for i in range(2)]
         finally:
             await controller.dispose()
 

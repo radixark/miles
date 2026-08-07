@@ -17,7 +17,7 @@ from miles.utils.test_utils.comparisons.dumps import (
 from miles.utils.test_utils.comparisons.inference_engine_checksums import compare_inference_engine_checksums
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
 from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
-from miles.utils.workers.naming import compute_cell_id
+from miles.utils.workers.ray_worker_manager import compute_ray_cell_id
 
 # --num-rollout is the exclusive global end id (TOTAL_NUM_ROLLOUTS); --debug-exit-after-rollout counts rollouts within the current run.
 NUM_ROLLOUTS_PER_PHASE: int = 3
@@ -27,7 +27,7 @@ PHASE_START_ROLLOUT_IDS: dict[str, int] = {"phase_a": 0, "phase_b": NUM_ROLLOUTS
 
 def _build_actions(*, phase_start_rollout_id: int, num_cells: int) -> list[dict]:
     heal_trigger_rollout_id: int = phase_start_rollout_id + 1
-    target_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
+    target_cell_id: str = compute_ray_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
     return [
         {"at_rollout": heal_trigger_rollout_id, "action": "stop_cell_at_end", "cell_id": target_cell_id},
         {"at_rollout": heal_trigger_rollout_id, "action": "start_cell_at_end", "cell_id": target_cell_id},
@@ -38,9 +38,12 @@ def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> li
     def heal_at(phase_name: str) -> ReconfigureInfo:
         return ReconfigureInfo(
             rollout_id=PHASE_START_ROLLOUT_IDS[phase_name] + 2,
-            src_cell_index=0,
-            healed_cell_indices=[num_cells - 1],
-            alive_cell_indices_after=list(range(num_cells)),
+            src_cell_id=compute_ray_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=0),
+            healed_cell_ids=[compute_ray_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)],
+            alive_cell_ids_after=[
+                compute_ray_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=index)
+                for index in range(num_cells)
+            ],
         )
 
     if not is_target:

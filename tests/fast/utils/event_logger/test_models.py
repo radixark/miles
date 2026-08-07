@@ -110,17 +110,17 @@ class TestCellReconfigureEvent:
             source=_FIXED_SOURCE,
             rollout_id=3,
             quorum_id=1,
-            src_cell_index=0,
-            healed_cell_indices=[2],
-            alive_cell_indices_after=[0, 1, 2],
+            src_cell_id="trainer-actor-0",
+            healed_cell_ids=["trainer-actor-2"],
+            alive_cell_ids_after=["trainer-actor-0", "trainer-actor-1", "trainer-actor-2"],
         )
         parsed = _event_adapter.validate_json(event.model_dump_json())
         assert isinstance(parsed, CellReconfigureEvent)
         assert parsed.rollout_id == 3
         assert parsed.quorum_id == 1
-        assert parsed.src_cell_index == 0
-        assert parsed.healed_cell_indices == [2]
-        assert parsed.alive_cell_indices_after == [0, 1, 2]
+        assert parsed.src_cell_id == "trainer-actor-0"
+        assert parsed.healed_cell_ids == ["trainer-actor-2"]
+        assert parsed.alive_cell_ids_after == ["trainer-actor-0", "trainer-actor-1", "trainer-actor-2"]
 
     def test_shrink_json_roundtrip(self) -> None:
         """A pure-shrink reconfigure event (no healed cells, src None) survives a JSON round-trip."""
@@ -129,15 +129,15 @@ class TestCellReconfigureEvent:
             source=_FIXED_SOURCE,
             rollout_id=2,
             quorum_id=1,
-            src_cell_index=None,
-            healed_cell_indices=[],
-            alive_cell_indices_after=[0],
+            src_cell_id=None,
+            healed_cell_ids=[],
+            alive_cell_ids_after=["trainer-actor-0"],
         )
         parsed = _event_adapter.validate_json(event.model_dump_json())
         assert isinstance(parsed, CellReconfigureEvent)
-        assert parsed.src_cell_index is None
-        assert parsed.healed_cell_indices == []
-        assert parsed.alive_cell_indices_after == [0]
+        assert parsed.src_cell_id is None
+        assert parsed.healed_cell_ids == []
+        assert parsed.alive_cell_ids_after == ["trainer-actor-0"]
 
 
 class TestInferenceEngineWeightChecksumEvent:

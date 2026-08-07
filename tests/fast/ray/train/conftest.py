@@ -66,6 +66,10 @@ def get_raw_actor_handles(cell: TrainerCell) -> list[ray.actor.ActorHandle]:
     return [handle._actor_handle for handle in cell._get_worker_handles()]
 
 
+def make_cell_id(cell_index: int) -> str:
+    return f"trainer-actor-{cell_index}"
+
+
 def make_indep_dp_info(
     *,
     cell_index: int = 0,
@@ -75,12 +79,12 @@ def make_indep_dp_info(
     if alive_cell_indices is None:
         alive_cell_indices = [0]
     return IndepDPInfo(
-        cell_index=cell_index,
+        cell_id=make_cell_id(cell_index),
         num_cells=3,
         alive_rank=alive_cell_indices.index(cell_index),
         alive_size=len(alive_cell_indices),
         quorum_id=quorum_id,
-        alive_cell_indices=alive_cell_indices,
+        alive_cell_ids=[make_cell_id(index) for index in alive_cell_indices],
     )
 
 
@@ -94,8 +98,7 @@ def make_cell(
         args=MagicMock(),
         role="actor",
         with_ref=False,
-        cell_id=f"trainer-actor-{cell_index}",
-        cell_index=cell_index,
+        cell_id=make_cell_id(cell_index),
         workers_hash="pseudo-hash-1",
         health_checker=NoopHealthChecker(),
         provider=make_provider(),

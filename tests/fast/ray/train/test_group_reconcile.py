@@ -37,15 +37,51 @@ def _make_controller(*, num_cells: int = 2, indep_dp: bool = False) -> TrainerCo
     return group
 
 
-def _make_cell_info(cell_index: int, *, workers_hash: str = "pseudo-hash-1") -> CellInfo:
+def _make_cell_info_for(cell_id: str, *, workers_hash: str = "pseudo-hash-1") -> CellInfo:
     return CellInfo(
-        cell_id=f"{_POOL_ID}-{cell_index}",
+        cell_id=cell_id,
         pool_id=_POOL_ID,
         alive=True,
-        worker_names=[f"{_POOL_ID}-{cell_index}-0"],
+        worker_names=[f"{cell_id}-0"],
         workers_hash=workers_hash,
-        meta={"role": "actor", "cell_index": cell_index},
+        meta={"role": "actor"},
     )
+
+
+def _make_cell_info(cell_index: int, *, workers_hash: str = "pseudo-hash-1") -> CellInfo:
+    return _make_cell_info_for(f"{_POOL_ID}-{cell_index}", workers_hash=workers_hash)
+
+
+class TestOpaqueCellIds:
+    async def test_a_cell_named_without_a_trailing_index_is_driven_like_any_other(self):
+        """A platform names its cells however it likes, so nothing may parse an index out of a cell id."""
+        group = _make_controller()
+        cell_id = f"{_POOL_ID}-west-a"
+
+        await group._reconcile(cell_id, _make_cell_info_for(cell_id))
+
+        assert [cell.cell_id for cell in group._cells] == [cell_id]
+
+    async def test_cells_are_ordered_by_id_rather_than_by_a_parsed_index(self):
+        """indep-DP ranks come from this order, so it has to hold for ids that carry no number at all."""
+        group = _make_controller()
+
+        for cell_id in [f"{_POOL_ID}-c", f"{_POOL_ID}-a", f"{_POOL_ID}-b"]:
+            await group._reconcile(cell_id, _make_cell_info_for(cell_id))
+
+        assert [cell.cell_id for cell in group._cells] == [f"{_POOL_ID}-{suffix}" for suffix in "abc"]
+
+    async def test_the_indep_dp_rank_is_the_position_of_the_cell_id(self):
+        """A rank must be dense for torch.distributed, and every participant must agree on the same order."""
+        group = _make_controller()
+        alive_cell_ids = [f"{_POOL_ID}-{suffix}" for suffix in "abc"]
+
+        ranks = [
+            group._compute_indep_dp_info(cell_id=cell_id, alive_cell_ids=alive_cell_ids).alive_rank
+            for cell_id in alive_cell_ids
+        ]
+
+        assert ranks == [0, 1, 2]
 
 
 class TestReconcile:
@@ -55,7 +91,7 @@ class TestReconcile:
 
         await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0))
 
-        assert [cell.cell_index for cell in group._cells] == [0]
+        assert [cell.cell_id for cell in group._cells] == [f"{_POOL_ID}-0"]
 
     async def test_a_disappeared_cell_is_dropped(self):
         """A cell the manager no longer reports must stop being trained."""
@@ -115,7 +151,7 @@ class TestReconcile:
         for cell_index in [2, 0, 1]:
             await group._reconcile(f"{_POOL_ID}-{cell_index}", _make_cell_info(cell_index))
 
-        assert [cell.cell_index for cell in group._cells] == [0, 1, 2]
+        assert [cell.cell_id for cell in group._cells] == [f"{_POOL_ID}-{i}" for i in range(3)]
 
 
 class _AutoAdvancingClock:
@@ -144,7 +180,7 @@ def fake_clock(monkeypatch: pytest.MonkeyPatch) -> _AutoAdvancingClock:
 
 class TestWaitExpectedNumCells:
     async def test_waiting_keeps_polling_until_the_late_cells_are_observed(self, fake_clock: _AutoAdvancingClock):
-        """Training must not start against half a pool, so the wait retries until the missing cells arrive."""
+        """Training must not start against half a fleet, so the wait retries until the missing cells arrive."""
         group = _make_controller(num_cells=4, indep_dp=True)
         await group._reconcile(f"{_POOL_ID}-0", _make_cell_info(0))
 
@@ -158,12 +194,12 @@ class TestWaitExpectedNumCells:
         await group._wait_expected_num_cells(timeout=600.0)
 
         assert len(fake_clock.sleeps) == 2
-        assert [cell.cell_index for cell in group._cells] == [0, 1, 2, 3]
+        assert [cell.cell_id for cell in group._cells] == [f"{_POOL_ID}-{i}" for i in range(4)]
 
     async def test_waiting_returns_immediately_when_every_cell_is_already_observed(
         self, fake_clock: _AutoAdvancingClock
     ):
-        """A complete pool must not cost a single retry sleep."""
+        """A complete fleet must not cost a single retry sleep."""
         group = _make_controller(num_cells=4, indep_dp=True)
         for cell_index in range(4):
             await group._reconcile(f"{_POOL_ID}-{cell_index}", _make_cell_info(cell_index))

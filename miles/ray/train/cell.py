@@ -34,14 +34,12 @@ class TrainerCell:
         with_ref: bool,
         with_opd_teacher: bool = False,
         cell_id: str,
-        cell_index: int,
         workers_hash: str,
         health_checker: BaseHealthChecker,
         provider: BaseWorkerProvider,
     ) -> None:
         self.args = args
         self.cell_id = cell_id
-        self.cell_index = cell_index
         self.workers_hash = workers_hash
         self.role = role
         self.with_ref = with_ref
