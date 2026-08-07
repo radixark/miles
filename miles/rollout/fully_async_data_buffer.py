@@ -141,7 +141,8 @@ class DefaultDataBuffer(DataBuffer):
             self._cond.notify_all()
 
     async def get(self, current_version: int | None = None, **_) -> DataBufferInput:
-        self._track_version(current_version)
+        if current_version is not None:
+            self._current_version = current_version
         async with self._cond:
             while True:
                 while not self._buffer:
@@ -182,10 +183,6 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_consumed_staleness = []
         self._metric_aborted_groups = self._metric_stale_groups = 0
         return metrics
-
-    def _track_version(self, version: int | None) -> None:
-        if version is not None and (self._current_version is None or version > self._current_version):
-            self._current_version = version
 
     @staticmethod
     def _staleness(group: Group, current_version: int | None) -> int | None:

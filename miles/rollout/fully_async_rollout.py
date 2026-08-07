@@ -147,13 +147,7 @@ class FullyAsyncRolloutFn:
         [prompt_group] = samples
         return asyncio.create_task(self._generate_group(prompt_group))
 
-    async def _generate_group(self, prompt_group: list[Sample]) -> tuple[list[Sample], Group]:
-        """Return the submitted prompt group next to its result.
-
-        A retry has to resubmit the prompt group: a generate function may expand one
-        trajectory into several samples, and ``generate_and_rm_group`` does not accept
-        that shape back.
-        """
+    async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
         result = await generate_and_rm_group(
             self.state,
             prompt_group,
@@ -161,7 +155,7 @@ class FullyAsyncRolloutFn:
             evaluation=False,
             sample_done_callback=self._scheduler.sample_done_callback,
         )
-        return prompt_group, result
+        return DataBufferInput(prompt_group=prompt_group, group=result)
 
     async def _worker_loop(self):
         active: set[asyncio.Task] = set()
@@ -171,8 +165,7 @@ class FullyAsyncRolloutFn:
                 active.add(self._submit_one_group())
             done, active = await self._scheduler.wait_for_progress(active)
             for task in done:
-                prompt_group, group = task.result()
-                await self._output.put(DataBufferInput(prompt_group=prompt_group, group=group))
+                await self._output.put(task.result())
 
     # -------------------------- consumer --------------------------
 
