@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.cell_state import (
     CellAddrInfo,
     StateDisposed,
@@ -13,7 +14,6 @@ from miles.ray.rollout.cell_state import (
     StatePendingWeights,
     StateServing,
 )
-from miles.ray.rollout import server_cell as server_cell_module
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 
 

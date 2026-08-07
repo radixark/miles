@@ -14,7 +14,7 @@ from miles.utils import object_store
 from miles.utils.types import Sample
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.server_cell import ServerCell
+    pass
 
 
 def make_args(**overrides: Any) -> Namespace:

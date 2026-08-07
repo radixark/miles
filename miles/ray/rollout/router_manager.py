@@ -48,7 +48,9 @@ async def wait_worker_serving(
                 f"its own log holds the reason it exited"
             )
         if time.monotonic() >= deadline:
-            raise RuntimeError(f"Worker {worker_name} is alive but {addr.host}:{addr.port} is not ready after {timeout}s")
+            raise RuntimeError(
+                f"Worker {worker_name} is alive but {addr.host}:{addr.port} is not ready after {timeout}s"
+            )
         await asyncio.sleep(WAIT_SERVING_POLL_INTERVAL_SECONDS)
 
 

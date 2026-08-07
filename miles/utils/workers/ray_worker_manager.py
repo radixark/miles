@@ -23,6 +23,7 @@ from miles.utils.workers.worker_spec import (
     HostAndPort,
     LaunchCommandContext,
     NamedHostAndPorts,
+    PortInfo,
     ServeWorkerSpec,
     WorkerLaunchContext,
     WorkerMetaContext,
