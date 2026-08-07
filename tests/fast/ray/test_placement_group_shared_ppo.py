@@ -62,6 +62,9 @@ class _RecordingWorkerProvider(BaseWorkerProvider):
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         raise NotImplementedError
 
+    async def is_worker_alive(self, worker_name: str) -> bool:
+        raise NotImplementedError
+
     async def watch_cells(self, reconcile: ReconcileFn, *, spec_names: list[str]) -> StopWatchFn:
         self.watched_spec_names.append(list(spec_names))
         return _stop_watch
