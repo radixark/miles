@@ -1,5 +1,7 @@
 import os
 
+import torch
+
 from tests.ci.ci_register import register_cuda_ci
 
 import miles.utils.external_utils.command_utils as U
@@ -9,6 +11,7 @@ register_cuda_ci(
 )
 
 ENABLE_EVAL = U.get_bool_env_var("MILES_TEST_ENABLE_EVAL", "0")
+IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
 
 MODEL_NAME = "GLM-Z1-9B-0414"
 MODEL_TYPE = "glm4-9B"
@@ -103,6 +106,9 @@ def execute():
         f"--actor-num-gpus-per-node {NUM_GPUS // 2} "
         f"--rollout-num-gpus {NUM_GPUS // 2} "
     )
+
+    if IS_ROCM:
+        misc_args += "--no-gradient-accumulation-fusion "
 
     train_args = (
         f"{ckpt_args} "
