@@ -177,7 +177,7 @@ class FullyAsyncRolloutFn:
     # -------------------------- consumer --------------------------
 
     async def _next_group(self, current_version: int | None) -> DataBufferInput:
-        queue_get = asyncio.create_task(self._output.get(current_version))
+        queue_get = asyncio.create_task(self._output.get(current_version=current_version))
         try:
             while True:
                 done, _ = await asyncio.wait(

@@ -461,10 +461,18 @@ async def test_buffer_blocks_producer_when_full():
     assert not blocked.done()
     assert buffer.get_metrics()["rollout/fully_async/queue_size"] == 2
 
-    assert (await buffer.get(None)).group[0].group_index == 1
+    assert (await buffer.get()).group[0].group_index == 1
     await blocked
-    assert (await buffer.get(None)).group[0].group_index == 2
-    assert (await buffer.get(None)).group[0].group_index == 3
+    assert (await buffer.get()).group[0].group_index == 2
+    assert (await buffer.get()).group[0].group_index == 3
+
+
+async def test_buffer_get_ignores_unknown_context_keys():
+    """get(**context) lets the driver add keys without breaking existing buffers."""
+    buffer, _ = make_buffer()
+    await put_group(buffer, make_group(1))
+
+    assert (await buffer.get(current_version=1, some_future_key=2)).group[0].group_index == 1
 
 
 async def test_buffer_get_skips_groups_stale_at_consumption_time():

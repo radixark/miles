@@ -59,10 +59,9 @@ class DataBuffer(ABC):
     """Store for finished groups between rollout production and training consumption.
 
     The producer puts each finished group as it completes; the consumer gets one
-    group at a time, passing the engine version as of now so staleness is judged
-    against a live clock; get_metrics is collected once per training step.
-    Storage, ordering, and filtering are invisible to callers — an implementation
-    is free to reject a group on put, on get, or not at all.
+    group at a time; get_metrics is collected once per training step. Storage,
+    ordering, and filtering are invisible to callers — an implementation is free
+    to reject a group on put, on get, or not at all.
     """
 
     @abstractmethod
@@ -70,8 +69,12 @@ class DataBuffer(ABC):
         """Accept a finished group; may store it, reject it, or evict to make room."""
 
     @abstractmethod
-    async def get(self, current_version: int | None) -> DataBufferInput:
-        """Return one group to train on, waiting until one is available."""
+    async def get(self, **context) -> DataBufferInput:
+        """Return one group to train on, waiting until one is available.
+
+        ``context`` is the consumer's view right now (the driver sends
+        ``current_version``); name the keys you use and absorb the rest.
+        """
 
     @abstractmethod
     def get_metrics(self) -> dict[str, float]:
@@ -138,7 +141,7 @@ class DefaultDataBuffer(DataBuffer):
             self._buffer.append(input)
             self._cond.notify_all()
 
-    async def get(self, current_version: int | None) -> DataBufferInput:
+    async def get(self, current_version: int | None = None, **_) -> DataBufferInput:
         self._track_version(current_version)
         async with self._cond:
             while True:
