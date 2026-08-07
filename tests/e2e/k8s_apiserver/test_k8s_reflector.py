@@ -57,7 +57,7 @@ class TestKubernetesAsyncioPodApi:
             await collector.close()
 
         lifecycle = [
-            (event.type, event.obj.metadata.name) for event in collector.events if event.type in ("ADDED", "DELETED")
+            (event.type, event.pod.metadata.name) for event in collector.events if event.type in ("ADDED", "DELETED")
         ]
         assert lifecycle == [("ADDED", "pod-b"), ("DELETED", "pod-a")]
 
@@ -80,7 +80,7 @@ class TestKubernetesAsyncioPodApi:
             namespace=apiserver_namespace, body=pod_body(name="pod-a", cell="cell-a")
         )
         await abandoned.wait_for(1)
-        cursor = abandoned.events[0].obj.metadata.resource_version
+        cursor = abandoned.events[0].pod.metadata.resource_version
         await abandoned.close()
 
         reopened = _StreamCollector(
@@ -99,7 +99,7 @@ class TestKubernetesAsyncioPodApi:
         finally:
             await reopened.close()
 
-        assert [event.obj.metadata.name for event in reopened.events] == ["pod-b"]
+        assert [event.pod.metadata.name for event in reopened.events] == ["pod-b"]
 
     async def test_the_loop_keeps_tracking_across_a_real_watch_timeout(
         self, apiserver_core_v1: kubernetes_client.CoreV1Api, apiserver_namespace: str
@@ -156,7 +156,7 @@ class TestKubernetesAsyncioPodApi:
         finally:
             await collector.close()
 
-        assert [event.obj.metadata.name for event in collector.events] == ["pod-labelled"]
+        assert [event.pod.metadata.name for event in collector.events] == ["pod-labelled"]
 
 
 class TestReconcileLoopAgainstAnApiserver:
@@ -284,7 +284,7 @@ class TestLabelMutationAgainstAnApiserver:
         finally:
             await collector.close()
 
-        lifecycle = [(event.type, event.obj.metadata.name) for event in collector.events]
+        lifecycle = [(event.type, event.pod.metadata.name) for event in collector.events]
         assert lifecycle == [("DELETED", "pod-a"), ("ADDED", "pod-a")]
 
     async def test_the_loop_drops_a_pod_whose_cell_label_is_removed(
