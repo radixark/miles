@@ -111,8 +111,9 @@ def _compute_server_args(
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
-        # NOTE: do not pass random seed and let SGLang pick random ones
-        # "random_seed": args.seed + rank,
+        # Offset per engine so two engines do not sample the same continuation for the same
+        # prompt, and derived from --seed so a rerun of the same launch reproduces the rollouts.
+        "random_seed": args.seed + base_gpu_id,
         # memory
         "enable_memory_saver": args.offload_rollout,
         # distributed
@@ -168,12 +169,12 @@ def _compute_server_args(
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = args.multi_lora_n_adapters
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        kwargs["lora_target_modules"] = _compute_lora_target_modules(args)
+        kwargs["lora_target_modules"] = _compute_lora_target_modules(args, may_auto_detect=False)
     elif lora_rollout_enabled(args):
         kwargs["enable_lora"] = True
         kwargs["max_loras_per_batch"] = 1
         kwargs["max_lora_rank"] = max(getattr(args, "lora_rank", 0), 1)
-        kwargs["lora_target_modules"] = _compute_lora_target_modules(args)
+        kwargs["lora_target_modules"] = _compute_lora_target_modules(args, may_auto_detect=True)
 
         if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
             kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
@@ -211,10 +212,12 @@ def _compute_server_args(
     return kwargs
 
 
-def _compute_lora_target_modules(args) -> list[str]:
+def _compute_lora_target_modules(args, *, may_auto_detect: bool) -> list[str]:
     # Inkling checkpoints expose module names this mapping cannot produce, so they are the one
-    # family that asks SGLang to discover them; everything else names what it wants.
-    if sglang_lora_target_all_sentinel(args):
+    # family that asks SGLang to discover them; everything else names what it wants. Multi-LoRA
+    # is excluded: several adapters share one slot budget, so discovering every compatible module
+    # sizes that budget off the base model rather than off what the adapters actually fill.
+    if may_auto_detect and sglang_lora_target_all_sentinel(args):
         return [LORA_TARGET_ALL_MODULES]
 
     hf_modules = convert_target_modules_to_hf(args.target_modules)
