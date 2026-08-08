@@ -131,11 +131,6 @@ class LinearTrajectory:
                 f"{e}; the selected TITO fixed template does not support appending this role"
             ) from e
 
-        # Matching is done: hand TITO the effective history whose prefix is the
-        # stored messages verbatim, so its strict internal validation and any
-        # full-history renderer (e.g. DeepSeek V4) stay consistent with the
-        # reused stored token prefix even when the matcher accepted a
-        # non-identical replay.
         effective_messages = self.messages + request_messages[len(self.messages) :]
         return tito_tokenizer.merge_tokens(
             old_messages=self.messages,
@@ -307,8 +302,6 @@ class SessionRegistry:
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
         self.comparator = tito_tokenizer.create_comparator()
-        # Sole runtime owner of the process-wide replay matcher; cores pass it
-        # into their pure request-planning functions and never re-resolve it.
         self.message_matcher: SessionMessageMatcher = (
             message_matcher if message_matcher is not None else strict_message_matches
         )
