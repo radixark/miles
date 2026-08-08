@@ -19,8 +19,8 @@ from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.session_state import SessionStateV2, position_for_request, prepare_pretokenized
 from miles.utils.chat_template_utils.message_matcher_hub import (
     loose_tool_call_message_matches,
-    message_matches,
     role_content_only_message_matches,
+    strict_message_matches,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES, FixedTemplate, TITOTokenizer
 
@@ -218,7 +218,7 @@ class TestRegistryOwnership:
     def test_defaults_to_the_strict_matcher(self):
         registry = SessionRegistry(SimpleNamespace(), tokenizer=None, tito_tokenizer=_RecordingTITOTokenizer())
 
-        assert registry.message_matcher is message_matches
+        assert registry.message_matcher is strict_message_matches
 
     def test_holds_the_injected_matcher(self):
         registry = SessionRegistry(

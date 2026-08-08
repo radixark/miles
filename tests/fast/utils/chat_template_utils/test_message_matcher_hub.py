@@ -15,9 +15,9 @@ import miles.utils.chat_template_utils as chat_template_utils
 from miles.utils.chat_template_utils import message_matcher_hub, template
 from miles.utils.chat_template_utils.message_matcher_hub import (
     loose_tool_call_message_matches,
-    message_matches,
     resolve_session_message_matcher,
     role_content_only_message_matches,
+    strict_message_matches,
 )
 
 _MISSING = object()
@@ -71,7 +71,7 @@ def test_strict_preserves_existing_empty_and_wire_index_normalization() -> None:
     stored["wire_metadata"] = {"source": "stored"}
     replayed["wire_metadata"] = {"source": "replayed"}
 
-    assert message_matches(stored, replayed)
+    assert strict_message_matches(stored, replayed)
 
 
 @pytest.mark.parametrize(
@@ -87,7 +87,7 @@ def test_loose_tool_call_normalizes_empty_argument_objects(stored_arguments: Any
     stored = _assistant(stored_arguments)
     replayed = _assistant(replayed_arguments)
 
-    assert not message_matches(stored, replayed)
+    assert not strict_message_matches(stored, replayed)
     assert loose_tool_call_message_matches(stored, replayed)
 
 
@@ -100,7 +100,7 @@ def test_loose_tool_call_normalizes_nested_json_objects_without_mutating_array_o
         }
     )
 
-    assert not message_matches(stored, replayed)
+    assert not strict_message_matches(stored, replayed)
     assert loose_tool_call_message_matches(stored, replayed)
 
 
@@ -120,7 +120,7 @@ def test_loose_tool_call_preserves_json_types_values_and_array_order(
     stored = _assistant(stored_arguments)
     replayed = _assistant(replayed_arguments)
 
-    assert not message_matches(stored, replayed)
+    assert not strict_message_matches(stored, replayed)
     assert not loose_tool_call_message_matches(stored, replayed)
     assert role_content_only_message_matches(stored, replayed)
 
@@ -348,7 +348,7 @@ def test_builtin_match_sets_are_monotonic() -> None:
 
     for stored in messages:
         for replayed in messages:
-            strict = message_matches(stored, replayed)
+            strict = strict_message_matches(stored, replayed)
             loose = loose_tool_call_message_matches(stored, replayed)
             role_content = role_content_only_message_matches(stored, replayed)
             assert not strict or loose
@@ -370,7 +370,7 @@ def test_matchers_do_not_mutate_either_input() -> None:
     replayed_before = copy.deepcopy(replayed)
 
     for matcher in (
-        message_matches,
+        strict_message_matches,
         loose_tool_call_message_matches,
         role_content_only_message_matches,
     ):
@@ -384,7 +384,7 @@ def test_matchers_do_not_mutate_either_input() -> None:
 @pytest.mark.parametrize(
     ("selector", "expected"),
     [
-        pytest.param("strict", message_matches, id="strict"),
+        pytest.param("strict", strict_message_matches, id="strict"),
         pytest.param("loose_tool_call", loose_tool_call_message_matches, id="loose-tool-call"),
         pytest.param("role_content_only", role_content_only_message_matches, id="role-content-only"),
     ],
@@ -445,8 +445,8 @@ def test_append_only_assert_still_validates_suffix_roles_under_a_loose_matcher()
 
 
 def test_compatibility_exports_are_direct_aliases() -> None:
-    assert template.message_matches is message_matcher_hub.message_matches
-    assert chat_template_utils.message_matches is message_matcher_hub.message_matches
+    assert template.strict_message_matches is message_matcher_hub.strict_message_matches
+    assert chat_template_utils.strict_message_matches is message_matcher_hub.strict_message_matches
     assert (
         template.assert_messages_append_only_with_allowed_role
         is message_matcher_hub.assert_messages_append_only_with_allowed_role
@@ -468,7 +468,7 @@ import sys
 assert "miles.utils.misc" not in sys.modules
 hub = importlib.import_module("miles.utils.chat_template_utils.message_matcher_hub")
 assert "miles.utils.misc" not in sys.modules
-assert hub.resolve_session_message_matcher("strict") is hub.message_matches
+assert hub.resolve_session_message_matcher("strict") is hub.strict_message_matches
 assert "miles.utils.misc" not in sys.modules
 hub.resolve_session_message_matcher("operator.eq")
 assert "miles.utils.misc" in sys.modules

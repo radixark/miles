@@ -4,7 +4,7 @@
 # template re-exports its two moved names, and tito_tokenizer builds on both.
 from miles.utils.chat_template_utils.message_matcher_hub import (
     assert_messages_append_only_with_allowed_role,
-    message_matches,
+    strict_message_matches,
 )
 from miles.utils.chat_template_utils.template import (
     apply_chat_template,
@@ -34,7 +34,7 @@ __all__ = [
     "apply_chat_template",
     "apply_chat_template_from_str",
     "assert_messages_append_only_with_allowed_role",
-    "message_matches",
+    "strict_message_matches",
     "extract_tool_dicts",
     "normalize_tool_arguments",
     "Mismatch",

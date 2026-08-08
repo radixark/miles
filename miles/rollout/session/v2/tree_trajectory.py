@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from miles.rollout.session.types import SessionRecord
-from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, message_matches
+from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, strict_message_matches
 
 MAX_NODES = 1024
 
@@ -114,7 +114,7 @@ class SessionTree:
         fully consumed; ties on depth (twins whose deltas both match) go to
         the latest ``seq``.  Pure judgment — never mutates the forest.
         """
-        matcher = message_matcher if message_matcher is not None else message_matches
+        matcher = message_matcher if message_matcher is not None else strict_message_matches
         best: TrajectoryNode | None = None
         best_matched = -1
         best_overlap = 0

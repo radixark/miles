@@ -9,7 +9,7 @@ from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcher,
     assert_messages_append_only_with_allowed_role,
-    message_matches,
+    strict_message_matches,
 )
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
@@ -106,7 +106,7 @@ class LinearTrajectory:
 
         Must be called under ``self.lock``.
         """
-        matcher = message_matcher if message_matcher is not None else message_matches
+        matcher = message_matcher if message_matcher is not None else strict_message_matches
 
         # 1. Detect agent retries and roll back (at most one assistant step). Retrying the
         #    first turn rolls back to the empty checkpoint, clearing token_ids.
@@ -310,7 +310,7 @@ class SessionRegistry:
         # Sole runtime owner of the process-wide replay matcher; cores pass it
         # into their pure request-planning functions and never re-resolve it.
         self.message_matcher: SessionMessageMatcher = (
-            message_matcher if message_matcher is not None else message_matches
+            message_matcher if message_matcher is not None else strict_message_matches
         )
 
     def create_session(self) -> str:

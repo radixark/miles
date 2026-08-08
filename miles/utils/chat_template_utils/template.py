@@ -32,7 +32,7 @@ from miles.utils.chat_template_utils import deepseek, inkling
 # established import surface working without a second implementation.
 from miles.utils.chat_template_utils.message_matcher_hub import (  # noqa: F401
     assert_messages_append_only_with_allowed_role,
-    message_matches,
+    strict_message_matches,
 )
 
 
