@@ -132,14 +132,14 @@ def _validate_glm_checkpoint():
 
 def prepare():
     os.environ.update(NVFP4_ENV)
-    U.exec_command(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
-    U.exec_command(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
+    U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
+    U.exec_command_cpu(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
 
     _validate_glm_checkpoint()
-    U.exec_command(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MODEL_NAME}_torch_dist")
+    U.exec_command_cpu(f"rm -rf {MODEL_DIR}/{MODEL_NAME}-NVFP4 {MODEL_DIR}/{MODEL_NAME}_torch_dist")
 
-    U.exec_command(
+    U.exec_command_gpu(
         f"python tools/convert_hf_to_nvfp4.py "
         f"--model-dir {MODEL_DIR}/{MODEL_NAME} "
         f"--save-dir {MODEL_DIR}/{MODEL_NAME}-NVFP4 "

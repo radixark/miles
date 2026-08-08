@@ -51,6 +51,6 @@ if __name__ == "__main__":
     for name, shared_outer, virtual_experts in _CONFIGS:
         print(f"[qwen3.5-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
-        U.exec_command("ray stop --force || true; pkill -9 sglang || true; sleep 10")
+        U.exec_command_cpu("ray stop --force || true; pkill -9 sglang || true; sleep 10")
         execute(_args(shared_outer, virtual_experts))
         print(f"[qwen3.5-lora-ci] ===== combo PASSED: {name} =====", flush=True)

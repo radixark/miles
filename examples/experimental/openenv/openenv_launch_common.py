@@ -267,7 +267,7 @@ def _sandbox_key_supply(
     get the provider key from their OWN environment (e.g. platform-injected)
     or from a file they can read (a dotfile, K8s Secret mount, or shared-FS
     path). The launcher forwards only the file PATH, never the value: worker
-    env rides ray's runtime_env, which exec_command echoes into driver logs
+    env rides ray's runtime_env, which exec_command_cpu echoes into driver logs
     and ray persists in job metadata, all in plaintext."""
     key_file = Path(arg_path or default_path).expanduser()
     try:

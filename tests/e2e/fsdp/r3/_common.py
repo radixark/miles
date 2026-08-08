@@ -26,8 +26,8 @@ class CaseConfig:
 
 
 def prepare(case: CaseConfig) -> None:
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download {case.hf_repo} --local-dir /root/models/{case.model_name}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download {case.hf_repo} --local-dir /root/models/{case.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
 

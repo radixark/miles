@@ -115,7 +115,15 @@ class SingletonMeta(type):
         SingletonMeta._instances.clear()
 
 
-def exec_command(cmd: str, capture_output: bool = False) -> str | None:
+def exec_command_gpu(cmd: str, capture_output: bool = False) -> str | None:
+    return _exec_command(cmd, capture_output=capture_output)
+
+
+def exec_command_cpu(cmd: str, capture_output: bool = False) -> str | None:
+    return _exec_command(cmd, capture_output=capture_output)
+
+
+def _exec_command(cmd: str, capture_output: bool = False) -> str | None:
     print(f"EXEC: {cmd}", flush=True)
 
     try:
@@ -138,12 +146,10 @@ def exec_command(cmd: str, capture_output: bool = False) -> str | None:
 
 @ray.remote(num_cpus=0.001)
 def _exec_command_on_node(cmd: str, capture_output: bool) -> str | None:
-    return exec_command(f"unset CUDA_VISIBLE_DEVICES; {cmd}", capture_output=capture_output)
+    return _exec_command(f"unset CUDA_VISIBLE_DEVICES; {cmd}", capture_output=capture_output)
 
 
-def exec_command_all_ray_node(
-    cmd: str, capture_output: bool = False, num_nodes: int | None = None
-) -> list[str | None]:
+def exec_command_multi_node(cmd: str, capture_output: bool = False, num_nodes: int | None = None) -> list[str | None]:
     """Execute a shell command on every alive Ray node in parallel.
 
     Supported placeholders in `cmd` (replaced per-node before execution):

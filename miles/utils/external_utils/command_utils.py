@@ -14,10 +14,10 @@ from functools import partial
 from pathlib import Path
 
 from miles.utils.http_utils import wait_for_server_ready
-from miles.utils.misc import exec_command, exec_command_all_ray_node
+from miles.utils.misc import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.typer_utils import dataclass_cli
 
-_ = exec_command, exec_command_all_ray_node, dataclass_cli
+_ = exec_command_cpu, exec_command_gpu, exec_command_multi_node, dataclass_cli
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
 
@@ -57,9 +57,9 @@ def convert_checkpoint(
         )
 
     if multinode:
-        fn = partial(exec_command_all_ray_node, num_nodes=num_nodes)
+        fn = partial(exec_command_multi_node, num_nodes=num_nodes)
     else:
-        fn = exec_command
+        fn = exec_command_gpu
     pythonpath = shlex.quote(_pythonpath_with_sources(megatron_path))
     fn(
         f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
@@ -76,14 +76,14 @@ def convert_checkpoint(
 
 
 def rsync_simple(path_src: str, path_dst: str, num_nodes: int | None = None):
-    exec_command_all_ray_node(
+    exec_command_multi_node(
         f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}", num_nodes=num_nodes
     )
 
 
 def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
     _, partial_name = full_name.split("/")
-    exec_command(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
+    exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 
 
 def fp8_cast_bf16(path_src, path_dst):
@@ -92,7 +92,7 @@ def fp8_cast_bf16(path_src, path_dst):
         print(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
         return
 
-    exec_command(
+    exec_command_gpu(
         f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
         f"--input-fp8-hf-path {path_src} "
         f"--output-bf16-hf-path {path_dst} "
@@ -130,7 +130,7 @@ def execute_train(
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
 
-    exec_command(
+    exec_command_cpu(
         "pkill -9 sglang; "
         "sleep 3; "
         f"{'' if external_ray else 'ray stop --force; '}"
@@ -148,7 +148,7 @@ def execute_train(
     )
 
     if not external_ray:
-        exec_command(
+        exec_command_cpu(
             # will prevent ray from buffering stdout/stderr
             f"export PYTHONUNBUFFERED=1 && "
             f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
@@ -199,7 +199,7 @@ def execute_train(
             if megatron_model_type is not None
             else ""
         )
-        exec_command(
+        exec_command_cpu(
             f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
             f"{cmd_megatron_model_source}"
             f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
@@ -218,7 +218,7 @@ def _parse_extra_env_vars(text: str):
 
 
 def check_has_nvlink():
-    output = exec_command("nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True)
+    output = exec_command_gpu("nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True)
     return int(output) > 0
 
 
@@ -312,7 +312,7 @@ def start_mooncake_master(
 
     log_path = Path(log_path)
     quoted_log_path = shlex.quote(str(log_path))
-    exec_command(
+    exec_command_cpu(
         "pkill -x mooncake_master >/dev/null 2>&1 || true; "
         f"(setsid mooncake_master --rpc_port {rpc_port} --metrics_port {metrics_port} "
         f"> {quoted_log_path} 2>&1 &)"
@@ -320,7 +320,7 @@ def start_mooncake_master(
     try:
         wait_for_server_ready(host, rpc_port, timeout=timeout)
     except RuntimeError as exc:
-        exec_command("pkill -x mooncake_master >/dev/null 2>&1 || true")
+        exec_command_cpu("pkill -x mooncake_master >/dev/null 2>&1 || true")
         try:
             log_lines = log_path.read_text(errors="replace").splitlines()
             log_tail = "\n".join(log_lines[-100:]) or "<empty>"
