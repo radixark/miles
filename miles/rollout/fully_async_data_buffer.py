@@ -96,7 +96,7 @@ class DataBuffer(ABC):
     def get_metrics(self) -> dict[str, float]:
         """Report fully-qualified metrics since the previous call (window counters reset here)."""
 
-    async def discard_all(self, on_discard: Callable[[DataBufferSource], None]) -> Exception | None:
+    async def discard_all(self, on_discard: Callable[[DataBufferSource], None]) -> BaseException | None:
         """Discard stored inputs after their exact sources settle.
 
         Custom buffers that retain inputs must override this method. The default
@@ -188,15 +188,15 @@ class DefaultDataBuffer(DataBuffer):
                 self._metric_stale_groups += 1
                 self._unused_handler_fn(entry.source)
 
-    async def discard_all(self, on_discard: Callable[[DataBufferSource], None]) -> Exception | None:
+    async def discard_all(self, on_discard: Callable[[DataBufferSource], None]) -> BaseException | None:
         """Discard buffered inputs after their exact sources settle."""
-        first_error: Exception | None = None
+        first_error: BaseException | None = None
         async with self._cond:
             index = 0
             while index < len(self._buffer):
                 try:
                     on_discard(self._buffer[index].source)
-                except Exception as error:
+                except BaseException as error:
                     if first_error is None:
                         first_error = error
                     index += 1

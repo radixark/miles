@@ -58,11 +58,12 @@ class FakeDataSource:
 
 
 class FakeReservationDataSource:
-    def __init__(self, reservations: list[SourceReservation]) -> None:
+    def __init__(self, reservations: list[SourceReservation], *, failed_requeues: int = 0) -> None:
         self.reservations = deque(reservations)
         self.reserved: list[SourceReservation] = []
         self.acknowledged: list[tuple[list[SourceReservation], int]] = []
         self.requeued: list[list[SourceReservation]] = []
+        self.failed_requeues = failed_requeues
         self.next_group_index = 1000
 
     def get_samples(self, num_samples: int) -> list[list[Sample]]:
@@ -90,6 +91,9 @@ class FakeReservationDataSource:
         self.acknowledged.append((list(reservations), rollout_id))
 
     def requeue_reservations(self, reservations: Sequence[SourceReservation]) -> None:
+        if self.failed_requeues:
+            self.failed_requeues -= 1
+            raise RuntimeError("scripted requeue failure")
         self.requeued.append(list(reservations))
 
     def save(self, rollout_id: int) -> None:
@@ -148,6 +152,7 @@ def make_args(**overrides) -> Namespace:
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
+        rollout_health_check_timeout=0.1,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
         eval_num_gpus=0,
@@ -243,6 +248,21 @@ async def test_owned_capacity_reopens_after_lease_settlement(monkeypatch):
     assert data_source.reserved == [first, second]
 
 
+async def test_close_retries_failed_lease_rollback(monkeypatch):
+    reservation = make_reservation(12)
+    data_source = FakeReservationDataSource([reservation], failed_requeues=1)
+    fn = make_owned_fn(monkeypatch, data_source)
+    output = await fn(RolloutFnTrainInput(rollout_id=23, weight_version="23"))
+
+    with pytest.raises(RuntimeError, match="scripted requeue failure"):
+        output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+
+    await fn.close()
+
+    assert data_source.requeued == [[reservation]]
+    assert fn._closed
+
+
 async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     args = make_args(rollout_batch_size=3)
     fn = make_fn(monkeypatch, args, FakeDataSource())
@@ -270,7 +290,9 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
         return group
 
     data_source = FakeDataSource()
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate)
+    fn = make_fn(
+        monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate
+    )
 
     eval_started = asyncio.Event()
     eval_release = asyncio.Event()
