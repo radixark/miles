@@ -126,6 +126,9 @@ def _compute_sample_from_openai_record(
     if args.sglang_speculative_algorithm:
         sample.spec_info.add(choice.get("meta_info", {}))
     sample.prefix_cache_info.add(choice.get("meta_info", {}))
+    # Token metering input (see Sample.update_from_meta_info): without this
+    # fold-in, session-based rollouts would meter zero sample-class tokens.
+    sample.engine_completion_tokens += choice.get("meta_info", {}).get("completion_tokens", 0)
     if "weight_version" in choice["meta_info"]:
         sample.weight_versions.append(choice["meta_info"]["weight_version"])
 

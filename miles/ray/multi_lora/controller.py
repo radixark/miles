@@ -88,11 +88,23 @@ class MultiLoRAController:
     def record_weight_update(self, names: list[str]) -> None:
         self.backend.registry.record_weight_update(names)
 
-    def record_batch_adapters(self, rollout_id: int, groups: dict[str, int], step_names: list[str]) -> None:
-        self.backend.registry.record_batch_adapters(rollout_id, groups, step_names)
+    def record_batch_adapters(
+        self,
+        rollout_id: int,
+        groups: dict[str, int],
+        step_names: list[str],
+        token_sums: dict[str, dict[str, int]] | None = None,
+    ) -> None:
+        self.backend.registry.record_batch_adapters(rollout_id, groups, step_names, token_sums)
 
     def mark_batch_trained(self, rollout_id: int) -> list[str]:
         return self.backend.registry.mark_batch_trained(rollout_id)
+
+    def credit_rollout_usage(self, incarnation: str, entries: list[dict]) -> None:
+        self.backend.registry.credit_rollout_usage(incarnation, entries)
+
+    def get_usage(self, registration_id: str | None = None) -> list[dict]:
+        return self.backend.registry.usage_entries(registration_id)
 
     def resolve_num_step(self, name: str, dataset_rows: int) -> None:
         self.backend.registry.resolve_num_step(name, dataset_rows)

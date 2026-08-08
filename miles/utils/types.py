@@ -150,6 +150,11 @@ class Sample:
 
     prefix_cache_info: PrefixCacheInfo = field(default_factory=PrefixCacheInfo)
 
+    # Engine-reported decode tokens accumulated across generate calls (multi-turn safe).
+    # This is the token-metering counter: unlike response_length it is never inflated
+    # by injected tool/observation tokens the engine did not sample.
+    engine_completion_tokens: int = 0
+
     def to_dict(self):
         value = self.__dict__.copy()
         value["status"] = self.status.value
@@ -264,6 +269,7 @@ class Sample:
         self.non_generation_time = 0.0
         self.spec_info = Sample.SpecInfo()
         self.prefix_cache_info = Sample.PrefixCacheInfo()
+        self.engine_completion_tokens = 0
         self.remove_sample = False
         self.train_metadata = None
 
@@ -284,6 +290,10 @@ class Sample:
 
         # Collect prefix cache statistics
         self.prefix_cache_info.add(meta_info=meta_info)
+
+        # Token metering input: every engine call must fold its meta_info in here
+        # (custom generate fns that skip update_from_meta_info zero their own usage).
+        self.engine_completion_tokens += meta_info.get("completion_tokens", 0)
 
         if "weight_version" in meta_info:
             self.weight_versions.append(meta_info["weight_version"])

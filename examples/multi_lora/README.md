@@ -109,6 +109,22 @@ python examples/multi_lora/service_smoke.py --api-url http://127.0.0.1:8068 \
     --data /root/datasets/gsm8k/train.parquet --input-key messages --label-key label --rm-type math
 ```
 
+## /v1 API demo (public fine-tuning surface)
+
+The public resource API (`/v1/postTrainingJobs`, datasets,
+evaluators, models, per-adapter token usage). `v1_api_demo.py` is the
+reference client: it submits 4 LoRA jobs, watches steps and token usage,
+cancels 2 mid-run, and prints the final billing ledger:
+
+```bash
+python examples/multi_lora/v1_api_demo.py --api-url http://127.0.0.1:8068 \
+    --data /root/datasets/gsm8k/train.parquet --jobs 4 --max-steps 5 --cancel 2
+```
+
+Endpoints it exercises: `POST /v1/datasets`, `POST /v1/evaluators`,
+`POST /v1/postTrainingJobs`, `GET /v1/postTrainingJobs`,
+`POST /v1/postTrainingJobs/{id}:cancel`, `GET /v1/usage`, `GET /v1/models/{id}`.
+
 ## Multi-LoRA CLI flags
 
 | Flag | Purpose |

@@ -64,6 +64,10 @@ class AdapterRun:
     # Unique per registration (see AdapterRecord.registration_id): lets the
     # rollout worker tell a re-registered name apart from the previous tenant.
     registration_id: str = ""
+    # Token meter snapshot for this registration (counting only, no pricing;
+    # see miles/utils/token_usage.py). None only for harnesses that build
+    # views by hand.
+    usage: dict[str, Any] | None = None
 
 
 def parse_adapter_run_yaml(path: Path) -> AdapterRunConfig:

@@ -1,0 +1,416 @@
+<!-- Miles Multi-LoRA console: a self-contained single-file UI over the /v1 API.
+     Served by the gateway at GET /ui; no external assets, no build step.
+     Set window.__MILES_MOCK__ (an object of canned API responses) before this
+     file's script runs to render without a live server (used for previews). -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Miles Multi-LoRA Console</title>
+<style>
+  :root {
+    --bg: #101418; --panel: #171d24; --panel2: #1d242d; --line: #2a333e;
+    --text: #d7dee7; --dim: #8494a6; --accent: #5aa9e6;
+    --green: #4cc38a; --amber: #e5b567; --red: #e0685c; --blue: #6fa8dc; --gray: #7d8a99; --purple: #b085d6;
+    font-size: 14px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  header { display: flex; flex-wrap: wrap; gap: 1rem 2rem; align-items: baseline;
+           padding: 1rem 1.5rem; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 1.1rem; margin: 0; letter-spacing: .04em; }
+  header .meta { color: var(--dim); }
+  header .meta b { color: var(--text); font-weight: 600; }
+  #conn { margin-left: auto; color: var(--dim); }
+  #conn.err { color: var(--red); }
+  main { padding: 1rem 1.5rem 4rem; max-width: 1200px; margin: 0 auto; }
+  section { margin-top: 1.6rem; }
+  h2 { font-size: .95rem; color: var(--dim); text-transform: uppercase; letter-spacing: .08em;
+       border-bottom: 1px solid var(--line); padding-bottom: .4rem; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--dim); font-weight: 500; padding: .35rem .6rem; white-space: nowrap; }
+  td { padding: .4rem .6rem; border-top: 1px solid var(--line); white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .badge { display: inline-block; padding: .1rem .5rem; border-radius: 99px; font-size: .8rem; }
+  .st-PENDING   { background: #3d3320; color: var(--amber); }
+  .st-RUNNING   { background: #1d3a2d; color: var(--green); }
+  .st-STOPPING  { background: #3d2c20; color: #e69a5a; }
+  .st-COMPLETED { background: #20303d; color: var(--blue); }
+  .st-CANCELLED { background: #262d35; color: var(--gray); }
+  .st-EXTERNAL  { background: #2e2438; color: var(--purple); }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+           border-radius: 6px; padding: .3rem .7rem; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--accent); }
+  button.danger { border-color: #6a3733; color: var(--red); }
+  button.danger:hover { border-color: var(--red); background: #2a1d1d; }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  button.primary:hover { background: #1b2a38; }
+  form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; margin-top: .8rem;
+         background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .8rem; }
+  label { display: flex; flex-direction: column; gap: .2rem; color: var(--dim); font-size: .78rem; }
+  input, select { background: var(--bg); color: var(--text); border: 1px solid var(--line);
+                  border-radius: 6px; padding: .32rem .5rem; font: inherit; min-width: 7rem; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  .uid { color: var(--dim); font-size: .8rem; }
+  #toast { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
+           background: #3a2326; color: #f0b6b0; border: 1px solid var(--red); border-radius: 8px;
+           padding: .6rem 1rem; max-width: 80vw; display: none; z-index: 9; }
+  #toast.ok { background: #1d3a2d; color: #bfe8d2; border-color: var(--green); }
+  .empty { color: var(--dim); padding: .8rem; }
+  details { margin-top: .5rem; }
+  summary { cursor: pointer; color: var(--dim); }
+  code { color: var(--accent); }
+</style>
+
+<header>
+  <h1>MILES MULTI-LORA</h1>
+  <span class="meta" title="adapters in use / total slots">adapters <b id="i-used" style="font-size:1.15rem">–/–</b></span>
+  <span class="meta">base <b id="i-model">–</b></span>
+  <span class="meta">max rank <b id="i-rank">–</b></span>
+  <span class="meta">dp <b id="i-dp">–</b></span>
+  <span id="conn">connecting…</span>
+</header>
+
+<main>
+  <section id="server-panel">
+    <h2>Server</h2>
+    <div class="wrap" style="padding:.8rem; display:flex; flex-wrap:wrap; gap:1rem; align-items:center;">
+      <span id="srv-dot" style="font-size:1.1rem">●</span>
+      <span id="srv-text">checking…</span>
+      <label style="flex-direction:row; align-items:center; gap:.4rem">slots
+        <input id="srv-slots" type="number" value="4" min="1" max="16" style="width:4.5rem"></label>
+      <button id="srv-launch" class="primary" style="display:none">▶ launch miles server</button>
+      <button id="srv-stop" class="danger" style="display:none">■ stop server</button>
+    </div>
+    <details id="srv-logwrap" style="display:none" open><summary>server log tail (startup takes a few minutes)</summary>
+      <pre id="srv-log" style="background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:.8rem; overflow-x:auto; max-height:14rem; overflow-y:auto; font-size:.78rem; color:var(--dim)"></pre>
+    </details>
+  </section>
+  <section>
+    <h2>Post-training jobs</h2>
+    <div class="wrap"><table id="jobs">
+      <thead><tr>
+        <th>job</th><th>state</th><th>stop reason</th><th>steps</th>
+        <th class="num">rollout tok</th><th class="num">training tok</th><th class="num">total tok</th><th></th>
+      </tr></thead><tbody></tbody>
+    </table></div>
+
+    <form id="f-job">
+      <label>jobId <input name="jobId" value="lora-1" required></label>
+      <label>dataset <select name="dataset" required><option>datasets/gsm8k</option></select></label>
+      <label>evaluator <select name="evaluator"><option>evaluators/math</option></select></label>
+      <label>rank <input name="loraRank" type="number" value="16" min="1"></label>
+      <label>alpha <input name="loraAlpha" type="number" value="32" min="1"></label>
+      <label>batch (prompts) <input name="batchSizePrompts" type="number" value="4" min="1"></label>
+      <label>rollouts/prompt <input name="rolloutsPerPrompt" type="number" value="4" min="1"></label>
+      <label>max steps <input name="maxSteps" type="number" value="5" min="1"></label>
+      <button type="submit">＋ create job</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Token usage (per registration — the billing ledger)</h2>
+    <div class="wrap"><table id="usage">
+      <thead><tr>
+        <th>adapter</th><th>uid</th><th>finalized</th>
+        <th class="num">prefill</th><th class="num">cached</th><th class="num">sample</th>
+        <th class="num">train</th><th class="num">train-fwd</th><th class="num">computed</th>
+      </tr></thead><tbody></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2>Models (adapters)</h2>
+    <div class="wrap"><table id="models">
+      <thead><tr><th>model</th><th>state</th><th>servable</th><th>rank</th><th>checkpoints</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+</main>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const MOCK = window.__MILES_MOCK__ || null;
+const $ = (sel) => document.querySelector(sel);
+const fmt = (n) => (n ?? 0).toLocaleString("en-US");
+
+function toast(msg, ok = false) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.className = ok ? "ok" : "";
+  el.style.display = "block";
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.display = "none"; }, ok ? 2500 : 6000);
+}
+
+async function api(method, path, body) {
+  if (MOCK) {
+    if (method !== "GET") { toast(`(preview) ${method} ${path} — read-only mock`, true); return null; }
+    const hit = MOCK[path] ?? MOCK[path.split("?")[0]];
+    if (hit) return structuredClone(hit);
+    throw new Error(`no mock for ${path}`);
+  }
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    // network-level failure: nothing answered at this origin
+    const hint = location.protocol === "file:"
+      ? "this page was opened as a local file — open http://127.0.0.1:8067/ui instead"
+      : "can't reach the launcher — is the SSH port-forward still up? (rx devbox ssh miles-test -- -L 8067:127.0.0.1:8067)";
+    throw new Error(hint);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const e = data.error || {};
+    throw new Error(`${e.status || res.status}: ${e.message || JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+function badge(state) { return `<span class="badge st-${state}">${state}</span>`; }
+
+function renderInfo(info) {
+  $("#i-model").textContent = info.baseModel ?? "–";
+  // a/n: adapters in use out of total slots
+  const used = info.slots.total - info.slots.free;
+  const el = $("#i-used");
+  el.textContent = `${used}/${info.slots.total}`;
+  el.style.color = info.slots.free === 0 ? "var(--amber)" : "var(--green)";
+  $("#i-rank").textContent = info.maxLoraRank ?? "–";
+  $("#i-dp").textContent = info.limits?.dpSize ?? "–";
+}
+
+// ---- launcher integration (present only when served via ui/launcher.py) ----
+let serverUp = true; // assume up when served straight from the gateway
+async function pollServer() {
+  let st = null;
+  if (MOCK) st = MOCK["/launcher/status"] || null;
+  else {
+    try {
+      const r = await fetch("/launcher/status");
+      if (r.ok) st = await r.json();
+    } catch { /* no launcher -> gateway-direct mode */ }
+  }
+  const dot = $("#srv-dot"), text = $("#srv-text");
+  const launch = $("#srv-launch"), stop = $("#srv-stop"), logwrap = $("#srv-logwrap");
+  if (!st) {
+    // Served straight from the gateway (:8068) — the server is by definition
+    // up, and start/stop controls live on the launcher origin.
+    serverUp = true;
+    dot.style.color = "var(--green)";
+    text.innerHTML = "miles server up (this console is served by it) — " +
+      "start/stop buttons need the launcher: <code>python ui/launcher.py</code> then open :8067/ui";
+    launch.style.display = "none"; stop.style.display = "none"; logwrap.style.display = "none";
+    return;
+  }
+  serverUp = st.serverUp;
+  if (st.serverUp) {
+    dot.style.color = "var(--green)"; text.textContent = `miles server up at ${st.apiUrl}`;
+    launch.style.display = "none"; stop.style.display = ""; logwrap.style.display = "none";
+  } else if (st.launching) {
+    dot.style.color = "var(--amber)"; text.textContent = "launching… (megatron init + engine load takes a few minutes)";
+    launch.style.display = "none"; stop.style.display = ""; logwrap.style.display = "";
+    $("#srv-log").textContent = st.logTail || "(waiting for log output…)";
+  } else {
+    dot.style.color = "var(--red)"; text.textContent = "miles server is down";
+    launch.style.display = ""; stop.style.display = "none";
+    logwrap.style.display = st.logTail ? "" : "none";
+    $("#srv-log").textContent = st.logTail || "";
+  }
+}
+$("#srv-launch").addEventListener("click", async () => {
+  const slots = Number($("#srv-slots").value) || 4;
+  try {
+    const r = await fetch("/launcher/start", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slots }) });
+    const b = await r.json();
+    toast(`launch: ${b.status} (${slots} slots)`, true);
+    pollServer();
+  } catch (e) { toast(String(e)); }
+});
+$("#srv-stop").addEventListener("click", async () => {
+  if (!confirm("Stop the miles server? All running jobs' GPUs are released; usage ledgers are kept.")) return;
+  try { await fetch("/launcher/stop", { method: "POST" }); toast("stopping server…", true); pollServer(); }
+  catch (e) { toast(String(e)); }
+});
+
+function renderJobs(listing) {
+  const rows = (listing.postTrainingJobs || []).map((j) => {
+    const name = j.name.split("/").pop();
+    const p = j.jobProgress || {};
+    const t = (j.usage || {}).totals || {};
+    const live = j.state === "RUNNING" || j.state === "PENDING";
+    const actions = [
+      live ? `<button class="danger" onclick="cancelJob('${name}')" title="stop this LoRA's training now">✕ cancel</button>` : "",
+      !live && j.kind !== "EXTERNAL" ? `<button class="danger" onclick="deleteJob('${name}')">delete</button>` : "",
+    ].join(" ");
+    return `<tr>
+      <td>${name}${j.kind === "EXTERNAL" ? " " + badge("EXTERNAL") : ""}</td>
+      <td>${badge(j.state)}</td>
+      <td class="uid">${j.stopReason ?? ""}</td>
+      <td>${p.completedSteps ?? "–"} / ${p.maxSteps ?? "∞"}</td>
+      <td class="num">${fmt(t.rolloutTokens)}</td>
+      <td class="num">${fmt(t.trainingTokens)}</td>
+      <td class="num">${fmt(t.computedTokens)}</td>
+      <td>${actions}</td>
+    </tr>`;
+  });
+  $("#jobs tbody").innerHTML = rows.join("") || `<tr><td colspan="8" class="empty">no jobs — create one below</td></tr>`;
+}
+
+function renderUsage(all) {
+  const rows = (all.entries || []).map((e) => {
+    const u = e.usage, r = u.rollout, t = u.training;
+    return `<tr>
+      <td>${e.name}</td>
+      <td class="uid">${e.uid.slice(0, 8)}…</td>
+      <td>${e.finalized ? "✓ frozen" : "accruing"}</td>
+      <td class="num">${fmt(r.prefillTokens)}</td>
+      <td class="num">${fmt(r.cachedPrefillTokens)}</td>
+      <td class="num">${fmt(r.sampleTokens)}</td>
+      <td class="num">${fmt(t.trainTokens)}</td>
+      <td class="num">${fmt(t.trainForwardTokens)}</td>
+      <td class="num">${fmt(u.totals.computedTokens)}</td>
+    </tr>`;
+  });
+  $("#usage tbody").innerHTML = rows.join("") || `<tr><td colspan="9" class="empty">no usage recorded yet</td></tr>`;
+}
+
+function renderModels(listing) {
+  const rows = (listing.models || []).map((m) => {
+    const name = m.name.split("/").pop();
+    const ckpts = (m.checkpoints || []).map((c) => c.checkpointId).join(", ") || "–";
+    return `<tr>
+      <td>${name}</td><td>${badge(m.state)}</td><td>${m.servable ? "yes" : "no"}</td>
+      <td>${m.loraRank ?? "–"}</td><td>${ckpts}</td>
+      <td><button onclick="downloadModel('${name}')">paths</button></td>
+    </tr>`;
+  });
+  $("#models tbody").innerHTML = rows.join("") || `<tr><td colspan="6" class="empty">no models</td></tr>`;
+}
+
+function renderResources(datasets, evaluators) {
+  // populate the job form's dataset/evaluator dropdowns
+  const dsSel = $("#f-job select[name=dataset]"), evSel = $("#f-job select[name=evaluator]");
+  const dsPrev = dsSel.value, evPrev = evSel.value;
+  // keep the seeded gsm8k/math defaults until the server lists arrive
+  // (auto-provision creates them moments after a fresh launch)
+  if ((datasets.datasets || []).length) {
+    dsSel.innerHTML = datasets.datasets.map((d) => `<option>${d.name}</option>`).join("");
+    if ([...dsSel.options].some((o) => o.value === dsPrev)) dsSel.value = dsPrev;
+  }
+  if ((evaluators.evaluators || []).length) {
+    evSel.innerHTML = `<option value="">(cluster default)</option>` +
+      evaluators.evaluators.map((e) => `<option>${e.name}</option>`).join("");
+    if (evPrev && [...evSel.options].some((o) => o.value === evPrev)) evSel.value = evPrev;
+    else if ([...evSel.options].some((o) => o.value === "evaluators/math")) evSel.value = "evaluators/math";
+  }
+}
+
+function nextJobId(jobs) {
+  const taken = new Set((jobs.postTrainingJobs || []).map((j) => j.name.split("/").pop()));
+  for (let n = 1; ; n++) if (!taken.has(`lora-${n}`)) return `lora-${n}`;
+}
+
+// One-time auto-provision: an empty fresh server gets the gsm8k dataset and
+// the math evaluator created automatically, so the create-job form is ready
+// with zero setup clicks.
+let autoProvisioned = false;
+async function autoProvision(datasets, evaluators) {
+  if (MOCK || autoProvisioned) return false;
+  if ((datasets.datasets || []).length || (evaluators.evaluators || []).length) return false;
+  autoProvisioned = true;
+  try {
+    await api("POST", "/v1/datasets", {
+      datasetId: "gsm8k",
+      source: { clusterPath: "/root/datasets/gsm8k/train.parquet" },
+      schema: { inputKey: "messages", labelKey: "label" },
+    });
+    await api("POST", "/v1/evaluators", { evaluatorId: "math", kind: "BUILTIN", builtin: { rmType: "math" } });
+    toast("auto-created dataset gsm8k + evaluator math — just press create job", true);
+    return true;
+  } catch (e) { toast(`auto-setup: ${e.message}`); return false; }
+}
+
+async function refresh() {
+  await pollServer();
+  if (!serverUp) {
+    $("#conn").textContent = "server down — launch it above";
+    $("#conn").className = "err";
+    return;
+  }
+  try {
+    let [info, jobs, usage, models, datasets, evaluators] = await Promise.all([
+      api("GET", "/v1/info"), api("GET", "/v1/postTrainingJobs"), api("GET", "/v1/usage"),
+      api("GET", "/v1/models"), api("GET", "/v1/datasets"), api("GET", "/v1/evaluators"),
+    ]);
+    if (await autoProvision(datasets, evaluators)) {
+      [datasets, evaluators] = await Promise.all([api("GET", "/v1/datasets"), api("GET", "/v1/evaluators")]);
+    }
+    renderInfo(info); renderJobs(jobs); renderUsage(usage); renderModels(models);
+    renderResources(datasets, evaluators);
+    // keep jobId pointing at the next free lora-N until the user edits it
+    if (!jobIdDirty) $("#f-job input[name=jobId]").value = nextJobId(jobs);
+    $("#conn").textContent = MOCK ? "preview (mock data)" : `live · ${new Date().toLocaleTimeString()}`;
+    $("#conn").className = "";
+  } catch (e) {
+    $("#conn").textContent = `connection error: ${e.message}`;
+    $("#conn").className = "err";
+  }
+}
+
+window.cancelJob = async (name) => {
+  if (!confirm(`Cancel job '${name}'? Its slot is retired and the meter freezes.`)) return;
+  try { await api("POST", `/v1/postTrainingJobs/${name}:cancel`); toast(`cancelling ${name}…`, true); refresh(); }
+  catch (e) { toast(e.message); }
+};
+window.deleteJob = async (name) => {
+  if (!confirm(`Delete terminal job '${name}'? (usage ledger is kept)`)) return;
+  try { await api("DELETE", `/v1/postTrainingJobs/${name}`); toast(`deleted ${name}`, true); refresh(); }
+  catch (e) { toast(e.message); }
+};
+window.downloadModel = async (name) => {
+  try {
+    const r = await api("GET", `/v1/models/${name}:download`);
+    alert(`${name} @ ${r.checkpointId}\n\n` +
+      Object.entries(r.files).map(([f, v]) => `${f}\n  ${v.clusterPath}`).join("\n"));
+  } catch (e) { toast(e.message); }
+};
+
+// User edits to jobId stick; otherwise refresh keeps it at the next free lora-N.
+let jobIdDirty = false;
+$("#f-job input[name=jobId]").addEventListener("input", () => { jobIdDirty = true; });
+
+$("#f-job").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const num = (k) => Number(f.get(k));
+  try {
+    await api("POST", "/v1/postTrainingJobs", {
+      jobId: f.get("jobId"),
+      dataset: f.get("dataset"),
+      ...(f.get("evaluator") ? { evaluator: f.get("evaluator") } : {}),
+      trainingConfig: {
+        loraRank: num("loraRank"), loraAlpha: num("loraAlpha"),
+        batchSizePrompts: num("batchSizePrompts"), rolloutsPerPrompt: num("rolloutsPerPrompt"),
+        maxSteps: num("maxSteps"),
+      },
+    });
+    toast(`job ${f.get("jobId")} created — training starts on the next weight push`, true);
+    ev.target.reset();
+    jobIdDirty = false; // let refresh fill in the next lora-N
+    refresh();
+  } catch (e) { toast(e.message); }
+});
+
+refresh();
+setInterval(refresh, 4000);
+</script>

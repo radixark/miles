@@ -37,6 +37,11 @@ class MultiLoRAHTTPServer:
         self.api_port = api_port
         self.api_server: uvicorn.Server | None = None
         self.api_task: asyncio.Task | None = None
+        # Public /v1 resource surface (declarative job/dataset/model API); the legacy
+        # /adapter_runs routes below stay as the internal ops plane.
+        from miles.ray.multi_lora.gateway import V1Gateway
+
+        self.gateway = V1Gateway(backend)
 
     @property
     def actual_api_port(self) -> int:
@@ -63,8 +68,11 @@ class MultiLoRAHTTPServer:
         app.get("/adapter_runs")(self.list_adapters)
         app.get("/adapter_runs/state")(self.adapter_states)  # before /adapter_runs/{name}
         app.get("/adapter_runs/{name}")(self.get_adapter)
+        app.get("/adapter_runs/{name}/usage")(self.get_adapter_usage)
+        app.get("/usage")(self.list_usage)
         app.post("/adapter_runs")(self.register_adapter)
         app.delete("/adapter_runs/{name}")(self.deregister_adapter)
+        self.gateway.add_routes(app)
 
     async def start(self) -> None:
         app = self.create_app()
@@ -112,6 +120,19 @@ class MultiLoRAHTTPServer:
                 return status
         raise HTTPException(status_code=404, detail=f"Adapter '{name}' not registered")
 
+    async def get_adapter_usage(self, name: str) -> dict:
+        record = self.backend.registry.records.get(name)
+        if record is None:
+            raise HTTPException(status_code=404, detail=f"Adapter '{name}' not registered")
+        return {
+            "name": name,
+            "registration_id": record.registration_id,
+            "usage": self.backend.registry.usage_dict(record.registration_id),
+        }
+
+    async def list_usage(self) -> dict:
+        return {"usage": self.backend.registry.usage_entries()}
+
     async def register_adapter(self, request: RegisterAdapterRequest) -> dict:
         if (request.config is None) == (request.yaml_path is None):
             raise HTTPException(status_code=400, detail="Exactly one of 'config' or 'yaml_path' must be set")
@@ -125,5 +146,9 @@ class MultiLoRAHTTPServer:
         state = self.backend.registry.adapter_state(name)
         if state is None:
             raise HTTPException(status_code=404, detail=f"Adapter '{name}' not registered")
+        # The ops plane is cancelling it, not the /v1 client: record the cause
+        # (before deregister flips the state) so the job surface renders
+        # CANCELLED with stopReason OPS_CANCELLED.
+        self.gateway.note_ops_delete(name)
         await self.backend.deregister(name)
         return {"status": "ok", "name": name}

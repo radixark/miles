@@ -3,7 +3,9 @@ controller Ray actor and the HTTP server. Subclass via
 ``--multi-lora-backend-path``."""
 
 import asyncio
+import json
 import logging
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,54 @@ from miles.utils.multi_lora import RID_SEPARATOR, min_groups_per_dp_split
 logger = logging.getLogger(__name__)
 
 
+class UsageJournal:
+    """Append-only JSONL token-usage ledger under ``{--save}/multi_lora_controller/``.
+
+    The registry's in-memory meters are volatile (a controller restart loses
+    them, and a same-name re-registration evicts the COMPLETED record); the
+    journal is the authoritative record an external billing backend can
+    consume. Events are timestamped at append time; replay on startup
+    restores terminal-registration usage."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open(self.path, "a", encoding="utf-8")
+
+    def append(self, event: dict) -> None:
+        record = {"ts": time.time(), **event}
+        self._file.write(json.dumps(record, default=str) + "\n")
+        self._file.flush()
+
+    def read_events(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+        events = []
+        with open(self.path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    logger.warning(f"Skipping corrupt usage journal line in {self.path}")
+        return events
+
+    def final_usage(self, registration_id: str) -> dict | None:
+        """The frozen counters of a finalized registration whose in-memory
+        meter was evicted. Rare read path (only past MAX_USAGE_RECORDS), so a
+        full journal scan is acceptable; the newest 'final' event wins."""
+        result = None
+        for event in self.read_events():
+            if event.get("kind") == "final" and event.get("registration_id") == registration_id:
+                result = event.get("usage")
+        return result
+
+    def close(self) -> None:
+        self._file.close()
+
+
 class MultiLoRABackend:
     """Registry + engine-facing aborts, shared by the Ray actor and HTTP server.
     Subclass via --multi-lora-backend-path."""
@@ -27,14 +77,25 @@ class MultiLoRABackend:
         self.registry = AdapterRegistry(args.multi_lora_n_adapters)
         self.router_url = router_url.rstrip("/")
         self.client: httpx.AsyncClient | None = None
+        self.usage_journal: UsageJournal | None = None
 
     async def init(self) -> None:
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+        if getattr(self.args, "save", None):
+            self.usage_journal = UsageJournal(Path(self.args.save) / "multi_lora_controller" / "usage.jsonl")
+            self.registry.replay_usage_journal(self.usage_journal.read_events())
+            self.registry.usage_journal = self.usage_journal.append
+            self.registry.usage_fallback = self.usage_journal.final_usage
+        else:
+            logger.warning("No --save dir: token-usage journal disabled; usage counters are in-memory only")
 
     async def close(self) -> None:
         if self.client is not None:
             await self.client.aclose()
             self.client = None
+        if self.usage_journal is not None:
+            self.usage_journal.close()
+            self.usage_journal = None
 
     async def validate_adapter(self, name: str, config: Any) -> None:
         """Override to reject adapter registrations (raise ValueError)."""

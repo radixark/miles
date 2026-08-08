@@ -20,6 +20,7 @@ from miles.utils.async_utils import run
 from miles.utils.metric_utils import compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
 from miles.utils.multi_lora import EmptyBatchTimeoutError, min_groups_per_dp_split
+from miles.utils.token_usage import RolloutTokenMeter, train_forward_pass_count
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
 
@@ -52,6 +53,14 @@ def group_sample_count(group: Group) -> int:
 # never hit in practice, just bounds memory if training stalls entirely.
 MAX_BUFFERED_GROUPS = 1000
 EMPTY_BATCH_TIMEOUT_S = 30.0
+# Cadence of cumulative token-usage snapshots to the controller; each collected
+# batch also flushes, so this only bounds staleness between batches.
+USAGE_FLUSH_INTERVAL_S = 5.0
+
+
+def group_completion_tokens(group: Group) -> int:
+    """Engine-reported decode tokens accumulated on a group's samples."""
+    return sum(s.engine_completion_tokens for s in iter_group_samples(group))
 
 
 class GroupBuffer:
@@ -63,6 +72,9 @@ class GroupBuffer:
     def __len__(self) -> int:
         return len(self._groups)
 
+    def __iter__(self):
+        return iter(self._groups)
+
     def put(self, group: Group) -> None:
         self._groups.append(group)
 
@@ -70,38 +82,48 @@ class GroupBuffer:
         """Remove and return the n oldest groups (queue.Queue-style API)."""
         return [self._groups.popleft() for _ in range(n_groups)]
 
-    def drop_foreign(self, registration_id: str) -> int:
+    def drop_foreign(self, registration_id: str) -> list[dict]:
         """Drop groups stamped by a different registration of this adapter
         name: an in-flight generation of a retired tenant can land after the
         buffer was reset for a same-name re-registration. Unstamped groups
-        (no adapter view at submission time) are kept. Returns the drop count."""
+        (no adapter view at submission time) are kept. Returns one
+        ``{completion_tokens, registration_id}`` entry per dropped group for
+        token-usage detail attribution."""
         if not self._groups:
-            return 0
+            return []
         kept: deque[Group] = deque(maxlen=MAX_BUFFERED_GROUPS)
-        dropped = 0
+        dropped: list[dict] = []
         for group in self._groups:
             stamped = first_sample(group).metadata.get("registration_id")
             if stamped is not None and stamped != registration_id:
-                dropped += 1
+                dropped.append({"completion_tokens": group_completion_tokens(group), "registration_id": stamped})
             else:
                 kept.append(group)
         self._groups = kept
         return dropped
 
-    def drop_stale(self, current_version: int, max_staleness: int | None) -> list[int]:
-        """Drop groups generated too many weight versions ago; returns the
-        staleness of each dropped group (for metrics)."""
+    def drop_stale(self, current_version: int, max_staleness: int | None) -> list[dict]:
+        """Drop groups generated too many weight versions ago; returns one
+        ``{staleness, completion_tokens, registration_id}`` entry per dropped
+        group (for metrics and token-usage detail attribution — the token
+        counts must be read here, before ``reset_for_retry`` zeroes them)."""
         if max_staleness is None or not self._groups:
             return []
         kept: deque[Group] = deque(maxlen=MAX_BUFFERED_GROUPS)
-        dropped: list[int] = []
+        dropped: list[dict] = []
         for group in self._groups:
             stamped = first_sample(group).metadata.get("slot_version")
             staleness = current_version - stamped if stamped is not None else 0
             if stamped is not None and staleness > max_staleness:
+                dropped.append(
+                    {
+                        "staleness": staleness,
+                        "completion_tokens": group_completion_tokens(group),
+                        "registration_id": first_sample(group).metadata.get("registration_id"),
+                    }
+                )
                 for sample in iter_group_samples(group):
                     sample.reset_for_retry()
-                dropped.append(staleness)
             else:
                 kept.append(group)
         self._groups = kept
@@ -129,7 +151,12 @@ def remaining_groups(adapter) -> int:
 
 
 async def process_group(
-    args, group: list[Sample], sampling_params: dict, generate_fn: GenerateFn, data_source
+    args,
+    group: list[Sample],
+    sampling_params: dict,
+    generate_fn: GenerateFn,
+    data_source,
+    usage_meter: RolloutTokenMeter | None = None,
 ) -> Group | None:
     """Generate a group; returns None for aborted groups. The slot version is
     stamped at submission time (what the staleness filter compares against)."""
@@ -153,7 +180,17 @@ async def process_group(
             s.metadata["slot_version"] = submission_version
             s.metadata["registration_id"] = submission_registration
 
+    # Token metering happens at engine-consumption time, so aborted partials
+    # and later-dropped groups are all counted; must precede reset_for_retry,
+    # which zeroes the per-sample counters.
+    if usage_meter is not None and adapter_name is not None:
+        usage_meter.record_generation(adapter_name, submission_registration, iter_group_samples(result))
+
     if any(s.status == Sample.Status.ABORTED for s in iter_group_samples(result)):
+        if usage_meter is not None and adapter_name is not None:
+            usage_meter.record_detail(
+                adapter_name, submission_registration, "sample_tokens_aborted", group_completion_tokens(result)
+            )
         for s in iter_group_samples(result):
             s.reset_for_retry()
         # Re-queuing is not wired up (the per-adapter source is read-only).
@@ -166,6 +203,10 @@ class MultiLoRAWorkerMetrics:
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        # Token-usage meter; its incarnation is minted here, per worker
+        # instance, so a re-created worker never regresses the cumulative
+        # snapshots an earlier incarnation already shipped. Internally locked.
+        self.usage = RolloutTokenMeter()
         self.dynamic_filter_drop_counts: dict[str, int] = defaultdict(int)
         # Staleness of dropped groups per adapter, drained every batch.
         self.staleness_values: dict[str, list[int]] = defaultdict(list)
@@ -323,9 +364,26 @@ class AsyncMultiLoRAWorker:
     def thread_main(self) -> None:
         asyncio.run(self.run_loop())
 
+    async def flush_usage(self) -> None:
+        """Ship the cumulative token-usage snapshot to the controller.
+        At-least-once safe (the controller max-merges per incarnation); a
+        failed flush is repaired by the next one. Meters the controller
+        reports as finalized are pruned so they stop being re-shipped."""
+        entries = self.metrics.usage.snapshot_entries()
+        if not entries:
+            return
+        try:
+            finalized = await get_multi_lora_controller().credit_rollout_usage.remote(
+                self.metrics.usage.incarnation, entries
+            )
+            self.metrics.usage.prune(finalized or [])
+        except Exception as e:
+            logger.warning(f"token-usage flush failed (repaired by the next flush): {e}")
+
     async def run_loop(self) -> None:
         active: set[asyncio.Task] = set()
         max_concurrent = self.concurrency
+        last_usage_flush = time.time()
         try:
             while self.running:
                 done = {t for t in active if t.done()}
@@ -342,6 +400,10 @@ class AsyncMultiLoRAWorker:
                         break
                     active.add(asyncio.create_task(self.process_and_enqueue(samples[0])))
 
+                if time.time() - last_usage_flush >= USAGE_FLUSH_INTERVAL_S:
+                    last_usage_flush = time.time()
+                    await self.flush_usage()
+
                 await asyncio.sleep(0.01)
         except Exception as e:
             # Typically the data source: this stops production for EVERY
@@ -353,9 +415,22 @@ class AsyncMultiLoRAWorker:
                 task.cancel()
             if active:
                 await asyncio.gather(*active, return_exceptions=True)
+            # Best-effort final flush: a dead incarnation has no next flush,
+            # so unshipped counters would otherwise be lost for good.
+            try:
+                await self.flush_usage()
+            except Exception:
+                logger.warning("final token-usage flush failed; up to one flush interval of usage is lost")
 
     async def process_and_enqueue(self, group: list[Sample]) -> None:
-        result = await process_group(self.args, group, self.state.sampling_params, self.generate_fn, self.data_source)
+        result = await process_group(
+            self.args,
+            group,
+            self.state.sampling_params,
+            self.generate_fn,
+            self.data_source,
+            usage_meter=self.metrics.usage,
+        )
         if result is None:
             return
 
@@ -363,6 +438,12 @@ class AsyncMultiLoRAWorker:
         if not filter_result.keep:
             if filter_result.reason:
                 self.metrics.record_dynamic_filter_drop(filter_result.reason)
+            self.metrics.usage.record_detail(
+                group_adapter_name(result),
+                first_sample(result).metadata.get("registration_id"),
+                "sample_tokens_dropped_filter",
+                group_completion_tokens(result),
+            )
             return
 
         adapter_name = group_adapter_name(result)
@@ -370,6 +451,17 @@ class AsyncMultiLoRAWorker:
             return
         with self.buffer_lock:
             self.buffers[adapter_name].put(result)
+
+    def _record_retired_buffer(self, name: str, buffer: GroupBuffer) -> None:
+        """Detail attribution for buffered-but-untrained groups discarded at
+        retire/re-registration (already counted at generation time)."""
+        for group in buffer:
+            self.metrics.usage.record_detail(
+                name,
+                first_sample(group).metadata.get("registration_id"),
+                "sample_tokens_dropped_retired",
+                group_completion_tokens(group),
+            )
 
     def queue_size(self) -> int:
         with self.buffer_lock:
@@ -396,7 +488,7 @@ class AsyncMultiLoRAWorker:
             # Retired adapters: discard their buffered tail and partial reward stats.
             for name in list(self.buffers):
                 if name not in adapters:
-                    self.buffers.pop(name)
+                    self._record_retired_buffer(name, self.buffers.pop(name))
                     self.metrics.discard_adapter(name)
                     self.registrations.pop(name, None)
 
@@ -405,7 +497,8 @@ class AsyncMultiLoRAWorker:
             for name, adapter in adapters.items():
                 previous = self.registrations.get(name)
                 if previous is not None and previous != adapter.registration_id:
-                    self.buffers.pop(name, None)
+                    if (buffer := self.buffers.pop(name, None)) is not None:
+                        self._record_retired_buffer(name, buffer)
                     self.metrics.discard_adapter(name)
                     logger.warning(f"Adapter '{name}' was re-registered; dropped the previous tenant's buffered state")
                 self.registrations[name] = adapter.registration_id
@@ -423,11 +516,21 @@ class AsyncMultiLoRAWorker:
                     adapter = adapters[name]
                     buffer = self.buffers[name]
                     if dropped := buffer.drop_stale(adapter.version, max_staleness):
-                        self.metrics.record_stale_drops(name, dropped)
+                        self.metrics.record_stale_drops(name, [d["staleness"] for d in dropped])
+                        for d in dropped:
+                            self.metrics.usage.record_detail(
+                                name, d["registration_id"], "sample_tokens_dropped_stale", d["completion_tokens"]
+                            )
                     # In-flight stragglers of a retired same-name tenant that
                     # landed after the re-registration sweep reset the buffer.
                     if foreign := buffer.drop_foreign(adapter.registration_id):
-                        logger.warning(f"Dropped {foreign} buffered groups from a previous registration of '{name}'")
+                        for d in foreign:
+                            self.metrics.usage.record_detail(
+                                name, d["registration_id"], "sample_tokens_dropped_retired", d["completion_tokens"]
+                            )
+                        logger.warning(
+                            f"Dropped {len(foreign)} buffered groups from a previous registration of '{name}'"
+                        )
                     min_groups_per_pop = min_groups_per_dp_split(adapter.config.n_samples_per_prompt, dp_size)
                     trainable_groups = len(buffer) // min_groups_per_pop * min_groups_per_pop
                     remaining_allowed_groups = max(0, remaining_groups(adapter) - group_counts.get(name, 0))
@@ -533,7 +636,31 @@ async def generate_rollout_multi_lora_async(
         head.metadata["step_slots"] = list(batch.step_slots)
         head.metadata["step_adapter_names"] = list(batch.step_names)
 
-    await get_multi_lora_controller().record_batch_adapters.remote(rollout_id, batch.group_counts, batch.step_names)
+    # Per-adapter train-token sums for this batch: full-sequence tokens per
+    # forward+backward, banked into the usage meter only when the train call
+    # commits (mark_batch_trained), so failed/retried trains never count.
+    # The shipped groups' decode tokens also fill the informational
+    # sample_tokens_trained detail bucket here, at ship time.
+    forward_passes = train_forward_pass_count(args)
+    token_sums: dict[str, dict[str, int]] = {}
+    for group in data:
+        name = group_adapter_name(group)
+        if name is None:
+            continue
+        sums = token_sums.setdefault(name, {"train_tokens": 0, "train_forward_tokens": 0})
+        group_train_tokens = sum(len(s.tokens) for s in iter_group_samples(group))
+        sums["train_tokens"] += group_train_tokens
+        sums["train_forward_tokens"] += group_train_tokens * forward_passes
+        worker.metrics.usage.record_detail(
+            name,
+            first_sample(group).metadata.get("registration_id"),
+            "sample_tokens_trained",
+            group_completion_tokens(group),
+        )
+
+    await get_multi_lora_controller().record_batch_adapters.remote(
+        rollout_id, batch.group_counts, batch.step_names, token_sums
+    )
 
     if (x := args.rollout_sample_filter_path) is not None:
         load_function(x)(args, data)
@@ -544,6 +671,16 @@ async def generate_rollout_multi_lora_async(
         url=get_model_url(args, "default"),
         sampling_params=state.sampling_params,
     )
+
+    # Scoring passes are real engine prefill compute: count them per adapter
+    # (mirrors the sample filter inside recompute_*_via_prefill).
+    if getattr(args, "recompute_logprobs_via_prefill", False):
+        for group in data:
+            for s in iter_group_samples(group):
+                if s.response_length != 0 and s.status != Sample.Status.ABORTED and s.adapter is not None:
+                    worker.metrics.usage.record_scoring(
+                        s.adapter.name, s.metadata.get("registration_id"), len(s.tokens)
+                    )
 
     # Adapter metrics ride the adapter's own optimizer-step axis ({name}/step); this batch completes step + 1.
     for name, step_metrics in worker.metrics.record_shipped_samples(args, data, batch.step_names, adapters).items():
@@ -574,6 +711,10 @@ async def generate_rollout_multi_lora_async(
         if values:
             metrics[f"{name}/perf/stale_dropped_avg_staleness"] = sum(values) / len(values)
             metrics[f"{name}/perf/stale_dropped_max_staleness"] = max(values)
+
+    # Per-batch usage flush (in addition to the producer's timer) so the
+    # controller's meters are at most one batch behind before a train commit.
+    await worker.flush_usage()
 
     return RolloutFnTrainOutput(samples=data, metrics=metrics)
 
