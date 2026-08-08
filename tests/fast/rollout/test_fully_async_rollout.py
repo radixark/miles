@@ -3,15 +3,31 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 import asyncio
+import logging
 from argparse import Namespace
 from collections import deque
+from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import replace
 
 import pytest
 
 import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
-from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
+import miles.rollout.inference_rollout.fully_async as inference_fully_async
+from miles.rollout.base_types import (
+    LeasedRolloutFnTrainOutput,
+    RolloutFnConstructorInput,
+    RolloutFnEvalInput,
+    RolloutFnTrainInput,
+    TrainBatchRollbackReason,
+)
+from miles.rollout.data_source import (
+    RolloutDataSource,
+    RolloutDataSourceWithBuffer,
+    SourceReservation,
+    SourceReservationId,
+)
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.rollout.fully_async.ownership import ReservationTerminalReceipt
 from miles.utils.types import Sample
@@ -47,6 +63,50 @@ class FakeDataSource:
         self.recycled.extend(groups)
 
 
+class FakeReservationDataSource:
+    supports_source_reservations = True
+
+    def __init__(self, reservations: list[SourceReservation]) -> None:
+        self.reservations = deque(reservations)
+        self.reserved: list[SourceReservation] = []
+        self.acknowledged: list[tuple[list[SourceReservation], int]] = []
+        self.requeued: list[list[SourceReservation]] = []
+        self.next_group_index = 1000
+
+    def get_samples(self, num_samples: int) -> list[list[Sample]]:
+        raise AssertionError("owned fully async rollout must reserve source groups")
+
+    def add_samples(self, groups: list[list[Sample]]) -> None:
+        raise AssertionError("owned fully async rollout must settle source reservations")
+
+    def reserve_samples(self, num_groups: int) -> list[SourceReservation]:
+        assert num_groups == 1
+        if self.reservations:
+            reservation = self.reservations.popleft()
+        else:
+            self.next_group_index += 1
+            reservation = make_reservation(self.next_group_index)
+        self.reserved.append(reservation)
+        return [reservation]
+
+    def acknowledge_reservations(
+        self,
+        reservations: Sequence[SourceReservation],
+        *,
+        rollout_id: int,
+    ) -> None:
+        self.acknowledged.append((list(reservations), rollout_id))
+
+    def requeue_reservations(self, reservations: Sequence[SourceReservation]) -> None:
+        self.requeued.append(list(reservations))
+
+    def save(self, rollout_id: int) -> None:
+        pass
+
+    def load(self, rollout_id: int | None = None) -> None:
+        pass
+
+
 def make_group(
     group_index: int,
     status: Sample.Status = Sample.Status.COMPLETED,
@@ -66,6 +126,21 @@ def make_group(
         )
         for i in range(N_SAMPLES_PER_PROMPT)
     ]
+
+
+def make_reservation(group_index: int) -> SourceReservation:
+    return SourceReservation(
+        reservation_id=SourceReservationId(f"source-{group_index}"),
+        samples=tuple(make_group(group_index)),
+    )
+
+
+async def wait_until(predicate) -> None:
+    async def wait() -> None:
+        while not predicate():
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait(), timeout=1)
 
 
 def make_args(**overrides) -> Namespace:
@@ -96,7 +171,119 @@ def make_fn(monkeypatch, args, data_source, generate=None):
 
     monkeypatch.setattr(fully_async, "GenerateState", FakeGenerateState)
     monkeypatch.setattr(fully_async, "generate_and_rm_group", generate or default_generate)
+    monkeypatch.setattr(inference_fully_async, "generate_and_rm_group", generate or default_generate)
     return fully_async.FullyAsyncRolloutFn(RolloutFnConstructorInput(args=args, data_source=data_source))
+
+
+def make_owned_fn(monkeypatch, data_source, generate=None, *, batch_size=1, execution_samples=2):
+    return make_fn(
+        monkeypatch,
+        make_args(
+            rollout_batch_size=batch_size,
+            async_max_concurrent_samples=execution_samples,
+            async_data_buffer_capacity_factor=1.0,
+            rollout_submission_granularity="group",
+        ),
+        data_source,
+        generate=generate,
+    )
+
+
+def test_owned_scheduling_requires_declared_source_reservation_support(monkeypatch, caplog):
+    class RejectingDataSource:
+        """Overrides ``reserve_samples`` only to reject it, like the buffered source."""
+
+        def get_samples(self, num_samples: int) -> list[list[Sample]]:
+            raise AssertionError("unused")
+
+        def add_samples(self, groups: list[list[Sample]]) -> None:
+            raise AssertionError("unused")
+
+        def reserve_samples(self, num_groups: int) -> list[SourceReservation]:
+            raise RuntimeError("scripted: durable source reservations are not supported")
+
+    assert fully_async._supports_source_reservations(FakeReservationDataSource([])) is True
+    assert fully_async._supports_source_reservations(RejectingDataSource()) is False
+    assert RolloutDataSource.supports_source_reservations is True
+    assert RolloutDataSourceWithBuffer.supports_source_reservations is False
+
+    with caplog.at_level(logging.WARNING, logger="miles.rollout.fully_async_rollout"):
+        fn = make_fn(monkeypatch, make_args(), RejectingDataSource())
+    assert fn._uses_owned_scheduling is False
+    assert "does not support source reservations" in caplog.text
+
+
+def test_owned_scheduling_follows_the_configured_source_capability(monkeypatch):
+    """A source class may declare support that its own configuration rules out."""
+    args = make_args(rollout_global_dataset=False, save_interval=1, save_trigger_sentinel=None)
+    data_source = RolloutDataSource(args)
+    assert data_source.supports_source_reservations is False
+
+    fn = make_fn(monkeypatch, args, data_source)
+
+    assert fn._uses_owned_scheduling is False
+
+
+async def test_train_call_leases_owned_output_until_settlement(monkeypatch):
+    reservation = make_reservation(1)
+    first_parent, second_parent = reservation.samples
+    first_child = deepcopy(first_parent)
+    second_child = deepcopy(first_parent)
+    generated_group = [[first_child, second_child], deepcopy(second_parent)]
+    data_source = FakeReservationDataSource([reservation])
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        return generated_group
+
+    fn = make_owned_fn(monkeypatch, data_source, generate)
+    output = await fn(RolloutFnTrainInput(rollout_id=17, weight_version="17"))
+
+    assert isinstance(output, LeasedRolloutFnTrainOutput)
+    assert output.samples == [generated_group]
+    assert data_source.acknowledged == []
+    output.lease.commit()
+    assert data_source.acknowledged == [([reservation], 17)]
+    assert data_source.requeued == []
+
+
+async def test_owned_execution_capacity_bounds_source_reservations(monkeypatch):
+    release = asyncio.Event()
+    started: list[int] = []
+    data_source = FakeReservationDataSource([make_reservation(index) for index in range(6, 10)])
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        started.append(group[0].group_index)
+        await release.wait()
+        return group
+
+    fn = make_owned_fn(monkeypatch, data_source, generate, execution_samples=4)
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=21, weight_version="21")))
+    await wait_until(lambda: len(started) == 2)
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert started == [6, 7]
+    assert data_source.reserved == [make_reservation(6), make_reservation(7)]
+
+    release.set()
+    output = await drain
+    output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+
+
+async def test_owned_capacity_reopens_after_lease_settlement(monkeypatch):
+    first = make_reservation(10)
+    second = make_reservation(11)
+    data_source = FakeReservationDataSource([first, second])
+    fn = make_owned_fn(monkeypatch, data_source)
+
+    output = await fn(RolloutFnTrainInput(rollout_id=22, weight_version="22"))
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert data_source.reserved == [first]
+
+    output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+    await wait_until(lambda: len(data_source.reserved) == 2)
+    assert data_source.requeued == [[first]]
+    assert data_source.reserved == [first, second]
 
 
 async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
@@ -126,9 +313,7 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
         return group
 
     data_source = FakeDataSource()
-    fn = make_fn(
-        monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate
-    )
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate)
 
     eval_started = asyncio.Event()
     eval_release = asyncio.Event()
