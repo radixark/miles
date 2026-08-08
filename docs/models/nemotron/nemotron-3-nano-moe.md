@@ -125,7 +125,7 @@ memory pressure rises.
 
 ### 5.5 Notable quirks
 
-From `scripts/models/nemotron-3-nano-30b-a3b.sh` and `scripts/run-nemotron-3-nano-30b-a3b.sh`:
+From `scripts/models/nemotron-3-nano-30b-a3b.py` and `scripts/run-nemotron-3-nano-30b-a3b.sh`:
 
 - **No `--spec`**: AutoBridge + the NemotronH shim synthesize the Megatron MoE spec from HF config.
 - 128 experts, `--moe-router-topk 6`, shared expert (3712-dim).

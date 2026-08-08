@@ -1,10 +1,8 @@
 import ast
-import importlib.util
 import inspect
 import os
 import re
 import subprocess
-import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -16,6 +14,7 @@ from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 from tests.fast.utils.command_recorder import record_commands
 
 import miles.utils.external_utils.command_utils as command_utils
+from miles.utils.external_utils.model_args_utils import import_module_from_path
 
 FROZEN_RUN_ID = "260101-000000-000"
 
@@ -126,15 +125,7 @@ def install_command_recorder(monkeypatch) -> Recording:
 
 def import_launch_script(path: Path) -> ModuleType:
     name = "miles_launch_script_" + path.relative_to(REPO_ROOT).with_suffix("").as_posix().replace("/", "_")
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        del sys.modules[name]
-    return module
+    return import_module_from_path(path, name)
 
 
 @contextmanager

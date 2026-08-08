@@ -44,6 +44,11 @@
 "-m"
 
 ### 9
+"python3"
+"<REPO_ROOT>/scripts/../miles/utils/external_utils/model_args_utils.py"
+"glm4.5-355B-A32B"
+
+### 10
 "ray"
 "start"
 "--head"
@@ -54,12 +59,12 @@
 "--dashboard-host=0.0.0.0"
 "--dashboard-port=8265"
 
-### 10
+### 11
 "awk"
 "{print $1}"
 "/root/mpi_rack_hostfile"
 
-### 11
+### 12
 "ray"
 "job"
 "submit"

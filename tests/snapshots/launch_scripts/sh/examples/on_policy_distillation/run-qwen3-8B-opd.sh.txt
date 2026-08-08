@@ -36,6 +36,11 @@
 "-m"
 
 ### 5
+"python3"
+"<REPO_ROOT>/examples/on_policy_distillation/../../miles/utils/external_utils/model_args_utils.py"
+"qwen3-8B"
+
+### 6
 "ray"
 "start"
 "--head"
@@ -47,7 +52,7 @@
 "--dashboard-host=0.0.0.0"
 "--dashboard-port=8265"
 
-### 6
+### 7
 "ray"
 "job"
 "submit"
@@ -188,40 +193,40 @@
 "--rm-url"
 "http://127.0.0.1:13141/generate"
 
-### 7
+### 8
 "pkill"
 "-9"
 "sglang"
 
-### 8
+### 9
 "sleep"
 "3"
 
-### 9
+### 10
 "ray"
 "stop"
 "--force"
 
-### 10
+### 11
 "pkill"
 "-9"
 "ray"
 
-### 11
+### 12
 "pkill"
 "-9"
 "python"
 
-### 12
+### 13
 "sleep"
 "3"
 
-### 13
+### 14
 "pkill"
 "-9"
 "ray"
 
-### 14
+### 15
 "pkill"
 "-9"
 "python"

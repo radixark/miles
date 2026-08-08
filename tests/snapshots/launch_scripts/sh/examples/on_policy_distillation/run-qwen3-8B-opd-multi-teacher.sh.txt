@@ -71,6 +71,11 @@
 "-m"
 
 ### 10
+"python3"
+"<REPO_ROOT>/examples/on_policy_distillation/../../miles/utils/external_utils/model_args_utils.py"
+"qwen3-8B"
+
+### 11
 "ray"
 "start"
 "--head"
@@ -82,7 +87,7 @@
 "--dashboard-host=0.0.0.0"
 "--dashboard-port=8265"
 
-### 11
+### 12
 "ray"
 "job"
 "submit"
@@ -227,40 +232,40 @@
 "--opd-teacher-key"
 "opd_teacher"
 
-### 12
+### 13
 "pkill"
 "-9"
 "sglang"
 
-### 13
+### 14
 "sleep"
 "3"
 
-### 14
+### 15
 "ray"
 "stop"
 "--force"
 
-### 15
+### 16
 "pkill"
 "-9"
 "ray"
 
-### 16
+### 17
 "pkill"
 "-9"
 "python"
 
-### 17
+### 18
 "sleep"
 "3"
 
-### 18
+### 19
 "pkill"
 "-9"
 "ray"
 
-### 19
+### 20
 "pkill"
 "-9"
 "python"

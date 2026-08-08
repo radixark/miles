@@ -21,8 +21,8 @@ if [ "$NVLINK_COUNT" -gt 0 ]; then HAS_NVLINK=1; else HAS_NVLINK=0; fi
 echo "HAS_NVLINK: $HAS_NVLINK"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/nemotron-3-nano-30b-a3b.sh"
-
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" "nemotron-3-nano-30b-a3b")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CKPT_ARGS=(
    --hf-checkpoint $BASE_DIR/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
    --ref-load $BASE_DIR/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16

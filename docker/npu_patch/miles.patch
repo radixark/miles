@@ -340,7 +340,7 @@ diff --git a/miles/utils/external_utils/command_utils.py b/miles/utils/external_
 index d016e01ac..08b4d6eff 100644
 --- a/miles/utils/external_utils/command_utils.py
 +++ b/miles/utils/external_utils/command_utils.py
-@@ -193,6 +193,112 @@ def execute_train(
+@@ -193,6 +193,107 @@ def execute_train(
          )
  
  
@@ -434,18 +434,13 @@ index d016e01ac..08b4d6eff 100644
 +    )
 +
 +    if get_bool_env_var("SLIME_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
-+        cmd_megatron_model_source = (
-+            f'source "{repo_base_dir}/scripts/models/{megatron_model_type}.sh" && '
-+            if megatron_model_type is not None
-+            else ""
-+        )
++        model_args = load_model_args(megatron_model_type) if megatron_model_type is not None else ""
 +        exec_command_cpu(
 +            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
-+            f"{cmd_megatron_model_source}"
 +            f'ray job submit --address="http://127.0.0.1:8265" '
 +            f"--runtime-env-json='{runtime_env_json}' "
 +            f"-- python3 {train_script} "
-+            f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
++            f"{model_args} "
 +            f"{train_args}"
 +        )
 +

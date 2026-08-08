@@ -68,7 +68,7 @@ import miles.utils.external_utils.command_utils as U
 
 app = typer.Typer()
 
-# model name -> scripts/models/<type>.sh; the 4-layer slices reuse the base
+# model name -> scripts/models/<type>.py; the 4-layer slices reuse the base
 # definition with MODEL_ARGS_NUM_LAYERS=4 (set in ScriptArgs.__post_init__)
 _MODEL_REGISTRY = {
     "Inkling": "inkling",

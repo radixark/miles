@@ -44,6 +44,11 @@
 "-m"
 
 ### 9
+"python3"
+"<REPO_ROOT>/scripts/../miles/utils/external_utils/model_args_utils.py"
+"kimi-k2-thinking"
+
+### 10
 "ray"
 "job"
 "submit"

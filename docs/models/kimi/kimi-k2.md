@@ -47,7 +47,8 @@ Convert across 4 nodes (mirror the DeepSeek-V3 procedure):
 
 ```bash
 cd /root/miles
-source scripts/models/kimi-k2.sh   # or kimi-k2-thinking.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py kimi-k2)" || exit 1   # or kimi-k2-thinking
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM/ torchrun \
    --nproc-per-node 8 \
    --master-addr ${MASTER_ADDR} --master-port 12345 \

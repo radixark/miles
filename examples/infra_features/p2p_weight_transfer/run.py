@@ -35,7 +35,7 @@ class PrepareConfig:
     """Configuration for the `prepare` subcommand."""
 
     hf_repo: str
-    model_type: str  # megatron model type (maps to scripts/models/<type>.sh)
+    model_type: str  # megatron model type (maps to scripts/models/<type>.py)
     datasets: list[str] = field(default_factory=lambda: ["zhuzilin/dapo-math-17k"])
     convert_gpus_per_node: int = 8
     convert_multinode: bool = False
@@ -1101,7 +1101,11 @@ def cmd_run(
 def build_model_args_command(cfg: RunConfig) -> str:
     """A shell snippet leaving MODEL_ARGS set; the knobs must reach it, not only ray's runtime env."""
     prefix = "".join(f"{name}={shlex.quote(value)} " for name, value in build_model_args_env(cfg).items())
-    return f'{prefix}source "{MILES_ROOT}/scripts/models/{cfg.model_type}.sh"'
+    return (
+        f'MODEL_ARGS_LINE="$({prefix}python3 "{MILES_ROOT}/miles/utils/external_utils/model_args_utils.py"'
+        f' {cfg.model_type})" || exit 1; '
+        'read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"'
+    )
 
 
 def build_model_args_env(cfg: RunConfig) -> dict[str, str]:

@@ -39,6 +39,11 @@
 "python"
 
 ### 8
+"python3"
+"<REPO_ROOT>/examples/experimental/search-r1/../../../miles/utils/external_utils/model_args_utils.py"
+"qwen2.5-3B"
+
+### 9
 "ray"
 "start"
 "--head"
@@ -48,7 +53,7 @@
 "8"
 "--disable-usage-stats"
 
-### 9
+### 10
 "ray"
 "job"
 "submit"

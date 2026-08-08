@@ -106,7 +106,8 @@ the next run. Requires `--save` to be set.
 ### HuggingFace → torch_dist
 
 ```bash
-source scripts/models/<family>.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py <family>)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/<model> \

@@ -39,6 +39,11 @@
 "python"
 
 ### 8
+"python3"
+"<REPO_ROOT>/scripts/../miles/utils/external_utils/model_args_utils.py"
+"qwen3-4B"
+
+### 9
 "ray"
 "start"
 "--head"
@@ -50,7 +55,7 @@
 "--dashboard-host=0.0.0.0"
 "--dashboard-port=8265"
 
-### 9
+### 10
 "ray"
 "job"
 "submit"
