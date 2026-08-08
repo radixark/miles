@@ -51,6 +51,26 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
 }
 
 
+def batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
+    """Distill one tinker selection's BatchPlan into conversion metadata.
+    Selections are homogeneous: exactly one data-operation kind — mixed
+    forward/forward_backward batches are structurally impossible, which is
+    what keeps forward operations gradient-free without loss surgery."""
+    kinds = {entry["operation_kind"] for entry in batch_plan}
+    if len(kinds) != 1 or not kinds <= {"forward_backward", "forward"}:
+        raise ValueError(f"tinker selection must be one homogeneous data kind, got {sorted(kinds)}")
+    metadata: dict[str, Any] = {
+        "batch_kind": "tinker",
+        "adapter_name_by_slot": {entry["bound_slot"]: entry["name"] for entry in batch_plan},
+        "tinker_loss_by_slot": {entry["bound_slot"]: entry.get("loss_spec") or {} for entry in batch_plan},
+        # The trainer completes these operations after the batch lands.
+        "operation_by_slot": {entry["bound_slot"]: entry["operation_id"] for entry in batch_plan},
+    }
+    if kinds == {"forward"}:
+        metadata["tinker_forward_only"] = True
+    return metadata
+
+
 def convert_samples_to_train_data(
     args,
     samples: list[Sample] | list[list[Sample]],
@@ -64,12 +84,18 @@ def convert_samples_to_train_data(
     if (f := custom_convert_samples_to_train_data_func) is not None:
         return f(args, samples)
 
-    raw_rewards, rewards = _post_process_rewards(
-        args,
-        samples,
-        custom_reward_post_process_func=custom_reward_post_process_func,
-        prompt_group_sizes=metadata.get("prompt_group_sizes"),
-    )
+    tinker = metadata.get("batch_kind") == "tinker"
+    if tinker:
+        # Tinker batches carry no rewards: losses come from client-supplied
+        # per-token channels, never from reward post-processing.
+        raw_rewards = rewards = [0.0] * len(samples)
+    else:
+        raw_rewards, rewards = _post_process_rewards(
+            args,
+            samples,
+            custom_reward_post_process_func=custom_reward_post_process_func,
+            prompt_group_sizes=metadata.get("prompt_group_sizes"),
+        )
 
     assert len(raw_rewards) == len(samples)
     assert len(rewards) == len(samples)
@@ -134,20 +160,52 @@ def convert_samples_to_train_data(
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
+    # Client-supplied per-token channels (tinker adapters). Absent tensors
+    # default to zeros so one selection may mix CE (weights) and IS/PPO
+    # (advantages) adapters.
+    if any(sample.loss_weights is not None for sample in samples):
+        train_data["loss_weights"] = [
+            sample.loss_weights if sample.loss_weights is not None else [0.0] * sample.response_length
+            for sample in samples
+        ]
+    if any(sample.advantages is not None for sample in samples):
+        train_data["advantages"] = [
+            sample.advantages if sample.advantages is not None else [0.0] * sample.response_length
+            for sample in samples
+        ]
+
     if any(sample.adapter is not None for sample in samples):
         assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
-        train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
-        # Slots whose adapter batch completes with this batch: the trainer scales their
-        # accumulated gradients by 1/adapter-batch-size and advances the LR schedule.
-        step_slots = sorted(metadata.get("step_slots", []))
-        train_data["step_slots"] = step_slots
-        train_data["step_adapter_names"] = sorted(metadata.get("step_adapter_names", []))
-        step_slot_set = set(step_slots)
-        train_data["step_adapter_batch_sizes"] = {
-            sample.adapter.slot: sample.metadata["adapter_global_batch_size"]
-            for sample in samples
-            if sample.adapter.slot in step_slot_set
-        }
+        if (name_by_slot := metadata.get("adapter_name_by_slot")) is not None:
+            # The BatchPlan's registration-bound slot is authoritative; a
+            # stamped slot could be stale, and a name missing from the plan
+            # must fail loudly.
+            slot_by_name = {name: slot for slot, name in name_by_slot.items()}
+            missing = {sample.adapter.name for sample in samples if sample.adapter.name not in slot_by_name}
+            if missing:
+                raise ValueError(f"Samples from adapters {sorted(missing)} have no BatchPlan slot")
+            train_data["adapter_slots"] = [slot_by_name[sample.adapter.name] for sample in samples]
+            train_data["adapter_name_by_slot"] = name_by_slot
+        else:
+            train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
+        if tinker:
+            train_data["batch_kind"] = "tinker"
+            train_data["tinker_loss_by_slot"] = metadata["tinker_loss_by_slot"]
+            train_data["operation_by_slot"] = metadata["operation_by_slot"]
+            if metadata.get("tinker_forward_only"):
+                train_data["tinker_forward_only"] = True
+        else:
+            # Slots whose adapter batch completes with this batch: the trainer scales their
+            # accumulated gradients by 1/adapter-batch-size and advances the LR schedule.
+            step_slots = sorted(metadata.get("step_slots", []))
+            train_data["step_slots"] = step_slots
+            train_data["step_adapter_names"] = sorted(metadata.get("step_adapter_names", []))
+            step_slot_set = set(step_slots)
+            train_data["step_adapter_batch_sizes"] = {
+                sample.adapter.slot: sample.metadata["adapter_global_batch_size"]
+                for sample in samples
+                if sample.adapter.slot in step_slot_set
+            }
 
     if (prompt_group_sizes := metadata.get("prompt_group_sizes")) is not None:
         train_data["prompt_group_sizes"] = prompt_group_sizes
@@ -320,6 +378,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
+            # Client-supplied per-token channels (tinker adapters).
+            "loss_weights",
+            "advantages",
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",
@@ -336,6 +397,11 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "step_slots",
             "step_adapter_names",
             "step_adapter_batch_sizes",
+            "adapter_name_by_slot",
+            "tinker_loss_by_slot",
+            "operation_by_slot",
+            "tinker_forward_only",
+            "batch_kind",
             "prompt_group_sizes",
         ]:
             if key not in data:

@@ -321,7 +321,8 @@ def _gather_logprobs(rollout_data) -> dict[str, list[list[float]]]:
     for op_slot, op_id in op_by_slot.items():
         if op_id is None:
             continue
-        rows = sorted((row, lp) for (slot, row), lp in merged.items() if slot == op_slot)
+        # row -1 is DP padding: never part of the operation's result plane.
+        rows = sorted((row, lp) for (slot, row), lp in merged.items() if slot == op_slot and row >= 0)
         logprobs_by_op[op_id] = [lp for _, lp in rows]
     return logprobs_by_op
 

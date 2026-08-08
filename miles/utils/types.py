@@ -12,6 +12,10 @@ class AdapterRef:
 
     name: str
     slot: int
+    # Registration-scoped serving identity (tinker): a re-registered name is a
+    # new tenant (anti-ABA), and the serving version keys the KV cache.
+    registration_id: str = ""
+    serving_version: int = 0
 
 
 @dataclass(frozen=True)

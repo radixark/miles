@@ -58,3 +58,4 @@ def cache_extra_key(adapter_name: str, registration_id: str, serving_version: in
 def is_tinker_enabled(args) -> bool:
     """Tinker mode: multi-LoRA slots driven by the tinker operation backend."""
     return bool(getattr(args, "tinker_backend", False)) and getattr(args, "multi_lora_n_adapters", 0) > 0
+

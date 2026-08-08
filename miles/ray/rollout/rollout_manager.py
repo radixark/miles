@@ -17,6 +17,7 @@ from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
+    batch_plan_to_metadata,
     convert_samples_to_train_data,
     split_train_data_by_dp,
 )
@@ -249,10 +250,19 @@ class RolloutManager:
                     call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
                 )
             metrics = data.metrics
+            fn_metadata = getattr(data, "metadata", None) or {}
             data = data.samples
             data, metadata = postprocess_rollout_data(
-                self.args, data, train_parallel_config=self.train_parallel_config
+                self.args,
+                data,
+                train_parallel_config=self.train_parallel_config,
+                # Tinker selections are whole client batches; zero-weight pads
+                # round them up to the DP grid so the multi-LoRA dynamic-GBS
+                # branch sizes the step to the batch instead of trimming it.
+                pad_to_dp="batch_plan" in fn_metadata,
             )
+            if (batch_plan := fn_metadata.get("batch_plan")) is not None:
+                metadata.update(batch_plan_to_metadata(batch_plan))
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data
                 data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)

@@ -1735,6 +1735,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "Requires --multi-lora-n-adapters > 0.",
             )
             parser.add_argument(
+                "--tinker-max-coalesce-wait-s",
+                type=float,
+                default=2.0,
+                help="After the first child batch is selected, keep coalescing further ready "
+                "batches into the same train call for this long (default: 2.0)",
+            )
+            parser.add_argument(
+                "--tinker-max-empty-wait-s",
+                type=float,
+                default=5.0,
+                help="End generate with EmptyBatchTimeoutError when no adapter produces a "
+                "batch within this window. Deliberately short: the driver treats it as a "
+                "yield back to the control phase, so queued optim_step/save/load operations "
+                "never wait behind an idle data queue (default: 5.0)",
+            )
+            parser.add_argument(
                 "--multi-lora-adapter",
                 nargs=2,
                 action="append",

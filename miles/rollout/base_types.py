@@ -54,6 +54,9 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
 class RolloutFnTrainOutput:
     samples: list[list[Sample]]
     metrics: dict[str, Any] = None
+    # Rollout-to-train control plane (e.g. the tinker BatchPlan); merged into
+    # the conversion metadata by the rollout manager.
+    metadata: dict[str, Any] | None = None
 
 
 # TODO make it frozen

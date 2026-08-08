@@ -16,7 +16,7 @@ from miles.ray.tinker_backend.config import AdapterRunConfig
 from miles.ray.tinker_backend.operations import OperationLedger
 from miles.ray.tinker_backend.registry import AdapterRegistry, AdapterState
 from miles.utils.http_utils import router_worker_base_urls
-from miles.utils.tinker_backend import rid_prefix
+from miles.utils.tinker_backend import rid_prefix, serving_lora_name
 
 logger = logging.getLogger(__name__)
 

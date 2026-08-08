@@ -113,7 +113,8 @@ class TestExecuteControls:
 class TestGatherAndCommit:
     def test_gather_groups_rows_per_operation_in_order(self):
         rollout_data = {
-            "tinker_logprob_collector": {(0, 1): [-2.0], (0, 0): [-1.0], (3, 0): [-9.0]},
+            # (0, -1) is a zero-weight DP pad: filtered from the result plane.
+            "tinker_logprob_collector": {(0, 1): [-2.0], (0, 0): [-1.0], (3, 0): [-9.0], (0, -1): [-7.0]},
             "operation_by_slot": {0: "fb1", 3: "fb2", 5: None},
         }
         assert trainer._gather_logprobs(rollout_data) == {"fb1": [[-1.0], [-2.0]], "fb2": [[-9.0]]}
