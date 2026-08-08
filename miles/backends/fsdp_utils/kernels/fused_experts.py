@@ -23,8 +23,6 @@ class GateUpProjFunction(torch.autograd.Function):
     ):
         num_tokens, _ = hidden_states.shape
         E, N, _ = w1.shape
-        # We execute the fused_moe kernel in chunks to circumvent this issue:
-        # https://github.com/vllm-project/vllm/issues/5938
         CHUNK_SIZE = 64 * 1024
 
         # default deterministic config
