@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
+from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.http_utils import wait_for_server_ready
-from miles.utils.misc import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.typer_utils import dataclass_cli
 
 _ = exec_command_cpu, exec_command_gpu, exec_command_multi_node, dataclass_cli

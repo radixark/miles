@@ -7,7 +7,7 @@ import typer
 
 from miles.utils.debug_utils.run_megatron.cli.commands.args import CompareArgs
 from miles.utils.debug_utils.run_megatron.logprob_comparator import compare_logprobs
-from miles.utils.misc import exec_command_cpu
+from miles.utils.external_utils.exec_command import exec_command_cpu
 from miles.utils.typer_utils import dataclass_cli
 
 
