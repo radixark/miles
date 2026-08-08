@@ -2865,6 +2865,10 @@ def miles_validate_args(args):
                 f"--use-session-server v2 does not support {', '.join(unsupported)}; v2 returns list[Sample]"
             )
 
+    assert not (
+        args.use_session_server and args.pause_generation_mode == "abort"
+    ), "--use-session-server is incompatible with --pause-generation-mode=abort"
+
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
             f"--tito-model={args.tito_model} requires --use-session-server; "
