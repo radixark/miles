@@ -66,18 +66,20 @@ needed to run RL at trillion-parameter scale.
 
 ## Supported models
 
-Each model name links to its recipe page.
+Each model name links to its recipe page or launch script. The table is not
+exhaustive — it highlights recent releases; many more models run on Miles out
+of the box, including older generations of the families below.
 
 | Family | Models |
 |---|---|
-| **DeepSeek** | [DeepSeek-V4 Pro](/models/deepseek/deepseek-v4-pro)<br/>[DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash)<br/>[DeepSeek-R1](/models/deepseek/deepseek)<br/>[DeepSeek-V3](/models/deepseek/deepseek) |
-| **Thinking Machines** | [Inkling](/models/thinkingmachines/inkling) |
-| **Qwen** | [Qwen3.6 MoE](/models/qwen/qwen3-6-moe)<br/>[Qwen3.6](/models/qwen/qwen3-6)<br/>[Qwen3.5-35B-A3B](/models/qwen/qwen3-5-moe)<br/>[Qwen3.5-4B / 9B / 27B](/models/qwen/qwen3-5)<br/>[Qwen3-Next-80B-A3B-Thinking](/models/qwen/qwen3-next)<br/>[Qwen3-30B-A3B / 235B-A22B](/models/qwen/qwen3-moe)<br/>[Qwen3-0.6B / 1.7B / 4B / 8B / 14B / 32B](/models/qwen/qwen3) |
-| **GLM** | [GLM-5.1](/models/glm/glm5)<br/>[GLM-5](/models/glm/glm5)<br/>[GLM-4.7-Flash](/models/glm/glm4-7-flash)<br/>[GLM-4.5](/models/glm/glm4-5)<br/>[GLM-Z1-9B-0414](/models/glm/glm4) |
-| **Kimi** | [Kimi-K2.6](/models/kimi/kimi-k2.5)<br/>[Kimi-K2.5](/models/kimi/kimi-k2.5)<br/>[Kimi-K2-Instruct / Thinking](/models/kimi/kimi-k2)<br/>[Moonlight-16B-A3B](/models/kimi/moonlight) |
-| **Nemotron** | [Nemotron-3-Super-120B-A12B-FP8](/models/nemotron/nemotron-3-super)<br/>[Nemotron-3-Nano MoE](/models/nemotron/nemotron-3-nano-moe)<br/>[Nemotron-3-Nano](/models/nemotron/nemotron-3-nano) |
-| **MiMo** | [MiMo-7B-RL](/models/mimo/mimo) |
-| **GPT-OSS** | [gpt-oss-20b](/models/gpt-oss/gpt-oss) |
+| **DeepSeek** | [DeepSeek-V4 Pro](/models/deepseek/deepseek-v4-pro)<br/>[DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash) |
+| **Thinking Machines** | [Inkling](/models/thinkingmachines/inkling)<br/>[Inkling-Small](/models/thinkingmachines/inkling-small) |
+| **Qwen** | [Qwen3.6 MoE](/models/qwen/qwen3-6-moe)<br/>[Qwen3.6](/models/qwen/qwen3-6)<br/>[Qwen3.5-35B-A3B](/models/qwen/qwen3-5-moe)<br/>[Qwen3.5-4B / 9B / 27B](/models/qwen/qwen3-5) |
+| **GLM** | [GLM-5.2](/models/glm/glm5-2)<br/>[GLM-5.1](/models/glm/glm5)<br/>[GLM-5](/models/glm/glm5)<br/>[GLM-4.7-Flash](/models/glm/glm4-7-flash) |
+| **Kimi** | [Kimi-K3](https://github.com/radixark/miles/pull/1825)<br/>[Kimi-K2.6](/models/kimi/kimi-k2.5)<br/>[Kimi-K2.5](/models/kimi/kimi-k2.5) |
+| **Nemotron** | [Nemotron-3-Ultra-550B-A55B](https://github.com/radixark/miles/blob/main/scripts/run_nemotron_3_ultra_550b_a55b.py)<br/>[Nemotron-3-Super-120B-A12B-FP8](/models/nemotron/nemotron-3-super)<br/>[Nemotron-3-Nano MoE](/models/nemotron/nemotron-3-nano-moe)<br/>[Nemotron-3-Nano](/models/nemotron/nemotron-3-nano) |
+| **Gemma** | [Gemma-4 26B-A4B](https://github.com/radixark/miles/blob/main/scripts/run_gemma_4_26b_a4b.py)<br/>[Gemma-4 31B](https://github.com/radixark/miles/blob/main/scripts/run_gemma_4_31b.py) |
+| **JoyAI** | [JoyAI-LLM-Flash](https://github.com/radixark/miles/blob/main/scripts/run_joy_ai_llm_flash.py) |
 
 See [Models](/models/index) for exact conversion commands, launch scripts, and
 parallelism settings.
