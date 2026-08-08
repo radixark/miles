@@ -32,6 +32,7 @@ from miles.rollout.fully_async_data_buffer import (
     DataBuffer,
     DataBufferConstructorInput,
     DataBufferInput,
+    DataBufferSource,
     DefaultDataBuffer,
     Group,
     first_sample,
@@ -81,7 +82,11 @@ class FullyAsyncRolloutFn:
         if self._worker is None:
             buffer_cls = load_function(self.args.custom_async_data_buffer_path) or DefaultDataBuffer
             self._output = buffer_cls(
-                DataBufferConstructorInput(args=self.args, unused_handler_fn=self._handle_unused)
+                DataBufferConstructorInput(
+                    args=self.args,
+                    unused_handler_fn=self._handle_unused_buffer_source,
+                    discard_handler_fn=self._discard_buffer_source,
+                )
             )
             self._worker = asyncio.create_task(self._worker_loop())
             logger.info("Started fully-async rollout worker")
@@ -123,7 +128,7 @@ class FullyAsyncRolloutFn:
             evaluation=False,
             sample_done_callback=self._scheduler.sample_done_callback,
         )
-        return DataBufferInput(prompt_group=prompt_group, group=result)
+        return DataBufferInput(source=prompt_group, group=result)
 
     async def _worker_loop(self):
         active: set[asyncio.Task] = set()
@@ -201,3 +206,12 @@ class FullyAsyncRolloutFn:
         for sample in prompt_group:
             sample.reset_for_retry()
         self.data_source.add_samples([prompt_group])
+
+    def _handle_unused_buffer_source(self, source: DataBufferSource) -> None:
+        if not isinstance(source, list):
+            raise RuntimeError("Receipt-owned buffer settlement requires owned scheduling.")
+        self._handle_unused(source)
+
+    def _discard_buffer_source(self, source: DataBufferSource) -> None:
+        if not isinstance(source, list):
+            raise RuntimeError("Receipt-owned buffer settlement requires owned scheduling.")

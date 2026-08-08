@@ -13,6 +13,7 @@ import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.fully_async.ownership import ReservationTerminalReceipt
 from miles.utils.types import Sample
 
 N_SAMPLES_PER_PROMPT = 2
@@ -302,7 +303,7 @@ async def test_worker_failure_beats_queued_groups(monkeypatch):
 
     fn._output = make_buffer()[0]
     group = make_group(1)
-    await fn._output.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
+    await fn._output.put(data_buffer.DataBufferInput(source=group, group=group))
     fn._worker = asyncio.create_task(boom())
     await asyncio.sleep(0)
 
@@ -401,14 +402,86 @@ def make_buffer(max_groups=None, max_staleness=None):
         max_weight_staleness=max_staleness,
     )
     buffer = data_buffer.DefaultDataBuffer(
-        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=unused.append)
+        data_buffer.DataBufferConstructorInput(
+            args=args,
+            unused_handler_fn=unused.append,
+            discard_handler_fn=unused.append,
+        )
     )
     return buffer, unused
 
 
 async def put_group(buffer, group):
     """These tests reuse one group as both the prompt group and the finished group."""
-    await buffer.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
+    await buffer.put(data_buffer.DataBufferInput(source=group, group=group))
+
+
+def make_terminal_receipt() -> ReservationTerminalReceipt:
+    return ReservationTerminalReceipt(executor_receipt=object())
+
+
+async def test_buffer_preserves_terminal_receipt_identity():
+    buffer, _ = make_buffer()
+    receipt = make_terminal_receipt()
+    group = make_group(1)
+
+    await buffer.put(data_buffer.DataBufferInput(source=receipt, group=group))
+    entry = await buffer.get()
+
+    assert entry.source is receipt
+    assert entry.group is group
+    with pytest.raises(RuntimeError, match="does not expose a retryable prompt group"):
+        _ = entry.prompt_group
+
+
+async def test_buffer_stale_filter_settles_the_exact_terminal_receipt():
+    buffer, unused = make_buffer(max_staleness=2)
+    receipt = make_terminal_receipt()
+    await buffer.put(data_buffer.DataBufferInput(source=receipt, group=make_group(1, weight_versions=["5"])))
+    fresh = make_group(2, weight_versions=["9"])
+    await put_group(buffer, fresh)
+
+    assert (await buffer.get(current_version=10)).source is fresh
+    assert unused == [receipt]
+
+
+async def test_buffer_dynamic_filter_discards_the_exact_terminal_receipt():
+    discarded = []
+    args = make_args(
+        rollout_batch_size=1,
+        dynamic_sampling_filter_path=f"{__name__}.reject_group_1",
+    )
+    buffer = data_buffer.DefaultDataBuffer(
+        data_buffer.DataBufferConstructorInput(
+            args=args,
+            unused_handler_fn=lambda source: None,
+            discard_handler_fn=discarded.append,
+        )
+    )
+    receipt = make_terminal_receipt()
+
+    await buffer.put(data_buffer.DataBufferInput(source=receipt, group=make_group(1)))
+
+    assert discarded == [receipt]
+    assert buffer.get_metrics()["rollout/fully_async/queue_size"] == 0
+
+
+async def test_buffer_discard_all_retains_sources_that_fail_settlement():
+    buffer, _ = make_buffer()
+    retained = make_terminal_receipt()
+    discarded = make_terminal_receipt()
+    await buffer.put(data_buffer.DataBufferInput(source=retained, group=make_group(1)))
+    await buffer.put(data_buffer.DataBufferInput(source=discarded, group=make_group(2)))
+
+    def settle(source):
+        if source is retained:
+            raise RuntimeError("settlement failed")
+
+    error = await buffer.discard_all(settle)
+
+    assert isinstance(error, RuntimeError)
+    assert str(error) == "settlement failed"
+    assert (await buffer.get()).source is retained
 
 
 async def test_buffer_blocks_producer_when_full():
@@ -477,7 +550,8 @@ async def test_custom_data_buffer_path_replaces_default(monkeypatch):
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
     assert type(fn._output) is RecordingBuffer
-    assert RecordingBuffer.constructed_with.unused_handler_fn == fn._recycle
+    assert RecordingBuffer.constructed_with.unused_handler_fn == fn._handle_unused_buffer_source
+    assert RecordingBuffer.constructed_with.discard_handler_fn == fn._discard_buffer_source
     assert len(output.samples) == 2
 
 
