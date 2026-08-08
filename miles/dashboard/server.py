@@ -214,12 +214,20 @@ def make_app(
             return dict(outliers=store.outliers(criterion, t0=t0, t1=t1, top_k=top_k))
 
     @app.get("/api/timeline/engine_series")
-    def timeline_engine_series(metric: str, t0: float | None = None, t1: float | None = None, max_points: int = 2000):
+    def timeline_engine_series(
+        metric: str,
+        t0: float | None = None,
+        t1: float | None = None,
+        max_points: int = 2000,
+        per_dp_rank: bool = False,
+    ):
         with _translate_errors():
             _check_window(t0, t1)
             if max_points < 2:
                 raise ValueError(f"{max_points=} must be >= 2")
-            return dict(series=store.engine_series(metric, t0=t0, t1=t1, max_points=max_points))
+            return dict(
+                series=store.engine_series(metric, t0=t0, t1=t1, max_points=max_points, per_dp_rank=per_dp_rank)
+            )
 
     @app.get("/api/timeline/bubbles")
     def timeline_bubbles():
