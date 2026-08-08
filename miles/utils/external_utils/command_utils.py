@@ -9,6 +9,7 @@ import os
 import random
 import shlex
 import socket
+import subprocess
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -29,6 +30,18 @@ def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | 
         if pythonpath:
             entries.extend(pythonpath.split(os.pathsep))
     return os.pathsep.join(dict.fromkeys(entries))
+
+
+def load_model_args(megatron_model_type: str) -> list[str]:
+    """Expand the MODEL_ARGS array that scripts/models/<megatron_model_type>.sh declares."""
+    script = f"{repo_base_dir}/scripts/models/{megatron_model_type}.sh"
+    assert os.path.exists(script), f"no model args script at {script}"
+    expansion = f'source {shlex.quote(script)} && printf "%s\\0" "${{MODEL_ARGS[@]}}"'
+    result = subprocess.run(["bash", "-c", expansion], capture_output=True, text=True, check=True)
+    tokens = result.stdout.split("\0")[:-1]
+    for token in tokens:
+        assert token.split() == [token], f"model args token must be one whitespace-free word: {token!r}"
+    return tokens
 
 
 def convert_checkpoint(
@@ -63,13 +76,12 @@ def convert_checkpoint(
         fn = exec_command_gpu
     pythonpath = shlex.quote(_pythonpath_with_sources(megatron_path))
     fn(
-        f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
         f"PYTHONPATH={pythonpath} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
         f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
-        "${MODEL_ARGS[@]} "
+        f"{' '.join(load_model_args(megatron_model_type))} "
         f"--hf-checkpoint {hf_checkpoint} "
         f"--save {path_dst} "
         f"{extra_args}"
@@ -195,18 +207,13 @@ def execute_train(
     runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
 
     if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
-        cmd_megatron_model_source = (
-            f'source "{repo_base_dir}/scripts/models/{megatron_model_type}.sh" && '
-            if megatron_model_type is not None
-            else ""
-        )
+        model_args = " ".join(load_model_args(megatron_model_type)) if megatron_model_type is not None else ""
         exec_command_cpu(
             f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
-            f"{cmd_megatron_model_source}"
             f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
             f"--runtime-env-json={shlex.quote(runtime_env_json)} "
             f"-- python3 {train_script} "
-            f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
+            f"{model_args} "
             f"{train_args}"
         )
 

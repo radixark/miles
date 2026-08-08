@@ -44,7 +44,7 @@ class TestConvertCheckpoint:
 
         command_utils.convert_checkpoint(
             model_name="model",
-            megatron_model_type="model_type",
+            megatron_model_type="qwen3-4B",
             num_gpus_per_node=1,
             dir_dst=str(tmp_path),
             megatron_path="/megatron",
@@ -234,7 +234,7 @@ class TestExecuteTrain:
         command_utils.execute_train(
             train_args="",
             num_gpus_per_node=1,
-            megatron_model_type="model_type",
+            megatron_model_type="qwen3-4B",
         )
 
         exports = [command for command in commands if "export PYTHONUNBUFFERED" in command]
@@ -250,7 +250,7 @@ class TestExecuteTrain:
         monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
         monkeypatch.setattr(command_utils, "check_has_nvlink", lambda: False)
 
-        command_utils.execute_train(train_args="", num_gpus_per_node=1, megatron_model_type="model_type")
+        command_utils.execute_train(train_args="", num_gpus_per_node=1, megatron_model_type="qwen3-4B")
 
         runtime_env_arg = next(arg for arg in shlex.split(commands[-1]) if arg.startswith("--runtime-env-json="))
         assert json.loads(runtime_env_arg.split("=", 1)[1])["env_vars"]["PYTHONUNBUFFERED"] == "1"
@@ -267,7 +267,7 @@ class TestExecuteTrain:
         command_utils.execute_train(
             train_args="",
             num_gpus_per_node=1,
-            megatron_model_type="model_type",
+            megatron_model_type="qwen3-4B",
             megatron_path="/megatron",
             extra_env_vars={"PYTHONPATH": "/custom:/sglang", "QUOTED_VALUE": "it's preserved"},
         )
@@ -328,21 +328,20 @@ class TestExecuteTrain:
 
         assert not any("ray job submit" in command for command in commands)
 
-    def test_sources_the_model_config_and_expands_model_args(self, commands):
-        """The megatron model type is turned into a `source` plus a ${MODEL_ARGS[@]} expansion."""
+    def test_expands_the_model_config_into_the_submitted_command(self, commands):
+        """The megatron model type is expanded into the argv its model script declares."""
         command_utils.execute_train(train_args="--x 1", num_gpus_per_node=8, megatron_model_type="qwen3-4B")
 
         submit = commands[-1]
-        assert f'source "{command_utils.repo_base_dir}/scripts/models/qwen3-4B.sh" && ' in submit
-        assert "${MODEL_ARGS[@]}" in submit
+        assert "--num-layers 36 " in submit
+        assert "source" not in submit
         assert submit.endswith("--x 1")
 
-    def test_omits_the_model_source_for_fsdp(self, commands):
-        """FSDP has no megatron model config to source."""
+    def test_omits_the_model_args_for_fsdp(self, commands):
+        """FSDP has no megatron model config to expand."""
         command_utils.execute_train(train_args="--train-backend fsdp", num_gpus_per_node=8, megatron_model_type=None)
 
-        assert "scripts/models/" not in commands[-1]
-        assert "${MODEL_ARGS[@]}" not in commands[-1]
+        assert "--num-layers" not in commands[-1]
 
     def test_drops_cuda_device_max_connections_for_fsdp(self, commands):
         """Pinning it to 1 breaks computation/communication overlap on FSDP."""

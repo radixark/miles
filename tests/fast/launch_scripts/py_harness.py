@@ -30,12 +30,15 @@ _FROZEN_ENV = {
     "WANDB_API_KEY": "frozen-wandb-api-key",
 }
 
-_CLEARED_ENV = (
+CLEARED_ENV = (
     "CUDA_VISIBLE_DEVICES",
     "GITHUB_COMMIT_NAME",
     "GLOO_SOCKET_IFNAME",
     "KEEP_MOE_LORA",
     "MILES_SCRIPT_EXTERNAL_RAY",
+    "MODEL_ARGS_FIRST_K_DENSE_REPLACE",
+    "MODEL_ARGS_NUM_LAYERS",
+    "MODEL_ARGS_ROTARY_BASE",
     "NCCL_DEBUG",
     "NCCL_DEBUG_FILE",
     "NCCL_NVLS_ENABLE",
@@ -43,6 +46,7 @@ _CLEARED_ENV = (
     "NO_PROXY",
     "OPTIMIZER_CPU_OFFLOAD",
     "RAY_ADDRESS",
+    "ROTARY_SCALING_FACTOR",
     "SLURM_JOB_NUM_NODES",
 )
 
@@ -103,7 +107,7 @@ def install_shell_recorder(monkeypatch, sandbox: Path) -> Recording:
 def freeze_environment(monkeypatch) -> None:
     for key, value in _FROZEN_ENV.items():
         monkeypatch.setenv(key, value)
-    for key in _CLEARED_ENV:
+    for key in CLEARED_ENV:
         monkeypatch.delenv(key, raising=False)
 
 
