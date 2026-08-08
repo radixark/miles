@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Backstop for an unreachable agent server; its own --agent-timeout should fire first.
 _DEFAULT_AGENT_TRIAL_TIMEOUT_S = 7200
+_CLAUDE_CODE_AGENT_NAME = "claude-code"
 
 _agent_server_client: httpx.AsyncClient | None = None
 
@@ -51,6 +52,20 @@ def _get_agent_server_client() -> httpx.AsyncClient:
             timeout=None,
         )
     return _agent_server_client
+
+
+def _agent_api_config(
+    base_url: str,
+    model_name: str,
+    agent_name: str | None,
+) -> tuple[str, str]:
+    """Return the session endpoint and model name expected by the Harbor agent."""
+    if agent_name == _CLAUDE_CODE_AGENT_NAME:
+        # Claude Code appends /v1/messages to ANTHROPIC_BASE_URL itself. Its
+        # model name is passed through the Anthropic request without a provider
+        # prefix, so it must match the name served by SGLang.
+        return base_url, model_name
+    return f"{base_url}/v1", f"openai/{model_name}"
 
 
 async def _post_agent_server(url: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -80,7 +95,11 @@ async def run(
         os.getenv("SWE_AGENT_MODEL_NAME", "model"),
     )
 
-    session_url = f"{base_url}/v1"
+    session_url, agent_model = _agent_api_config(
+        base_url=base_url,
+        model_name=model_name,
+        agent_name=metadata.get("agent_name"),
+    )
     external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
     if external_host:
         parsed = urlparse(session_url)
@@ -91,7 +110,7 @@ async def run(
     request: dict[str, Any] = {
         **metadata,
         "base_url": session_url,
-        "model": f"openai/{model_name}",
+        "model": agent_model,
         "sampling_params": request_kwargs,
     }
 
