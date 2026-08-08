@@ -12,6 +12,7 @@ from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
     _resolve_rollout_functions,
+    _validate_fully_async_capacity,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -23,6 +24,41 @@ from miles.utils.misc import function_registry
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
+
+
+class TestFullyAsyncCapacityValidation:
+    def _args(self, **overrides) -> SimpleNamespace:
+        values = {
+            "async_max_concurrent_samples": None,
+            "async_data_buffer_capacity_factor": 2.0,
+            "n_samples_per_prompt": 2,
+            "rollout_batch_size": 4,
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def test_accepts_existing_capacity_controls(self) -> None:
+        _validate_fully_async_capacity(
+            self._args(async_max_concurrent_samples=6, async_data_buffer_capacity_factor=1.5)
+        )
+
+    @pytest.mark.parametrize("value", [0, -1, True])
+    def test_rejects_nonpositive_execution_capacity(self, value: object) -> None:
+        with pytest.raises(ValueError, match="--async-max-concurrent-samples must be a positive integer"):
+            _validate_fully_async_capacity(self._args(async_max_concurrent_samples=value))
+
+    def test_rejects_less_than_one_execution_group(self) -> None:
+        with pytest.raises(ValueError, match="must be at least --n-samples-per-prompt"):
+            _validate_fully_async_capacity(self._args(async_max_concurrent_samples=1))
+
+    @pytest.mark.parametrize("value", [0.0, -1.0, float("inf"), float("nan"), True])
+    def test_rejects_invalid_completed_group_capacity(self, value: object) -> None:
+        with pytest.raises(ValueError, match="must be a positive finite number"):
+            _validate_fully_async_capacity(self._args(async_data_buffer_capacity_factor=value))
+
+    def test_rejects_capacity_that_rounds_to_zero_groups(self) -> None:
+        with pytest.raises(ValueError, match="must retain at least one completed prompt group"):
+            _validate_fully_async_capacity(self._args(async_data_buffer_capacity_factor=0.2))
 
 
 def make_class_with_add_arguments():
