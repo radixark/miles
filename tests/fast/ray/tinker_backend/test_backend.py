@@ -164,6 +164,17 @@ class TestControlClaims:
         assert backend.registry.find("X").step == 0
         assert not backend.registry.is_dirty("X")
 
+    def test_publish_completion_stamps_post_push_serving_identity(self):
+        backend = ready_backend()
+        backend.registry.record_weight_update(["X"])  # the push landed: v1
+        backend.enqueue_operation("X", "pub1", 1, "save_weights_for_sampler")
+        [op] = backend.claim_ready_control_operations()
+        backend.complete_control_operations({op["operation_id"]: dict(ok=True, result={})})
+        result = backend.operations.get("pub1")["result"]
+        assert result["serving_version"] == 1
+        reg_id = backend.registry.find("X").registration_id
+        assert result["serving_name"] == f"__miles_adapter_X_{reg_id}"
+
     def test_load_state_repositions_the_clock(self):
         backend = ready_backend()
         backend.enqueue_operation("X", "load1", 1, "load_state", {"path": "/tmp/state"})

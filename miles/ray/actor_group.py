@@ -129,6 +129,16 @@ class RayTrainGroup:
 
         await self._broadcast("update_weights", info=info)
 
+    async def reconcile_tinker_adapters(self) -> None:
+        """Converge trainer residency to the tinker controller's registry."""
+        await self._broadcast("reconcile_tinker_adapters")
+
+    async def execute_tinker_controls(self, operations: list[dict]) -> dict:
+        """Run claimed control operations on every rank (identical list, fixed
+        order — the collectives require it); results agree, take rank 0's."""
+        results = await self._broadcast("execute_tinker_controls", operations)
+        return results[0]
+
     async def reconcile_adapters(self) -> None:
         """Multi-LoRA: reconcile loaded adapters with the controller's active set
         (load new, cleanup gone). Called by the trainer before generate."""

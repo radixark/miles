@@ -220,7 +220,17 @@ class TinkerBackend:
             if operation is None:
                 continue
             if outcome.get("ok"):
-                self.operations.complete(operation_id, outcome.get("result"))
+                result = outcome.get("result")
+                if operation["kind"] == "save_weights_for_sampler":
+                    # Completing after the push landed (the publish barrier):
+                    # stamp the authoritative post-push serving identity.
+                    record = self.registry.find(operation["name"])
+                    result = {
+                        **(result or {}),
+                        "serving_version": record.serving_version if record else None,
+                        "serving_name": serving_lora_name(operation["name"], operation["registration_id"]),
+                    }
+                self.operations.complete(operation_id, result)
                 if operation["kind"] == "optim_step":
                     self.registry.commit_tinker_step(operation["name"])
                 elif operation["kind"] == "load_state":

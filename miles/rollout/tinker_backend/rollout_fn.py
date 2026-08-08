@@ -70,6 +70,29 @@ class TinkerOperationSource:
         pass
 
 
+class TinkerNullDataSource:
+    """The manager-level data source slot for tinker runs. Tinker has no
+    dataset — every child pulls from the operation queue — so this only
+    satisfies the manager's save/load/close surface."""
+
+    dataset = ()
+
+    def __init__(self, args):
+        self.args = args
+
+    def get_samples(self, num_samples: int):
+        raise RuntimeError("tinker runs have no dataset; data arrives as client operations")
+
+    def add_samples(self, samples) -> None:
+        pass
+
+    def save(self, rollout_id) -> None:
+        pass
+
+    def load(self, rollout_id=None) -> None:
+        pass
+
+
 class QueueChildRolloutFn:
     """Awaits the registration's next data-bearing operation and returns it as
     one complete batch. Blocking while the client queue is idle is normal: the

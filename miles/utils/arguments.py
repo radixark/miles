@@ -3065,6 +3065,10 @@ def miles_validate_args(args):
 
     validate_multi_lora_args(args)
 
+    from miles.utils.tinker_backend import validate_tinker_args
+
+    validate_tinker_args(args)
+
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 
     if args.advantage_estimator in ["reinforce_plus_plus", "reinforce_plus_plus_baseline"]:
