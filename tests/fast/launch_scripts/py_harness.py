@@ -1,8 +1,11 @@
 import ast
 import importlib.util
 import inspect
+import os
 import re
+import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,6 +18,10 @@ from tests.fast.utils.command_recorder import record_commands
 import miles.utils.external_utils.command_utils as command_utils
 
 FROZEN_RUN_ID = "260101-000000-000"
+
+_GPU_COUNT_ANY_WAIT_LOOP_ACCEPTS = "1000000"
+_FROZEN_PID = 1000
+_FROZEN_PPID = 1001
 
 _FROZEN_ENV = {
     "MASTER_ADDR": "127.0.0.1",
@@ -59,6 +66,38 @@ class PyLaunchScript:
 def iter_py_launch_scripts() -> list[PyLaunchScript]:
     paths = sorted((REPO_ROOT / "scripts").rglob("run_*.py"))
     return [PyLaunchScript(path=path, entrypoints=tuple(_entrypoint_names(path))) for path in paths]
+
+
+def iter_self_executing_launchers() -> list[Path]:
+    """Launchers that reach the shell themselves rather than through command_utils."""
+    roots = [REPO_ROOT / root for root in ("scripts", "examples", "tools")]
+    convention = {script.path for script in iter_py_launch_scripts()}
+    return sorted(
+        path
+        for root in roots
+        for path in root.rglob("*.py")
+        if path not in convention and "ray job submit" in path.read_text(errors="replace")
+    )
+
+
+def install_shell_recorder(monkeypatch, sandbox: Path) -> Recording:
+    """A launcher holding its own subprocess handle never touches the recorded command_utils helpers."""
+    recording = Recording(commands=[], pseudo_files=[])
+
+    def fake_run(command, *args, **kwargs):
+        recording.commands.append(command if isinstance(command, str) else " ".join(command))
+        return subprocess.CompletedProcess(
+            args=command, returncode=0, stdout=_GPU_COUNT_ANY_WAIT_LOOP_ACCEPTS, stderr=""
+        )
+
+    monkeypatch.setenv("MILES_LOG_DIR", str(sandbox))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(os, "makedirs", lambda path, **kwargs: None)
+    monkeypatch.setattr(os, "getpid", lambda: _FROZEN_PID)
+    monkeypatch.setattr(os, "getppid", lambda: _FROZEN_PPID)
+
+    return recording
 
 
 def freeze_environment(monkeypatch) -> None:
