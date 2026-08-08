@@ -9,9 +9,11 @@ VALID_MODELS="
   Qwen3-VL-2B-Instruct
   Qwen3-VL-4B-Instruct
   Qwen3-VL-8B-Instruct
+  Qwen3-VL-32B-Instruct
   Qwen3-VL-2B-Thinking
   Qwen3-VL-4B-Thinking
   Qwen3-VL-8B-Thinking
+  Qwen3-VL-32B-Thinking
   Qwen3-VL-30B-A3B-Instruct
   Qwen3-VL-235B-A22B-Instruct
   Qwen3-VL-30B-A3B-Thinking
@@ -78,7 +80,6 @@ SFT_ARGS=(
    --rollout-function-path miles.rollout.sft_rollout.generate_rollout
    --prompt-data /root/datasets/${DATASET_LOCAL_NAME}/train_formatted.parquet
    --input-key messages
-   --apply-chat-template
    --rollout-shuffle
    --num-epoch 3000
    --rollout-batch-size 128
