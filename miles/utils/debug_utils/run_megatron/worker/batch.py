@@ -4,6 +4,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import torch
+import torch.distributed as dist
+
+from miles.backends.training_utils.parallel import get_parallel_state
 
 
 def prepare_batch(
@@ -95,17 +98,32 @@ def loss_func(
     labels: torch.Tensor,
     output_tensor: torch.Tensor,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
-    """Cross-entropy loss for forward-backward pipeline schedule.
+    """Cross-entropy loss, normalised by the *global* valid-token count.
 
-    Uses ignore_index=-100 to handle CP-aware label masking.
+    A local ``reduction="mean"`` is wrong under context parallelism: the labels are
+    sharded, so each rank divides by its own valid count rather than the global
+    one, and every activation gradient comes out scaled by global/local -- about 2x
+    at CP=2, which shows up as a ~0.5 relative difference against the CP=1 run and
+    swamps any real discrepancy.
+
+    Summing locally and dividing by the CP-reduced count instead makes each rank
+    contribute its true share of the global mean: the per-rank losses add up to the
+    CP=1 loss, and the gradients match position for position.
     """
     logits: torch.Tensor = output_tensor.float()
     vocab_size: int = logits.size(-1)
+    flat_labels: torch.Tensor = labels.view(-1)
 
-    loss: torch.Tensor = torch.nn.functional.cross_entropy(
+    loss_sum: torch.Tensor = torch.nn.functional.cross_entropy(
         logits.view(-1, vocab_size),
-        labels.view(-1),
+        flat_labels,
         ignore_index=-100,
-        reduction="mean",
+        reduction="sum",
     )
+    num_valid: torch.Tensor = (flat_labels != -100).sum()
+    cp = get_parallel_state().cp
+    if cp.size > 1:
+        dist.all_reduce(num_valid, group=cp.group)
+
+    loss: torch.Tensor = loss_sum / num_valid.clamp(min=1)
     return loss, {"loss": loss.detach()}
