@@ -318,5 +318,12 @@ def process_rollout_data(
 def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:
     store = object_store.get_instance()
     data_ref = rollout_data_pack["data_ref"]
+    first_error: BaseException | None = None
     for ref in data_ref if isinstance(data_ref, list) else [data_ref]:
-        store.remove(ref)
+        try:
+            store.remove(ref)
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise first_error

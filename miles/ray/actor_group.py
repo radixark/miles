@@ -4,10 +4,19 @@
 # MILES_EXPERIMENTAL_FT_TRAINER (default off -> v1).
 
 import asyncio
+from typing import Any
 
 from ray.util.placement_group import PlacementGroup
 
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
+from miles.ray.train_batch_admission import (
+    TrainBatchPublication,
+    TrainerAdmissionReceipt,
+    TrainerCellCohort,
+    TrainerCohort,
+    TrainerRankReceipt,
+    validate_publication_data_ref,
+)
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
 
@@ -48,6 +57,7 @@ class RayTrainGroup:
 
         # Allocate the GPUs for actors w/o instantiating them
         self._actor_handles = self._allocate_gpus_for_actor(pg, num_gpus_per_actor)
+        self._train_batch_pins: dict[TrainBatchPublication, tuple[TrainerAdmissionReceipt, tuple[Any, ...]]] = {}
 
     def _allocate_gpus_for_actor(self, pg, num_gpus_per_actor):
         return allocate_gpus_for_actor(
@@ -74,39 +84,116 @@ class RayTrainGroup:
             indep_dp_info=indep_dp_info,
         )
 
-    async def train(self, rollout_id, rollout_data_pack, external_data=None):
+    async def train(self, rollout_id, rollout_data_pack, external_data=None, *, admission_receipt=None):
         """Do one rollout training"""
         rollout_data_ref = rollout_data_pack["data_ref"]
-        if external_data is None:
+        try:
+            if admission_receipt is not None:
+                self._validate_train_batch_pin(rollout_id, rollout_data_pack, admission_receipt)
+            if external_data is None:
+                return await self._broadcast(
+                    "train",
+                    rollout_id,
+                    rollout_data_ref,
+                    witness_info=None,
+                    attempt=0,
+                )
+            if isinstance(external_data, list):
+                if len(external_data) != len(self._actor_handles):
+                    raise ValueError("external_data must contain one payload per train worker")
+                refs = [
+                    actor.train.remote(
+                        rollout_id,
+                        rollout_data_ref,
+                        witness_info=None,
+                        attempt=0,
+                        external_data=rank_data,
+                    )
+                    for actor, rank_data in zip(self._actor_handles, external_data, strict=False)
+                ]
+                return await asyncio.gather(*refs)
             return await self._broadcast(
                 "train",
                 rollout_id,
                 rollout_data_ref,
                 witness_info=None,
                 attempt=0,
+                external_data=external_data,
             )
-        if isinstance(external_data, list):
-            if len(external_data) != len(self._actor_handles):
-                raise ValueError("external_data must contain one payload per train worker")
-            refs = [
-                actor.train.remote(
-                    rollout_id,
-                    rollout_data_ref,
-                    witness_info=None,
-                    attempt=0,
-                    external_data=rank_data,
+        finally:
+            if admission_receipt is not None:
+                self.discard_train_batch_admission(admission_receipt)
+
+    async def admit_train_batch(
+        self,
+        rollout_id: int,
+        rollout_data_pack: dict[str, Any],
+    ) -> TrainerAdmissionReceipt:
+        """Read-proof the exact publication on every v1 trainer rank."""
+        publication = rollout_data_pack.get("trainer_admission")
+        if not isinstance(publication, TrainBatchPublication) or publication.rollout_id != rollout_id:
+            raise ValueError(f"Invalid trainer admission for rollout {rollout_id}.")
+        if "data_ref" not in rollout_data_pack:
+            raise ValueError(f"Trainer admission for rollout {rollout_id} has no published data reference.")
+        data_ref = rollout_data_pack["data_ref"]
+        validate_publication_data_ref(publication, data_ref)
+        responses = await self._broadcast("admit_train_batch", publication, data_ref)
+        expected_ranks = tuple(range(len(self._actor_handles)))
+        if len(responses) != len(expected_ranks):
+            raise RuntimeError(f"Trainer admission {publication.admission_id} missed a trainer rank response.")
+        ranks: list[int] = []
+        for response in responses:
+            if not isinstance(response, TrainerRankReceipt) or response.publication != publication:
+                raise RuntimeError(f"Trainer admission {publication.admission_id} received a stale rank response.")
+            if response.rank not in expected_ranks or response.rank in ranks:
+                raise RuntimeError(
+                    f"Trainer admission {publication.admission_id} received a duplicate or foreign rank."
                 )
-                for actor, rank_data in zip(self._actor_handles, external_data, strict=False)
-            ]
-            return await asyncio.gather(*refs)
-        return await self._broadcast(
-            "train",
-            rollout_id,
-            rollout_data_ref,
-            witness_info=None,
-            attempt=0,
-            external_data=external_data,
+            ranks.append(response.rank)
+        if tuple(sorted(ranks)) != expected_ranks:
+            raise RuntimeError(f"Trainer admission {publication.admission_id} missed a trainer rank response.")
+        receipt = TrainerAdmissionReceipt(
+            publication=publication,
+            role=self.role,
+            cohort=TrainerCohort(
+                quorum_id=None,
+                cells=(TrainerCellCohort(cell_index=0, ranks=expected_ranks),),
+            ),
         )
+        self._train_batch_pins_for_write()[publication] = (receipt, tuple(self._actor_handles))
+        return receipt
+
+    def discard_train_batch_admission(self, receipt: TrainerAdmissionReceipt) -> None:
+        """Discard the private fixed-rank pin for an admission receipt."""
+        pins = self._train_batch_pins_for_write()
+        pin = pins.get(receipt.publication)
+        if pin is not None and pin[0] == receipt:
+            pins.pop(receipt.publication, None)
+
+    def _validate_train_batch_pin(
+        self,
+        rollout_id: int,
+        rollout_data_pack: dict[str, Any],
+        receipt: TrainerAdmissionReceipt,
+    ) -> None:
+        publication = rollout_data_pack.get("trainer_admission")
+        if publication != receipt.publication or publication.rollout_id != rollout_id:
+            raise RuntimeError("Trainer admission receipt does not match the train batch publication.")
+        validate_publication_data_ref(publication, rollout_data_pack["data_ref"])
+        pin = self._train_batch_pins_for_write().get(publication)
+        if pin is None or pin[0] != receipt:
+            raise RuntimeError(f"Trainer admission {publication.admission_id} has no exact trainer pin.")
+        expected_handles = pin[1]
+        current_handles = tuple(self._actor_handles)
+        if len(current_handles) != len(expected_handles) or any(
+            current is not expected for current, expected in zip(current_handles, expected_handles, strict=True)
+        ):
+            raise RuntimeError(f"Trainer admission {publication.admission_id} detected trainer cohort drift.")
+
+    def _train_batch_pins_for_write(self) -> dict:
+        if not hasattr(self, "_train_batch_pins"):
+            self._train_batch_pins = {}
+        return self._train_batch_pins
 
     async def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""

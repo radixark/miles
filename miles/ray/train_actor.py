@@ -2,6 +2,7 @@ import abc
 import logging
 import os
 import random
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 
@@ -11,6 +12,7 @@ import torch.distributed as dist
 
 import miles.utils.eval_config
 from miles.ray.ray_actor import RayActor
+from miles.ray.train_batch_admission import TrainBatchPublication, TrainerRankReceipt, validate_publication_data_ref
 from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.distributed_utils import init_gloo_group
@@ -149,6 +151,17 @@ class TrainRayActor(RayActor):
         print_memory("before TrainRayActor.clear_memory")
         clear_memory()
         print_memory("after TrainRayActor.clear_memory")
+
+    def admit_train_batch(self, publication: TrainBatchPublication, rollout_data_ref) -> TrainerRankReceipt:
+        """Prove that this rank can read the exact published batch, without training."""
+        validate_publication_data_ref(publication, rollout_data_ref)
+        refs = rollout_data_ref if isinstance(rollout_data_ref, list) else [rollout_data_ref]
+        store = object_store.get_instance()
+        for ref in refs:
+            with store.get(ref) as value:
+                if not isinstance(value, Mapping):
+                    raise ValueError(f"Admission {publication.admission_id} resolved a non-mapping train batch.")
+        return TrainerRankReceipt(publication=publication, rank=self.args.rank)
 
     @abc.abstractmethod
     def sleep(self, tags):

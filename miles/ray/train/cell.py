@@ -15,6 +15,7 @@ from miles.ray.train.cell_state import (
     StatePending,
     StateStopped,
 )
+from miles.ray.train_batch_admission import TrainerCohortChangedError
 from miles.utils.ft_utils.control_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -210,12 +211,20 @@ class RayTrainCell:
 
     # ------------------------ API :: directly forward calls to actors ------------------------
 
-    async def execute(self, fn_name: str, *args, kill_on_failure: bool = True, **kwargs) -> list:
+    async def execute(
+        self,
+        fn_name: str,
+        *args,
+        kill_on_failure: bool = True,
+        expected_actor_handles: tuple[ray.actor.ActorHandle, ...] | None = None,
+        **kwargs,
+    ) -> list:
         return await self._execute_raw(
             fn_name,
             compute_args=lambda _: args,
             compute_kwargs=lambda _: kwargs,
             kill_on_failure=kill_on_failure,
+            expected_actor_handles=expected_actor_handles,
         )
 
     async def _execute_raw(
@@ -224,8 +233,14 @@ class RayTrainCell:
         compute_args,
         compute_kwargs,
         kill_on_failure: bool = True,
+        expected_actor_handles: tuple[ray.actor.ActorHandle, ...] | None = None,
     ) -> list:
-        handles = self._get_actor_handles()
+        handles = tuple(self._get_actor_handles())
+        if expected_actor_handles is not None and (
+            len(handles) != len(expected_actor_handles)
+            or any(current is not expected for current, expected in zip(handles, expected_actor_handles, strict=True))
+        ):
+            raise TrainerCohortChangedError(f"Trainer cell {self.cell_index} changed actor handles after admission.")
         log_structured(
             logger.info, op="execute", phase="start", cell=self.cell_index, fn=fn_name, n_actors=len(handles)
         )
@@ -301,6 +316,9 @@ class RayTrainCell:
             self._state, StateAllocatedBase
         ), f"Cell {self.cell_index} is not allocated (state={type(self._state).__name__})"
         return self._state.actor_handles
+
+    def _snapshot_actor_handles(self) -> tuple[ray.actor.ActorHandle, ...]:
+        return tuple(self._get_actor_handles())
 
 
 async def _confirm_actor_dead(handle: ray.actor.ActorHandle) -> None:
