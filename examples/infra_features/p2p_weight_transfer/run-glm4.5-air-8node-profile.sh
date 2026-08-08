@@ -71,7 +71,7 @@ NUM_TRAIN_NODES=$((NUM_TRAIN_GPUS / GPUS_PER_NODE))
 MODEL_NAME="GLM-4.5-Air"
 MODEL_TYPE="glm4.5-106B-A12B"
 
-MILES_ROOT="/root/miles"
+MILES_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"
 source "${MILES_ROOT}/scripts/models/${MODEL_TYPE}.sh"
 
 # Rotary base override

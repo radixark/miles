@@ -44,7 +44,8 @@ else
 fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
-source "/root/miles/scripts/models/qwen3-8B.sh"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+source "${SCRIPT_DIR}/../../scripts/models/qwen3-8B.sh"
 
 
 CKPT_ARGS=(
