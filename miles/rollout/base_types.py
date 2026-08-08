@@ -52,21 +52,21 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
 
 
 class TrainBatchRollbackReason(Enum):
-    """Reason that a manager could not publish a leased train batch."""
+    """Reason that a manager could not settle a leased train batch."""
 
     HANDOFF_FAILED = auto()
+    TRAINER_ADMISSION_FAILED = auto()
 
 
 class TrainBatchLease(ABC):
-    """Own a rollout batch until the manager's train-data publication settles.
+    """Own a rollout batch until remote trainers acknowledge its publication.
 
     Args:
         rollout_id: Training rollout that requested the batch.
 
-    A successful commit records that the manager published the complete
-    train-data result. It does not confirm that a remote caller received that
-    result. Settlement may be attempted only once, including when its
-    implementation raises.
+    A successful commit records that every required remote trainer acknowledged
+    the exact published train-data result. Settlement may be attempted only
+    once, including when its implementation raises.
     """
 
     def __init__(self, rollout_id: int) -> None:

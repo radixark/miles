@@ -20,6 +20,12 @@ import ray
 from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
 
 from miles.ray.rollout.rollout_manager import RolloutManager
+from miles.ray.train_batch_admission import (
+    TrainerAdmissionReceipt,
+    TrainerAdmissionStatus,
+    TrainerCellCohort,
+    TrainerCohort,
+)
 from miles.rollout.base_types import (
     LeasedRolloutFnTrainOutput,
     RolloutFnEvalInput,
@@ -646,7 +652,7 @@ class TestGenerate:
             # 8 samples / 2 dp = 4 per rank
             assert len(partition["tokens"]) == 4
 
-    async def test_commits_leased_output_after_every_dp_shard_is_published(
+    async def test_keeps_leased_output_pending_until_trainer_admission(
         self,
         ray_local_mode,
         placement_group_factory,
@@ -678,9 +684,21 @@ class TestGenerate:
 
         result = await manager.generate(rollout_id=42)
 
-        assert events == ["publish", "publish", "commit"]
-        assert set(result) == {"sample_indices", "data_ref"}
+        assert events == ["publish", "publish"]
+        assert set(result) == {"sample_indices", "data_ref", "trainer_admission"}
         assert len(result["data_ref"]) == 2
+        publication = result["trainer_admission"]
+        receipt = TrainerAdmissionReceipt(
+            publication=publication,
+            role="actor",
+            cohort=TrainerCohort(
+                quorum_id=None,
+                cells=(TrainerCellCohort(cell_index=0, ranks=(0, 1)),),
+            ),
+        )
+
+        assert manager.commit_trainer_admission(publication, (receipt,)) is TrainerAdmissionStatus.COMMITTED
+        assert events == ["publish", "publish", "commit"]
 
 
 @pytest.mark.asyncio

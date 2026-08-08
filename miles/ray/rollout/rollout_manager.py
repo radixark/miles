@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from typing import cast
 
@@ -20,6 +21,15 @@ from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
     convert_samples_to_train_data,
     split_train_data_by_dp,
+)
+from miles.ray.train_batch_admission import (
+    TrainBatchPublication,
+    TrainerAdmissionReceipt,
+    TrainerAdmissionStatus,
+    TrainerCellCohort,
+    TrainerCohort,
+    data_ref_ids,
+    required_trainer_roles,
 )
 from miles.ray.utils import Lock
 from miles.rollout.base_types import (
@@ -53,6 +63,16 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 logger = logging.getLogger(__name__)
+
+_MAX_RETAINED_TERMINAL_ADMISSIONS = 64
+
+
+@dataclass
+class _PendingTrainerAdmission:
+    lease: TrainBatchLease | None
+    data_ref: object_store.StoreObjectRef | list[object_store.StoreObjectRef] | None
+    publication: TrainBatchPublication
+    status: TrainerAdmissionStatus = TrainerAdmissionStatus.PENDING
 
 
 def _remove_train_data_refs(
@@ -126,6 +146,9 @@ class RolloutManager:
             dashboard_hooks.register_router(args)
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
+        self._manager_incarnation = uuid.uuid4().hex
+        self._next_admission_id = 0
+        self._pending_admissions: dict[int, _PendingTrainerAdmission] = {}
         self._eval_lock = asyncio.Lock()
         self._eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
 
@@ -150,6 +173,7 @@ class RolloutManager:
         return self.args.sglang_router_ip, self.args.sglang_router_port
 
     def dispose(self):
+        self._reject_unresolved_admissions("dispose")
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
@@ -172,6 +196,8 @@ class RolloutManager:
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         lease: TrainBatchLease | None = None
+        data_ref = None
+        publication = None
         try:
             with timer("rollout"):
                 if self.args.load_debug_rollout_data is not None:
@@ -213,24 +239,177 @@ class RolloutManager:
             else:
                 data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
             result = dict(sample_indices=sample_indices, data_ref=data_ref)
+
+            if lease is not None:
+                self._ensure_admission_state()
+                publication = TrainBatchPublication(
+                    manager_incarnation=self._manager_incarnation,
+                    admission_id=self._next_admission_id,
+                    rollout_id=rollout_id,
+                    data_ref_ids=data_ref_ids(data_ref),
+                    required_roles=required_trainer_roles(self.args, rollout_id),
+                )
+                self._pending_admissions[publication.admission_id] = _PendingTrainerAdmission(
+                    lease=lease,
+                    data_ref=data_ref,
+                    publication=publication,
+                )
+                self._next_admission_id += 1
+                result["trainer_admission"] = publication
         except BaseException as handoff_error:
             if lease is not None:
                 try:
                     lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
                 except BaseException as rollback_error:
                     raise handoff_error from rollback_error
+                cleanup_error = None
+                if publication is not None:
+                    try:
+                        self._pending_admissions.pop(publication.admission_id, None)
+                    except BaseException as registration_cleanup_error:
+                        cleanup_error = registration_cleanup_error
+                if data_ref is not None:
+                    try:
+                        _remove_train_data_refs(data_ref)
+                    except BaseException as data_cleanup_error:
+                        if cleanup_error is None:
+                            cleanup_error = data_cleanup_error
+                if cleanup_error is not None:
+                    raise handoff_error from cleanup_error
             raise
-
-        if lease is not None:
-            try:
-                lease.commit()
-            except BaseException as commit_error:
-                try:
-                    _remove_train_data_refs(data_ref)
-                except BaseException as cleanup_error:
-                    raise commit_error from cleanup_error
-                raise
         return result
+
+    def commit_trainer_admission(
+        self,
+        publication: TrainBatchPublication,
+        receipts: tuple[TrainerAdmissionReceipt, ...],
+    ) -> TrainerAdmissionStatus:
+        """Commit the source lease after every required trainer role acknowledges it."""
+        pending = self._get_pending_admission(publication)
+        if pending.status is not TrainerAdmissionStatus.PENDING:
+            return pending.status
+        self._validate_receipts(pending.publication, receipts)
+        if pending.lease is None:
+            raise RuntimeError(f"Trainer admission {publication.admission_id} has no source lease.")
+        pending.status = TrainerAdmissionStatus.COMMIT_FAILED
+        pending.lease.commit()
+        pending.status = TrainerAdmissionStatus.COMMITTED
+        pending.lease = None
+        pending.data_ref = None
+        self._trim_terminal_admissions()
+        return pending.status
+
+    def rollback_trainer_admission(self, publication: TrainBatchPublication) -> TrainerAdmissionStatus:
+        """Settle the source lease before deleting a failed publication."""
+        pending = self._get_pending_admission(publication)
+        if pending.status is not TrainerAdmissionStatus.PENDING:
+            return pending.status
+        if pending.lease is None or pending.data_ref is None:
+            raise RuntimeError(f"Trainer admission {publication.admission_id} has no source publication.")
+        pending.status = TrainerAdmissionStatus.ROLLBACK_FAILED
+        pending.lease.rollback(TrainBatchRollbackReason.TRAINER_ADMISSION_FAILED)
+        _remove_train_data_refs(pending.data_ref)
+        pending.status = TrainerAdmissionStatus.ROLLED_BACK
+        pending.lease = None
+        pending.data_ref = None
+        self._trim_terminal_admissions()
+        return pending.status
+
+    def get_trainer_admission_status(self, publication: TrainBatchPublication) -> TrainerAdmissionStatus:
+        """Return the recorded definitive or fail-closed settlement state."""
+        return self._get_pending_admission(publication).status
+
+    def _ensure_admission_state(self) -> None:
+        if not hasattr(self, "_manager_incarnation"):
+            self._manager_incarnation = uuid.uuid4().hex
+        if not hasattr(self, "_next_admission_id"):
+            self._next_admission_id = 0
+        if not hasattr(self, "_pending_admissions"):
+            self._pending_admissions = {}
+
+    def _get_pending_admission(self, publication: TrainBatchPublication) -> _PendingTrainerAdmission:
+        self._ensure_admission_state()
+        try:
+            pending = self._pending_admissions[publication.admission_id]
+        except KeyError:
+            raise ValueError(f"Unknown trainer admission {publication.admission_id}.") from None
+        if pending.publication != publication:
+            raise ValueError(f"Trainer admission {publication.admission_id} does not match this manager publication.")
+        return pending
+
+    @staticmethod
+    def _validate_receipts(
+        publication: TrainBatchPublication,
+        receipts: tuple[TrainerAdmissionReceipt, ...],
+    ) -> None:
+        if not receipts:
+            raise ValueError(f"Trainer admission {publication.admission_id} requires exactly the expected roles.")
+        roles: set[str] = set()
+        for receipt in receipts:
+            if not isinstance(receipt, TrainerAdmissionReceipt):
+                raise ValueError(f"Trainer admission {publication.admission_id} received an invalid role receipt.")
+            if receipt.publication != publication:
+                raise ValueError(f"Trainer admission {publication.admission_id} has a foreign publication receipt.")
+            if receipt.role not in publication.required_roles:
+                raise ValueError(f"Trainer admission {publication.admission_id} has a foreign role {receipt.role!r}.")
+            if receipt.role in roles:
+                raise ValueError(f"Trainer admission {publication.admission_id} repeats role {receipt.role!r}.")
+            if not isinstance(receipt.cohort, TrainerCohort):
+                raise ValueError(f"Trainer admission {publication.admission_id} received an invalid cohort.")
+            if not RolloutManager._is_canonical_cohort(receipt.cohort):
+                raise ValueError(f"Trainer admission {publication.admission_id} received a non-canonical cohort.")
+            roles.add(receipt.role)
+        if roles != publication.required_roles:
+            raise ValueError(f"Trainer admission {publication.admission_id} requires exactly the expected roles.")
+
+    @staticmethod
+    def _is_canonical_cohort(cohort: TrainerCohort) -> bool:
+        if type(cohort.cells) is not tuple or not cohort.cells:
+            return False
+        if cohort.quorum_id is not None and (type(cohort.quorum_id) is not int or cohort.quorum_id < 0):
+            return False
+        if cohort.quorum_id is None and len(cohort.cells) != 1:
+            return False
+
+        cell_indices: list[int] = []
+        for cell in cohort.cells:
+            if not isinstance(cell, TrainerCellCohort) or type(cell.cell_index) is not int or cell.cell_index < 0:
+                return False
+            if type(cell.ranks) is not tuple or not cell.ranks:
+                return False
+            if any(type(rank) is not int or rank < 0 for rank in cell.ranks):
+                return False
+            if cell.ranks != tuple(sorted(set(cell.ranks))):
+                return False
+            cell_indices.append(cell.cell_index)
+
+        if cell_indices != sorted(set(cell_indices)):
+            return False
+        return cohort.quorum_id is not None or cell_indices == [0]
+
+    def _reject_unresolved_admissions(self, operation: str) -> None:
+        self._ensure_admission_state()
+        unresolved = [
+            admission_id
+            for admission_id, pending in self._pending_admissions.items()
+            if pending.status
+            in (
+                TrainerAdmissionStatus.PENDING,
+                TrainerAdmissionStatus.COMMIT_FAILED,
+                TrainerAdmissionStatus.ROLLBACK_FAILED,
+            )
+        ]
+        if unresolved:
+            raise RuntimeError(f"Cannot {operation} with unresolved trainer admissions {unresolved}.")
+
+    def _trim_terminal_admissions(self) -> None:
+        terminal_ids = [
+            admission_id
+            for admission_id, pending in self._pending_admissions.items()
+            if pending.status in (TrainerAdmissionStatus.COMMITTED, TrainerAdmissionStatus.ROLLED_BACK)
+        ]
+        for admission_id in terminal_ids[:-_MAX_RETAINED_TERMINAL_ADMISSIONS]:
+            self._pending_admissions.pop(admission_id, None)
 
     async def eval(
         self,
@@ -348,6 +527,7 @@ class RolloutManager:
     # -------------------------- checkpointing -----------------------------
 
     def save(self, rollout_id):
+        self._reject_unresolved_admissions("save")
         if self.args.rollout_global_dataset:
             self.data_source.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)

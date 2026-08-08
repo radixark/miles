@@ -199,6 +199,19 @@ data source that cannot own reservations fails at load. When neither flag is set
 reservations still run and nothing is ever checkpointed, so there is no reservation state
 to lose.
 
+### Trainer admission
+
+Trainer admission runs under owned scheduling, so the configurations above that switch
+owned scheduling off skip it too. Before a training batch commits, every trainer rank
+reads the exact published batch and acknowledges it. A rank reads its own shard when the
+manager splits the publication by data-parallel rank. A rank that has not learned its
+data-parallel layout reads every shard. Under `--delay-split-train-data-by-dp` the
+publication is a single reference, and every rank reads the whole batch. Each trainer
+cell's receipts must together cover every published shard. A rank that cannot read what
+was published to it fails admission, and the step stops before any optimizer work. The
+trainer group stays alive through that failure, so the source group can be replayed on a
+later step.
+
 ## Evaluation
 
 Fully async rollout changes one thing about eval: generation is always in flight, so an
