@@ -21,6 +21,10 @@ class CaseConfig:
     sglang_dp_size: int = None
     sglang_enable_dp_attention: bool = False
     use_deepep: bool = False
+    # Which EP implementation backs use_deepep. "deepep" needs the deep_ep module on
+    # both sides; ROCm images ship "mori" for SGLang and have no Megatron equivalent,
+    # so the dispatcher falls back to alltoall there.
+    ep_backend: str = "deepep"
     use_fp8_rollout: bool = False
     use_int4_rollout: bool = False
     use_bridge: bool = False
@@ -28,6 +32,11 @@ class CaseConfig:
     use_mooncake: bool = False
     max_tokens_per_gpu: int = 8192
     colocate: bool = True
+    # colocate defaults both offloads on, which pulls in torch_memory_saver. Setting
+    # this False keeps the GPUs shared but leaves the training model resident, so
+    # sglang_mem_fraction_static has to drop to leave room for it.
+    offload: bool = True
+    sglang_mem_fraction_static: float = 0.7
     rollout_num_gpus: int = None
     update_weight_transfer_mode: str = None
     num_rollout: int = 2
@@ -52,6 +61,8 @@ class CaseConfig:
             )
         if self.update_weight_transfer_mode is not None:
             assert self.update_weight_transfer_mode == "broadcast"
+        if self.ep_backend not in ("deepep", "mori"):
+            raise ValueError(f"unknown ep_backend: {self.ep_backend!r} (expected 'deepep' or 'mori')")
 
 
 def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
@@ -169,13 +180,13 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 
     sglang_args = (
         f"--rollout-num-gpus-per-engine {case.rollout_num_gpus_per_engine} "
-        "--sglang-mem-fraction-static 0.7 "
+        f"--sglang-mem-fraction-static {case.sglang_mem_fraction_static} "
         "--sglang-max-running-requests 512 "
         "--sglang-enable-metrics "
     )
 
     if case.use_deepep:
-        sglang_args += "--sglang-moe-a2a-backend deepep --sglang-deepep-mode auto "
+        sglang_args += f"--sglang-moe-a2a-backend {case.ep_backend} --sglang-deepep-mode auto "
     if case.sglang_ep_size is not None:
         sglang_args += f"--sglang-expert-parallel-size {case.sglang_ep_size} "
     if case.sglang_dp_size is not None:
@@ -198,9 +209,15 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
     if case.colocate:
         misc_args += "--colocate "
-        misc_args += "--rematerialize-param-from-master-weight "
+        if case.offload:
+            # Rebuilds the param buffer from the distributed optimizer's master
+            # weights after a pause, so it asserts offload_train.
+            misc_args += "--rematerialize-param-from-master-weight "
     else:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
+
+    if not case.offload:
+        misc_args += "--no-offload-train --no-offload-rollout "
 
     if case.update_weight_transfer_mode is not None:
         misc_args += f"--update-weight-transfer-mode {case.update_weight_transfer_mode} "
@@ -214,7 +231,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     if case.use_mooncake:
         misc_args += U.get_mooncake_object_store_args()
 
-    if case.use_deepep:
+    if case.use_deepep and case.ep_backend == "deepep":
         misc_args += "--moe-token-dispatcher-type flex --moe-enable-deepep "
     else:
         misc_args += "--moe-token-dispatcher-type alltoall "
@@ -238,6 +255,10 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
     train_args = build_train_args(case, wandb_file=wandb_file)
 
     extra_env_vars = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
+    if case.ep_backend == "mori":
+        # Large-HBM parts make SGLang auto-pick chunked_prefill_size=16384, above
+        # MoRI's 4096 default dispatch-buffer cap, which asserts at engine init.
+        extra_env_vars["SGLANG_MORI_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "16384"
     if case.use_int4_rollout:
         extra_env_vars |= {
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
