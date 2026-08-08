@@ -37,6 +37,15 @@ from miles.rollout.base_types import (
     TrainBatchRollbackReason,
 )
 from miles.rollout.data_source import DataSource, SourceReservation
+from miles.rollout.fully_async.execution import (
+    FullyAsyncExecution,
+    FullyAsyncExecutionFailure,
+    FullyAsyncExecutionRetry,
+    FullyAsyncExecutionSuccess,
+    FullyAsyncRetryReason,
+    FullyAsyncTerminalPendingError,
+)
+from miles.rollout.fully_async.ownership import ReservationOwnership, ReservationStageId, ReservationTerminalReceipt
 from miles.rollout.fully_async_data_buffer import (
     DataBuffer,
     DataBufferConstructorInput,
@@ -46,14 +55,6 @@ from miles.rollout.fully_async_data_buffer import (
     Group,
     first_sample,
 )
-from miles.rollout.fully_async.execution import (
-    FullyAsyncExecution,
-    FullyAsyncExecutionFailure,
-    FullyAsyncExecutionRetry,
-    FullyAsyncExecutionSuccess,
-    FullyAsyncRetryReason,
-)
-from miles.rollout.fully_async.ownership import ReservationOwnership, ReservationStageId, ReservationTerminalReceipt
 from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from miles.rollout.inference_rollout.fully_async import InferenceFullyAsyncExecutor
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
@@ -142,6 +143,12 @@ class _OwnedTrainBatchLease(TrainBatchLease):
         completion.result()
 
 
+def _retrieve_task_exception(task: asyncio.Task) -> None:
+    """Consume a finished task's failure so an abandoned task never warns on collection."""
+    if not task.cancelled():
+        task.exception()
+
+
 def _supports_source_reservations(data_source: DataSource) -> bool:
     """Whether ``data_source`` declares durable source reservations.
 
@@ -155,15 +162,21 @@ def _supports_source_reservations(data_source: DataSource) -> bool:
 def _owned_group_identity_error(completed: _OwnedCompletedGroup) -> ValueError | None:
     reservation_id = completed.terminal_receipt.executor_receipt.reservation_id
     if len(completed.samples) != len(completed.expected_parent_identities):
-        return ValueError(f"Source reservation {reservation_id} returned {len(completed.samples)} parent slots; expected {len(completed.expected_parent_identities)}.")
+        return ValueError(
+            f"Source reservation {reservation_id} returned {len(completed.samples)} parent slots; expected {len(completed.expected_parent_identities)}."
+        )
     for position, expected_identity in enumerate(completed.expected_parent_identities):
         item = completed.samples[position]
         samples = item if isinstance(item, list) else [item]
         if any(not isinstance(sample, Sample) for sample in samples):
-            return ValueError(f"Source reservation {reservation_id} returned non-Sample values at parent slot {position}.")
+            return ValueError(
+                f"Source reservation {reservation_id} returned non-Sample values at parent slot {position}."
+            )
         actual_identities = [(sample.group_index, sample.index) for sample in samples]
         if not actual_identities or any(identity != expected_identity for identity in actual_identities):
-            return ValueError(f"Source reservation {reservation_id} returned sample identities {actual_identities} at parent slot {position}; expected every sample to have identity {expected_identity}.")
+            return ValueError(
+                f"Source reservation {reservation_id} returned sample identities {actual_identities} at parent slot {position}; expected every sample to have identity {expected_identity}."
+            )
     return None
 
 
@@ -184,7 +197,9 @@ class FullyAsyncRolloutFn:
         self._scheduler = make_submission_scheduler(input.args, default="sample")
         assert input.args.async_unused_samples_handler in ("retry", "drop")
         # applied to every group we do not train on; "drop" discards instead of recycling
-        self._handle_unused = self._recycle if input.args.async_unused_samples_handler == "retry" else (lambda prompt_group: None)
+        self._handle_unused = (
+            self._recycle if input.args.async_unused_samples_handler == "retry" else (lambda prompt_group: None)
+        )
         self._sample_filter = load_function(input.args.rollout_sample_filter_path)
         self._worker: asyncio.Task | None = None
         self._eval_prompt_dataset_cache: dict = {}
@@ -204,7 +219,11 @@ class FullyAsyncRolloutFn:
         self._max_execution_groups = execution_samples // self.args.n_samples_per_prompt
         buffer_groups = int(self.args.async_data_buffer_capacity_factor * self.args.rollout_batch_size)
         self._max_completed_groups = max(buffer_groups, self.args.rollout_batch_size)
-        self._retained_slots = asyncio.BoundedSemaphore(self._max_execution_groups + self._max_completed_groups) if self._uses_owned_scheduling else None
+        self._retained_slots = (
+            asyncio.BoundedSemaphore(self._max_execution_groups + self._max_completed_groups)
+            if self._uses_owned_scheduling
+            else None
+        )
         self._completed_slots: asyncio.Queue[object] | None = None
         self._completed_slot_available = asyncio.Event()
         self._owned_capacity_released = asyncio.Event()
@@ -220,8 +239,13 @@ class FullyAsyncRolloutFn:
         self._active_executions: dict[asyncio.Task[_OwnedTerminalResult], _ActiveOwnedExecution] = {}
         self._pending_reserved_rollbacks: list[SourceReservation] = []
         self._pending_terminal_rollbacks: list[tuple[ReservationTerminalReceipt, bool]] = []
+        self._pending_acquisition_slot = False
         self._discarded_terminal_receipts: deque[ReservationTerminalReceipt] = deque()
         self._discarded_terminal_available = asyncio.Event()
+        self._closing = False
+        self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
+        self._executor_closed = False
         self._next_execution_id = 1
         if self._uses_owned_scheduling:
             self._completed_slots = asyncio.Queue(maxsize=self._max_completed_groups)
@@ -230,6 +254,8 @@ class FullyAsyncRolloutFn:
             self._completed_slot_available.set()
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
+        if self._closing or self._closed:
+            raise RuntimeError("Fully async rollout is closing or closed.")
         if input.evaluation:
             return await self._call_eval(input)
         if self._worker is None:
@@ -281,7 +307,9 @@ class FullyAsyncRolloutFn:
         try:
             [reservation] = ownership.reserve_samples(1)
         except Exception:
-            if not ownership.has_pending_acquisition_rollback:
+            if ownership.has_pending_acquisition_rollback:
+                self._pending_acquisition_slot = True
+            else:
                 retained_slots.release()
             raise
 
@@ -319,7 +347,9 @@ class FullyAsyncRolloutFn:
         async def observe_terminal() -> _OwnedTerminalResult:
             outcome = await execution.wait_terminal()
             if outcome.executor_receipt is not executor_receipt:
-                raise RuntimeError(f"Execution receipt {executor_receipt.receipt_id} did not return its exact terminal receipt.")
+                raise RuntimeError(
+                    f"Execution receipt {executor_receipt.receipt_id} did not return its exact terminal receipt."
+                )
             [terminal_receipt] = ownership.record_terminal([executor_receipt], stage_id=stage_id)
             if isinstance(outcome, FullyAsyncExecutionFailure):
                 return _OwnedExecutionFailure(terminal_receipt=terminal_receipt, error=outcome.error)
@@ -350,12 +380,16 @@ class FullyAsyncRolloutFn:
     ) -> tuple[tuple[int | None, int | None], ...]:
         expected_parents = self.args.n_samples_per_prompt
         if len(reservation.samples) != expected_parents:
-            raise ValueError(f"Source reservation {reservation.reservation_id} contains {len(reservation.samples)} parent slots; expected {expected_parents}.")
+            raise ValueError(
+                f"Source reservation {reservation.reservation_id} contains {len(reservation.samples)} parent slots; expected {expected_parents}."
+            )
         identities = tuple((sample.group_index, sample.index) for sample in reservation.samples)
         if any(group_index is None or sample_index is None for group_index, sample_index in identities):
             raise ValueError(f"Source reservation {reservation.reservation_id} has incomplete parent identities.")
         if len(identities) != len(set(identities)):
-            raise ValueError(f"Source reservation {reservation.reservation_id} has duplicate parent identities: {list(identities)}.")
+            raise ValueError(
+                f"Source reservation {reservation.reservation_id} has duplicate parent identities: {list(identities)}."
+            )
         return identities
 
     async def _generate_group(self, prompt_group: list[Sample]) -> DataBufferInput:
@@ -497,7 +531,9 @@ class FullyAsyncRolloutFn:
                         fatal_error = fatal_error or result.error
                     continue
                 if not isinstance(result, _OwnedCompletedGroup):
-                    fatal_error = fatal_error or RuntimeError(f"Fully async execution returned unsupported {type(result).__name__}.")
+                    fatal_error = fatal_error or RuntimeError(
+                        f"Fully async execution returned unsupported {type(result).__name__}."
+                    )
                     continue
                 if fatal_error is not None or not self._try_acquire_completed_slot():
                     try:
@@ -527,6 +563,7 @@ class FullyAsyncRolloutFn:
             raise RuntimeError("Fully async worker is not initialized.")
         queue_get = asyncio.create_task(output.get(current_version=input.weight_version))
         discarded_wait = asyncio.create_task(self._discarded_terminal_available.wait())
+        claimed_entry: DataBufferInput | None = None
         try:
             while True:
                 done, _ = await asyncio.wait(
@@ -542,13 +579,21 @@ class FullyAsyncRolloutFn:
                     discarded_wait = asyncio.create_task(self._discarded_terminal_available.wait())
                     continue
                 if queue_get in done:
-                    return queue_get.result()
+                    claimed_entry = queue_get.result()
+                    return claimed_entry
                 logger.warning(f"No completed rollout groups for {NO_PROGRESS_WARN_SECS}s")
         finally:
             for task in (queue_get, discarded_wait):
                 if not task.done():
                     task.cancel()
             await asyncio.gather(queue_get, discarded_wait, return_exceptions=True)
+            if claimed_entry is None and not queue_get.cancelled() and queue_get.done():
+                try:
+                    unclaimed_entry = queue_get.result()
+                except BaseException:
+                    pass
+                else:
+                    self._handle_unused_buffer_source(unclaimed_entry.source)
 
     async def _drain(self, input: RolloutFnTrainInput) -> RolloutFnTrainOutput:
         args = self.args
@@ -562,7 +607,9 @@ class FullyAsyncRolloutFn:
             while len(data) < target_data_size:
                 entry = await self._next_group(input)
                 if len(entry.group) != args.n_samples_per_prompt:
-                    raise ValueError(f"Generated group contains {len(entry.group)} parent slots; expected {args.n_samples_per_prompt}.")
+                    raise ValueError(
+                        f"Generated group contains {len(entry.group)} parent slots; expected {args.n_samples_per_prompt}."
+                    )
                 if isinstance(entry.source, ReservationTerminalReceipt):
                     terminal_receipts.append(entry.source)
 
@@ -605,7 +652,6 @@ class FullyAsyncRolloutFn:
                 try:
                     self._rollback_owned_terminals(terminal_receipts)
                 except BaseException as settlement_error:
-                    self._pending_terminal_rollbacks.extend((receipt, True) for receipt in terminal_receipts)
                     raise error from settlement_error
             raise
 
@@ -640,7 +686,11 @@ class FullyAsyncRolloutFn:
         *,
         rollout_id: int,
     ) -> None:
-        self._require_ownership().commit_batch(terminal_receipts, rollout_id=rollout_id)
+        try:
+            self._require_ownership().commit_batch(terminal_receipts, rollout_id=rollout_id)
+        except BaseException:
+            self._pending_terminal_rollbacks.extend((receipt, True) for receipt in terminal_receipts)
+            raise
         self._release_owned_capacity(terminal_receipts, completed_slots=len(terminal_receipts))
 
     def _rollback_owned_terminal(
@@ -653,7 +703,11 @@ class FullyAsyncRolloutFn:
         self._release_owned_capacity([terminal_receipt], completed_slots=int(completed_slot_held))
 
     def _rollback_owned_terminals(self, terminal_receipts: list[ReservationTerminalReceipt]) -> None:
-        self._require_ownership().rollback_batch(terminal_receipts)
+        try:
+            self._require_ownership().rollback_batch(terminal_receipts)
+        except BaseException:
+            self._pending_terminal_rollbacks.extend((receipt, True) for receipt in terminal_receipts)
+            raise
         self._release_owned_capacity(terminal_receipts, completed_slots=len(terminal_receipts))
 
     def _release_owned_capacity(
@@ -683,3 +737,169 @@ class FullyAsyncRolloutFn:
         if self._retained_slots is None:
             raise RuntimeError("Fully async retained capacity is not initialized.")
         return self._retained_slots
+
+    async def close(self) -> None:
+        """Stop production and retry every retained source settlement."""
+        if self._closed:
+            return
+        self._closing = True
+        if self._close_task is None:
+            self._close_task = asyncio.create_task(self._close_once())
+        close_task = self._close_task
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            if close_task.done():
+                self._close_task = None
+            raise
+        self._closed = True
+
+    async def _close_once(self) -> None:
+        errors: list[BaseException] = []
+        worker = self._worker
+        if worker is not None and not worker.done():
+            worker.cancel()
+        if worker is not None:
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+            except BaseException as error:
+                errors.append(error)
+
+        for active in self._active_executions.values():
+            active.execution.request_cancellation()
+        executor = self._executor
+        if executor is not None and not self._executor_closed:
+            try:
+                await executor.close()
+            except BaseException as error:
+                errors.append(error)
+            else:
+                self._executor_closed = True
+
+        for task, active in list(self._active_executions.items()):
+            error = await self._settle_active_execution(task, active)
+            if error is not None:
+                errors.append(error)
+
+        output = self._output
+        if output is not None:
+            try:
+                discard_error = await output.discard_all(self._handle_unused_buffer_source)
+            except BaseException as error:
+                errors.append(error)
+            else:
+                if discard_error is not None:
+                    errors.append(discard_error)
+
+        self._rollback_discarded_terminals(errors)
+        self._retry_pending_rollbacks(errors)
+        if errors:
+            raise errors[0]
+
+    async def _settle_active_execution(
+        self,
+        task: asyncio.Task[_OwnedTerminalResult],
+        active: _ActiveOwnedExecution,
+    ) -> BaseException | None:
+        try:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            if task.cancelled():
+                # The observer never recorded a terminal receipt, so observe the
+                # execution's terminal state directly.
+                result = await self._observe_terminal_with_retry(active)
+            else:
+                # Cancellation is shielded until the execution is terminal, so a
+                # finished observer already holds the exact terminal receipt;
+                # observing again would record that receipt twice.
+                try:
+                    result = task.result()
+                except FullyAsyncTerminalPendingError:
+                    # A pending observer never recorded a terminal receipt, so
+                    # give the aborted execution exactly one more terminal window.
+                    result = await active.observe_terminal()
+        except FullyAsyncTerminalPendingError as error:
+            self._rearm_terminal_observation(task, active)
+            return error
+        except BaseException as error:
+            return error
+        try:
+            self._rollback_owned_terminal(result.terminal_receipt, completed_slot_held=False)
+        except BaseException as error:
+            self._pending_terminal_rollbacks.append((result.terminal_receipt, False))
+            self._active_executions.pop(task, None)
+            return error
+        self._active_executions.pop(task, None)
+        return None
+
+    def _rearm_terminal_observation(
+        self,
+        task: asyncio.Task[_OwnedTerminalResult],
+        active: _ActiveOwnedExecution,
+    ) -> None:
+        # Defensive: reachable only when a ``FullyAsyncExecutor.close()`` returned
+        # with an attempt still in flight, which its contract forbids.
+        # A finished pending observer holds a stale exception, so replace it with a
+        # fresh observation that a later close can settle for real.
+        if self._active_executions.pop(task, None) is None:
+            return
+        rearmed = asyncio.create_task(active.observe_terminal())
+        # Nothing awaits the re-armed observer until the next close, and that close
+        # may never come, so retrieve its exception rather than warn on collection.
+        rearmed.add_done_callback(_retrieve_task_exception)
+        self._active_executions[rearmed] = active
+
+    async def _observe_terminal_with_retry(self, active: _ActiveOwnedExecution) -> _OwnedTerminalResult:
+        try:
+            return await active.observe_terminal()
+        except FullyAsyncTerminalPendingError:
+            # A pending observation never recorded a terminal receipt, so give the
+            # aborted execution exactly one more terminal window.
+            return await active.observe_terminal()
+
+    def _rollback_discarded_terminals(self, errors: list[BaseException]) -> None:
+        while self._discarded_terminal_receipts:
+            receipt = self._discarded_terminal_receipts[0]
+            try:
+                self._rollback_owned_terminal(receipt, completed_slot_held=True)
+            except BaseException as error:
+                errors.append(error)
+                return
+            self._discarded_terminal_receipts.popleft()
+        self._discarded_terminal_available.clear()
+
+    def _retry_pending_rollbacks(self, errors: list[BaseException]) -> None:
+        ownership = self._ownership
+        if ownership is None:
+            return
+        if ownership.has_pending_acquisition_rollback:
+            try:
+                ownership.retry_failed_acquisition_rollback()
+            except BaseException as error:
+                errors.append(error)
+            else:
+                if self._pending_acquisition_slot:
+                    self._require_retained_slots().release()
+                    self._pending_acquisition_slot = False
+
+        for reservation in list(self._pending_reserved_rollbacks):
+            try:
+                ownership.rollback_reserved([reservation])
+            except BaseException as error:
+                errors.append(error)
+            else:
+                self._pending_reserved_rollbacks.remove(reservation)
+                self._require_retained_slots().release()
+
+        for receipt, completed_slot_held in list(self._pending_terminal_rollbacks):
+            try:
+                self._rollback_owned_terminal(receipt, completed_slot_held=completed_slot_held)
+            except BaseException as error:
+                errors.append(error)
+            else:
+                self._pending_terminal_rollbacks.remove((receipt, completed_slot_held))

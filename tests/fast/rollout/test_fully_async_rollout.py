@@ -29,6 +29,7 @@ from miles.rollout.data_source import (
     SourceReservationId,
 )
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.fully_async.execution import FullyAsyncTerminalPendingError
 from miles.rollout.fully_async.ownership import ReservationTerminalReceipt
 from miles.utils.types import Sample
 
@@ -66,11 +67,12 @@ class FakeDataSource:
 class FakeReservationDataSource:
     supports_source_reservations = True
 
-    def __init__(self, reservations: list[SourceReservation]) -> None:
+    def __init__(self, reservations: list[SourceReservation], *, failed_requeues: int = 0) -> None:
         self.reservations = deque(reservations)
         self.reserved: list[SourceReservation] = []
         self.acknowledged: list[tuple[list[SourceReservation], int]] = []
         self.requeued: list[list[SourceReservation]] = []
+        self.failed_requeues = failed_requeues
         self.next_group_index = 1000
 
     def get_samples(self, num_samples: int) -> list[list[Sample]]:
@@ -98,6 +100,9 @@ class FakeReservationDataSource:
         self.acknowledged.append((list(reservations), rollout_id))
 
     def requeue_reservations(self, reservations: Sequence[SourceReservation]) -> None:
+        if self.failed_requeues:
+            self.failed_requeues -= 1
+            raise RuntimeError("scripted requeue failure")
         self.requeued.append(list(reservations))
 
     def save(self, rollout_id: int) -> None:
@@ -156,6 +161,7 @@ def make_args(**overrides) -> Namespace:
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
+        rollout_health_check_timeout=0.1,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
         eval_num_gpus=0,
@@ -286,6 +292,104 @@ async def test_owned_capacity_reopens_after_lease_settlement(monkeypatch):
     assert data_source.reserved == [first, second]
 
 
+async def test_close_retries_failed_lease_rollback(monkeypatch):
+    reservation = make_reservation(12)
+    data_source = FakeReservationDataSource([reservation], failed_requeues=1)
+    fn = make_owned_fn(monkeypatch, data_source)
+    output = await fn(RolloutFnTrainInput(rollout_id=23, weight_version="23"))
+
+    with pytest.raises(RuntimeError, match="scripted requeue failure"):
+        output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+
+    await fn.close()
+
+    assert data_source.requeued == [[reservation]]
+    assert fn._closed
+
+
+async def test_close_retries_a_pending_terminal_observation_once(monkeypatch):
+    release_generation = asyncio.Event()
+    reservation = make_reservation(60)
+    data_source = FakeReservationDataSource([reservation])
+    background: list[asyncio.Task[None]] = []
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        await release_generation.wait()
+        return group
+
+    fn = make_owned_fn(monkeypatch, data_source, generate)
+
+    async def release_after_first_terminal_window() -> None:
+        # Let the first terminal window expire before the group becomes terminal.
+        [observer] = list(fn._active_executions)
+        while not observer.done():
+            await asyncio.sleep(0.005)
+        release_generation.set()
+
+    async def request_abort(args) -> None:
+        background.append(asyncio.create_task(release_after_first_terminal_window()))
+
+    monkeypatch.setattr(inference_fully_async, "request_abort", request_abort)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=60, weight_version="60")))
+    await wait_until(lambda: len(fn._active_executions) == 1)
+    drain.cancel()
+    await asyncio.gather(drain, return_exceptions=True)
+
+    await fn.close()
+
+    assert fn._active_executions == {}
+    assert data_source.requeued == [[reservation]]
+    await asyncio.gather(*background, return_exceptions=True)
+
+
+async def test_close_rearms_observation_after_two_pending_windows(monkeypatch):
+    release_generation = asyncio.Event()
+    reservation = make_reservation(61)
+    data_source = FakeReservationDataSource([reservation])
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        await release_generation.wait()
+        return group
+
+    async def request_abort(args) -> None:
+        return None
+
+    fn = make_owned_fn(monkeypatch, data_source, generate)
+    monkeypatch.setattr(inference_fully_async, "request_abort", request_abort)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=61, weight_version="61")))
+    await wait_until(lambda: len(fn._active_executions) == 1)
+    drain.cancel()
+    await asyncio.gather(drain, return_exceptions=True)
+
+    async def stop_accepting_submissions() -> None:
+        # This executor reports itself closed while one attempt is still in
+        # flight, so close must prove terminal state on its own.
+        return None
+
+    monkeypatch.setattr(fn._executor, "close", stop_accepting_submissions)
+    [pending_observer] = list(fn._active_executions)
+
+    with pytest.raises(FullyAsyncTerminalPendingError):
+        await fn.close()
+
+    [rearmed_observer] = list(fn._active_executions)
+    assert rearmed_observer is not pending_observer
+    assert not rearmed_observer.done()
+    # Nothing awaits a re-armed observer before the next close, so it carries a
+    # done callback that retrieves its exception instead of warning on collection.
+    assert rearmed_observer._callbacks
+    assert not fn._closed
+
+    release_generation.set()
+    await fn.close()
+
+    assert fn._active_executions == {}
+    assert data_source.requeued == [[reservation]]
+    assert fn._closed
+
+
 async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     args = make_args(rollout_batch_size=3)
     fn = make_fn(monkeypatch, args, FakeDataSource())
@@ -313,7 +417,9 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
         return group
 
     data_source = FakeDataSource()
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate)
+    fn = make_fn(
+        monkeypatch, make_args(rollout_batch_size=2, eval_num_gpus=0), data_source, generate=blocking_generate
+    )
 
     eval_started = asyncio.Event()
     eval_release = asyncio.Event()
