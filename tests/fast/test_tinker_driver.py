@@ -79,8 +79,8 @@ def test_validate_tinker_args_defaults_the_rollout_plane():
     args = SimpleNamespace(
         tinker_backend=True,
         multi_lora_n_adapters=4,
-        rollout_function_path="miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora",
-        data_source_path="miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource",
+        rollout_function_path=None,
+        data_source_path="miles.rollout.data_source.RolloutDataSourceWithBuffer",
         use_dynamic_global_batch_size=False,
     )
     validate_tinker_args(args)

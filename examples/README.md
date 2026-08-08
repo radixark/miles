@@ -13,7 +13,7 @@ recipes that are not fully verified.
 - **[fully_async](./fully_async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
 - **[geo3k_vlm](./geo3k_vlm)**: Training VLMs with FSDP using GRPO on the GEO3K dataset, single-turn and [multi-turn](./geo3k_vlm/multi_turn).
 - **[lora](./lora)**: LoRA fine-tuning with the Megatron backend.
-- **[multi_lora](./multi_lora)**: Fully-async multi-adapter LoRA training with a slot-keyed adapter page table.
+- **[tinker_backend](./tinker_backend)**: Multi-adapter LoRA served through the tinker-compatible operation backend (client-driven forward_backward/optim_step).
 - **[on_policy_distillation](./on_policy_distillation)**: Example implementation for on-policy distillation, extending the reinforcement learning pipeline to support teacher–student distillation directly within on-policy training.
 - **[retool_v2](./retool_v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
 - **[swe-agent-harbor-docker](./swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.

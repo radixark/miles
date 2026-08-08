@@ -279,7 +279,7 @@ class DistBucketedWeightUpdateMixin:
 
         from miles.utils.multi_lora import slot_lora_name
 
-        from ...multi_lora_utils import slice_lora_to_rank
+        from ...tinker_backend.model import slice_lora_to_rank
 
         adapter_rank = adapter.config.rank
         lora_config = build_lora_sync_config(self.args) | {"r": adapter_rank, "lora_alpha": adapter.config.alpha}

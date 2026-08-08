@@ -5,11 +5,44 @@ re-registered name is a new tenant, so nothing minted by a predecessor — a
 request id, an engine-side LoRA name, a KV-cache key — can alias its
 successor (anti-ABA)."""
 
+import time
 import uuid
 from dataclasses import dataclass
 
+from miles.utils.misc import SingletonMeta
+
 # Cannot appear in adapter names (registry validates [A-Za-z0-9._-] only).
 RID_SEPARATOR = "::"
+
+
+class AdaptersCache(metaclass=SingletonMeta):
+    """TTL-cached tinker controller snapshot; get/get_all expose the resident
+    projection (ready + retiring), used by the generate path to drop requests
+    for adapters that are no longer served."""
+
+    def __init__(self, ttl_s: float = 1.0) -> None:
+        self.ttl_s = ttl_s
+        self.snapshot: dict = {"pending": {}, "ready": {}, "retiring": {}, "cleanup": []}
+        self.last_refresh: float | None = None
+
+    async def get_snapshot(self) -> dict:
+        from miles.ray.tinker_backend.controller import get_tinker_controller
+
+        now = time.monotonic()
+        if self.last_refresh is None or now - self.last_refresh >= self.ttl_s:
+            try:
+                self.snapshot = await get_tinker_controller().snapshot.remote()
+                self.last_refresh = now
+            except Exception:
+                pass
+        return self.snapshot
+
+    async def get_all(self) -> dict:
+        snapshot = await self.get_snapshot()
+        return {**snapshot.get("ready", {}), **snapshot.get("retiring", {})}
+
+    async def get(self, adapter_name: str):
+        return (await self.get_all()).get(adapter_name)
 
 
 @dataclass(frozen=True)
@@ -73,12 +106,9 @@ def validate_tinker_args(args) -> None:
         "--tinker-backend needs the class-based rollout API: set MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 "
         "(and propagate it through runtime_env when submitting via Ray)"
     )
-    if args.rollout_function_path in (None, "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"):
+    if args.rollout_function_path is None:
         args.rollout_function_path = "miles.rollout.tinker_backend.rollout_fn.TinkerRolloutFn"
-    if args.data_source_path in (
-        "miles.rollout.data_source.RolloutDataSourceWithBuffer",
-        "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource",
-    ):
+    if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
         args.data_source_path = "miles.rollout.tinker_backend.rollout_fn.TinkerNullDataSource"
     # One selection = one whole train step: the multi-LoRA dynamic-GBS branch
     # sizes the step to the (zero-weight padded) batch, so trimming is a

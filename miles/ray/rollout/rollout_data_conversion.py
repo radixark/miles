@@ -13,14 +13,10 @@ def postprocess_rollout_data(args, data, train_parallel_config, pad_to_dp: bool 
 
     validate_compact_rollout_ids(data)
 
-    # Multi-LoRA: record group boundaries (heterogeneous per-adapter group sizes)
-    # and lift the collection loop's batch-level step decision out of sample metadata,
-    # both before flattening.
+    # Multi-LoRA: record group boundaries (heterogeneous per-adapter group
+    # sizes) before flattening.
     if is_multi_lora_enabled(args) and isinstance(data[0], list):
         metadata["prompt_group_sizes"] = [_nested_sample_count(group) for group in data]
-        head = _first_sample(data[0])
-        metadata["step_slots"] = list(head.metadata.pop("step_slots", []))
-        metadata["step_adapter_names"] = list(head.metadata.pop("step_adapter_names", []))
 
     # flatten the data if it is a list of lists
     while isinstance(data[0], list):
@@ -76,10 +72,6 @@ def validate_compact_rollout_ids(node, depth=0):
         validate_compact_rollout_ids(item, depth + 1)
 
 
-def _first_sample(group):
-    return _first_sample(group[0]) if isinstance(group[0], list) else group[0]
-
-
 def _nested_sample_count(group) -> int:
     if not isinstance(group, list):
         return 1
@@ -122,13 +114,13 @@ def _compute_dynamic_global_batch_size(args, train_parallel_config, num_samples:
     original_gbs = args.global_batch_size
 
     if is_multi_lora_enabled(args):
-        # Batches take groups in multiples of each adapter's
-        # min_groups_per_dp_split, so this holds by construction; a violation
-        # means a generate fn's group shape broke the invariant.
+        # Multi-LoRA batches are built from whole prompt groups sized to split
+        # evenly across DP ranks; a violation means a generate fn's group
+        # shape broke that invariant.
         if num_samples % dp_size != 0:
             raise ValueError(
                 f"Multi-LoRA batch of {num_samples} samples is not divisible by dp_size={dp_size}; "
-                "the min_groups_per_dp_split invariant was violated (variable-size generate fn output?)"
+                "whole prompt groups must split evenly across ranks (variable-size generate fn output?)"
             )
         return num_samples
 

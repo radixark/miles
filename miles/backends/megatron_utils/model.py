@@ -195,10 +195,6 @@ def setup_model_and_optimizer(
         from miles.backends.megatron_utils.tinker_backend.optimizer import build_tinker_slot_optimizer
 
         optimizer = build_tinker_slot_optimizer(args, config, model)
-    elif is_multi_lora_enabled(args):
-        from miles.backends.megatron_utils.multi_lora_optimizer import build_multi_lora_optimizer
-
-        optimizer = build_multi_lora_optimizer(args, config, model)
     else:
         optimizer = get_megatron_optimizer(
             config=config,
@@ -427,8 +423,8 @@ def train_one_step(
     one scheduler step when gradients are valid.
 
     Multi-LoRA: gradients are retained across train calls (per-adapter
-    gradient accumulation); only the slots in the batch's ``step_slots`` step,
-    and only their gradients are zeroed.
+    gradient accumulation); slots step only when the client's optim_step
+    operation executes, and only their gradients are zeroed.
 
     Args:
         args: Runtime arguments.
@@ -451,10 +447,7 @@ def train_one_step(
     multi_lora = is_multi_lora_enabled(args)
 
     if multi_lora:
-        if is_tinker_enabled(args):
-            from miles.backends.megatron_utils.tinker_backend.optimizer import reset_grad_metadata_keep_grads
-        else:
-            from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
+        from miles.backends.megatron_utils.tinker_backend.optimizer import reset_grad_metadata_keep_grads
 
         # Retain accumulated per-adapter gradients; reset only the per-iteration
         # DDP bookkeeping. Slot grads are zeroed selectively at step time.
@@ -623,16 +616,10 @@ def train_one_step(
         dumper_phase_util.finalize(model)
 
     if not disable_optimizer and valid_step:
-        if is_tinker_enabled(args):
+        if multi_lora:
             # Tinker data batches only accumulate gradient sums; the optimizer
             # steps when the client's optim_step operation executes.
             grad_norm = 0.0
-        elif multi_lora:
-            from miles.backends.megatron_utils.multi_lora_utils import step_stepped_adapter_slots
-
-            grad_norm = step_stepped_adapter_slots(
-                args, model, optimizer, data_iterator[0].rollout_data, rollout_id, step_id
-            )
         else:
             # Update parameters.
             update_successful, grad_norm, num_zeros_in_grad = optimizer.step()

@@ -194,18 +194,6 @@ def convert_samples_to_train_data(
             train_data["operation_by_slot"] = metadata["operation_by_slot"]
             if metadata.get("tinker_forward_only"):
                 train_data["tinker_forward_only"] = True
-        else:
-            # Slots whose adapter batch completes with this batch: the trainer scales their
-            # accumulated gradients by 1/adapter-batch-size and advances the LR schedule.
-            step_slots = sorted(metadata.get("step_slots", []))
-            train_data["step_slots"] = step_slots
-            train_data["step_adapter_names"] = sorted(metadata.get("step_adapter_names", []))
-            step_slot_set = set(step_slots)
-            train_data["step_adapter_batch_sizes"] = {
-                sample.adapter.slot: sample.metadata["adapter_global_batch_size"]
-                for sample in samples
-                if sample.adapter.slot in step_slot_set
-            }
 
     if (prompt_group_sizes := metadata.get("prompt_group_sizes")) is not None:
         train_data["prompt_group_sizes"] = prompt_group_sizes
@@ -394,9 +382,6 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "raw_reward",
             "total_lengths",
             "dynamic_global_batch_size",
-            "step_slots",
-            "step_adapter_names",
-            "step_adapter_batch_sizes",
             "adapter_name_by_slot",
             "tinker_loss_by_slot",
             "operation_by_slot",

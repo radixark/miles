@@ -139,11 +139,6 @@ class RayTrainGroup:
         results = await self._broadcast("execute_tinker_controls", operations)
         return results[0]
 
-    async def reconcile_adapters(self) -> None:
-        """Multi-LoRA: reconcile loaded adapters with the controller's active set
-        (load new, cleanup gone). Called by the trainer before generate."""
-        await self._broadcast("reconcile_adapters")
-
     async def onload(self):
         await self._broadcast("wake_up")
 
