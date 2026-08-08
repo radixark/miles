@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -6,7 +7,12 @@ from pathlib import Path
 import pytest
 
 import miles.utils.external_utils.model_args_utils as model_args_utils
-from miles.utils.external_utils.model_args_utils import load_model_args, load_sibling_model_args, moe_layer_freq
+from miles.utils.external_utils.model_args_utils import (
+    load_model_args,
+    load_sibling_model_args,
+    moe_layer_freq,
+    shell_safe_model_args,
+)
 
 _MODEL_ARGS_CLI = Path(model_args_utils.__file__).resolve()
 
@@ -231,3 +237,23 @@ class TestModelArgsScript:
         )
 
         assert "--rotary-base 5000000" in result.stdout
+
+
+class TestShellSafeModelArgs:
+    def test_quotes_the_tokens_a_shell_would_reinterpret(self):
+        """--moe-layer-freq [0,0,0,1,1] is a glob; unquoted it expands against the launch directory."""
+        assert "--moe-layer-freq '[0,0,0,1,1]'" in shell_safe_model_args("deepseek-v3-5layer")
+
+    def test_leaves_ordinary_tokens_alone(self):
+        """Quoting everything would churn every snapshot for no gain."""
+        assert "--num-layers 36" in shell_safe_model_args("qwen3-4B")
+
+    def test_survives_a_shell_round_trip_unchanged(self):
+        """Escaping is only correct if the training process receives exactly the declared argv."""
+        assert (
+            shlex.split(shell_safe_model_args("deepseek-v3-5layer")) == load_model_args("deepseek-v3-5layer").split()
+        )
+
+    def test_is_empty_without_a_model_type(self):
+        """FSDP launchers pass None and must contribute no argv at all."""
+        assert shell_safe_model_args(None) == ""

@@ -434,7 +434,7 @@ index d016e01ac..08b4d6eff 100644
 +    )
 +
 +    if get_bool_env_var("SLIME_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
-+        model_args = load_model_args(megatron_model_type) if megatron_model_type is not None else ""
++        model_args = shell_safe_model_args(megatron_model_type)
 +        exec_command_cpu(
 +            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
 +            f'ray job submit --address="http://127.0.0.1:8265" '

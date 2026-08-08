@@ -18,7 +18,7 @@ hf download
   --nnodes={{nnodes}}
   --node-rank {{node_rank}} <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
   --spec miles_plugins.models.glm5.glm5 get_glm5_spec
-  --moe-layer-freq [0]*3+[1]*75
+  --moe-layer-freq '[0]*3+[1]*75'
   --num-experts 256
   --moe-shared-expert-intermediate-size 2048
   --moe-router-topk 8
