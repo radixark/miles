@@ -72,7 +72,7 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
     )
     process.daemon = True
     process.start()
-    wait_for_server_ready(router_ip, router_port, process, timeout=30)
+    wait_for_server_ready(router_ip, router_port, process, timeout=120)
     logger.info(f"Router launched at {router_ip}:{router_port}")
     return router_ip, router_port
 
