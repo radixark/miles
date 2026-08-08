@@ -9,7 +9,7 @@ import random
 import shlex
 import socket
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
@@ -103,7 +103,7 @@ def fp8_cast_bf16(path_src, path_dst):
 @dataclass
 class ExecuteTrainConfig:
     cuda_core_dump: bool = False
-    num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
+    num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
 

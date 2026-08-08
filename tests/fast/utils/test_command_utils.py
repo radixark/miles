@@ -165,3 +165,13 @@ def test_rsync_simple_limits_itself_to_the_requested_node_count(monkeypatch):
     command_utils.rsync_simple("/src", "/dst", num_nodes=4)
 
     assert calls == [{"num_nodes": 4}]
+
+
+class TestExecuteTrainConfig:
+    def test_num_nodes_reads_the_slurm_allocation_when_the_config_is_built(self, monkeypatch):
+        """A plain class-level default would bake in the allocation at import and ignore later changes."""
+        monkeypatch.setenv("SLURM_JOB_NUM_NODES", "8")
+        assert command_utils.ExecuteTrainConfig().num_nodes == 8
+
+        monkeypatch.delenv("SLURM_JOB_NUM_NODES")
+        assert command_utils.ExecuteTrainConfig().num_nodes == 1
