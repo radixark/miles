@@ -111,7 +111,7 @@ def prepare():
 
 def execute():
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
-    te_precision_config_path = U.save_to_temp_file(TE_PRECISION_CONFIG, "yaml")
+    te_precision_config_path = U.encode_pseudo_file(TE_PRECISION_CONFIG)
 
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-MXFP8/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 

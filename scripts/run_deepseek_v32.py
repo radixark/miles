@@ -378,7 +378,7 @@ matchers:
     config: "bf16"
 """.strip()
                 if "--te-precision-config-file" not in args.extra_args:
-                    misc_args += f"--te-precision-config-file {U.save_to_temp_file(te_precision_config_text, 'yaml')} "
+                    misc_args += f"--te-precision-config-file {U.encode_pseudo_file(te_precision_config_text)} "
             else:
                 if args.use_single_node:
                     sglang_world_size = 2
@@ -419,7 +419,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 

@@ -2,18 +2,19 @@
 This file is not for miles framework itself, but as an optional utility to easily launch miles jobs and tests.
 """
 
+import base64
 import datetime
 import json
 import os
 import random
 import shlex
 import socket
-import time
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
 from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
+from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.http_utils import wait_for_server_ready
 from miles.utils.typer_utils import dataclass_cli
 
@@ -332,11 +333,8 @@ def start_mooncake_master(
         ) from exc
 
 
-def save_to_temp_file(text: str, ext: str):
-    path = Path(f"/tmp/miles_temp_file_{time.time()}_{random.randrange(0, 10000000)}.{ext}")
-    path.write_text(text)
-    print(f"Write the following content to {path=}: {text=}")
-    return str(path)
+def encode_pseudo_file(text: str) -> str:
+    return PSEUDO_FILE_PREFIX + base64.b64encode(text.encode()).decode()
 
 
 NUM_GPUS_OF_HARDWARE = {
