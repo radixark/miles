@@ -95,6 +95,10 @@ class RolloutFnLifecycle(ABC):
     """Expose optional rollout ownership and resource lifecycle controls."""
 
     @abstractmethod
+    async def prepare_checkpoint(self, rollout_id: int) -> None:
+        """Require quiescent train-batch ownership before checkpoint publication."""
+
+    @abstractmethod
     async def acquire_train_admission_hold(self) -> TrainAdmissionHold:
         """Close admission and return its linear ownership claim."""
 

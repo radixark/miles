@@ -331,18 +331,43 @@ class FullyAsyncRolloutFn(RolloutFnLifecycle):
         self._train_admission_holds.add(hold)
         return hold
 
+    async def prepare_checkpoint(self, rollout_id: int) -> None:
+        """Require a held terminal frontier before checkpoint publication.
+
+        The admission hold closes source and train-batch lease admission.  The
+        manager waits that hold before invoking this method, so any non-terminal
+        execution here is a frontier violation rather than work that should be
+        consumed by checkpoint preparation.  Discarded terminal receipts are
+        committed under the checkpoint rollout id, while retained ownership
+        cleanup is retried before publication is allowed.
+        """
+        if self._closing or self._closed:
+            raise RuntimeError("Fully async rollout is closing or closed.")
+        if not self._train_admission_holds:
+            raise RuntimeError("Checkpoint preparation requires an active train admission hold.")
+        if self._open_train_batch_leases:
+            open_rollout_ids = sorted(lease.rollout_id for lease in self._open_train_batch_leases)
+            raise RuntimeError(
+                f"Cannot prepare checkpoint {rollout_id} with open train batch leases: {open_rollout_ids}."
+            )
+        if any(not task.done() for task in self._active_executions):
+            raise RuntimeError("Checkpoint preparation requires the admission frontier to be terminal.")
+        if self._discarded_terminal_receipts:
+            self._flush_discarded_terminals(rollout_id)
+        errors: list[BaseException] = []
+        self._retry_pending_rollbacks(errors)
+        if errors:
+            raise errors[0]
+        worker = self._worker
+        if worker is not None and worker.done() and not worker.cancelled():
+            worker.result()
+
     async def _wait_train_admission_frontier(self, hold: _OwnedTrainAdmissionHold) -> None:
         outcomes = await asyncio.gather(
             *(asyncio.shield(task) for task in hold._terminal_frontier),
             return_exceptions=True,
         )
         worker = self._worker
-        while (
-            any(task in self._active_executions for task in hold._terminal_frontier)
-            and worker is not None
-            and not worker.done()
-        ):
-            await asyncio.sleep(0)
         if worker is not None and worker.done() and not worker.cancelled():
             worker.result()
         for outcome in outcomes:

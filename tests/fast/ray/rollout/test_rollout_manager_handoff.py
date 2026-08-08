@@ -93,6 +93,9 @@ class RecordingRolloutLifecycle(RolloutFnLifecycle):
         self.close_started = threading.Event()
         self.holds: list[RecordingTrainAdmissionHold] = []
 
+    async def prepare_checkpoint(self, rollout_id: int) -> None:
+        self.events.append(f"prepare:{rollout_id}")
+
     async def acquire_train_admission_hold(self) -> TrainAdmissionHold:
         self.events.append("acquire")
         self.acquire_started.set()
@@ -288,6 +291,156 @@ async def test_lifecycle_close_precedes_resources_and_retries_failed_close(
 
     await manager.dispose()
     assert events == ["close", "close", "resource"]
+
+
+async def test_checkpoint_fence_orders_prepare_source_and_event(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, args = manager_env
+    args.rollout_global_dataset = True
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+    manager.data_source = SimpleNamespace(save=lambda rollout_id: events.append(f"source:{rollout_id}"))
+    monkeypatch.setattr(
+        rollout_manager_mod.event_logger_checkpoint,
+        "snapshot",
+        lambda _args, rollout_id: events.append(f"event:{rollout_id}"),
+    )
+
+    await manager.save(31)
+
+    assert events == ["acquire", "wait", "prepare:31", "source:31", "event:31", "release"]
+    assert manager._train_admission_holds == {}
+
+
+async def test_known_unresolved_admission_skips_prepare_and_publication(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, args = manager_env
+    args.rollout_global_dataset = True
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+    manager._pending_admissions[17] = SimpleNamespace(status=TrainerAdmissionStatus.PENDING)
+    manager.data_source = SimpleNamespace(save=lambda _rollout_id: events.append("source"))
+    monkeypatch.setattr(rollout_manager_mod.event_logger_checkpoint, "snapshot", lambda *_args: events.append("event"))
+
+    with pytest.raises(RuntimeError, match=r"unresolved trainer admissions \[17\]"):
+        await manager.save(32)
+
+    assert events == ["acquire", "wait", "release"]
+    assert manager._train_admission_holds == {}
+
+
+async def test_late_unresolved_admission_blocks_publication_after_prepare(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, args = manager_env
+    args.rollout_global_dataset = True
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+
+    async def prepare_checkpoint(rollout_id: int) -> None:
+        events.append(f"prepare:{rollout_id}")
+        manager._pending_admissions[18] = SimpleNamespace(status=TrainerAdmissionStatus.ROLLBACK_FAILED)
+
+    lifecycle.prepare_checkpoint = prepare_checkpoint
+    manager.data_source = SimpleNamespace(save=lambda _rollout_id: events.append("source"))
+    monkeypatch.setattr(rollout_manager_mod.event_logger_checkpoint, "snapshot", lambda *_args: events.append("event"))
+
+    with pytest.raises(RuntimeError, match=r"unresolved trainer admissions \[18\]"):
+        await manager.save(33)
+
+    assert events == ["acquire", "wait", "prepare:33", "release"]
+    assert manager._train_admission_holds == {}
+
+
+async def test_prepare_failure_releases_hold_without_publishing(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, args = manager_env
+    args.rollout_global_dataset = True
+    events: list[str] = []
+    prepare_failure = RuntimeError("prepare failed")
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+
+    async def fail_prepare(_rollout_id: int) -> None:
+        events.append("prepare")
+        raise prepare_failure
+
+    lifecycle.prepare_checkpoint = fail_prepare
+    manager.data_source = SimpleNamespace(save=lambda _rollout_id: events.append("source"))
+    monkeypatch.setattr(rollout_manager_mod.event_logger_checkpoint, "snapshot", lambda *_args: events.append("event"))
+
+    with pytest.raises(RuntimeError) as error:
+        await manager.save(34)
+
+    assert error.value is prepare_failure
+    assert events == ["acquire", "wait", "prepare", "release"]
+
+
+async def test_source_failure_preserves_primary_error_when_release_fails(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, args = manager_env
+    args.rollout_global_dataset = True
+    events: list[str] = []
+    source_failure = RuntimeError("source save failed")
+    release_failure = RuntimeError("release failed")
+    lifecycle = RecordingRolloutLifecycle(events, release_error=release_failure)
+    install_lifecycle(manager, lifecycle)
+    manager.data_source = SimpleNamespace(save=lambda _rollout_id: (_ for _ in ()).throw(source_failure))
+    monkeypatch.setattr(rollout_manager_mod.event_logger_checkpoint, "snapshot", lambda *_args: events.append("event"))
+
+    with pytest.raises(RuntimeError) as error:
+        await manager.save(35)
+
+    assert error.value is source_failure
+    assert error.value.__cause__ is release_failure
+    assert events == ["acquire", "wait", "prepare:35", "release"]
+
+
+async def test_cancelled_prepare_waits_for_cleanup_and_releases_exact_hold(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, args = manager_env
+    args.rollout_global_dataset = True
+    events: list[str] = []
+    prepare_started = threading.Event()
+    release_prepare = threading.Event()
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+
+    async def blocked_prepare(_rollout_id: int) -> None:
+        events.append("prepare")
+        prepare_started.set()
+        await asyncio.to_thread(release_prepare.wait)
+
+    lifecycle.prepare_checkpoint = blocked_prepare
+    manager.data_source = SimpleNamespace(save=lambda _rollout_id: events.append("source"))
+    monkeypatch.setattr(rollout_manager_mod.event_logger_checkpoint, "snapshot", lambda *_args: events.append("event"))
+
+    save_task = asyncio.create_task(manager.save(36))
+    assert await asyncio.to_thread(prepare_started.wait, 1)
+    save_task.cancel()
+    await asyncio.sleep(0)
+    assert not save_task.done()
+    release_prepare.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await save_task
+
+    assert events == ["acquire", "wait", "prepare", "release"]
+    assert manager._train_admission_holds == {}
 
 
 async def test_ordinary_output_preserves_existing_handoff(

@@ -9,12 +9,15 @@ from collections import deque
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import replace
+from typing import cast
 
 import pytest
 
+import miles.ray.rollout.rollout_manager as rollout_manager_mod
 import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 import miles.rollout.inference_rollout.fully_async as inference_fully_async
+from miles.ray.rollout.rollout_manager import RolloutManager
 from miles.rollout.base_types import (
     LeasedRolloutFnTrainOutput,
     RolloutFnConstructorInput,
@@ -282,6 +285,180 @@ async def test_open_owned_lease_blocks_close_until_definitive_settlement(monkeyp
     output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
     await fn.close()
     assert fn._closed
+
+
+async def test_prepare_checkpoint_requires_an_active_admission_hold(monkeypatch):
+    fn = make_owned_fn(monkeypatch, FakeReservationDataSource([]))
+
+    with pytest.raises(RuntimeError, match="active train admission hold"):
+        await fn.prepare_checkpoint(24)
+
+
+async def test_prepare_checkpoint_rejects_open_lease_then_accepts_exact_settlement(monkeypatch):
+    reservation = make_reservation(24)
+    data_source = FakeReservationDataSource([reservation])
+    fn = make_owned_fn(monkeypatch, data_source)
+    output = await fn(RolloutFnTrainInput(rollout_id=24, weight_version=24))
+    hold = await fn.acquire_train_admission_hold()
+    await hold.wait_terminal()
+
+    with pytest.raises(RuntimeError, match=r"open train batch leases: \[24\]"):
+        await fn.prepare_checkpoint(24)
+
+    output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+    await fn.prepare_checkpoint(24)
+    assert output.lease not in fn._open_train_batch_leases
+    hold.release()
+
+
+async def test_prepare_checkpoint_rejects_active_frontier_until_hold_waits(monkeypatch):
+    release_generation = asyncio.Event()
+    reservation = make_reservation(25)
+    data_source = FakeReservationDataSource([reservation])
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        await release_generation.wait()
+        return group
+
+    fn = make_owned_fn(monkeypatch, data_source, generate)
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=25, weight_version=25)))
+    await wait_until(lambda: data_source.reserved == [reservation])
+    hold = await fn.acquire_train_admission_hold()
+
+    with pytest.raises(RuntimeError, match="admission frontier to be terminal"):
+        await fn.prepare_checkpoint(25)
+
+    release_generation.set()
+    await hold.wait_terminal()
+    hold.release()
+    output = await drain
+    output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+    await fn.close()
+
+
+async def test_checkpoint_publication_does_not_wait_for_terminal_result_to_enter_full_buffer(monkeypatch):
+    release_generation = asyncio.Event()
+    reservation = make_reservation(26)
+    data_source = FakeReservationDataSource([reservation])
+    events: list[str] = []
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        await release_generation.wait()
+        return group
+
+    fn = make_owned_fn(monkeypatch, data_source, generate)
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=26, weight_version=26)))
+    await wait_until(lambda: data_source.reserved == [reservation])
+    drain.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await drain
+
+    output = fn._output
+    assert isinstance(output, data_buffer.DefaultDataBuffer)
+    buffered_group = make_group(260)
+    await output.put(data_buffer.DataBufferInput(source=buffered_group, group=buffered_group))
+
+    manager_class = cast(type[RolloutManager], object.__getattribute__(RolloutManager, "__ray_actor_class__"))
+    manager = object.__new__(manager_class)
+    manager.args = fn.args
+    manager.data_source = data_source
+    manager._train_rollout_lifecycle = fn
+    manager._rollout_lifecycles_closing = False
+    manager._pending_admissions = {}
+    monkeypatch.setattr(manager, "_submit_lifecycle_coroutine", lambda coroutine: asyncio.create_task(coroutine))
+    monkeypatch.setattr(data_source, "save", lambda rollout_id: events.append(f"source:{rollout_id}"))
+
+    def snapshot(_args, rollout_id):
+        assert data_source.reserved == [reservation]
+        assert not fn._train_admission_open.is_set()
+        events.append(f"event:{rollout_id}")
+
+    monkeypatch.setattr(rollout_manager_mod.event_logger_checkpoint, "snapshot", snapshot)
+    save_task = asyncio.create_task(manager.save(26))
+    await wait_until(lambda: bool(fn._train_admission_holds))
+    release_generation.set()
+    await wait_until(lambda: fn._active_executions and all(task.done() for task in fn._active_executions))
+    assert fn._worker is not None and not fn._worker.done()
+
+    try:
+        done, _ = await asyncio.wait([save_task], timeout=1)
+        assert done == {save_task}
+        await save_task
+        assert events == ["source:26", "event:26"]
+        assert output.get_metrics()["rollout/fully_async/queue_size"] == 1
+    finally:
+        await output.get()
+        if not save_task.done():
+            await asyncio.wait_for(save_task, timeout=1)
+        await fn.close()
+
+
+async def test_prepare_checkpoint_flushes_discarded_terminal_with_checkpoint_rollout_id(monkeypatch):
+    reservation = make_reservation(26)
+    data_source = FakeReservationDataSource([reservation])
+    fn = make_owned_fn(monkeypatch, data_source)
+    ownership = fn._require_ownership()
+    retained_slots = fn._require_retained_slots()
+    assert fn._completed_slots is not None
+    await retained_slots.acquire()
+    assert fn._try_acquire_completed_slot()
+    [reserved] = ownership.reserve_samples(1)
+    [executor_receipt] = ownership.begin_execution([reserved], stage_id="checkpoint-test")
+    [terminal_receipt] = ownership.record_terminal([executor_receipt], stage_id="checkpoint-test")
+    fn._discard_buffer_source(terminal_receipt)
+
+    hold = await fn.acquire_train_admission_hold()
+    await hold.wait_terminal()
+    await fn.prepare_checkpoint(27)
+
+    assert data_source.acknowledged == [([reservation], 27)]
+    assert not fn._discarded_terminal_receipts
+    hold.release()
+    await fn.close()
+
+
+async def test_prepare_checkpoint_retries_retained_terminal_cleanup(monkeypatch):
+    reservation = make_reservation(28)
+    data_source = FakeReservationDataSource([reservation], failed_requeues=1)
+    fn = make_owned_fn(monkeypatch, data_source)
+    output = await fn(RolloutFnTrainInput(rollout_id=28, weight_version=28))
+    hold = await fn.acquire_train_admission_hold()
+    await hold.wait_terminal()
+
+    with pytest.raises(RuntimeError, match="scripted requeue failure"):
+        output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+    assert output.lease not in fn._open_train_batch_leases
+
+    await fn.prepare_checkpoint(28)
+    assert data_source.requeued == [[reservation]]
+    hold.release()
+
+
+async def test_prepare_checkpoint_retries_retained_acquisition_and_reservation_cleanup(monkeypatch):
+    reservation = make_reservation(29)
+    acquisition_attempt = make_reservation(30)
+    data_source = FakeReservationDataSource([reservation], failed_requeues=2)
+    fn = make_owned_fn(monkeypatch, data_source)
+    ownership = fn._require_ownership()
+    retained_slots = fn._require_retained_slots()
+    await retained_slots.acquire()
+    await retained_slots.acquire()
+    [reserved] = ownership.reserve_samples(1)
+    ownership._pending_acquisition_rollback = [acquisition_attempt]
+    fn._pending_acquisition_slot = True
+    fn._pending_reserved_rollbacks.append(reserved)
+    hold = await fn.acquire_train_admission_hold()
+
+    with pytest.raises(RuntimeError, match="scripted requeue failure"):
+        await fn.prepare_checkpoint(29)
+    assert ownership.has_pending_acquisition_rollback
+    assert fn._pending_reserved_rollbacks == [reserved]
+
+    await fn.prepare_checkpoint(29)
+    assert not ownership.has_pending_acquisition_rollback
+    assert fn._pending_reserved_rollbacks == []
+    assert data_source.requeued == [[acquisition_attempt], [reserved]]
+    hold.release()
 
 
 async def test_admission_epoch_race_rolls_back_prefetched_terminal_before_lease(monkeypatch):
