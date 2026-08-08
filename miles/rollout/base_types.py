@@ -58,6 +58,51 @@ class TrainBatchRollbackReason(Enum):
     TRAINER_ADMISSION_FAILED = auto()
 
 
+class TrainAdmissionHold(ABC):
+    """Own one claim that keeps source and train-batch admission closed.
+
+    A hold captures the execution frontier present when it is acquired. Waiting
+    observes that frontier without consuming completed groups or settling a
+    train-batch lease. Release is linear even when its owner reports a failure.
+    """
+
+    def __init__(self) -> None:
+        self._release_attempted = False
+
+    async def wait_terminal(self) -> None:
+        """Wait until the execution frontier captured by this hold is terminal."""
+        if self._release_attempted:
+            raise RuntimeError("Train admission hold already has a release attempt.")
+        await self._wait_terminal()
+
+    @abstractmethod
+    async def _wait_terminal(self) -> None:
+        """Implement terminal observation for this hold's frontier."""
+
+    def release(self) -> None:
+        """Release this exact claim on source and train-batch admission."""
+        if self._release_attempted:
+            raise RuntimeError("Train admission hold already has a release attempt.")
+        self._release_attempted = True
+        self._release()
+
+    @abstractmethod
+    def _release(self) -> None:
+        """Implement release after the handle is claimed."""
+
+
+class RolloutFnLifecycle(ABC):
+    """Expose optional rollout ownership and resource lifecycle controls."""
+
+    @abstractmethod
+    async def acquire_train_admission_hold(self) -> TrainAdmissionHold:
+        """Close admission and return its linear ownership claim."""
+
+    @abstractmethod
+    async def close(self) -> None:
+        """Close resources after all train-batch leases settle."""
+
+
 class TrainBatchLease(ABC):
     """Own a rollout batch until remote trainers acknowledge its publication.
 
