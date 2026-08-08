@@ -15,7 +15,7 @@ from miles.utils.arguments import (
     miles_validate_args,
     resolve_rollout_function_paths,
     validate_async_off_policy_correction,
-    validate_skip_forward_only,
+    validate_skip_actor_forward_only,
 )
 from miles.utils.misc import function_registry
 
@@ -649,30 +649,39 @@ class TestValidateAsyncOffPolicyCorrection:
     ("extra_args", "expected"),
     [
         ([], False),
-        (["--skip-forward-only"], True),
+        (["--skip-actor-forward-only"], True),
     ],
 )
-def test_skip_forward_only_flag_is_parsed(extra_args, expected):
+def test_skip_actor_forward_only_flag_is_parsed(extra_args, expected):
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
 
     args = parser.parse_args(extra_args + REQUIRED_ARGS)
 
-    assert args.skip_forward_only is expected
+    assert args.skip_actor_forward_only is expected
 
 
-def test_skip_forward_only_is_gated_during_miles_validation():
+def test_skip_actor_forward_only_is_gated_during_miles_validation():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(
-        ["--skip-forward-only", "--global-batch-size", "32", "--num-rollout", "1"] + REQUIRED_ARGS
+        ["--skip-actor-forward-only", "--global-batch-size", "32", "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+    vars(args).update(
+        hidden_dropout=0.0,
+        attention_dropout=0.0,
+        lora_dropout=0.0,
+        moe_input_jitter_eps=None,
+        moe_router_force_biased=None,
+        moe_router_force_load_balancing=False,
+        moe_router_load_balancing_type="aux_loss",
     )
 
-    with pytest.raises(AssertionError, match="--skip-forward-only"):
+    with pytest.raises(AssertionError, match="--skip-actor-forward-only"):
         miles_validate_args(args)
 
 
-def _make_skip_forward_only_args(**overrides) -> SimpleNamespace:
+def _make_skip_actor_forward_only_args(**overrides) -> SimpleNamespace:
     defaults = dict(
         compute_advantages_and_returns=True,
         custom_megatron_before_log_prob_hook_path=None,
@@ -684,10 +693,17 @@ def _make_skip_forward_only_args(**overrides) -> SimpleNamespace:
         dump_details=None,
         get_mismatch_metrics=False,
         global_batch_size=64,
+        hidden_dropout=0.0,
+        attention_dropout=0.0,
         keep_old_actor=False,
         kl_coef=0.0,
+        lora_dropout=0.0,
         log_correct_samples=False,
         loss_type="policy_loss",
+        moe_input_jitter_eps=None,
+        moe_router_force_biased=None,
+        moe_router_force_load_balancing=False,
+        moe_router_load_balancing_type="aux_loss",
         multi_lora=False,
         n_samples_per_prompt=8,
         num_steps_per_rollout=None,
@@ -710,9 +726,15 @@ def _make_skip_forward_only_args(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**defaults)
 
 
-class TestValidateSkipForwardOnly:
+class TestValidateSkipActorForwardOnly:
     def test_valid_single_step_configuration_passes(self):
-        validate_skip_forward_only(_make_skip_forward_only_args())
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args())
+
+    def test_zero_moe_input_jitter_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(moe_input_jitter_eps=0.0))
+
+    def test_tis_configuration_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_tis=True))
 
     @pytest.mark.parametrize(
         "overrides",
@@ -724,7 +746,13 @@ class TestValidateSkipForwardOnly:
             {"keep_old_actor": True},
             {"kl_coef": 0.1},
             {"use_opd": True},
-            {"use_tis": True},
+            {"hidden_dropout": 0.1},
+            {"attention_dropout": 0.1},
+            {"lora_dropout": 0.1},
+            {"moe_input_jitter_eps": 0.1},
+            {"moe_router_force_load_balancing": True},
+            {"moe_router_force_biased": 0.0},
+            {"moe_router_load_balancing_type": ["sinkhorn"]},
             {"get_mismatch_metrics": True},
             {"use_rollout_entropy": True},
             {"true_on_policy_mode": True},
@@ -740,19 +768,34 @@ class TestValidateSkipForwardOnly:
             {"save_debug_train_data": "train-{rollout_id}.pt"},
             {"use_routing_replay": True},
             {"use_indexer_replay": True},
-            {"use_rollout_routing_replay": True},
-            {"use_rollout_indexer_replay": True},
             {"num_steps_per_rollout": 2},
             {"global_batch_size": 32},
         ],
     )
     def test_incompatible_configuration_is_rejected(self, overrides):
-        with pytest.raises(AssertionError, match="--skip-forward-only"):
-            validate_skip_forward_only(_make_skip_forward_only_args(**overrides))
+        with pytest.raises(AssertionError, match="--skip-actor-forward-only"):
+            validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(**overrides))
+
+    @pytest.mark.parametrize(
+        ("base_flag", "rollout_flag"),
+        [
+            ("use_routing_replay", "use_rollout_routing_replay"),
+            ("use_indexer_replay", "use_rollout_indexer_replay"),
+        ],
+    )
+    def test_rollout_replay_is_compatible(self, base_flag, rollout_flag):
+        validate_skip_actor_forward_only(
+            _make_skip_actor_forward_only_args(
+                **{
+                    base_flag: True,
+                    rollout_flag: True,
+                }
+            )
+        )
 
     def test_dynamic_global_batch_size_defers_step_count_to_runtime(self):
-        validate_skip_forward_only(
-            _make_skip_forward_only_args(
+        validate_skip_actor_forward_only(
+            _make_skip_actor_forward_only_args(
                 global_batch_size=32,
                 use_dynamic_global_batch_size=True,
             )

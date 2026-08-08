@@ -1454,13 +1454,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--skip-forward-only",
+                "--skip-actor-forward-only",
                 action="store_true",
                 default=False,
                 help=(
-                    "Skip the standalone Megatron actor log-probs forward and use detached log probs "
-                    "from the single training optimizer step as the old-policy baseline. This makes "
-                    "the actor importance log-ratio exactly 0. The skipped pass's rollout/log_probs "
+                    "Skip the standalone Megatron actor forward-only pass by reusing detached training "
+                    "log-probs as the old-policy baseline. This requires a single optimizer step and "
+                    "makes the actor importance log-ratio exactly 0. The skipped pass's rollout/log_probs "
                     "metric is not emitted."
                 ),
             )
@@ -3329,14 +3329,14 @@ def miles_validate_args(args):
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
-    if args.skip_forward_only:
-        validate_skip_forward_only(args)
+    if args.skip_actor_forward_only:
+        validate_skip_actor_forward_only(args)
 
     _maybe_apply_dumper_overrides(args)
 
 
-def validate_skip_forward_only(args) -> None:
-    option = "--skip-forward-only"
+def validate_skip_actor_forward_only(args) -> None:
+    option = "--skip-actor-forward-only"
     assert args.train_backend == "megatron", f"{option} only supports --train-backend megatron"
     assert args.loss_type == "policy_loss", f"{option} only supports --loss-type policy_loss"
     assert args.compute_advantages_and_returns, f"{option} requires actor advantage computation"
@@ -3348,7 +3348,16 @@ def validate_skip_forward_only(args) -> None:
             ("--keep-old-actor", args.keep_old_actor),
             ("--kl-coef", args.kl_coef != 0),
             ("--use-opd", args.use_opd),
-            ("--use-tis", args.use_tis),
+            ("--hidden-dropout", args.hidden_dropout != 0),
+            ("--attention-dropout", args.attention_dropout != 0),
+            ("--lora-dropout", args.lora_dropout != 0),
+            ("--moe-input-jitter-eps", args.moe_input_jitter_eps not in (None, 0)),
+            ("--moe-router-force-load-balancing", args.moe_router_force_load_balancing),
+            ("--moe-router-force-biased", args.moe_router_force_biased is not None),
+            (
+                "--moe-router-load-balancing-type sinkhorn",
+                "sinkhorn" in args.moe_router_load_balancing_type,
+            ),
             ("--get-mismatch-metrics", args.get_mismatch_metrics),
             ("--use-rollout-entropy", args.use_rollout_entropy),
             ("--true-on-policy-mode", args.true_on_policy_mode),
@@ -3371,10 +3380,14 @@ def validate_skip_forward_only(args) -> None:
             ),
             ("--dump-details", args.dump_details is not None),
             ("--save-debug-train-data", args.save_debug_train_data is not None and args.dump_details is None),
-            ("--use-routing-replay", args.use_routing_replay),
-            ("--use-indexer-replay", args.use_indexer_replay),
-            ("--use-rollout-routing-replay", args.use_rollout_routing_replay),
-            ("--use-rollout-indexer-replay", args.use_rollout_indexer_replay),
+            (
+                "--use-routing-replay",
+                args.use_routing_replay and not args.use_rollout_routing_replay,
+            ),
+            (
+                "--use-indexer-replay",
+                args.use_indexer_replay and not args.use_rollout_indexer_replay,
+            ),
         )
         if enabled
     ]

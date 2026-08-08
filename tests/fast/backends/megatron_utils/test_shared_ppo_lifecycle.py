@@ -6,6 +6,9 @@ from types import ModuleType
 from unittest.mock import Mock
 
 import pytest
+import torch
+
+from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 
 
 @pytest.fixture(scope="module")
@@ -242,7 +245,7 @@ def _actor_train_args(**overrides):
         use_rollout_logprobs=False,
         keep_old_actor=False,
         get_mismatch_metrics=False,
-        skip_forward_only=False,
+        skip_actor_forward_only=False,
     )
     return Namespace(**(defaults | overrides))
 
@@ -293,7 +296,7 @@ def _patch_actor_reuse_dependencies(actor_module, monkeypatch, *, num_microbatch
 
 
 @pytest.mark.parametrize(
-    ("skip_forward_only", "num_microbatches"),
+    ("skip_actor_forward_only", "num_microbatches"),
     [
         (False, [1]),
         (True, [1]),
@@ -301,11 +304,11 @@ def _patch_actor_reuse_dependencies(actor_module, monkeypatch, *, num_microbatch
     ],
 )
 def test_actor_logprob_forward_is_explicit_single_step_opt_in(
-    actor_module, monkeypatch, skip_forward_only, num_microbatches
+    actor_module, monkeypatch, skip_actor_forward_only, num_microbatches
 ):
     worker = _actor_reuse_worker(
         actor_module,
-        skip_forward_only=skip_forward_only,
+        skip_actor_forward_only=skip_actor_forward_only,
     )
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=num_microbatches)
     rollout_data = {
@@ -315,18 +318,86 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
 
     worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert worker.compute_log_prob.call_count == int(not skip_forward_only)
+    assert worker.compute_log_prob.call_count == int(not skip_actor_forward_only)
     assert (
         actor_module.compute_advantages_and_returns.call_args.kwargs["allow_training_logprob_reuse"]
-        is skip_forward_only
+        is skip_actor_forward_only
     )
     train_call = actor_module.train.call_args
     assert train_call.args[6] is rollout_data["num_rollouts"]
-    assert train_call.kwargs["allow_training_logprob_reuse"] is skip_forward_only
+    assert train_call.kwargs["allow_training_logprob_reuse"] is skip_actor_forward_only
 
 
-def test_skip_forward_only_rejects_multiple_optimizer_steps(actor_module, monkeypatch):
-    worker = _actor_reuse_worker(actor_module, skip_forward_only=True)
+@pytest.mark.parametrize(
+    ("manager_cls", "rollout_flag", "data_key"),
+    [
+        (RoutingReplayManager, "use_rollout_routing_replay", "rollout_routed_experts"),
+        (IndexerReplayManager, "use_rollout_indexer_replay", "rollout_indexer_topk"),
+    ],
+)
+def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_training(
+    actor_module,
+    monkeypatch,
+    manager_cls,
+    rollout_flag,
+    data_key,
+):
+    manager = manager_cls()
+    manager.enabled = True
+    manager.enable_check_replay_result = False
+    queued_top_indices = []
+    replay = Mock()
+    replay.record.side_effect = queued_top_indices.append
+    replay.pop_backward.side_effect = lambda: queued_top_indices.pop(0)
+    manager.replays = [replay]
+    manager.set_current(replay)
+
+    worker = _actor_reuse_worker(
+        actor_module,
+        skip_actor_forward_only=True,
+        **{rollout_flag: True},
+    )
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
+    monkeypatch.setattr(actor_module, "all_replay_managers", [manager])
+    worker._set_replay_stage.side_effect = lambda stage: setattr(manager, "stage", stage)
+
+    expected_top_indices = torch.tensor([[1]], dtype=torch.int64)
+
+    def preload_replay_data(**kwargs):
+        assert kwargs["data_key"] == data_key
+        assert kwargs["replay_list"] is manager.replays
+        kwargs["replay_list"][0].record(kwargs["rollout_data"].pop(data_key)[0])
+
+    fill_replay_data = Mock(side_effect=preload_replay_data)
+    monkeypatch.setattr(actor_module, "fill_replay_data", fill_replay_data)
+
+    def train_with_replay(*_args, **_kwargs):
+        topk_fn = manager.get_topk_fn(
+            lambda scores, topk: torch.topk(scores, topk, dim=1).indices,
+            return_probs=False,
+        )
+        scores = torch.tensor([[0.0, 1.0]])
+        torch.testing.assert_close(topk_fn(scores, 1), expected_top_indices)
+        return actor_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY
+
+    train = Mock(side_effect=train_with_replay)
+    monkeypatch.setattr(actor_module, "train", train)
+    rollout_data = {
+        "num_rollouts": [1],
+        "total_lengths": [1],
+        data_key: [expected_top_indices],
+    }
+
+    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    fill_replay_data.assert_called_once()
+    replay.pop_backward.assert_called_once()
+    assert queued_top_indices == []
+
+
+def test_skip_actor_forward_only_rejects_multiple_optimizer_steps(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, skip_actor_forward_only=True)
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1, 1])
     rollout_data = {"num_rollouts": [1, 1], "total_lengths": [1, 1]}
 
@@ -338,8 +409,8 @@ def test_skip_forward_only_rejects_multiple_optimizer_steps(actor_module, monkey
     actor_module.train.assert_not_called()
 
 
-def test_skip_forward_only_rejects_existing_actor_log_probs(actor_module, monkeypatch):
-    worker = _actor_reuse_worker(actor_module, skip_forward_only=True)
+def test_skip_actor_forward_only_rejects_existing_actor_log_probs(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, skip_actor_forward_only=True)
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
     rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
     rollout_data["log_probs"] = [object()]

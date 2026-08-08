@@ -53,10 +53,18 @@ def _run_policy_loss(args, batch, inputs, *, allow_training_logprob_reuse):
     return loss.detach(), metrics, logits.grad.clone()
 
 
-@pytest.mark.parametrize("advantage_estimator", ["grpo", "gspo"])
+@pytest.mark.parametrize(
+    ("advantage_estimator", "use_tis"),
+    [
+        ("grpo", False),
+        ("gspo", False),
+        ("grpo", True),
+    ],
+)
 def test_reused_training_log_probs_match_an_explicit_detached_baseline(
     process_group,
     advantage_estimator,
+    use_tis,
     monkeypatch,
 ):
     parallel_state = make_parallel_state()
@@ -67,6 +75,7 @@ def test_reused_training_log_probs_match_an_explicit_detached_baseline(
         kl_coef=0.0,
         observe_training_entropy=False,
         true_on_policy_mode=False,
+        use_tis=use_tis,
     )
     inputs = make_inputs(
         seed=1234,

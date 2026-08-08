@@ -465,9 +465,9 @@ class MegatronTrainRayActor(TrainRayActor):
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         num_optimizer_steps = len(num_microbatches)
         num_rollouts = get_num_rollouts(self.args, rollout_data, num_optimizer_steps)
-        allow_training_logprob_reuse = self.args.skip_forward_only
+        allow_training_logprob_reuse = self.args.skip_actor_forward_only
         if allow_training_logprob_reuse:
-            option = "--skip-forward-only"
+            option = "--skip-actor-forward-only"
             assert num_optimizer_steps == 1, f"{option} requires 1 optimizer step, got {num_optimizer_steps}"
             assert rollout_data.get("log_probs") is None, f"{option} requires rollout data without actor log probs"
 
