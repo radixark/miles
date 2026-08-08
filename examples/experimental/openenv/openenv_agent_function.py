@@ -37,7 +37,7 @@ verdict and the episode is dropped with a warning (see the guard in
 multi_turn).
 
 Per-episode sandbox variants: one sibling module per provider
-(``openenv_{daytona,e2b}_agent_function``), each a drop-in
+(``openenv_{daytona,e2b,modal}_agent_function``), each a drop-in
 ``--custom-agent-function-path`` alternative that runs every episode in its
 own cloud sandbox. They reuse this module's agent loop and training wrapper,
 supplying only their own run_episode (see the episode-wiring note below);

@@ -1,7 +1,8 @@
 """Shared per-episode sandbox orchestration for the backend agent functions.
 
 A backend module (``openenv_daytona_agent_function``,
-``openenv_e2b_agent_function``) owns only what is genuinely provider-specific: how ONE sandbox with the env
+``openenv_e2b_agent_function``, ``openenv_modal_agent_function``)
+owns only what is genuinely provider-specific: how ONE sandbox with the env
 server comes into being (its ``tb2_sandbox_*`` materialization module), which
 errors count as retryable throttling, and its env-var knobs. Everything that
 makes per-episode sandboxes safe under a fanned-out rollout is provider-blind
@@ -49,6 +50,7 @@ StartFn = Callable[[str, str], tuple[Callable[[], None], str]]
 AGENT_MODULES = {
     "daytona": "openenv_daytona_agent_function",
     "e2b": "openenv_e2b_agent_function",
+    "modal": "openenv_modal_agent_function",
 }
 AGENT_FUNCTIONS = {backend: f"{module}.run" for backend, module in AGENT_MODULES.items()}
 _ALIASES = {"agentenv": "e2b"}
@@ -150,7 +152,7 @@ def _agent_function():
 
 # Throttle text every provider shares: an HTTP 429 surfaced as a message
 # rather than a typed error. A backend adds its own vocabulary (Daytona's
-# "throttler").
+# "throttler", Modal's "resource exhausted").
 _THROTTLE_TEXT = ("too many requests", "429", "rate limit")
 
 
