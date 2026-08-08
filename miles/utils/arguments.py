@@ -818,10 +818,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "p2p", "disk-delta"],
+                choices=["broadcast", "p2p", "disk-delta", "rdt"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
+                    "'broadcast' = NCCL broadcast; 'p2p' = mooncake RDMA write; "
+                    "'rdt' = Ray Direct Transport (NIXL RDMA pull, requires sglang use_ray=True). "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                     "them into a host-local checkpoint that the engine reloads from."
@@ -3210,14 +3212,14 @@ def miles_validate_args(args):
         args.check_weight_update_equal = True
 
     # always true on offload for colocate at the moment.
-    if args.update_weight_transfer_mode == "p2p":
+    if args.update_weight_transfer_mode in ("p2p", "rdt"):
         assert not args.colocate, (
-            "P2P weight transfer mode is not compatible with --colocate. "
-            "Please use broadcast mode or disable colocate."
+            f"{args.update_weight_transfer_mode} weight transfer mode is not compatible with "
+            "--colocate. Please use broadcast mode or disable colocate."
         )
         assert (
             getattr(args, "prefill_num_servers", None) is None
-        ), "P2P weight transfer mode has not been tested when PD is enabled."
+        ), f"{args.update_weight_transfer_mode} weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
 
     if args.update_weight_transfer_mode == "disk-delta":

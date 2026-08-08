@@ -68,7 +68,12 @@ def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
 
 
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
-    from sglang.srt.entrypoints.http_server import launch_server
+    if server_args.use_ray:
+        # entrypoints.http_server ignores use_ray and starts mp.Process schedulers,
+        # which have no SchedulerActor for RDT to pull from.
+        from sglang.srt.ray.http_server import launch_server
+    else:
+        from sglang.srt.entrypoints.http_server import launch_server
 
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
@@ -132,6 +137,8 @@ class SGLangEngine(RayActor):
         base_gpu_id: int | None = None,
         sglang_overrides: dict | None = None,
         num_gpus_per_engine: int | None = None,
+        pg_id: str | None = None,
+        pg_bundles: list | None = None,
     ):
         self.args = args
         self.rank = rank
@@ -139,6 +146,9 @@ class SGLangEngine(RayActor):
         self.base_gpu_id = base_gpu_id
         self.sglang_overrides = sglang_overrides or {}
         self.num_gpus_per_engine = num_gpus_per_engine
+        self.pg_id = pg_id
+        self.pg_bundles = pg_bundles
+        self._scheduler_actors = []
 
     def get_topology_info(self) -> dict:
         """Placement facts for the dashboard timeline. ``base_gpu_id`` is
@@ -244,7 +254,26 @@ class SGLangEngine(RayActor):
         _sanity_check_server_args(actual_server_args, expect_server_args)
 
     def _init_normal(self, server_args_dict):
-        logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
+        use_rdt = self.args.update_weight_transfer_mode == "rdt"
+        if use_rdt:
+            if self.node_rank != 0:
+                # For a multi-node engine, the node-0 server's RayEngine spawns
+                # the SchedulerActors of ALL ranks (placed cross-node via the
+                # placement group), so non-zero node ranks launch nothing.
+                self.process = None
+                return
+            server_args_dict["use_ray"] = True
+            server_args_dict["enable_rdt_weight_sync"] = True
+            # The mp.Process child loses the PG context and would auto-create a
+            # second PG, double-booking the rollout GPUs. It is a separate Ray job,
+            # so pass the PG by global ID rather than by name.
+            if self.pg_id and self.pg_bundles:
+                os.environ["MILES_RDT_PG_ID"] = self.pg_id
+                os.environ["MILES_RDT_PG_BUNDLES"] = ",".join(str(b) for b in self.pg_bundles)
+        logger.info(
+            f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}"
+            f"{' (use_ray=True for RDT)' if use_rdt else ''}"
+        )
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
@@ -465,6 +494,9 @@ class SGLangEngine(RayActor):
     def shutdown(self):
         if self.args.rollout_external:
             return
+        if getattr(self, "process", None) is None:
+            # Non-zero node ranks of an RDT multi-node engine launch no server.
+            return
 
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
         if self.node_rank == 0:
@@ -513,6 +545,51 @@ class SGLangEngine(RayActor):
             "unload_lora_adapter",
             {"lora_name": lora_name},
         )
+
+    def get_scheduler_actors(self) -> list:
+        """Return this engine's SchedulerActor handles (RDT mode, use_ray=True).
+
+        RayEngine names one actor per (pp, tp) rank
+        ``sglang_scheduler_node{ip}[_dp{dp}]_pp{pp}_tp{tp}_port{port}_pg{hex}_bundle{idx}``.
+        The pg/bundle suffix is unknown here, but the http port is unique per engine,
+        so match on the port and tp tokens across namespaces. Raises unless every
+        tp_rank matches exactly one actor: a partial list would silently sync a
+        subset of the ranks.
+        """
+        if self._scheduler_actors:
+            return self._scheduler_actors
+
+        import ray
+
+        tp_size = getattr(self.args, "rollout_num_gpus_per_engine", 1)
+        port_token = f"_port{self.server_port}_"
+
+        try:
+            raw = ray.util.list_named_actors(all_namespaces=True)
+        except TypeError:
+            # Older Ray without the all_namespaces kwarg.
+            raw = ray.util.list_named_actors()
+        entries = [(e["name"], e.get("namespace")) if isinstance(e, dict) else (e, None) for e in raw]
+        # Kept for the failure message below.
+        sched_like = [(n, ns) for (n, ns) in entries if "scheduler" in n.lower() or "sglang" in n.lower()]
+        engine_entries = [(n, ns) for (n, ns) in entries if n.startswith("sglang_scheduler_node") and port_token in n]
+
+        actors = []
+        for tp_rank in range(tp_size):
+            tp_token = f"_pp0_tp{tp_rank}_"
+            matches = [(n, ns) for (n, ns) in engine_entries if tp_token in n]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    f"SchedulerActor discovery for engine port={self.server_port} tp_rank={tp_rank} "
+                    f"matched {len(matches)} actors (expected 1): {[n for n, _ in matches]}. "
+                    f"tokens: '{port_token}', '{tp_token}'. Discovered {len(entries)} named actors, "
+                    f"{len(sched_like)} scheduler-like: {[n for n, _ in sched_like[:20]]}."
+                )
+            name, namespace = matches[0]
+            actors.append(ray.get_actor(name, namespace=namespace) if namespace else ray.get_actor(name))
+
+        self._scheduler_actors = actors
+        return actors
 
     def release_memory_occupation(self, tags: list[str] = None):
         """Release memory occupation. Available tags: weights, kv_cache."""
