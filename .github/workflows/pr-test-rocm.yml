@@ -9,9 +9,15 @@ name: PR Test (ROCm)
 # shared CI policy selects matching register_rocm_ci() labels for PR/nightly
 # runs; manual dispatch keeps the full regular MI300X suite.
 #
-# The MI300X host is split into two 4-GPU runners, so this stage is 4-GPU.
-# CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
-# own 4-GPU CaseConfig rather than an IS_HIP branch in the original.
+# Two stages, one per GPU family: stage-c-4-gpu-mi300x and
+# stage-c-4-gpu-mi350. Both hosts are split into two 4-GPU runners, so each
+# stage is 4-GPU and runs in two est_time-balanced shards. CUDA tests that
+# need 8 GPUs get a standalone test_amd_<name>.py with its own 4-GPU
+# CaseConfig rather than an IS_HIP branch in the original.
+#
+# The two families run different rocm/sgl-dev lines, so resolve-ci-image
+# emits one image per family: MI300X is pinned, MI350 resolves to the newest
+# dated tag because that line is rebuilt daily.
 #
 # pull_request_target keeps the workflow and fork authorization on the trusted
 # base branch. A fork reaches the privileged self-hosted stage only after a
@@ -33,11 +39,16 @@ on:
     - cron: '0 15 * * *'
   workflow_dispatch:
     inputs:
-      ci_image_tag:
-        description: 'ROCm Docker image tag (default: miles-rocm700-mi30x-20260708)'
+      ci_image_tag_mi300x:
+        description: 'MI300X image tag (default: miles-rocm700-mi30x-20260708)'
         required: false
         type: string
         default: 'miles-rocm700-mi30x-20260708'
+      ci_image_tag_mi350:
+        description: 'MI350 image tag (default: newest miles-rocm720-mi35x-<date> within 7 days)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -87,22 +98,59 @@ jobs:
   resolve-ci-image:
     runs-on: ubuntu-latest
     outputs:
-      container_image: ${{ steps.resolve.outputs.container_image }}
+      mi300x_image: ${{ steps.resolve.outputs.mi300x_image }}
+      mi350_image: ${{ steps.resolve.outputs.mi350_image }}
     steps:
-      - name: Resolve CI image
+      - name: Resolve CI images
         id: resolve
         shell: bash
         env:
-          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+          INPUT_TAG_MI300X: ${{ github.event.inputs.ci_image_tag_mi300x || '' }}
+          INPUT_TAG_MI350: ${{ github.event.inputs.ci_image_tag_mi350 || '' }}
         run: |
-          CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
-          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm700-mi30x-20260708"
-          if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-            echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
-            exit 1
+          set -euo pipefail
+          REPO=rocm/sgl-dev
+
+          # Reject a full image name pasted into a tag-only input.
+          validate_tag() {
+            if [[ ! "$1" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+              echo "::error::$2 must be a Docker tag, not a full image name: $1"
+              exit 1
+            fi
+          }
+
+          # MI300X: pinned. The rocm700/mi30x line is not rebuilt on a schedule,
+          # so a fixed date is reproducible rather than stale.
+          TAG_MI300X="${INPUT_TAG_MI300X:-}"
+          [ -z "$TAG_MI300X" ] && TAG_MI300X="miles-rocm700-mi30x-20260708"
+          validate_tag "$TAG_MI300X" "ci_image_tag_mi300x"
+
+          # MI350: newest dated tag. The rocm720/mi35x line is rebuilt daily, so
+          # pinning a date rots within days. `manifest inspect` is a read-only
+          # existence probe -- it does not pull the multi-GB image, and
+          # rocm/sgl-dev serves it without registry credentials.
+          TAG_MI350="${INPUT_TAG_MI350:-}"
+          if [ -n "$TAG_MI350" ]; then
+            validate_tag "$TAG_MI350" "ci_image_tag_mi350"
+          else
+            BASE=miles-rocm720-mi35x
+            for i in $(seq 0 6); do
+              CANDIDATE="${BASE}-$(date -u -d "-${i} day" +%Y%m%d)"
+              if docker manifest inspect "${REPO}:${CANDIDATE}" >/dev/null 2>&1; then
+                TAG_MI350="$CANDIDATE"
+                break
+              fi
+            done
+            if [ -z "$TAG_MI350" ]; then
+              echo "::error::no ${REPO}:${BASE}-<date> image found in the last 7 days"
+              exit 1
+            fi
           fi
-          echo "container_image=rocm/sgl-dev:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
-          echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
+
+          echo "mi300x_image=${REPO}:${TAG_MI300X}" >> "$GITHUB_OUTPUT"
+          echo "mi350_image=${REPO}:${TAG_MI350}" >> "$GITHUB_OUTPUT"
+          echo "Resolved MI300X image: ${REPO}:${TAG_MI300X}"
+          echo "Resolved MI350 image:  ${REPO}:${TAG_MI350}"
 
   stage-c-4-gpu-mi300x:
     needs: [resolve-ci-policy, resolve-ci-image]
@@ -117,7 +165,7 @@ jobs:
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
       runs_on: '["self-hosted", "amd", "mi300x", "4gpu"]'
-      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      container_image: ${{ needs.resolve-ci-image.outputs.mi300x_image }}
       checkout_ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi300x
@@ -125,6 +173,37 @@ jobs:
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+        --enable-retry --max-attempts 2
+    secrets:
+      WANDB_API_KEY: ${{ (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.WANDB_API_KEY || '' }}
+
+  stage-c-4-gpu-mi350:
+    needs: [resolve-ci-policy, resolve-ci-image]
+    if: needs.resolve-ci-policy.outputs.allow_self_hosted == 'true'
+    # Same shape as the MI300X stage: the MI350X host is likewise split into
+    # two 4-GPU runners, so one shard each. run_suite.py balances by est_time.
+    #
+    # Unlike the MI300X stage this passes --continue-on-error unconditionally.
+    # test_qwen3_30B_A3B/test_baseline.py currently fails this suite on MI350
+    # (log-prob tolerance; it fails the external SGLang nightly too), and
+    # halting on it would hide the other five tests. A failing test still
+    # fails the job -- the flag only controls how far the run gets.
+    strategy:
+      fail-fast: false
+      matrix:
+        partition_id: [0, 1]
+    uses: ./.github/workflows/_run-ci-rocm.yml
+    with:
+      runs_on: '["self-hosted", "amd", "mi350", "4gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.mi350_image }}
+      checkout_ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi350
+        --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+        --continue-on-error
         --enable-retry --max-attempts 2
     secrets:
       WANDB_API_KEY: ${{ (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) && secrets.WANDB_API_KEY || '' }}
