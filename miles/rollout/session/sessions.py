@@ -57,8 +57,8 @@ def setup_session_routes(app, backend, args):
         return await core.health()
 
     @app.post("/sessions")
-    async def create_session():
-        return await core.create_session()
+    async def create_session(request: Request):
+        return await core.create_session(await request.body())
 
     @app.get("/sessions/{session_id}")
     async def get_session(session_id: str):

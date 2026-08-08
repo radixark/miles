@@ -61,6 +61,25 @@ async def test_create_without_instance_id_on_args(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_sends_session_request_overrides(monkeypatch):
+    seen: list[dict] = []
+
+    async def fake_post(url: str, payload: dict, action: str = "post"):
+        seen.append(payload)
+        return {"session_id": "session-123"}
+
+    monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+    args = SimpleNamespace(session_server_ip="127.0.0.1", session_server_ports=[12345])
+    await OpenAIEndpointTracer.create(
+        args,
+        request_overrides={"max_tokens": 4096, "temperature": 0.7, "seed": 42},
+    )
+
+    assert seen == [{"request_overrides": {"max_tokens": 4096, "temperature": 0.7, "seed": 42}}]
+
+
+@pytest.mark.asyncio
 async def test_create_distributes_sessions_across_port_range(monkeypatch):
     """With a multi-port range, sessions land on more than one instance, and every
     request of a session (create, samples POST, DELETE) hits the port chosen

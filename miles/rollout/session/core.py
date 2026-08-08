@@ -33,6 +33,10 @@ from miles.rollout.session.errors import (
     UpstreamResponseError,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.request_overrides import (
+    SESSION_REQUEST_OVERRIDE_KEYS,
+    validate_session_request_override_values,
+)
 from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
@@ -160,7 +164,7 @@ def proxy_result_to_response(result: dict) -> Response:
     return Response(content=_render_json(data), status_code=status_code, headers=headers, media_type=JSON_MEDIA_TYPE)
 
 
-def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
+def prepare_chat_request(body: bytes, args, tito_tokenizer, request_overrides: dict | None = None) -> tuple:
     """Parse and normalize a chat request body — the session-independent half
     of chat dispatch, shared verbatim by the v1 and v2 cores. Returns
     ``(request_body, client_stream, tito_tokenizer)``; the tokenizer may be a
@@ -177,6 +181,11 @@ def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
     # when rendering the client response.
     client_stream = bool(request_body.pop("stream", False))
     request_body.pop("stream_options", None)
+
+    # A session's rollout policy wins over values supplied by the agent harness.
+    # This is especially important for external agents such as Claude Code,
+    # which construct their own sampling parameters on every turn.
+    request_body.update(request_overrides or {})
 
     # TITO token tracking needs Miles-owned input_ids plus SGLang output
     # metadata: logprobs=True populates meta_info.output_token_logprobs and
@@ -261,8 +270,28 @@ class SessionCore:
             body["session_server_instance_id"] = self.instance_id
         return Response(content=_render_json(body), status_code=200, media_type=JSON_MEDIA_TYPE)
 
-    async def create_session(self) -> Response:
-        session_id = self.registry.create_session()
+    async def create_session(self, body: bytes = b"") -> Response:
+        try:
+            params = json.loads(body) if body else {}
+        except json.JSONDecodeError as exc:
+            raise MessageValidationError(f"invalid JSON body: {exc}") from exc
+        if not isinstance(params, dict):
+            raise MessageValidationError("session request must be an object")
+
+        request_overrides = params.get("request_overrides", {})
+        if request_overrides is None:
+            request_overrides = {}
+        if not isinstance(request_overrides, dict):
+            raise MessageValidationError("request_overrides must be an object")
+        unsupported = sorted(set(request_overrides) - SESSION_REQUEST_OVERRIDE_KEYS)
+        if unsupported:
+            raise MessageValidationError(f"unsupported session request overrides: {unsupported}")
+        try:
+            validate_session_request_override_values(request_overrides)
+        except ValueError as exc:
+            raise MessageValidationError(str(exc)) from exc
+
+        session_id = self.registry.create_session(request_overrides)
         return Response(content=_render_json({"session_id": session_id}), status_code=200, media_type=JSON_MEDIA_TYPE)
 
     def _session_metadata(self, session_id: str, session) -> dict:
@@ -357,7 +386,7 @@ class SessionCore:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
             request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.args, self.registry.tito_tokenizer
+                body, self.args, self.registry.tito_tokenizer, session.request_overrides
             )
 
             request_messages = request_body.get("messages", [])
