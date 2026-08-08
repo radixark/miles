@@ -2,8 +2,9 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Coroutine
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeVar, cast
 
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
@@ -36,8 +37,10 @@ from miles.rollout.base_types import (
     LeasedRolloutFnTrainOutput,
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
+    RolloutFnLifecycle,
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
+    TrainAdmissionHold,
     TrainBatchLease,
     TrainBatchRollbackReason,
     call_rollout_fn,
@@ -45,6 +48,7 @@ from miles.rollout.base_types import (
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils import object_store
+from miles.utils.async_utils import get_async_loop
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdentity
@@ -65,6 +69,39 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 _MAX_RETAINED_TERMINAL_ADMISSIONS = 64
+_T = TypeVar("_T")
+
+
+async def _release_train_admission_hold(hold: TrainAdmissionHold) -> None:
+    hold.release()
+
+
+async def _await_task_terminal(task: asyncio.Future[_T]) -> _T:
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                return task.result()
+
+
+async def _await_task_before_cancellation(task: asyncio.Future[_T]) -> _T:
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError as cancellation:
+        try:
+            await _await_task_terminal(task)
+        except BaseException as terminal_error:
+            raise cancellation from terminal_error
+        raise
+
+
+def _discover_rollout_lifecycles(*rollout_fns: object) -> tuple[RolloutFnLifecycle, ...]:
+    lifecycles: list[RolloutFnLifecycle] = []
+    for rollout_fn in rollout_fns:
+        if isinstance(rollout_fn, RolloutFnLifecycle) and all(rollout_fn is not lifecycle for lifecycle in lifecycles):
+            lifecycles.append(rollout_fn)
+    return tuple(lifecycles)
 
 
 @dataclass
@@ -127,6 +164,22 @@ class RolloutManager:
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
+        self._train_rollout_lifecycle = (
+            self.generate_rollout if isinstance(self.generate_rollout, RolloutFnLifecycle) else None
+        )
+        self._rollout_lifecycles = _discover_rollout_lifecycles(
+            self.generate_rollout,
+            self.eval_generate_rollout,
+        )
+        # Rollout lifecycle methods own an event loop separate from the manager
+        # actor loop, so concurrent actor calls share one deterministic frontier.
+        self._lifecycle_async_loop = get_async_loop() if self._rollout_lifecycles else None
+        self._closed_rollout_lifecycles: list[RolloutFnLifecycle] = []
+        self._rollout_lifecycles_closing = False
+        self._dispose_lock = asyncio.Lock()
+        self._manager_resources_disposed = False
+        self._next_train_admission_hold_id = 0
+        self._train_admission_holds: dict[int, TrainAdmissionHold] = {}
         self.custom_reward_post_process_func = None
         if (x := self.args.custom_reward_post_process_path) is not None:
             self.custom_reward_post_process_func = load_function(x)
@@ -166,27 +219,288 @@ class RolloutManager:
                     self._health_monitors.append(monitor)
             self._ci_fault_injection_pending = self.args.ci_test
 
+        self._data_source_closed = False
+        self._event_analysis_completed = False
+        self._metric_checker_disposed = False
+        self._checkpoint_eval_disposed = False
+        self._stopped_health_monitors: list[RolloutHealthMonitor] = []
+        self._active_generations = 0
+        self._generations_drained = asyncio.Event()
+        self._generations_drained.set()
+
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
 
     def get_router_address(self) -> tuple[str, int]:
         return self.args.sglang_router_ip, self.args.sglang_router_port
 
-    def dispose(self):
-        self._reject_unresolved_admissions("dispose")
-        if (close := getattr(self.data_source, "close", None)) is not None:
-            close()
-        event_analyzer.run_analysis_from_args(self.args)
-        if self._metric_checker is not None:
-            self._metric_checker.dispose()
-        if isinstance(self.eval_generate_rollout, CheckpointEvalFn):
-            self.eval_generate_rollout.dispose()
+    def _submit_lifecycle_coroutine(self, coroutine: Coroutine[object, object, _T]) -> asyncio.Future[_T]:
+        if self._lifecycle_async_loop is None:
+            raise RuntimeError("Rollout lifecycle event loop is not initialized.")
+        concurrent_future = asyncio.run_coroutine_threadsafe(coroutine, self._lifecycle_async_loop.loop)
+        return asyncio.wrap_future(concurrent_future)
+
+    def _raise_if_rollout_lifecycles_closing(self) -> None:
+        if self._rollout_lifecycles_closing:
+            raise RuntimeError("Rollout manager lifecycle is closing.")
+
+    def _ensure_lifecycle_state(self) -> None:
+        if not hasattr(self, "_train_rollout_lifecycle"):
+            self._train_rollout_lifecycle = None
+        if not hasattr(self, "_rollout_lifecycles"):
+            self._rollout_lifecycles = ()
+        if self._rollout_lifecycles and getattr(self, "_lifecycle_async_loop", None) is None:
+            self._lifecycle_async_loop = get_async_loop()
+        if not hasattr(self, "_closed_rollout_lifecycles"):
+            self._closed_rollout_lifecycles = []
+        if not hasattr(self, "_rollout_lifecycles_closing"):
+            self._rollout_lifecycles_closing = False
+        if not hasattr(self, "_dispose_lock"):
+            self._dispose_lock = asyncio.Lock()
+        if not hasattr(self, "_manager_resources_disposed"):
+            self._manager_resources_disposed = False
+        if not hasattr(self, "_next_train_admission_hold_id"):
+            self._next_train_admission_hold_id = 0
+        if not hasattr(self, "_train_admission_holds"):
+            self._train_admission_holds = {}
+        if not hasattr(self, "_active_generations"):
+            self._active_generations = 0
+        if not hasattr(self, "_generations_drained"):
+            self._generations_drained = asyncio.Event()
+            self._generations_drained.set()
+        if not hasattr(self, "_data_source_closed"):
+            self._data_source_closed = False
+        if not hasattr(self, "_event_analysis_completed"):
+            self._event_analysis_completed = False
+        if not hasattr(self, "_metric_checker_disposed"):
+            self._metric_checker_disposed = False
+        if not hasattr(self, "_checkpoint_eval_disposed"):
+            self._checkpoint_eval_disposed = False
+        if not hasattr(self, "_stopped_health_monitors"):
+            self._stopped_health_monitors = []
+        if not hasattr(self, "_health_monitors"):
+            self._health_monitors = []
+
+    def _begin_generation(self) -> None:
+        self._ensure_lifecycle_state()
+        self._raise_if_rollout_lifecycles_closing()
+        self._active_generations += 1
+        self._generations_drained.clear()
+
+    def _end_generation(self) -> None:
+        self._active_generations -= 1
+        if self._active_generations < 0:
+            self._active_generations = 0
+            raise RuntimeError("Rollout manager generation accounting underflowed.")
+        if self._active_generations == 0:
+            self._generations_drained.set()
+
+    async def acquire_train_admission_hold(self) -> int | None:
+        self._ensure_lifecycle_state()
+        lifecycle = self._train_rollout_lifecycle
+        if lifecycle is None:
+            return None
+        self._raise_if_rollout_lifecycles_closing()
+        acquire_task = self._submit_lifecycle_coroutine(lifecycle.acquire_train_admission_hold())
+        try:
+            hold = await asyncio.shield(acquire_task)
+        except asyncio.CancelledError as cancellation:
+            try:
+                hold = await _await_task_terminal(acquire_task)
+                release_task = self._submit_lifecycle_coroutine(_release_train_admission_hold(hold))
+                await _await_task_terminal(release_task)
+            except BaseException as cleanup_error:
+                raise cancellation from cleanup_error
+            raise
+
+        try:
+            self._raise_if_rollout_lifecycles_closing()
+        except BaseException as closing_error:
+            try:
+                release_task = self._submit_lifecycle_coroutine(_release_train_admission_hold(hold))
+                await _await_task_terminal(release_task)
+            except BaseException as cleanup_error:
+                raise closing_error from cleanup_error
+            raise
+
+        hold_id = self._next_train_admission_hold_id
+        self._next_train_admission_hold_id += 1
+        self._train_admission_holds[hold_id] = hold
+        return hold_id
+
+    async def wait_train_admission_hold(self, hold_id: int | None) -> None:
+        self._ensure_lifecycle_state()
+        if hold_id is None:
+            return
+        try:
+            hold = self._train_admission_holds[hold_id]
+        except KeyError:
+            raise RuntimeError(f"Unknown train admission hold {hold_id}.") from None
+        wait_task = self._submit_lifecycle_coroutine(hold.wait_terminal())
+        await _await_task_before_cancellation(wait_task)
+
+    async def release_train_admission_hold(self, hold_id: int | None) -> None:
+        self._ensure_lifecycle_state()
+        if hold_id is None:
+            return
+        try:
+            hold = self._train_admission_holds[hold_id]
+        except KeyError:
+            raise RuntimeError(f"Unknown train admission hold {hold_id}.") from None
+        release_task = self._submit_lifecycle_coroutine(_release_train_admission_hold(hold))
+        cancellation: asyncio.CancelledError | None = None
+        release_error: BaseException | None = None
+        try:
+            await asyncio.shield(release_task)
+        except asyncio.CancelledError as error:
+            cancellation = error
+            try:
+                await _await_task_terminal(release_task)
+            except BaseException as terminal_error:
+                release_error = terminal_error
+        except BaseException as error:
+            release_error = error
+
+        if release_error is not None:
+            if cancellation is not None:
+                raise cancellation from release_error
+            raise release_error
+        self._train_admission_holds.pop(hold_id, None)
+        if cancellation is not None:
+            raise cancellation
+
+    async def dispose(self) -> None:
+        self._ensure_lifecycle_state()
+        async with self._dispose_lock:
+            await self._dispose()
+
+    async def _dispose(self) -> None:
+        self._ensure_lifecycle_state()
+        self._rollout_lifecycles_closing = True
+        if self._manager_resources_disposed:
+            return
+
+        cancellation: asyncio.CancelledError | None = None
+        generations_task = asyncio.create_task(self._generations_drained.wait())
+        try:
+            await asyncio.shield(generations_task)
+        except asyncio.CancelledError as error:
+            cancellation = error
+            try:
+                await _await_task_terminal(generations_task)
+            except BaseException as terminal_error:
+                raise cancellation from terminal_error
+
+        # A generated leased result must first be registered as a PR4
+        # publication.  Otherwise closing the lifecycle could strand its lease.
+        try:
+            self._reject_unresolved_admissions("dispose")
+        except BaseException as admission_error:
+            if cancellation is not None:
+                raise cancellation from admission_error
+            raise
+
+        close_error: BaseException | None = None
+        for lifecycle in self._rollout_lifecycles:
+            if any(lifecycle is closed for closed in self._closed_rollout_lifecycles):
+                continue
+            close_task = self._submit_lifecycle_coroutine(lifecycle.close())
+            closed = False
+            try:
+                await asyncio.shield(close_task)
+            except asyncio.CancelledError as error:
+                cancellation = cancellation or error
+                try:
+                    await _await_task_terminal(close_task)
+                except BaseException as terminal_error:
+                    close_error = close_error or terminal_error
+                else:
+                    closed = True
+            except BaseException as error:
+                close_error = close_error or error
+            else:
+                closed = True
+            if closed:
+                self._closed_rollout_lifecycles.append(lifecycle)
+
+        if close_error is not None:
+            if cancellation is not None:
+                raise cancellation from close_error
+            raise close_error
+
+        self._train_admission_holds.clear()
+        cleanup_error: BaseException | None = None
+        try:
+            self._dispose_resources()
+        except BaseException as error:
+            cleanup_error = error
+        else:
+            self._manager_resources_disposed = True
+
+        if cancellation is not None:
+            if cleanup_error is not None:
+                raise cancellation from cleanup_error
+            raise cancellation
+        if cleanup_error is not None:
+            raise cleanup_error
+
+    def _dispose_resources(self) -> None:
+        cleanup_errors: list[BaseException] = []
+        if not self._data_source_closed:
+            if (close := getattr(getattr(self, "data_source", None), "close", None)) is None:
+                self._data_source_closed = True
+            else:
+                try:
+                    close()
+                except BaseException as error:
+                    cleanup_errors.append(error)
+                else:
+                    self._data_source_closed = True
+        if not self._event_analysis_completed:
+            try:
+                event_analyzer.run_analysis_from_args(self.args)
+            except BaseException as error:
+                cleanup_errors.append(error)
+            else:
+                self._event_analysis_completed = True
+        metric_checker = getattr(self, "_metric_checker", None)
+        if metric_checker is not None and not self._metric_checker_disposed:
+            try:
+                metric_checker.dispose()
+            except BaseException as error:
+                cleanup_errors.append(error)
+            else:
+                self._metric_checker_disposed = True
+        eval_generate_rollout = getattr(self, "eval_generate_rollout", None)
+        if isinstance(eval_generate_rollout, CheckpointEvalFn) and not self._checkpoint_eval_disposed:
+            try:
+                eval_generate_rollout.dispose()
+            except BaseException as error:
+                cleanup_errors.append(error)
+            else:
+                self._checkpoint_eval_disposed = True
         for monitor in self._health_monitors:
-            monitor.stop()
+            if any(monitor is stopped for stopped in self._stopped_health_monitors):
+                continue
+            try:
+                monitor.stop()
+            except BaseException as error:
+                cleanup_errors.append(error)
+            else:
+                self._stopped_health_monitors.append(monitor)
+        if cleanup_errors:
+            raise cleanup_errors[0]
 
     # -------------------------- data generation -----------------------------
 
     async def generate(self, rollout_id):
+        self._begin_generation()
+        try:
+            return await self._generate(rollout_id)
+        finally:
+            self._end_generation()
+
+    async def _generate(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
         self._health_monitoring_resume()
