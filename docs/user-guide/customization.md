@@ -14,6 +14,7 @@ and the default it replaces.
 | | `--custom-generate-function-path` | A single sample's generation |
 | | `--data-source-path` | How prompts are loaded |
 | | `--eval-function-path` | The eval rollout |
+| **Session** | `--session-message-matcher` | Prefix-replay equivalence |
 | **Reward** | `--custom-rm-path` | Reward computation |
 | | `--custom-reward-post-process-path` | Reward normalization |
 | **Filtering** | `--dynamic-sampling-filter-path` | Per-group filter (DAPO) |
@@ -82,6 +83,30 @@ class CustomDataSource(DataSource):
 
 Same signature as `--rollout-function-path`. Defaults to whatever rollout function is
 configured.
+
+---
+
+## Session
+
+### `--session-message-matcher`
+
+This process-wide flag accepts `strict` (default), `loose_tool_call`, `role_content_only`, or a trusted dotted import path. A custom matcher has this signature:
+
+```python
+def matcher(
+    stored_message: dict[str, Any],
+    replayed_message: dict[str, Any],
+) -> bool:
+    ...
+```
+
+`stored_message` is the authoritative message represented by the reusable token prefix. Returning `True` accepts the replayed message as the same history at that position; returning `False` follows the normal v1 rollback or v2 branching behavior.
+
+The matcher must be synchronous and return an exact `bool`. It runs while Miles holds the per-session lock, so keep it fast, deterministic, side-effect-free, and non-mutating. Its two message arguments do not include request-level `tools`, the tokenizer, the template, or `chat_template_kwargs`. Define an equivalence relation because the result also determines v2 tree identity.
+
+The import path is resolved when session routes start. Import failures, non-callable targets, and async functions fail startup. Runtime exceptions or non-boolean results return HTTP 500 without falling back to another matcher. Custom matcher code is trusted server code, not a sandbox boundary.
+
+See [Agentic Rollout (TITO)](/user-guide/agentic-chat-template#choose-replay-matching) for the built-in selectors and the tool-call ID risk of `role_content_only`.
 
 ---
 
