@@ -106,14 +106,14 @@ def optimizer_args() -> str:
 
 
 def resolve_sandbox_backend(args: LaunchArgs) -> str:
-    """The per-episode sandbox backend in effect: "" (shared env server),
-    "daytona", or "e2b".
+    """The per-episode sandbox backend in effect, or "" for the shared env server.
 
     Names and aliases resolve through openenv_sandbox_common, the canonical
-    registry: "agentenv" is an accepted alias for "e2b", because AgentENV
+    registry, so the accepted set is never enumerated twice: "agentenv" is an
+    accepted alias for "e2b", because AgentENV
     (https://github.com/kvcache-ai/AgentENV) is a self-hosted Firecracker
     microVM platform whose native API is the E2B API, so it runs on the e2b
-    leg with E2B_API_URL/E2B_SANDBOX_URL pointed at it.
+    backend with E2B_API_URL/E2B_SANDBOX_URL pointed at it.
 
     The two settings that turn this mode on come as a pair — a task checkout
     to build images from, and the provider to build them on — so naming one
@@ -137,9 +137,9 @@ def resolve_sandbox_backend(args: LaunchArgs) -> str:
 
 def agent_args(tito_model: str, sandbox_backend: str = "") -> str:
     """Agentic-rollout wiring. The TITO surface differs across models; the
-    agent function decides where episodes run — the shared env server by
-    default, per-episode sandboxes (Daytona or E2B/AgentENV) when the launcher
-    resolves a sandbox backend (see resolve_sandbox_backend)."""
+    agent function decides where episodes run — per-episode sandboxes on
+    whichever backend the launcher resolves (see resolve_sandbox_backend), else
+    the one shared env server."""
     agent_fn = sandbox_common.AGENT_FUNCTIONS.get(sandbox_backend, "openenv_agent_function.run")
     return (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
@@ -230,7 +230,7 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
         # Preflight the env package the recipe bakes into each task image —
         # shared by every sandbox backend. The import check catches a missing
         # install; the source probe catches an install that imports fine but
-        # lacks the server features the sandbox legs score through (canonical
+        # lacks the server features the sandbox backends score through (canonical
         # tests/test.sh evaluate, TB2_WITHHOLD_TESTS) — that one would not
         # even fail per-episode, it would silently mis-score every episode.
         try:
