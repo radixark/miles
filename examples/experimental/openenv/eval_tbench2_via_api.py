@@ -23,7 +23,7 @@ Env vars:
   POLICY_BASE_URL   OpenAI-compatible root (default https://api.deepseek.com)
   POLICY_MODEL      default deepseek-v4-flash
   OPENENV_SANDBOX_BACKEND   per-episode sandbox mode: agentenv (an alias for
-                    e2b) / daytona / e2b. Left unset, OPENENV_ENV_URL
+                    e2b) / daytona / e2b / modal. Left unset, OPENENV_ENV_URL
                     (one shared env server) is used instead.
   OPENENV_TB2_TASKS_DIR     required with the above: the TB2 checkout to build
                     task images from. Each backend then resolves its OWN

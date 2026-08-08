@@ -19,11 +19,11 @@ where the environment itself comes from:
 | Integration | Plugs in at | Guide |
 |---|---|---|
 | [Harbor](https://github.com/harbor-framework/harbor) | agent function | [guide](/user-guide/harbor) |
-| [OpenEnv](https://github.com/huggingface/openenv) | agent function | [guide](/user-guide/openenv) |
 | [NeMo-Gym](https://github.com/NVIDIA-NeMo/Gym) | agent function | [guide](/user-guide/nemo-gym) |
+| [OpenEnv](https://github.com/huggingface/openenv) | agent function | [guide](/user-guide/openenv) |
 | [Strands Agents](https://strandsagents.com/) | generate function | [example](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang) |
-| [τ-bench](https://github.com/sierra-research/tau-bench) | generate function | [example](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench) |
 | [Verifiers (Prime Intellect)](https://github.com/PrimeIntellect-ai/verifiers) | rollout function | [guide](/user-guide/verifiers) |
+| [τ-bench](https://github.com/sierra-research/tau-bench) | generate function | [example](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench) |
 
 Sandbox providers are a different axis: they provision the task containers
 *inside* a connector rather than occupying a rollout layer.
@@ -33,8 +33,9 @@ Sandbox providers are a different axis: they provision the task containers
 | [AgentENV](https://github.com/kvcache-ai/AgentENV) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv) |
 | [Daytona](https://www.daytona.io/) | OpenEnv, Harbor, NeMo-Gym | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
 | [E2B](https://e2b.dev/) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
+| [Modal](https://modal.com/) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
 
-All external ecosystem support is experimental.
+Everything above is experimental, and listed alphabetically.
 
 ## Integration shapes
 

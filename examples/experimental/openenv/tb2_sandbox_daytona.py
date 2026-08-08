@@ -98,7 +98,7 @@ def create_task_sandbox(
     command_timeout_s: int = COMMAND_TIMEOUT_S,
     create_timeout_s: float = 1800.0,
     ready_timeout_s: float = _READY_TIMEOUT_S,
-    # Deliberately arguments rather than env knobs, unlike the E2B TTL:
+    # Deliberately arguments rather than env knobs, unlike the E2B/Modal TTLs:
     # these two are Daytona's OWN auto-stop/auto-delete intervals, and the
     # keepalive cadence below is written against them. Retuning them means
     # rethinking the heartbeat, not turning a dial.

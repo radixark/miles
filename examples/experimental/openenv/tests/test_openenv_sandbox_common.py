@@ -76,6 +76,7 @@ async def _fake_episode_env(env_cls, metadata):
         ("e2b", "e2b"),
         ("agentenv", "e2b"),
         ("  E2B  ", "e2b"),
+        ("modal", "modal"),
     ],
 )
 def test_resolve_backend_normalizes_names_and_aliases(name, expected):
@@ -116,8 +117,9 @@ def test_every_backend_exposes_the_entry_points(name):
 @pytest.mark.parametrize("name", sorted(common.AGENT_MODULES))
 def test_operator_facing_help_names_every_backend(name):
     """The sibling tools tell an operator which backends exist. That list drifted
+    once already (modal was added and the help text still said daytona/e2b), so
     it is generated from the registry where it can be, and asserted where it
-    cannot -- a list written by hand drifts the moment a backend is added."""
+    cannot."""
     assert name in common.backend_names()
     root = Path(__file__).resolve().parent.parent
     assert name in (root / "eval_tbench2_via_api.py").read_text().split('"""')[1]
