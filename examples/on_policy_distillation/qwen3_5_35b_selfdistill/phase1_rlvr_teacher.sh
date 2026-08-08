@@ -19,7 +19,7 @@
 #   EXAMPLE_DIR this directory (for rm.py + eval config on PYTHONPATH)
 # =============================================================================
 set -ex
-export PYTHONUNBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 MODEL_DIR=${MODEL_DIR:-/cluster_public/miles_data/models}
 DATA_DIR=${DATA_DIR:-/node_public/maocheng-qwen35/data}

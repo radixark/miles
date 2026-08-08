@@ -23,7 +23,7 @@
 
 set -ex
 
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 # ---------------------------------------------------------------------------
 # Positional arguments

@@ -25,7 +25,7 @@
 # teacher == student -> opd_reverse_kl ~= 0 (inert).
 # =============================================================================
 set -ex
-export PYTHONUNBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 MODE=${MODE:-pure}
 MODEL_DIR=${MODEL_DIR:-/cluster_public/miles_data/models}

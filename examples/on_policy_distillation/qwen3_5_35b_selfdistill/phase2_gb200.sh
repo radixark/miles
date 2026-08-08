@@ -25,7 +25,7 @@
 # teacher == student -> opd_reverse_kl ~= 0 (inert).
 # =============================================================================
 set -ex
-export PYTHONUNBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 MODE=${MODE:-pure}
 # GB200 tiling: this cluster is 4 GPUs/node, so world=8 = 2 nodes x 4 GPUs.
