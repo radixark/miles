@@ -90,7 +90,7 @@ def get_rollout_data(
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
     # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
-    for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):
+    for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl", "loss_weights", "advantages"):
         if key in rollout_data:
             dtype = _rollout_logprob_dtype(args) if key == "rollout_log_probs" else torch.float32
             rollout_data[key] = [
@@ -161,6 +161,13 @@ def get_batch(
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
+
+    # Tinker batches dispatch the loss per slot; the spec map and forward-only
+    # flag are batch-level, and the logprob collector is a shared mutable side
+    # channel the loss fills for the operation result plane.
+    for key in ("tinker_loss_by_slot", "tinker_forward_only", "tinker_logprob_collector"):
+        if key in data_iterator.rollout_data:
+            batch[key] = data_iterator.rollout_data[key]
 
     # No-op safety net if batches reach get_batch without rollout-level preprocessing.
     expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)

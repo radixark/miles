@@ -34,6 +34,7 @@ from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
+from miles.utils.tinker_backend import is_tinker_enabled
 from miles.utils.tracking_utils.structured_log import log_structured
 
 from ...utils.misc import filter_keys
@@ -190,10 +191,10 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.enable_gloo_process_groups,
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
-    elif is_multi_lora_enabled(args):
-        from miles.backends.megatron_utils.multi_lora_optimizer import build_multi_lora_optimizer
+    elif is_tinker_enabled(args):
+        from miles.backends.megatron_utils.tinker_backend.optimizer import build_tinker_slot_optimizer
 
-        optimizer = build_multi_lora_optimizer(args, config, model)
+        optimizer = build_tinker_slot_optimizer(args, config, model)
     else:
         optimizer = get_megatron_optimizer(
             config=config,
@@ -422,8 +423,8 @@ def train_one_step(
     one scheduler step when gradients are valid.
 
     Multi-LoRA: gradients are retained across train calls (per-adapter
-    gradient accumulation); only the slots in the batch's ``step_slots`` step,
-    and only their gradients are zeroed.
+    gradient accumulation); slots step only when the client's optim_step
+    operation executes, and only their gradients are zeroed.
 
     Args:
         args: Runtime arguments.
@@ -446,7 +447,7 @@ def train_one_step(
     multi_lora = is_multi_lora_enabled(args)
 
     if multi_lora:
-        from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
+        from miles.backends.megatron_utils.tinker_backend.optimizer import reset_grad_metadata_keep_grads
 
         # Retain accumulated per-adapter gradients; reset only the per-iteration
         # DDP bookkeeping. Slot grads are zeroed selectively at step time.
@@ -493,6 +494,8 @@ def train_one_step(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
+                "loss_weights",
+                "sample_indices",
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
@@ -614,11 +617,9 @@ def train_one_step(
 
     if not disable_optimizer and valid_step:
         if multi_lora:
-            from miles.backends.megatron_utils.multi_lora_utils import step_stepped_adapter_slots
-
-            grad_norm = step_stepped_adapter_slots(
-                args, model, optimizer, data_iterator[0].rollout_data, rollout_id, step_id
-            )
+            # Tinker data batches only accumulate gradient sums; the optimizer
+            # steps when the client's optim_step operation executes.
+            grad_norm = 0.0
         else:
             # Update parameters.
             update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
