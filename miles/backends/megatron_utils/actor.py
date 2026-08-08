@@ -159,6 +159,15 @@ class MegatronTrainRayActor(TrainRayActor):
         )
         dist.barrier(group=get_gloo_group())
 
+        # NCCL allocates outside torch's caching allocator, so allocator knobs alone
+        # cannot keep memory free for it: gc_threshold is relative to the per-process
+        # cap, which defaults to the whole device. A hard cap forces the allocator to
+        # release cached blocks instead of growing reserved until NCCL's cudaMalloc
+        # during backward finds 0 bytes free.
+        if (frac := float(os.environ.get("MILES_TRAIN_MEMORY_FRACTION", "0"))) > 0:
+            torch.cuda.set_per_process_memory_fraction(frac)
+            logger.info(f"Set torch per-process CUDA memory fraction to {frac}")
+
         if args.offload_train:
             if (x := args.train_memory_margin_bytes) > 0:
                 # --train-memory-margin-bytes can tune this
