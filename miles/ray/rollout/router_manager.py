@@ -95,6 +95,11 @@ def _resolve_session_server_ports(raw: list[int] | None) -> list[int]:
     raise ValueError(f"--session-server-port takes one port or a start/end range, got {len(raw)} values: {raw}")
 
 
+def _session_server_startup_timeout(num_servers: int) -> int:
+    """Allow large process pools enough time to import their tokenizer stack."""
+    return max(30, num_servers * 2)
+
+
 def start_session_server(args):
     """Start the standalone session servers when ``--use-session-server`` is set.
 
@@ -145,6 +150,9 @@ def start_session_server(args):
     # The per-port map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
+    # Large process pools contend for CPU while importing the tokenizer stack.
+    # Keep the existing deadline for small pools and scale it for larger ones.
+    startup_timeout = _session_server_startup_timeout(len(ports))
     for port, process in processes:
-        wait_for_server_ready(ip, port, process, timeout=30)
+        wait_for_server_ready(ip, port, process, timeout=startup_timeout)
     logger.info(f"Session servers launched at {ip}, ports {ports} ({len(ports)} instances)")

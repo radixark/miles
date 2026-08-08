@@ -384,6 +384,44 @@ class TestInklingFixedTemplate:
             "<|content_model_end_sampling|>"
         ) in rendered
 
+    def test_ordered_blocks_preserve_repetition_interleaving_and_empty_blocks(self):
+        rendered = self._render(
+            [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "flattened-text",
+                    "reasoning_content": "flattened-thinking",
+                    "content_blocks": [
+                        {"type": "thinking", "text": "think-1"},
+                        {"type": "text", "text": "text-1"},
+                        {"type": "text", "text": ""},
+                        {"type": "thinking", "text": "think-2"},
+                    ],
+                },
+            ]
+        )
+
+        assert (
+            "<|message_model|><|content_thinking|>think-1<|end_message|>"
+            "<|message_model|><|content_text|>text-1<|end_message|>"
+            "<|message_model|><|content_text|><|end_message|>"
+            "<|message_model|><|content_thinking|>think-2<|end_message|>"
+            "<|content_model_end_sampling|>"
+        ) in rendered
+        assert "flattened-text" not in rendered
+        assert "flattened-thinking" not in rendered
+
+    def test_empty_ordered_block_sequence_keeps_sampling_terminator(self):
+        rendered = self._render(
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "", "content_blocks": []},
+            ]
+        )
+
+        assert rendered.endswith("<|content_model_end_sampling|>")
+
 
 class TestDeepSeekV32IncrementalAppend:
     """V3.2 rides the default synthetic-prefix suffix diff; with the family's

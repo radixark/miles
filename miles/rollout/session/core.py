@@ -59,11 +59,16 @@ def _samples_response(payload: bytes) -> Response:
 
 
 _CLIENT_STRIPPED_META_KEYS = ("routed_experts", "indexer_topk")
+_CLIENT_STRIPPED_MESSAGE_KEYS = ("content_blocks",)
 
 
 def _strip_replay_payloads(response: dict) -> dict:
     stripped_choices = []
     for choice in response.get("choices", []):
+        message = choice.get("message")
+        if isinstance(message, dict) and any(k in message for k in _CLIENT_STRIPPED_MESSAGE_KEYS):
+            message = {k: v for k, v in message.items() if k not in _CLIENT_STRIPPED_MESSAGE_KEYS}
+            choice = {**choice, "message": message}
         meta = choice.get("meta_info")
         if isinstance(meta, dict) and any(k in meta for k in _CLIENT_STRIPPED_META_KEYS):
             meta = {k: v for k, v in meta.items() if k not in _CLIENT_STRIPPED_META_KEYS}

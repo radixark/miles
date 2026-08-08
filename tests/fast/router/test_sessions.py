@@ -13,6 +13,7 @@ import pytest
 import requests
 from fastapi.responses import JSONResponse
 
+from miles.rollout.session.core import _strip_replay_payloads
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import message_matches
 from miles.utils.http_utils import find_available_port
@@ -275,6 +276,30 @@ class TestSessionProxy:
         record_meta = record["response"]["choices"][0]["meta_info"]
         assert record_meta["routed_experts"] == [[0, 1], [2, 3]]
         assert record_meta["indexer_topk"] == [[4], [5]]
+
+    def test_chat_response_strips_ordered_blocks_without_mutating_record(self):
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "answer",
+                        "content_blocks": [
+                            {"type": "thinking", "text": "think"},
+                            {"type": "text", "text": "answer"},
+                        ],
+                    }
+                }
+            ]
+        }
+
+        client_response = _strip_replay_payloads(response)
+
+        assert "content_blocks" not in client_response["choices"][0]["message"]
+        assert response["choices"][0]["message"]["content_blocks"] == [
+            {"type": "thinking", "text": "think"},
+            {"type": "text", "text": "answer"},
+        ]
 
 
 class TestChatFakeStreaming:

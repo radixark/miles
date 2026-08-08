@@ -214,6 +214,33 @@ class TestSingleUserTurnPretokenized:
         assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1, TOOL_MSG_1, ASSISTANT_MSG_FINAL]
         assert session.token_ids == [1, 2, 3, 4, 5, 10, 11, 12, 20, 21, 30, 31, 32]
 
+    def test_server_owned_content_blocks_survive_flattened_client_replay(self, registry: SessionRegistry):
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+        ordered_assistant = {
+            "role": "assistant",
+            "content": "answer-1answer-2",
+            "reasoning_content": "think-1think-2",
+            "content_blocks": [
+                {"type": "thinking", "text": "think-1"},
+                {"type": "text", "text": "answer-1"},
+                {"type": "thinking", "text": "think-2"},
+                {"type": "text", "text": "answer-2"},
+            ],
+        }
+        flattened_replay = {key: value for key, value in ordered_assistant.items() if key != "content_blocks"}
+        session.update_pretokenized_state([USER_MSG], ordered_assistant, [1, 2], [10, 11], max_trim_tokens=0)
+
+        session.update_pretokenized_state(
+            [USER_MSG, flattened_replay, TOOL_MSG_1],
+            ASSISTANT_MSG_FINAL,
+            [1, 2, 10, 11, 20],
+            [30],
+            max_trim_tokens=0,
+        )
+
+        assert session.messages[1] == ordered_assistant
+
     def test_three_turn_trajectory(self, registry: SessionRegistry):
         """Full 3-turn: user -> ass(tool) -> tool -> ass(tool) -> tool -> final."""
         sid = registry.create_session()

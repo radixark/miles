@@ -17,6 +17,34 @@ logger = logging.getLogger(__name__)
 MAX_ASSISTANT_ROLLBACK_STEPS = 1
 
 
+def _preserve_ordered_content_blocks(
+    stored_messages: list[dict[str, Any]],
+    request_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Retain server-owned Inkling block order when clients replay history.
+
+    ``content_blocks`` is deliberately absent from the client response, so the
+    next request can only replay the compatible flattened OpenAI fields. Copy
+    the stored side channel solely across messages already proven equivalent by
+    ``message_matches``; never infer or synthesize it for new messages.
+    """
+    preserved = list(request_messages)
+    for index, request_message in enumerate(preserved):
+        if index >= len(stored_messages):
+            break
+        stored_message = stored_messages[index]
+        if (
+            stored_message.get("role") == "assistant"
+            and "content_blocks" in stored_message
+            and message_matches(stored_message, request_message)
+        ):
+            preserved[index] = {
+                **request_message,
+                "content_blocks": stored_message["content_blocks"],
+            }
+    return preserved
+
+
 def assert_pretokenized_prefix(
     prev: list[int],
     all_token_ids: list[int],
@@ -154,7 +182,8 @@ class LinearTrajectory:
             assistant_message=assistant_message,
         )
 
-        self.messages = list(request_messages) + [assistant_message]
+        request_messages = _preserve_ordered_content_blocks(self.messages, request_messages)
+        self.messages = request_messages + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)

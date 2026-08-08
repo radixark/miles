@@ -5,7 +5,12 @@ from unittest.mock import patch
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout.router_manager import _resolve_session_server_ports, start_router, start_session_server
+from miles.ray.rollout.router_manager import (
+    _resolve_session_server_ports,
+    _session_server_startup_timeout,
+    start_router,
+    start_session_server,
+)
 
 
 class TestStartRouter:
@@ -85,3 +90,8 @@ class TestResolveSessionServerPorts:
     def test_more_than_two_values_raises(self):
         with pytest.raises(ValueError, match="one port or a start/end range"):
             _resolve_session_server_ports([30000, 30001, 30002])
+
+
+def test_session_server_startup_timeout_scales_for_large_pools():
+    assert _session_server_startup_timeout(1) == 30
+    assert _session_server_startup_timeout(64) == 128

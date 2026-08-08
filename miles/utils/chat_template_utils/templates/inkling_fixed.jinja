@@ -71,27 +71,46 @@
         {{- "<|end_message|>" -}}
 
     {%- else -%}
-        {%- if message.role == "assistant" and message.reasoning_content is defined and message.reasoning_content -%}
-            {{- "<|message_model|><|content_thinking|>" ~ message.reasoning_content ~ "<|end_message|>" -}}
-        {%- endif -%}
+        {%- set ordered_blocks = message.content_blocks if (
+            message.role == "assistant"
+            and message.content_blocks is defined
+            and message.content_blocks is not none
+        ) else none -%}
 
-        {%- if message.content is string and message.content -%}
-            {{- rtok ~ "<|content_text|>" ~ message.content ~ "<|end_message|>" -}}
-        {%- elif message.content -%}
-            {%- for part in message.content -%}
-                {%- if part is string -%}
-                    {{- rtok ~ "<|content_text|>" ~ part ~ "<|end_message|>" -}}
-                {%- elif part.type is not defined or part.type in ("text", "input_text") -%}
-                    {%- set text_part = (part.text if part.text is defined and part.text is string else "") -%}
-                    {{- rtok ~ "<|content_text|>" ~ text_part ~ "<|end_message|>" -}}
-                {%- elif part.type in ("image", "input_image", "image_url") -%}
-                    {{- rtok ~ "<|content_image|><|unused_200054|><|end_message|>" -}}
-                {%- elif part.type in ("audio", "input_audio", "audio_url") -%}
-                    {{- rtok ~ "<|content_audio_input|><|unused_200053|><|audio_end|><|end_message|>" -}}
+        {%- if ordered_blocks is not none -%}
+            {%- for block in ordered_blocks -%}
+                {%- set block_text = block.text if block.text is defined and block.text is string else "" -%}
+                {%- if block.type in ("thinking", "reasoning") -%}
+                    {{- "<|message_model|><|content_thinking|>" ~ block_text ~ "<|end_message|>" -}}
+                {%- elif block.type == "text" -%}
+                    {{- "<|message_model|><|content_text|>" ~ block_text ~ "<|end_message|>" -}}
                 {%- else -%}
-                    {{- raise_exception("Unsupported content part type: " ~ part.type) -}}
+                    {{- raise_exception("Unsupported assistant content block type: " ~ block.type) -}}
                 {%- endif -%}
             {%- endfor -%}
+        {%- else -%}
+            {%- if message.role == "assistant" and message.reasoning_content is defined and message.reasoning_content -%}
+                {{- "<|message_model|><|content_thinking|>" ~ message.reasoning_content ~ "<|end_message|>" -}}
+            {%- endif -%}
+
+            {%- if message.content is string and message.content -%}
+                {{- rtok ~ "<|content_text|>" ~ message.content ~ "<|end_message|>" -}}
+            {%- elif message.content -%}
+                {%- for part in message.content -%}
+                    {%- if part is string -%}
+                        {{- rtok ~ "<|content_text|>" ~ part ~ "<|end_message|>" -}}
+                    {%- elif part.type is not defined or part.type in ("text", "input_text") -%}
+                        {%- set text_part = (part.text if part.text is defined and part.text is string else "") -%}
+                        {{- rtok ~ "<|content_text|>" ~ text_part ~ "<|end_message|>" -}}
+                    {%- elif part.type in ("image", "input_image", "image_url") -%}
+                        {{- rtok ~ "<|content_image|><|unused_200054|><|end_message|>" -}}
+                    {%- elif part.type in ("audio", "input_audio", "audio_url") -%}
+                        {{- rtok ~ "<|content_audio_input|><|unused_200053|><|audio_end|><|end_message|>" -}}
+                    {%- else -%}
+                        {{- raise_exception("Unsupported content part type: " ~ part.type) -}}
+                    {%- endif -%}
+                {%- endfor -%}
+            {%- endif -%}
         {%- endif -%}
 
         {%- if message.role == "assistant" and message.tool_calls -%}
@@ -115,7 +134,8 @@
         {%- endif -%}
 
         {%- if message.role == "assistant" and (
-            (message.reasoning_content is defined and message.reasoning_content)
+            ordered_blocks is not none
+            or (message.reasoning_content is defined and message.reasoning_content)
             or message.content
             or message.tool_calls
         ) -%}
