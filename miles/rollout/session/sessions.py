@@ -79,6 +79,17 @@ def setup_session_routes(app, backend, args):
             body=body,
         )
 
+    @app.post("/sessions/{session_id}/v1/messages")
+    async def messages(request: Request, session_id: str):
+        body = await request.body()
+        return await core.messages(
+            session_id,
+            method=request.method,
+            query=request.url.query,
+            headers=dict(request.headers),
+            body=body,
+        )
+
     @app.post("/sessions/{session_id}/samples")
     async def collect_samples(request: Request, session_id: str):
         # Starlette matches routes in registration order; keep this before session_proxy.
