@@ -62,6 +62,16 @@ class FixedTemplate:
         object.__setattr__(self, "allowed_append_roles", roles)
 
 
+@dataclass(frozen=True)
+class ParsedAssistantCompletion:
+    """Optional model-family projection of one raw assistant completion."""
+
+    client_message: dict[str, Any]
+    stored_message: dict[str, Any]
+    parser_name: str
+    parse_error: str | None = None
+
+
 def _build_dummy_assistant(stored_assistant: dict[str, Any]) -> dict[str, Any]:
     """Build a dummy assistant that preserves the stored turn's tool calls."""
     return {
@@ -153,6 +163,30 @@ class TITOTokenizer:
             tools=tools,
             **self.chat_template_kwargs,
         )
+
+    def parse_assistant_completion(
+        self,
+        completion_token_ids: list[int],
+        *,
+        finish_reason: str | None,
+    ) -> ParsedAssistantCompletion | None:
+        """Optionally convert one raw model completion into agent-facing fields.
+
+        The generic session server is parser-neutral. Model families that need
+        token-aware response parsing override this hook; all others retain the
+        upstream SGLang response unchanged.
+        """
+        del completion_token_ids, finish_reason
+        return None
+
+    def preserve_server_message_state(
+        self,
+        stored_messages: list[dict[str, Any]],
+        request_messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Restore model-specific server-owned sidecars after client replay."""
+        del stored_messages
+        return list(request_messages)
 
     def _encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
