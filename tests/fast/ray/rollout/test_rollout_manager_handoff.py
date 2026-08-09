@@ -22,6 +22,7 @@ from miles.rollout.base_types import (
     TrainAdmissionHold,
     TrainBatchLease,
     TrainBatchRollbackReason,
+    WeightUpdateAdmissionHold,
 )
 from miles.utils.ray_utils import Box
 
@@ -50,7 +51,7 @@ class RecordingTrainBatchLease(TrainBatchLease):
             raise self._rollback_error
 
 
-class RecordingTrainAdmissionHold(TrainAdmissionHold):
+class RecordingTrainAdmissionHold(WeightUpdateAdmissionHold):
     def __init__(
         self,
         events: list[str],
@@ -68,10 +69,21 @@ class RecordingTrainAdmissionHold(TrainAdmissionHold):
         if self._wait_gate is not None:
             await asyncio.to_thread(self._wait_gate.wait)
 
+    def _record_weight_update(self, weight_version: int | None = None) -> None:
+        self._events.append(f"record:{weight_version}")
+
     def _release(self) -> None:
         self._events.append("release")
         if self._release_error is not None:
             raise self._release_error
+
+
+class PlainTrainAdmissionHold(TrainAdmissionHold):
+    async def _wait_terminal(self) -> None:
+        return None
+
+    def _release(self) -> None:
+        return None
 
 
 class RecordingRolloutLifecycle(RolloutFnLifecycle):
@@ -183,6 +195,214 @@ def manager_env(monkeypatch: pytest.MonkeyPatch) -> tuple[RolloutManager, Simple
 
 def leased_output(lease: TrainBatchLease) -> LeasedRolloutFnTrainOutput:
     return LeasedRolloutFnTrainOutput(samples=[], metrics={"source": "test"}, lease=lease)
+
+
+@pytest.mark.asyncio
+async def test_weight_update_records_manager_version_before_releasing_hold(manager_env) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+    manager.weight_version = 2
+
+    hold_id = await manager.acquire_train_admission_hold()
+    await manager.wait_weight_update_admission(hold_id)
+    await manager.record_train_weight_update(hold_id)
+    await manager.release_train_admission_hold(hold_id)
+
+    assert events == ["acquire", "wait", "record:2", "release"]
+    assert manager._train_admission_holds == {}
+
+
+@pytest.mark.asyncio
+async def test_weight_update_fails_closed_for_plain_admission_hold(manager_env) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+
+    hold_id = await manager.acquire_train_admission_hold()
+    assert hold_id is not None
+    manager._train_admission_holds[hold_id] = PlainTrainAdmissionHold()
+
+    with pytest.raises(RuntimeError, match="does not support weight-update admission"):
+        await manager.wait_weight_update_admission(hold_id)
+
+    await manager.release_train_admission_hold(hold_id)
+    await manager.dispose()
+
+
+@pytest.mark.asyncio
+async def test_weight_update_and_shared_eval_exclude_each_other(manager_env) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+
+    eval_hold = await manager.acquire_train_admission_hold()
+    await manager.wait_train_admission_hold(eval_hold)
+    assert eval_hold is not None
+    await manager._enter_shared_eval(eval_hold)
+
+    update_hold = await manager.acquire_train_admission_hold()
+    update_wait = asyncio.create_task(manager.wait_weight_update_admission(update_hold))
+    await asyncio.sleep(0)
+    assert not update_wait.done()
+
+    manager._leave_shared_eval(eval_hold)
+    await manager.release_train_admission_hold(eval_hold)
+    await update_wait
+    manager.weight_version = 2
+    await manager.record_train_weight_update(update_hold)
+
+    next_eval_hold = await manager.acquire_train_admission_hold()
+    await manager.wait_train_admission_hold(next_eval_hold)
+    assert next_eval_hold is not None
+    eval_enter = asyncio.create_task(manager._enter_shared_eval(next_eval_hold))
+    await asyncio.sleep(0)
+    assert not eval_enter.done()
+
+    await manager.release_train_admission_hold(update_hold)
+    await eval_enter
+    manager._leave_shared_eval(next_eval_hold)
+    await manager.release_train_admission_hold(next_eval_hold)
+    assert manager._active_shared_eval_holds == set()
+
+
+@pytest.mark.asyncio
+async def test_dispose_waits_for_shared_eval_before_closing_lifecycle(manager_env) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+
+    hold_id = await manager.acquire_train_admission_hold()
+    await manager.wait_train_admission_hold(hold_id)
+    assert hold_id is not None
+    await manager._enter_shared_eval(hold_id)
+
+    dispose_task = asyncio.create_task(manager.dispose())
+    await asyncio.sleep(0)
+    assert not lifecycle.close_started.is_set()
+
+    manager._leave_shared_eval(hold_id)
+    await manager.release_train_admission_hold(hold_id)
+    await dispose_task
+
+    assert events == ["acquire", "wait", "release", "close"]
+
+
+@pytest.mark.asyncio
+async def test_dispose_rejects_active_weight_update_without_closing_manager(manager_env) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+
+    hold_id = await manager.acquire_train_admission_hold()
+    await manager.wait_weight_update_admission(hold_id)
+    with pytest.raises(RuntimeError, match="weight update owns"):
+        await manager.dispose()
+
+    assert not manager._rollout_lifecycles_closing
+    manager.weight_version = 3
+    await manager.record_train_weight_update(hold_id)
+    await manager.release_train_admission_hold(hold_id)
+    await manager.dispose()
+
+    assert events == ["acquire", "wait", "record:3", "release", "close"]
+
+
+@pytest.mark.asyncio
+async def test_shared_eval_waits_frontier_and_snapshot_eval_bypasses_it(manager_env, monkeypatch) -> None:
+    manager, args = manager_env
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+    args.debug_train_only = False
+    args.eval_uses_snapshots = False
+    manager.eval_generate_rollout = object()
+    manager._metric_checker = None
+    monkeypatch.setattr(manager, "_health_monitoring_resume", lambda: events.append("health"))
+    monkeypatch.setattr(
+        rollout_manager_mod,
+        "call_rollout_function",
+        lambda rollout_fn, input: events.append("eval") or SimpleNamespace(data=[], metrics={}),
+    )
+    monkeypatch.setattr(rollout_manager_mod, "log_eval_rollout_data", lambda *args, **kwargs: {})
+
+    await manager.eval(40)
+    assert events == ["acquire", "wait", "health", "eval", "release"]
+
+    events.clear()
+    args.eval_uses_snapshots = True
+
+    async def eval_checkpoint(*args, **kwargs):
+        events.append("snapshot")
+
+    monkeypatch.setattr(manager, "_eval_checkpoint", eval_checkpoint)
+    await manager.eval(41, hf_dir="/checkpoint")
+    assert events == ["health", "snapshot"]
+
+
+@pytest.mark.asyncio
+async def test_eval_skips_debug_replay_without_eval_rollout_fn(manager_env) -> None:
+    manager, args = manager_env
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+    args.debug_train_only = False
+    args.eval_uses_snapshots = False
+    args.load_debug_rollout_data = "/debug/rollout/data"
+    manager.eval_generate_rollout = None
+
+    assert await manager.eval(40) is None
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_public_eval_releases_fence_only_after_worker_finishes(manager_env, monkeypatch) -> None:
+    manager, args = manager_env
+    events: list[str] = []
+    lifecycle = RecordingRolloutLifecycle(events)
+    install_lifecycle(manager, lifecycle)
+    args.debug_train_only = False
+    args.eval_uses_snapshots = False
+    manager.eval_generate_rollout = object()
+    manager._metric_checker = None
+    eval_started = threading.Event()
+    release_eval = threading.Event()
+    monkeypatch.setattr(manager, "_health_monitoring_resume", lambda: None)
+
+    def blocked_eval(rollout_fn, input):
+        eval_started.set()
+        release_eval.wait()
+        return SimpleNamespace(data=[], metrics={})
+
+    monkeypatch.setattr(rollout_manager_mod, "call_rollout_function", blocked_eval)
+    monkeypatch.setattr(rollout_manager_mod, "log_eval_rollout_data", lambda *args, **kwargs: {})
+
+    eval_task = asyncio.create_task(manager.eval(42))
+    assert await asyncio.to_thread(eval_started.wait, 1)
+    update_hold = await manager.acquire_train_admission_hold()
+    update_wait = asyncio.create_task(manager.wait_weight_update_admission(update_hold))
+    await asyncio.sleep(0)
+    assert not update_wait.done()
+
+    eval_task.cancel()
+    await asyncio.sleep(0)
+    assert not eval_task.done()
+    assert not update_wait.done()
+
+    release_eval.set()
+    with pytest.raises(asyncio.CancelledError):
+        await eval_task
+    await update_wait
+    manager.weight_version = 2
+    await manager.record_train_weight_update(update_hold)
+    await manager.release_train_admission_hold(update_hold)
+
+    assert events == ["acquire", "wait", "acquire", "release", "wait", "record:2", "release"]
 
 
 async def test_acquire_close_race_releases_unregistered_hold(

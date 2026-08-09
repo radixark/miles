@@ -43,6 +43,7 @@ from miles.rollout.base_types import (
     TrainAdmissionHold,
     TrainBatchLease,
     TrainBatchRollbackReason,
+    WeightUpdateAdmissionHold,
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
@@ -74,6 +75,10 @@ _T = TypeVar("_T")
 
 async def _release_train_admission_hold(hold: TrainAdmissionHold) -> None:
     hold.release()
+
+
+async def _record_train_weight_update(hold: WeightUpdateAdmissionHold, weight_version: int | None) -> None:
+    hold.record_weight_update(weight_version)
 
 
 async def _await_task_terminal(task: asyncio.Future[_T]) -> _T:
@@ -180,6 +185,18 @@ class RolloutManager:
         self._manager_resources_disposed = False
         self._next_train_admission_hold_id = 0
         self._train_admission_holds: dict[int, TrainAdmissionHold] = {}
+        # A weight update mutates the shared updatable rollout engines.  Keep
+        # one manager-owned exclusion frontier so concurrent shared evaluation
+        # calls cannot observe a partially published update (and vice versa).
+        self._weight_update_fence_hold_id: int | None = None
+        self._weight_update_fence_failure: BaseException | None = None
+        self._weight_update_fence_open = asyncio.Event()
+        self._weight_update_fence_open.set()
+        self._shared_eval_admission_open = asyncio.Event()
+        self._shared_eval_admission_open.set()
+        self._active_shared_eval_holds: set[int] = set()
+        self._shared_evals_drained = asyncio.Event()
+        self._shared_evals_drained.set()
         self.custom_reward_post_process_func = None
         if (x := self.args.custom_reward_post_process_path) is not None:
             self.custom_reward_post_process_func = load_function(x)
@@ -244,6 +261,62 @@ class RolloutManager:
         if self._rollout_lifecycles_closing:
             raise RuntimeError("Rollout manager lifecycle is closing.")
 
+    def _raise_if_weight_update_fence_failed(self) -> None:
+        if self._weight_update_fence_failure is not None:
+            raise RuntimeError("Weight-update fence failed during train admission hold release.") from (
+                self._weight_update_fence_failure
+            )
+
+    def _fail_weight_update_fence(self, hold_id: int, error: BaseException) -> None:
+        if self._weight_update_fence_hold_id != hold_id:
+            return
+        self._weight_update_fence_failure = error
+        self._weight_update_fence_hold_id = None
+        self._shared_eval_admission_open.set()
+        self._weight_update_fence_open.set()
+
+    async def _claim_weight_update_fence(self, hold_id: int) -> None:
+        while self._weight_update_fence_hold_id not in (None, hold_id):
+            self._raise_if_rollout_lifecycles_closing()
+            self._raise_if_weight_update_fence_failed()
+            await self._weight_update_fence_open.wait()
+        self._raise_if_rollout_lifecycles_closing()
+        self._raise_if_weight_update_fence_failed()
+        if self._weight_update_fence_hold_id is None:
+            self._weight_update_fence_hold_id = hold_id
+            self._weight_update_fence_open.clear()
+            self._shared_eval_admission_open.clear()
+
+    async def _enter_shared_eval(self, hold_id: int) -> None:
+        while True:
+            await self._shared_eval_admission_open.wait()
+            self._raise_if_rollout_lifecycles_closing()
+            self._raise_if_weight_update_fence_failed()
+            if hold_id in self._active_shared_eval_holds:
+                raise RuntimeError(f"Train admission hold {hold_id} already owns a shared evaluation.")
+            self._active_shared_eval_holds.add(hold_id)
+            if self._shared_eval_admission_open.is_set():
+                self._shared_evals_drained.clear()
+                return
+            self._active_shared_eval_holds.remove(hold_id)
+            if not self._active_shared_eval_holds:
+                self._shared_evals_drained.set()
+
+    def _leave_shared_eval(self, hold_id: int) -> None:
+        try:
+            self._active_shared_eval_holds.remove(hold_id)
+        except KeyError:
+            raise RuntimeError(f"Train admission hold {hold_id} does not own a shared evaluation.") from None
+        if not self._active_shared_eval_holds:
+            self._shared_evals_drained.set()
+
+    def _release_weight_update_fence(self, hold_id: int) -> None:
+        if self._weight_update_fence_hold_id != hold_id:
+            return
+        self._weight_update_fence_hold_id = None
+        self._shared_eval_admission_open.set()
+        self._weight_update_fence_open.set()
+
     def _ensure_lifecycle_state(self) -> None:
         if not hasattr(self, "_train_rollout_lifecycle"):
             self._train_rollout_lifecycle = None
@@ -263,6 +336,21 @@ class RolloutManager:
             self._next_train_admission_hold_id = 0
         if not hasattr(self, "_train_admission_holds"):
             self._train_admission_holds = {}
+        if not hasattr(self, "_weight_update_fence_hold_id"):
+            self._weight_update_fence_hold_id = None
+        if not hasattr(self, "_weight_update_fence_failure"):
+            self._weight_update_fence_failure = None
+        if not hasattr(self, "_weight_update_fence_open"):
+            self._weight_update_fence_open = asyncio.Event()
+            self._weight_update_fence_open.set()
+        if not hasattr(self, "_shared_eval_admission_open"):
+            self._shared_eval_admission_open = asyncio.Event()
+            self._shared_eval_admission_open.set()
+        if not hasattr(self, "_active_shared_eval_holds"):
+            self._active_shared_eval_holds = set()
+        if not hasattr(self, "_shared_evals_drained"):
+            self._shared_evals_drained = asyncio.Event()
+            self._shared_evals_drained.set()
         if not hasattr(self, "_active_generations"):
             self._active_generations = 0
         if not hasattr(self, "_generations_drained"):
@@ -339,6 +427,42 @@ class RolloutManager:
         wait_task = self._submit_lifecycle_coroutine(hold.wait_terminal())
         await _await_task_before_cancellation(wait_task)
 
+    async def wait_weight_update_admission(self, hold_id: int | None) -> None:
+        """Claim the update side of the coordinator and wait its rollout frontier."""
+        self._ensure_lifecycle_state()
+        if hold_id is None:
+            return
+        try:
+            hold = self._train_admission_holds[hold_id]
+        except KeyError:
+            raise RuntimeError(f"Unknown train admission hold {hold_id}.") from None
+        if not isinstance(hold, WeightUpdateAdmissionHold):
+            raise RuntimeError("Train admission hold does not support weight-update admission.")
+        await self._claim_weight_update_fence(hold_id)
+        drain_task = asyncio.create_task(self._shared_evals_drained.wait())
+        await _await_task_before_cancellation(drain_task)
+        self._raise_if_rollout_lifecycles_closing()
+        await self.wait_train_admission_hold(hold_id)
+
+    async def record_train_weight_update(self, hold_id: int | None) -> None:
+        """Record a completed trainer-owned update on its exact active hold."""
+        self._ensure_lifecycle_state()
+        if hold_id is None:
+            return
+        self._raise_if_rollout_lifecycles_closing()
+        try:
+            hold = self._train_admission_holds[hold_id]
+        except KeyError:
+            raise RuntimeError(f"Unknown train admission hold {hold_id}.") from None
+        if self._weight_update_fence_hold_id != hold_id:
+            raise RuntimeError(f"Train admission hold {hold_id} does not own the weight-update fence.")
+        if not isinstance(hold, WeightUpdateAdmissionHold):
+            raise RuntimeError("Train admission hold does not support weight-update admission.")
+        record_task = self._submit_lifecycle_coroutine(
+            _record_train_weight_update(hold, getattr(self, "weight_version", None))
+        )
+        await _await_task_before_cancellation(record_task)
+
     async def release_train_admission_hold(self, hold_id: int | None) -> None:
         self._ensure_lifecycle_state()
         if hold_id is None:
@@ -362,9 +486,11 @@ class RolloutManager:
             release_error = error
 
         if release_error is not None:
+            self._fail_weight_update_fence(hold_id, release_error)
             if cancellation is not None:
                 raise cancellation from release_error
             raise release_error
+        self._release_weight_update_fence(hold_id)
         self._train_admission_holds.pop(hold_id, None)
         if cancellation is not None:
             raise cancellation
@@ -376,7 +502,13 @@ class RolloutManager:
 
     async def _dispose(self) -> None:
         self._ensure_lifecycle_state()
+        if self._weight_update_fence_hold_id is not None:
+            raise RuntimeError(
+                "Cannot dispose the rollout manager while a trainer weight update owns the admission fence."
+            )
         self._rollout_lifecycles_closing = True
+        self._shared_eval_admission_open.set()
+        self._weight_update_fence_open.set()
         if self._manager_resources_disposed:
             return
 
@@ -399,6 +531,16 @@ class RolloutManager:
             if cancellation is not None:
                 raise cancellation from admission_error
             raise
+
+        shared_evals_task = asyncio.create_task(self._shared_evals_drained.wait())
+        try:
+            await asyncio.shield(shared_evals_task)
+        except asyncio.CancelledError as error:
+            cancellation = cancellation or error
+            try:
+                await _await_task_terminal(shared_evals_task)
+            except BaseException as terminal_error:
+                raise cancellation from terminal_error
 
         close_error: BaseException | None = None
         for lifecycle in self._rollout_lifecycles:
@@ -429,6 +571,10 @@ class RolloutManager:
             raise close_error
 
         self._train_admission_holds.clear()
+        self._active_shared_eval_holds.clear()
+        self._weight_update_fence_hold_id = None
+        self._weight_update_fence_failure = None
+        self._shared_evals_drained.set()
         cleanup_error: BaseException | None = None
         try:
             self._dispose_resources()
@@ -735,30 +881,68 @@ class RolloutManager:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
-        self._health_monitoring_resume()
 
         if self.args.eval_uses_snapshots:
+            self._health_monitoring_resume()
             return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
 
-        with timer("eval_rollout"):
-            if not self.use_legacy_rollout_v1:
-                result = await asyncio.to_thread(
-                    call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
-                )
-            else:
-                result = await asyncio.to_thread(
-                    call_rollout_fn,
-                    self.eval_generate_rollout,
-                    self.args,
-                    rollout_id,
-                    self.data_source,
-                    evaluation=True,
-                )
-        data = result.data
-        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
-        metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
-        if self._metric_checker is not None:
-            self._metric_checker.on_eval(metrics)
+        if self.eval_generate_rollout is None:
+            # load_debug_rollout_data skips rollout-fn construction, so there is no eval fn to run
+            return
+
+        hold_id = await self.acquire_train_admission_hold()
+        shared_eval_entered = False
+        try:
+            if hold_id is not None:
+                await self.wait_train_admission_hold(hold_id)
+                await self._enter_shared_eval(hold_id)
+                shared_eval_entered = True
+            self._health_monitoring_resume()
+            with timer("eval_rollout"):
+                if not self.use_legacy_rollout_v1:
+                    eval_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            call_rollout_function,
+                            self.eval_generate_rollout,
+                            RolloutFnEvalInput(rollout_id=rollout_id),
+                        )
+                    )
+                else:
+                    eval_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            call_rollout_fn,
+                            self.eval_generate_rollout,
+                            self.args,
+                            rollout_id,
+                            self.data_source,
+                            evaluation=True,
+                        )
+                    )
+                if hold_id is None:
+                    result = await eval_task
+                else:
+                    result = await _await_task_before_cancellation(eval_task)
+            data = result.data
+            save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
+            metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
+            if self._metric_checker is not None:
+                self._metric_checker.on_eval(metrics)
+        except BaseException as eval_error:
+            if shared_eval_entered:
+                assert hold_id is not None
+                self._leave_shared_eval(hold_id)
+            if hold_id is not None:
+                try:
+                    await self.release_train_admission_hold(hold_id)
+                except BaseException as release_error:
+                    raise eval_error from release_error
+            raise
+        else:
+            if shared_eval_entered:
+                assert hold_id is not None
+                self._leave_shared_eval(hold_id)
+            if hold_id is not None:
+                await self.release_train_admission_hold(hold_id)
 
     async def _eval_checkpoint(
         self, rollout_id: int, hf_dir: str | None, export_time_seconds: float | None, require_marker: bool
