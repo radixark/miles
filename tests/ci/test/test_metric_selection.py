@@ -335,9 +335,9 @@ def test_one_liner_fills_from_gate_defaults(tmp_path):
         tmp_path,
     )
     s = parse_ci_gate_specs(path)[0]
-    assert s.steps == "last"
+    assert s.steps == "all"
     assert s.constraint == {"rel_up": 0.5, "abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02}
-    assert s.steps_key == '"last"'
+    assert s.steps_key == '"all"'
     assert s.constraint_key == '{"abs_floor_down":0.02,"abs_floor_up":0.02,"rel_down":0.8,"rel_up":0.5}'
 
 
@@ -353,7 +353,7 @@ def test_partial_default_written_literal_wins(tmp_path):
         tmp_path,
     )
     s = parse_ci_gate_specs(path)[0]
-    assert s.steps == "last"  # from GATE_DEFAULTS
+    assert s.steps == "all"  # from GATE_DEFAULTS
     assert s.constraint_key == '{"rel_down":0.1,"rel_up":0.1}'  # written literal, not the table's
 
 
@@ -385,6 +385,20 @@ def test_gate_defaults_within_capture_whitelist_and_valid(tmp_path):
     path = _make_fixture(body, tmp_path)
     specs = parse_ci_gate_specs(path)
     assert len(specs) == len(GATE_DEFAULTS)
+
+
+@pytest.mark.parametrize(
+    "metric_key",
+    [
+        "train/grad_norm",
+        "train/ppo_kl",
+        "train/train_rollout_logprob_abs_diff",
+        "train/train_rollout_kl",
+        "rollout/raw_reward",
+    ],
+)
+def test_standard_rl_gate_defaults_capture_all_steps(metric_key):
+    assert GATE_DEFAULTS[metric_key]["steps"] == "all"
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])

@@ -89,23 +89,23 @@ _FIELDS: dict[str, tuple[bool, object]] = {
 # TARGET_METRIC_KEYS; test-enforced, not imported here).
 GATE_DEFAULTS: dict[str, dict] = {
     "train/grad_norm": {
-        "steps": "last",
+        "steps": "all",
         "constraint": {"rel_up": 0.5, "abs_floor_up": 0.1, "rel_down": 0.8, "abs_floor_down": 0.1},
     },
     "train/ppo_kl": {
-        "steps": "last",
+        "steps": "all",
         "constraint": {"rel_up": 0.5, "abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02},
     },
     "train/train_rollout_logprob_abs_diff": {
-        "steps": "last",
+        "steps": "all",
         "constraint": {"rel_up": 0.5, "abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02},
     },
     "train/train_rollout_kl": {
-        "steps": "last",
+        "steps": "all",
         "constraint": {"rel_up": 0.5, "abs_floor_up": 0.02, "rel_down": 0.8, "abs_floor_down": 0.02},
     },
     "rollout/raw_reward": {
-        "steps": "last",
+        "steps": "all",
         "constraint": {"rel_up": 0.5, "abs_floor_up": 0.05, "rel_down": 0.2, "abs_floor_down": 0.05},
     },
     "rollout/tito_session_mismatch_rate/v1/assistant_text": {
