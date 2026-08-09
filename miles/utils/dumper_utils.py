@@ -81,10 +81,6 @@ async def configure_sglang(args: Namespace) -> None:
 
 
 async def _wait_registered_worker_urls(args: Namespace) -> list[str]:
-    # An engine only joins the router once its weights land, and the router lists it only
-    # after its own health check passes. Reading the roster the moment the rollout starts
-    # can therefore see an empty one and configure nothing at all, which costs the whole
-    # run's inference dumps and surfaces much later as missing output directories.
     from miles.rollout.inference_rollout.inference_rollout_train import get_worker_urls
 
     async def _attempt(_remaining_seconds: float) -> list[str]:

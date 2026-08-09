@@ -48,8 +48,6 @@ class ServerCellMetadata(FrozenStrictBaseModel):
     needs_offload: bool
     update_weights: bool
     workers_hash: str
-    # Set only under --rollout-external, where the engine is already serving and miles never
-    # launched a worker to read an address from.
     external_server_addr: str | None = None
 
 
@@ -187,8 +185,6 @@ class ServerCell:
         self._mark_serving()
 
     async def _register_with_router(self, addr_info: CellAddrInfo) -> None:
-        # Recorded before the call, not after: a failed add_worker may still have reached the
-        # router, and the cell deliberately stays in its current state so it can be retried.
         self._registered_worker_url = addr_info.server_url
         await self.router_api_client.add_worker(
             worker_url=addr_info.server_url,
@@ -200,10 +196,6 @@ class ServerCell:
     async def dispose(self) -> None:
         self._health_checker.stop()
 
-        # Whether the router may hold this cell's url is not a function of the state: both
-        # registration sites await add_worker before the state advances, so a cell can own a
-        # live router entry while still initializing or pending weights, and a cell can reach
-        # either of those states having never registered at all.
         if self._registered_worker_url is not None:
             await self._unregister_from_router()
 
@@ -224,13 +216,9 @@ class ServerCell:
                 timeout=SHUTDOWN_TIMEOUT,
             )
         except Exception as e:
-            # Deliberately not dropping the url here: the router may still hold the entry, and
-            # teardown paths overlap, so a later dispose is the only chance to take it out.
             logger.warning(f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})")
             return
 
-        # Teardown paths overlap, so dispose can run twice; after a removal the router
-        # confirmed, a second one would be aimed at an entry that is already gone.
         self._registered_worker_url = None
 
     async def _compute_addr_info(self) -> CellAddrInfo:

@@ -61,8 +61,6 @@ class FakeClock(Clock):
 
     async def elapse(self, seconds: float) -> None:
         assert seconds >= 0, f"Cannot elapse negative time: {seconds}"
-        # Let a task started just before this call reach its first sleep, so that
-        # sleep is measured from the time it was asked for rather than from here.
         for _ in range(_DRAIN_ITERATIONS):
             await asyncio.sleep(0)
         self._now += seconds

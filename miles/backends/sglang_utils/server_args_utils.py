@@ -7,27 +7,14 @@ from miles.utils.workers.argv_utils import _actions_by_dest, _render_action_argv
 
 _IDENTITY_FIELDS = ("model_path", "host", "port")
 
-# Each engine deliberately draws its own seed, so the launched process is expected
-# to differ here from whatever this process happened to draw while checking.
 _UNCOMPARED_FIELDS = frozenset({"random_seed"})
 
 
 def server_args_to_argv(server_args_dict: dict) -> list[str]:
-    """Render the launch command line from the arguments as sglang has not yet seen them.
-
-    Rendering a constructed ServerArgs instead would spell out values its __post_init__
-    already derived, and some of those derivations are not idempotent -- under DP
-    attention sglang divides chunked_prefill_size by dp_size and scales
-    schedule_conservativeness every time it runs -- so the launched process would apply
-    them a second time on top of the ones baked into the command line.
-    """
     parser = _make_cli_parser()
     actions_by_dest = _actions_by_dest(parser)
 
     def render(name: str, value: object) -> list[str]:
-        # Rendering through the parser's own action keeps the spellings the CLI actually
-        # accepts: --no- for a BooleanOptionalAction, JSON for a json.loads type, and the
-        # renamed option string of a field whose flag does not match its dest.
         action = _resolve_action(actions_by_dest, field_name=name, dest_prefix="", field_to_dest={})
         return _render_action_argv(action, value)
 

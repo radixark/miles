@@ -863,8 +863,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 interval_default=30.0,
                 timeout_default=30.0,
                 first_wait_default=0.0,
-                # A rollout engine that fails one health_generate is gone, not blipping: debouncing it
-                # over three intervals keeps a dead engine taking traffic for another minute.
                 failure_threshold_default=1,
             )
             parser.add_argument(
@@ -2589,13 +2587,6 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
 
 
 def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
-    """Detection without action is not fault tolerance.
-
-    The health checkers only publish a status; this controller is the only thing in-tree that
-    acts on it. Asking for fault tolerance and getting a run that watches an engine die without
-    replacing it is the shape of the old behaviour with the recovery removed, so the default
-    follows --ft-components and the flag is left to override it either way.
-    """
     if args.mini_ft_controller_enable is not None:
         return args.mini_ft_controller_enable
     return bool(args.ft_components)
@@ -3191,7 +3182,6 @@ def miles_validate_args(args):
 
     _maybe_apply_dumper_overrides(args)
 
-    # After the dumper overrides, not before: they clear ft_components, and this default follows it.
     args.mini_ft_controller_enable = _resolve_mini_ft_controller_enable(args)
 
 
@@ -3223,14 +3213,10 @@ def _maybe_apply_dumper_overrides(args) -> None:
     if args.use_fault_tolerance:
         logger.info("Dumper mode: disabling --use-fault-tolerance to suppress fault tolerance heartbeats")
         args.use_fault_tolerance = False
-        # ft_components was resolved from use_fault_tolerance long before this runs, so clearing
-        # the flag alone leaves every component still selected and its probes still firing.
         args.ft_components = []
 
     logger.info("Dumper mode: all heartbeat mechanisms disabled")
     args.router_disable_health_check = True
-    # The miles router reads its probe cadence from here. A dump run whose engines miss three
-    # probes while writing has its engines struck from the routing pool, with no path back in.
     args.rollout_health_check_interval = _DUMPER_DISABLED_HEALTH_CHECK_INTERVAL
 
     if args.start_rollout_id is None:

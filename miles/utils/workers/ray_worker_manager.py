@@ -265,11 +265,6 @@ class _BaseActorManager(Generic[SpecT]):
             self.self_addrs[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
 
     async def _claim_static_port(self, port_info: PortInfo) -> int:
-        """A pinned port cannot move, so an occupant is fatal rather than something to route around.
-
-        Left unchecked the new process fails to bind and dies, while whoever waits for the port
-        connects to the occupant instead and the run proceeds against a stranger's server.
-        """
         port = port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
         first_free = await self.actor_handle._get_free_port_block.remote(
             start_port=port, count=port_info.num_consecutive

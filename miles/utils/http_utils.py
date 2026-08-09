@@ -66,7 +66,6 @@ def wait_for_server_ready(
 
 
 def is_tcp_ready(host: str, port: int) -> bool:
-    """Return whether a TCP port accepts a connection right now."""
     try:
         with socket.create_connection((host.strip("[]"), port), timeout=1):
             return True

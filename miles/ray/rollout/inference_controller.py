@@ -49,8 +49,6 @@ class InferenceController:
             )
 
             if args.rollout_external:
-                # There are no workers to watch: the engines were started outside this run, so the
-                # fleet is exactly the addresses that were named and never changes.
                 await controller._add_external_cells()
             else:
                 # TODO: may change to InferenceController.init(engine_provider, ...) later
@@ -173,8 +171,6 @@ class InferenceController:
         while True:
             if self.args.colocate:
                 await asyncio.gather(*[cell.init() for cell in self._all_cells() if cell.is_uninitialized])
-            # Re-read after the awaits above: reconcile can add a cell while we initialize,
-            # and returning on the older list would leave that cell out of the window.
             cells = self._all_cells()
             pending = [cell for cell in cells if not cell.is_pending_weights_or_serving]
             if not pending:
@@ -241,8 +237,6 @@ class InferenceController:
 
     @with_lock
     async def _add_external_cells(self) -> None:
-        # One address list cannot describe two models; --sglang-config is refused alongside
-        # --rollout-external for exactly this reason, so a second model here is a wiring bug.
         ((model_name, srv),) = self.servers.items()
         for cell_meta in compute_external_server_cell_metas(self.args, model_name=model_name):
             await srv.add_cell(cell_meta)
@@ -291,13 +285,6 @@ class UpdatableEngines:
 
 
 def compute_external_server_cell_metas(args, *, model_name: str) -> list[ServerCellMetadata]:
-    """Describe the engines named by --rollout-external-engine-addrs.
-
-    Under external rollout miles launches nothing, so there is no worker to read a cell's shape
-    from; every field the launched path would have learned from the provider is fixed here
-    instead. The addresses are the whole fleet, so the hash is constant: nothing can replace a
-    cell miles does not own.
-    """
     return [
         ServerCellMetadata(
             model_id=model_name,

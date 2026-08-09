@@ -114,9 +114,6 @@ def _compute_server_args(
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
-        # Offset by the engine's place in the fleet so two engines do not sample the same
-        # continuation for the same prompt -- node-local gpu ids repeat across nodes and would
-        # collide -- and derived from --seed so a rerun of the same launch reproduces the rollouts.
         "random_seed": args.seed + fleet_gpu_offset,
         # memory
         "enable_memory_saver": args.offload_rollout,
@@ -217,24 +214,13 @@ def _compute_server_args(
 
 
 def _compute_lora_target_modules(args, *, may_auto_detect: bool) -> list[str]:
-    # Inkling checkpoints expose module names this mapping cannot produce, so they are the one
-    # family that asks SGLang to discover them; everything else names what it wants. Multi-LoRA
-    # is excluded: several adapters share one slot budget, so discovering every compatible module
-    # sizes that budget off the base model rather than off what the adapters actually fill.
     if may_auto_detect and sglang_lora_target_all_sentinel(args):
         return [LORA_TARGET_ALL_MODULES]
 
     hf_modules = convert_target_modules_to_hf(args.target_modules)
-    # The shorthand is itself a valid --lora-target-modules value, so a run that asked for it
-    # by name is spellable; what is refused below is substituting it for something else.
     spellable = set(SUPPORTED_LORA_TARGET_MODULES) | {LORA_TARGET_ALL_MODULES}
     unspellable = sorted(set(hf_modules) - spellable)
 
-    # Substituting the auto-detecting shorthand here would launch, but it is not the set that
-    # was asked for: SGLang then scans every compatible module the base model exposes, so the
-    # adapter covers modules the trainer never fills. A run that silently trains something
-    # other than what --target-modules named is worse than one that does not start, so refuse.
-    # Widening SGLang's command-line whitelist is the fix; this is only where it is detected.
     assert not unspellable, (
         f"LoRA target modules {unspellable} have no spelling on SGLang's command line "
         f"(it accepts {sorted(SUPPORTED_LORA_TARGET_MODULES)}), so this launch cannot ask for "

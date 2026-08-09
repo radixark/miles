@@ -33,12 +33,6 @@ def compute_sglang_router_args(
 
 
 def _fill_unset_from_cli_defaults(router_args: RouterArgs) -> RouterArgs:
-    """Adopt the router's own defaults where miles expresses no opinion.
-
-    `from_cli_args` leaves a field miles does not expose at the dataclass default,
-    which is None even where the router's command line defaults to a real value.
-    None has no command-line spelling, so the launch argv could not carry it back.
-    """
     cli_defaults = parse_router_args_argv([])
     for field in dataclasses.fields(router_args):
         if getattr(router_args, field.name) is None:

@@ -24,9 +24,6 @@ def maybe_start_mini_ft_controller(args: Any, registry: _CellRegistry) -> None:
     if not args.mini_ft_controller_enable:
         return
 
-    # The registry is driven directly rather than over the api server's own HTTP port, so that
-    # healing does not depend on --api-server-port being set: the port exists to let an external
-    # controller drive the run, not to let this one reach cells in its own process.
     runner = _MiniFTControllerRunner(
         registry=registry,
         poll_interval=args.mini_ft_controller_poll_interval,
@@ -39,9 +36,6 @@ def maybe_start_mini_ft_controller(args: Any, registry: _CellRegistry) -> None:
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
     logger.info("Started mini FT controller on daemon thread")
-
-
-# ------------------------ registry transport + thread runner ------------------------
 
 
 class _MiniFTControllerRunner:

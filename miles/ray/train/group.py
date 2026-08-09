@@ -400,8 +400,6 @@ class TrainerController:
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 
     def get_cell_statuses(self) -> dict[str, CellStatus]:
-        # Snapshotted because the healing loop calls this from its own thread while reconcile
-        # adds and removes cells on the main loop.
         return {cell_id: cell.cell_status() for cell_id, cell in list(self._cells_by_id.items())}
 
     # ------------------------ utils to forward calls to cells ------------------------

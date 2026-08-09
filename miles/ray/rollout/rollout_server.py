@@ -23,7 +23,6 @@ WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 async def create_rollout_servers(
     args, context_lock: ContextLock, global_health_checker_activeness: Callable[[], ActiveAndEpoch]
 ) -> dict[str, "RolloutServer"]:
-    """Create rollout servers: one per model, each behind a router."""
     config = resolve_sglang_config(args)
 
     external_router_addr = _compute_external_router_addr(args)
@@ -59,11 +58,6 @@ async def create_rollout_servers(
 
 
 def _compute_external_router_addr(args) -> HostAndPort | None:
-    """The router miles should talk to instead of starting one, when it was given one.
-
-    An ip alone is not enough to reach a router, so the port has to come with it; a port on its
-    own means something else entirely -- pin the port of the router miles starts.
-    """
     if args.sglang_router_ip is None:
         return None
 
@@ -72,8 +66,6 @@ def _compute_external_router_addr(args) -> HostAndPort | None:
 
 
 def _compute_expected_num_cells(args, *, model_cfg) -> int:
-    # Externally launched engines are not derived from the gpu budget; the addresses that were
-    # named are the whole fleet.
     if args.rollout_external:
         return len(args.rollout_external_engine_addrs)
 
@@ -177,12 +169,6 @@ class RolloutServer:
 
     @requires_lock
     def _addressable_cells(self) -> list[ServerCell]:
-        """Cells that can be dialled right now.
-
-        Reconcile runs concurrently with the weight update window, so a cell can be gated or
-        already torn down when a fan-out reaches it; addressing one asserts inside the cell and
-        takes the whole window down over an engine that was never part of it.
-        """
         return [cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving]
 
     @lock_exempt

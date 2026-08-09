@@ -37,12 +37,6 @@ def render_cli_argv(
     field_to_dest: Mapping[str, str] | None = None,
     derived_fields: frozenset[str] = frozenset(),
 ) -> list[str]:
-    """Render *args_obj* back into a command line that parses into an equal object.
-
-    Fields named in *derived_fields* are computed by the parser from other flags and
-    have no faithful command-line spelling of their own, so they are not rendered.
-    The roundtrip below is what proves that omitting them loses nothing.
-    """
     parser = make_parser()
 
     def parse(argv: list[str]) -> _ArgsT:
@@ -56,9 +50,6 @@ def render_cli_argv(
 
     parsed = parse(argv)
     if parsed != args_obj:
-        # A default the parser derives from other flags (e.g. the PD load balance
-        # method) only reveals itself once those flags are on the command line, so
-        # rendering once against the bare defaults can leave it unspelled.
         argv = argv + _render_cli_argv(args_obj, cli_defaults=parsed, derived_fields=derived_fields, **render_kwargs)
         parsed = parse(argv)
 
@@ -67,7 +58,6 @@ def render_cli_argv(
 
 
 def _describe_mismatch(parsed: _ArgsT, args_obj: _ArgsT) -> str:
-    """Name the fields that differ; the full reprs are hundreds of fields wide."""
     if not (dataclasses.is_dataclass(parsed) and dataclasses.is_dataclass(args_obj)):
         return f"{parsed!r} != {args_obj!r}"
     return ", ".join(

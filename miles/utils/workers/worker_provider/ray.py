@@ -37,8 +37,6 @@ class RayWorkerProvider(BaseWorkerProvider):
         try:
             handle = await self._worker_manager_handle.get_worker_handle.remote(worker_name)
         except ray.exceptions.RayTaskError:
-            # The manager only hands out handles for live cells, so a cell stopped since the
-            # caller looked up its address has no handle to probe -- which is the answer.
             return False
         return await handle.is_alive(timeout=WORKER_LIVENESS_PROBE_TIMEOUT_SECONDS)
 

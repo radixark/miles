@@ -18,8 +18,6 @@ logger = logging.getLogger(__name__)
 
 
 def specs_router(args) -> list[CommandWorkerSpec]:
-    # A router that was named is already running outside this run, so starting one would put a
-    # second router in front of the same engines.
     if args.sglang_router_ip is not None:
         return []
 
@@ -109,8 +107,6 @@ def spec_session_server(args) -> CommandWorkerSpec:
 
 
 def _compute_session_server_backend_url(args, ctx: LaunchCommandContext) -> str:
-    # With an external router there is no router spec to read an address from, so the one that was
-    # named is the backend.
     if args.sglang_router_ip is not None:
         return f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
     return ctx.spec_addrs[compute_router_spec_name(0)][0]["primary"].addr
@@ -134,8 +130,6 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
     if args.debug_train_only:
         return []
 
-    # The engines are already running outside this run, so miles has nothing to launch and the
-    # placement group reserves no rollout bundles to launch it into.
     if args.rollout_external:
         return []
 
@@ -174,8 +168,6 @@ def _compute_spec_inference_engine(
             node_rank=ctx.worker_in_cell_index,
             worker_type=server_group_config.worker_type,
             base_gpu_id=ctx.gpu_ids[0],
-            # The gpu ids above are node-local, so they repeat across nodes; this one counts from
-            # the start of the fleet and is what tells two engines apart.
             fleet_gpu_offset=server_group_config.gpu_offset + ctx.cell_index * server_group_config.num_gpus_per_engine,
             sglang_overrides=server_group_config.overrides,
             num_gpus_per_engine=server_group_config.num_gpus_per_engine,

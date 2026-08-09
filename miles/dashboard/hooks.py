@@ -338,14 +338,9 @@ async def register_engines(servers) -> None:
         return
     try:
         cells = _alive_engine_cells(servers)
-        # Externally launched engines have no worker in the manager to describe them, so there is
-        # no topology to publish rather than a topology that failed to build.
         if any(cell.meta.external_server_addr is not None for cell in cells):
             return
         worker_infos_per_cell = _collect_worker_infos(cells)
-        # The cell's url is in here because it is what gets published: it is the address the cell
-        # cached when it initialized, not one derived from the worker infos read just above, so
-        # watching the workers alone lets a repush carry a url the cell has since replaced.
         fingerprint = tuple(
             (cell.server_url, tuple((info.name, info.generation, info.self_addrs["primary"]) for info in worker_infos))
             for cell, worker_infos in zip(cells, worker_infos_per_cell, strict=True)

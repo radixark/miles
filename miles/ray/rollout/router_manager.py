@@ -32,12 +32,6 @@ async def wait_worker_serving(
     addr: HostAndPort,
     timeout: float = WAIT_SERVING_TIMEOUT_SECONDS,
 ) -> None:
-    """Wait for a launched worker's port, giving up early once the worker itself is gone.
-
-    A server that dies at import time -- a bad template path, a missing model -- never opens the
-    port, so waiting the whole timeout reports a network problem for what is a crashed child whose
-    traceback is already in its own log.
-    """
     deadline = time.monotonic() + timeout
     while True:
         if is_tcp_ready(addr.host, addr.port):

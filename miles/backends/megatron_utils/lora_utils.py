@@ -629,9 +629,6 @@ def _load_training_state(
 
 def build_lora_sync_config(args: Namespace) -> dict[str, Any]:
     """Build LoRA config dict for syncing weights to SGLang engines."""
-    # The engine was launched with the auto-detecting shorthand only when it serves a single
-    # adapter; multi-LoRA names its targets, and publishing an adapter that claims more than the
-    # engine was launched to host makes the engine reject it or quietly host a subset.
     if sglang_lora_target_all_sentinel(args) and not is_multi_lora_enabled(args):
         target_modules_hf: Any = "all-linear"
     else:
