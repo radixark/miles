@@ -732,7 +732,7 @@ class TestParserBinding:
             (TITOTokenizerType.MINIMAX_M27, "minimax-append-think", "minimax-m2"),
             (TITOTokenizerType.DEEPSEEKV32, "deepseek-v3", "deepseekv32"),
             (TITOTokenizerType.DEEPSEEKV4, "deepseek-v4", "deepseekv4"),
-            (TITOTokenizerType.INKLING, "inkling", "inkling"),
+            (TITOTokenizerType.INKLING, None, None),
             (TITOTokenizerType.DEFAULT, None, None),
         ],
     )
