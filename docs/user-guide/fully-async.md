@@ -151,12 +151,17 @@ flowchart LR
     T --> S[Optimizer step, weight sync]
 ```
 
-Groups are filtered at two points, because the two decisions become available at
+Groups are filtered at three points, because the three decisions become available at
 different times. Whether a group was aborted, and whether
 `--dynamic-sampling-filter-path` keeps it, is fixed the moment generation finishes, so
 both are decided on `put()`. Staleness depends on how long the group then sits in the
-buffer, so it is decided on `get()`. Once the trainer has a full batch it sorts the
-groups by index and applies `--rollout-sample-filter-path` to the assembled batch.
+buffer, so it is decided on `get()`. A weight update can still land between that drain
+and the handoff to training, so the assembled batch is re-checked on
+`validate_final_admission()`, and the entries the update invalidated are settled as
+unused: an owned reservation returns to the source for a fresh attempt, and any other
+group goes to `--async-unused-samples-handler`, which drops it by default. Once the
+trainer has a full batch it sorts the groups by index and applies
+`--rollout-sample-filter-path` to the assembled batch.
 
 The buffer decouples the two loops. As long as it holds finished groups, the trainer
 never waits for generation. If it sits empty, rollout is still the bottleneck and async
@@ -174,7 +179,7 @@ Staleness control decides which of those groups training is allowed to see:
 
 | Flag | Effect |
 |---|---|
-| `--max-weight-staleness` | Maximum gap between a group's oldest weight version and the current engine version. Unset by default, which disables the filter |
+| `--max-weight-staleness` | Maximum gap between a group's oldest weight version and the manager-published trainer weight version. Unset by default, which disables the numeric filter but still recycles prefetched groups admitted before a recorded weight update |
 | `--async-unused-samples-handler` | What happens to a group training does not use, either aborted or too stale. The default `drop` discards it; `retry` recycles its prompts into the data source for regeneration. Dynamic-filter rejects are always dropped |
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer

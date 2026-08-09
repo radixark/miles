@@ -542,6 +542,190 @@ async def test_epoch_mismatch_rollback_failure_retains_one_close_retry(monkeypat
     assert data_source.requeued == [[reservation]]
 
 
+@pytest.mark.parametrize(
+    ("max_weight_staleness", "expected_group_indices", "expected_requeued", "expected_stale"),
+    [
+        (None, [32, 33], [30, 31], 2),
+        (0, [32, 33], [30, 31], 2),
+        # Receipt 30 was already claimed before the lifecycle hold, so PR5's
+        # lease fence replays it. Receipt 31 is claimed after release and
+        # remains within the numeric staleness allowance.
+        (1, [31, 32], [30], 0),
+    ],
+)
+async def test_recorded_weight_version_revalidates_groups_claimed_before_update(
+    monkeypatch,
+    max_weight_staleness,
+    expected_group_indices,
+    expected_requeued,
+    expected_stale,
+):
+    release_second_generation = asyncio.Event()
+    reservations = [make_reservation(index) for index in range(30, 34)]
+    data_source = FakeReservationDataSource(reservations)
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        group_index = group[0].group_index
+        if group_index != 30:
+            await release_second_generation.wait()
+        version = "1" if group_index < 32 else "2"
+        return make_group(group_index, weight_versions=[version])
+
+    fn = make_fn(
+        monkeypatch,
+        make_args(
+            rollout_batch_size=2,
+            max_weight_staleness=max_weight_staleness,
+            async_max_concurrent_samples=2,
+            async_data_buffer_capacity_factor=1.0,
+            rollout_submission_granularity="group",
+        ),
+        data_source,
+        generate=generate,
+    )
+    first_group_claimed = asyncio.Event()
+    original_next_group = fn._next_group
+    claims = 0
+
+    async def observe_claim(input):
+        nonlocal claims
+        entry = await original_next_group(input)
+        claims += 1
+        if claims == 1:
+            first_group_claimed.set()
+        return entry
+
+    fn._next_group = observe_claim
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=30, weight_version=1)))
+    await first_group_claimed.wait()
+    await wait_until(lambda: len(data_source.reserved) >= 2)
+
+    hold = await fn.acquire_train_admission_hold()
+    release_second_generation.set()
+    await hold.wait_terminal()
+    hold.record_weight_update(2)
+    hold.release()
+
+    output = await asyncio.wait_for(drain, timeout=1)
+    assert [group[0].group_index for group in output.samples] == expected_group_indices
+    assert (
+        sorted(reservation.samples[0].group_index for batch in data_source.requeued for reservation in batch)
+        == expected_requeued
+    )
+    assert output.metrics["rollout/fully_async/stale_groups_filtered"] == expected_stale
+
+    output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+    await fn.close()
+
+
+async def test_legacy_hold_and_close_do_not_wait_for_full_buffer_publication(monkeypatch):
+    buffered_group = make_group(36)
+    blocked_group = make_group(37)
+    data_source = FakeDataSource([blocked_group])
+    fn = make_fn(
+        monkeypatch,
+        make_args(
+            rollout_batch_size=1,
+            async_max_concurrent_samples=2,
+            async_data_buffer_capacity_factor=1.0,
+            async_unused_samples_handler="retry",
+        ),
+        data_source,
+    )
+    output = data_buffer.DefaultDataBuffer(
+        data_buffer.DataBufferConstructorInput(
+            args=fn.args,
+            unused_handler_fn=fn._handle_unused_buffer_source,
+            discard_handler_fn=fn._discard_buffer_source,
+        )
+    )
+    await output.put(data_buffer.DataBufferInput(source=buffered_group, group=buffered_group, weight_update_epoch=0))
+    fn._output = output
+    fn._worker = asyncio.create_task(fn._worker_loop())
+    await wait_until(lambda: fn._legacy_executions and all(task.done() for task in fn._legacy_executions))
+
+    hold = await fn.acquire_train_admission_hold()
+    await asyncio.wait_for(hold.wait_terminal(), timeout=1)
+    hold.record_weight_update(1)
+    hold.release()
+    await fn.close()
+
+    assert sorted(group[0].group_index for group in data_source.recycled) == [36, 37]
+
+
+async def test_legacy_weight_hold_blocks_new_source_until_update_is_recorded(monkeypatch):
+    release_generation = asyncio.Event()
+    first_group = make_group(38)
+    second_group = make_group(39)
+    data_source = FakeDataSource([first_group, second_group])
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        await release_generation.wait()
+        return group
+
+    fn = make_fn(
+        monkeypatch,
+        make_args(
+            rollout_batch_size=1,
+            async_max_concurrent_samples=2,
+            async_data_buffer_capacity_factor=1.0,
+            async_unused_samples_handler="retry",
+        ),
+        data_source,
+        generate=generate,
+    )
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=38, weight_version=1)))
+    await wait_until(lambda: data_source.num_get_calls == 1)
+
+    hold = await fn.acquire_train_admission_hold()
+    release_generation.set()
+    await hold.wait_terminal()
+    await asyncio.sleep(0)
+    assert data_source.num_get_calls == 1
+
+    hold.record_weight_update(2)
+    hold.release()
+    output = await asyncio.wait_for(drain, timeout=1)
+
+    assert output.samples == [second_group]
+    assert [group[0].group_index for group in data_source.recycled] == [38]
+    await fn.close()
+
+
+async def test_legacy_hold_without_record_keeps_the_claimed_group(monkeypatch):
+    release_generation = asyncio.Event()
+    first_group = make_group(40)
+    data_source = FakeDataSource([first_group])
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        await release_generation.wait()
+        return group
+
+    fn = make_fn(
+        monkeypatch,
+        make_args(
+            rollout_batch_size=1,
+            async_max_concurrent_samples=1,
+            async_data_buffer_capacity_factor=1.0,
+            async_unused_samples_handler="retry",
+        ),
+        data_source,
+        generate=generate,
+    )
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=40, weight_version=1)))
+    await wait_until(lambda: data_source.num_get_calls == 1)
+
+    hold = await fn.acquire_train_admission_hold()
+    release_generation.set()
+    await hold.wait_terminal()
+    hold.release()
+
+    output = await asyncio.wait_for(drain, timeout=1)
+    assert output.samples == [first_group]
+    assert data_source.recycled == []
+    await fn.close()
+
+
 async def test_multiple_admission_holds_reopen_only_after_final_release(monkeypatch):
     reservation = make_reservation(6)
     data_source = FakeReservationDataSource([reservation])
@@ -895,14 +1079,131 @@ async def test_stale_group_dropped_by_default(monkeypatch):
     assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
 
 
+async def test_owned_stale_callback_failure_is_retried_on_close(monkeypatch):
+    reservation = make_reservation(52)
+    data_source = FakeReservationDataSource([reservation], failed_requeues=1)
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        return make_group(52, weight_versions=["1"])
+
+    fn = make_fn(
+        monkeypatch,
+        make_args(
+            rollout_batch_size=1,
+            max_weight_staleness=0,
+            async_max_concurrent_samples=2,
+            async_data_buffer_capacity_factor=1.0,
+            rollout_submission_granularity="group",
+        ),
+        data_source,
+        generate=generate,
+    )
+    with pytest.raises(RuntimeError, match="scripted requeue failure"):
+        await fn(RolloutFnTrainInput(rollout_id=52, weight_version=2))
+
+    await fn.close()
+    assert data_source.requeued == [[reservation]]
+
+
+async def test_legacy_stale_callback_failure_is_retried_on_close(monkeypatch):
+    class FailOnceRecycleDataSource(FakeDataSource):
+        def __init__(self, scripted):
+            super().__init__(scripted)
+            self.fail_recycle = True
+
+        def add_samples(self, groups):
+            if self.fail_recycle:
+                self.fail_recycle = False
+                raise RuntimeError("scripted recycle failure")
+            super().add_samples(groups)
+
+    stale = make_group(53, weight_versions=["1"])
+    data_source = FailOnceRecycleDataSource([stale])
+
+    fn = make_fn(
+        monkeypatch,
+        make_args(rollout_batch_size=1, max_weight_staleness=0, async_unused_samples_handler="retry"),
+        data_source,
+    )
+    with pytest.raises(RuntimeError, match="scripted recycle failure"):
+        await fn(RolloutFnTrainInput(rollout_id=53, weight_version=2))
+
+    await fn.close()
+    assert [group[0].group_index for group in data_source.recycled].count(53) == 1
+
+
+async def test_legacy_put_callback_failure_has_one_retry_owner(monkeypatch):
+    class FailOnceRecycleDataSource(FakeDataSource):
+        def __init__(self, scripted):
+            super().__init__(scripted)
+            self.fail_recycle = True
+
+        def add_samples(self, groups):
+            if self.fail_recycle:
+                self.fail_recycle = False
+                raise RuntimeError("scripted put recycle failure")
+            super().add_samples(groups)
+
+    aborted = [replace(sample, status=Sample.Status.ABORTED) for sample in make_group(55)]
+    data_source = FailOnceRecycleDataSource([aborted])
+    fn = make_fn(
+        monkeypatch,
+        make_args(
+            rollout_batch_size=1,
+            async_max_concurrent_samples=N_SAMPLES_PER_PROMPT,
+            async_unused_samples_handler="retry",
+        ),
+        data_source,
+    )
+
+    with pytest.raises(RuntimeError, match="scripted put recycle failure"):
+        await fn(RolloutFnTrainInput(rollout_id=55))
+    with pytest.raises(RuntimeError, match="scripted put recycle failure"):
+        await fn.close()
+
+    assert [group[0].group_index for group in data_source.recycled].count(55) == 1
+    assert not fn._legacy_close_pending_groups
+
+
+async def test_owned_put_callback_failure_has_one_retry_owner(monkeypatch):
+    reservation = make_reservation(56)
+    data_source = FakeReservationDataSource([reservation], failed_requeues=1)
+
+    async def generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        return [replace(sample, status=Sample.Status.ABORTED) for sample in make_group(56)]
+
+    fn = make_owned_fn(monkeypatch, data_source, generate)
+    with pytest.raises(RuntimeError, match="scripted requeue failure"):
+        await fn(RolloutFnTrainInput(rollout_id=56))
+    with pytest.raises(RuntimeError, match="scripted requeue failure"):
+        await fn.close()
+
+    assert data_source.requeued == [[reservation]]
+    assert fn._pending_terminal_rollbacks == []
+
+
 async def test_worker_error_propagates(monkeypatch):
     async def failing_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         raise RuntimeError("generation exploded")
 
-    fn = make_fn(monkeypatch, make_args(), FakeDataSource(), generate=failing_generate)
+    source_group = make_group(54)
+    data_source = FakeDataSource([source_group])
+    fn = make_fn(
+        monkeypatch,
+        make_args(
+            rollout_batch_size=1,
+            async_max_concurrent_samples=N_SAMPLES_PER_PROMPT,
+            async_unused_samples_handler="retry",
+        ),
+        data_source,
+        generate=failing_generate,
+    )
 
     with pytest.raises(RuntimeError, match="generation exploded"):
         await fn(RolloutFnTrainInput(rollout_id=0))
+    with pytest.raises(RuntimeError, match="generation exploded"):
+        await fn.close()
+    assert data_source.recycled == [source_group]
 
 
 async def test_worker_bounds_in_flight_groups(monkeypatch):
@@ -1027,6 +1328,34 @@ async def test_sample_filter_marks_samples_without_shrinking_the_batch(monkeypat
 
     assert len(output.samples) == 2
     assert [sample.remove_sample for sample in output.samples[0]] == [True, False]
+
+
+async def test_worker_stays_alive_when_admission_pauses_without_active_work(monkeypatch):
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+    output = data_buffer.DefaultDataBuffer(
+        data_buffer.DataBufferConstructorInput(
+            args=fn.args,
+            unused_handler_fn=fn._handle_unused_buffer_source,
+            discard_handler_fn=fn._discard_buffer_source,
+        )
+    )
+    fn._output = output
+    submit_calls = 0
+
+    async def pause_before_submit(active):
+        nonlocal submit_calls
+        submit_calls += 1
+        fn._producer_resumed.clear()
+        return False
+
+    monkeypatch.setattr(fn, "_submit_active_group", pause_before_submit)
+    worker = asyncio.create_task(fn._worker_loop())
+    fn._worker = worker
+    await wait_until(lambda: submit_calls == 1)
+    await asyncio.sleep(0)
+    assert not worker.done()
+    worker.cancel()
+    await asyncio.gather(worker, return_exceptions=True)
 
 
 async def test_staleness_filter_off_before_the_first_weight_update(monkeypatch):
@@ -1191,6 +1520,37 @@ class RecordingBuffer(data_buffer.DefaultDataBuffer):
     def __init__(self, input):
         super().__init__(input)
         RecordingBuffer.constructed_with = input
+
+
+class CompatibleCustomBuffer(data_buffer.DataBuffer):
+    async def put(self, input):
+        pass
+
+    async def get(self, **context):
+        raise RuntimeError("not used")
+
+    def get_metrics(self):
+        return {}
+
+
+async def test_custom_buffer_final_admission_fails_closed_only_after_recorded_update():
+    buffer = CompatibleCustomBuffer()
+    entry = data_buffer.DataBufferInput(source=make_group(50), group=make_group(50), weight_update_epoch=0)
+
+    assert (
+        buffer.validate_final_admission([entry], current_weight_update_epoch=0, current_version=None).rejected_indexes
+        == ()
+    )
+    with pytest.raises(RuntimeError, match="must implement final-admission validation"):
+        buffer.validate_final_admission([entry], current_weight_update_epoch=1, current_version=None)
+
+    class ExplicitVerdictBuffer(CompatibleCustomBuffer):
+        def validate_final_admission(self, entries, *, current_weight_update_epoch, current_version):
+            return data_buffer.DataBufferAdmissionVerdict(rejected_indexes=(0,))
+
+    assert ExplicitVerdictBuffer().validate_final_admission(
+        [entry], current_weight_update_epoch=1, current_version=None
+    ).rejected_indexes == (0,)
 
 
 async def test_custom_data_buffer_path_replaces_default(monkeypatch):

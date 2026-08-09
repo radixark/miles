@@ -346,6 +346,7 @@ contract, session behavior, and model-family selection.
 | `--partial-rollout` | flag | off | Resume aborted rollouts in the next iteration. |
 | `--async-max-concurrent-samples` | int | – | Maximum number of trajectories generating at once in fully async mode. Unset keeps the legacy bound of one training batch (`rollout_batch_size * n_samples_per_prompt`). Must be at least `--n-samples-per-prompt`; smaller values are rejected at startup. |
 | `--async-data-buffer-capacity-factor` | float | `2.0` | Capacity of the finished-group buffer between generation and training, as a multiple of `--rollout-batch-size` (`floor(factor * rollout_batch_size)` groups). The producer blocks while the buffer is full. Must be a positive finite number that keeps at least one group; other values are rejected at startup. |
+| `--max-weight-staleness` | int | – | Largest allowed gap between a group's oldest weight version and the current engine weight version in fully async mode; groups beyond it are recycled to the data buffer. Unset disables numeric staleness filtering but still recycles prefetched groups admitted before a recorded weight update. A numeric limit revalidates groups against the trainer weight version the manager publishes, so groups within the limit may be kept. |
 
 ### Logging
 

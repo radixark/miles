@@ -68,12 +68,14 @@ class TrainAdmissionHold(ABC):
 
     def __init__(self) -> None:
         self._release_attempted = False
+        self._terminal_observed = False
 
     async def wait_terminal(self) -> None:
         """Wait until the execution frontier captured by this hold is terminal."""
         if self._release_attempted:
             raise RuntimeError("Train admission hold already has a release attempt.")
         await self._wait_terminal()
+        self._terminal_observed = True
 
     @abstractmethod
     async def _wait_terminal(self) -> None:
@@ -89,6 +91,45 @@ class TrainAdmissionHold(ABC):
     @abstractmethod
     def _release(self) -> None:
         """Implement release after the handle is claimed."""
+
+
+class WeightUpdateAdmissionHold(TrainAdmissionHold, ABC):
+    """Admission hold that can fence a trainer-owned weight update.
+
+    A plain :class:`TrainAdmissionHold` remains a compatible lifecycle contract
+    for rollouts that only need to close source admission.  Implementations
+    that participate in trainer weight-update sequencing opt into this explicit
+    capability instead of inheriting an update API they cannot honor.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._weight_update_recorded = False
+
+    def record_weight_update(self, weight_version: int | None = None) -> None:
+        """Record that a trainer-owned weight update completed under this hold.
+
+        The marker is deliberately separate from release: a successful update
+        advances the rollout's local admission generation before new source
+        work may be admitted.  Callers must first observe the hold frontier so
+        no pre-update execution remains in flight.
+        """
+        if self._release_attempted:
+            raise RuntimeError("Train admission hold already has a release attempt.")
+        if not self._terminal_observed:
+            raise RuntimeError("Train admission hold must observe its terminal frontier before a weight update.")
+        if self._weight_update_recorded:
+            raise RuntimeError("Train admission hold already recorded a weight update.")
+        self._record_weight_update(weight_version)
+        self._weight_update_recorded = True
+
+    @abstractmethod
+    def _record_weight_update(self, weight_version: int | None = None) -> None:
+        """Apply a completed trainer-owned weight update to rollout state.
+
+        A lifecycle that has no update-aware state must opt out of the update
+        admission API explicitly; silently reopening admission would be unsafe.
+        """
 
 
 class RolloutFnLifecycle(ABC):
