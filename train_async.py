@@ -75,6 +75,39 @@ async def _rollback_prefetched_pack_before_exit(coordinator: Any, pack: Any, *, 
     return await _await_task_before_cancellation(rollback_task)
 
 
+async def _update_weights_with_admission_hold(
+    rollout_manager: Any,
+    actor_model: Any,
+    rollout_id: int | None,
+) -> None:
+    """Publish trainer weights behind one exact rollout admission hold."""
+    acquire_task = asyncio.ensure_future(rollout_manager.acquire_train_admission_hold.remote())
+    try:
+        hold_id = await asyncio.shield(acquire_task)
+    except asyncio.CancelledError as cancellation:
+        try:
+            hold_id = await _await_task_terminal(acquire_task)
+            release_task = asyncio.ensure_future(rollout_manager.release_train_admission_hold.remote(hold_id))
+            await _await_task_terminal(release_task)
+        except BaseException as cleanup_error:
+            raise cancellation from cleanup_error
+        raise
+
+    # Once the hold is published, an update or terminal-frontier failure
+    # leaves it active and fail-closed for the caller to reconcile.
+    await rollout_manager.wait_weight_update_admission.remote(hold_id)
+    if rollout_id is None:
+        await actor_model.update_weights()
+    else:
+        await actor_model.update_weights(rollout_id=rollout_id)
+
+    async def commit_weight_update() -> None:
+        await rollout_manager.record_train_weight_update.remote(hold_id)
+        await rollout_manager.release_train_admission_hold.remote(hold_id)
+
+    await _await_task_before_cancellation(asyncio.create_task(commit_weight_update()))
+
+
 # The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
 async def train(args):
     assert not args.colocate, "Colocation is not supported for async training."
@@ -104,7 +137,7 @@ async def train(args):
     maybe_start_mini_ft_controller(args)
 
     # always update weight first so that sglang has the loaded weights from training.
-    await actor_model.update_weights()
+    await _update_weights_with_admission_hold(rollout_manager, actor_model, None)
 
     if args.check_weight_update_equal:
         await rollout_manager.check_weights.remote(
@@ -243,7 +276,7 @@ async def train(args):
                 os.remove(args.save_trigger_sentinel)
 
         if update_weights:
-            await actor_model.update_weights(rollout_id=rollout_id)
+            await _update_weights_with_admission_hold(rollout_manager, actor_model, rollout_id)
 
         if periodic_eval:
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)

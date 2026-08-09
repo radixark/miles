@@ -22,9 +22,25 @@ class _RecordingRolloutManager:
         self.leased = leased
         self.pending = set()
         self._generation = 0
+        self.acquire_train_admission_hold = _RemoteMethod(self._acquire_train_admission_hold)
+        self.wait_weight_update_admission = _RemoteMethod(self._wait_weight_update_admission)
+        self.record_train_weight_update = _RemoteMethod(self._record_train_weight_update)
+        self.release_train_admission_hold = _RemoteMethod(self._release_train_admission_hold)
         self.generate = _RemoteMethod(self._generate)
         self.save = _RemoteMethod(self._save)
         self.dispose = _RemoteMethod(self._dispose)
+
+    async def _acquire_train_admission_hold(self):
+        return None
+
+    async def _wait_weight_update_admission(self, hold_id):
+        assert hold_id is None
+
+    async def _record_train_weight_update(self, hold_id):
+        assert hold_id is None
+
+    async def _release_train_admission_hold(self, hold_id):
+        assert hold_id is None
 
     def _generate(self, rollout_id):
         generation = self._generation
@@ -51,6 +67,35 @@ class _RecordingRolloutManager:
         self.events.append("dispose")
 
 
+class _AdmissionRolloutManager(_RecordingRolloutManager):
+    def __init__(self, events, *, record_error=None):
+        self.active_holds = set()
+        self._next_hold_id = 0
+        self._record_error = record_error
+        super().__init__(events)
+
+    async def _acquire_train_admission_hold(self):
+        hold_id = self._next_hold_id
+        self._next_hold_id += 1
+        self.active_holds.add(hold_id)
+        self.events.append(f"acquire:{hold_id}")
+        return hold_id
+
+    async def _wait_weight_update_admission(self, hold_id):
+        assert hold_id in self.active_holds
+        self.events.append(f"wait:{hold_id}")
+
+    async def _record_train_weight_update(self, hold_id):
+        assert hold_id in self.active_holds
+        self.events.append(f"record:{hold_id}")
+        if self._record_error is not None:
+            raise self._record_error
+
+    async def _release_train_admission_hold(self, hold_id):
+        self.active_holds.remove(hold_id)
+        self.events.append(f"release:{hold_id}")
+
+
 class _BlockingRolloutManager(_RecordingRolloutManager):
     def __init__(self, events):
         super().__init__(events, leased=True)
@@ -74,12 +119,15 @@ class _BlockingRolloutManager(_RecordingRolloutManager):
 
 
 class _RecordingActor:
-    def __init__(self, events):
+    def __init__(self, events, *, update_error=None):
         self.events = events
+        self.update_error = update_error
 
     async def update_weights(self, **kwargs):
         label = kwargs.get("rollout_id", "initial")
         self.events.append(f"update:{label}")
+        if self.update_error is not None:
+            raise self.update_error
 
     async def save_model(self, rollout_id, *, force_sync):
         self.events.append(f"model_save:{rollout_id}:{force_sync}")
@@ -173,6 +221,70 @@ def _patch_train(monkeypatch, manager, actor, coordinator, events):
     monkeypatch.setattr(train_async, "maybe_start_mini_ft_controller", lambda args: None)
     monkeypatch.setattr(train_async, "EvalDispatcher", lambda args, actor, manager: _RecordingEval(events))
     monkeypatch.setattr(train_async, "TrainBatchCoordinator", lambda **kwargs: coordinator)
+
+
+@pytest.mark.asyncio
+async def test_weight_updates_record_exact_hold_before_reopening_admission(monkeypatch):
+    events = []
+    manager = _AdmissionRolloutManager(events)
+    actor = _RecordingActor(events)
+    coordinator = _RecordingCoordinator(events=events, manager=manager)
+    _patch_train(monkeypatch, manager, actor, coordinator, events)
+
+    await train_async.train(_args(num_rollout=1, update_weights_interval=1))
+
+    assert events == [
+        "acquire:0",
+        "wait:0",
+        "update:initial",
+        "record:0",
+        "release:0",
+        "generate:0:0",
+        "handoff:0:0",
+        "train:0",
+        "acquire:1",
+        "wait:1",
+        "update:0",
+        "record:1",
+        "release:1",
+        "eval_drain",
+        "dispose",
+    ]
+    assert manager.active_holds == set()
+
+
+@pytest.mark.asyncio
+async def test_weight_update_failure_retains_admission_hold(monkeypatch):
+    events = []
+    failure = RuntimeError("weight update failed")
+    manager = _AdmissionRolloutManager(events)
+    actor = _RecordingActor(events, update_error=failure)
+    coordinator = _RecordingCoordinator(events=events, manager=manager)
+    _patch_train(monkeypatch, manager, actor, coordinator, events)
+
+    with pytest.raises(RuntimeError) as update_error:
+        await train_async.train(_args(num_rollout=1, update_weights_interval=1))
+
+    assert update_error.value is failure
+    assert events == ["acquire:0", "wait:0", "update:initial"]
+    assert manager.active_holds == {0}
+
+
+@pytest.mark.asyncio
+async def test_weight_update_record_failure_retains_admission_hold(monkeypatch):
+    events = []
+    failure = RuntimeError("weight update record failed")
+    manager = _AdmissionRolloutManager(events, record_error=failure)
+    actor = _RecordingActor(events)
+    coordinator = _RecordingCoordinator(events=events, manager=manager)
+    _patch_train(monkeypatch, manager, actor, coordinator, events)
+
+    with pytest.raises(RuntimeError) as record_error:
+        await train_async.train(_args(num_rollout=1, update_weights_interval=1))
+
+    assert record_error.value is failure
+    assert events == ["acquire:0", "wait:0", "update:initial", "record:0"]
+    assert manager.active_holds == {0}
 
 
 @pytest.mark.asyncio
