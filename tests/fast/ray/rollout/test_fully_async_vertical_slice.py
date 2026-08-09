@@ -1,9 +1,9 @@
 """Composed ownership path for issue #2254.
 
-The test keeps the production seams intact while replacing only external
-inference, object-store, trainer, and checkpoint side effects. Two sequential
-reservations cover successful training and checkpointed replay before the same
-scenario crosses shared evaluation and weight-update fencing.
+The test keeps the production seams intact while replacing only GPU inference,
+optimizer, logging, and checkpoint-event side effects. Two sequential
+reservations cover successful remote training and checkpointed replay before
+the same scenario crosses shared evaluation and weight-update fencing.
 """
 
 from tests.ci.ci_register import register_cpu_ci
@@ -11,14 +11,18 @@ from tests.ci.ci_register import register_cpu_ci
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 import asyncio
+import inspect
 import threading
 from argparse import Namespace
+from collections.abc import Mapping
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+import ray
+import train_async as train_async_mod
 
 import miles.ray.rollout.rollout_manager as rollout_manager_mod
 import miles.rollout.data_source as data_source_mod
@@ -31,12 +35,14 @@ from miles.ray.train_batch_admission import (
     TrainerAdmissionStatus,
     TrainerCellCohort,
     TrainerCohort,
+    TrainerRankReceipt,
     validate_publication_data_ref,
 )
 from miles.ray.train_batch_coordinator import TrainBatchCoordinator
 from miles.rollout.base_types import RolloutFnConstructorInput
 from miles.rollout.data_source import RolloutDataSource, SourceReservationId
 from miles.rollout.fully_async_rollout import FullyAsyncRolloutFn
+from miles.utils import object_store
 from miles.utils.async_utils import get_async_loop
 from miles.utils.ray_utils import Box
 from miles.utils.types import Sample
@@ -54,29 +60,87 @@ class _RemoteMethod:
         self._callback = callback
 
     def remote(self, *args, **kwargs):
+        result = self._callback(*args, **kwargs)
+        if inspect.isawaitable(result):
+            return result
+
         async def invoke():
-            return self._callback(*args, **kwargs)
+            return result
 
         return invoke()
 
 
 class _ManagerProxy:
     def __init__(self, manager: RolloutManager) -> None:
+        self._manager = manager
+        self.weight_update_wait_started = asyncio.Event()
+        self.acquire_train_admission_hold = _RemoteMethod(manager.acquire_train_admission_hold)
+        self.wait_weight_update_admission = _RemoteMethod(self._wait_weight_update_admission)
+        self.record_train_weight_update = _RemoteMethod(manager.record_train_weight_update)
+        self.release_train_admission_hold = _RemoteMethod(manager.release_train_admission_hold)
         self.commit_trainer_admission = _RemoteMethod(manager.commit_trainer_admission)
         self.rollback_trainer_admission = _RemoteMethod(manager.rollback_trainer_admission)
         self.get_trainer_admission_status = _RemoteMethod(manager.get_trainer_admission_status)
 
+    async def _wait_weight_update_admission(self, hold_id: int | None) -> None:
+        self.weight_update_wait_started.set()
+        await self._manager.wait_weight_update_admission(hold_id)
 
-class _RecordingTrainer:
-    def __init__(self, manager: RolloutManager) -> None:
+
+@ray.remote(num_cpus=0)
+class _RemoteTrainerRank:
+    """Small real-Ray boundary that proves and consumes the published object ref."""
+
+    def __init__(self) -> None:
+        self._store = object_store.init_instance(Namespace(object_store_backend="ray"))
+        self._events: list[tuple[str, int, int, str | None]] = []
+
+    def _resolve_publication(self, publication, data_ref) -> int:
+        validate_publication_data_ref(publication, data_ref)
+        refs = data_ref if isinstance(data_ref, list) else [data_ref]
+        resolved = 0
+        for ref in refs:
+            with self._store.get(ref) as value:
+                if not isinstance(value, Mapping):
+                    raise ValueError(f"Admission {publication.admission_id} resolved non-mapping data.")
+            resolved += 1
+        return resolved
+
+    def admit_train_batch(self, publication, data_ref) -> TrainerRankReceipt:
+        resolved_refs = self._resolve_publication(publication, data_ref)
+        self._events.append(("admit", publication.admission_id, resolved_refs, None))
+        return TrainerRankReceipt(publication=publication, rank=0)
+
+    def train(self, publication, data_ref, manager_status: str) -> dict[str, Any]:
+        resolved_refs = self._resolve_publication(publication, data_ref)
+        self._events.append(("train", publication.admission_id, resolved_refs, manager_status))
+        if manager_status != TrainerAdmissionStatus.COMMITTED.value:
+            raise AssertionError(f"remote train started before commit: {manager_status!r}")
+        return {"rank": 0, "resolved_refs": resolved_refs, "status": manager_status}
+
+    def update_weights(self, rollout_id: int | None = None) -> dict[str, Any]:
+        self._events.append(("update_weights", rollout_id if rollout_id is not None else -1, 0, "2"))
+        return {"rollout_id": rollout_id, "weight_version": 2}
+
+    def events(self) -> tuple[tuple[str, int, int, str | None], ...]:
+        return tuple(self._events)
+
+
+class _RayTrainerGroupAdapter:
+    """Local trainer-group seam whose admission and training cross real Ray."""
+
+    def __init__(self, manager: RolloutManager, rank: ray.actor.ActorHandle) -> None:
         self._manager = manager
+        self._rank = rank
         self.events: list[str] = []
         self.discarded: list[TrainerAdmissionReceipt] = []
 
     async def admit_train_batch(self, rollout_id: int, data_pack: dict[str, Any]) -> TrainerAdmissionReceipt:
         self.events.append(f"admit:{rollout_id}")
         publication = data_pack["trainer_admission"]
-        validate_publication_data_ref(publication, data_pack["data_ref"])
+        rank_receipt = await self._rank.admit_train_batch.remote(publication, data_pack["data_ref"])
+        if not isinstance(rank_receipt, TrainerRankReceipt) or rank_receipt.publication != publication:
+            raise AssertionError(f"unexpected remote trainer proof: {rank_receipt!r}")
         return TrainerAdmissionReceipt(
             publication=publication,
             role="actor",
@@ -90,9 +154,28 @@ class _RecordingTrainer:
         publication = data_pack["trainer_admission"]
         status = self._manager.get_trainer_admission_status(publication)
         self.events.append(f"train:{rollout_id}:{status.value}")
+        result = await self._rank.train.remote(publication, data_pack["data_ref"], status.value)
+        assert result == {
+            "rank": 0,
+            "resolved_refs": 1,
+            "status": TrainerAdmissionStatus.COMMITTED.value,
+        }
 
     def discard_train_batch_admission(self, receipt: TrainerAdmissionReceipt) -> None:
         self.discarded.append(receipt)
+
+
+class _RayActorModel:
+    """Trainer-model seam that publishes the remote update version to the manager."""
+
+    def __init__(self, manager: RolloutManager, rank: ray.actor.ActorHandle) -> None:
+        self._manager = manager
+        self._rank = rank
+
+    async def update_weights(self, rollout_id: int | None = None) -> None:
+        result = await self._rank.update_weights.remote(rollout_id)
+        assert result["rollout_id"] == rollout_id
+        self._manager.weight_version = result["weight_version"]
 
 
 def _args(tmp_path: Path) -> Namespace:
@@ -111,6 +194,7 @@ def _args(tmp_path: Path) -> Namespace:
         custom_async_data_buffer_path=None,
         rollout_health_check_timeout=0.1,
         rollout_global_dataset=True,
+        object_store_backend="ray",
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
         eval_num_gpus=0,
@@ -213,11 +297,6 @@ def _make_manager(
     monkeypatch.setattr(rollout_manager_mod, "log_rollout_data", lambda *args, **kwargs: None)
     monkeypatch.setattr(rollout_manager_mod, "log_eval_rollout_data", lambda *args, **kwargs: {})
     monkeypatch.setattr(
-        rollout_manager_mod.object_store,
-        "get_instance",
-        lambda: SimpleNamespace(put=lambda **kwargs: Box("vertical-slice-data"), remove=lambda ref: None),
-    )
-    monkeypatch.setattr(
         rollout_manager_mod.event_logger_checkpoint,
         "snapshot",
         lambda *args, **kwargs: None,
@@ -229,11 +308,14 @@ def _make_manager(
 async def test_fully_async_vertical_slice_preserves_ownership_across_train_checkpoint_and_eval(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    ray_local_mode,
 ) -> None:
     """Exercise one leased batch through every issue #2254 lifecycle seam."""
+    _ = ray_local_mode
     monkeypatch.setattr(data_source_mod, "load_tokenizer", lambda *args, **kwargs: object())
     monkeypatch.setattr(data_source_mod, "load_processor", lambda *args, **kwargs: None)
     args = _args(tmp_path)
+    object_store.init_instance(args)
     data_source = RolloutDataSource(args)
 
     async def generate_group(state, samples, sampling_params, evaluation=False, sample_done_callback=None):
@@ -251,23 +333,30 @@ async def test_fully_async_vertical_slice_preserves_ownership_across_train_check
 
     second_pack = None
     eval_task = None
-    update_hold_id = None
+    update_task = None
+    trainer_rank = _RemoteTrainerRank.remote()
     release_eval = threading.Event()
     try:
         first_pack = await manager.generate(rollout_id=7)
         first_publication = first_pack["trainer_admission"]
         assert isinstance(first_pack["data_ref"], Box)
+        assert isinstance(first_pack["data_ref"].inner, ray.ObjectRef)
 
-        trainer = _RecordingTrainer(manager)
+        trainer = _RayTrainerGroupAdapter(manager, trainer_rank)
+        manager_proxy = _ManagerProxy(manager)
         coordinator = TrainBatchCoordinator(
             args=args,
             actor_model=trainer,
             critic_model=None,
             rollout_manager=None,
-            admission_adapter=RayTrainerAdmissionAdapter(_ManagerProxy(manager)),
+            admission_adapter=RayTrainerAdmissionAdapter(manager_proxy),
         )
         await coordinator.train(rollout_id=7, rollout_data_pack=first_pack)
         assert trainer.events == ["admit:7", "train:7:committed"]
+        assert await trainer_rank.events.remote() == (
+            ("admit", 0, 1, None),
+            ("train", 0, 1, TrainerAdmissionStatus.COMMITTED.value),
+        )
         assert manager.get_trainer_admission_status(first_publication) is TrainerAdmissionStatus.COMMITTED
 
         second_pack = await manager.generate(rollout_id=8)
@@ -300,30 +389,38 @@ async def test_fully_async_vertical_slice_preserves_ownership_across_train_check
         eval_task = asyncio.create_task(manager.eval(9))
         assert await asyncio.to_thread(eval_started.wait, 2)
 
-        update_hold_id = await manager.acquire_train_admission_hold()
-        update_wait = asyncio.create_task(manager.wait_weight_update_admission(update_hold_id))
-        await asyncio.sleep(0)
-        assert not update_wait.done(), "weight update must wait for shared evaluation"
+        update_task = asyncio.create_task(
+            train_async_mod._update_weights_with_admission_hold(
+                manager_proxy,
+                _RayActorModel(manager, trainer_rank),
+                9,
+            )
+        )
+        await asyncio.wait_for(manager_proxy.weight_update_wait_started.wait(), timeout=2)
+        assert not update_task.done(), "weight update must wait for shared evaluation"
+        assert [event[0] for event in await trainer_rank.events.remote()] == ["admit", "train"]
 
         release_eval.set()
         await eval_task
-        await update_wait
-        manager.weight_version = 2
-        await manager.record_train_weight_update(update_hold_id)
-        await manager.release_train_admission_hold(update_hold_id)
-        update_hold_id = None
+        await update_task
+        assert manager.weight_version == 2
+        assert (await trainer_rank.events.remote())[-1] == ("update_weights", 9, 0, "2")
     finally:
         release_eval.set()
         if eval_task is not None and not eval_task.done():
             eval_task.cancel()
             await asyncio.gather(eval_task, return_exceptions=True)
-        if update_hold_id is not None:
-            try:
-                await manager.release_train_admission_hold(update_hold_id)
-            except BaseException:
-                pass
+        if update_task is not None and not update_task.done():
+            update_task.cancel()
+            await asyncio.gather(update_task, return_exceptions=True)
         if second_pack is not None:
             second_publication = second_pack["trainer_admission"]
             if manager.get_trainer_admission_status(second_publication) is TrainerAdmissionStatus.PENDING:
                 await coordinator.rollback_prefetched(second_pack)
-        await manager.dispose()
+        try:
+            await manager.dispose()
+        finally:
+            try:
+                ray.kill(trainer_rank)
+            except BaseException:
+                pass
