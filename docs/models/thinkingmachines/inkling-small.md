@@ -22,18 +22,20 @@ cd /root/miles
 
 # Full-parameter GRPO. 276 B fits with the CPU-offloaded optimizer -
 # no NVMe streaming needed (unlike the 975 B recipe).
-python scripts/run_inkling_975b.py train \
+python scripts/run_inkling.py train \
    --model-name Inkling-Small --train-mode full --task dapo_math \
    --num-nodes 4 --num-gpus-per-node 8 \
+   --lr 5e-5 --rollout-batch-size 64 --global-batch-size 128 \
    --sglang-context-length 4096 --rollout-max-response-len 2048 \
    --extra-args "--offload-train-target cpu --sglang-mem-fraction-static 0.65 \
       --optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer"
 
 # LoRA GRPO (rank 32, all-linear), same cluster; adapter-only weight
 # sync swaps in ~4 s per rollout.
-python scripts/run_inkling_975b.py train \
+python scripts/run_inkling.py train \
    --model-name Inkling-Small --train-mode lora --task dapo_math \
    --num-nodes 4 --num-gpus-per-node 8 \
+   --lr 2e-4 --rollout-batch-size 64 --global-batch-size 128 \
    --sglang-context-length 4096 --rollout-max-response-len 2048
 ```
 
@@ -45,4 +47,4 @@ The model definition lives in `scripts/models/inkling-small.sh` (`MODEL_ARGS_NUM
 |---|---|---|---|---|---|---|---|
 | H200 | 32 | 4 | on | 8 | 4 | 1 | `--decoder-last-pipeline-num-layers 7` (42 = 7×5 + 7) |
 
-Batch shape is configurable from the launcher (`--rollout-batch-size`, `--global-batch-size`; defaults 32/64). The validated Small runs used 64/128 with `--lr 6e-6`, producing a steadily rising dapo-math reward curve; LoRA uses the launcher's `lr 5e-6` default.
+Batch shape is configurable from the launcher (`--rollout-batch-size`, `--global-batch-size`; defaults 32/64). The validated Small runs used 64/128: full with `--lr 5e-5`, LoRA with `--lr 2e-4` — both produce a steadily rising dapo-math reward curve. At the launcher's conservative LoRA default (5e-6) the zero-initialised B factors take hundreds of rollouts to accumulate a visible delta-W, which reads as "not learning".

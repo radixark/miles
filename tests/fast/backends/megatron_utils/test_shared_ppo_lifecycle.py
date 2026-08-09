@@ -164,6 +164,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
         debug_skip_weight_update=True,
         debug_train_only=False,
         offload_train=True,
+        rematerialize_param_from_master_weight=False,
     )
     worker._asleep = asleep
     worker._heartbeat = Mock()
@@ -190,7 +191,7 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
 
 def _lifecycle_worker(actor_module, monkeypatch, asleep):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = Namespace(offload_train=True)
+    worker.args = Namespace(offload_train=True, rematerialize_param_from_master_weight=False)
     worker._asleep = asleep
     saver = Mock()
     reload_groups = Mock()

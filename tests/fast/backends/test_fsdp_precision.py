@@ -7,12 +7,12 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.experimental.fsdp_utils.adaptations.precision import (
+from miles.backends.fsdp_utils.adaptations.precision import (
     apply_fp32_master,
     precision_forward_context,
     resolve_precision_policy,
 )
-from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args, parse_fsdp_cli
+from miles.backends.fsdp_utils.arguments import load_fsdp_args, parse_fsdp_cli
 from miles.backends.training_utils.data import _rollout_logprob_dtype
 from miles.true_on_policy.contracts import QWEN3_DENSE_TRUE_ON_POLICY_V1
 

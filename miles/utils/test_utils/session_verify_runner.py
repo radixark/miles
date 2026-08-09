@@ -65,7 +65,7 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
     "rm_type": "random",
     "custom_generate_function_path": "miles.utils.test_utils.session_verify_agent.generate",
     "custom_agent_function_path": "miles.utils.test_utils.session_verify_agent.run_agent",
-    "use_session_server": True,
+    "use_session_server": "v2",
     "debug_rollout_only": True,
     "ci_test": True,
     "colocate": True,
@@ -181,7 +181,11 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
             ]
         )
     if ns.use_session_server:
-        parts.append("--use-session-server")
+        # Preserve an explicit version string ("v2"); a bare True stays the bare flag.
+        if isinstance(ns.use_session_server, str):
+            parts.append(f"--use-session-server {ns.use_session_server}")
+        else:
+            parts.append("--use-session-server")
     if ns.debug_rollout_only:
         parts.append("--debug-rollout-only")
     if ns.ci_test:

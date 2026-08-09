@@ -6,6 +6,8 @@ The implementation lives in the core library at `miles/rollout/fully_async_rollo
 
 ## Files
 * `run-qwen3-4b-fully_async.sh`: example launch script with Qwen3‑4B.
+* `run_qwen3_5_4b_fully_async_eval.py`: Qwen3.5‑4B with async checkpoint eval — `--eval-backend fleet` (dedicated eval fleet) or `--eval-backend external` (fn-launched sglang server).
+* `external_eval_fn.py`: reference `CheckpointEvalFn` — launches/attaches an external sglang server and evals snapshots on it.
 
 ## Prerequisite
 First set up model & environment following the Qwen3-4B example.
@@ -26,8 +28,15 @@ Started fully-async rollout worker
 * Completed groups are pushed into a queue; each step drains until it has `--rollout-batch-size` groups.
 * Aborted or too-stale groups are recycled back into the data source.
 
+## Evaluation
+Without extra GPUs, eval shares the rollout engines (producer pauses during the blocking
+eval). For eval that never pauses training, `run_qwen3_5_4b_fully_async_eval.py` shows both
+checkpoint-pinned backends behind the same contract: `--eval-backend fleet` (in-job eval
+fleet via `--eval-num-gpus`) and `--eval-backend external` (`--eval-function-path` pointed
+at `external_eval_fn.ExternalSglangEvalFn`, which launches or attaches its own sglang
+server). See the fully-async docs for the posture trade-offs.
+
 ## Limitations
-* No evaluation mode (`--fully-async` points `--eval-function-path` at the standard `InferenceRolloutFn` unless you set it).
 * Ordering is best effort (sorted at the end by index).
 
 ## Config Differences (3 Key Points)

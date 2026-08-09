@@ -75,7 +75,7 @@ Non-docker PRs are untouched: `docker-paths` reports no change, `docker-build` s
 
 The only automated builder of `radixark/miles`. Two jobs:
 
-- **`check-upstream`** (schedule / `simulate_schedule` only) — polls the inputs the image bakes: the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the source branches it builds — plus a fingerprint of the selected `yueming-yuan/miles-wheels` rolling release, so a rebuilt sgl-router or other wheel also triggers a build (re-uploads to the same tag are caught by fingerprint, not commit SHA). It compares against the values cached from the last build and sets `should_build=true` if any moved. `miles` itself is intentionally not polled. This is what stops the 12-hour cron from rebuilding an unchanged image.
+- **`check-upstream`** (schedule / `simulate_schedule` only) — polls the inputs the image bakes: the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the source branches it builds — plus a fingerprint of the selected `yueming-yuan/miles-wheels` rolling release, so a rebuilt sgl-router or other wheel also triggers a build (re-uploads to the same tag are caught by fingerprint, not commit SHA). It compares against the values cached from the last build and sets `should_build=true` if any moved. `miles` itself is intentionally not polled — that would rebuild far too often. This is what stops the 12-hour cron from rebuilding an unchanged image, with one staleness bound: because the image also bakes a `miles` checkout, `should_build` is forced to `true` once the last triggered build is **24h** old, so `dev` never drifts more than a day behind the `miles` repo even when sglang / Megatron / wheels are quiet. (The cache file's last line records the epoch of the last triggered build; it is only re-saved when a build fires.)
 - **`build-and-push`** (self-hosted runner) — calls `docker/build.py` to build + push, then conditionally points `latest` at the new `dev` and prunes old timestamped tags.
 
 `build-and-push` runs when `check-upstream` was skipped, or ran and reported `should_build=true`.
@@ -88,7 +88,7 @@ The only automated builder of `radixark/miles`. Two jobs:
 
 | Trigger                                     | `check-upstream`                   | builds                | `latest` move     | prune      |
 | ------------------------------------------- | ---------------------------------- | --------------------- | ----------------- | ---------- |
-| schedule (cron 00:00 / 12:00 UTC)           | runs; build only if upstream moved | `cu13` + `cu12-x86`   | yes (both)        | yes (both) |
+| schedule (cron 00:00 / 12:00 UTC)           | runs; build if upstream moved or last build ≥ 24h ago | `cu13` + `cu12-x86`   | yes (both)        | yes (both) |
 | push to `main` touching `docker/Dockerfile`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | `cu13` + `cu12-x86`   | no                | no         |
 | `workflow_dispatch`                         | skipped                            | the one input variant | no                | no         |
 | `workflow_dispatch` + `simulate_schedule`   | runs                               | the one input variant | no                | no         |

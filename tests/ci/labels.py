@@ -26,6 +26,7 @@ KNOWN_LABELS: dict[str, str] = {
     "long": "Long-running training tests",
     "ckpt": "Checkpoint save / load tests",
     "lora": "LoRA training tests",
+    "eval": "Evaluation machinery tests (shared-engine / fleet / external postures)",
     "precision": "Numerical precision parity tests",
     "ft-short": "Fault-tolerance trainer comparison tests (no_failure / deterministic / with_failure)",
     "ft-long": "Fault-tolerance trainer soak tests (random-crash survival, realistic-gsm8k convergence)",
@@ -35,4 +36,5 @@ KNOWN_LABELS: dict[str, str] = {
     "qwen35": "Qwen3.5-35B-A3B MTP / spec-v2 e2e tests",
     "mooncake": "Mooncake object-store rollout transfer tests",
     "miles-plugin": "miles_plugins extension tests (optimizers, model plugins)",
+    "amd": "AMD MI300X ROCm tests (stage-c-4-gpu-mi300x)",
 }

@@ -1,9 +1,9 @@
 ---
-title: Agentic Chat Templates (TITO)
+title: Agentic Rollout (TITO)
 description: How to turn on and verify Token-In-Token-Out (TITO) for multi-turn agentic rollout.
 ---
 
-# Agentic Chat Templates (TITO)
+# Agentic Rollout (TITO)
 
 Multi-turn agentic rollout in Miles runs on **TITO** (Token-In-Token-Out): each turn's token sequence is a bit-perfect prefix of the next, so the trainer sees exactly the tokens the engine produced — no re-tokenization, no drift. The *why* is in the blog ([No Token Left Behind](https://lmsys.org/blog/2026-05-13-no-token-left-behind/)); this page is *how*.
 
@@ -46,7 +46,7 @@ ROLLOUT_ARGS+=(
 
 ## Example
 
-A full multi-turn agentic setup on the session-server TITO path lives in [`examples/swe-agent`](https://github.com/radixark/miles/tree/main/examples/swe-agent): its launchers wire `--use-session-server` + `--tito-model glm47` against a real SWE agent.
+A full multi-turn agentic setup on the session-server TITO path lives in [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker): its launchers wire `--use-session-server` + `--tito-model glm47` against a real SWE agent.
 
 ## Add a new model
 

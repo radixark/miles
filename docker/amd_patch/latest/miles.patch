@@ -1,7 +1,7 @@
-diff --git a/miles/backends/experimental/fsdp_utils/actor.py b/miles/backends/experimental/fsdp_utils/actor.py
+diff --git a/miles/backends/fsdp_utils/actor.py b/miles/backends/fsdp_utils/actor.py
 index 9d258e733..55c4647fd 100644
---- a/miles/backends/experimental/fsdp_utils/actor.py
-+++ b/miles/backends/experimental/fsdp_utils/actor.py
+--- a/miles/backends/fsdp_utils/actor.py
++++ b/miles/backends/fsdp_utils/actor.py
 @@ -124,6 +124,3 @@ class FSDPTrainRayActor(TrainRayActor):
 -        with init_context():
 -            model = self.get_model_cls().from_pretrained(

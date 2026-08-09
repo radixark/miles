@@ -102,7 +102,6 @@ def execute(shared_outer: bool, virtual_experts: bool):
         "--colocate "
         "--ci-test "
         "--ci-disable-logprobs-checker "
-        "--disable-weights-backuper "
     )
 
     train_args = (

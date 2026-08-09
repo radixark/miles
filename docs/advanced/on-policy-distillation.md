@@ -12,6 +12,8 @@ On-policy distillation (OPD) trains a student model on its own rollouts while us
 | `--opd-log-prob-top-k` | Number of top-k tokens retained for the Rethinking OPD token reward. `0` uses sampled-token OPD; `16` matches the paper recipe default. |
 | `--opd-top-k-strategy` | Top-k token set strategy: `only-student`, `only-teacher`, `intersection`, `union`, or `xor`. |
 | `--opd-reward-weight-mode` | Weighting scheme for top-k rewards: `student_p`, `teacher_p`, or `none`. |
+| `--opd-teacher-urls` | Optional multi-teacher routing map (`NAME=URL` pairs, SGLang mode only). Routes each sample to a teacher by `sample.metadata[--opd-teacher-key]`; reserved name `default` is the fallback. Unset = single teacher at `--rm-url`. |
+| `--opd-teacher-key` | Metadata key holding the teacher name for routing (default: `opd_teacher`). |
 | `--opd-teacher-load` | Path to teacher Megatron checkpoint. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
 | `--opd-teacher-ckpt-step` | Optional checkpoint step for teacher model. |
 
@@ -70,6 +72,42 @@ The teacher runs on an external SGLang server. Teacher log-probs are obtained du
 --custom-reward-post-process-path miles.rollout.on_policy_distillation.post_process_rewards
 --rm-url http://<TEACHER_IP>:<TEACHER_PORT>/generate
 ```
+
+### Multi-Teacher Routing (SGLang mode only)
+
+`--opd-teacher-urls` routes each sample to a task-specific teacher, e.g. a math
+specialist for math prompts and a code specialist for code prompts. Each sample
+is still scored by exactly one teacher, so scoring cost is identical to
+single-teacher OPD and the loss is unchanged — `teacher_log_probs` /
+`opd_reverse_kl` are per-sample and do not care which teacher produced them.
+
+**How it works**:
+1. Tag each prompt with a teacher name in its dataset metadata column
+   (read via `--metadata-key`, default `metadata`):
+   ```json
+   {"prompt": "...", "metadata": {"opd_teacher": "math"}}
+   {"prompt": "...", "metadata": {"opd_teacher": "code"}}
+   ```
+2. Map names to teacher endpoints with `--opd-teacher-urls NAME=URL ...`.
+   The reserved name `default` is the fallback for samples whose name is
+   missing or unknown; without a `default` entry such samples raise an error
+   (failing loudly beats silently distilling from the wrong teacher).
+3. `reward_func` resolves the URL per sample; everything downstream is
+   unchanged.
+
+**Configuration** (on top of the SGLang-mode flags above; `--rm-url` is ignored
+when the routing map is set):
+```bash
+--opd-teacher-urls math=http://<H1>:<P1>/generate code=http://<H2>:<P2>/generate default=http://<H1>:<P1>/generate
+--opd-teacher-key opd_teacher   # metadata key holding the teacher name (default)
+```
+
+> **Notes**: All teachers must share the student's tokenizer — scoring sends
+> `input_ids` and gathers per-token-id log-probs. Works with both the
+> sampled-token path and the top-k path (student-side scoring still goes to the
+> student router). For throughput, point multiple names (or one name backed by
+> an sglang router) at replicas; `--opd-teacher-urls` is for *different*
+> teachers, not load balancing.
 
 ### Megatron Mode (`--opd-type megatron`)
 

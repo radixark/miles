@@ -319,6 +319,35 @@ class TestNightlyWrite:
         )
         assert vals == [0.30]
 
+    def test_nightly_one_liner_writes_every_step(self, tmp_path, store):
+        test_file = _write_test_file(
+            tmp_path,
+            'register_ci_gate(metric_key="rollout/raw_reward")',
+        )
+        registry = _registry(test_file)
+        record = _write_record(
+            tmp_path,
+            {"rollout/raw_reward": [[0, 0.20], [1, 0.40], [2, 0.60], [3, 0.80]]},
+            name="m.jsonl",
+        )
+
+        run_gate_hook(
+            test_file,
+            record,
+            store=store,
+            registry=registry,
+            nightly=True,
+            provenance=PROVENANCE,
+        )
+
+        rows = store._conn.execute("SELECT steps_key, step, value FROM metric_values ORDER BY step").fetchall()
+        assert rows == [
+            ('"all"', 0, 0.20),
+            ('"all"', 1, 0.40),
+            ('"all"', 2, 0.60),
+            ('"all"', 3, 0.80),
+        ]
+
     def test_nightly_no_spec_file_writes_nothing(self, tmp_path, store, monkeypatch):
         # A file with no register_ci_gate call has nothing a baseline can use:
         # the hook must skip the write entirely, not leave an empty runs row.

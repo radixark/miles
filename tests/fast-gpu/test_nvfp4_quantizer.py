@@ -8,6 +8,7 @@ register_cuda_ci(
 )
 
 
+import json
 import os
 
 import pytest
@@ -189,6 +190,45 @@ def test_nvfp4_hf_should_quantize_respects_extra_high_precision_layers_hf():
         weight,
         skip_weight_substrings=("mlp.experts.1",),
     )
+
+
+def test_nvfp4_hf_converter_uses_compact_bf16_moe_prefixes(tmp_path):
+    model_dir = tmp_path / "model"
+    save_dir = tmp_path / "converted"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"num_hidden_layers": 1}')
+
+    weights = {
+        f"model.layers.0.mlp.experts.{expert_idx}.{projection}.weight": torch.ones(
+            (1, NVFP4_GROUP_SIZE), dtype=torch.bfloat16
+        )
+        for expert_idx in range(128)
+        for projection in ("gate_proj", "up_proj", "down_proj")
+    }
+    weights["model.layers.0.input_layernorm.weight"] = torch.ones(NVFP4_GROUP_SIZE, dtype=torch.bfloat16)
+    safetensors.torch.save_file(weights, model_dir / "model.safetensors", metadata={"format": "pt"})
+
+    convert_nvfp4(
+        str(model_dir),
+        str(save_dir),
+        device="cpu",
+        num_layers_at_end_in_bf16=1,
+    )
+
+    expected_ignore = [
+        "model.layers.0.",
+        "model.layers.0.input_layernorm",
+        "model.layers.0.mlp.experts",
+    ]
+    config = json.loads((save_dir / "config.json").read_text())
+    assert config["quantization_config"]["ignore"] == expected_ignore
+
+    hf_quant_config = json.loads((save_dir / "hf_quant_config.json").read_text())
+    assert hf_quant_config["quantization"]["exclude_modules"] == expected_ignore
+
+    with safetensors.safe_open(save_dir / "model.safetensors", framework="pt", device="cpu") as f:
+        assert all("weight_scale" not in key for key in f.keys())
+        assert f.get_tensor("model.layers.0.mlp.experts.127.down_proj.weight").dtype == torch.bfloat16
 
 
 def test_nvfp4_hf_converter_quantizes_cross_shard_gated_pair_together(tmp_path, monkeypatch):

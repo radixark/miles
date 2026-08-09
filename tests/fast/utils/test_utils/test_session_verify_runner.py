@@ -50,6 +50,18 @@ def test_namespace_to_train_args_keeps_ci_test_enabled_for_fsdp_debug_rollout():
     assert "--ci-test" in train_args
 
 
+def test_namespace_to_train_args_defaults_to_session_server_v2():
+    train_args = _build_args()
+
+    assert "--use-session-server v2" in train_args
+
+
+def test_namespace_to_train_args_allows_session_server_v1():
+    train_args = _build_args(use_session_server="v1")
+
+    assert "--use-session-server v1" in train_args
+
+
 def test_namespace_to_train_args_has_no_append_role_policy_flag():
     train_args = _build_args()
 
@@ -99,8 +111,44 @@ def test_run_one_aligns_global_batch_size_with_sample_count(
     _common.run_one(config)
 
     assert captured["args"].global_batch_size == expected_global_batch_size
+    assert captured["args"].rollout_batch_size == 16
     assert captured["args"].rollout_max_response_len == 4096
     assert captured["args"].sglang_cuda_graph_backend_prefill == "disabled"
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_run_one_uses_requested_session_server_version(monkeypatch, version):
+    captured = {}
+    monkeypatch.setattr(_common, "run_session_verify", lambda args: captured.setdefault("args", args))
+    config = _common.ModelConfig(
+        model_name="test-model",
+        reasoning_parser="qwen3",
+        tool_call_parser="qwen25",
+        tito_model="qwen3",
+    )
+
+    _common.run_one(config, session_server_version=version)
+
+    assert captured["args"].use_session_server == version
+
+
+@pytest.mark.parametrize(("n_samples_per_prompt", "expected_global_batch_size"), [(1, 8), (4, 32)])
+def test_run_both_versions_splits_rollout_batch(monkeypatch, n_samples_per_prompt, expected_global_batch_size):
+    captured = []
+    monkeypatch.setattr(_common, "run_session_verify", lambda args: captured.append(args))
+    config = _common.ModelConfig(
+        model_name="test-model",
+        reasoning_parser="qwen3",
+        tool_call_parser="qwen25",
+        tito_model="qwen3",
+        n_samples_per_prompt=n_samples_per_prompt,
+    )
+
+    _common.run_both_versions(config)
+
+    assert [args.use_session_server for args in captured] == ["v1", "v2"]
+    assert [args.rollout_batch_size for args in captured] == [8, 8]
+    assert [args.global_batch_size for args in captured] == [expected_global_batch_size] * 2
 
 
 def test_namespace_to_train_args_omits_expert_parallel_for_single_expert():

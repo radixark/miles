@@ -119,6 +119,7 @@ def execute():
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
+        "--rematerialize-param-from-master-weight "
     )
 
     train_args = (
