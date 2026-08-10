@@ -4,7 +4,6 @@ from collections.abc import Callable
 from typing import Any
 
 from miles.utils.object_store import BaseObjectStore, ObjectStoreGetResult, StoreObjectRef, ValueSpec
-from miles.utils.ray_utils import Box
 
 
 class FakeRemoteMethod:
@@ -126,7 +125,7 @@ class FakeObjectStore(BaseObjectStore):
         self.consumed: list[StoreObjectRef] = []
 
     def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
-        ref = Box(f"fake-object-{len(self._values)}")
+        ref = StoreObjectRef(f"fake-object-{len(self._values)}")
         self._values[ref] = value
         return ref
 
