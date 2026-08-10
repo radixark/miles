@@ -32,7 +32,7 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-20
 
 ```bash
 cd /root/miles
-MODEL_ARGS_LINE="$(python3 scripts/model_args.py glm4-9B)" || exit 1
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py glm4-9B)" || exit 1
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
