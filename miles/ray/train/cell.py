@@ -60,6 +60,7 @@ class TrainerCell:
         self,
         *,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
         recv_ckpt_src_rank: int | None = None,
     ):
         await self.execute(
@@ -74,6 +75,7 @@ class TrainerCell:
             with_ref=self.with_ref,
             with_opd_teacher=self.with_opd_teacher,
             indep_dp_info=indep_dp_info,
+            indep_dp_store_addr=indep_dp_store_addr,
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
         self._mark_as_alive(indep_dp_info=indep_dp_info)
@@ -109,9 +111,12 @@ class TrainerCell:
     async def prepare_indep_dp_mode_alive(
         self,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
         send_ckpt_dst_ranks: list[int],
     ):
-        await self.execute("reconfigure_indep_dp", indep_dp_info=indep_dp_info)
+        await self.execute(
+            "reconfigure_indep_dp", indep_dp_info=indep_dp_info, indep_dp_store_addr=indep_dp_store_addr
+        )
         self._update_indep_dp_info(indep_dp_info)
 
         for dst_rank in send_ckpt_dst_ranks:
@@ -120,10 +125,12 @@ class TrainerCell:
     async def prepare_indep_dp_mode_healing(
         self,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
         recv_ckpt_src_rank: int | None,
     ):
         await self.init(
             indep_dp_info=indep_dp_info,
+            indep_dp_store_addr=indep_dp_store_addr,
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
 
