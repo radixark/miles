@@ -70,7 +70,7 @@
 "job"
 "submit"
 "--address=http://127.0.0.1:8265"
-"--runtime-env-json={\n  \"env_vars\": {\n    \"PYTHONPATH\": \"/root/Megatron-LM/\",\n    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",\n    \"NCCL_NVLS_ENABLE\": \"0\"\n    \"no_proxy\": \"127.0.0.1,127.0.0.1\",\n    \"MASTER_ADDR\": \"127.0.0.1\"\n  }\n}"
+"--runtime-env-json={\n  \"env_vars\": {\n    \"PYTHONPATH\": \"/root/Megatron-LM/\",\n    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",\n    \"NCCL_NVLS_ENABLE\": \"0\",\n    \"no_proxy\": \"127.0.0.1,127.0.0.1\",\n    \"MASTER_ADDR\": \"127.0.0.1\"\n  }\n}"
 "--"
 "python3"
 "train.py"

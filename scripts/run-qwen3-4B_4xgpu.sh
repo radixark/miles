@@ -100,12 +100,15 @@ OPTIMIZER_ARGS=(
    --adam-beta2 0.98
 )
 
-WANDB_ARGS=(
-   --use-wandb
-   --wandb-project miles-dev-qwen3-radix
-   --wandb-group qwen3-4B-4xgpu
-   --wandb-key ${WANDB_KEY}
-)
+WANDB_ARGS=()
+if [ -n "${WANDB_KEY:-}" ]; then
+   WANDB_ARGS=(
+      --use-wandb
+      --wandb-project miles-dev-qwen3-radix
+      --wandb-group qwen3-4B-4xgpu
+      --wandb-key "${WANDB_KEY}"
+   )
+fi
 
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine 2
@@ -140,6 +143,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    -- python3 train.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 4 \
+   --num-gpus-per-node 4 \
    --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
