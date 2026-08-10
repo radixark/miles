@@ -23,10 +23,8 @@ from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _ray_minicluster():
+def _ray_minicluster(ray_local_mode):
     """split_train_data_by_dp uses ray.put(...) so we need Ray."""
-    if not ray.is_initialized():
-        ray.init(ignore_reinit_error=True, include_dashboard=False, log_to_driver=False)
     yield
 
 
