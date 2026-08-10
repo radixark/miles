@@ -2,12 +2,21 @@ import builtins
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from miles.ray.specs import train as train_specs
-from miles.ray.specs.train import compute_trainer_pool_id, specs_trainer
+from miles.ray.specs.train import (
+    TRAINER_CONTROLLER_WORKER_CLASS,
+    compute_trainer_controller_pool_id,
+    compute_trainer_pool_id,
+    spec_trainer_controller_actor,
+    spec_trainer_controller_critic,
+    specs_trainer,
+    trainer_controller_cell_id,
+    trainer_controller_worker_name,
+)
 from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TRAINER_METHOD_CONCURRENCY_GROUPS, TrainRayActor
 from miles.utils.workers.worker_spec import WorkerLaunchContext
 
@@ -435,4 +444,74 @@ class TestPorts:
 @pytest.mark.parametrize("role", ["actor", "critic"])
 def test_the_pool_name_encodes_the_role(role):
     """Spec names identify trainer cells apart from inference cells."""
-    assert compute_trainer_pool_id(role) == f"trainer-{role}"
+    assert compute_trainer_pool_id(role) == f"trainer-engine-{role}"
+
+
+def _controller_context() -> WorkerLaunchContext:
+    return WorkerLaunchContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[])
+
+
+_INFERENCE_HANDLE = object()
+
+
+def _controller_ctor_kwargs(spec) -> dict:
+    with patch("miles.ray.specs.train.create_inference_controller_handle", return_value=_INFERENCE_HANDLE):
+        return spec.ctor_kwargs(_controller_context())
+
+
+class TestSpecTrainerController:
+    def test_one_controller_per_trainer_role(self):
+        """Each controller owns exactly one trainer pool, so a critic run needs a second one."""
+        assert spec_trainer_controller_actor(_make_args()).name == "trainer-controller-actor"
+        assert spec_trainer_controller_critic(_make_args(use_critic=True)).name == "trainer-controller-critic"
+
+    def test_it_is_a_gpuless_worker_on_both_backends(self):
+        """A gpu request would reserve a whole trainer slot for a process that only sends rpcs."""
+        spec = spec_trainer_controller_actor(_make_args())
+
+        assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (1, 1)
+        assert spec.scheduling.num_gpus_per_worker == 0
+        assert spec.scheduling.num_gpu_slots_per_worker == 0
+
+    def test_the_worker_class_is_the_controller_itself(self):
+        """The spec names the class a pod or actor constructs, so it must be the real implementation."""
+        spec = spec_trainer_controller_actor(_make_args())
+
+        assert spec.worker_class == TRAINER_CONTROLLER_WORKER_CLASS
+
+    def test_the_worker_and_cell_names_are_stable(self):
+        """The driver looks the controller up by name, so these names are part of the release's contract."""
+        assert trainer_controller_worker_name("actor") == "trainer-controller-actor-0-0"
+        assert trainer_controller_cell_id("actor") == "trainer-controller-actor-0"
+
+    def test_the_critic_controller_gets_no_reference_or_teacher_cells(self):
+        """A critic controller must not hand its cells the actor's KL and OPD settings."""
+        spec = spec_trainer_controller_critic(_make_args(use_critic=True, kl_coef=0.1, use_kl_loss=True, use_opd=True))
+        critic_kwargs = _controller_ctor_kwargs(spec)
+
+        assert (critic_kwargs["with_ref"], critic_kwargs["with_opd_teacher"]) == (False, False)
+
+    def test_the_actor_controller_follows_the_run_it_was_given(self):
+        """The actor's cells hold a reference model only when the loss needs one."""
+        with_kl = _controller_ctor_kwargs(spec_trainer_controller_actor(_make_args(kl_coef=0.0, use_kl_loss=True)))
+        without_kl = _controller_ctor_kwargs(spec_trainer_controller_actor(_make_args(kl_coef=0.0, use_kl_loss=False)))
+
+        assert (with_kl["with_ref"], without_kl["with_ref"]) == (True, False)
+
+    def test_no_args_are_frozen_into_the_controller_at_spec_time(self):
+        """The spec is built before the driver finishes deriving args, so a captured copy would be stale."""
+        actor_kwargs = _controller_ctor_kwargs(spec_trainer_controller_actor(_make_args()))
+
+        assert "args" not in actor_kwargs
+
+    def test_only_the_actor_controller_reaches_the_inference_controller(self):
+        """Two controllers driving weight updates would broadcast the actor's and the critic's weights alike."""
+        actor_kwargs = _controller_ctor_kwargs(spec_trainer_controller_actor(_make_args()))
+        critic_kwargs = _controller_ctor_kwargs(spec_trainer_controller_critic(_make_args(use_critic=True)))
+
+        assert actor_kwargs["inference_controller"] is _INFERENCE_HANDLE
+        assert critic_kwargs["inference_controller"] is None
+
+    def test_the_controller_pool_name_encodes_the_role(self):
+        """The two controllers of a critic run must not collide in the address book."""
+        assert compute_trainer_controller_pool_id("critic") == "trainer-controller-critic"
