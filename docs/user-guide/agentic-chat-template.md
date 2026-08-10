@@ -48,7 +48,7 @@ ROLLOUT_ARGS+=(
 
 Some agent harnesses do not replay model messages verbatim: they may reserialize tool-call arguments, replace empty `arguments` with `"{}"`, or omit `reasoning_content` on the next request. Under the default matcher those replays count as divergence — v1 rolls back (or rejects), v2 branches a new lineage.
 
-`--session-message-matcher` is process-wide and defaults to `strict`. It accepts a built-in selector or a trusted dotted import path. Changing it requires restarting the session server, which drops its in-memory sessions.
+`--session-message-matcher` is process-wide and defaults to `strict`. It accepts a built-in selector or a trusted dotted import path.
 
 | Selector | Behavior |
 |---|---|
@@ -57,9 +57,12 @@ Some agent harnesses do not replay model messages verbatim: they may reserialize
 | `role_content_only` | Compares only normalized `role` and `content`. **High risk:** different tool-call or reasoning histories can collapse into one session lineage. |
 | dotted import path | Loads a trusted synchronous custom matcher; see [Customization](/user-guide/customization#session-message-matcher). |
 
-The matcher decides replay identity only; it does not disable TITO. When a matcher accepts a non-identical replay inside the reusable prefix, the stored token snapshot stays the token-level authority: TITO renders and validates against the stored prefix plus the untouched replay suffix, and only the suffix is newly tokenized.
+The matcher only decides whether the message a client replays and the message stored at the same position in the session count as the same one.
 
-Miles does not reconcile tool-call IDs across the stored/replayed boundary. Under `role_content_only` a stored call ID `A` can be followed by a replayed tool result referencing `B`; deployments choosing that mode must ensure such combinations remain protocol-compatible.
+- On a mismatch, the existing paths apply: v1 rolls back (or rejects), v2 branches.
+- On a match, the stored messages and token snapshot stay authoritative inside the reusable prefix; only the suffix beyond it is tokenized anew from the client input.
+
+Miles does not reconcile tool-call IDs across that boundary: deployments choosing `role_content_only` must themselves keep a stored call ID `A` followed by a replayed tool result referencing `B` protocol-compatible.
 
 ## Example
 

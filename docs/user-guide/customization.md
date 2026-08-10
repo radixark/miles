@@ -90,23 +90,14 @@ configured.
 
 ### `--session-message-matcher`
 
-This process-wide flag accepts `strict` (default), `loose_tool_call`, `role_content_only`, or a trusted dotted import path. A custom matcher has this signature:
+Some harnesses do not replay history verbatim — they reserialize tool-call arguments or drop `reasoning_content` — and the default `strict` matcher counts that as divergence (v1 rollback, v2 branching). This flag loosens what "the same message" means during replay: choose a looser built-in selector (see [Agentic Rollout (TITO)](/user-guide/agentic-chat-template#choose-replay-matching)) or supply your own matcher via a trusted dotted import path:
 
 ```python
-def matcher(
-    stored_message: dict[str, Any],
-    replayed_message: dict[str, Any],
-) -> bool:
+def matcher(stored_message: dict[str, Any], replayed_message: dict[str, Any]) -> bool:
     ...
 ```
 
-`stored_message` is the authoritative message represented by the reusable token prefix. Returning `True` accepts the replayed message as the same history at that position; returning `False` follows the normal v1 rollback or v2 branching behavior.
-
-The matcher must be synchronous and return an exact `bool`. It runs while Miles holds the per-session lock, so keep it fast, deterministic, side-effect-free, and non-mutating. Its two message arguments do not include request-level `tools`, the tokenizer, the template, or `chat_template_kwargs`. Define an equivalence relation because the result also determines v2 tree identity.
-
-The import path is resolved when session routes start. Import failures, non-callable targets, and async functions fail startup. Runtime exceptions or non-boolean results return HTTP 500 without falling back to another matcher. Custom matcher code is trusted server code, not a sandbox boundary.
-
-See [Agentic Rollout (TITO)](/user-guide/agentic-chat-template#choose-replay-matching) for the built-in selectors and the tool-call ID risk of `role_content_only`.
+`stored_message` is the authoritative stored message; return `True` to accept the replayed message as the same history at that position. Keep the matcher a fast, synchronous, side-effect-free equivalence check — exceptions or non-`bool` results return HTTP 500, and startup fails if the path does not resolve.
 
 ---
 
