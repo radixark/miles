@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from miles.utils.workers.backend_capability.base import BackendCapability
-from miles.utils.workers.process_supervisor import SUBPROCESS_INDEX_ENV_VAR
+from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
 from miles.utils.workers.worker_spec import SchedulingSpec, WorkerCtorContext
-
-CELL_INDEX_ENV_VAR = "MILES_CELL_INDEX"
-POD_INDEX_ENV_VAR = "MILES_POD_INDEX"
 
 
 @dataclass(frozen=True)
@@ -38,11 +34,7 @@ class KubernetesWorkerIdentity:
         )
 
 
-def read_worker_identity(
-    *, scheduling: SchedulingSpec, environ: Mapping[str, str] | None = None
-) -> KubernetesWorkerIdentity:
-    environ = os.environ if environ is None else environ
-
+def read_worker_identity(*, scheduling: SchedulingSpec, environ: Mapping[str, str]) -> KubernetesWorkerIdentity:
     workers_per_pod = scheduling.workers_per_pod()
     pods_per_cell = scheduling.pods_per_cell()
 
@@ -80,8 +72,7 @@ def read_worker_identity(
     )
 
 
-def read_worker_in_pod_index(environ: Mapping[str, str] | None = None) -> int:
-    environ = os.environ if environ is None else environ
+def read_worker_in_pod_index(environ: Mapping[str, str]) -> int:
     return _index_from(environ, SUBPROCESS_INDEX_ENV_VAR, required_because=None)
 
 

@@ -33,8 +33,21 @@ class TestComputeSpecs:
             "inference-engine-0-2",
             "rollout-executor",
             "trainer-controller-actor",
-            "trainer-actor",
+            "trainer-engine-actor",
         ]
+
+    def test_a_train_only_debug_run_specs_no_inference_at_all(self):
+        """--debug-train-only leaves --rollout-num-gpus unset, so anything that sizes an engine
+        fleet from it cannot even be built, let alone launched."""
+        args = make_args(rollout_num_gpus=None, debug_train_only=True, use_session_server=True)
+
+        specs = {spec.name: spec for spec in compute_specs(args)}
+
+        assert not [name for name in specs if name.startswith(("inference-router", "inference-engine"))]
+        assert specs["session-server"].scheduling.num_cells == 0
+        # the controller resolves the same config again inside its own actor, where a failure
+        # is a dead actor rather than a readable error at launch
+        assert compute_router_providers(args, capability=_unusable_capability()) == []
 
     def test_a_disabled_session_server_is_listed_with_no_cells(self, tmp_path):
         """Disabling the session server must not remove it from the inventory, only empty it."""
