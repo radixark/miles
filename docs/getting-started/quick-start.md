@@ -12,10 +12,7 @@ This page takes you from `docker pull` to a running GRPO training job on Qwen3-4
 
 **What you will accomplish**
 
-- Start the Miles container.
-- Download a model and two math datasets.
-- Convert the model to Megatron's checkpoint format.
-- Launch a GRPO run and watch the reward climb.
+- Launch a GRPO run and watch the reward climb!
 
 Training a different model? The flow is the same — see [Models](/models/index) for
 the per-model recipes.
@@ -44,23 +41,20 @@ latest main:
 cd /root/miles && git pull && pip install -e . --no-deps
 ```
 
-Everything from here on runs inside the container.
+**Everything from here on runs inside the container.**
 
 ## Step 2: Download the model and data
 
-Three downloads: the model you will train, prompts to train on, and a benchmark to
-evaluate against.
+Three downloads:
 
 ```bash
+# The model you will train
 hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
+# Training prompts: 17k math problems with checkable answers
 hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
+# Eval benchmark: harder problems, evaluated on but never trained on
 hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024
 ```
-
-[DAPO-Math-17K](https://huggingface.co/datasets/BytedTsinghua-SIA/DAPO-Math-17K) is
-17k math problems with checkable answers.
-[AIME-2024](https://huggingface.co/datasets/zhuzilin/aime-2024) is a small, harder
-set the run evaluates on — but never trains on.
 
 ## Step 3: Convert to Megatron format
 
@@ -87,7 +81,7 @@ it.
 bash scripts/run-qwen3-4B.sh
 ```
 
-That's it — the script starts a local Ray cluster and submits the training job.
+That's it — the script starts a local Ray cluster and submits the training job!
 A few things it already does for you:
 
 - Checkpoints land in `/root/Qwen3-4B_miles/` every 20 rollouts.
@@ -96,6 +90,12 @@ A few things it already does for you:
   checkpoint.
 - The Ray dashboard at `http://localhost:8265` shows per-worker logs and GPU
   usage.
+
+And treat yourself to the [Miles dashboard](/user-guide/dashboard): add
+`--dump-details <dir> --use-miles-dashboard` to the training arguments, serve it
+with `python -m miles.dashboard.serve --dump-details <dir>`, and open
+`http://localhost:7788` to watch what every GPU was doing during a step and what
+every trajectory contained, token by token.
 
 Once the engines warm up and the first rollout completes, the log settles into
 per-rollout metric lines (values illustrative, keys abridged):
