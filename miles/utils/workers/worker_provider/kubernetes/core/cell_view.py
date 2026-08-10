@@ -41,7 +41,7 @@ def compute_cell_info(cell_id: str, *, pods: list[pod_view.ParsedPod], run: Kube
     return CellInfo(
         cell_id=cell_id,
         pool_id=pool_id,
-        alive=all(pod.ready for pod in pods) and _has_all_pods(pods),
+        alive=all(pod.ready and not pod.deleting for pod in pods) and _has_all_pods(pods),
         worker_names=[worker.name for worker in workers_of_pods(pods, run=run)],
         workers_hash=pod_view.cell_members_hash(pods),
         meta=meta,
