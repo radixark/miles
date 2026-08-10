@@ -300,8 +300,8 @@ async def test_addition_assembled_sample_matches_full_reference(addition_core):
 
 
 async def test_addition_truncation_golden(addition_core):
-    """max_seq_len=8 strips one token off the merged sample; the folded tensor
-    is materialized for exactly len(tokens) - 1 rows."""
+    """max_seq_len=8 strips one token off the merged sample; R3 is materialized
+    for exactly len(tokens) - 1 rows."""
     sid = await _make_session(addition_core, _two_turn_addition_records(), _ACCUMULATED)
     status, payload = await _collect_via_op(addition_core, sid, max_seq_len=8)
     assert status == 200
@@ -313,8 +313,20 @@ async def test_addition_truncation_golden(addition_core):
     assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 8)[:-1])
 
 
+async def test_addition_turn_boundary_truncation_uses_required_prefix(addition_core):
+    """A max_seq_len boundary may drop the original last turn entirely."""
+    sid = await _make_session(addition_core, _two_turn_addition_records(), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid, max_seq_len=5)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+
+    last = samples[-1]
+    assert last.tokens == _ACCUMULATED[:5]
+    assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 4))
+
+
 async def test_addition_gap_returns_422(addition_core):
-    # Turn 2 starts at row 5 while turn 1 retained only 4 rows: the fold
+    # Turn 2 starts at row 5 while turn 1 retained only 4 rows: the assembler
     # rejects the gap as a 422 instead of assembling a corrupt tensor.
     sid = await _make_session(addition_core, _two_turn_addition_records(turn2_start_len=5), _ACCUMULATED)
     status, payload = await _collect_via_op(addition_core, sid)

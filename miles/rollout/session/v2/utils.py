@@ -56,8 +56,8 @@ def build_leaf_material(
     the downstream pick/post-process hooks.
 
     With ``use_addition_r3``, each record along a path carries only its
-    additional R3 rows; the per-leaf fold rebuilds one full tensor per leaf
-    (a path is exactly the linear record chain its offsets were computed on).
+    additional R3 rows; the per-leaf assembler materializes the required prefix
+    because a path is the linear record chain its offsets were computed on.
     """
     material: list[Sample] = []
     for leaf in state.tree.leaves():

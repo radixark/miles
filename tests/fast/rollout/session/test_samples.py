@@ -584,8 +584,8 @@ def _merge_addition(records, accumulated, max_trim_tokens=0):
 class TestAdditionR3Assembly:
     """Addition-mode records carry an R3 patch of rows [routed_experts_start_len,
     len(input_ids) + len(output) - 1) instead of a full per-turn tensor;
-    `merge_samples_with_addition_r3` folds the patches (replacement from start)
-    into one (len(tokens) - 1, num_layers, topk) tensor.
+    `merge_samples_with_addition_r3` concatenates the append-only stream into
+    one (len(tokens) - 1, num_layers, topk) tensor after the ordinary merge.
     See docs/developer/session-server-addition-r3.md.
     """
 
@@ -621,14 +621,10 @@ class TestAdditionR3Assembly:
         assert np.array_equal(merged_addition.rollout_routed_experts, merged_full.rollout_routed_experts)
         assert np.array_equal(merged_addition.rollout_routed_experts, full)
 
-    def test_trailing_rewrite_replaces_overlapping_rows(self):
-        """A next turn that rewrites the checkpoint's trailing tokens sends a
-        start below the rows already retained; the overlapping old rows are
-        replaced by the new patch, not concatenated after it."""
+    def test_overlapping_start_raises(self):
+        """Every patch must start exactly after the preceding raw patch."""
         turn1_rows = _r3_rows(5, seed=0)
         turn2_rows = _r3_rows(2, seed=500)
-        # Turn 1 checkpoint [1,2,3,10,98,99] (rows [0,5)); turn 2's prompt
-        # rewrites the two trailing stop tokens -> LCP=4 -> start=4 < 5.
         records = [
             _make_record([1, 2, 3], [10, 98, 99], routed_experts=_r3_patch(turn1_rows), routed_experts_start_len=0),
             _make_record(
@@ -637,15 +633,11 @@ class TestAdditionR3Assembly:
         ]
         accumulated = [1, 2, 3, 10, 55, 20, 21]
 
-        merged = _merge_addition(records, accumulated, max_trim_tokens=2)
+        with pytest.raises(ValueError, match="record 1 starts at row 4; expected 5"):
+            _merge_addition(records, accumulated, max_trim_tokens=2)
 
-        assert merged.tokens == accumulated
-        expected = np.concatenate([turn1_rows[:4], turn2_rows])
-        assert np.array_equal(merged.rollout_routed_experts, expected)
-
-    def test_intermediate_truncated_turn_bounds_the_fold(self):
-        """A non-COMPLETED accumulated turn cannot be extended: the fold stops
-        at the same terminal record as the merge, ignoring later patches."""
+    def test_intermediate_truncated_turn_bounds_materialization(self):
+        """A non-COMPLETED turn bounds required rows before later patches."""
         records = [
             _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(4, 0)), routed_experts_start_len=0),
             _make_record(
@@ -655,12 +647,7 @@ class TestAdditionR3Assembly:
                 routed_experts=_r3_patch(_r3_rows(3, 16)),
                 routed_experts_start_len=4,
             ),
-            _make_record(
-                [1, 2, 3, 10, 11, 4, 20, 21, 5],
-                [30, 31],
-                routed_experts=_r3_patch(_r3_rows(3, 900)),
-                routed_experts_start_len=7,
-            ),
+            _make_record([1, 2, 3, 10, 11, 4, 20, 21, 5], [30, 31]),
         ]
         accumulated = [1, 2, 3, 10, 11, 4, 20, 21, 5, 30, 31]
 
@@ -671,9 +658,8 @@ class TestAdditionR3Assembly:
         expected = np.concatenate([_r3_rows(4, 0), _r3_rows(3, 16)])
         assert np.array_equal(merged.rollout_routed_experts, expected)
 
-    def test_later_replay_gap_bounds_the_fold(self):
-        """A later turn without an R3 payload is not consumed, mirroring the
-        full-R3 merge stop rule."""
+    def test_missing_required_patch_raises(self):
+        """A missing patch cannot silently shorten a merged trajectory."""
         records = [
             _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(4, 0)), routed_experts_start_len=0),
             _make_record(
@@ -686,11 +672,8 @@ class TestAdditionR3Assembly:
         ]
         accumulated = [1, 2, 3, 10, 11, 4, 20, 21, 5, 30, 31]
 
-        merged = _merge_addition(records, accumulated)
-
-        assert merged.tokens == accumulated[:8]
-        expected = np.concatenate([_r3_rows(4, 0), _r3_rows(3, 16)])
-        assert np.array_equal(merged.rollout_routed_experts, expected)
+        with pytest.raises(ValueError, match="record 2 has no routed_experts payload"):
+            _merge_addition(records, accumulated)
 
     def test_replay_disabled_records_unaffected(self):
         """use_addition_r3=True is dormant when no record carries R3."""
@@ -726,12 +709,18 @@ class TestAdditionR3Assembly:
         with pytest.raises(ValueError, match="carries no routed_experts_start_len"):
             _merge_addition(records, [1, 2, 3, 10, 11])
 
+    def test_empty_payload_for_nonempty_delta_raises(self):
+        records = [_make_record([1, 2, 3], [10, 11], routed_experts="", routed_experts_start_len=0)]
+
+        with pytest.raises(ValueError, match="payload presence does not match 4 rows"):
+            _merge_addition(records, [1, 2, 3, 10, 11])
+
     def test_gapped_start_raises(self):
         records = [
             _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(3, 0)), routed_experts_start_len=1)
         ]
 
-        with pytest.raises(ValueError, match="starts at row 1 but only 0 rows are retained"):
+        with pytest.raises(ValueError, match="starts at row 1; expected 0"):
             _merge_addition(records, [1, 2, 3, 10, 11])
 
     def test_wrong_value_count_raises(self):
@@ -740,7 +729,7 @@ class TestAdditionR3Assembly:
             _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(3, 0)), routed_experts_start_len=0)
         ]
 
-        with pytest.raises(ValueError, match="not a positive multiple"):
+        with pytest.raises(ValueError):
             _merge_addition(records, [1, 2, 3, 10, 11])
 
     def test_inconsistent_topk_raises(self):
@@ -754,7 +743,7 @@ class TestAdditionR3Assembly:
         ]
         accumulated = [1, 2, 3, 10, 11, 4, 20, 21]
 
-        with pytest.raises(ValueError, match="expected 12"):
+        with pytest.raises(ValueError):
             _merge_addition(records, accumulated)
 
 

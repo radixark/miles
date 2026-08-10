@@ -262,14 +262,17 @@ class SessionCore:
 
         ``checkpoint_token_ids`` is the stored snapshot this request builds on
         (v1: the post-rollback checkpoint; v2: the positioned attach node). The
-        LCP proves every skipped row belongs to an unchanged causal prefix; a
-        checkpoint of N tokens has only N - 1 reusable R3 rows.
+        checkpoint's N - 1 rows must remain a causal prefix of the new prompt,
+        so every persisted patch starts exactly where the previous one ended.
         """
         if not (self.use_addition_r3 and request_body.get("return_routed_experts")):
             return
-        request_body["routed_experts_start_len"] = min(
-            max(0, len(checkpoint_token_ids) - 1), _lcp_len(checkpoint_token_ids, prompt_token_ids)
-        )
+        previous_rows = max(0, len(checkpoint_token_ids) - 1)
+        stable_prefix_tokens = _lcp_len(checkpoint_token_ids, prompt_token_ids)
+        assert (
+            stable_prefix_tokens >= previous_rows
+        ), f"additional R3 requires {previous_rows} stable prefix tokens, got {stable_prefix_tokens}"
+        request_body["routed_experts_start_len"] = previous_rows
 
     async def health(self) -> Response:
         body = {"status": "ok"}

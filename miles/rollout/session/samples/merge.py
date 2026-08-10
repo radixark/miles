@@ -4,19 +4,18 @@ Owned by the session package so the assembly runs on the owning instance (record
 
 - Depends on `generate_utils.generate_endpoint_utils` for the R3 replay decoders (accepted utils-level dependency: the decoders have other consumers on the single-turn `/generate` path and must not fork).
 - Order contract: `truncate_samples_by_total_tokens` runs BEFORE `merge_samples` — truncation is a turn-level budget decision (which turns survive; the overflowing turn is cut at a turn boundary, later turns are dropped) and the turn structure only exists pre-merge.
-- Additional R3 (`use_addition_r3`, in-place weight updates): each record's `routed_experts` is a patch of `end - routed_experts_start_len` rows, not a per-turn full tensor, so per-turn decoding is skipped and `merge_samples_with_addition_r3` folds the patches into one full tensor after the merge decides the terminal record. Only the session path owns this: records persist the request offsets the fold needs.
+- Additional R3 patches stay out of per-turn `Sample`s; after the ordinary merge selects the final token prefix, the session assembler decodes and concatenates only the patches needed for that prefix.
 """
 
 from argparse import Namespace
 
 import numpy as np
-import pybase64
 
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     get_indexer_topk_from_response,
     get_routed_experts_from_response,
 )
-from miles.rollout.generate_utils.sample_utils import merge_samples_with_terminal_index
+from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
 from miles.utils.types import Sample
@@ -117,9 +116,9 @@ def _compute_sample_from_openai_record(
     sample.response = tokenizer.decode(output_token_ids)
     sample.response_length = len(output_token_ids)
     sample.loss_mask = [1] * len(output_token_ids)
-    # An addition-mode response carries an R3 patch, not a per-turn full tensor;
-    # merge_samples_with_addition_r3 owns its decoding after the merge.
-    sample.rollout_routed_experts = None if use_addition_r3 else get_routed_experts_from_response(args, choice, sample)
+    sample.rollout_routed_experts = (
+        None if use_addition_r3 else get_routed_experts_from_response(args, choice, len(sample.tokens) - 1)
+    )
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, choice, sample)
 
     if trim_count > 0:
@@ -149,105 +148,48 @@ def merge_samples_with_addition_r3(
     records: list[SessionRecord],
     tokenizer,
 ) -> Sample:
-    """Merge per-turn samples whose records carry additional R3 patches into
-    one Sample with a full ``rollout_routed_experts`` tensor.
+    """Merge ordinary fields, then materialize the required append-only R3 prefix."""
+    merged = merge_samples(samples, tokenizer)
+    if all(record.response["choices"][0]["meta_info"].get("routed_experts") is None for record in records):
+        return merged
 
-    ``samples[i]`` must be assembled from ``records[i]`` (compute and turn-level
-    truncation preserve that mapping). The merge stop rules are shared with
-    ``merge_samples``; the extra record-level rule restores the routed-experts
-    replay-gap check that addition-mode samples (R3 field ``None``) can no
-    longer express, so a turn without an R3 payload is not consumed.
-    """
-    present = [_record_routed_experts(record) is not None for record in records]
-    merged, terminal = merge_samples_with_terminal_index(
-        samples, tokenizer, stop_before=lambda last_consumed, i: present[last_consumed] and not present[i]
-    )
-    merged.rollout_routed_experts = _fold_addition_routed_experts(
-        args, records[: terminal + 1], num_rows=len(merged.tokens) - 1
-    )
-    return merged
-
-
-def _record_routed_experts(record: SessionRecord) -> str | None:
-    return record.response["choices"][0]["meta_info"].get("routed_experts")
-
-
-def _fold_addition_routed_experts(
-    args: Namespace, records: list[SessionRecord], *, num_rows: int
-) -> np.ndarray | None:
-    """Decode per-record additional R3 patches and fold them —
-    ``R_i = R_(i-1)[:start_i] + delta_i`` — into one ``(num_rows, num_layers,
-    topk)`` int32 tensor. Replacement from ``start_i`` supports an offset moving
-    backward after rollback or a rewritten suffix. ``num_rows`` is the merged
-    sample's ``len(tokens) - 1``; the folded stream must cover at least that
-    many rows. Raises ``ValueError`` on a missing payload or offset, wrong
-    value count, inconsistent top-k, or a row gap.
-    """
-    if all(_record_routed_experts(record) is None for record in records):
-        return None
-
-    num_layers = args.num_layers
-    topk = None
-    chunks: list[np.ndarray] = []  # contiguous folded patches, sum of lengths == rows
-    rows = 0
+    required_rows = len(merged.tokens) - 1
+    covered_rows = 0
+    chunks: list[np.ndarray] = []
     for i, record in enumerate(records):
-        info = _record_routed_experts(record)
+        if chunks and covered_rows >= required_rows:
+            break
+
+        choice = record.response["choices"][0]
+        info = choice["meta_info"].get("routed_experts")
         if info is None:
             raise ValueError(f"additional R3: record {i} has no routed_experts payload")
+
         start = record.request.get("routed_experts_start_len")
         if start is None:
             raise ValueError(f"additional R3: record {i} request carries no routed_experts_start_len")
-        meta_info = record.response["choices"][0]["meta_info"]
-        end = len(record.request["input_ids"]) + len(meta_info["output_token_logprobs"]) - 1
-        delta_rows = end - start
-        if start < 0 or delta_rows < 0:
-            raise ValueError(f"additional R3: record {i} has invalid offsets (start={start}, end={end})")
-        if start > rows:
-            raise ValueError(f"additional R3: record {i} starts at row {start} but only {rows} rows are retained")
-        values = np.frombuffer(pybase64.b64decode(info.encode("ascii")), dtype=np.int32)
-        if delta_rows == 0:
-            if values.size:
-                raise ValueError(f"additional R3: record {i} carries {values.size} values for 0 new rows")
-        else:
-            if topk is None:
-                if values.size == 0 or values.size % (delta_rows * num_layers):
-                    raise ValueError(
-                        f"additional R3: record {i} has {values.size} values, not a positive multiple of "
-                        f"delta_rows * num_layers ({delta_rows} * {num_layers})"
-                    )
-                topk = values.size // (delta_rows * num_layers)
-            elif values.size != delta_rows * num_layers * topk:
-                raise ValueError(
-                    f"additional R3: record {i} has {values.size} values, expected "
-                    f"{delta_rows * num_layers * topk} (delta_rows={delta_rows}, "
-                    f"num_layers={num_layers}, topk={topk})"
-                )
-        # Replacement from `start`: drop retained rows the new patch rewrites.
-        while rows > start:
-            drop = min(len(chunks[-1]), rows - start)
-            chunks[-1] = chunks[-1][: len(chunks[-1]) - drop]
-            if not len(chunks[-1]):
-                chunks.pop()
-            rows -= drop
-        if delta_rows:
-            chunks.append(values.reshape(delta_rows, num_layers, topk))
-        rows = end
+        if start != covered_rows:
+            raise ValueError(f"additional R3: record {i} starts at row {start}; expected {covered_rows}")
 
-    if topk is None:
-        # Only empty patches: preserve the existing empty-buffer decode shape.
-        topk = 0
-    if num_rows > rows:
-        raise ValueError(f"additional R3 covers {rows} rows but the merged sample needs {num_rows} (len(tokens) - 1)")
-    out = np.empty((num_rows, num_layers, topk), dtype=np.int32)
-    pos = 0
-    for chunk in chunks:
-        if pos >= num_rows:
-            break
-        take = min(len(chunk), num_rows - pos)
-        out[pos : pos + take] = chunk[:take]
-        pos += take
-    assert pos == num_rows, f"additional R3 fold left rows [{pos}, {num_rows}) uncovered"
-    return out
+        end = len(record.request["input_ids"]) + len(choice["meta_info"]["output_token_logprobs"]) - 1
+        if end < start:
+            raise ValueError(f"additional R3: record {i} has invalid offsets (start={start}, end={end})")
+        delta_rows = end - start
+        if bool(info) != bool(delta_rows):
+            raise ValueError(f"additional R3: record {i} payload presence does not match {delta_rows} rows")
+
+        patch = get_routed_experts_from_response(args, choice, delta_rows)
+        if len(patch) or required_rows == 0:
+            chunks.append(patch)
+        covered_rows = end
+
+    if covered_rows < required_rows:
+        raise ValueError(
+            f"additional R3 covers {covered_rows} rows but the merged sample needs "
+            f"{required_rows} (len(tokens) - 1)"
+        )
+    merged.rollout_routed_experts = np.concatenate(chunks)[:required_rows]
+    return merged
 
 
 def truncate_samples_by_total_tokens(

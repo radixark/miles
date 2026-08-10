@@ -10,19 +10,8 @@ _REPLAY_FIELDS = ("rollout_routed_experts", "rollout_indexer_topk")
 
 
 def merge_samples(samples: list[Sample], tokenizer) -> Sample:
-    merged, _ = merge_samples_with_terminal_index(samples, tokenizer)
-    return merged
-
-
-def merge_samples_with_terminal_index(samples: list[Sample], tokenizer, *, stop_before=None) -> tuple[Sample, int]:
-    """Fold ``samples`` like ``merge_samples`` and also return the index of the
-    last sample consumed. ``stop_before(last_consumed, candidate)`` adds a
-    caller-owned stop rule evaluated alongside the built-in ones (the session
-    addition-R3 assembler supplies replay presence its samples no longer carry).
-    """
     acc = samples[0]
-    last_consumed = 0
-    for i, sample in enumerate(samples[1:], start=1):
+    for sample in samples[1:]:
         # Only a COMPLETED turn can be extended by a later turn; if an
         # intermediate turn truncated, the trajectory ends there.
         # TODO (shi.dong): figure out how in-turn truncation should be handled.
@@ -34,11 +23,8 @@ def merge_samples_with_terminal_index(samples: list[Sample], tokenizer, *, stop_
         # instead of extending into a turn with a routing gap.
         if _introduces_replay_gap(acc, sample):
             break
-        if stop_before is not None and stop_before(last_consumed, i):
-            break
         acc = _merge_sample_pair(acc, sample, tokenizer=tokenizer)
-        last_consumed = i
-    return acc, last_consumed
+    return acc
 
 
 def _introduces_replay_gap(a: Sample, b: Sample) -> bool:

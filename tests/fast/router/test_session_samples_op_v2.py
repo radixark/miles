@@ -248,7 +248,7 @@ async def test_session_metadata_matches_get_session(core):
     assert reply.session_metadata["accumulated_token_ids"] == _ACCUMULATED
 
 
-# ── additional R3 (in-place weight updates): per-leaf patch folds ──
+# ── additional R3 (in-place weight updates): per-leaf materialization ──
 
 
 def _r3_slice_b64(seed: int, start_row: int, end_row: int) -> str:
@@ -296,9 +296,8 @@ async def test_addition_assembled_sample_matches_full_reference(addition_core):
     assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
 
 
-async def test_addition_branched_tree_folds_each_leaf():
-    """Two leaves branching off one root each fold their own record chain:
-    the shared root patch plus the leaf's own suffix patch."""
+async def test_addition_branched_tree_materializes_each_leaf():
+    """Each leaf materializes its root patch plus its own suffix patch."""
     shared = _expected_r3(0, 4)
     leaf_a_rows = _expected_r3(1000, 2)
     leaf_b_rows = _expected_r3(2000, 2)
@@ -351,7 +350,7 @@ async def test_addition_branched_tree_folds_each_leaf():
 
 async def test_addition_gap_returns_422(addition_core):
     # Turn 2 starts at row 5 while turn 1 retained only 4 rows: the per-leaf
-    # fold rejects the gap as a 422 instead of assembling a corrupt tensor.
+    # assembler rejects the gap as a 422 instead of producing a corrupt tensor.
     sid = await _make_session(addition_core, _two_turn_addition_records(turn2_start_len=5), _ACCUMULATED)
     status, payload = await _collect_via_op(addition_core, sid)
     assert status == 422
