@@ -1,10 +1,10 @@
 """Wiring tests for the configurable session message matcher.
 
-The hub owns matcher semantics (``test_message_matcher_hub``); this file
-verifies the session layer honors one resolved matcher end to end: v1
-rollback detection and append validation, v2 attach search, the effective
-history handed to TITO, registry ownership, and the runtime contract
-wrapper applied at the composition root.
+The hub owns matcher semantics and the runtime contract wrapper
+(``test_message_matcher_hub``); this file verifies the session layer honors
+one resolved matcher end to end: v1 rollback detection and append
+validation, v2 attach search, the effective history handed to TITO, and
+registry ownership.
 """
 
 from types import SimpleNamespace
@@ -12,9 +12,8 @@ from typing import Any
 
 import pytest
 
-from miles.rollout.session.errors import MessageValidationError, SessionMessageMatcherError
+from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.linear_trajectory import LinearTrajectory, SessionRegistry
-from miles.rollout.session.sessions import _validated_message_matcher
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.session_state import SessionStateV2, position_for_request, prepare_pretokenized
 from miles.utils.chat_template_utils.message_matcher_hub import (
@@ -229,20 +228,3 @@ class TestRegistryOwnership:
         )
 
         assert registry.message_matcher is loose_tool_call_message_matches
-
-
-class TestValidatedMessageMatcher:
-    def test_passes_through_exact_bool_results(self):
-        assert _validated_message_matcher(lambda stored, replayed: True)({}, {}) is True
-        assert _validated_message_matcher(lambda stored, replayed: False)({}, {}) is False
-
-    def test_wraps_matcher_exceptions(self):
-        def broken(stored, replayed):
-            raise RuntimeError("boom")
-
-        with pytest.raises(SessionMessageMatcherError, match="raised an exception"):
-            _validated_message_matcher(broken)({}, {})
-
-    def test_rejects_truthy_non_bool_results(self):
-        with pytest.raises(SessionMessageMatcherError, match="must return bool, got int"):
-            _validated_message_matcher(lambda stored, replayed: 1)({}, {})

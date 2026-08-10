@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Collection
 from typing import Any
 
@@ -119,10 +120,40 @@ _BUILTIN_MESSAGE_MATCHERS: dict[str, SessionMessageMatcher] = {
 }
 
 
+class SessionMessageMatcherError(Exception):
+    """Raised when a configured matcher throws or returns a non-bool value."""
+
+
+def _validated(matcher: SessionMessageMatcher) -> SessionMessageMatcher:
+    """Enforce the matcher contract at runtime: exact bool, no exceptions.
+
+    A truthy non-bool or a raised exception is a configuration error, never a
+    match or mismatch; surface it as ``SessionMessageMatcherError`` so the
+    session server maps it to HTTP 500 instead of silently deciding session
+    identity from a broken matcher.
+    """
+
+    @functools.wraps(matcher)
+    def validated(stored: dict[str, Any], replayed: dict[str, Any]) -> bool:
+        try:
+            result = matcher(stored, replayed)
+        except Exception as exc:
+            raise SessionMessageMatcherError("session message matcher raised an exception") from exc
+        if type(result) is not bool:
+            raise SessionMessageMatcherError(f"session message matcher must return bool, got {type(result).__name__}")
+        return result
+
+    return validated
+
+
 def resolve_session_message_matcher(selector: str) -> SessionMessageMatcher:
-    """Resolve an exact built-in alias or a synchronous dotted import path."""
+    """Resolve an exact built-in alias or a synchronous dotted import path.
+
+    Every result carries the runtime contract check (``_validated``); the
+    original matcher stays reachable as ``__wrapped__``.
+    """
     if selector in _BUILTIN_MESSAGE_MATCHERS:
-        return _BUILTIN_MESSAGE_MATCHERS[selector]
+        return _validated(_BUILTIN_MESSAGE_MATCHERS[selector])
     aliases = ", ".join(_BUILTIN_MESSAGE_MATCHERS)
     if not isinstance(selector, str) or not selector or "." not in selector:
         raise ValueError(
@@ -132,7 +163,7 @@ def resolve_session_message_matcher(selector: str) -> SessionMessageMatcher:
     try:
         from miles.utils.misc import load_function
 
-        return load_function(selector, sync_required=True)
+        return _validated(load_function(selector, sync_required=True))
     except Exception as exc:
         raise ValueError(
             f"failed to resolve --session-message-matcher {selector!r}; use one of {aliases}, "

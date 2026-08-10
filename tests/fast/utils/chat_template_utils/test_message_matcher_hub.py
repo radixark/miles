@@ -14,11 +14,13 @@ import pytest
 import miles.utils.chat_template_utils as chat_template_utils
 from miles.utils.chat_template_utils import message_matcher_hub, template
 from miles.utils.chat_template_utils.message_matcher_hub import (
+    SessionMessageMatcherError,
     loose_tool_call_message_matches,
     resolve_session_message_matcher,
     role_content_only_message_matches,
     strict_message_matches,
 )
+from miles.utils.chat_template_utils.message_matcher_hub.funcs import _validated
 
 _MISSING = object()
 
@@ -390,11 +392,33 @@ def test_matchers_do_not_mutate_either_input() -> None:
     ],
 )
 def test_resolver_maps_builtin_aliases_by_identity(selector: str, expected: Any) -> None:
-    assert resolve_session_message_matcher(selector) is expected
+    assert resolve_session_message_matcher(selector).__wrapped__ is expected
 
 
 def test_resolver_loads_a_synchronous_dotted_path() -> None:
-    assert resolve_session_message_matcher("operator.eq") is operator.eq
+    assert resolve_session_message_matcher("operator.eq").__wrapped__ is operator.eq
+
+
+class TestValidatedMessageMatcher:
+    def test_passes_through_exact_bool_results(self):
+        assert _validated(lambda stored, replayed: True)({}, {}) is True
+        assert _validated(lambda stored, replayed: False)({}, {}) is False
+
+    def test_wraps_matcher_exceptions(self):
+        def broken(stored, replayed):
+            raise RuntimeError("boom")
+
+        with pytest.raises(SessionMessageMatcherError, match="raised an exception"):
+            _validated(broken)({}, {})
+
+    def test_rejects_truthy_non_bool_results(self):
+        with pytest.raises(SessionMessageMatcherError, match="must return bool, got int"):
+            _validated(lambda stored, replayed: 1)({}, {})
+
+    def test_resolver_applies_the_contract_check_to_custom_paths(self):
+        wrapped = resolve_session_message_matcher("os.path.join")
+        with pytest.raises(SessionMessageMatcherError, match="must return bool, got str"):
+            wrapped("a", "b")
 
 
 @pytest.mark.parametrize("selector", ["Strict", "LOOSE_TOOL_CALL", "role-content-only"])
@@ -468,7 +492,7 @@ import sys
 assert "miles.utils.misc" not in sys.modules
 hub = importlib.import_module("miles.utils.chat_template_utils.message_matcher_hub")
 assert "miles.utils.misc" not in sys.modules
-assert hub.resolve_session_message_matcher("strict") is hub.strict_message_matches
+assert hub.resolve_session_message_matcher("strict").__wrapped__ is hub.strict_message_matches
 assert "miles.utils.misc" not in sys.modules
 hub.resolve_session_message_matcher("operator.eq")
 assert "miles.utils.misc" in sys.modules

@@ -5,7 +5,6 @@ Hierarchy
 SessionError (base)
 ├── SessionNotFoundError       → 404  session does not exist
 ├── MessageValidationError     → 400  messages structure/content invalid
-├── SessionMessageMatcherError → 500  configured matcher failed its contract
 ├── TruncatedGenerationError   → 409  extending a length-truncated generation (v2)
 ├── TokenizationError          → 500  TITO tokenizer / prefix mismatch
 └── UpstreamResponseError      → 502  SGLang response invalid or unexpected
@@ -32,12 +31,6 @@ class MessageValidationError(SessionError):
     """
 
     status_code: int = 400
-
-
-class SessionMessageMatcherError(SessionError):
-    """Raised when a configured matcher throws or returns a non-bool value."""
-
-    status_code: int = 500
 
 
 class TruncatedGenerationError(SessionError):

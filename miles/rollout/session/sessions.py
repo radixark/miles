@@ -11,33 +11,16 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from miles.rollout.session.core import SessionCore
-from miles.rollout.session.errors import SessionError, SessionMessageMatcherError
+from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.utils.chat_template_utils import get_tito_tokenizer
-from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher, resolve_session_message_matcher
+from miles.utils.chat_template_utils.message_matcher_hub import (
+    SessionMessageMatcherError,
+    resolve_session_message_matcher,
+)
 from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
-
-
-def _validated_message_matcher(matcher: SessionMessageMatcher) -> SessionMessageMatcher:
-    """Enforce the matcher contract at runtime: exact bool, no exceptions.
-
-    A truthy non-bool or a raised exception is a configuration error, never a
-    match or mismatch; surface it as ``SessionMessageMatcherError`` (500)
-    instead of silently deciding session identity from a broken matcher.
-    """
-
-    def validated(stored: dict, replayed: dict) -> bool:
-        try:
-            result = matcher(stored, replayed)
-        except Exception as exc:
-            raise SessionMessageMatcherError("session message matcher raised an exception") from exc
-        if type(result) is not bool:
-            raise SessionMessageMatcherError(f"session message matcher must return bool, got {type(result).__name__}")
-        return result
-
-    return validated
 
 
 def setup_session_routes(app, backend, args):
@@ -49,14 +32,8 @@ def setup_session_routes(app, backend, args):
     session_server_instance_id = getattr(args, "session_server_instance_id", None)
 
     message_matcher_selector = getattr(args, "session_message_matcher", "strict")
-    resolved_matcher = resolve_session_message_matcher(message_matcher_selector)
-    logger.info(
-        "[session] Using message matcher selector=%r callable=%s.%s",
-        message_matcher_selector,
-        getattr(resolved_matcher, "__module__", "<unknown>"),
-        getattr(resolved_matcher, "__qualname__", type(resolved_matcher).__name__),
-    )
-    message_matcher = _validated_message_matcher(resolved_matcher)
+    message_matcher = resolve_session_message_matcher(message_matcher_selector)
+    logger.info("[session] Using message matcher selector=%r callable=%r", message_matcher_selector, message_matcher)
 
     tokenizer = load_tokenizer(
         hf_checkpoint, chat_template_path=getattr(args, "chat_template_path", None), trust_remote_code=True
@@ -82,6 +59,10 @@ def setup_session_routes(app, backend, args):
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
         return JSONResponse(status_code=exc.status_code, content={"error": str(exc)})
+
+    @app.exception_handler(SessionMessageMatcherError)
+    async def session_message_matcher_error_handler(request: Request, exc: SessionMessageMatcherError):
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
     @app.get("/health")
     async def health():
