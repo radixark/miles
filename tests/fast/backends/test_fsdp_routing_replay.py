@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch.nn as nn
 
-from miles.backends.experimental.fsdp_utils.adaptations import routing_replay
+from miles.backends.fsdp_utils.adaptations import routing_replay
 from miles.utils.arguments import resolve_fsdp_num_layers
 from miles.utils.replay_base import routing_replay_manager
 
@@ -148,7 +148,7 @@ def test_install_raises_when_adapter_matches_but_finds_no_layers():
 
 
 def test_specs_register_adapters_for_every_supported_model_type():
-    import miles.backends.experimental.fsdp_utils.adaptations.specs  # noqa: F401
+    import miles.backends.fsdp_utils.adaptations.specs  # noqa: F401
 
     expected = {
         "qwen3_moe": "Qwen3MoeTopKRouter",
@@ -162,7 +162,7 @@ def test_specs_register_adapters_for_every_supported_model_type():
 
 
 def test_dense_archs_do_not_resolve_to_a_moe_adapter():
-    import miles.backends.experimental.fsdp_utils.adaptations.specs  # noqa: F401
+    import miles.backends.fsdp_utils.adaptations.specs  # noqa: F401
 
     for model_type in ("qwen3_5_text", "qwen3"):
         assert routing_replay.resolve_routing_replay_adapter(SimpleNamespace(model_type=model_type)) is None
@@ -234,7 +234,7 @@ def test_stage_nests():
 def test_ref_model_creation_does_not_install_routing_replay():
     import inspect
 
-    from miles.backends.experimental.fsdp_utils.actor import FSDPTrainRayActor
+    from miles.backends.fsdp_utils.actor import FSDPTrainRayActor
 
     source = inspect.getsource(FSDPTrainRayActor._create_ref_model)
     assert "routing_replay.install" not in source

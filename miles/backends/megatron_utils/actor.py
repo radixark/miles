@@ -768,6 +768,8 @@ class MegatronTrainRayActor(TrainRayActor):
             print_memory("before update_weights")
             self.weight_updater.update_weights()
             print_memory("after update_weights")
+            if dist.get_rank() == 0:
+                ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
 
             if is_multi_lora_enabled(self.args):
                 from miles.backends.megatron_utils.multi_lora_utils import commit_weight_push

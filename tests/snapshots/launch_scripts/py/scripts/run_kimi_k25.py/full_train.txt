@@ -1,0 +1,148 @@
+### 0
+mkdir -p /root/models /root/datasets
+
+### 1
+hf download moonshotai/Kimi-K2.5
+  --local-dir /root/models/Kimi-K2.5
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 3
+python <REPO_ROOT>/tools/convert_kimi_int4_to_bf16.py
+  --model-dir /root/models/Kimi-K2.5
+  --output-dir /root/models/Kimi-K2.5-bf16 
+
+### 4
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 5
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 6
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 7
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "NCCL_TIMEOUT": "3600", "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1", "OPEN_TRAINING_INT4_GROUP_SIZE": "32", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --num-layers 61
+  --hidden-size 7168
+  --ffn-hidden-size 18432
+  --num-attention-heads 64
+  --kv-channels 64
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --norm-epsilon 1e-5
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 163840
+  --multi-latent-attention
+  --q-lora-rank 1536
+  --kv-lora-rank 512
+  --qk-head-dim 128
+  --qk-pos-emb-head-dim 64
+  --v-head-dim 128
+  --qk-layernorm
+  --rotary-scaling-factor 64.0
+  --rotary-base 50000
+  --mscale 1.0
+  --mscale-all-dim 1.0
+  --attention-softmax-in-fp32
+  --no-rope-fusion
+  --num-experts 384
+  --moe-layer-freq '[0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --moe-ffn-hidden-size 2048
+  --moe-router-topk 8
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-pre-softmax
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-aux-loss-coeff 0
+  --moe-router-bias-update-rate 0
+  --moe-router-group-topk 1
+  --moe-router-num-groups 1
+  --moe-grouped-gemm
+  --moe-router-topk-scaling-factor 2.827
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --hf-checkpoint /root/models/Kimi-K2.5
+  --ref-load /root/models/Kimi-K2.5-bf16
+  --megatron-to-hf-mode bridge
+  --model-name kimi_k25
+  --load /root/shared_data/260101-000000-000/checkpoints
+  --save /root/shared_data/260101-000000-000/checkpoints
+  --save-interval 2 
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --balance-data
+  --rm-type deepscaler
+  --num-rollout 3000
+  --rollout-batch-size 32
+  --n-samples-per-prompt 8
+  --rollout-max-response-len 100
+  --rollout-temperature 1
+  --global-batch-size 256
+  --use-dynamic-global-batch-size 
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --optimizer-cpu-offload
+  --overlap-cpu-optimizer-d2h-h2d
+  --use-precision-aware-optimizer
+  --use-distributed-optimizer 
+  --advantage-estimator grpo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28 
+  --use-wandb
+  --wandb-project miles-run_kimi_k25
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 8
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 2048  
+  --rollout-num-gpus-per-engine 8
+  --sglang-mem-fraction-static 0.7
+  --sglang-ep-size 8
+  --sglang-server-concurrency 1024
+  --use-rollout-routing-replay 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --no-check-for-nan-in-loss-and-grad
+  --colocate
+  --update-weight-buffer-size 2147483648
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8   

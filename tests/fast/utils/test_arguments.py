@@ -11,6 +11,7 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
+    _resolve_rollout_functions,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -154,6 +155,29 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
 
     override = SimpleNamespace(rollout_function_path=None, eval_function_path="pkg.CustomEval", fully_async=True)
     assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
+
+
+def test_fully_async_rejects_abort_pause_mode(monkeypatch):
+    """Generation is always in flight, so aborting on every weight update would kill it."""
+    monkeypatch.setenv("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR", "1")
+    args = SimpleNamespace(
+        fully_async=True,
+        multi_lora=False,
+        rollout_function_path=None,
+        eval_function_path=None,
+        colocate=False,
+        partial_rollout=False,
+        pause_generation_mode="abort",
+        recompute_logprobs_via_prefill=False,
+        rollout_all_samples_process_path=None,
+        eval_num_gpus=0,
+    )
+
+    with pytest.raises(AssertionError, match="pause-generation-mode abort"):
+        _resolve_rollout_functions(args)
+
+    args.pause_generation_mode = "retract"
+    _resolve_rollout_functions(args)
 
 
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
