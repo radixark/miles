@@ -93,6 +93,10 @@ class TestCISuites:
             "stage-c-2-gpu-h200",
         ]
 
+    def test_rocm_suites_include_the_mi300x_pr_stage(self):
+        """The trusted ROCm PR workflow can request its MI300X suite."""
+        assert "stage-c-4-gpu-mi300x" in CI_SUITES[HWBackend.ROCM]
+
     def test_no_legacy_suite_names_remain(self):
         legacy = {
             "stage-a-fast",
