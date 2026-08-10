@@ -6,7 +6,7 @@ from pathlib import Path
 
 import ray
 
-from miles.ray.multi_lora.controller import create_multilora_controller, get_multi_lora_controller
+from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
 from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
@@ -42,10 +42,10 @@ async def main(args):
     inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(args)
 
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
-    controller = create_multilora_controller(args, f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
-    await controller.start.remote()
-    host = await controller.http_host.remote()
-    api_port = await controller.api_port.remote()
+    controller = get_multi_lora_controller()
+    await controller.init()
+    host = await controller.http_host()
+    api_port = await controller.api_port()
     logger.info(f"Multi-LoRA control API listening on http://{host}:{api_port} (head node)")
 
     actor_model, _ = await create_training_models(args, rollout_executor)
@@ -54,11 +54,11 @@ async def main(args):
     # reconcile + update_weights.
     for name, path in args.multi_lora_adapters:
         config = parse_adapter_run_yaml(Path(path))
-        await controller.register_adapter.remote(name, config)
+        await controller.register_adapter(name, config)
 
     rollout_id = 0
     while True:
-        snapshot = await get_multi_lora_controller().snapshot.remote()
+        snapshot = await get_multi_lora_controller().snapshot()
 
         # handle dynamic metrics in tracking backend
         define_new_adapter_metrics(snapshot)
@@ -77,7 +77,7 @@ async def main(args):
         await update_weights(actor_model, rollout_executor)
 
         # With nothing active, generate would wait forever.
-        post_update = await get_multi_lora_controller().snapshot.remote()
+        post_update = await get_multi_lora_controller().snapshot()
         if not (post_update["active"] or post_update["retiring"]):
             continue
 
@@ -101,7 +101,7 @@ async def main(args):
     await rollout_executor.dispose()
     await inference_controller.dispose()
     await actor_model.dispose()
-    await controller.stop.remote()
+    await controller.stop()
 
 
 if __name__ == "__main__":
