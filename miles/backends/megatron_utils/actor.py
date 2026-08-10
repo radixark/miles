@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import logging
 import os
@@ -7,7 +8,6 @@ from argparse import Namespace
 from contextlib import ExitStack, nullcontext
 from typing import TYPE_CHECKING
 
-import ray
 import torch
 import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
@@ -673,6 +673,58 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self._heartbeat.bump()
         return TrainStepOutput(outcome=train_step_outcome)
+
+    @with_logs
+    @timer
+    def reconcile_adapters(self) -> None:
+        """Load adapters the controller wants served; retire deregistered ones, dropping their untrained tail."""
+        if not is_multi_lora_enabled(self.args):
+            return
+        from miles.backends.megatron_utils.multi_lora_utils import cleanup_adapters as _cleanup_adapters
+        from miles.backends.megatron_utils.multi_lora_utils import load_adapters as _load_adapters
+        from miles.ray.multi_lora.controller import get_multi_lora_controller
+
+        broadcast_buffer = [None]
+        if is_first_replica_megatron_main_rank():
+            controller = get_multi_lora_controller()
+            asyncio.run(controller.retire_adapters())
+            broadcast_buffer[0] = asyncio.run(controller.snapshot())
+        if dist.is_initialized():
+            dist.broadcast_object_list(broadcast_buffer, src=0, group=get_gloo_group())
+        snapshot = broadcast_buffer[0]
+        should_be_loaded = {**snapshot["active"], **snapshot["pending"], **snapshot["retiring"]}
+        cleanup_names = set(snapshot["cleanup"])
+
+        loaded_names = set(self.loaded_adapters)
+        # Sorted so per-adapter collectives (checkpoint export) run in the same
+        # order on every rank; set iteration order is process-specific.
+        adapters_to_load = sorted(
+            (adapter for name, adapter in should_be_loaded.items() if name not in loaded_names),
+            key=lambda adapter: adapter.name,
+        )
+        adapters_to_clean_up = sorted(
+            (self.loaded_adapters[n] for n in loaded_names if n in cleanup_names or n not in should_be_loaded),
+            key=lambda adapter: adapter.name,
+        )
+        if adapters_to_load:
+            _load_adapters(self.args, self.model, self.optimizer, adapters_to_load)
+            for adapter in adapters_to_load:
+                self.loaded_adapters[adapter.name] = adapter
+                self._multi_lora_pending_push.add(adapter.name)
+            if self._enable_weight_backup:
+                self.weights_backuper.backup("actor")
+        if adapters_to_clean_up:
+            _cleanup_adapters(self.args, self.model, self.optimizer, adapters_to_clean_up)
+            for adapter in adapters_to_clean_up:
+                self.loaded_adapters.pop(adapter.name, None)
+                self._multi_lora_pending_push.discard(adapter.name)
+            if self._enable_weight_backup:
+                self.weights_backuper.backup("actor")
+
+        # Deregistered before ever being loaded: nothing to save or clear.
+        if is_first_replica_megatron_main_rank():
+            for name in cleanup_names - loaded_names:
+                asyncio.run(get_multi_lora_controller().free_slot(name))
 
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:

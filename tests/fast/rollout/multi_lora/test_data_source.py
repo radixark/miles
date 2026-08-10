@@ -2,6 +2,8 @@ from argparse import Namespace
 from collections import deque
 from typing import Any
 
+import pytest
+
 import miles.rollout.multi_lora.data_source as data_source_module
 from miles.rollout.multi_lora.data_source import MultiLoRAAsyncDataSource
 from miles.utils.adapter_config import AdapterRun, AdapterRunConfig
@@ -97,3 +99,67 @@ class TestAddSamples:
         assert live_source.added == [live_group]
         assert removed_source.added == []
         assert "removed" not in data_source.sources
+
+
+class _FakeController:
+    def __init__(self, snapshots) -> None:
+        self.resolutions: list[tuple[str, int]] = []
+        self.snapshots = snapshots
+
+    async def snapshot(self):
+        return self.snapshots.pop(0)
+
+    async def resolve_num_step(self, name: str, dataset_length: int) -> None:
+        self.resolutions.append((name, dataset_length))
+
+
+class TestMultiLoRAAsyncDataSource:
+    async def test_public_sampling_rotates_to_the_active_source_and_resolves_its_length(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Public sampling builds an active source, resolves its length, and returns adapter-stamped samples."""
+        adapter = AdapterRun(
+            name="active",
+            slot=3,
+            config=AdapterRunConfig(data="dataset", rollout_batch_size=1, n_samples_per_prompt=1),
+        )
+        snapshot = {"active": {"active": adapter}, "retiring": {}}
+        controller = _FakeController([snapshot, {"active": {}, "retiring": {}}])
+        args = Namespace(
+            input_key="text",
+            label_key=None,
+            metadata_key=None,
+            save=None,
+            load=None,
+            n_samples_per_prompt=1,
+            rollout_global_dataset=True,
+            hf_checkpoint="model",
+            chat_template_path=None,
+            dump_details=None,
+            rollout_max_prompt_len=32,
+            multimodal_keys=None,
+            tool_key=None,
+            apply_chat_template=False,
+            apply_chat_template_kwargs=None,
+            rollout_seed=1,
+            rollout_shuffle=False,
+        )
+
+        class _Dataset:
+            def __init__(self, *_args, **_kwargs) -> None:
+                self.samples = [Sample(), Sample(), Sample()]
+
+            def __len__(self) -> int:
+                return len(self.samples)
+
+        monkeypatch.setattr(data_source_module, "get_multi_lora_controller", lambda: controller)
+        monkeypatch.setattr("miles.rollout.data_source.load_tokenizer", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr("miles.rollout.data_source.load_processor", lambda *_args, **_kwargs: object())
+        monkeypatch.setattr("miles.rollout.data_source.Dataset", _Dataset)
+        source = data_source_module.MultiLoRAAsyncDataSource(args)
+
+        groups = await source.get_samples()
+
+        assert controller.resolutions == [("active", 3)]
+        assert groups[0][0].adapter.name == "active"
+        assert (await source.get_samples()) == []
