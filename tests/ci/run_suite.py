@@ -257,6 +257,7 @@ def run_a_suite(args):
         gate_store=gate_store,
         gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
+        reap_leftovers=True,
     )
 
 

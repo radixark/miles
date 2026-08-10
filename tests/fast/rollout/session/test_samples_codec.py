@@ -22,6 +22,10 @@ def _per_call(*spans: tuple[str, int, int]) -> WeightVersionsPerCall:
     )
 
 
+def _versions(version: str) -> WeightVersionsPerCall:
+    return WeightVersionsPerCall(spans=[WeightVersionSpan(version=version, abs_start=0, abs_end=1)])
+
+
 def _computed_sample(**overrides) -> Sample:
     """A blank-template sample carrying every computed field, as the worker produces."""
     s = Sample()
@@ -33,7 +37,7 @@ def _computed_sample(**overrides) -> Sample:
     s.rollout_routed_experts = np.arange(24, dtype=np.int32).reshape(4, 3, 2)
     s.rollout_indexer_topk = None
     s.status = Sample.Status.COMPLETED
-    s.weight_versions = ["w1", "w2"]
+    s.weight_versions = [_versions("w1"), _versions("w2")]
     s.prefix_cache_info = Sample.PrefixCacheInfo.from_dict({"cached_tokens": 2, "total_prompt_tokens": 3})
     s.metadata = {
         "lifecycle": [{"t0": 1.0, "t1": 2.0, "turn": 1}],
@@ -78,7 +82,7 @@ class TestSamplesWireCodec:
         assert out.loss_mask == [1, 1]
         assert out.response == "[10][11]" and out.response_length == 2
         assert out.status == Sample.Status.COMPLETED
-        assert out.weight_versions == ["w1", "w2"]
+        assert out.weight_versions == [_versions("w1"), _versions("w2")]
         assert out.prefix_cache_info.to_dict() == {"cached_tokens": 2, "total_prompt_tokens": 3}
         assert out.rollout_routed_experts.dtype == np.int32
         assert np.array_equal(out.rollout_routed_experts, np.arange(24, dtype=np.int32).reshape(4, 3, 2))
@@ -122,7 +126,7 @@ class TestSamplesWireCodec:
         # The empty reply is decoded before the driver takes its ABORTED path, so
         # the overlay-defaults guard must not fire on it — even for an input
         # sample that would violate the guard.
-        evolved = Sample(weight_versions=["stale"])
+        evolved = Sample(weight_versions=[_versions("stale")])
         reply = decode_samples_and_merge_input_sample(
             encode_samples([], {"max_trim_tokens": 0}, "no_records"), evolved
         )
@@ -131,7 +135,7 @@ class TestSamplesWireCodec:
     def test_defaults_guard_rejects_evolved_template(self):
         payload = encode_samples([_computed_sample()], {}, None)
         with pytest.raises(AssertionError, match="weight_versions"):
-            decode_samples_and_merge_input_sample(payload, Sample(weight_versions=["stale"]))
+            decode_samples_and_merge_input_sample(payload, Sample(weight_versions=[_versions("stale")]))
         with pytest.raises(AssertionError, match="teacher_log_probs"):
             decode_samples_and_merge_input_sample(payload, Sample(teacher_log_probs=[-1.0]))
         with pytest.raises(AssertionError, match="opd_student_top_logprobs"):
