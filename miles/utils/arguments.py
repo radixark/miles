@@ -99,6 +99,7 @@ def reset_arg(parser, name, **kwargs):
 
 
 _FT_CHOICES = ["rollout", "train"]
+_DEFAULT_FT_API_SERVER_PORT = 18080
 
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
@@ -956,14 +957,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--api-server-port",
                 type=int,
-                default=0,
-                help="Port for HTTP api server. 0 = disabled.",
+                default=None,
+                help=f"Port for HTTP api server. 0 = disabled. Left unset it is "
+                f"{_DEFAULT_FT_API_SERVER_PORT} under --use-fault-tolerance and 0 otherwise, "
+                f"because the mini fault-tolerance controller drives cells over this port.",
             )
             parser.add_argument(
                 "--mini-ft-controller-enable",
-                action="store_true",
-                default=False,
-                help="Enable the mini fault-tolerance controller that auto-heals Fatal cells.",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Enable the mini fault-tolerance controller that auto-heals Fatal cells. "
+                "Left unset it follows --ft-components and --api-server-port, which is what makes "
+                "--use-fault-tolerance heal on its own.",
             )
             parser.add_argument(
                 "--mini-ft-controller-poll-interval",
@@ -2858,14 +2863,23 @@ def _validate_rematerialize_param_from_master_weight(args):
         args.check_rematerialize_param_from_master_weight = True
 
 
+def _resolve_api_server_port(args: argparse.Namespace) -> int:
+    if (port := args.api_server_port) is not None:
+        return port
+    return _DEFAULT_FT_API_SERVER_PORT if args.ft_components else 0
+
+
+def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
+    if (enable := args.mini_ft_controller_enable) is not None:
+        return enable
+    return bool(args.ft_components) and args.api_server_port != 0
+
+
 def miles_validate_args(args):
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
-
-    if args.mini_ft_controller_enable and args.api_server_port == 0:
-        raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
 
     if "train" in args.ft_components:
         args.indep_dp = True
@@ -3553,6 +3567,12 @@ def miles_validate_args(args):
 
     _maybe_apply_dumper_overrides(args)
 
+    args.api_server_port = _resolve_api_server_port(args)
+    args.mini_ft_controller_enable = _resolve_mini_ft_controller_enable(args)
+
+    if args.mini_ft_controller_enable and args.api_server_port == 0:
+        raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
+
 
 def validate_skip_actor_forward_only(args) -> None:
     option = "--skip-actor-forward-only"
@@ -3647,6 +3667,7 @@ def _maybe_apply_dumper_overrides(args) -> None:
     if args.use_fault_tolerance:
         logger.info("Dumper mode: disabling --use-fault-tolerance to suppress fault tolerance heartbeats")
         args.use_fault_tolerance = False
+        args.ft_components = []
 
     logger.info("Dumper mode: all heartbeat mechanisms disabled")
     args.router_disable_health_check = True

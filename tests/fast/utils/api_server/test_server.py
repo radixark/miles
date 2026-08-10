@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
+
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
 from miles.utils.ft_utils.api_server import server
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
@@ -231,12 +233,12 @@ class TestStartApiServerRegistration:
         monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
 
         server.start_api_server(
-            args=SimpleNamespace(),
+            args=make_rollout_args(),
             actor_model=make_mock_group([]),
             inference_controller=MockInferenceController(
                 {cell_id: compute_pending_rollout_cell_status() for cell_id in cell_ids}
             ),
-            port=0,
+            port=18080,
             ft_components=ft_components,
         )
 
@@ -270,7 +272,6 @@ class TestStartApiServerRegistration:
         registry = self._start(monkeypatch, ft_components=["train", "rollout"], cell_ids=["inference-engine-0-0-0"])
 
         assert [handler.cell_type for handler in registry._handlers] == ["actor", "rollout"]
-
 
 class TestDynamicCells:
     @pytest.mark.asyncio
