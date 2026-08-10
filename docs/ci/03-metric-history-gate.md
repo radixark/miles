@@ -193,25 +193,13 @@ Chart key: rectangle = a step or check; rounded box = a data artifact; diamond =
 
 **Operations** — hosted Postgres setup is out-of-band: the two tables and application role are provisioned outside this repo, and runtime gate code stays DML-only (`NeonMetricHistoryStore` never issues DDL). Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
 
-### Inspect hosted history through the authorized workflow
+### Inspect hosted history
 
-Repository writers can query or repair the hosted `runs` and `metric_values` tables through `$neon-access` without retrieving `NEON_DATABASE_URL`. The skill uses the caller's current `gh` identity, generates exact SQL plus a short audit reason from an explicit request, dispatches without a second confirmation, and returns the workflow URL plus the locally decrypted JSON result. The supported client and workflow require legacy repository permission `write` or `admin`; results and database errors are encrypted before artifact upload.
-
-For example:
+Repository writers can use `$neon-access` to query or repair hosted metric history. For example:
 
 ```text
 Use $neon-access to show the 10 most recent metric-history runs for tests/e2e/megatron/test_qwen3_5_35B_A3B_mtp/test_mtp1_spec_v2_r3.py and include each run's metric rows.
 ```
-
-To supply SQL directly, save its exact UTF-8 bytes in a file and run:
-
-```bash
-python3 .claude/skills/neon-access/scripts/run_neon_workflow.py \
-  --reason 'inspect recent metric-history runs' \
-  /absolute/path/to/query.sql
-```
-
-The `workflow_dispatch` definition must already exist on the repository's default branch. A workflow introduced by an open PR cannot be dispatched until that PR merges. This operator path is separate from the runtime store API: it intentionally accepts arbitrary PostgreSQL SQL under the role encoded by `NEON_DATABASE_URL`, while `NeonMetricHistoryStore` remains DML-only. Execution uses autocommit, adds no implicit transaction, and never retries automatically.
 
 ## Trust, cleanup, who writes
 
