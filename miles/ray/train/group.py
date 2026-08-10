@@ -39,6 +39,12 @@ _RETRY_MAX_ATTEMPTS = 30
 _CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
 
+def compute_trainer_health_checker_config(args, *, expected_num_cells: int) -> SimpleHealthCheckerConfig | None:
+    if expected_num_cells == 1:
+        return None
+    return SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker")
+
+
 class TrainerController:
     def __init__(
         self,
@@ -59,23 +65,9 @@ class TrainerController:
 
         self._indep_dp_quorum_id = 0
 
-        self._health_checker_config = (
-            SimpleHealthCheckerConfig.from_args(args, prefix="trainer_heartbeat_checker")
-            if self._expected_num_cells > 1
-            else None
-        )
-
         self._health_checker_activeness = ActivenessTracker(active=True)
 
         self._cells_by_id: dict[str, TrainerCell] = {}
-
-        self._witness_allocator: WitnessIdAllocator | None = (
-            WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
-        )
-        if self._witness_allocator is not None and args.save_debug_event_data is not None:
-            self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
-
-        self._test_action_executor = FTTestActionControllerExecutor.from_args(args, controller=self)
 
     @property
     def pool_id(self) -> str:
@@ -306,6 +298,20 @@ class TrainerController:
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
         """
+        args = self.args
+
+        self._health_checker_config = compute_trainer_health_checker_config(
+            args, expected_num_cells=self._expected_num_cells
+        )
+
+        self._witness_allocator: WitnessIdAllocator | None = (
+            WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
+        )
+        if self._witness_allocator is not None and args.save_debug_event_data is not None:
+            self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
+
+        self._test_action_executor = FTTestActionControllerExecutor.from_args(args, controller=self)
+
         provider: BaseWorkerProvider = RayWorkerProvider.create(pool_ids=[self._pool_id])
         self._watcher_disposer = await provider.watch_cells(self._reconcile)
         await self._wait_expected_num_cells()
