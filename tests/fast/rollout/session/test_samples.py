@@ -586,7 +586,6 @@ class TestAdditionR3Assembly:
     len(input_ids) + len(output) - 1) instead of a full per-turn tensor;
     `merge_samples_with_addition_r3` concatenates the append-only stream into
     one (len(tokens) - 1, num_layers, topk) tensor after the ordinary merge.
-    See docs/developer/session-server-addition-r3.md.
     """
 
     def test_two_patches_reconstruct_full_reference(self):
