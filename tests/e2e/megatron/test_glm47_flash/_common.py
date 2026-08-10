@@ -1,7 +1,6 @@
 import os
 from dataclasses import dataclass
 
-import torch
 from tests.ci.rocm_utils import IS_ROCM
 import miles.utils.external_utils.command_utils as U
 
