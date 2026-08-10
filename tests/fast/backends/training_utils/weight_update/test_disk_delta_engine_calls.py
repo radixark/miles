@@ -32,12 +32,6 @@ def _make_protocol(calls: list[tuple[str, dict]]) -> UpdateWeightFromDiskDelta:
     return protocol
 
 
-def _patch_dist(rank: int):
-    dist_mock = patch(f"{_MODULE}.dist")
-    gloo_mock = patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock())
-    return dist_mock, gloo_mock, rank
-
-
 def test_reload_engines_pulls_with_both_checkpoint_dirs_then_reloads():
     """The reload pull carries both checkpoint dirs the deleted engine wrapper used to inject."""
     calls: list[tuple[str, dict]] = []
@@ -128,3 +122,23 @@ def test_baseline_capture_reloads_the_pulled_checkpoint_when_equality_is_checked
 
     assert [name for name, _kwargs in calls] == ["pull_weights", "update_weights_from_disk"]
     assert calls[1][1] == {"model_path": "/local/ckpt", "weight_version": "0"}
+
+
+def test_non_source_rank_waits_for_baseline_engine_reload(tmp_path):
+    """A non-source rank waits until rank zero finishes the baseline engine reload."""
+    protocol = _make_protocol([])
+    protocol.delta_dir = str(tmp_path / "delta")
+    protocol.args.hf_checkpoint = "/fake/hf"
+    protocol._snapshot = {}
+    protocol.is_sender = False
+
+    with (
+        patch(f"{_MODULE}.dist") as dist_mock,
+        patch(f"{_MODULE}.get_gloo_group", return_value=MagicMock()),
+        patch(f"{_MODULE}.make_tensor_reader", return_value=lambda name, **kwargs: None),
+    ):
+        dist_mock.get_rank.return_value = 1
+        dist_mock.get_world_size.return_value = 1
+        protocol._capture_baseline(lambda materialize: [])
+
+    assert dist_mock.barrier.call_count == 2
