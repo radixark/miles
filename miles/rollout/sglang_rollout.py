@@ -23,6 +23,7 @@ from miles.utils.eval_config import EvalDatasetConfig
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
+from miles.rollout.generate_utils.generate_endpoint_utils import stamp_start_weight_version
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
 from miles.utils.multi_lora import make_rid, slot_lora_name
 from miles.utils.processing_utils import (
@@ -119,6 +120,9 @@ class GenerateState(metaclass=SingletonMeta):
     def __init__(self, args: Namespace) -> None:
         # persistent state for the generation process
         self.args = args
+        # Version the controller last published; stamped on each request so the
+        # engine can abort what is already too stale. None until the first update.
+        self.current_weight_version: int | None = None
         self.tokenizer = load_tokenizer(
             args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True
         )
@@ -242,6 +246,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         payload["extra_key"] = f"{sample.adapter.name}:v{adapter.version}"
     elif lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
+
+    stamp_start_weight_version(args, sample, payload)
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True

@@ -157,6 +157,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             reward=_merge_equal_value("reward"),
             loss_mask=a.loss_mask + [0] * obs_len + b.loss_mask,
             weight_versions=a.weight_versions + b.weight_versions,
+            start_weight_versions=a.start_weight_versions + b.start_weight_versions,
             rollout_log_probs=a.rollout_log_probs + [0.0] * obs_len + b.rollout_log_probs,
             teacher_log_probs=_merge_optional_per_token("teacher_log_probs"),
             opd_reverse_kl=_merge_optional_per_token("opd_reverse_kl"),

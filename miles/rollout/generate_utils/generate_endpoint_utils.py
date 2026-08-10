@@ -138,3 +138,20 @@ def get_indexer_topk_from_response(args, output, sample):
         "sglang-miles must include the layer count in meta_info."
     )
     return _decode_topk_buffer(info, len(sample.tokens) - 1, num_layers, -1)
+
+
+def stamp_start_weight_version(args, sample: Sample, payload: dict | None) -> None:
+    """Record the submit-time version on the sample and put it on the request.
+
+    The value sent is the *trajectory* start (min over its calls), not this
+    call's version: the data buffer filters on that min, so sending anything
+    else would have the engine and the buffer select different requests.
+    """
+    from miles.rollout.sglang_rollout import GenerateState
+
+    current = GenerateState(args).current_weight_version
+    if current is None:
+        return
+    sample.start_weight_versions.append(int(current))
+    if payload is not None:
+        payload["start_weight_version"] = min(sample.start_weight_versions)
