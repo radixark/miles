@@ -5,7 +5,6 @@ from pathlib import Path
 from miles.ray.specs.inference import create_inference_controller_handle
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
-from miles.utils.ft_utils.indep_dp import create_tcp_store
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
@@ -33,8 +32,6 @@ _TRAINER_ACTOR_CLASSES = {
 }
 
 _NUM_GPUS_PER_TRAINER_WORKER = 0.4
-
-_indep_dp_stores: list = []
 
 
 def spec_trainer_controller_actor(args) -> ServeWorkerSpec:
@@ -159,7 +156,6 @@ def _compute_spec_trainer(
     assert total_gpus % num_cells == 0, f"{total_gpus=} must be divisible by {num_cells=}"
     gpus_per_cell = total_gpus // num_cells
 
-    indep_dp_store_addr = _create_indep_dp_store_addr() if num_cells > 1 else None
     fp8_scales = (
         x
         if (x := os.environ.get("NVTE_FP8_BLOCK_SCALING_FP32_SCALES")) is not None
@@ -183,7 +179,6 @@ def _compute_spec_trainer(
             args=args,
             world_size=gpus_per_cell,
             rank=ctx.worker_in_cell_index,
-            indep_dp_store_addr=indep_dp_store_addr,
             role=role,
             cell_index=ctx.cell_index,
         ),
@@ -230,9 +225,3 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"
 
     return env_vars
-
-
-def _create_indep_dp_store_addr() -> str:
-    store, addr = create_tcp_store()
-    _indep_dp_stores.append(store)
-    return addr

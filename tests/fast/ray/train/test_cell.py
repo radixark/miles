@@ -180,7 +180,7 @@ class TestAsyncInit:
         cell = make_cell(actor_count=2)
         info = make_indep_dp_info()
 
-        results = await cell.init(indep_dp_info=info)
+        results = await cell.init(indep_dp_info=info, indep_dp_store_addr="10.0.0.9:1234")
 
         assert len(results) == 2
         assert cell.is_alive
@@ -192,6 +192,7 @@ class TestAsyncInit:
             assert calls[0][2] == {"master_addr": "10.0.0.1", "master_port": 20000}
             kwargs = calls[1][2]
             assert kwargs["indep_dp_info"] == info
+            assert kwargs["indep_dp_store_addr"] == "10.0.0.9:1234"
             assert kwargs["recv_ckpt_src_rank"] is None
 
     async def test_health_checking_starts_on_an_alive_cell_and_is_running_when_init_returns(self):
@@ -200,7 +201,7 @@ class TestAsyncInit:
         cell = make_cell(actor_count=1, health_checker=checker)
         checker.observe_alive = lambda: cell.is_alive
 
-        await cell.init(indep_dp_info=make_indep_dp_info())
+        await cell.init(indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
 
         assert checker.start_count == 1
         assert checker.alive_when_started is True
@@ -279,7 +280,7 @@ class TestAsyncInitFailure:
             ray.get(handle.set_fail_methods.remote(["init"]))
 
         with pytest.raises(RuntimeError, match="Injected failure"):
-            await cell.init(indep_dp_info=make_indep_dp_info())
+            await cell.init(indep_dp_info=make_indep_dp_info(), indep_dp_store_addr=None)
 
         assert not cell.is_alive
         for handle in get_raw_actor_handles(cell):
@@ -292,7 +293,9 @@ class TestPrepareIndepDPModeAlive:
         cell = make_alive_cell(0, alive_cell_indices=[0, 1, 2])
 
         new_info = make_indep_dp_info(alive_cell_indices=[0, 2], quorum_id=2)
-        await cell.prepare_indep_dp_mode_alive(indep_dp_info=new_info, send_ckpt_dst_ranks=[])
+        await cell.prepare_indep_dp_mode_alive(
+            indep_dp_info=new_info, indep_dp_store_addr="10.0.0.9:1234", send_ckpt_dst_ranks=[]
+        )
 
         assert cell.indep_dp_info == new_info
         assert cell.is_alive
@@ -302,12 +305,15 @@ class TestPrepareIndepDPModeAlive:
             reconfig_calls = [c for c in calls if c[0] == "reconfigure_indep_dp"]
             assert len(reconfig_calls) == 1
             assert reconfig_calls[0][2]["indep_dp_info"] == new_info
+            assert reconfig_calls[0][2]["indep_dp_store_addr"] == "10.0.0.9:1234"
 
     async def test_sends_ckpt_to_correct_dst_ranks(self):
         cell = make_alive_cell(0, alive_cell_indices=[0, 1, 2])
 
         new_info = make_indep_dp_info(alive_cell_indices=[0, 1, 2], quorum_id=2)
-        await cell.prepare_indep_dp_mode_alive(indep_dp_info=new_info, send_ckpt_dst_ranks=[1, 2])
+        await cell.prepare_indep_dp_mode_alive(
+            indep_dp_info=new_info, indep_dp_store_addr=None, send_ckpt_dst_ranks=[1, 2]
+        )
 
         handle = get_raw_actor_handles(cell)[0]
         calls = ray.get(handle.get_calls.remote())
@@ -322,7 +328,7 @@ class TestPrepareIndepDPModeHealing:
         cell = make_cell(actor_count=1)
         info = make_indep_dp_info()
 
-        await cell.prepare_indep_dp_mode_healing(indep_dp_info=info, recv_ckpt_src_rank=None)
+        await cell.prepare_indep_dp_mode_healing(indep_dp_info=info, indep_dp_store_addr=None, recv_ckpt_src_rank=None)
 
         assert cell.is_alive
         assert cell.indep_dp_info == info

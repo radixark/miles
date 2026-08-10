@@ -103,6 +103,7 @@ class MegatronTrainRayActor(TrainRayActor):
         with_opd_teacher: bool = False,
         recv_ckpt_src_rank: int | None = None,
         indep_dp_info: IndepDPInfo,
+        indep_dp_store_addr: str | None,
     ) -> int | None:
         monkey_patch_torch_dist()
 
@@ -114,7 +115,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         init(
             args,
-            indep_dp_store_addr=self._indep_dp_store_addr,
+            indep_dp_store_addr=indep_dp_store_addr,
             indep_dp_info=indep_dp_info,
         )
 
@@ -871,10 +872,10 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
     @with_logs
-    def reconfigure_indep_dp(self, indep_dp_info: IndepDPInfo) -> None:
+    def reconfigure_indep_dp(self, indep_dp_info: IndepDPInfo, indep_dp_store_addr: str | None) -> None:
         reconfigure_indep_dp_group(
             parallel_state=get_parallel_state(),
-            store_addr=self._indep_dp_store_addr,
+            store_addr=indep_dp_store_addr,
             indep_dp_info=indep_dp_info,
             megatron_rank=dist.get_rank(),
             megatron_world_size=dist.get_world_size(),
