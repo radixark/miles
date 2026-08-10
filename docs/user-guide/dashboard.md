@@ -189,6 +189,11 @@ collapsed to zero, so a degenerating run is visible as that fraction climbing, a
 `dump/mixed_version_frac` is the fraction of samples that spanned more than one weight
 version, which is the staleness signal that matters in async runs.
 
+The `perf` category holds the per step throughput series, including `perf/actor_train_mfu`
+and the `perf/mfu_peak_tflops` it was divided by. Those two are covered in
+[Model FLOPs utilization](#model-flops-utilization) below, which is worth reading before
+comparing the number against anything published.
+
 ### Compute Utilization
 
 Below 64 GPUs, one lane per GPU, and each lane stacks four things:
@@ -225,10 +230,83 @@ actually did against what the run was configured to allow:
 | Peak `sglang_num_running_reqs` stayed below 30% of `--sglang-max-running-requests` | Lower it, and under `--colocate` note that this frees memory for training |
 | Mean `sglang_cache_hit_rate` below 10%, non colocated runs only | Raise `--sglang-mem-fraction-static` for a bigger KV cache |
 | Mean `sglang_token_usage` above 95% | Warns that KV cache is the throughput bottleneck; more GPUs or a smaller rollout batch |
+| Mean `perf/actor_train_mfu` below 15%, excluding the first step | Warns that the training step itself is computing slowly. See the caveats below: at this threshold the rule fires on any run using a CPU-offloaded optimizer or full activation recompute |
 
 These are heuristics rather than a guarantee, and the thresholds are expected to be tuned as
 real runs surface false positives and negatives. The panel is empty when no sglang series was
-scraped, since it has nothing to compare against.
+scraped, since it has nothing to compare against, except for the MFU rule, which reads the
+metrics stream and therefore stands on its own.
+
+### Model FLOPs utilization
+
+The Compute Utilization view carries an MFU tile fed by two keys the trainer logs per step:
+
+```
+perf/actor_train_mfu   = perf/actor_train_tflops / perf/mfu_peak_tflops
+perf/actor_train_tflops = 3 x forward FLOPs of the model / training world size / actor train time
+```
+
+The denominator is published alongside the ratio on purpose. A percentage whose peak is not
+stated cannot be checked by the person reading it, so the tile shows `25.3% of 989 TFLOP/s`
+rather than `25.3%`.
+
+`perf/mfu_peak_tflops` comes from a small device table in `miles/utils/device_flops.py`, keyed
+on a substring of `torch.cuda.get_device_name()`, and `--mfu-peak-tflops` overrides it for a
+device the table does not know or to report against a different precision's peak. The table
+holds **dense** BF16 figures. Vendor datasheets headline the 2:4-sparsity number, which is
+exactly twice the dense one, so extending the table from the headline would halve every MFU
+reported: an H100 SXM is 989 TFLOP/s dense and 1979 with sparsity, and every published number
+this would be compared against uses dense. When neither the table nor the override yields a
+peak, both keys are simply not logged, so a run with an unrecognised device shows no tile at
+all rather than a percentage against an assumed denominator.
+
+#### Reading the number
+
+This is model FLOPs utilization, not hardware FLOPs utilization. The `3x` counts one forward
+and one backward of the model, which is the work the model required; it does not count
+activation recompute, which is work the hardware did that the model did not require. Three
+things therefore lower the number legitimately, and none of them are bugs:
+
+* **Activation recompute** makes the hardware perform roughly four forward passes where the
+  model needed three.
+* **The optimizer step** sits inside `actor_train_time` and contributes no model FLOPs. With
+  `--optimizer-cpu-offload` this is the dominant term, because the adam step moves the whole
+  optimizer state across PCIe.
+* **Heads the FLOPs model does not cover.** `calculate_fwd_flops` models the base model only,
+  so a run with `--enable-mtp-training` does real work that never reaches the numerator. This
+  affects the pre-existing `perf/actor_train_tflops` in the same way.
+
+The first step of a run is always an outlier, because it carries kernel autotuning and
+compilation. Measured below: 9.4% against a 25% steady state on a dense run, 3.8% against 5.4%
+on an MoE one. The advisory rule drops step 0 for this reason, and so should you when reading
+the curve.
+
+#### What the numbers look like
+
+Measured on 8xH200, three rollout steps each, all with gradient checkpointing:
+
+| | colocate | fully-async |
+|---|---|---|
+| Qwen3-4B dense, FSDP | 25.3 / 24.6% | 26.0 / 26.2% |
+| Qwen3.5-35B-A3B MoE, expert parallel, `--optimizer-cpu-offload`, MTP | 5.0 / 5.8% | 5.4% |
+
+Two things to take from this. First, both rows are healthy runs and they differ five-fold, so
+a single absolute threshold cannot separate "slow by configuration" from "slow because
+something broke" — which is why the advisory rule above is best read as a placeholder rather
+than a calibrated number.
+
+Second, and more useful day to day: **MFU barely moves between colocate and fully-async while
+`perf/wait_time_ratio` collapses**, from 0.708 to 0.060 on the dense run and from 0.760 to
+0.027 on the MoE one. The two metrics answer different questions and both are needed. MFU
+asks how efficiently the training step computes, and fully-async does not change that because
+the same kernels do the same work. `wait_time_ratio` asks how much of the step was spent
+waiting for rollout data, which is exactly what fully-async removes. A single blended
+end-to-end utilization number would have read as "async made training three times more
+efficient", which is false.
+
+Because `actor_train_time` is the only denominator, MFU is immune to rollout starvation: a
+pipeline stalled on data shows a healthy MFU and a `wait_time_ratio` near one. That is the
+signature to look for when a run is slow but the training step is not the reason.
 
 ### Rollouts
 

@@ -1,5 +1,5 @@
 from miles.dashboard.advisory import compute_advisories
-from miles.dashboard.store import EngineSample, Meta, MetricStore
+from miles.dashboard.store import EngineSample, Meta, MetricsRecord, MetricStore, Stream
 
 
 def _store(tmp_path, *, args: dict, engine_samples: list[EngineSample]) -> MetricStore:
@@ -98,3 +98,48 @@ def test_window_narrows_to_requested_range(tmp_path):
     )
     assert compute_advisories(store, t0=0.0, t1=10.0) != []
     assert compute_advisories(store, t0=50.0, t1=150.0) == []
+
+
+def _mfu_store(tmp_path, values: list[float]) -> MetricStore:
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="advisory-test", start_ts=0.0, args={}))
+    for step, value in enumerate(values):
+        metrics = {"perf/actor_train_mfu": value, "perf/mfu_peak_tflops": 989.0}
+        writer.append(MetricsRecord(ts=float(step), step_key="rollout/step", step=step, metrics=metrics))
+    writer.flush()
+    return MetricStore.load(tmp_path)
+
+
+def test_sustained_low_mfu_is_a_warning(tmp_path):
+    store = _mfu_store(tmp_path, [0.02, 0.10, 0.11, 0.09, 0.10])
+    assert store.has_stream(Stream.ENGINE_SERIES) is False
+    [advisory] = compute_advisories(store)
+    assert advisory.level == "warning"
+    assert "10.0%" in advisory.message
+    assert "989 TFLOP/s" in advisory.message
+    assert "rollout stalls cannot depress it" in advisory.message
+
+
+def test_healthy_mfu_is_quiet(tmp_path):
+    assert compute_advisories(_mfu_store(tmp_path, [0.02, 0.38, 0.36, 0.37, 0.39])) == []
+
+
+def test_first_step_is_excluded_from_the_mean(tmp_path):
+    assert compute_advisories(_mfu_store(tmp_path, [0.0, 0.35, 0.35, 0.35, 0.35])) == []
+
+
+def test_too_few_steady_steps_to_judge(tmp_path):
+    assert compute_advisories(_mfu_store(tmp_path, [0.01, 0.01, 0.01])) == []
+
+
+def test_no_mfu_metric_no_claim(tmp_path):
+    writer = MetricStore(tmp_path)
+    writer.write_meta(Meta(run_name="advisory-test", start_ts=0.0, args={}))
+    for step in range(5):
+        writer.append(
+            MetricsRecord(
+                ts=float(step), step_key="rollout/step", step=step, metrics={"perf/actor_train_tflops": 10.0}
+            )
+        )
+    writer.flush()
+    assert compute_advisories(MetricStore.load(tmp_path)) == []

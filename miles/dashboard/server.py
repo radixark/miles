@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from miles.dashboard.advisory import compute_advisories
+from miles.dashboard.advisory import compute_advisories, mfu_summary
 from miles.dashboard.dump_reader import STEP_AGGREGATE_METRICS, DumpReader, DumpStillWriting
 from miles.dashboard.store import MetricStore, Stream
 
@@ -174,7 +174,11 @@ def make_app(
         tuning advisory ask) — computed lazily on request, not persisted."""
         with _translate_errors():
             _check_window(t0, t1)
-            return dict(advisories=[asdict(a) for a in compute_advisories(store, t0=t0, t1=t1)])
+            mfu = mfu_summary(store)
+            return dict(
+                advisories=[asdict(a) for a in compute_advisories(store, t0=t0, t1=t1, mfu=mfu)],
+                mfu=mfu,
+            )
 
     @app.get("/api/timeline/heatmap")
     def timeline_heatmap(

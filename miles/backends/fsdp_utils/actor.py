@@ -25,6 +25,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
@@ -116,6 +117,7 @@ class FSDPTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
 
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
+        self._flops_args = flops_args_from_hf_config(self.hf_config)
 
         routing_replay.enable(args)
 
@@ -439,7 +441,9 @@ class FSDPTrainRayActor(TrainRayActor):
             rollout_id=rollout_id,
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,
-            compute_total_fwd_flops=None,
+            compute_total_fwd_flops=lambda seq_lens: fwd_tflops_per_gpu(
+                seq_lens, self._flops_args, dist.get_world_size()
+            ),
         )
 
         self._heartbeat.bump()

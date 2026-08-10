@@ -431,6 +431,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Allocate optimizer states on CPU during checkpoint loading to prevent GPU OOM on memory spike. "
                 ),
             )
+            parser.add_argument(
+                "--mfu-peak-tflops",
+                type=float,
+                default=None,
+                help=(
+                    "Peak dense BF16 TFLOP/s of one training GPU — the denominator of perf/actor_train_mfu. "
+                    "Defaults to a built-in table keyed on the device name; set this for a device the table "
+                    "does not know, or to report MFU against another precision's peak. With neither available "
+                    "the MFU metric is not logged."
+                ),
+            )
 
             return parser
 

@@ -18,6 +18,12 @@ LOW_CONCURRENCY_RATIO = 0.3
 LOW_CACHE_HIT_RATE = 0.10
 HIGH_TOKEN_USAGE = 0.95
 
+LOW_MFU = 0.15
+MFU_KEY = "perf/actor_train_mfu"
+MFU_PEAK_KEY = "perf/mfu_peak_tflops"
+MFU_STEP_KEY = "rollout/step"
+MFU_MIN_STEPS = 3
+
 
 @dataclass
 class Advisory:
@@ -34,15 +40,50 @@ def _aggregate(series: list[dict], *, agg: str) -> float | None:
     return max(values) if agg == "max" else sum(values) / len(values)
 
 
-def compute_advisories(store: MetricStore, *, t0: float | None = None, t1: float | None = None) -> list[Advisory]:
+def mfu_summary(store: MetricStore) -> dict | None:
+    series = store.metric_series([MFU_KEY, MFU_PEAK_KEY], x_key=MFU_STEP_KEY)
+    steady = series[MFU_KEY]["y"][1:]
+    if not steady:
+        return None
+    return dict(
+        latest=steady[-1],
+        mean=sum(steady) / len(steady),
+        steps=len(steady),
+        peak=series[MFU_PEAK_KEY]["y"][-1],
+    )
+
+
+def _mfu_advisories(summary: dict | None) -> list[Advisory]:
+    if summary is None or summary["steps"] < MFU_MIN_STEPS:
+        return []
+    mean_mfu, peak = summary["mean"], summary["peak"]
+    if mean_mfu >= LOW_MFU:
+        return []
+    return [
+        Advisory(
+            level="warning",
+            message=(
+                f"Model FLOPs utilization averaged {mean_mfu:.1%} of the device's {peak:g} TFLOP/s "
+                f"over {summary['steps']} train steps — "
+                "the training step is computing slowly, not waiting: this ratio counts actor train time only, "
+                "so rollout stalls cannot depress it. Usual causes are activation recompute, a parallel split "
+                "that leaves ranks idle, and small or ragged micro-batches"
+            ),
+        )
+    ]
+
+
+def compute_advisories(
+    store: MetricStore, *, t0: float | None = None, t1: float | None = None, mfu: dict | None = None
+) -> list[Advisory]:
+    out: list[Advisory] = _mfu_advisories(mfu if mfu is not None else mfu_summary(store))
     if not store.has_stream(Stream.ENGINE_SERIES):
-        return []  # no sglang scrape data to compare against
+        return out
     args = store.meta.args if store.meta else {}
     peak_running = _aggregate(store.engine_series("sglang_num_running_reqs", t0=t0, t1=t1), agg="max")
     cache_hit = _aggregate(store.engine_series("sglang_cache_hit_rate", t0=t0, t1=t1), agg="mean")
     token_usage = _aggregate(store.engine_series("sglang_token_usage", t0=t0, t1=t1), agg="mean")
 
-    out: list[Advisory] = []
     colocate = bool(args.get("colocate"))
 
     max_running = args.get("sglang_max_running_requests")
