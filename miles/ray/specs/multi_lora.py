@@ -1,4 +1,4 @@
-from miles.ray.specs.inference import compute_router_pool_id
+from miles.ray.specs.inference import compute_router_providers
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
@@ -25,7 +25,7 @@ def spec_multi_lora_controller(args) -> ServeWorkerSpec:
         worker_class=MULTI_LORA_CONTROLLER_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
             args=args,
-            router_provider=ctx.capability.static_worker_provider(pool_id=compute_router_pool_id(0)),
+            router_providers=compute_router_providers(args, capability=ctx.capability),
         ),
     )
 
