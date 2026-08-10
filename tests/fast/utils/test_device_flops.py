@@ -12,7 +12,6 @@ from miles.utils.device_flops import local_peak_bf16_tflops, peak_bf16_tflops
         ("NVIDIA A100-SXM4-80GB", 312.0),
         ("NVIDIA H100 80GB HBM3", 989.0),
         ("NVIDIA H200", 989.0),
-        ("NVIDIA H800", 989.0),
         ("NVIDIA B200", 2250.0),
         ("NVIDIA GB300", 2500.0),
     ],

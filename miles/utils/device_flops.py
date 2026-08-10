@@ -4,10 +4,8 @@ from functools import cache
 
 _PEAK_BF16_TFLOPS: dict[str, float] = {
     "A100": 312.0,
-    "A800": 312.0,
     "H100": 989.0,
     "H200": 989.0,
-    "H800": 989.0,
     "B200": 2250.0,
     "B300": 2250.0,
     "GB200": 2500.0,
