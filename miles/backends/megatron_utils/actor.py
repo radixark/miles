@@ -557,11 +557,10 @@ class MegatronTrainRayActor(TrainRayActor):
                             "actor and critic share the same parallel topology, so the critic rank "
                             "paired with a pp-last-stage actor rank must have shipped 'values'"
                         )
-                        shipped = object_store.get_instance().get(values_ref).value
-                        rollout_data["values"] = [
-                            value.to(device=torch.cuda.current_device(), non_blocking=True)
-                            for value in shipped["values"]
-                        ]
+                        with object_store.get_instance().get(values_ref) as shipped:
+                            rollout_data["values"] = [
+                                value.to(device=torch.cuda.current_device()).clone() for value in shipped["values"]
+                            ]
                 if self._active_model_tag != "actor":
                     self._switch_model("actor")
 

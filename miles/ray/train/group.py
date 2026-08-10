@@ -20,6 +20,7 @@ from miles.utils.audit_utils.event_logger.models import (
     WitnessAllocateIdEvent,
 )
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
+from miles.utils.data import remove_train_output_refs
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -189,7 +190,18 @@ class TrainerController:
                 debug_name="execute_all_alive_and_catch#train",
                 check_recoverable=False,
             )
-            self._check_train_one_attempt(snapshot_alive_cells, results)
+            worker_results = [
+                worker_result
+                for cell_results in results
+                if not isinstance(cell_results, BaseException)
+                for worker_result in cell_results
+            ]
+
+            try:
+                self._check_train_one_attempt(snapshot_alive_cells, results)
+            except Exception:
+                remove_train_output_refs(worker_results)
+                raise
 
             self._log_step_end_event(
                 rollout_id=rollout_id,
@@ -197,12 +209,7 @@ class TrainerController:
                 results=results,
             )
 
-            return [
-                worker_result
-                for cell_results in results
-                if not isinstance(cell_results, BaseException)
-                for worker_result in cell_results
-            ]
+            return worker_results
 
         worker_results = await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
 
