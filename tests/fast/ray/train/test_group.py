@@ -10,6 +10,7 @@ from tests.fast.ray.train.conftest import get_raw_actor_handles
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController
+from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -932,6 +933,32 @@ class TestTrainRetry:
 
         for i in range(2):
             assert _count_train_calls(group, i) == 4
+
+    async def test_a_failed_attempt_releases_values_returned_by_its_successful_workers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retry must release values already returned by successful workers in the failed attempt."""
+
+        class RecordingStore:
+            def __init__(self) -> None:
+                self.removed: list[Box] = []
+
+            def remove(self, ref: Box) -> None:
+                self.removed.append(ref)
+
+        group = await _make_alive_controller(num_cells=2)
+        values_ref = Box("failed-attempt-values")
+        successful_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=values_ref)
+        first_cell_handle = get_raw_actor_handles(_cell(group, 0))[0]
+        second_cell_handle = get_raw_actor_handles(_cell(group, 1))[0]
+        ray.get(first_cell_handle.set_train_return_values_per_attempt.remote([successful_output, NORMAL]))
+        ray.get(second_cell_handle.set_train_return_values_per_attempt.remote([DISCARDED, NORMAL]))
+        store = RecordingStore()
+        monkeypatch.setattr(object_store, "_INSTANCE", store)
+
+        await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
+
+        assert [ref.inner for ref in store.removed] == [values_ref.inner]
 
     async def test_cell_errored_does_not_retry_when_others_normal(self):
         """One cell errors during train but others return NORMAL → no retry.
