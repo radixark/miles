@@ -169,7 +169,9 @@ def execute_train(
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             }
         ),
-        "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
+        # python evaluates a get() default eagerly, so probing inline would shell out to
+        # nvidia-smi even when the caller already decided
+        "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE") or str(int(check_has_nvlink())),
         **{
             k: os.environ[k]
             for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")
