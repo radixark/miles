@@ -130,7 +130,7 @@ def _execute_train(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--rollout-function-path miles.rollout.fully_async_rollout.FullyAsyncRolloutFn "
+        "--fully-async "
         "--pause-generation-mode in_place "
         f"--async-max-concurrent-samples {args.async_max_concurrent_samples} "
         # Free a submission slot per finished sample, not per finished group:
