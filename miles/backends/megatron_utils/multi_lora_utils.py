@@ -434,6 +434,18 @@ def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id:
     return max(grad_norms_by_slot.values(), default=0.0)
 
 
+def step_external_adapter_slot(args, model, optimizer, slot: int, batch_size: int, adam_params: dict) -> float:
+    """Commit one Tinker client's accumulated gradients with its Adam config."""
+    from miles.backends.megatron_utils.multi_lora_optimizer import (
+        configure_adapter_slot_adam,
+        step_adapter_slots,
+    )
+
+    configure_adapter_slot_adam(optimizer, slot, **adam_params)
+    grad_norms = step_adapter_slots(optimizer, model, {slot: batch_size}, clip_grad=args.clip_grad)
+    return grad_norms[slot]
+
+
 def commit_trained_batch(rollout_data, rollout_id: int, pending_push: set) -> None:
     """A train call landed: schedule the stepped adapters' engine push and
     commit the batch on the controller (main rank only). The stepped set ships

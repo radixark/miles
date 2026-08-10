@@ -389,11 +389,14 @@ def train_one_step(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    *,
+    apply_optimizer: bool = True,
 ) -> tuple[dict[str, float], float, TrainStepOutcome]:
     """Execute a single pipeline-parallel training step.
 
-    Runs forward/backward over ``num_microbatches``, applies optimizer step and
-    one scheduler step when gradients are valid.
+    Runs forward/backward over ``num_microbatches``. By default it also applies
+    the optimizer, while Tinker-style callers pass ``apply_optimizer=False``
+    and commit the accumulated slot gradients in a later request.
 
     Multi-LoRA: gradients are retained across train calls (per-adapter
     gradient accumulation); only the slots in the batch's ``step_slots`` step,
@@ -417,6 +420,8 @@ def train_one_step(
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
     multi_lora = is_multi_lora_enabled(args)
+    if not apply_optimizer and not multi_lora:
+        raise ValueError("deferred optimizer steps require multi-LoRA slot-isolated gradients")
 
     if multi_lora:
         from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
@@ -576,7 +581,7 @@ def train_one_step(
     if outcome == TrainStepOutcome.NORMAL:
         dumper_phase_util.finalize(model)
 
-    if not disable_optimizer and valid_step:
+    if apply_optimizer and not disable_optimizer and valid_step:
         if multi_lora:
             from miles.backends.megatron_utils.multi_lora_utils import step_stepped_adapter_slots
 

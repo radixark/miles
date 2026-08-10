@@ -132,6 +132,25 @@ def _slot_children(optimizer, slot: int):
     return [optimizer.chained_optimizers[i] for i in optimizer.miles_slot_child_indices[slot]]
 
 
+def configure_adapter_slot_adam(
+    optimizer,
+    slot: int,
+    *,
+    learning_rate: float,
+    beta1: float,
+    beta2: float,
+    eps: float,
+    weight_decay: float,
+) -> None:
+    """Apply request-scoped Tinker Adam parameters to one adapter slot."""
+    for child in _slot_children(optimizer, slot):
+        for group in child.param_groups:
+            group["lr"] = learning_rate
+            group["betas"] = (beta1, beta2)
+            group["eps"] = eps
+            group["weight_decay"] = weight_decay
+
+
 def reset_grad_metadata_keep_grads(model_chunks) -> None:
     """Reset DDP per-iteration grad bookkeeping WITHOUT zeroing grad buffers, so per-adapter accumulation
     survives across train batches (replaces ``DistributedDataParallel.zero_grad_buffer``)."""
