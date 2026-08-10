@@ -44,7 +44,7 @@ def _make_ctor_context(**overrides) -> WorkerCtorContext:
 
 
 def _make_port_info(**overrides) -> PortInfo:
-    kwargs = dict(name="http", static_port=8000, mode="per_worker", allow_dynamic=False)
+    kwargs = dict(name="http", static_port=8080, mode="per_worker", allow_dynamic=False)
     kwargs.update(overrides)
     return PortInfo(**kwargs)
 
@@ -106,7 +106,7 @@ class TestBaseWorkerSpec:
         """A spec keeps its name, ports, and scheduling as provided."""
         spec = BaseWorkerSpec(**_make_base_kwargs())
         assert spec.name == "demo-worker"
-        assert spec.port_infos[0].static_port == 8000
+        assert spec.port_infos[0].static_port == 8080
         assert spec.scheduling.num_cells == 2
 
     def test_env_var_is_stored_uncalled(self):
@@ -265,6 +265,63 @@ class TestSchedulingSpecPinToHead:
         assert (scheduling.num_cells, scheduling.num_workers_per_cell) == (1, 1)
         assert scheduling.num_gpus_per_worker == 0.5
         assert scheduling.pin_to_head is True
+
+
+class TestSchedulingSpecPodPacking:
+    def test_a_cell_a_node_can_hold_rides_in_one_pod(self):
+        """A cell no bigger than a node must not be spread, however many workers it holds."""
+        scheduling = _gpu_scheduling(num_workers_per_cell=8, num_gpus_per_node=8)
+
+        assert (scheduling.pods_per_cell(), scheduling.workers_per_pod()) == (1, 8)
+
+    def test_a_cell_spanning_several_nodes_is_tiled_by_them(self):
+        """This is the whole point of the derivation: 16 gpus on 8-gpu nodes are two equal pods."""
+        scheduling = _gpu_scheduling(num_workers_per_cell=16, num_gpus_per_node=8)
+
+        assert (scheduling.pods_per_cell(), scheduling.workers_per_pod()) == (2, 8)
+
+    def test_a_cell_that_claims_no_gpu_rides_in_one_pod(self):
+        """A cpu spec has no node shape to tile, so its whole cell travels together."""
+        scheduling = SchedulingSpec(num_cells=1, num_workers_per_cell=4, num_gpus_per_worker=0)
+
+        assert (scheduling.pods_per_cell(), scheduling.workers_per_pod()) == (1, 4)
+
+    def test_rejects_a_gpu_cell_that_never_says_how_big_a_node_is(self):
+        """Forgetting the node shape used to pack one rank per pod in silence."""
+        scheduling = _gpu_scheduling(num_workers_per_cell=8, num_gpus_per_node=0)
+
+        with pytest.raises(AssertionError, match="divide 8 by zero"):
+            scheduling.pods_per_cell()
+
+    def test_rejects_a_cell_that_is_not_a_whole_number_of_nodes(self):
+        """A trailing partial node would leave the last pod fewer gpus than its ranks need."""
+        scheduling = _gpu_scheduling(num_workers_per_cell=12, num_gpus_per_node=8)
+
+        with pytest.raises(AssertionError, match="12 is not a whole number of 8"):
+            scheduling.pods_per_cell()
+
+    def test_rejects_a_cell_whose_workers_cannot_tile_its_pods(self):
+        """A trailing partial pod would shift every later worker's name and rpc port."""
+        scheduling = SchedulingSpec(
+            num_cells=1,
+            num_workers_per_cell=2,
+            num_gpus_per_worker=1,
+            num_gpu_slots_per_worker=12,
+            num_gpus_per_node=8,
+        )
+
+        with pytest.raises(AssertionError, match="2 is not a whole number of 3"):
+            scheduling.workers_per_pod()
+
+
+def _gpu_scheduling(*, num_workers_per_cell: int, num_gpus_per_node: int) -> SchedulingSpec:
+    return SchedulingSpec(
+        num_cells=1,
+        num_workers_per_cell=num_workers_per_cell,
+        num_gpus_per_worker=1,
+        num_gpu_slots_per_worker=1,
+        num_gpus_per_node=num_gpus_per_node,
+    )
 
 
 class TestServeWorkerSpecExtraScheduling:
