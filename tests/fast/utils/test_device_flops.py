@@ -14,6 +14,7 @@ from miles.utils.device_flops import local_peak_bf16_tflops, peak_bf16_tflops
         ("NVIDIA H200", 989.0),
         ("NVIDIA H800", 989.0),
         ("NVIDIA B200", 2250.0),
+        ("NVIDIA GB300", 2500.0),
     ],
 )
 def test_known_devices_resolve(device_name, expected):
@@ -22,6 +23,8 @@ def test_known_devices_resolve(device_name, expected):
 
 def test_longer_key_wins_over_the_substring_it_contains():
     assert peak_bf16_tflops("NVIDIA GB200") == 2500.0
+    assert peak_bf16_tflops("NVIDIA GB300") == 2500.0
+    assert peak_bf16_tflops("NVIDIA B300") == 2250.0
 
 
 def test_matching_is_case_insensitive():

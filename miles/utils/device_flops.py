@@ -9,7 +9,9 @@ _PEAK_BF16_TFLOPS: dict[str, float] = {
     "H200": 989.0,
     "H800": 989.0,
     "B200": 2250.0,
+    "B300": 2250.0,
     "GB200": 2500.0,
+    "GB300": 2500.0,
 }
 
 _MATCH_ORDER: tuple[str, ...] = tuple(sorted(_PEAK_BF16_TFLOPS, key=len, reverse=True))
