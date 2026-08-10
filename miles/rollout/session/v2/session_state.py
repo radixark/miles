@@ -108,10 +108,6 @@ def prepare_pretokenized(
 
     stored = state.active_messages()
     _validate_suffix_roles(request_messages[len(stored) :], tito_tokenizer)
-    # The attach search already matched the prefix: hand TITO the effective
-    # history whose prefix is the stored path verbatim, so its strict internal
-    # validation and any full-history renderer stay consistent with the reused
-    # token snapshot even when the matcher accepted a non-identical replay.
     effective_messages = stored + request_messages[len(stored) :]
     return tito_tokenizer.merge_tokens(
         old_messages=stored,
