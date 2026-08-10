@@ -24,6 +24,11 @@ class PortInfo(FrozenStrictBaseModel):
     num_consecutive: int = 1
     offset_by_cell: bool = False
 
+    def effective_static_port(self, *, worker_in_pod_index: int) -> int:
+        if self.mode == "per_worker":
+            return self.static_port + worker_in_pod_index * self.num_consecutive
+        return self.static_port
+
     @model_validator(mode="after")
     def _reject_offsetting_a_dynamically_allocated_port(self) -> "PortInfo":
         assert not (
