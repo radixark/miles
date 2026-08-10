@@ -99,7 +99,7 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Bridge | Qwen3 4B | Dense | [Single-LoRA recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen3-4B-megatron-lora.sh), [multi-LoRA recipe](https://github.com/radixark/miles/tree/main/examples/multi_lora) | Used by the current multi-adapter example. |
 | Bridge | GPT-OSS 20B | MoE | [Recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh), [MoE LoRA E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_gpt_oss_20b_moe_lora_ci.py) | Uses the SGLang `triton` LoRA backend. |
 | Bridge | Kimi K2.5 | Multimodal MoE + MLA | [16-node recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-kimi-k25-megatron-lora.sh) | Demonstrates shared-outer expert LoRA and an INT4 rollout / fake-QAT setup. |
-| Bridge | GLM-5 / 5.1 / 5.2 744B-A40B | MoE + MLA + DSA | [GLM-5.1 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_1_744b_a40b_lora.py), [GLM-5.2 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_2_744b_a40b_lora.py), [full-scale validation](https://github.com/radixark/miles/pull/1559) | CI covers reduced 6-layer / 5-layer checkpoints; full 744B results are described below. |
+| Bridge | GLM-5 / 5.1 / 5.2 744B-A40B | MoE + MLA + DSA | [GLM-5.1 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_1_744b_a40b_lora.py), [GLM-5.2 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_2_744b_a40b_lora.py) | CI covers reduced 6-layer / 5-layer checkpoints; historical full-744B results are described below. |
 | Bridge | Qwen3.5 / Qwen3.6 35B-A3B | Hybrid GDN + MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_qwen3_5_35b_a3b_lora.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/test_qwen3_5_35b_a3b_lora_ci.py) | Uses explicit wildcard targets to exclude MTP and vision modules. |
 | Native / raw | Inkling / Inkling-Small | Native multimodal MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_inkling.py), [Inkling-Small 4-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_inkling_small_4layer_lora_ci.py) | Current `main` model-specific native path; larger profiles are launcher/experiment evidence rather than LoRA CI. |
 
@@ -233,8 +233,7 @@ checkpoint. Adapter tensors remain unquantized and are synchronized at each
 configured weight-update boundary. The GLM-5.2 launcher exposes this as its
 `--fp8-rollout` option and writes an SGLang config with `update_weights: true`.
 
-The final validation reported in [PR #1678](https://github.com/radixark/miles/pull/1678#issuecomment-4979467048)
-measured:
+Historical GLM-5.2 validation measured:
 
 | Configuration | Train/rollout abs diff | KL |
 |---|---:|---:|
@@ -247,18 +246,18 @@ The full-744B row is historical multi-node evidence and cannot be reproduced
 directly by the current single-node `main` launcher; multi-node launcher work is
 tracked in [PR #2033](https://github.com/radixark/miles/pull/2033).
 
-The PR body also attached the following curves from a different, longer
-validation run. It did not publish the exact configuration for these curves, so
+The same work also produced the following curves from a different, longer
+validation run. The exact configuration for these curves was not published, so
 their plotted levels should not be mapped to any one of the final point
 measurements in the table:
 
-![GLM-5.2 LoRA FP8 rollout train-rollout log-prob difference](/assets/images/lora-glm5-2-fp8-logprob-pr1678.png)
+![GLM-5.2 LoRA FP8 rollout train-rollout log-prob difference](/assets/images/lora-glm5-2-fp8-logprob.png)
 
-*Train/rollout log-prob difference in the FP8 rollout validation attached to [PR #1678](https://github.com/radixark/miles/pull/1678).*
+*Train/rollout log-prob difference in the longer FP8 rollout validation.*
 
-![GLM-5.2 LoRA FP8 rollout reward](/assets/images/lora-glm5-2-fp8-reward-pr1678.png)
+![GLM-5.2 LoRA FP8 rollout reward](/assets/images/lora-glm5-2-fp8-reward.png)
 
-*Raw reward in the FP8 rollout validation attached to [PR #1678](https://github.com/radixark/miles/pull/1678).*
+*Raw reward in the longer FP8 rollout validation.*
 
 Kimi K2.5 provides a separate model-specific INT4 example: SGLang serves the
 INT4 checkpoint while the trainer uses BF16 fake-QAT and TIS correction. Do not
@@ -268,12 +267,11 @@ FP8/FP4 experts.
 
 ## GLM-5.2 744B BF16 validation
 
-[PR #1559](https://github.com/radixark/miles/pull/1559) validated the
-GLM-5/5.1/5.2 Bridge LoRA path across MoE and MLA on models containing DSA; the
-DSA indexer itself was excluded from the adapter targets. The full GLM-5.2 744B
-run used 64 GPUs and completed more than 50 rollout -> train -> save steps. The
-PR also compared expert target selections, including a run that excluded
-`down_proj`.
+Historical full-scale runs validated the GLM-5/5.1/5.2 Bridge LoRA path across
+MoE and MLA on models containing DSA; the DSA indexer itself was excluded from
+the adapter targets. The full GLM-5.2 744B run used 64 GPUs and completed more
+than 50 rollout -> train -> save steps. The validation also compared expert
+target selections, including a run that excluded `down_proj`.
 
 Treat this as historical implementation and scale evidence. The reported
 train/rollout log-prob gaps are configuration-specific and are not established
@@ -314,12 +312,6 @@ NaN/OOM, but the PR does not publish a reward value, solve rate, or learning
 curve. It remains a draft and depends on an open memory-headroom companion
 change ([PR #2199](https://github.com/radixark/miles/pull/2199)), so treat it as
 stability evidence rather than a released benchmark.
-
-<Note>
-[PR #2220](https://github.com/radixark/miles/pull/2220) contains GLM-5.2 x
-Terminal-Bench-2 scaling charts, but that run is full-parameter training, not
-LoRA. Its charts should not be presented as LoRA results.
-</Note>
 
 ## Multi-LoRA training
 
