@@ -9,7 +9,7 @@ Use this skill when a writer asks to run SQL, for example: “Use `$neon-access`
 
 ## Run SQL
 
-1. Confirm the exact SQL and a short audit reason before dispatching. Treat every statement as potentially state-changing because the skill does not inspect or classify it.
+1. Treat an explicit request as authorization to generate the exact SQL and a short audit reason, then dispatch without a second confirmation. Ask only when unresolved ambiguity would materially change the SQL. Treat every statement as potentially state-changing because the skill does not inspect or classify it.
 2. Save the exact UTF-8 SQL in a temporary `.sql` file. Preserve the text byte-for-byte; do not normalize, split, wrap, retry, or add a transaction.
 3. From the repository root, run:
 
