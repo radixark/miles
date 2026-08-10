@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.ray.specs.inference import (
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 _SERVER_READY_TIMEOUT_SECS = 120
 
 
-async def resolve_router_addrs(args, *, provider: BaseWorkerProvider) -> dict[str, HostAndPort]:
+async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerProvider]) -> dict[str, HostAndPort]:
     """Wait for every model's router and record its address on ``args``, keyed by model name.
 
     A second call in the same process answers from the record, so the driver and an
@@ -32,8 +33,12 @@ async def resolve_router_addrs(args, *, provider: BaseWorkerProvider) -> dict[st
         return {name: HostAndPort(host=host, port=port) for name, (host, port) in args.sglang_model_routers.items()}
 
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
+    assert len(router_providers) == len(config.models), (
+        f"every model is served by its own router, so it needs its own provider "
+        f"(got {len(router_providers)} for {len(config.models)} models)"
+    )
     router_addrs = {
-        model_cfg.name: await wait_router_ready(model_idx=model_idx, provider=provider)
+        model_cfg.name: await wait_router_ready(model_idx=model_idx, provider=router_providers[model_idx])
         for model_idx, model_cfg in enumerate(config.models)
     }
 
