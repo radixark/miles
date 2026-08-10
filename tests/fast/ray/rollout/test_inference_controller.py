@@ -178,7 +178,7 @@ def _make_controller(servers: dict, *, engine_provider: _FakeWorkerProvider | No
     controller.context_lock = ContextLock("InferenceController")
     controller._health_checker_activeness = ActivenessTracker(active=True)
     controller._engine_provider = engine_provider if engine_provider is not None else _FakeWorkerProvider([])
-    controller._router_provider = _FakeWorkerProvider([])
+    controller._router_providers = [_FakeWorkerProvider([])]
     return controller
 
 
@@ -353,7 +353,7 @@ class _RefusingWorkerProvider(_FakeWorkerProvider):
 
 
 async def _init_controller(args: Namespace, *, engine_provider: _FakeWorkerProvider) -> None:
-    controller = InferenceController(args, engine_provider=engine_provider, router_provider=_FakeWorkerProvider([]))
+    controller = InferenceController(args, engine_provider=engine_provider, router_providers=[_FakeWorkerProvider([])])
     await controller.init()
     await controller.dispose()
 

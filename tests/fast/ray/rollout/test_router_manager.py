@@ -3,6 +3,7 @@ from __future__ import annotations
 from argparse import Namespace
 from collections.abc import Callable, Coroutine
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -42,7 +43,7 @@ def _make_two_model_args(tmp_path: Path) -> Namespace:
     )
 
 
-_ROUTER_PROVIDER = object()
+_ROUTER_PROVIDERS = [object()]
 
 
 class TestResolveRouterAddrs:
@@ -55,7 +56,7 @@ class TestResolveRouterAddrs:
 
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_router_ready", _fake_wait_router_ready)
 
-        router_addrs = await resolve_router_addrs(args, provider=_ROUTER_PROVIDER)
+        router_addrs = await resolve_router_addrs(args, router_providers=_ROUTER_PROVIDERS)
 
         assert router_addrs == {"default": HostAndPort(host="10.0.0.9", port=30000)}
         assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.9", 30000)
@@ -72,8 +73,8 @@ class TestResolveRouterAddrs:
 
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_router_ready", _fake_wait_router_ready)
 
-        first = await resolve_router_addrs(args, provider=_ROUTER_PROVIDER)
-        second = await resolve_router_addrs(args, provider=_ROUTER_PROVIDER)
+        first = await resolve_router_addrs(args, router_providers=_ROUTER_PROVIDERS)
+        second = await resolve_router_addrs(args, router_providers=_ROUTER_PROVIDERS)
 
         assert second == first
         assert waited == [0]
@@ -84,6 +85,7 @@ class TestResolveRouterAddrs:
         waited: list[int] = []
 
         providers: list[object] = []
+        two_model_providers = [object(), object()]
 
         async def _fake_wait_router_ready(*, model_idx: int, provider) -> HostAndPort:
             waited.append(model_idx)
@@ -92,10 +94,10 @@ class TestResolveRouterAddrs:
 
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_router_ready", _fake_wait_router_ready)
 
-        router_addrs = await resolve_router_addrs(args, provider=_ROUTER_PROVIDER)
+        router_addrs = await resolve_router_addrs(args, router_providers=two_model_providers)
 
         assert waited == [0, 1]
-        assert providers == [_ROUTER_PROVIDER, _ROUTER_PROVIDER]
+        assert providers == two_model_providers
         assert router_addrs == {
             "actor": HostAndPort(host="10.0.0.9", port=30000),
             "ref": HostAndPort(host="10.0.0.9", port=30001),
@@ -108,7 +110,16 @@ class TestResolveRouterAddrs:
         args = make_args(sglang_router_ip="10.0.0.1", sglang_router_port=3000, sglang_model_routers=None)
 
         with pytest.raises(AssertionError, match="external router mode was removed"):
-            await resolve_router_addrs(args, provider=_ROUTER_PROVIDER)
+            await resolve_router_addrs(args, router_providers=_ROUTER_PROVIDERS)
+
+
+class TestRouterProvidersPerModel:
+    async def test_a_multi_model_run_needs_one_provider_per_model(self, tmp_path: Path):
+        """One provider answers for exactly one pool, so reusing model zero's would look up the wrong router."""
+        args = _make_two_model_args(tmp_path)
+
+        with pytest.raises(AssertionError, match="its own provider"):
+            await resolve_router_addrs(args, router_providers=_ROUTER_PROVIDERS)
 
 
 def _recording_probe(waited: list[tuple[str, int]]) -> Callable[..., Coroutine[Any, Any, None]]:

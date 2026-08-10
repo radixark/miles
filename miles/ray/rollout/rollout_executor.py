@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from typing import Any
 
 from miles.dashboard import hooks as dashboard_hooks
@@ -51,7 +52,7 @@ class RolloutExecutor:
         self,
         *,
         args,
-        router_provider: BaseWorkerProvider,
+        router_providers: Sequence[BaseWorkerProvider],
         session_server_provider: BaseWorkerProvider | None,
     ):
         event_logger_checkpoint.restore(args)
@@ -61,13 +62,13 @@ class RolloutExecutor:
         # set by the training actor after each weight update
         self.weight_version: int | None = None
         self._rollouts_since_weight_version_publish = 0
-        self._router_provider = router_provider
+        self._router_providers = router_providers
         self._session_server_provider = session_server_provider
 
     async def init(self) -> None:
         args = self.args
         if not args.debug_train_only:
-            await resolve_router_addrs(args, provider=self._router_provider)
+            await resolve_router_addrs(args, router_providers=self._router_providers)
             await wait_session_server_ready(args, provider=self._session_server_provider)
 
         # TODO make args immutable

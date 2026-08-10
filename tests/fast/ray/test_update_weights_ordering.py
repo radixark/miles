@@ -61,7 +61,7 @@ class _ServerStub:
 
 
 def _make_inference_controller(**arg_overrides: object) -> InferenceController:
-    return InferenceController(make_args(**arg_overrides), engine_provider=None, router_provider=None)
+    return InferenceController(make_args(**arg_overrides), engine_provider=None, router_providers=[])
 
 
 @pytest.mark.asyncio
