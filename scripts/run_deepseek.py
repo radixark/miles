@@ -209,7 +209,7 @@ def _execute_train(args: ScriptArgs):
 
     grpo_args = (
         "--advantage-estimator grpo "
-        # TODO run-deepseek-r1.sh enables use-kl-loss but w/ coef 0. can we just disable it like this?
+        # coef is 0 anyway, so the reference model is not loaded at all
         # "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "

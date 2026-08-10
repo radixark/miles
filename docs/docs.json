@@ -119,8 +119,7 @@
         "pages": [
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
-         "models/glm/glm4-5",
-         "models/glm/glm4"
+         "models/glm/glm4-5"
         ],
         "expanded": false
        },
@@ -129,8 +128,7 @@
         "root": "models/kimi/index",
         "pages": [
          "models/kimi/kimi-k2.5",
-         "models/kimi/kimi-k2",
-         "models/kimi/moonlight"
+         "models/kimi/kimi-k2"
         ],
         "expanded": false
        },
@@ -150,7 +148,6 @@
         ],
         "expanded": false
        },
-       "models/mimo/mimo",
        "models/gpt-oss/gpt-oss"
       ]
      }
