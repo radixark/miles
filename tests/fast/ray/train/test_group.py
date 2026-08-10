@@ -8,7 +8,7 @@ import ray
 from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_provider
 
-import miles.ray.train.group as group_module
+import miles.utils.ft_utils.indep_dp as group_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
 from miles.utils import object_store
