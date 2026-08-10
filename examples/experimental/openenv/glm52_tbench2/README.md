@@ -43,9 +43,7 @@ reward hook in `../openenv_generate.py`, dataset generation in
 ## Prerequisites
 
 **Container image.** A miles runtime image with sglang from `sglang-miles`
-at 2026-08-04 or later (needs the NextN loader and pausable page-table fixes).
-Do not put a separate sglang checkout on `PYTHONPATH` — an older one shadows
-the image's.
+at 2026-08-04 or later.
 
 **Python packages**, installed in the image or once per node (the recipe
 asserts them at launch):
