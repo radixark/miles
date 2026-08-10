@@ -3,6 +3,7 @@ from typing import Any, Literal
 
 from pydantic import ConfigDict, model_validator
 
+from miles.utils.math_utils import exact_div
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.backend_capability.base import BackendCapability
 
@@ -37,9 +38,25 @@ class SchedulingSpec(FrozenStrictBaseModel):
     num_gpus_per_worker: float
     num_cpus_per_worker: float = 0.2
     num_gpu_slots_per_worker: int = 0
+    num_gpus_per_node: int = 0
     pg_name: str | None = None
     pg_slot_offset: int = 0
     pin_to_head: bool = False
+
+    def gpus_per_cell(self) -> int:
+        return self.num_workers_per_cell * self.num_gpu_slots_per_worker
+
+    def pods_per_cell(self) -> int:
+        gpus_per_cell = self.gpus_per_cell()
+        if gpus_per_cell <= self.num_gpus_per_node:
+            return 1
+        return exact_div(gpus_per_cell, self.num_gpus_per_node)
+
+    def gpus_per_pod(self) -> int:
+        return exact_div(self.gpus_per_cell(), self.pods_per_cell())
+
+    def workers_per_pod(self) -> int:
+        return exact_div(self.num_workers_per_cell, self.pods_per_cell())
 
     @classmethod
     def single(cls, num_gpus_per_worker: float, pin_to_head: bool = False) -> "SchedulingSpec":
