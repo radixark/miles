@@ -19,6 +19,8 @@ from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 fake_worker_manager: FakeWorkerManager | None = None
 
+FAKE_STORE_ADDR = "10.0.0.7:29500"
+
 
 @pytest.fixture(autouse=True)
 def _patch_worker_backends(monkeypatch: pytest.MonkeyPatch):
@@ -37,6 +39,11 @@ def _patch_worker_backends(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture(scope="module", autouse=True)
 def ray_env(ray_local_mode):
     yield
+
+
+@pytest.fixture(autouse=True)
+def _fake_indep_dp_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(group_module, "create_tcp_store", lambda: (object(), FAKE_STORE_ADDR))
 
 
 @pytest.fixture(autouse=True)
