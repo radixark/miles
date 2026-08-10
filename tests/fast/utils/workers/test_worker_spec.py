@@ -88,6 +88,20 @@ class TestPortInfo:
             port_info.static_port = 9000
 
 
+class TestPortInfoEffectiveStaticPort:
+    def test_offsets_a_per_worker_port_by_the_whole_block_of_the_workers_before_it(self):
+        """Offsetting by the bare index hands a worker an address inside the previous worker's block."""
+        port_info = _make_port_info(static_port=8080, mode="per_worker", num_consecutive=4)
+
+        assert port_info.effective_static_port(worker_in_pod_index=2) == 8088
+
+    def test_leaves_a_master_port_where_every_worker_of_the_pod_expects_it(self):
+        """A master port names one endpoint the whole pod talks to, so shifting it per worker would split them."""
+        port_info = _make_port_info(static_port=8080, mode="master", num_consecutive=4)
+
+        assert port_info.effective_static_port(worker_in_pod_index=2) == 8080
+
+
 class TestPortInfoCellOffset:
     def test_a_dynamically_allocated_port_cannot_be_offset_by_cell(self):
         """A cell offset applied to a port whose number is chosen at runtime would point at an unrelated socket."""
