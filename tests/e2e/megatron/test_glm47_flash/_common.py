@@ -6,8 +6,6 @@ import miles.utils.external_utils.command_utils as U
 MODEL_NAME = "GLM-4.7-Flash"
 MODEL_TYPE = "glm4.7-flash"
 
-TIGHT_HOST_MEMORY = bool(int(os.environ.get("MILES_TEST_TIGHT_HOST_MEMORY", "1")))
-
 
 @dataclass
 class CaseConfig:
@@ -87,11 +85,6 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {case.max_tokens_per_gpu} "
     )
-
-    if TIGHT_HOST_MEMORY:
-        perf_args += "--exp-avg-dtype fp16 "
-        perf_args += "--exp-avg-sq-dtype fp16 "
-        perf_args += "--main-params-dtype fp16 "
 
     grpo_args = (
         "--advantage-estimator grpo "

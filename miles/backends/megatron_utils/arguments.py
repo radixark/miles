@@ -1,12 +1,29 @@
 import logging
 import os
 
-from megatron.training.arguments import parse_args, validate_args
+import torch
+from megatron.training.arguments import parse_args
+from megatron.training.arguments import validate_args as _megatron_validate_args
 from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
 
 __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
 
 logger = logging.getLogger(__name__)
+
+
+def validate_args(args):
+    args = _megatron_validate_args(args)
+
+    optimizer_state_dtypes = (args.main_params_dtype, args.exp_avg_dtype, args.exp_avg_sq_dtype)
+    if args.optimizer_cpu_offload and any(dtype != torch.float32 for dtype in optimizer_state_dtypes):
+        # HybridDeviceOptimizer currently creates FP32 master parameters and Adam states
+        # regardless of the precision-aware optimizer dtype settings.
+        raise ValueError(
+            "--optimizer-cpu-offload does not honor lower-precision --main-params-dtype, "
+            "--exp-avg-dtype, or --exp-avg-sq-dtype; remove these dtype overrides"
+        )
+
+    return args
 
 
 def set_default_megatron_args(args):
