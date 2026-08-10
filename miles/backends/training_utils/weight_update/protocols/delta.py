@@ -257,6 +257,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                 len(self._snapshot),
                 self.args.hf_checkpoint,
             )
+        dist.barrier(group=get_gloo_group())
 
     def _begin_encode(self, weight_version: int) -> None:
         """Set up this version's diff/compress pipeline: each ``send_bucket`` copies one tensor at
