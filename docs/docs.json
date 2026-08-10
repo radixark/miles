@@ -3,12 +3,12 @@
  "name": "Miles",
  "theme": "mint",
  "logo": {
-  "light": "/assets/images/miles_logo_light.png",
-  "dark": "/assets/images/miles_logo_dark.png",
+  "light": "/assets/images/brand/miles_logo_light.png",
+  "dark": "/assets/images/brand/miles_logo_dark.png",
   "href": "/",
   "width": 130
  },
- "favicon": "/assets/images/miles_square.png",
+ "favicon": "/assets/images/brand/miles_square.png",
  "seo": {
   "metatags": {
    "canonical": "https://miles.radixark.com/docs",

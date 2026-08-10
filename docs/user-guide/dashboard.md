@@ -25,7 +25,7 @@ eight samples per prompt. Using one run throughout means the panels line up acro
 
 ### Metrics
 
-![The Metrics view, rollout category](/assets/images/dashboard-metrics-rollout.png)
+![The Metrics view, rollout category](/assets/images/dashboard/metrics-rollout.png)
 
 This is the tab that tells you whether the run is learning. It shows every logged metric, with a
 wandb-style category sidebar on the left.
@@ -52,7 +52,7 @@ collapsed to zero. If that fraction climbs, the run is degenerating.
 `dump/mixed_version_frac` is the fraction of samples that spanned more than one weight version,
 which is the staleness signal that matters in async runs.
 
-![The Metrics view, sglang category](/assets/images/dashboard-metrics-sglang.png)
+![The Metrics view, sglang category](/assets/images/dashboard/metrics-sglang.png)
 
 The `sglang` category behaves differently from the other three, in ways that will confuse you if
 you do not expect them.
@@ -71,7 +71,7 @@ you can tell the difference between "no data" and "zero".
 
 ### Compute Utilization
 
-![The Compute Utilization view](/assets/images/dashboard-compute-utilization.png)
+![The Compute Utilization view](/assets/images/dashboard/compute-utilization.png)
 
 This is the most detailed view, and the one to open when a run is slower than it should be. It
 has three parts, top to bottom.
@@ -129,7 +129,7 @@ nothing to compare against.
 
 ### Rollouts
 
-![The Rollouts view for one training step](/assets/images/dashboard-rollout-step.png)
+![The Rollouts view for one training step](/assets/images/dashboard/rollout-step.png)
 
 This view shows one training step at a time. You reach a step by number and walk between steps
 with Prev and Next.
@@ -162,7 +162,7 @@ truncation flag, turn and tool-call counts, and the per-token statistics when tr
 Click any row to open the sample view. The reward axis in the screenshot only has values at 0 and
 1, because this task harness scores pass or fail with nothing in between.
 
-![The Rollouts view, Groups tab](/assets/images/dashboard-rollout-groups.png)
+![The Rollouts view, Groups tab](/assets/images/dashboard/rollout-groups.png)
 
 The Groups tab re-aggregates the same step by GRPO group. Rows whose reward standard deviation
 collapsed to zero are drawn in red, because those groups contribute no gradient signal at all:
@@ -174,7 +174,7 @@ If that fraction climbs over a run, the effective batch size is shrinking.
 
 ### Sample view
 
-![The sample view, conversation tab](/assets/images/dashboard-sample-conversation.png)
+![The sample view, conversation tab](/assets/images/dashboard/sample-conversation.png)
 
 This view shows one sample. You reach it by clicking a row in the step table. Prev and Next walk
 the other seven samples of the same GRPO group, which is the useful comparison: those samples
