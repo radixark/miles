@@ -337,7 +337,7 @@ class AsyncMultiLoRAWorker:
                     active.discard(t)
 
                 while len(active) < max_concurrent and self.running:
-                    samples = self.data_source.get_samples(1)
+                    samples = await self.data_source.get_samples(1)
                     if not samples:
                         break
                     active.add(asyncio.create_task(self.process_and_enqueue(samples[0])))
