@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from typing import Any, TypeVar
 
 import ray
 
@@ -14,6 +14,15 @@ logger = logging.getLogger(__name__)
 # ray uses 10002-19999, and 32768+ is the ephemeral range, so wrapped scans restart above ray's block
 _MIN_DYNAMIC_PORT = 20000
 _MAX_PORT = 65535
+
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+
+
+def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V]:
+    conflicts = {key: (a[key], b[key]) for key in a.keys() & b.keys() if a[key] != b[key]}
+    assert not conflicts, f"cannot merge two dicts that disagree: {conflicts}"
+    return a | b
 
 
 async def call_agent_abort_hook(args) -> None:
