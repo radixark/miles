@@ -15,7 +15,6 @@ per-model thin bash wrappers:
 examples/infra_features/p2p_weight_transfer/
 ├── run.py                # Shared logic: prepare + run (model registry)
 ├── Qwen3-4B.sh           # 1 node  – bash Qwen3-4B.sh [MODE]
-├── Moonlight-16B.sh      # 2 nodes – bash Moonlight-16B.sh [MODE] [NODE_RANK] [HEAD_IP]
 ├── GLM-4.7-Flash.sh      # 2 nodes
 ├── GLM-5.sh              # 2/12/32 nodes – bash GLM-5.sh <VARIANT> [MODE] [NODE_RANK] [HEAD_IP]
 ├── Qwen3-30B-A3B.sh      # 4 nodes
