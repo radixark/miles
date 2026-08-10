@@ -25,6 +25,7 @@ class TestComputeSpecs:
 
         assert [spec.name for spec in specs] == [
             "rollout-executor",
+            "multi-lora-controller",
             "inference-controller",
             "inference-router-0",
             "session-server",
