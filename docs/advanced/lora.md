@@ -12,33 +12,25 @@ colocated base-backup recipes transfer only the adapter after startup; a
 colocated job without the base backup may also re-send frozen base weights as
 part of pause/resume.
 
-## Mental model
+## Training and rollout lifecycle
 
-```text
-HF base checkpoint + target module names
-                    |
-                    v
-        training-side model construction
-          /                         \
- Bridge: AutoBridge PEFT       native/raw: miles provider
-          \                    + model-aware adapter spec
-           \                         /
-             frozen base + trainable A/B matrices
-                            |
-                  optimizer step(s)
-                            |
-               configured update boundary
-                            |
-                  export adapter tensors
-                    /              \
-          colocated: local IPC    disaggregated: NCCL (Bridge on main)
-                    \              /
-                            v
-               SGLang base + named adapter
-                            |
-                 requests select lora_path
-                            |
-                 reward / advantages / next step
+```mermaid
+flowchart TB
+    HF["HF base checkpoint<br/>+ target module names"] --> Build{"LoRA implementation"}
+    Build --> Bridge["Megatron-Bridge<br/>AutoBridge PEFT"]
+    Build --> Native["Native / raw<br/>miles provider + model-aware adapter spec"]
+    Bridge --> Train["Frozen base + trainable LoRA A/B matrices"]
+    Native --> Train
+    Train --> Step["Optimizer step(s)"]
+    Step --> Boundary["Configured weight-update boundary"]
+    Boundary --> Export["Export adapter tensors"]
+    Export --> IPC["Colocated<br/>local IPC"]
+    Export --> NCCL["Disaggregated<br/>NCCL broadcast<br/>(Bridge on current main)"]
+    IPC --> SGLang["SGLang base + named adapter"]
+    NCCL --> SGLang
+    SGLang --> Request["Rollout requests select lora_path"]
+    Request --> RL["Reward / advantages / next step"]
+    RL --> Step
 ```
 
 Model support is therefore a three-way contract rather than a hard-coded
@@ -63,9 +55,6 @@ separate from SGLang's serving-side `--sglang-lora-backend` choice.
 |---|---|---|---|
 | **Megatron-Bridge PEFT** | `AutoBridge` builds the provider, applies Bridge LoRA before DDP, and exports HF-named adapter tensors. Select it with `--megatron-to-hf-mode bridge`. | Qwen2.5, Qwen3, GPT-OSS, Kimi K2.5, GLM-5/5.1/5.2, and Qwen3.5/3.6, subject to the evidence and module caveats below. | General production path. Current multi-LoRA also requires this path. |
 | **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and attaches model-aware adapter modules directly before DDP. | Inkling and Inkling-Small. The current implementation is an Inkling-specific integration, including custom attention, MLP, routed/shared experts, LM head, adapter import, and export. | Specialized path on current `main`; use the Inkling launcher rather than assuming `raw` works for another model. |
-
-The current Inkling integration was added in
-[PR #2122](https://github.com/radixark/miles/pull/2122).
 
 <Note>
 The planned maintenance direction is native-first: after the generalized native plugin
@@ -302,13 +291,12 @@ full-744B launcher work is tracked in
 ## Agentic RL with LoRA (experimental)
 
 Agentic rollout has one extra correctness requirement: every turn sent through
-the session server must select the newly synchronized adapter. [PR
-#2075](https://github.com/radixark/miles/pull/2075) fixed this by attaching
-`lora_path=miles_lora` to session-server requests. Before that fix, the trainer
-updated LoRA while the agent continued collecting trajectories from the frozen
-base policy. The current session integration selects the fixed single-adapter
-name; it is not multi-LoRA slot routing, and it should not be combined with
-`--lora-train-only`.
+the session server must select the newly synchronized adapter. The session
+server therefore attaches `lora_path=miles_lora` to its requests; otherwise the
+trainer could update LoRA while the agent continues collecting trajectories
+from the frozen base policy. The current session integration selects the fixed
+single-adapter name; it is not multi-LoRA slot routing, and it should not be
+combined with `--lora-train-only`.
 
 [Draft PR #2280](https://github.com/radixark/miles/pull/2280) adds the first
 LoRA-specific agentic recipe: GLM-5.2 744B-A40B with synchronous GRPO on
