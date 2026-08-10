@@ -32,7 +32,6 @@ _P2P_PROFILES = (
     "GLM-5",
     "GLM-5_20layer",
     "GLM-5_4layer",
-    "GLM-Z1-9B-0414",
     "Kimi-K2-Instruct",
     "Moonlight-16B-A3B-Instruct",
     "Qwen3-235B-A22B-Instruct-2507",
