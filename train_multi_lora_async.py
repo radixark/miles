@@ -48,7 +48,7 @@ async def main(args):
     api_port = await controller.api_port.remote()
     logger.info(f"Multi-LoRA control API listening on http://{host}:{api_port} (head node)")
 
-    actor_model, _ = await create_training_models(args, inference_controller, rollout_executor)
+    actor_model, _ = await create_training_models(args, rollout_executor)
 
     # CLI-registered adapters are loaded and pushed by the loop's first
     # reconcile + update_weights.
