@@ -134,10 +134,8 @@ class ServerGroup:
             rdt_pg_kwargs = {}
             if rdt_reuse_pg and i % self.nodes_per_engine == 0:
                 rdt_pg_kwargs = dict(
-                    pg_id=pg.id.hex(),
-                    pg_bundles=[
-                        reordered_bundle_indices[gpu_index + k] for k in range(self.num_gpus_per_engine)
-                    ],
+                    placement_group=pg,
+                    pg_bundles=[reordered_bundle_indices[gpu_index + k] for k in range(self.num_gpus_per_engine)],
                 )
 
             rollout_engine = RolloutRayActor.options(

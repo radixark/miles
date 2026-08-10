@@ -6,9 +6,12 @@ import os
 import time
 from urllib.parse import quote
 
+import ray
 import requests
 import sglang_router
 from packaging.version import parse
+from ray.util.placement_group import PlacementGroup
+from sglang.srt.environ import envs
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
@@ -133,8 +136,8 @@ class SGLangEngine(RayActor):
         base_gpu_id: int | None = None,
         sglang_overrides: dict | None = None,
         num_gpus_per_engine: int | None = None,
-        pg_id: str | None = None,
-        pg_bundles: list | None = None,
+        placement_group: PlacementGroup | None = None,
+        pg_bundles: list[int] | None = None,
     ):
         self.args = args
         self.rank = rank
@@ -142,7 +145,7 @@ class SGLangEngine(RayActor):
         self.base_gpu_id = base_gpu_id
         self.sglang_overrides = sglang_overrides or {}
         self.num_gpus_per_engine = num_gpus_per_engine
-        self.pg_id = pg_id
+        self.placement_group = placement_group
         self.pg_bundles = pg_bundles
         self._scheduler_actors = []
 
@@ -261,17 +264,20 @@ class SGLangEngine(RayActor):
                 return
             server_args_dict["use_ray"] = True
             server_args_dict["enable_rdt_weight_sync"] = True
-            # The mp.Process child loses the PG context and would auto-create a
-            # second PG, double-booking the rollout GPUs. It is a separate Ray job,
-            # so pass the PG by global ID rather than by name.
-            if self.pg_id and self.pg_bundles:
-                os.environ["MILES_RDT_PG_ID"] = self.pg_id
-                os.environ["MILES_RDT_PG_BUNDLES"] = ",".join(str(b) for b in self.pg_bundles)
+            assert self.placement_group is not None and self.pg_bundles
         logger.info(
             f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}"
             f"{' (use_ray=True for RDT)' if use_rdt else ''}"
         )
-        self.process = launch_server_process(ServerArgs(**server_args_dict))
+        server_args = ServerArgs(**server_args_dict)
+        if use_rdt:
+            envs.SGLANG_RAY_BUNDLE_INDICES.set(",".join(str(bundle) for bundle in self.pg_bundles))
+            server_args.override(
+                "miles.rdt.ray_context",
+                placement_group=self.placement_group,
+                ray_runtime_env=dict(ray.get_runtime_context().runtime_env),
+            )
+        self.process = launch_server_process(server_args)
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
             if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
@@ -538,17 +544,16 @@ class SGLangEngine(RayActor):
 
         RayEngine names one actor per (pp, tp) rank
         ``sglang_scheduler_node{ip}[_dp{dp}]_pp{pp}_tp{tp}_port{port}_pg{hex}_bundle{idx}``.
-        The pg/bundle suffix is unknown here, but the http port is unique per engine,
-        so match on the port and tp tokens across namespaces. Raises unless every
-        tp_rank matches exactly one actor: a partial list would silently sync a
-        subset of the ranks.
+        The pg/bundle suffix is unknown here, so match on node IP, HTTP port,
+        and TP rank across namespaces. Ports are allocated per host, making
+        ``(node IP, port)`` the engine's unique key. Raises unless every TP rank
+        matches exactly one actor: a partial list would silently sync a subset.
         """
         if self._scheduler_actors:
             return self._scheduler_actors
 
-        import ray
-
         tp_size = getattr(self.args, "rollout_num_gpus_per_engine", 1)
+        node_prefix = f"sglang_scheduler_node{ray.util.get_node_ip_address()}_"
         port_token = f"_port{self.server_port}_"
 
         try:
@@ -559,7 +564,7 @@ class SGLangEngine(RayActor):
         entries = [(e["name"], e.get("namespace")) if isinstance(e, dict) else (e, None) for e in raw]
         # Kept for the failure message below.
         sched_like = [(n, ns) for (n, ns) in entries if "scheduler" in n.lower() or "sglang" in n.lower()]
-        engine_entries = [(n, ns) for (n, ns) in entries if n.startswith("sglang_scheduler_node") and port_token in n]
+        engine_entries = [(n, ns) for (n, ns) in entries if n.startswith(node_prefix) and port_token in n]
 
         actors = []
         for tp_rank in range(tp_size):
@@ -567,9 +572,10 @@ class SGLangEngine(RayActor):
             matches = [(n, ns) for (n, ns) in engine_entries if tp_token in n]
             if len(matches) != 1:
                 raise RuntimeError(
-                    f"SchedulerActor discovery for engine port={self.server_port} tp_rank={tp_rank} "
-                    f"matched {len(matches)} actors (expected 1): {[n for n, _ in matches]}. "
-                    f"tokens: '{port_token}', '{tp_token}'. Discovered {len(entries)} named actors, "
+                    f"SchedulerActor discovery for engine {self.server_host}:{self.server_port} "
+                    f"tp_rank={tp_rank} matched {len(matches)} actors (expected 1): "
+                    f"{[n for n, _ in matches]}. tokens: '{node_prefix}', '{port_token}', "
+                    f"'{tp_token}'. Discovered {len(entries)} named actors, "
                     f"{len(sched_like)} scheduler-like: {[n for n, _ in sched_like[:20]]}."
                 )
             name, namespace = matches[0]

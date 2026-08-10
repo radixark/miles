@@ -118,6 +118,9 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._group_name = "miles-rdt"
 
+        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self._connection_stale = False
+
         self._staged_tensors: dict[str, list[tuple[str, torch.Tensor]]] = {}
         self._tensor_update_pending: dict[str, int] = {}
         self._shared_params_dict: dict[str, torch.nn.Parameter] = {}
@@ -126,6 +129,12 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         # One entry per engine rank this source is responsible for.
         self._engine_rank_buckets: list[_EngineRankBucket] = []
         self._scheduler_actors_cache: dict[int, list[ActorHandle]] = {}
+
+    def is_rollout_engines_fresh(self) -> bool:
+        return self.rollout_engines is not None and not self._connection_stale
+
+    def mark_engine_connection_stale(self) -> None:
+        self._connection_stale = True
 
     @property
     def _is_source(self) -> bool:
@@ -146,6 +155,7 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         one-sided RDMA pulls have no collective to deadlock, so they are unused here.
         """
         self.rollout_engines = rollout_engines
+        self._connection_stale = False
         self._staged_tensors.clear()
         self._tensor_update_pending.clear()
         self._shared_params_dict = {}
@@ -217,9 +227,10 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         self, rollout_engines: Sequence[ActorHandle], engine_ind: int
     ) -> list[ActorHandle]:
         if engine_ind not in self._scheduler_actors_cache:
-            self._scheduler_actors_cache[engine_ind] = ray.get(
-                rollout_engines[engine_ind].get_scheduler_actors.remote()
-            )
+            actors = ray.get(rollout_engines[engine_ind].get_scheduler_actors.remote())
+            # Keep destination registrations alive across repeated RDT pulls.
+            ray.get([actor.register_weight_for_rdt.remote() for actor in actors])
+            self._scheduler_actors_cache[engine_ind] = actors
         return self._scheduler_actors_cache[engine_ind]
 
     def create_gpu_replica(
@@ -239,7 +250,10 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
             model_loader_extra_config=None,
             rl_quant_profile=server_args.rl_quant_profile,
         )
-        server_args_module._global_server_args = server_args
+        # This replica is local even when the rollout deployment spans nodes.
+        if server_args.nnodes > 1:
+            server_args.override("miles.rdt.local_replica", nnodes=1)
+        server_args_module.set_global_server_args_for_scheduler(server_args)
         initialize_moe_config(server_args)
         initialize_fp8_gemm_config(server_args)
         initialize_fp4_gemm_config(server_args)
