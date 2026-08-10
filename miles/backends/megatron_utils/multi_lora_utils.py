@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -5,7 +6,6 @@ from argparse import Namespace
 from collections.abc import Mapping
 from pathlib import Path
 
-import ray
 import torch
 import torch.distributed as dist
 
@@ -340,7 +340,7 @@ def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
 
     if args.save_interval is not None:
         # The controller still holds the step count until free_slot runs.
-        step = ray.get(get_multi_lora_controller().adapter_step.remote(name))
+        step = asyncio.run(get_multi_lora_controller().adapter_step(name))
         save_multi_lora_checkpoints(args, model, {name: step}, {name: adapter})
         logger.info(f"{log_prefix} saved final checkpoint at step {step}")
     else:
@@ -384,7 +384,7 @@ def load_adapters(args, model, optimizer, adapters) -> int:
     if is_first_replica_megatron_main_rank():
         for name, step in resume_steps.items():
             if step > 0:
-                ray.get(get_multi_lora_controller().set_adapter_step.remote(name, step))
+                asyncio.run(get_multi_lora_controller().set_adapter_step(name, step))
     return len(adapters)
 
 
@@ -403,7 +403,7 @@ def cleanup_adapters(args, model, optimizer, adapters) -> int:
         dist.barrier(group=get_gloo_group())
     if is_first_replica_megatron_main_rank():
         for adapter in adapters:
-            ray.get(get_multi_lora_controller().free_slot.remote(adapter.name))
+            asyncio.run(get_multi_lora_controller().free_slot(adapter.name))
     return len(adapters)
 
 
@@ -443,7 +443,7 @@ def commit_trained_batch(rollout_data, rollout_id: int, pending_push: set) -> No
 
     pending_push.update(rollout_data.get("step_adapter_names", []))
     if is_first_replica_megatron_main_rank():
-        ray.get(get_multi_lora_controller().mark_batch_trained.remote(rollout_id))
+        asyncio.run(get_multi_lora_controller().mark_batch_trained(rollout_id))
 
 
 def save_due_adapter_checkpoints(args, model) -> bool:
@@ -455,7 +455,7 @@ def save_due_adapter_checkpoints(args, model) -> bool:
 
     due_buffer = [None]
     if is_first_replica_megatron_main_rank() and args.save_interval is not None:
-        snapshot = ray.get(get_multi_lora_controller().snapshot.remote())
+        snapshot = asyncio.run(get_multi_lora_controller().snapshot())
         adapters = {**snapshot["active"], **snapshot["retiring"]}
         due_buffer[0] = {
             name: adapter
@@ -487,4 +487,4 @@ def commit_weight_push(version_update_names: list, is_main_rank: bool) -> None:
     """A weight push landed: bump the pushed adapters' slot versions on the
     controller (promotes PENDING adapters to ACTIVE)."""
     if version_update_names and is_main_rank:
-        ray.get(get_multi_lora_controller().record_weight_update.remote(version_update_names))
+        asyncio.run(get_multi_lora_controller().record_weight_update(version_update_names))
