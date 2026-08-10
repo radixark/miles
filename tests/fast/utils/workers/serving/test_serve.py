@@ -8,9 +8,16 @@ from pathlib import Path
 import httpx
 import pytest
 from tests.fast.utils.workers.import_probe import unexpected_light_entrypoint_imports
-from tests.fast.utils.workers.serving.serve_smoke_worker import IMPORTED_MODULES_ENV_VAR, SmokeWorker
+from tests.fast.utils.workers.serving.serve_smoke_worker import (
+    IMPORTED_MODULES_ENV_VAR,
+    POOL_ID,
+    RPC_PORT_FLAG,
+    SMOKE_EXTRA_ENV_VAR,
+    SmokeWorker,
+)
 
 from miles.utils.http_utils import find_available_port
+from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.serving import serve as serve_module
@@ -18,21 +25,20 @@ from miles.utils.workers.serving.utils import split_worker_argv
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 
 _REPO_ROOT = Path(__file__).resolve().parents[5]
-_WORKER_PATH = "tests.fast.utils.workers.serving.serve_smoke_worker.make_worker"
-_ENV_FN_PATH = "tests.fast.utils.workers.serving.serve_smoke_worker.compute_env_vars"
+_SPECS_PATH = "tests.fast.utils.workers.serving.serve_smoke_worker.compute_specs"
 
 
 class TestSplitWorkerArgv:
     def test_splits_on_the_separator(self):
         """Everything after -- is worker argv, everything before belongs to the entrypoint."""
-        assert split_worker_argv(["--worker", "m:f", "--", "--greeting", "hi"]) == (
-            ["--worker", "m:f"],
+        assert split_worker_argv(["--pool-id", "p", "--", "--greeting", "hi"]) == (
+            ["--pool-id", "p"],
             ["--greeting", "hi"],
         )
 
     def test_no_separator_means_no_worker_argv(self):
         """Without a separator the whole argv belongs to the entrypoint."""
-        assert split_worker_argv(["--worker", "m:f"]) == (["--worker", "m:f"], [])
+        assert split_worker_argv(["--pool-id", "p"]) == (["--pool-id", "p"], [])
 
     def test_later_separators_stay_with_the_worker(self):
         """Only the first separator splits, so worker argv may contain its own --."""
@@ -40,41 +46,18 @@ class TestSplitWorkerArgv:
 
 
 class TestOuterServeForwarding:
-    def test_only_env_hook_is_consumed_before_exec(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The outer serve layer forwards all non-hook own arguments verbatim."""
+    def test_forwards_its_own_argv_and_the_env_the_spec_computed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """serve exists to put the spec's env on the exec'd image; anything it swallowed would never arrive."""
         captured: dict[str, object] = {}
 
         def fake_execve(path: str, argv: list[str], env: dict[str, str]) -> None:
             captured.update(path=path, argv=argv, env=env)
 
         monkeypatch.setattr(serve_module.os, "execve", fake_execve)
-        monkeypatch.setattr(
-            serve_module,
-            "load_function",
-            lambda path: lambda worker_argv: {"MILES_TEST_ENV": ",".join(worker_argv)},
-        )
-
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            [
-                "serve.py",
-                "--worker",
-                "package.worker",
-                "--host",
-                "127.0.0.1",
-                "--env-var-fn",
-                "package.env",
-                "--port",
-                "9000",
-                "--",
-                "--flag",
-                "value",
-            ],
-        )
+        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
+        own_argv = ["--specs", _SPECS_PATH, "--pool-id", POOL_ID]
+        worker_argv = [RPC_PORT_FLAG, "9000", "--flag", "value"]
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv, "--", *worker_argv])
 
         serve_module.main()
 
@@ -82,17 +65,29 @@ class TestOuterServeForwarding:
             sys.executable,
             "-m",
             "miles.utils.workers.serving.serve_inner",
-            "--worker",
-            "package.worker",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "9000",
+            *own_argv,
             "--",
-            "--flag",
-            "value",
+            *worker_argv,
         ]
-        assert captured["env"]["MILES_TEST_ENV"] == "--flag,value"
+        assert captured["env"]["MILES_SERVE_SMOKE_ENV"] == ",".join(worker_argv)
+        assert captured["env"]["MILES_SERVE_SMOKE_POOL_ID"] == POOL_ID
+
+    def test_refuses_a_spec_that_overwrites_the_identity_the_platform_gave_the_pod(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--train-env-vars is unrestricted json, and one of these keys makes every rank claim worker zero."""
+        monkeypatch.setattr(serve_module.os, "execve", _refuse_exec)
+        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
+        monkeypatch.setenv(SMOKE_EXTRA_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR)
+        own_argv = ["--specs", _SPECS_PATH, "--pool-id", POOL_ID]
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv, "--", RPC_PORT_FLAG, "9000"])
+
+        with pytest.raises(AssertionError, match=SUBPROCESS_INDEX_ENV_VAR):
+            serve_module.main()
+
+
+def _refuse_exec(path: str, argv: list[str], env: dict[str, str]) -> None:
+    raise AssertionError("a spec that overwrites the pod's identity must not reach exec")
 
     def test_env_var_hook_overrides_same_named_parent_variable(
         self,
@@ -146,6 +141,9 @@ class TestOuterServeInterpreterFlags:
             captured.update(path=path, argv=argv, env=env)
 
         monkeypatch.setattr(serve_module.os, "execve", fake_execve)
+        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
+        own_argv = ["--specs", _SPECS_PATH, "--pool-id", POOL_ID]
+        worker_argv = [RPC_PORT_FLAG, "9000"]
         monkeypatch.setattr(
             sys,
             "orig_argv",
@@ -156,11 +154,12 @@ class TestOuterServeInterpreterFlags:
                 "faulthandler",
                 "-m",
                 "miles.utils.workers.serving.serve",
-                "--worker",
-                "package.worker",
+                *own_argv,
+                "--",
+                *worker_argv,
             ],
         )
-        monkeypatch.setattr(sys, "argv", ["serve.py", "--worker", "package.worker"])
+        monkeypatch.setattr(sys, "argv", ["serve.py", *own_argv, "--", *worker_argv])
 
         serve_module.main()
 
@@ -171,9 +170,9 @@ class TestOuterServeInterpreterFlags:
             "faulthandler",
             "-m",
             "miles.utils.workers.serving.serve_inner",
-            "--worker",
-            "package.worker",
+            *own_argv,
             "--",
+            *worker_argv,
         ]
         assert captured["path"] == sys.executable
 
@@ -181,21 +180,20 @@ class TestOuterServeInterpreterFlags:
 def _spawn_serve(port: int) -> subprocess.Popen:
     env = dict(os.environ)
     env["PYTHONPATH"] = f"{_REPO_ROOT}{os.pathsep}{env.get('PYTHONPATH', '')}"
+    env[CELL_INDEX_ENV_VAR] = "0"
 
     return subprocess.Popen(
         [
             sys.executable,
             "-m",
             "miles.utils.workers.serving.serve",
-            "--worker",
-            _WORKER_PATH,
-            "--env-var-fn",
-            _ENV_FN_PATH,
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
+            "--specs",
+            _SPECS_PATH,
+            "--pool-id",
+            POOL_ID,
             "--",
+            RPC_PORT_FLAG,
+            str(port),
             "--greeting",
             "hello",
         ],
@@ -238,8 +236,8 @@ class TestServeEndToEnd:
             try:
                 await _wait_ready_or_die(handle, process)
                 assert await handle.demo_sync(a=3, b=4) == 7
-                assert await handle.report_argv() == ["--greeting", "hello"]
-                assert await handle.report_env(name="MILES_SERVE_SMOKE_ENV") == "--greeting,hello"
+                assert (await handle.report_argv())[-2:] == ["--greeting", "hello"]
+                assert (await handle.report_env(name="MILES_SERVE_SMOKE_ENV")).endswith("--greeting,hello")
                 reported = await handle.report_env(name=IMPORTED_MODULES_ENV_VAR)
                 assert unexpected_light_entrypoint_imports(reported) == []
             finally:

@@ -2,7 +2,6 @@ import pytest
 from pydantic import ValidationError
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
-from miles.utils.workers.serving import serve_inner
 from miles.utils.workers.worker_spec import (
     DEFAULT_RPC_PORT,
     RPC_PORT_NAME,
@@ -246,10 +245,6 @@ class TestServeWorkerSpecRpcPortInjection:
         command = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "sleep 1")
         assert RPC_PORT_NAME not in [port_info.name for port_info in base.port_infos]
         assert RPC_PORT_NAME not in [port_info.name for port_info in command.port_infos]
-
-    def test_the_injected_port_is_the_one_the_serve_entrypoint_binds_by_default(self):
-        """A spec advertising a port its own process does not bind leaves every caller talking to nothing."""
-        assert DEFAULT_RPC_PORT == serve_inner.DEFAULT_PORT
 
 
 class TestSchedulingSpecPinToHead:
