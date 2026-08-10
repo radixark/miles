@@ -1,0 +1,8 @@
+# Installed by docker/Dockerfile in one layer with `pip install --no-deps -r`:
+# every entry's runtime deps are already satisfied by the base image or earlier
+# layers, and --no-deps keeps pip from re-negotiating the environment (see
+# docker/build-refactor-design.md §3.5). Not consumed outside the image build.
+git+https://github.com/ISEEKYAN/mbridge.git@89eb10887887bc74853f89a4de258c0702932a1c
+megatron-energon
+multi-storage-client
+tile_kernels==1.0.0

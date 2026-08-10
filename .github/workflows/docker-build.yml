@@ -6,7 +6,13 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
+      - 'docker/build.py'
+      - 'docker/resolve_upstream.py'
+      - 'docker/fetch_wheels.py'
+      - 'docker/requirements-nodeps.txt'
+      - 'docker/smoke_test.py'
       - 'docker/verify_transformer_engine.py'
+      - 'docker/patch/**'
       - 'requirements.txt'
 
   schedule:
@@ -52,13 +58,24 @@ on:
         default: false
 
 jobs:
-  check-upstream:
-    # Only run on schedule (or simulated schedule) — check if upstream repos have new commits
-    if: github.event_name == 'schedule' || inputs.simulate_schedule == true
+  resolve-upstream:
+    # Resolves every upstream input the image bakes: source-branch HEAD SHAs and the
+    # wheels releases' asset fingerprints. Always runs — the build consumes these values
+    # as its pinned inputs; on schedule (or simulate_schedule) they additionally gate
+    # the rebuild, so the 12-hour cron skips when nothing moved.
     runs-on: ubuntu-latest
     outputs:
-      should_build: ${{ steps.check.outputs.should_build }}
+      sglang_sha: ${{ steps.resolve.outputs.sglang_sha }}
+      megatron_sha: ${{ steps.resolve.outputs.megatron_sha }}
+      miles_sha: ${{ steps.resolve.outputs.miles_sha }}
+      wheels_fp_cu13_x86: ${{ steps.resolve.outputs.wheels_fp_cu13_x86 }}
+      wheels_fp_cu13_arm64: ${{ steps.resolve.outputs.wheels_fp_cu13_arm64 }}
+      wheels_fp_cu12_x86: ${{ steps.resolve.outputs.wheels_fp_cu12_x86 }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Restore last known upstream SHAs
         uses: actions/cache/restore@v4
         with:
@@ -66,79 +83,76 @@ jobs:
           key: upstream-shas-
           restore-keys: upstream-shas-
 
-      - name: Check for new upstream commits
-        id: check
+      - name: Resolve upstream SHAs and wheels fingerprints
+        id: resolve
+        env:
+          # The rebuild gate applies only on these paths; push/dispatch builds are never gated.
+          GATED: ${{ github.event_name == 'schedule' || inputs.simulate_schedule == true }}
         run: |
-          SHOULD_BUILD=false
+          set -euo pipefail
 
-          # Check sglang (sglang-miles branch)
-          SGLANG_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/sgl-project/sglang/commits/sglang-miles")
+          # docker/resolve_upstream.py is the single resolver (build.py reuses it for
+          # local builds); it hard-fails on any unresolvable value. On push the image
+          # bakes the pushed commit, not main HEAD. miles stays out of the rebuild
+          # gate (pushes already trigger their own build).
+          MILES_ARG=""
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            MILES_ARG="--miles-sha ${GITHUB_SHA}"
+          fi
+          python3 docker/resolve_upstream.py ${MILES_ARG} > resolved.txt
+          cat resolved.txt
+          cat resolved.txt >> "$GITHUB_OUTPUT"
 
-          # Check Megatron-LM (miles-main branch)
-          MEGATRON_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
-            "https://api.github.com/repos/radixark/Megatron-LM/commits/miles-main")
+          val() { grep "^$1=" resolved.txt | cut -d= -f2; }
+          SGLANG_SHA=$(val sglang_sha)
+          MEGATRON_SHA=$(val megatron_sha)
+          WHEELS_CU13_X86_FP=$(val wheels_fp_cu13_x86)
+          WHEELS_CU13_ARM64_FP=$(val wheels_fp_cu13_arm64)
+          WHEELS_CU12_X86_FP=$(val wheels_fp_cu12_x86)
 
-          # Fingerprint the miles-wheels releases the images install from (sgl-router +
-          # the other prebuilt wheels). cu13 installs cu130-x86_64 / cu130-aarch64;
-          # cu12-x86 installs cu129-x86_64 — both build automatically, so track all rolling
-          # release tags they bake. Rolling tags stay fixed while assets may be replaced,
-          # so fingerprint the asset list rather than a commit SHA.
-          wheels_fp() {
-            curl -s "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/$1" \
-              | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
-          }
-          WHEELS_CU13_X86_FP=$(wheels_fp cu130-x86_64)
-          WHEELS_CU13_ARM64_FP=$(wheels_fp cu130-aarch64)
-          WHEELS_CU12_X86_FP=$(wheels_fp cu129-x86_64)
-
-          echo "sglang HEAD:   ${SGLANG_SHA}"
-          echo "megatron HEAD: ${MEGATRON_SHA}"
-          echo "wheels FP cu13 x86:   ${WHEELS_CU13_X86_FP}"
-          echo "wheels FP cu13 arm64: ${WHEELS_CU13_ARM64_FP}"
-          echo "wheels FP cu12 x86:   ${WHEELS_CU12_X86_FP}"
-
-          # Compare against last known values stored in cache
+          # Gate: compare against the values stored at the last gated build
+          SHOULD_BUILD=true
           CACHE_FILE="last_upstream_shas.txt"
-          if [ -f "$CACHE_FILE" ]; then
-            LAST_SGLANG=$(sed -n '1p' "$CACHE_FILE")
-            LAST_MEGATRON=$(sed -n '2p' "$CACHE_FILE")
-            LAST_WHEELS_CU13_X86=$(sed -n '3p' "$CACHE_FILE")
-            LAST_WHEELS_CU13_ARM64=$(sed -n '4p' "$CACHE_FILE")
-            LAST_WHEELS_CU12_X86=$(sed -n '5p' "$CACHE_FILE")
-            LAST_BUILD_EPOCH=$(sed -n '6p' "$CACHE_FILE")
-          else
-            LAST_SGLANG=""
-            LAST_MEGATRON=""
-            LAST_WHEELS_CU13_X86=""
-            LAST_WHEELS_CU13_ARM64=""
-            LAST_WHEELS_CU12_X86=""
-            LAST_BUILD_EPOCH=""
-          fi
-
-          if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_CU13_X86_FP" != "$LAST_WHEELS_CU13_X86" ] || [ "$WHEELS_CU13_ARM64_FP" != "$LAST_WHEELS_CU13_ARM64" ] || [ "$WHEELS_CU12_X86_FP" != "$LAST_WHEELS_CU12_X86" ]; then
-            SHOULD_BUILD=true
-            echo "Upstream change detected"
-          else
-            echo "No upstream changes"
-          fi
-
-          # miles commits alone never trigger rebuilds, so bound how stale the baked
-          # miles checkout can get.
-          MAX_BUILD_AGE_SECONDS=$(( 24 * 3600 ))
           NOW_EPOCH=$(date +%s)
-          if [ "$SHOULD_BUILD" = "false" ]; then
-            if ! [ "$LAST_BUILD_EPOCH" -gt 0 ] 2>/dev/null; then
-              SHOULD_BUILD=true
-              echo "No last-build timestamp recorded; rebuilding"
-            elif [ $(( NOW_EPOCH - LAST_BUILD_EPOCH )) -ge $MAX_BUILD_AGE_SECONDS ]; then
-              SHOULD_BUILD=true
-              echo "Last build was $(( (NOW_EPOCH - LAST_BUILD_EPOCH) / 3600 ))h ago (max $(( MAX_BUILD_AGE_SECONDS / 3600 ))h); rebuilding"
+          if [ "${GATED}" = "true" ]; then
+            if [ -f "$CACHE_FILE" ]; then
+              LAST_SGLANG=$(sed -n '1p' "$CACHE_FILE")
+              LAST_MEGATRON=$(sed -n '2p' "$CACHE_FILE")
+              LAST_WHEELS_CU13_X86=$(sed -n '3p' "$CACHE_FILE")
+              LAST_WHEELS_CU13_ARM64=$(sed -n '4p' "$CACHE_FILE")
+              LAST_WHEELS_CU12_X86=$(sed -n '5p' "$CACHE_FILE")
+              LAST_BUILD_EPOCH=$(sed -n '6p' "$CACHE_FILE")
+            else
+              LAST_SGLANG=""
+              LAST_MEGATRON=""
+              LAST_WHEELS_CU13_X86=""
+              LAST_WHEELS_CU13_ARM64=""
+              LAST_WHEELS_CU12_X86=""
+              LAST_BUILD_EPOCH=""
+            fi
+            if [ "$SGLANG_SHA" != "$LAST_SGLANG" ] || [ "$MEGATRON_SHA" != "$LAST_MEGATRON" ] || [ "$WHEELS_CU13_X86_FP" != "$LAST_WHEELS_CU13_X86" ] || [ "$WHEELS_CU13_ARM64_FP" != "$LAST_WHEELS_CU13_ARM64" ] || [ "$WHEELS_CU12_X86_FP" != "$LAST_WHEELS_CU12_X86" ]; then
+              echo "Upstream change detected"
+            else
+              SHOULD_BUILD=false
+              echo "No upstream changes"
+            fi
+
+            # miles commits alone never trigger rebuilds, so bound how stale the baked
+            # miles checkout can get.
+            MAX_BUILD_AGE_SECONDS=$(( 24 * 3600 ))
+            if [ "$SHOULD_BUILD" = "false" ]; then
+              if ! [ "$LAST_BUILD_EPOCH" -gt 0 ] 2>/dev/null; then
+                SHOULD_BUILD=true
+                echo "No last-build timestamp recorded; rebuilding"
+              elif [ $(( NOW_EPOCH - LAST_BUILD_EPOCH )) -ge $MAX_BUILD_AGE_SECONDS ]; then
+                SHOULD_BUILD=true
+                echo "Last build was $(( (NOW_EPOCH - LAST_BUILD_EPOCH) / 3600 ))h ago (max $(( MAX_BUILD_AGE_SECONDS / 3600 ))h); rebuilding"
+              fi
             fi
           fi
 
-          # Save current values for next run (cached only when a build triggers,
-          # so line 6 = when the last build was kicked off).
+          # Save current values for the next gated run. The cache is only saved when a
+          # gated build triggers, so line 6 records when the last build was kicked off.
           echo "${SGLANG_SHA}" > "$CACHE_FILE"
           echo "${MEGATRON_SHA}" >> "$CACHE_FILE"
           echo "${WHEELS_CU13_X86_FP}" >> "$CACHE_FILE"
@@ -146,22 +160,26 @@ jobs:
           echo "${WHEELS_CU12_X86_FP}" >> "$CACHE_FILE"
           echo "${NOW_EPOCH}" >> "$CACHE_FILE"
 
+          # The six resolved values are already in GITHUB_OUTPUT (resolved.txt above);
+          # the gate verdict is the only output produced here.
           echo "should_build=${SHOULD_BUILD}" >> "$GITHUB_OUTPUT"
 
       - name: Save upstream SHAs to cache
-        if: steps.check.outputs.should_build == 'true'
+        if: |
+          steps.resolve.outputs.should_build == 'true' &&
+          (github.event_name == 'schedule' || inputs.simulate_schedule == true)
         uses: actions/cache/save@v4
         with:
           path: last_upstream_shas.txt
           key: upstream-shas-${{ github.run_id }}
 
   build-and-push:
-    needs: [check-upstream]
+    needs: [resolve-upstream]
     # schedule: only build if upstream changed
-    # push/dispatch: build; simulate_schedule runs the check but does not gate the manual build
-    if: |
-      always() &&
-      (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
+    # push/dispatch: build unconditionally; simulate_schedule reports the gate signal
+    # without gating the manual build. No always(): a failed resolve blocks the build
+    # instead of letting it proceed with unpinned inputs.
+    if: github.event_name != 'schedule' || needs.resolve-upstream.outputs.should_build == 'true'
     # The build itself never touches a GPU (buildx sandboxes RUN steps); docker-build
     # nodes are CI machines carrying a second runner instance dedicated to builds, so
     # image builds stop competing for GPU-suite runner slots.
@@ -170,17 +188,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
-
-      - name: Install Python + dependencies
+      - name: Ensure persistent buildx builder
+        # A named docker-container builder persists on the build node across runs and
+        # is the layer cache — correct now that every image input is pinned by
+        # SHA/fingerprint build-args. setup-buildx-action would create (and tear down)
+        # a fresh builder per run, discarding all state: every build was fully cold.
         run: |
-          apt-get update && apt-get install -y python3 python3-pip
-          pip3 install --break-system-packages typer
+          docker buildx inspect miles-builder >/dev/null 2>&1 || \
+            docker buildx create --name miles-builder --driver docker-container \
+              --driver-opt image=moby/buildkit:latest --driver-opt network=host \
+              --bootstrap
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -188,6 +205,37 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Gate: boot the amd64 image on this node's GPU before anything is pushed — a
+      # broken image must never reach a tag (a --no-deps install once dropped
+      # onnxscript and shipped a green image that failed every GPU job). Built with
+      # --load from the same builder cache the push builds hit afterwards, so the
+      # gate costs one local image export plus seconds of probing. arm64 halves ship
+      # unprobed (no ARM GPU nodes); rocm variants use different recipes/hardware.
+      - name: GPU smoke gate (amd64)
+        if: ${{ !startsWith(inputs.variant, 'rocm') && inputs.variant != 'cu13-aarch64' }}
+        run: |
+          set -euo pipefail
+          for v in ${{ inputs.variant || 'cu13 cu12-x86' }}; do
+            case "$v" in
+              cu13|cu13-x86) GV=cu13-x86; TAG=radixark/miles:smoke-gate ;;
+              cu12-x86)      GV=cu12-x86; TAG=radixark/miles:smoke-gate-cu12 ;;
+              *) echo "no amd64 smoke mapping for variant $v" >&2; exit 1 ;;
+            esac
+            python3 docker/build.py --variant "$GV" --image-tag custom --custom-tag smoke-gate \
+              --build-arg SGLANG_COMMIT=${{ needs.resolve-upstream.outputs.sglang_sha }} \
+              --build-arg MEGATRON_COMMIT=${{ needs.resolve-upstream.outputs.megatron_sha }} \
+              --build-arg MILES_COMMIT=${{ needs.resolve-upstream.outputs.miles_sha }} \
+              --builder miles-builder \
+              --load
+            docker run --rm --gpus all \
+              -v "$PWD/docker/smoke_test.py:/tmp/smoke_test.py:ro" \
+              "$TAG" python3 /tmp/smoke_test.py
+            docker rmi "$TAG"
+          done
+
+      # The source SHAs come from resolve-upstream (the same values the rebuild gate
+      # saw); the per-variant wheels fingerprints are left to build.py, which resolves
+      # them for the release tags the variant actually installs.
       - name: Build and push
         run: |
           python3 docker/build.py \
@@ -195,6 +243,10 @@ jobs:
             --image-tag ${{ inputs.image_tag || 'dev' }} \
             --dockerfile ${{ inputs.dockerfile || 'docker/Dockerfile' }} \
             ${{ inputs.custom_tag && format('--custom-tag {0}', inputs.custom_tag) || '' }} \
+            --build-arg SGLANG_COMMIT=${{ needs.resolve-upstream.outputs.sglang_sha }} \
+            --build-arg MEGATRON_COMMIT=${{ needs.resolve-upstream.outputs.megatron_sha }} \
+            --build-arg MILES_COMMIT=${{ needs.resolve-upstream.outputs.miles_sha }} \
+            --builder miles-builder \
             --push
 
       - name: Build and push cu12-x86 (automatic builds only)
@@ -202,7 +254,12 @@ jobs:
         # image; a manual workflow_dispatch builds only the single variant the user picked.
         if: ${{ !inputs.variant }}
         run: |
-          python3 docker/build.py --variant cu12-x86 --image-tag dev --push
+          python3 docker/build.py --variant cu12-x86 --image-tag dev \
+            --build-arg SGLANG_COMMIT=${{ needs.resolve-upstream.outputs.sglang_sha }} \
+            --build-arg MEGATRON_COMMIT=${{ needs.resolve-upstream.outputs.megatron_sha }} \
+            --build-arg MILES_COMMIT=${{ needs.resolve-upstream.outputs.miles_sha }} \
+            --builder miles-builder \
+            --push
 
       - name: Point latest to current dev
         # schedule only: latest is published registry state, so — like prune — a [DEBUG]
@@ -214,51 +271,61 @@ jobs:
 
       - name: Prune old dev tags
         if: github.event_name == 'schedule'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        # stdlib-only python, like build.py: build nodes carry docker + stock python3,
+        # no jq and no pip-installed packages.
         run: |
-          KEEP=20
-          IMAGE=radixark/miles
+          python3 - <<'EOF'
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.request
 
-          # Authenticate with Docker Hub API
-          TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \
-            -H "Content-Type: application/json" \
-            -d '{"username":"${{ secrets.DOCKERHUB_USERNAME }}","password":"${{ secrets.DOCKERHUB_TOKEN }}"}' \
-            | jq -r .token)
+          KEEP = 20
+          IMAGE = "radixark/miles"
+          HUB = "https://hub.docker.com/v2"
 
-          # Keep the newest $KEEP timestamped tags matching $1, delete the rest.
+          def call(url, data=None, method=None, token=None):
+              req = urllib.request.Request(url, method=method)
+              if token:
+                  req.add_header("Authorization", f"JWT {token}")
+              if data is not None:
+                  req.add_header("Content-Type", "application/json")
+                  req.data = json.dumps(data).encode()
+              with urllib.request.urlopen(req) as resp:
+                  body = resp.read()
+                  return json.loads(body) if body else None
+
+          token = call(
+              f"{HUB}/users/login/",
+              data={"username": os.environ["DOCKERHUB_USERNAME"], "password": os.environ["DOCKERHUB_TOKEN"]},
+          )["token"]
+
+          # Keep the newest KEEP timestamped tags matching pattern, delete the rest.
           # cu13 (dev-<ts>) and cu12-x86 (dev-cu12-<ts>) are pruned as independent series.
-          prune_series() {
-            PATTERN="$1"
-            TAGS=""
-            URL="https://hub.docker.com/v2/repositories/${IMAGE}/tags/?page_size=100"
-            while [ "$URL" != "null" ] && [ -n "$URL" ]; do
-              RESP=$(curl -s -H "Authorization: JWT ${TOKEN}" "$URL")
-              PAGE_TAGS=$(echo "$RESP" | jq -r '.results[].name' | grep -E "$PATTERN" || true)
-              TAGS="${TAGS}${PAGE_TAGS}"$'\n'
-              URL=$(echo "$RESP" | jq -r '.next')
-            done
+          def prune_series(pattern):
+              tags = []
+              url = f"{HUB}/repositories/{IMAGE}/tags/?page_size=100"
+              while url:
+                  page = call(url, token=token)
+                  tags += [t["name"] for t in page["results"] if re.fullmatch(pattern, t["name"])]
+                  url = page.get("next")
+              tags.sort()
+              print(f"Found {len(tags)} tags matching {pattern}")
+              if len(tags) <= KEEP:
+                  print(f"Nothing to prune for {pattern} (keep={KEEP})")
+                  return
+              print(f"Pruning {len(tags) - KEEP} old tags matching {pattern}...")
+              for tag in tags[: len(tags) - KEEP]:
+                  try:
+                      call(f"{HUB}/repositories/{IMAGE}/tags/{tag}/", method="DELETE", token=token)
+                      print(f"  Deleted {tag}")
+                  except urllib.error.HTTPError as e:
+                      print(f"  Failed to delete {tag} (HTTP {e.code})")
 
-            SORTED=$(echo "$TAGS" | grep -v '^$' | sort)
-            COUNT=$(echo "$SORTED" | wc -l | tr -d ' ')
-            echo "Found ${COUNT} tags matching ${PATTERN}"
-            if [ "$COUNT" -le "$KEEP" ]; then
-              echo "Nothing to prune for ${PATTERN} (keep=${KEEP})"
-              return
-            fi
-
-            DELETE_COUNT=$((COUNT - KEEP))
-            echo "Pruning ${DELETE_COUNT} old tags matching ${PATTERN}..."
-            echo "$SORTED" | head -n "$DELETE_COUNT" | while read -r TAG; do
-              [ -z "$TAG" ] && continue
-              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-                -H "Authorization: JWT ${TOKEN}" \
-                "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${TAG}/")
-              if [ "$HTTP_CODE" = "204" ]; then
-                echo "  Deleted ${TAG}"
-              else
-                echo "  Failed to delete ${TAG} (HTTP ${HTTP_CODE})"
-              fi
-            done
-          }
-
-          prune_series '^dev-[0-9]{12}$'
-          prune_series '^dev-cu12-[0-9]{12}$'
+          prune_series(r"dev-[0-9]{12}")
+          prune_series(r"dev-cu12-[0-9]{12}")
+          EOF

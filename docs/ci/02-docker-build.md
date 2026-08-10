@@ -29,10 +29,12 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 | `ENABLE_CUDA_13`                                                                                       | `1` = CUDA 13 (default) and installs the Mooncake wheel from the selected wheels release; `0` = CUDA 12.9 and keeps the base image's Mooncake                                                                                                                                                                                                         |
 | `WHEELS_REPO`                                                                                          | prebuilt-wheels GitHub repo (`yueming-yuan/miles-wheels`)                                                                                                                                                                                                                                                                                           |
 | `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64`                                                                  | the two **complete** wheels release tags selected by `TARGETARCH` and installed **verbatim**. cu13 uses the rolling `cu130-x86_64` / `cu130-aarch64` releases; cu12-x86 overrides `WHEELS_TAG_X86` with the rolling `cu129-x86_64` release                                                                                                                                                                                              |
-| `SGLANG_BRANCH` / `SGLANG_COMMIT`, `MEGATRON_REPO` / `MEGATRON_BRANCH`, `MILES_COMMIT`, `SGL_ROUTER_*` | source pins for the layered repos                                                                                                                                                                                                                                                                                                                   |
+| `SGLANG_COMMIT` / `MEGATRON_COMMIT` / `MILES_COMMIT`                                                   | **required** exact commits for the layered source repos — the build refuses branch-HEAD fallbacks so a cached layer can never silently serve a stale tree. `docker/resolve_upstream.py` resolves current values; `build.py` fills in any the caller didn't pass                                                                                       |
+| `WHEELS_FP_X86` / `WHEELS_FP_ARM64`                                                                    | **required** per built arch: asset-list fingerprint of the selected wheels release (from `docker/resolve_upstream.py`) — the cache-buster for the download layer, since rolling tags keep their name while assets get replaced                                                                                                                        |
+| `MEGATRON_REPO`, `SGL_ROUTER_*`                                                                        | remaining source knobs for the layered repos                                                                                                                                                                                                                                                                                                          |
 
 
-**Output** — one `radixark/miles` image for the platform buildx targets: the sglang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
+**Output** — one `radixark/miles` image for the platform buildx targets. Layer order is ascending change frequency: the sglang base, prebuilt release wheels and pinned third-party installs (TE, apex, `sgl-router` among them), the `requirements.txt` resolve (constrained so it cannot silently move anything already installed), then the fast-moving source trees last — Megatron-LM, sglang, miles (each at its required commit pin). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
 `docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH` + a ROCm `SGLANG_IMAGE_TAG`; the 7.2 variants also set `APPLY_ROCR_VMMFIX=1`, which downloads the ROCr VMM-pause fix `.so` from the `WHEELS_TAG_ROCM` release and installs it — ROCm 7.0 has no such regression and leaves it off).
 
@@ -55,13 +57,13 @@ The cu13 variants share one multi-arch CUDA base image and differ only in platfo
 
 The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
 
-A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`.
+A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, `--build-arg` (repeatable `KEY=VALUE` forwarded verbatim to `docker buildx build`, appended after the variant's own build-args so an explicit value wins), `--builder` (buildx builder to use; CI passes its persistent `miles-builder`).
 
 ## PR build check (in `pr-test.yml`)
 
 Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this breakage lands on `main` first.
 
-When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
+When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/resolve_upstream.py`, `docker/fetch_wheels.py`, `docker/smoke_test.py`, `docker/requirements-nodeps.txt`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
 
 | Job | What it does |
 | --- | --- |
@@ -75,23 +77,23 @@ Non-docker PRs are untouched: `docker-paths` reports no change, `docker-build` s
 
 The only automated builder of `radixark/miles`. Two jobs:
 
-- **`check-upstream`** (schedule / `simulate_schedule` only) — polls the inputs the image bakes: the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the source branches it builds — plus a fingerprint of the selected `yueming-yuan/miles-wheels` rolling release, so a rebuilt sgl-router or other wheel also triggers a build (re-uploads to the same tag are caught by fingerprint, not commit SHA). It compares against the values cached from the last build and sets `should_build=true` if any moved. `miles` itself is intentionally not polled — that would rebuild far too often. This is what stops the 12-hour cron from rebuilding an unchanged image, with one staleness bound: because the image also bakes a `miles` checkout, `should_build` is forced to `true` once the last triggered build is **24h** old, so `dev` never drifts more than a day behind the `miles` repo even when sglang / Megatron / wheels are quiet. (The cache file's last line records the epoch of the last triggered build; it is only re-saved when a build fires.)
+- **`resolve-upstream`** (always runs) — runs `docker/resolve_upstream.py` (the single resolver, shared with `build.py`) to resolve the inputs the image bakes: the HEAD SHAs of sglang `sglang-miles` (`sgl-project/sglang`), Megatron-LM `miles-main` (`radixark/Megatron-LM`), and miles itself (the pushed commit on push events, else `main` HEAD), plus a fingerprint of each `yueming-yuan/miles-wheels` rolling release (re-uploads to the same tag are caught by fingerprint, not commit SHA). All values are exposed as job outputs; an empty resolution fails the job, and `build-and-push` bakes the source SHAs via `--build-arg`. On **schedule / `simulate_schedule`** the values additionally gate the rebuild by comparing against the cache from the last gated build. `miles` is intentionally excluded from the value comparison because ordinary source changes would rebuild too often, but the gate forces a build once the last triggered build is **24h** old, so `dev` never drifts more than a day behind the repo when sglang, Megatron, and wheels are quiet.
 - **`build-and-push`** (self-hosted `docker-build` runner) — calls `docker/build.py` to build + push, then conditionally points `latest` at the new `dev` and prunes old timestamped tags.
 
-`build-and-push` runs when `check-upstream` was skipped, or ran and reported `should_build=true`.
+`build-and-push` requires `resolve-upstream` to succeed (a failed resolve blocks the build rather than building unpinned), and on schedule additionally requires `should_build=true`.
 
 ### Triggers: automatic vs manual
 
-- **Automatic** (no human) — the **schedule** (cron 00:00 / 12:00 UTC, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both leave `--variant` empty and build **two images**: `cu13` → `radixark/miles` (multi-arch) and `cu12-x86` → `radixark/miles:dev-cu12`.
+- **Automatic** (no human) — the **schedule** (cron 00:00 / 12:00 UTC, gated by `resolve-upstream`) and any **push to `main` that touches the same docker paths the PR check watches** (see PR build check above). Both leave `--variant` empty and build **two images**: `cu13` → `radixark/miles` (multi-arch) and `cu12-x86` → `radixark/miles:dev-cu12`.
 - **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. Only the `rocm-*` images have **no automatic path** (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
 
 
-| Trigger                                     | `check-upstream`                   | builds                | `latest` move     | prune      |
+| Trigger                                     | rebuild gate (`resolve-upstream`)  | builds                | `latest` move     | prune      |
 | ------------------------------------------- | ---------------------------------- | --------------------- | ----------------- | ---------- |
-| schedule (cron 00:00 / 12:00 UTC)           | runs; build if upstream moved or last build ≥ 24h ago | `cu13` + `cu12-x86`   | yes (both)        | yes (both) |
-| push to `main` touching `docker/Dockerfile`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | `cu13` + `cu12-x86`   | no                | no         |
-| `workflow_dispatch`                         | skipped                            | the one input variant | no                | no         |
-| `workflow_dispatch` + `simulate_schedule`   | runs                               | the one input variant | no                | no         |
+| schedule (cron 00:00 / 12:00 UTC)           | gates; build if upstream moved or the last build is 24h old | `cu13` + `cu12-x86`   | yes (both)        | yes (both) |
+| push to `main` touching the watched docker paths | resolves only, no gate             | `cu13` + `cu12-x86`   | no                | no         |
+| `workflow_dispatch`                         | resolves only, no gate             | the one input variant | no                | no         |
+| `workflow_dispatch` + `simulate_schedule`   | reports the gate signal, doesn't gate | the one input variant | no                | no         |
 
 
 ### Tags & where it pushes
@@ -108,7 +110,7 @@ What **moves a shared tag**: `--image-tag dev` overwrites `:dev` (or `:dev-cu12`
 
 ### Trigger a build yourself
 
-Manual builds run through `workflow_dispatch` — by default the image is built straight from the inputs you pass; with `simulate_schedule`, `check-upstream` runs first for signal but does not gate the manual build (see the `workflow_dispatch` rows in the table above for how this differs from schedule). Start one two ways:
+Manual builds run through `workflow_dispatch` — by default the image is built straight from the inputs you pass; with `simulate_schedule`, `resolve-upstream` additionally reports the gate signal but does not gate the manual build (see the `workflow_dispatch` rows in the table above for how this differs from schedule). Start one two ways:
 
 - **Web UI** — Actions → "Docker Build & Push" → **Run workflow**, then fill the inputs below.
 - **CLI** — `gh` dispatches on the repo's default branch; pass `--ref <branch>` to build another branch's workflow.
@@ -125,14 +127,15 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 | `image_tag` | yes | `dev` / `latest` / `custom` |
 | `custom_tag` | no | tag name; required when `image_tag=custom` |
 | `dockerfile` | no | path to Dockerfile (default `docker/Dockerfile`) |
-| `simulate_schedule` | no | `true` runs the `check-upstream` poll first (default `false`) |
+| `simulate_schedule` | no | `true` makes `resolve-upstream` report the rebuild-gate signal (default `false`) |
 
 ### Steps (`build-and-push`)
 
-1. checkout → Buildx → install Python + typer → Docker Hub login.
-2. **Build + push** via `build.py` — automatic runs build **both** `cu13` and `cu12-x86`; a manual dispatch builds only the one variant you picked.
-3. **schedule only** — point `latest`→`dev` and `latest-cu12`→`dev-cu12`.
-4. **schedule only** — prune each timestamp series to the newest 20.
+1. checkout → ensure the persistent `miles-builder` buildx builder (node-local layer cache; created once per node, reused by every build including PR builds) → Docker Hub login. No host package installs: `build.py` is stdlib-only, so build nodes need just docker and stock `python3`.
+2. **GPU smoke gate** — before anything is pushed, the amd64 image is `--load`ed from the builder cache and booted on the build node's GPU running `docker/smoke_test.py` (CUDA visible + tensor math, real TE/sglang/miles imports, nccl-tests binaries). A broken image never reaches a tag; the CUDA-variant builds all pass through it (arm64 halves ship unprobed — no ARM GPU nodes; `rocm-*` and `cu13-aarch64` skip it).
+3. **Build + push** via `build.py` — automatic runs build **both** `cu13` and `cu12-x86` (amd64 layers all cache hits from the gate build); a manual dispatch builds only the one variant you picked.
+4. **schedule only** — point `latest`→`dev` and `latest-cu12`→`dev-cu12`.
+5. **schedule only** — prune each timestamp series to the newest 20.
 
 ### Push auth & permissions
 
@@ -141,9 +144,9 @@ Pushes use a Docker Hub credential, not your identity:
 - **Remote (CI)** — the workflow logs in with repo secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`, so you don't hold the key — you just trigger the run, which needs repo **Write** access. No approval gate, but `build-and-push` runs on a `self-hosted` runner, so it only fires when one is online.
 - **Local** — `build.py --push` uses your own `docker login`; you need push rights to the target namespace (`radixark/miles`, or `rocm/sgl-dev` for ROCm).
 
-### Pinning specific repo versions
+### Pinning specific repo versions — reproducible builds
 
-`docker/Dockerfile` already takes `MEGATRON_BRANCH` / `SGLANG_COMMIT` / `MILES_COMMIT` build-args, but `build.py` does not yet forward arbitrary build-args and `workflow_dispatch` exposes no input for them — so commit-pinning from the workflow needs two changes first: a passthrough in `build.py` and matching inputs in `docker-build.yml`.
+Every image is now built from exact pins: CI passes the `resolve-upstream` SHAs as `--build-arg SGLANG_COMMIT/MEGATRON_COMMIT/MILES_COMMIT`, `build.py` resolves the per-variant wheels fingerprints, and the Dockerfile hard-fails on any missing pin instead of following a branch HEAD. To rebuild a historical image, pass its pins explicitly — e.g. `python docker/build.py --variant cu13-x86 --image-tag custom --custom-tag repro --build-arg SGLANG_COMMIT=<sha> --build-arg MEGATRON_COMMIT=<sha> --build-arg MILES_COMMIT=<sha>` (wheels fingerprints only key the cache, so bit-exact wheel reproduction additionally needs the release assets to be unchanged). A plain local `build.py` run with no `--build-arg` resolves all pins itself via `docker/resolve_upstream.py` and prints each one.
 
 ## Image retention (open)
 
