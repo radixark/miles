@@ -143,7 +143,7 @@ rollout_batch_size × n_samples_per_prompt
 In this recipe, 32 prompts × 8 samples = 256 = one optimizer step at global batch
 size 256.
 
-### The fine print
+### 🔍 The fine print
 
 - **The docker flags (Step 1).** `--gpus all` exposes the GPUs, `--ipc=host` and
   `--shm-size=32g` give NCCL and Ray the shared memory they need, and
@@ -171,13 +171,13 @@ size 256.
   the two `perf` lines time the generation side (`perf/rollout_time`) and the
   training side (`perf/actor_train_time`) of each iteration.
 
-## Inspecting a run
+### Inspecting a run
 
 | Question | Where to look |
 |---|---|
 | Is the policy learning? | `rollout/raw_reward` in stdout, or wandb |
 | Rollout or train bottleneck? | `perf/rollout_time` vs. `perf/actor_train_time` |
-| Are GPUs saturated? | `nvidia-smi dmon -s u` |
+| Are GPUs saturated? | The [Miles dashboard](/user-guide/dashboard) GPU timeline |
 | SGLang internals? | Ray worker logs under `~/.ray/session_latest/logs/`; raise verbosity with `--sglang-log-level` |
 | Ranks crashing? | `~/.ray/session_latest/logs/worker-*.err` |
 
