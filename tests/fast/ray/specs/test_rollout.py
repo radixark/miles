@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
+from argparse import Namespace
 
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.rollout_executor import RolloutExecutor
 from miles.ray.specs.rollout import (
@@ -18,11 +19,12 @@ from miles.utils.workers.ray_worker_manager import bootstrapped_worker_class
 from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
-def _args(*, debug_train_only: bool = False, use_session_server: bool = False) -> SimpleNamespace:
-    return SimpleNamespace(
+def _args(*, debug_train_only: bool = False, use_session_server: bool = False, **overrides) -> Namespace:
+    return make_args(
         pin_rollout_manager_to_head=False,
         debug_train_only=debug_train_only,
         use_session_server=use_session_server,
+        **overrides,
     )
 
 
@@ -53,8 +55,8 @@ class TestRolloutExecutorSpec:
 
         kwargs = spec_rollout_executor(_args(use_session_server=True)).ctor_kwargs(context)
 
-        assert sorted(kwargs) == ["args", "router_provider", "session_server_provider"]
-        assert kwargs["router_provider"] is capability.static_provider
+        assert sorted(kwargs) == ["args", "router_providers", "session_server_provider"]
+        assert kwargs["router_providers"] == [capability.static_provider]
         assert kwargs["session_server_provider"] is capability.static_provider
         assert capability.requested_static_pool_ids == ["inference-router-0", "session-server"]
 

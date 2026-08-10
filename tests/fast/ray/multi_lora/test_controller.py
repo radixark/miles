@@ -31,7 +31,7 @@ def _make_args(**overrides) -> SimpleNamespace:
 def events(monkeypatch) -> list[str]:
     recorded: list[str] = []
 
-    async def fake_resolve_router_addrs(args, *, provider):
+    async def fake_resolve_router_addrs(args, *, router_providers):
         recorded.append("resolve_router_addrs")
         args.sglang_router_ip = "10.0.0.1"
         args.sglang_router_port = 4321
@@ -61,14 +61,14 @@ def events(monkeypatch) -> list[str]:
 class TestInit:
     async def test_the_constructor_starts_nothing(self, events):
         """The platform constructs the worker long before the router exists, so init() owns every side effect."""
-        MultiLoRAController(args=_make_args(), router_provider=object())
+        MultiLoRAController(args=_make_args(), router_providers=[object()])
 
         assert events == []
 
     async def test_it_resolves_the_router_on_its_own_args_before_building_the_backend(self, events):
         """The worker's args snapshot predates the driver's resolution, so a captured url would be empty."""
         args = _make_args()
-        controller = MultiLoRAController(args=args, router_provider=object())
+        controller = MultiLoRAController(args=args, router_providers=[object()])
 
         await controller.init()
 
@@ -83,6 +83,6 @@ class TestInit:
 
     async def test_it_answers_the_port_the_server_actually_bound(self, events):
         """--multi-lora-api-port 0 asks the os for a port, so the caller can only learn it from the server."""
-        controller = MultiLoRAController(args=_make_args(), router_provider=object())
+        controller = MultiLoRAController(args=_make_args(), router_providers=[object()])
 
         assert await controller.init() == 8123
