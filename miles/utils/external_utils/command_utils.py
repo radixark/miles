@@ -82,6 +82,31 @@ def rsync_simple(path_src: str, path_dst: str, num_nodes: int | None = None):
     )
 
 
+def ssh_start_ray_workers(
+    master_addr: str,
+    num_gpus_per_node: int,
+    hostfile: str = "/root/mpi_rack_hostfile",
+    head_host: str | None = None,
+):
+    """Join every host in an MPI-style hostfile to the ray cluster over ssh, in parallel.
+
+    Ray itself cannot bring up the workers: the head is already running locally and the
+    workers have no agent yet. Pass this as `execute_train(before_ray_job_submit=...)` so
+    the cluster is complete before the job is submitted.
+    """
+    head_host = head_host or master_addr
+    exec_command_cpu(
+        f"for worker_ip in $(awk '{{print $1}}' {hostfile}); do "
+        f'if [ "$worker_ip" = {shlex.quote(head_host)} ]; then continue; fi; '
+        'echo "Starting Ray worker on $worker_ip"; '
+        'ssh root@"$worker_ip" '
+        '"pkill -9 sglang ; ray stop --force ; pkill -9 miles ; '
+        f"ray start --address={master_addr}:6379 --num-gpus {num_gpus_per_node} "
+        '--node-ip-address $worker_ip --disable-usage-stats" & '
+        "done; wait"
+    )
+
+
 def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
     _, partial_name = full_name.split("/")
     exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")

@@ -56,9 +56,9 @@ cd miles && pip install -e . --no-deps
 ## Download model + data
 
 ```bash
-hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
-hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
+hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B
+hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/datasets/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/aime-2024
 ```
 
 ## Convert weights (CPU + Gloo)
@@ -74,16 +74,25 @@ MEGATRON_LM_PATH=$(pip list | grep megatron-core | awk '{print $NF}')
 
 PYTHONPATH=${MEGATRON_LM_PATH} python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /root/Qwen3-4B \
-   --save           /root/Qwen3-4B_torch_dist
+   --hf-checkpoint /root/models/Qwen3-4B \
+   --save           /root/models/Qwen3-4B_torch_dist
 ```
 
 If you see `miles cannot be found`, re-run `pip install -e . --no-deps` in the repo.
 
 ## Launch
 
-The standard `scripts/run-qwen3-4B.sh` works as-is. The image already sets the
-ROCm-specific env vars you'd otherwise need:
+```bash
+python scripts/amd/run_qwen3_4b.py --hardware MI355X
+```
+
+That is the standard Qwen3-4B recipe plus the ROCm bits: it keeps Ray from blanking
+HIP/CUDA visibility and mirrors `HIP_VISIBLE_DEVICES` into `CUDA_VISIBLE_DEVICES`.
+`--hardware` (`MI350X` / `MI355X`) fixes the default GPU count per node; override it with
+`--num-gpus-per-node`. The generic `python scripts/run_qwen3_dense.py --model-name Qwen3-4B`
+also works if those env vars are already right.
+
+The image already sets the ROCm-specific env vars you'd otherwise need:
 
 ```bash
 HSA_OVERRIDE_GFX_VERSION=11.0.0   # or 9.4.0 for MI300

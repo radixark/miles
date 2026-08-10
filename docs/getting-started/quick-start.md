@@ -44,9 +44,9 @@ Three artifacts are needed: the model you will train, a training prompt set, and
 evaluation set.
 
 ```bash
-hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
-hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024
+hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B
+hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/datasets/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/datasets/aime-2024
 ```
 
 Qwen3-4B is the starting policy.
@@ -70,32 +70,34 @@ read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /root/Qwen3-4B \
-   --save /root/Qwen3-4B_torch_dist
+   --hf-checkpoint /root/models/Qwen3-4B \
+   --save /root/models/Qwen3-4B_torch_dist
 ```
 
-Keep the original HuggingFace directory too — the launch script still points the
-SGLang engines at it (`--hf-checkpoint`).
+Keep the original HuggingFace directory too — the launcher still points the
+SGLang engines at it (`--hf-checkpoint`). Both directories live under `--model-dir`, which
+defaults to `/root/models`; the datasets come from `--data-dir`, default `/root/datasets`.
 
 ## 4. Launch training
 
 ```bash
-bash scripts/run-qwen3-4B.sh
+python scripts/run_qwen3_dense.py --model-name Qwen3-4B
 ```
 
-The script is organized into named argument groups (`CKPT_ARGS`, `ROLLOUT_ARGS`,
-`GRPO_ARGS`, and so on) and is meant to be read and edited — it is the canonical
-place to change hyperparameters. When launched, it starts a local Ray cluster and
+The launcher is organized into named flag groups (checkpoint paths, rollout, GRPO,
+optimizer, performance, eval, SGLang) built as f-strings, and is meant to be read and
+edited — it is the canonical place to change hyperparameters; `--extra-args` appends flags
+without touching the file. When launched, it starts a local Ray cluster and
 submits `train.py` as a Ray job. The run is colocated (`--colocate`): the four
 SGLang engines (2 GPUs each) and the Megatron trainer share the same 8 GPUs,
 alternating between generation and training phases.
 
 A few defaults worth knowing on a first run:
 
-- Checkpoints are written to `/root/Qwen3-4B_miles/` every 20 rollouts
-  (`--save-interval 20`).
+- Checkpoints are written to `<output-dir>/checkpoints` — `/root/shared_data/checkpoints`
+  by default — every 20 rollouts (`--save-interval 20`).
 - The policy is evaluated on AIME-2024 every 20 rollouts (`--eval-interval 20`).
-- If the run dies, relaunch the same script — `--load` points at the save
+- If the run dies, relaunch the same command — `--load` points at the save
   directory, so training resumes from the last checkpoint.
 - The Ray dashboard at `http://localhost:8265` shows per-worker logs and GPU usage.
 

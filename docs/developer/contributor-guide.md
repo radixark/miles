@@ -26,7 +26,6 @@ miles/
 │   ├── models/               # per-model MODEL_ARGS bash files
 │   ├── amd/                  # AMD-specific launchers
 │   ├── tools/                # script-side utilities (e.g. verify_chat_template.py)
-│   ├── run-*.sh              # bash launch scripts
 │   └── run_*.py              # Python launch scripts
 ├── tools/                    # ckpt converters, calibrators, debug tools
 ├── tests/                    # pytest suite (fast / ci / e2e / utils)

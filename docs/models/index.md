@@ -27,7 +27,7 @@ Every recipe page follows the same six sections:
 1. **Model Introduction** — what the model is and why miles supports it.
 2. **Supported Variants** — model sizes + HF links.
 3. **Environment Setup** — env vars, downloads, and HF → Megatron conversion.
-4. **Launch** — the `scripts/run-<family>.sh` (or `run_<family>.py`) invocation.
+4. **Launch** — the `scripts/run_<family>.py` invocation.
 5. **Recipe Configuration** — parallelism, algorithm, rollout/SGLang, optimizer.
 6. **Pairs Well With** — links to the advanced features that complement this recipe.
 

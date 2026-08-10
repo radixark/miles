@@ -2,15 +2,23 @@
 title: Training Script Walkthrough
 description: An annotated tour through every argument group in a Miles launch script, plus the feature modes you turn on when a recipe isn't enough.
 ---
-A Miles launch script is plain bash — a sequence of `XXX_ARGS=( ... )` arrays handed
-to `train.py` or `train_async.py`. This page walks through each group and then covers
-the execution modes you turn on beyond the default recipe.
+The launchers under `examples/` are plain bash — a sequence of `XXX_ARGS=( ... )` arrays
+handed to `train.py` or `train_async.py`. This page walks through each group and then
+covers the execution modes you turn on beyond the default recipe.
 
-`scripts/run-qwen3-4B.sh` is the reference script; other recipes follow the same shape.
+`examples/lora/run-qwen3-4B-megatron-lora.sh` is the reference script — a Qwen3-4B recipe
+with all eight groups plus a `LORA_ARGS` block; other example recipes follow the same shape.
+
+The launchers under `scripts/` are python, and build the very same flag groups as
+f-strings: one string per concern, concatenated and handed to `train.py`, with the
+per-variant values pulled from a recipe table and the knobs exposed as Typer options.
+`scripts/run_qwen3_dense.py` is the direct counterpart of the script above — read its
+`ScriptArgs` for the options and `_RECIPES` for the per-model values. Everything this page
+says about a flag holds either way.
 
 ## The eight argument groups
 
-Every launch script assembles eight bash arrays, passes them as CLI flags, and hands
+Every bash launcher assembles eight arrays, passes them as CLI flags, and hands
 off to `train.py`:
 
 | Array | Governs |
@@ -34,7 +42,8 @@ a HuggingFace checkpoint. Miles therefore loads a matching python file from
 
 ```bash
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" qwen3-4B)" || exit 1
+REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." &>/dev/null && pwd)"
+MODEL_ARGS_LINE="$(python3 "${REPO_ROOT}/miles/utils/external_utils/model_args_utils.py" qwen3-4B)" || exit 1
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 ```
 
@@ -47,7 +56,7 @@ padding, or normalization epsilon. Diff the `config.json` against the file in
 `scripts/models/` before you run, and override anything that drifts:
 
 ```bash
-MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" qwen3-4B)" || exit 1
+MODEL_ARGS_LINE="$(python3 "${REPO_ROOT}/miles/utils/external_utils/model_args_utils.py" qwen3-4B)" || exit 1
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 MODEL_ARGS+=(--rotary-base 10000)
 ```
@@ -60,11 +69,11 @@ The three roles — actor, frozen reference, HuggingFace directory — are defin
 
 ```bash
 CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B                # tokenizer, config, SGLang init
-   --ref-load      /root/Qwen3-4B_torch_dist     # frozen ref (KL anchor)
-   --load          /root/Qwen3-4B_miles/         # actor resume point
-   --save          /root/Qwen3-4B_miles/         # where checkpoints are written
-   --save-interval 20                            # rollouts between writes
+   --hf-checkpoint /root/models/Qwen3-4B              # tokenizer, config, SGLang init
+   --ref-load      /root/models/Qwen3-4B_torch_dist   # frozen ref (KL anchor)
+   --load          /root/shared_data/checkpoints      # actor resume point
+   --save          /root/shared_data/checkpoints      # where checkpoints are written
+   --save-interval 20                                 # rollouts between writes
 )
 ```
 
@@ -103,7 +112,7 @@ A compact example:
 
 ```bash
 ROLLOUT_ARGS=(
-   --prompt-data /root/dapo-math-17k/dapo-math-17k.jsonl
+   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
    --input-key prompt
    --label-key label
    --apply-chat-template
@@ -141,7 +150,7 @@ that eval is deterministic and comparable across runs.
 ```bash
 EVAL_ARGS=(
    --eval-interval 5                                # rollouts between eval runs
-   --eval-prompt-data aime /root/aime-2024/aime-2024.jsonl
+   --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
    --n-samples-per-eval-prompt 16                   # eval group size
    --eval-max-response-len 16384                    # longer than train rollout
    --eval-top-p 1                                   # disable nucleus
@@ -437,7 +446,7 @@ changes — only checkpoint pointers differ.
 Download the FP8 weights alongside the BF16 originals:
 
 ```bash
-hf download Qwen/Qwen3-4B-FP8 --local-dir /root/Qwen3-4B-FP8
+hf download Qwen/Qwen3-4B-FP8 --local-dir /root/models/Qwen3-4B-FP8
 ```
 
 Then swap the `--hf-checkpoint` pointer to the FP8 directory while leaving the
@@ -446,10 +455,10 @@ Megatron side unchanged:
 ```bash
 CKPT_ARGS=(
    # SGLang picks up the FP8 weights from here
-   --hf-checkpoint /root/Qwen3-4B-FP8
+   --hf-checkpoint /root/models/Qwen3-4B-FP8
 
    # Megatron still trains from the BF16-derived torch_dist checkpoint
-   --ref-load      /root/Qwen3-4B_torch_dist
+   --ref-load      /root/models/Qwen3-4B_torch_dist
 )
 ```
 
