@@ -1,6 +1,5 @@
 /.github/CODEOWNERS @fzyzcjy @Ying1123
 /.github/workflows/ @yushengsu-thu @guapisolo @yueming-yuan
-/.github/scripts/neon_access_job.py @yushengsu-thu @guapisolo @yueming-yuan
 /miles/ @fzyzcjy @yueming-yuan @Zhichenzzz
 /miles/backends/ @fzyzcjy @yueming-yuan @maocheng23 @Zhichenzzz @Shi-Dong
 /miles/backends/fsdp_utils/ @fzyzcjy @yueming-yuan @Zhichenzzz @guapisolo @Rockdu

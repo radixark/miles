@@ -15,7 +15,7 @@ def load_module(name, path):
     return module
 
 
-JOB = load_module("neon_access_job", ROOT / ".github/scripts/neon_access_job.py")
+JOB = load_module("neon_access_job", ROOT / ".github/workflows/scripts/neon_access_job.py")
 CLIENT = load_module(
     "run_neon_workflow",
     ROOT / ".claude/skills/neon-access/scripts/run_neon_workflow.py",
@@ -231,9 +231,12 @@ def test_workflow_keeps_secret_and_sql_at_executor_boundary():
 
     assert workflow.count("secrets.NEON_DATABASE_URL") == 1
     assert "SQL_GZIP_BASE64: ${{ inputs.sql_gzip_base64 }}" in workflow
-    assert "run: python3 .github/scripts/neon_access_job.py" in workflow
+    assert "run: python3 .github/workflows/scripts/neon_access_job.py" in workflow
+    assert "GITHUB_STEP_SUMMARY" not in workflow
     assert "collaborators/${actor}/permission" in workflow
+    assert "github.triggering_actor" in workflow
     assert 'permission" != "write"' in workflow
+    assert "Neon access must run from the default branch" in workflow
     assert "retention-days: 1" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in workflow

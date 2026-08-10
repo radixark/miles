@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# doc-dev: docs/ci/04-neon-access.md
 
 import base64
 import gzip
