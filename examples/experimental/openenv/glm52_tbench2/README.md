@@ -42,11 +42,10 @@ reward hook in `../openenv_generate.py`, dataset generation in
 
 ## Prerequisites
 
-**Container image.** A miles runtime image whose sglang includes
-sgl-project/sglang#33478 (NextN unified-loader attributes — EAGLE draft load
-crashes without it) and sgl-project/sglang#33479 (DSA cuda-graph page table in
-the pausable memory region — a paused engine keeps tens of GB resident without
-it). Do not put a separate sglang checkout on `PYTHONPATH`.
+**Container image.** A miles runtime image with sglang from `sglang-miles`
+at 2026-08-04 or later (needs the NextN loader and pausable page-table fixes).
+Do not put a separate sglang checkout on `PYTHONPATH` — an older one shadows
+the image's.
 
 **Python packages**, installed in the image or once per node (the recipe
 asserts them at launch):
