@@ -33,7 +33,8 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-20
 
 ```bash
 cd /root/miles
-source scripts/models/mimo-7B-rl.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py mimo-7B-rl)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/MiMo-7B-RL \

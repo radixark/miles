@@ -1140,6 +1140,7 @@ def make_conversion_actor():
         num_gpus=0,
         runtime_env={
             "env_vars": {
+                "PYTHONUNBUFFERED": "1",
                 "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
                 "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES": "1",
             }

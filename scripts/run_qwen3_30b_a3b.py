@@ -57,16 +57,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
     if args.rollout_fp8:
-        U.exec_command(f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8")
+        U.exec_command_cpu(
+            f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
+        )
 
     if args.rollout_mxfp8:
-        U.exec_command(
+        U.exec_command_gpu(
             f"python tools/convert_hf_to_mxfp8.py --model-dir {args.model_dir}/{args.model_name} "
             f"--save-dir {args.model_dir}/{args.model_name}-MXFP8 "
             f"{args.extra_args} "
@@ -84,7 +86,7 @@ def prepare(args: ScriptArgs):
             },
         }
         nvfp4_env_prefix = " ".join(f"{key}={value}" for key, value in nvfp4_env_vars.items()) + " "
-        U.exec_command(
+        U.exec_command_gpu(
             f"{nvfp4_env_prefix}"
             f"python tools/convert_hf_to_nvfp4.py --model-dir {args.model_dir}/{args.model_name} "
             f"--save-dir {args.model_dir}/{args.model_name}-NVFP4 "
@@ -92,7 +94,7 @@ def prepare(args: ScriptArgs):
         )
 
     if args.rollout_int4:
-        U.exec_command(
+        U.exec_command_gpu(
             f"python tools/convert_hf_to_int4_direct.py --model-dir {args.model_dir}/{args.model_name} --save-dir {args.model_dir}/{args.model_name}-INT4"
         )
 
@@ -283,7 +285,7 @@ matchers:
         pattern: "*"
         config: "bf16"
 """.strip()
-        misc_args += f"--te-precision-config-file {U.save_to_temp_file(te_precision_config_text, 'yaml')} "
+        misc_args += f"--te-precision-config-file {U.encode_pseudo_file(te_precision_config_text)} "
 
     if args.enable_megatron_bridge:
         misc_args += "--megatron-to-hf-mode bridge "
@@ -392,7 +394,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 

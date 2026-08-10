@@ -9,8 +9,8 @@ import torch.nn as nn
 from torch.distributed.fsdp import fully_shard
 from torch.distributed.tensor import DTensor
 
-from miles.backends.experimental.fsdp_utils.dtensor import gather_full_param
-from miles.backends.experimental.fsdp_utils.parallel import build_fsdp_meshes
+from miles.backends.fsdp_utils.dtensor import gather_full_param
+from miles.backends.fsdp_utils.parallel import build_fsdp_meshes
 
 
 class _Block(nn.Module):

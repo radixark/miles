@@ -49,8 +49,8 @@ def _strip_remote_code(model_path: str):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir}")
-    U.exec_command(f"hf download {HF_REPO} --local-dir {args.model_dir}/{MODEL_NAME}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir}")
+    U.exec_command_cpu(f"hf download {HF_REPO} --local-dir {args.model_dir}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
     _strip_remote_code(f"{args.model_dir}/{MODEL_NAME}")
@@ -105,7 +105,7 @@ def execute(args: ScriptArgs):
         "--adam-beta2 0.98 "
     )
 
-    # No --wandb-key on purpose: exec_command prints the full command line, so the
+    # No --wandb-key on purpose: exec_command_cpu prints the full command line, so the
     # trainer must pick up WANDB_API_KEY from its inherited environment instead.
     wandb_args = (
         f"--use-wandb --wandb-project {args.wandb_project} --wandb-group {WANDB_GROUP} "

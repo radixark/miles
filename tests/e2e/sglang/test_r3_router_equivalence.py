@@ -2,7 +2,12 @@ from tests.ci.ci_register import register_cuda_ci
 
 # Two model families run sequentially in one job, so est_time is roughly 2x
 # of a single family.
-register_cuda_ci(est_time=1000, suite="stage-c-4-gpu-h200", labels=["sglang"])
+register_cuda_ci(
+    est_time=1100,
+    suite="stage-c-4-gpu-h200",
+    labels=["sglang"],
+    disabled="Miles Router is deprecated.",
+)
 
 """E2E test: verify sglang router and miles router produce identical rollout
 routing replay results across MoE models.
@@ -27,7 +32,7 @@ identical prompts).
 Backend / checkpoint
 ~~~~~~~~~~~~~~~~~~~~
 Megatron backend (same as the sibling ``tests/e2e/megatron/*_r3.py``
-tests) — sourcing ``scripts/models/{type}.sh`` populates
+tests) — loading ``scripts/models/{type}.py`` populates
 ``args.num_layers`` / ``args.moe_router_topk`` that the rollout-side
 reshape of ``routed_experts`` depends on.  We do *not* set
 ``--use-kl-loss`` or ``--kl-coef`` > 0, which is what gates the
@@ -115,9 +120,9 @@ def _get_config(model_family: str) -> ModelConfig:
 
 def prepare(model_family: str) -> None:
     cfg = _get_config(model_family)
-    U.exec_command("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     if not Path(cfg.local_dir).exists():
-        U.exec_command(f"hf download {cfg.hf_repo} --local-dir {cfg.local_dir}")
+        U.exec_command_cpu(f"hf download {cfg.hf_repo} --local-dir {cfg.local_dir}")
     if not Path(PROMPT_DATA_PATH).exists():
         U.hf_download_dataset("zhuzilin/dapo-math-17k")
 

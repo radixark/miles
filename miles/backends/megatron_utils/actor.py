@@ -12,6 +12,7 @@ import torch
 import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
+from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
@@ -216,14 +217,17 @@ class MegatronTrainRayActor(TrainRayActor):
                 self.sleep()
             return start_rollout_id
 
+        main_cast_ctx = None
+        if args.rematerialize_param_from_master_weight:
+            main_cast_ctx = build_main_cast_context(args, model=self.model, optimizer=self.optimizer)
+
         self.weights_backuper = TensorBackuper.create(
             source_getter=lambda: named_params_and_buffers(
                 self.args,
                 self.model,
                 convert_to_global_name=args.megatron_to_hf_mode == "raw",
-                translate_gpu_to_cpu=not self.args.enable_weights_backuper,
             ),
-            single_tag=None if args.enable_weights_backuper else "actor",
+            main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
         if self._enable_weight_backup:
@@ -304,8 +308,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
         destroy_process_groups()
 
-        tag = "default" if lora_rollout_enabled(self.args) else None
-        torch_memory_saver.pause(tag=tag)
+        if self.args.rematerialize_param_from_master_weight and self.role == "actor":
+            # Params stay resident for update_weights, which pauses them afterwards.
+            torch_memory_saver.pause(tag="grad_buffer")
+            torch_memory_saver.pause(tag="default")
+        else:
+            tag = "default" if lora_rollout_enabled(self.args) else None
+            torch_memory_saver.pause(tag=tag)
 
         self._asleep = True
         print_memory("after offload model")
@@ -741,6 +750,8 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
                 logger.warning("Skipping actor-to-rollout weight update because " "--debug-skip-weight-update is set.")
+            if self.args.rematerialize_param_from_master_weight:
+                torch_memory_saver.pause(tag="param_buffer")
             if process_groups_are_temporary:
                 destroy_process_groups()
             return
@@ -757,6 +768,8 @@ class MegatronTrainRayActor(TrainRayActor):
             print_memory("before update_weights")
             self.weight_updater.update_weights()
             print_memory("after update_weights")
+            if dist.get_rank() == 0:
+                ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
 
             if is_multi_lora_enabled(self.args):
                 from miles.backends.megatron_utils.multi_lora_utils import commit_weight_push
@@ -783,6 +796,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 else:
                     self.weights_backuper.backup("old_actor")
 
+        if self.args.rematerialize_param_from_master_weight:
+            torch_memory_saver.pause(tag="param_buffer")
         if process_groups_are_temporary:
             destroy_process_groups()
 
