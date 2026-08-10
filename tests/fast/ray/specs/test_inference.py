@@ -1082,14 +1082,14 @@ class TestSpecInferenceController:
         assert capability.requested_pool_ids == [compute_engine_pool_ids(args)]
         assert kwargs["engine_provider"] is capability.cells_provider
 
-    def test_it_asks_for_a_provider_that_can_address_the_router(self, tmp_path):
-        """A router is addressed rather than observed, and only the backend knows how to redeem that name."""
+    def test_it_asks_for_one_router_provider_per_model(self, tmp_path):
+        """Every model is served by its own router pool, so one provider cannot answer for all of them."""
         capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
 
         kwargs = spec_inference_controller(self._args(tmp_path)).ctor_kwargs(self._ctor_context(capability))
 
         assert capability.requested_static_pool_ids == [compute_router_pool_id(0)]
-        assert kwargs["router_provider"] is capability.static_provider
+        assert kwargs["router_providers"] == [capability.static_provider]
 
     def test_a_train_only_run_builds_a_controller_over_an_empty_pool(self, tmp_path):
         """--debug-train-only deploys no engines, so the controller observes no pools at all."""
