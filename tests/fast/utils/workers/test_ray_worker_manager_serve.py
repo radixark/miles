@@ -373,7 +373,7 @@ class TestTheBootstrappedClass:
 
         capability = probe.contexts[0].capability
         capability.cell_operations()
-        capability.dynamic_worker_provider(pool_ids=["trainer-actor"])
+        capability.dynamic_worker_provider(pool_ids=["trainer-engine-actor"])
 
         assert creations == ["created"]
 
@@ -386,10 +386,10 @@ class TestTheBootstrappedClass:
 
         actor_class(ctor_kwargs=probe, context=_launch_context())
         capability = probe.contexts[0].capability
-        capability.dynamic_worker_provider(pool_ids=["trainer-actor"])
+        capability.dynamic_worker_provider(pool_ids=["trainer-engine-actor"])
         capability.static_worker_provider(pool_id="rollout-executor")
 
-        assert built.requested_pool_ids == [["trainer-actor"]]
+        assert built.requested_pool_ids == [["trainer-engine-actor"]]
         assert built.requested_static_pool_ids == ["rollout-executor"]
 
     async def test_passes_the_computed_keywords_to_the_wrapped_constructor(self):
