@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import logging
 import os
@@ -7,7 +8,6 @@ from argparse import Namespace
 from contextlib import ExitStack, nullcontext
 from typing import TYPE_CHECKING
 
-import ray
 import torch
 import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
