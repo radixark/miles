@@ -14,6 +14,10 @@ from pathlib import Path
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.rpc.common.metadata import rpc
+from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+
+POOL_ID = "e2e-pool"
+RPC_PORT_FLAG = "--rpc-port"
 
 _BLOCK_GUARD_SECONDS = 20.0
 
@@ -342,17 +346,25 @@ class E2eWorker:
             return self._async_gates.setdefault(tag, asyncio.Event())
 
 
-def make_worker(argv: list[str]) -> E2eWorker:
+def compute_specs(worker_argv: list[str]) -> list[ServeWorkerSpec]:
+    return [spec_of(worker_argv, env_var=lambda context: {"MILES_E2E_ARGV": ",".join(worker_argv)})]
+
+
+def spec_of(worker_argv: list[str], *, env_var) -> ServeWorkerSpec:
+    args = parse_run_args(worker_argv)
+    return ServeWorkerSpec(
+        name=POOL_ID,
+        port_infos=[PortInfo(name="rpc", static_port=args.rpc_port)],
+        env_var=env_var,
+        scheduling=SchedulingSpec(num_cells=1, num_workers_per_cell=1, num_gpus_per_worker=0),
+        worker_class=f"{__name__}.E2eWorker",
+        ctor_kwargs=lambda context: dict(argv=worker_argv, state_dir=Path(args.state_dir)),
+    )
+
+
+def parse_run_args(worker_argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-dir", required=True)
-    args, _ = parser.parse_known_args(argv)
-
-    return E2eWorker(argv, Path(args.state_dir))
-
-
-def make_raising_worker(argv: list[str]) -> E2eWorker:
-    raise RuntimeError(WORKER_FACTORY_ERROR)
-
-
-def compute_env_vars(argv: list[str]) -> dict[str, str]:
-    return {"MILES_E2E_ARGV": ",".join(argv)}
+    parser.add_argument(RPC_PORT_FLAG, type=int, required=True)
+    args, _ = parser.parse_known_args(worker_argv)
+    return args
