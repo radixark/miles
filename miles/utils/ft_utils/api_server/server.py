@@ -12,7 +12,6 @@ from starlette.responses import JSONResponse
 
 from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.ray.specs.train import compute_trainer_pool_id
-from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
@@ -31,7 +30,7 @@ _THREAD_READY_POLL_INTERVAL_SECONDS = 0.05
 def start_api_server(
     *,
     args,
-    actor_model: TrainerController,
+    actor_model: BaseWorkerHandle,
     inference_controller: BaseWorkerHandle,
     host: str = "127.0.0.1",
     port: int,

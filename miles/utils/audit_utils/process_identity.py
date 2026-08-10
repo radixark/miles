@@ -24,6 +24,14 @@ class InferenceControllerProcessIdentity(_ProcessIdentityBase):
     component: Literal["inference_controller"] = "inference_controller"
 
 
+class TrainerControllerProcessIdentity(_ProcessIdentityBase):
+    component: Literal["trainer_controller"] = "trainer_controller"
+    role: Literal["actor", "critic"]
+
+    def to_name(self) -> str:
+        return f"{self.component}_{self.role}"
+
+
 class TrainProcessIdentity(_ProcessIdentityBase):
     component: Literal["actor", "critic"]
     cell_index: NonNegativeInt
@@ -34,6 +42,10 @@ class TrainProcessIdentity(_ProcessIdentityBase):
 
 
 ProcessIdentity = Annotated[
-    MainProcessIdentity | RolloutExecutorProcessIdentity | InferenceControllerProcessIdentity | TrainProcessIdentity,
+    MainProcessIdentity
+    | RolloutExecutorProcessIdentity
+    | InferenceControllerProcessIdentity
+    | TrainerControllerProcessIdentity
+    | TrainProcessIdentity,
     Discriminator("component"),
 ]

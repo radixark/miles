@@ -67,16 +67,16 @@ def _make_controller(
     train_conftest.fake_worker_manager.num_cells = num_cells
     train_conftest.fake_worker_manager.actor_count_per_cell = actor_count_per_cell
     group = TrainerController(
-        args=_make_mock_args(
-            indep_dp=True,
-            gpus_per_cell=actor_count_per_cell,
-            num_cells=num_cells,
-            ci_ft_test_actions=ci_ft_test_actions,
-        ),
         role="actor",
         with_ref=with_ref,
         with_opd_teacher=with_opd_teacher,
         inference_controller=inference_controller,
+    )
+    group.args = _make_mock_args(
+        indep_dp=True,
+        gpus_per_cell=actor_count_per_cell,
+        num_cells=num_cells,
+        ci_ft_test_actions=ci_ft_test_actions,
     )
     group._health_checker_config = compute_trainer_health_checker_config(
         group.args, expected_num_cells=group._expected_num_cells
@@ -124,7 +124,7 @@ def _was_killed(group: TrainerController, cell_index: int) -> bool:
 
 async def _init_controller(group: TrainerController) -> None:
     """Call init and wait for all cells to become alive."""
-    await group.init()
+    await group.init(group.args)
 
 
 async def _make_alive_controller(*, num_cells: int = 3, **kwargs) -> TrainerController:
@@ -224,7 +224,7 @@ class TestExecuteFirstAlive:
 class TestGetTrainParallelConfig:
     @staticmethod
     def _set_configs(cell, configs: list[dict]) -> None:
-        handles = cell._get_actor_handles()
+        handles = get_raw_actor_handles(cell)
         ray.get(
             [handle.set_train_parallel_config.remote(config) for handle, config in zip(handles, configs, strict=True)]
         )
@@ -239,8 +239,8 @@ class TestGetTrainParallelConfig:
     async def test_skips_stopped_cells(self):
         """A stopped cell 0 must not be asked; the next alive cell answers instead."""
         group = await _make_alive_controller(num_cells=2)
-        self._set_configs(group._cells[1], [{"dp_size": 2}])
-        await group._cells[0].stop()
+        self._set_configs(_cell(group, 1), [{"dp_size": 2}])
+        await _stop_cell(group, 0)
 
         assert await group.get_train_parallel_config() == {"dp_size": 2}
 
@@ -875,6 +875,22 @@ class TestCheckTrainOneAttempt:
         with pytest.raises(NonRetryableError, match="All cells failed"):
             _make_controller(num_cells=1)._check_train_one_attempt(_alive_cells_for(results), results)
 
+    @pytest.mark.parametrize(
+        "results",
+        [
+            [_ERR],  # single cell errored
+            [_ERR, _ERR2],  # multiple cells all errored
+        ],
+    )
+    def test_raises_a_fatal_error_when_every_cell_is_already_errored(self, results):
+        """With every cell errored there is nothing left to heal, so an all-errored attempt is non-retryable."""
+        group = _make_controller(num_cells=1)
+        for cell in group._cells:
+            cell._mark_as_errored()
+
+        with pytest.raises(NonRetryableError, match="All cells failed"):
+            group._check_train_one_attempt(_alive_cells_for(results), results)
+
     def test_compute_attempt_outcomes_buckets_cells_by_index(self):
         """_compute_attempt_outcomes buckets each alive cell into errored / discarded / normal by index."""
         results = [_ERR, [DISCARDED], [NORMAL, NORMAL]]
@@ -1105,7 +1121,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
 
             await group._maybe_log_inference_engine_weight_checksums(rollout_id=3)
 
-        inference_ctl.check_weights.assert_awaited_once_with("checksum")
+        inference_ctl.check_weights.assert_awaited_once_with(action="checksum")
         mock_logger.log.assert_called_once()
         logged = mock_logger.log.call_args.args[1]
         assert logged == dict(rollout_id=3, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}])

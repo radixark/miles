@@ -48,7 +48,7 @@ def _install_driver_fakes(
     async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
         return components.inference_controller, components.rollout_executor, 4
 
-    async def create_training_models(_args: SimpleNamespace, _controller: Any, _executor: Any) -> tuple[Any, Any]:
+    async def create_training_models(_args: SimpleNamespace, _executor: Any) -> tuple[Any, Any]:
         return components.actor_model, components.critic_model
 
     async def update_weights(_model: Any, _executor: Any, rollout_id: int | None = None) -> None:
