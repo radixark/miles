@@ -181,6 +181,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 len(self._snapshot),
                 self.args.hf_checkpoint,
             )
+        dist.barrier(group=get_gloo_group())
 
     def _for_each_hf_bucket(self, bucket_func: Callable[[list[tuple[str, torch.Tensor]], tqdm | None], None]) -> None:
         """Feed every gathered HF bucket through ``bucket_func``: the base-class TP pass then the
