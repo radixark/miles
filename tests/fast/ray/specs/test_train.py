@@ -141,6 +141,36 @@ class TestScheduling:
         with pytest.raises(AssertionError, match="must be divisible"):
             specs_trainer(_make_args(indep_dp=True, actor_num_nodes=1, actor_num_gpus_per_node=5))
 
+    def test_a_cell_spanning_several_nodes_is_deployed_as_one_pod_per_node(self):
+        """A trainer rank owns one gpu, so a two-node cell has to be two pods of a node's worth."""
+        (spec,) = specs_trainer(_make_args(actor_num_nodes=2, actor_num_gpus_per_node=8))
+
+        assert (spec.scheduling.pods_per_cell(), spec.scheduling.workers_per_pod()) == (2, 8)
+
+    def test_each_role_packs_its_pods_with_its_own_per_node_count(self):
+        """A critic on smaller nodes must not inherit the actor's packing, or every name and port shifts."""
+        args = _make_args(
+            use_critic=True,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=8,
+            critic_num_nodes=2,
+            critic_num_gpus_per_node=2,
+        )
+
+        actor_spec, critic_spec = specs_trainer(args)
+
+        assert (actor_spec.scheduling.pods_per_cell(), actor_spec.scheduling.workers_per_pod()) == (1, 8)
+        assert (critic_spec.scheduling.pods_per_cell(), critic_spec.scheduling.workers_per_pod()) == (2, 2)
+
+    def test_a_cell_smaller_than_a_node_fits_into_one_pod(self, monkeypatch):
+        """An independent-DP cell of two ranks must not claim a pod bigger than the cell itself."""
+        monkeypatch.setattr("miles.ray.specs.train.compute_megatron_world_size_except_dp", lambda _args: 2)
+
+        (spec,) = specs_trainer(_make_args(actor_num_gpus_per_node=8, indep_dp=True))
+
+        assert spec.scheduling.num_workers_per_cell == 2
+        assert (spec.scheduling.pods_per_cell(), spec.scheduling.workers_per_pod()) == (1, 2)
+
     def test_a_worker_reserves_a_fraction_of_its_gpu(self):
         """The rollout engine shares the same GPU slot, so the trainer must not claim it whole."""
         (spec,) = specs_trainer(_make_args())

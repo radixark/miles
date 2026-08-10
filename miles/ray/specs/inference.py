@@ -263,6 +263,7 @@ def _compute_spec_inference_engine(
         # TODO: may need real num for k8s native mode
         num_gpus_per_worker=0.2,
         num_gpu_slots_per_worker=min(server_group_config.num_gpus_per_engine, args.num_gpus_per_node),
+        num_gpus_per_node=args.num_gpus_per_node,
         pg_name="rollout",
         pg_slot_offset=server_group_config.gpu_offset,
     )
