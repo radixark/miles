@@ -19,14 +19,17 @@ from miles.utils.audit_utils.event_logger.models import (
     TrainGroupStepEndEvent,
     WitnessAllocateIdEvent,
 )
+from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_persisted_witness_counter
 from miles.utils.data import remove_train_output_refs
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.logging_utils import configure_logger
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.rpc.common.wire_types import WireNamespace
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -48,14 +51,12 @@ def compute_trainer_health_checker_config(args, *, expected_num_cells: int) -> S
 class TrainerController:
     def __init__(
         self,
-        args,
         *,
         inference_controller: BaseWorkerHandle | None,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
-        self.args = args
         self._inference_controller = inference_controller
         self._role = role
         self._with_ref = with_ref
@@ -293,12 +294,13 @@ class TrainerController:
 
     # ------------------------ API :: others ------------------------
 
-    async def init(self) -> list[Any]:
+    async def init(self, args: WireNamespace) -> list[Any]:
         """
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
         """
-        args = self.args
+        self.args = args
+        configure_logger(args, source=TrainerControllerProcessIdentity(role=self._role))
 
         self._health_checker_config = compute_trainer_health_checker_config(
             args, expected_num_cells=self._expected_num_cells
@@ -369,7 +371,7 @@ class TrainerController:
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        check_weights_result = await self._inference_controller.check_weights("checksum")
+        check_weights_result = await self._inference_controller.check_weights(action="checksum")
         engine_checksums = flatten_inference_engine_checksums(check_weights_result)
         get_event_logger().log(
             InferenceEngineWeightChecksumEvent,
