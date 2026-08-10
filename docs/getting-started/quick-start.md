@@ -2,8 +2,6 @@
 title: Quick Start
 description: A quick RL training job on Qwen3-4B in under an hour.
 ---
-This page takes you from `docker pull` to a running GRPO training job on Qwen3-4B.
-
 **What you need**
 
 - A node with 8 GPUs (H100 / H200 / B-series).
@@ -63,9 +61,11 @@ weights once:
 
 ```bash
 cd /root/miles
+# Load MODEL_ARGS, the Megatron-side description of the architecture
 MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3-4B)" || exit 1
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 
+# Map the HuggingFace weights into a sharded torch_dist checkpoint
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/Qwen3-4B \
@@ -88,14 +88,10 @@ A few things it already does for you:
 - The policy is evaluated on AIME-2024 every 20 rollouts.
 - If the run dies, relaunch the same script — training resumes from the last
   checkpoint.
-- The Ray dashboard at `http://localhost:8265` shows per-worker logs and GPU
-  usage.
-
-And treat yourself to the [Miles dashboard](/user-guide/dashboard): add
-`--dump-details <dir> --use-miles-dashboard` to the training arguments, serve it
-with `python -m miles.dashboard.serve --dump-details <dir>`, and open
-`http://localhost:7788` to watch what every GPU was doing during a step and what
-every trajectory contained, token by token.
+- The [Miles dashboard](/user-guide/dashboard) records what every GPU was doing
+  during a step and what every trajectory contained, token by token. Serve it with
+  `python -m miles.dashboard.serve --dump-details /root/Qwen3-4B_miles/dump_details`
+  and open `http://localhost:7788`.
 
 Once the engines warm up and the first rollout completes, the log settles into
 per-rollout metric lines (values illustrative, keys abridged):
@@ -147,7 +143,7 @@ rollout_batch_size × n_samples_per_prompt
 In this recipe, 32 prompts × 8 samples = 256 = one optimizer step at global batch
 size 256.
 
-### The details behind each step
+### The fine print
 
 - **The docker flags (Step 1).** `--gpus all` exposes the GPUs, `--ipc=host` and
   `--shm-size=32g` give NCCL and Ray the shared memory they need, and
