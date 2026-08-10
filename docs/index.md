@@ -58,8 +58,11 @@ needed to run RL at trillion-parameter scale.
   [Switch training backends](/developer/experimental-features#fsdp-backend) without
   rewriting your training loop.
 - **Wide recipe support.** RL (GRPO, PPO), SFT, and on-policy distillation.
-- **Verified on multiple hardware generations.** GB300, GB200, B200, H200, H100,
-  and AMD MI355X — see [Platforms](/platforms/index).
+- **Verified on multiple hardware generations.** GB300, GB200, B300, B200, H200,
+  H100, and AMD MI355X / MI300X — see [Platforms](/platforms/index).
+- **Comprehensive CI.** Every pull request runs unit suites and end-to-end GPU
+  training tests across the supported model families, on both NVIDIA and AMD
+  runners — coverage few RL frameworks match.
 - **[Miles dashboard](/user-guide/dashboard).** A self-hosted web UI for a run's
   training dynamics and compute efficiency: what every GPU was doing during a step,
   and what each trajectory contained at the token level.
