@@ -277,35 +277,25 @@ generalize these two recipes into blanket support for FP8, MXFP8, or INT4 LoRA
 training on every model. In particular, multi-LoRA on MoE expert leaves rejects
 FP8/FP4 experts.
 
-## GLM-5.2 744B BF16 case study
+## GLM-5.2 744B BF16 validation
 
 [PR #1559](https://github.com/radixark/miles/pull/1559) validated the
 GLM-5/5.1/5.2 Bridge LoRA path across MoE and MLA on models containing DSA; the
 DSA indexer itself was excluded from the adapter targets. The full GLM-5.2 744B
-run used 64 GPUs and completed more than 50 rollout -> train -> save steps. Once
-rollout requests correctly selected the adapter, the reported absolute
-train/rollout log-prob difference stayed around `0.0096`, while raw reward rose
-from roughly `0.45` to `0.8-0.99`.
+run used 64 GPUs and completed more than 50 rollout -> train -> save steps. The
+PR also compared expert target selections, including a run that excluded
+`down_proj`.
 
-The plotted run, `no-down-proj-260702-0948`, excluded the expert `down_proj`.
-The PR's ablation found that including it caused abs diff to drift to `0.058` at
-step 43 (KL about `0.02`); excluding it kept abs diff at `0.0044-0.0077` (KL
-about `2e-4`) without an observed reward cost. Treat this as a GLM recipe finding,
-not a rule for every MoE model.
-
-![GLM-5.2 744B LoRA train-rollout log-prob difference without expert down_proj](/assets/images/lora-glm5-2-no-down-proj-logprob-pr1559.png)
-
-*The `no-down-proj-260702-0948` train/rollout log-prob curve. Source: [PR #1559](https://github.com/radixark/miles/pull/1559).*
-
-![GLM-5.2 744B LoRA raw reward without expert down_proj](/assets/images/lora-glm5-2-no-down-proj-reward-pr1559.png)
-
-*The `no-down-proj-260702-0948` raw-reward curve. Source: [PR #1559](https://github.com/radixark/miles/pull/1559).*
+Treat this as historical implementation and scale evidence. The reported
+train/rollout log-prob gaps are configuration-specific and are not established
+as a portable acceptance threshold, so the corresponding curves are not
+reproduced here.
 
 <Warning>
-These figures are historical full-scale validation evidence, not a claim that
-the current `main` launcher reproduces the 744B run on one node. The checked-in
-launcher is single-node; the repository's copy-paste validation path uses a
-reduced checkpoint. Multi-node full-744B launcher work is tracked in
+This historical validation is not a claim that the current `main` launcher
+reproduces the 744B run on one node. The checked-in launcher is single-node; the
+repository's copy-paste validation path uses a reduced checkpoint. Multi-node
+full-744B launcher work is tracked in
 [PR #2033](https://github.com/radixark/miles/pull/2033).
 </Warning>
 
