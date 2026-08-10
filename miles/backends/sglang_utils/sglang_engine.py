@@ -620,10 +620,13 @@ class SGLangEngine(RayActor):
             payload,
         )
 
-    def pause_generation(self, mode: str = "retract"):
+    def pause_generation(self, mode: str = "retract", abort_below_start_weight_version=None):
+        payload = {"mode": mode}
+        if abort_below_start_weight_version is not None:
+            payload["abort_below_start_weight_version"] = int(abort_below_start_weight_version)
         response = requests.post(
             f"http://{self.server_host}:{self.server_port}/pause_generation",
-            json={"mode": mode},
+            json=payload,
         )
         response.raise_for_status()
         return response

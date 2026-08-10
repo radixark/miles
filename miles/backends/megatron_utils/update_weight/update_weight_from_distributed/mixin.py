@@ -311,7 +311,18 @@ class DistBucketedWeightUpdateMixin:
         self._weight_update_selector = weight_update_selector(self.args)
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
+            # Drop what the data buffer would discard anyway, before retract
+            # re-prefills it. Same threshold the buffer applies at consume time.
+            max_staleness = getattr(self.args, "max_weight_staleness", None)
+            sweep_below = None if max_staleness is None else self.weight_version - max_staleness
+            ray.get(
+                [
+                    engine.pause_generation.remote(
+                        mode=mode, abort_below_start_weight_version=sweep_below
+                    )
+                    for engine in self.rollout_engines
+                ]
+            )
             if mode != "in_place":
                 ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
