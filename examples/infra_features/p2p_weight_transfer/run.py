@@ -144,10 +144,6 @@ PREPARE_CONFIGS: dict[str, PrepareConfig] = {
         hf_repo="Qwen/Qwen3-4B",
         model_type="qwen3-4B",
     ),
-    "Moonlight-16B-A3B-Instruct": PrepareConfig(
-        hf_repo="moonshotai/Moonlight-16B-A3B-Instruct",
-        model_type="moonlight",
-    ),
     "GLM-4.7-Flash": PrepareConfig(
         hf_repo="zai-org/GLM-4.7-Flash",
         model_type="glm4.7-flash",
@@ -240,21 +236,6 @@ RUN_CONFIGS: dict[str, RunConfig] = {
         global_batch_size=32,
         sglang_gpus_per_engine=2,
         sglang_mem_fraction=0.8,
-    ),
-    "Moonlight-16B-A3B-Instruct": RunConfig(
-        model_type="moonlight",
-        nnodes=2,
-        num_train_gpus=8,
-        num_rollout_gpus=8,
-        tp=2,
-        ep=8,
-        use_kl_loss=True,
-        sglang_gpus_per_engine=8,
-        sglang_mem_fraction=0.7,
-        sglang_ep_size=8,
-        sglang_cuda_graph_bs="1 2 4 8 16",
-        sglang_enable_dp_attention=True,
-        sglang_enable_dp_lm_head=True,
     ),
     "GLM-4.7-Flash": RunConfig(
         model_type="glm4.7-flash",
