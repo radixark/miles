@@ -5,6 +5,10 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
+
 ROOT = Path(__file__).parents[3]
 
 
