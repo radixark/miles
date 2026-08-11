@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 _shard_topology: tuple[bool, tuple[tuple[int, int, int], ...]] | None = None
 
 
+def _lora_a_init_method(args: Namespace) -> str:
+    # Tinker's LoRA contract follows PEFT's default Kaiming-uniform A
+    # initialization. Miles' autonomous trainer historically uses Xavier.
+    # The difference is invisible at model creation because B starts at zero,
+    # but changes every subsequent adapter delta, so keep it scoped to the
+    # request-driven compatibility service.
+    lora_a_init_method = getattr(args, "lora_A_init_method", "xavier")
+    if os.environ.get("MILES_TINKER_API", "0") == "1":
+        lora_a_init_method = "kaiming"
+    return lora_a_init_method
+
+
 def create_multi_lora_instance(args: Namespace):
     """Create a MultiLoRA instance from training args."""
     from megatron.bridge.peft.multi_lora import MultiLoRA
@@ -36,14 +48,13 @@ def create_multi_lora_instance(args: Namespace):
 
         lora_cls = LoRA
 
-    # exclude_modules was already folded into target_modules during arg validation.
     return MultiLoRA(
         target_modules=convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls),
         n_adapters=args.multi_lora_n_adapters,
         dim=args.lora_rank,
         alpha=args.lora_alpha,
         dropout=getattr(args, "lora_dropout", 0.0),
-        lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
+        lora_A_init_method=_lora_a_init_method(args),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
 
@@ -432,6 +443,23 @@ def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id:
             **{f"slot_{slot}": lr for slot, lr in lr_by_slot.items()},
         )
     return max(grad_norms_by_slot.values(), default=0.0)
+
+
+def step_external_adapter_slot(args, model, optimizer, slot: int, batch_size: int, adam_params: dict) -> float:
+    """Commit one Tinker client's accumulated gradients with its Adam config."""
+    from miles.backends.megatron_utils.multi_lora_optimizer import (
+        configure_adapter_slot_adam,
+        step_adapter_slots,
+    )
+
+    adam_config = dict(adam_params)
+    # Tinker's AdamParams includes clipping alongside the Adam
+    # hyperparameters. Miles applies clipping in the slot-step primitive,
+    # rather than storing it in the torch optimizer param group.
+    clip_grad = float(adam_config.pop("grad_clip_norm", args.clip_grad))
+    configure_adapter_slot_adam(optimizer, slot, **adam_config)
+    grad_norms = step_adapter_slots(optimizer, model, {slot: batch_size}, clip_grad=clip_grad)
+    return grad_norms[slot]
 
 
 def commit_trained_batch(rollout_data, rollout_id: int, pending_push: set) -> None:

@@ -1,0 +1,8 @@
+FROM radixark/miles@sha256:5330ec7585dd9a88cde9d810a23d4d3216a399391905666554613656b47b8221
+
+ARG MILES_SOURCE_COMMIT=unknown
+LABEL org.opencontainers.image.revision=${MILES_SOURCE_COMMIT}
+
+COPY . /root/miles
+WORKDIR /root/miles
+RUN rm -f /root/miles/.git && python -m compileall -q miles train_multi_lora_async.py

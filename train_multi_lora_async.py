@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 import ray
@@ -51,11 +52,56 @@ async def main(args):
 
     actor_model, _ = await create_training_models(args, pgs, rollout_manager)
 
+    tinker_server = None
+    tinker_task = None
+    if os.environ.get("MILES_TINKER_API") == "1":
+        import uvicorn
+
+        from miles.tinker.api import create_app
+        from miles.tinker.backend import MilesTinkerBackend
+
+        tinker_backend = MilesTinkerBackend(
+            args,
+            actor_model,
+            controller,
+            f"http://{router_ip}:{router_port}",
+        )
+        app = create_app(
+            tinker_backend,
+            os.environ.get("MILES_TINKER_BASE_MODEL", args.hf_checkpoint),
+            max_lora_rank=args.lora_rank,
+        )
+        tinker_port = int(os.environ.get("MILES_TINKER_API_PORT", "8000"))
+        tinker_server = uvicorn.Server(
+            uvicorn.Config(app, host="0.0.0.0", port=tinker_port, log_level="info", access_log=False)
+        )
+        tinker_task = asyncio.create_task(tinker_server.serve())
+        while not tinker_server.started:
+            if tinker_task.done():
+                tinker_task.result()
+                raise RuntimeError("Miles Tinker API exited before startup")
+            await asyncio.sleep(0.05)
+        logger.info(f"Tinker-compatible API listening on http://{host}:{tinker_port}")
+
     # CLI-registered adapters are loaded and pushed by the loop's first
     # reconcile + update_weights.
     for name, path in args.multi_lora_adapters:
         config = parse_adapter_run_yaml(Path(path))
         await controller.register_adapter.remote(name, config)
+
+    # Tinker owns the training cadence in request-driven mode.  Entering the
+    # autonomous rollout loop here would try to construct Miles datasets for
+    # externally registered adapters (which intentionally have no prompt
+    # path) and would also race Tinker's split forward/backward + optimizer
+    # calls.  Keep the Ray actors alive until the API server is stopped; the
+    # backend methods perform their own adapter reconciliation and weight push.
+    if tinker_task is not None:
+        try:
+            await tinker_task
+        finally:
+            await rollout_manager.dispose.remote()
+            await controller.stop.remote()
+        return
 
     rollout_id = 0
     while True:
@@ -98,6 +144,9 @@ async def main(args):
         rollout_id += 1
 
     await rollout_manager.dispose.remote()
+    if tinker_server is not None:
+        tinker_server.should_exit = True
+        await tinker_task
     await controller.stop.remote()
 
 

@@ -277,6 +277,13 @@ def compute_policy_loss(
     return pg_losses, clipfrac
 
 
+@torch.compile(dynamic=True)
+def compute_importance_sampling_loss(ppo_kl: torch.Tensor, advantages: torch.Tensor):
+    """Return Tinker's unclipped importance-weighted policy objective."""
+    ratio = _safe_exp_neg_ppo_kl(ppo_kl)
+    return -ratio * advantages, torch.zeros_like(ratio)
+
+
 def compute_log_probs(
     logits: torch.Tensor,
     tokens: torch.Tensor,

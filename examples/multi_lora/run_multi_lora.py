@@ -38,6 +38,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     data_dir: str = "/root/datasets"
     save_dir: str = "/tmp/multi_lora"
     megatron_path: str = "/root/Megatron-LM"
+    megatron_model_type: str = "qwen3-4B"
 
     # Disaggregated split (fully-async forbids colocate).
     num_gpus_per_node: int = 8
@@ -160,7 +161,7 @@ def _train(args: ScriptArgs, service: bool):
         train_args=train_args,
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
-        megatron_model_type="qwen3-4B",
+        megatron_model_type=args.megatron_model_type,
         train_script="train_multi_lora_async.py",
         megatron_path=args.megatron_path,
     )
