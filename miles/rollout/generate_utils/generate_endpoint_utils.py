@@ -147,13 +147,14 @@ def stamp_start_weight_version(state, sample: Sample, payload: dict | None) -> N
     GenerateState is a plain class, so constructing one here would produce a
     fresh instance whose version is always None.
 
-    The value sent is the *trajectory* start (min over its calls), not this
-    call's version: the data buffer filters on that min, so sending anything
-    else would have the engine and the buffer select different requests.
+    Later turns keep the first turn's version rather than their own: the data
+    buffer judges the whole trajectory by where it started, so sending this
+    call's version would have the engine and the buffer select different requests.
     """
-    current = getattr(state, "current_weight_version", None)
-    if current is None:
-        return
-    sample.start_weight_versions.append(int(current))
+    if sample.start_weight_version is None:
+        current = getattr(state, "current_weight_version", None)
+        if current is None:
+            return
+        sample.start_weight_version = int(current)
     if payload is not None:
-        payload["start_weight_version"] = min(sample.start_weight_versions)
+        payload["start_weight_version"] = sample.start_weight_version

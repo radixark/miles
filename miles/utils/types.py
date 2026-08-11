@@ -43,10 +43,10 @@ class Sample:
     reward: float | dict[str, Any] | None = None
     loss_mask: list[int] | None = None
     weight_versions: list[str] = field(default_factory=list)
-    # Version at *submit* of each generation call, recorded by the rollout side.
-    # weight_versions is stamped by the engine at emission instead, so it cannot
-    # be read before a response comes back.
-    start_weight_versions: list[int] = field(default_factory=list)
+    # Version this trajectory started generating under, recorded by the rollout
+    # side at submit. weight_versions is stamped by the engine at emission
+    # instead, so it cannot be read before a response comes back.
+    start_weight_version: int | None = None
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
     rollout_routed_experts: numpy.ndarray | None = (
         None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
@@ -261,7 +261,7 @@ class Sample:
         self.reward = None
         self.loss_mask = None
         self.weight_versions = []
-        self.start_weight_versions = []
+        self.start_weight_version = None
         self.rollout_log_probs = None
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None
@@ -277,11 +277,6 @@ class Sample:
         """Minimum weight version across all turns (generation calls) for this trajectory."""
         numeric = [int(v) for v in self.weight_versions if str(v).isdigit()]
         return min(numeric) if numeric else None
-
-    @property
-    def oldest_start_weight_version(self) -> int | None:
-        """Version this trajectory started under, across all its generation calls."""
-        return min(self.start_weight_versions) if self.start_weight_versions else None
 
     def update_from_meta_info(self, args, meta_info: dict):
         """

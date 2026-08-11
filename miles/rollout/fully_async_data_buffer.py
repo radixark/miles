@@ -44,7 +44,7 @@ def _group_response_tokens(group: Group) -> int:
 
 def group_oldest_start_weight_version(group: Group) -> int | None:
     """Submit-time counterpart of group_oldest_weight_version."""
-    versions = [v for s in iter_samples(group) if (v := s.oldest_start_weight_version) is not None]
+    versions = [v for s in iter_samples(group) if (v := s.start_weight_version) is not None]
     return min(versions) if versions else None
 
 
