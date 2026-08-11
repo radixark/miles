@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import _assert_worker_ports_fit
 from miles.utils.workers.worker_spec import (
     DEFAULT_RPC_PORT,
     RPC_PORT_NAME,
@@ -316,6 +317,73 @@ def _gpu_scheduling(*, num_workers_per_cell: int, num_gpus_per_node: int) -> Sch
         num_gpus_per_worker=1,
         num_gpu_slots_per_worker=1,
         num_gpus_per_node=num_gpus_per_node,
+    )
+
+
+class TestAssertRankPortsFit:
+    def test_ranks_sharing_a_pod_may_climb_up_to_the_next_port_block(self):
+        """The ports a pod hands its ranks are free, so the spec must be accepted."""
+        spec = _serve_spec(
+            num_gpus_per_node=4,
+            port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=8004)],
+        )
+
+        _assert_worker_ports_fit(spec)
+
+    def test_rejects_rank_ports_reaching_into_another_port(self):
+        """Rank 2 would bind the master port and every collective would rendezvous on nothing."""
+        spec = _serve_spec(
+            num_gpus_per_node=4,
+            port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=8002)],
+        )
+
+        with pytest.raises(AssertionError, match="reaches into"):
+            _assert_worker_ports_fit(spec)
+
+    def test_rejects_rank_ports_reaching_into_a_consecutive_port_block(self):
+        """A block claims num_consecutive ports, so the collision test must span all of them."""
+        spec = _serve_spec(
+            num_gpus_per_node=8,
+            port_infos=[
+                PortInfo(name=RPC_PORT_NAME, static_port=8000),
+                PortInfo(name="dist_init", static_port=8003, num_consecutive=30),
+            ],
+        )
+
+        with pytest.raises(AssertionError, match="reaches into"):
+            _assert_worker_ports_fit(spec)
+
+    def test_a_port_below_the_rpc_port_is_untouched(self):
+        """Ranks climb upwards only, so a lower port can never be reached."""
+        spec = _serve_spec(
+            num_gpus_per_node=8,
+            port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=7000)],
+        )
+
+        _assert_worker_ports_fit(spec)
+
+    def test_a_pod_of_one_rank_needs_only_its_own_rpc_port(self):
+        """Nodes as wide as a cell put one rank in each pod, which must not be constrained by neighbours."""
+        spec = _serve_spec(
+            num_gpus_per_node=1,
+            port_infos=[PortInfo(name=RPC_PORT_NAME, static_port=8000), PortInfo(name="master", static_port=8001)],
+        )
+
+        _assert_worker_ports_fit(spec)
+
+
+def _serve_spec(*, num_gpus_per_node: int, **overrides) -> ServeWorkerSpec:
+    scheduling = SchedulingSpec(
+        num_cells=1,
+        num_workers_per_cell=8,
+        num_gpus_per_worker=1,
+        num_gpu_slots_per_worker=1,
+        num_gpus_per_node=num_gpus_per_node,
+    )
+    return ServeWorkerSpec(
+        **_make_base_kwargs(scheduling=scheduling, **overrides),
+        worker_class="miles.demo.Worker",
+        ctor_kwargs=lambda _ctx: {},
     )
 
 
