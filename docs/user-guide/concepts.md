@@ -84,8 +84,8 @@ Use this map when reading any launch script:
 
 ## Next
 
-- [Training Backend](/user-guide/usage) — Megatron-LM, parallelism, checkpoints, and hooks.
+- [Launch Script](/user-guide/launch-script) — what a launch script does when you run it,
+  and how to override a recipe.
 - [Argument Groups](/user-guide/argument-groups) — where each launch-script array belongs.
-- [Training Script Walkthrough](/user-guide/training-script-walkthrough) — the launch script
-  group by group, plus execution modes (colocation, sync/async, dynamic sampling, …).
+- [Training Backend](/user-guide/usage) — Megatron-LM, parallelism, checkpoints, and hooks.
 - [CLI Reference](/user-guide/cli-reference) — every flag, grouped and fully cataloged.
