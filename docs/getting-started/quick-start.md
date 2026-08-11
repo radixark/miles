@@ -186,9 +186,8 @@ size 256.
 ## Next steps
 
 - [Core concepts](/user-guide/concepts) — the model behind rollout / actor / reference.
-- [Training script walkthrough](/user-guide/training-script-walkthrough) —
-  an annotated tour through every argument group in a launch script, plus colocation,
-  dynamic sampling, partial rollout, and BF16+FP8 inference.
+- [Launch script](/user-guide/launch-script) — what a launch script does when you run it,
+  how it is structured, and the three ways to override a recipe.
 - [Training backends](/user-guide/usage) — Megatron vs FSDP.
 - [Customization](/user-guide/customization) — plug in custom rollout / reward.
 - [Models](/models/index) — recipes for Qwen3.5, GLM5.2, DeepSeek V4, Kimi K2.6, and more.

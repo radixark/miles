@@ -189,8 +189,8 @@ at startup.
 ## Further reading
 
 - [Core concepts](/user-guide/concepts) — the four objects that make up any Miles job.
-- [Training script walkthrough](/user-guide/training-script-walkthrough) — the launch script,
-  argument group by argument group.
+- [Launch script](/user-guide/launch-script) — what a launch script does when you run it,
+  and how to override a recipe.
 - [Fully Async RL](/user-guide/fully-async) — keep generation running continuously so
   rollout never waits on a training step.
 - [Configuration](/user-guide/cli-reference) — the flag taxonomy and defaults.

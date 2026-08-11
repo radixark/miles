@@ -172,10 +172,15 @@
       "root": "user-guide/index",
       "pages": [
        "user-guide/concepts",
-       "user-guide/argument-groups",
+       {
+        "group": "Launch Script",
+        "pages": [
+         "user-guide/launch-script",
+         "user-guide/argument-groups"
+        ]
+       },
        "user-guide/fully-async",
        "user-guide/usage",
-       "user-guide/training-script-walkthrough",
        "user-guide/monitoring",
        "user-guide/dashboard",
        "user-guide/customization",
