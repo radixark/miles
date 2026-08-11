@@ -14,6 +14,8 @@ from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LAB
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
+CI_LABEL = "miles.radixark.io/ci-run"
+
 
 class Helm:
     @staticmethod
@@ -27,8 +29,9 @@ class Helm:
         namespace: str,
         chart: str | Path,
         values_files: list[str | Path],
+        ci_run: bool,
     ) -> None:
-        _run(Helm.upgrade_command(release, namespace, chart, values_files), capture_output=False)
+        _run(Helm.upgrade_command(release, namespace, chart, values_files, ci_run=ci_run), capture_output=False)
 
     @staticmethod
     def render_upgrade(*, release: str, namespace: str, chart: str | Path, values_files: list[str | Path]) -> Manifest:
@@ -63,8 +66,24 @@ class Helm:
         _run(["helm", "dependency", "build", str(chart)], capture_output=False)
 
     @staticmethod
-    def upgrade_command(release: str, namespace: str, chart: str | Path, values_files: list[str | Path]) -> list[str]:
+    def list_releases(*, namespace: str, selector: str) -> list[str]:
+        listed = _run(
+            ["helm", "list", "--namespace", namespace, "--selector", selector, "--output", "json"],
+            capture_output=True,
+        )
+        return [release["name"] for release in json.loads(listed.stdout or "[]")]
+
+    @staticmethod
+    def uninstall(*, release: str, namespace: str) -> None:
+        _run(["helm", "uninstall", release, "--namespace", namespace], capture_output=False)
+
+    @staticmethod
+    def upgrade_command(
+        release: str, namespace: str, chart: str | Path, values_files: list[str | Path], *, ci_run: bool
+    ) -> list[str]:
         command = ["helm", "upgrade", "--install", release, str(chart), "--namespace", namespace]
+        if ci_run:
+            command += ["--labels", f"{CI_LABEL}=true"]
         for values_file in values_files:
             command += ["--values", str(values_file)]
         return command
