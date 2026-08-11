@@ -7,7 +7,7 @@ from pathlib import Path
 import ray
 
 from miles.ray.multi_lora.controller import create_multilora_controller, get_multi_lora_controller
-from miles.ray.placement_group import create_rollout_components, create_training_models
+from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
 from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
 from miles.utils.adapter_config import parse_adapter_run_yaml
@@ -74,7 +74,7 @@ async def main(args):
         # and only then does the data source sample them. The actor pushes only
         # stale adapter weights (newly loaded, or stepped by the last batch).
         await actor_model.reconcile_adapters()
-        await actor_model.update_weights()
+        await update_weights(actor_model, rollout_executor)
 
         # With nothing active, generate would wait forever.
         post_update = await get_multi_lora_controller().snapshot.remote()

@@ -732,10 +732,10 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: "UpdatableEngines") -> None:
+    def update_weights(self, info: "UpdatableEngines") -> int | None:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
-            return
+            return None
 
         rollout_engines = info.rollout_engines
         snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
@@ -764,7 +764,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 torch_memory_saver.pause(tag="param_buffer")
             if process_groups_are_temporary:
                 destroy_process_groups()
-            return
+            return None
 
         version_update_names: list[str] = []
         if is_multi_lora_enabled(self.args):
@@ -781,8 +781,6 @@ class MegatronTrainRayActor(TrainRayActor):
             print_memory("before update_weights")
             self.weight_updater.update_weights()
             print_memory("after update_weights")
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
 
             if is_multi_lora_enabled(self.args):
                 from miles.backends.megatron_utils.multi_lora_utils import commit_weight_push
@@ -813,6 +811,8 @@ class MegatronTrainRayActor(TrainRayActor):
             torch_memory_saver.pause(tag="param_buffer")
         if process_groups_are_temporary:
             destroy_process_groups()
+
+        return self.weight_updater.weight_version
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
