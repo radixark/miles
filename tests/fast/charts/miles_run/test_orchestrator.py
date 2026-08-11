@@ -1,7 +1,7 @@
 from tests.fast.charts.utils import (
     NAMESPACE,
-    RUN_ID,
     RUN_RELEASE_NAME,
+    RUN_STATE_FILE,
     named_object,
     objects_of_kind,
     pod_spec_of,
@@ -29,7 +29,9 @@ class TestOrchestrator:
             "-m",
             WRAPPER_MODULE,
             "--state-file",
-            f"/cluster-storage/miles_data/miles-runs/{RUN_ID}/state/orchestrator.state",
+            RUN_STATE_FILE,
+            "--uninstall-manifest",
+            "/etc/miles-uninstall/uninstall-job.yaml",
             "--",
             "python",
             "train.py",
@@ -56,7 +58,7 @@ class TestOrchestrator:
         """The wrapper writes the exit file to that path, so the mount has to be there."""
         mounts = sole_container_of(render_run(), "StatefulSet", ORCHESTRATOR)["volumeMounts"]
 
-        assert [mount["mountPath"] for mount in mounts] == ["/cluster-storage"]
+        assert [mount["mountPath"] for mount in mounts] == ["/cluster-storage", "/etc/miles-uninstall"]
 
     def test_serves_the_orchestrator_under_a_headless_service(self):
         """Workers address each other by stable dns, which a headless service is what provides."""
@@ -101,6 +103,7 @@ class TestOrchestratorIdentity:
 
         assert role["rules"] == [
             {"apiGroups": [""], "resources": ["pods"], "verbs": ["get", "list", "watch", "delete"]},
+            {"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["create"]},
         ]
         assert binding["roleRef"]["name"] == ORCHESTRATOR
         assert binding["subjects"] == [dict(kind="ServiceAccount", name=ORCHESTRATOR, namespace=NAMESPACE)]

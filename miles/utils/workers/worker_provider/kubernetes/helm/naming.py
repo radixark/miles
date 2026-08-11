@@ -5,6 +5,7 @@ import hashlib
 from miles.utils.workers.worker_spec import BaseWorkerSpec, HostAndPort, NamedHostAndPorts
 
 CHART_NAME = "miles-run"
+UNINSTALLER_SERVICE_ACCOUNT = "miles-uninstaller"
 
 MAX_OBJECT_NAME_LENGTH = 63
 LONGEST_CELL_INDEX_SUFFIX = "-999"
