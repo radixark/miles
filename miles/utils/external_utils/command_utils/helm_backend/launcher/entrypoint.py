@@ -20,7 +20,11 @@ from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.pod_facts import pod_phase
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import InfraInfo, LaunchPlan
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import (
+    InfraInfo,
+    LaunchPlan,
+    MooncakeInfo,
+)
 from miles.utils.external_utils.command_utils.helm_backend.naming import RunFiles, RunNames
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator.observer import wait_for_run
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
@@ -44,7 +48,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     namespace = config.namespace
     release = RunNames.release(run_id=run_id)
     env = train_env_vars(request, {}, config=config)
-    pod_argv, args = _compute_train_argv(request, run_id=run_id, env=env)
+    pod_argv, args = _compute_train_argv(request, run_id=run_id, release=release, namespace=namespace, env=env)
 
     specs = compute_specs(args)
     chart = chart_dir(repo_base_dir=repo_base_dir)
@@ -63,6 +67,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         orchestrator_command=["python", request.train_script, *pod_argv],
         worker_argv=pod_argv,
         env=env,
+        mooncake_plan=MooncakeInfo.plan_of_args(args),
         prepare_cmd=request.prepare_cmd,
     )
     values_path = RunFiles.new_values_file(run_directory=run_directory)
@@ -92,7 +97,9 @@ def _follow_until_finished(*, release: str, namespace: str, state_file: Path) ->
         raise SystemExit(outcome.exit_code)
 
 
-def _compute_train_argv(request: ExecuteTrainRequest, *, run_id: str, env: dict[str, str]) -> tuple[list[str], Any]:
+def _compute_train_argv(
+    request: ExecuteTrainRequest, *, run_id: str, release: str, namespace: str, env: dict[str, str]
+) -> tuple[list[str], Any]:
     argv = [*shlex.split(shell_safe_model_args(request.megatron_model_type)), *shlex.split(request.train_args)]
     argv = ArgvManipulator.with_flag(argv, CLUSTER_BACKEND_FLAG, ClusterBackend.KUBERNETES.value)
     # TODO: generate different run_uuid even for same run_id, but at the same time allow helm upgrading
@@ -106,7 +113,10 @@ def _compute_train_argv(request: ExecuteTrainRequest, *, run_id: str, env: dict[
         args.wandb_run_id = _generate_wandb_run_id()
         argv = ArgvManipulator.with_flag(argv, _WANDB_RUN_ID_FLAG, args.wandb_run_id)
 
-    return argv, args
+    pod_argv = MooncakeInfo.with_cluster_master(
+        argv, plan=MooncakeInfo.plan_of_args(args), host=MooncakeInfo.master_service_host(release, namespace)
+    )
+    return pod_argv, args
 
 
 def _generate_wandb_run_id() -> str:
