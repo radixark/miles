@@ -72,16 +72,24 @@ python scripts/run_nemotron_3_ultra_550b_a55b.py full-train \
 
 ### 4.2 Full model
 
-The full 108-layer model needs **16 nodes × 8 GPU**. Worker pods join the head's
-ray cluster; the head submits:
+The full 108-layer model needs **16 nodes × 8 GPU**. Bring up the ray cluster
+yourself, tell the launcher it is external, and submit from the head — the
+launcher has no worker-side subcommand:
 
 ```bash
-# on each worker pod
-python scripts/run_nemotron_3_ultra_550b_a55b.py worker --head-ip <head_ip>
-
 # on the head pod
-python scripts/run_nemotron_3_ultra_550b_a55b.py train --head-ip <head_ip>
+ray start --head --num-gpus 8 --disable-usage-stats
+# on every worker pod
+ray start --address=${HEAD_IP}:6379 --num-gpus 8 --disable-usage-stats
+
+# then, on the head pod
+export MILES_SCRIPT_EXTERNAL_RAY=1
+export RAY_ADDRESS=http://${HEAD_IP}:8265
+python scripts/run_nemotron_3_ultra_550b_a55b.py train --num-nodes 16
 ```
+
+Without `MILES_SCRIPT_EXTERNAL_RAY=1` the launcher runs `ray stop --force` and
+starts a fresh single-node head, tearing down the cluster the workers joined.
 
 The recipe defaults to a 30-rollout run (`--num-rollout`), rollout batch 32 at 8
 samples per prompt, global batch 128.

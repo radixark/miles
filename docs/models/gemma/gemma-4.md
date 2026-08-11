@@ -31,7 +31,7 @@ conversion and no LLM-view rewrite of the checkpoint.
 
 Both use GQA with `kv_channels=256`, RoPE base 1e6, and a 262144-token vocab.
 
-The 31B recipe requires the `gemma4-dense` branch of `radixark/Megatron-Bridge`.
+The 31B recipe requires the `zhichen/gemma4-dense` branch of `radixark/Megatron-Bridge`.
 
 ## 3. Environment Setup
 
