@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
+from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
 from miles.utils.workers.worker_spec import (
     BaseWorkerSpec,
     CommandWorkerSpec,
@@ -51,6 +53,7 @@ def make_router_spec() -> CommandWorkerSpec:
 def make_engine_spec() -> CommandWorkerSpec:
     return CommandWorkerSpec(
         name="engine",
+        category=POOL_CATEGORY_INFERENCE_ENGINE,
         port_infos=[PortInfo(name="primary", static_port=8000), PortInfo(name="nccl", static_port=10000)],
         env_var=lambda context: {},
         scheduling=SchedulingSpec(
@@ -68,7 +71,8 @@ def make_trainer_spec(
     *, num_workers_per_cell: int, num_gpus_per_node: int = 8, port_infos: list[PortInfo] | None = None
 ) -> ServeWorkerSpec:
     return ServeWorkerSpec(
-        name="trainer-actor",
+        name="trainer-engine-actor",
+        category=POOL_CATEGORY_TRAINER_ENGINE,
         port_infos=port_infos or [PortInfo(name="master", static_port=9000, mode="master")],
         env_var=lambda context: {},
         scheduling=SchedulingSpec(
