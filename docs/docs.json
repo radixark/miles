@@ -281,22 +281,12 @@
    },
    {
     "tab": "Resources",
-    "anchors": [
+    "groups": [
      {
-      "anchor": "Blog",
-      "icon": "newspaper",
-      "href": "https://www.lmsys.org/blog"
-     },
-     {
-      "anchor": "Subscribe",
-      "icon": "bell",
-      "groups": [
-       {
-        "group": "Subscribe",
-        "pages": [
-         "subscribe"
-        ]
-       }
+      "group": "Resources",
+      "pages": [
+       "blog/index",
+       "subscribe"
       ]
      }
     ]
