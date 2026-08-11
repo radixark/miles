@@ -5,6 +5,7 @@ This file is not for miles framework itself, but as an optional utility to easil
 import base64
 import datetime
 import json
+import logging
 import os
 import platform
 import random
@@ -22,6 +23,8 @@ from miles.utils.http_utils import wait_for_server_ready
 from miles.utils.typer_utils import dataclass_cli
 
 _ = exec_command_cpu, exec_command_gpu, exec_command_multi_node, dataclass_cli
+
+logger = logging.getLogger(__name__)
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
 
@@ -51,7 +54,7 @@ def convert_checkpoint(
     path_dst = f"{dir_dst}/{model_name}_torch_dist"
     tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
     if tracker.exists() and tracker.read_text().strip() == "release":
-        print(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
+        logger.info(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
         return
 
     multinode_args = ""
@@ -117,7 +120,7 @@ def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
 def fp8_cast_bf16(path_src, path_dst):
     sentinel = Path(path_dst) / "model.safetensors.index.json"
     if sentinel.exists():
-        print(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
+        logger.info(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
         return
 
     exec_command_gpu(
@@ -254,7 +257,7 @@ def check_has_nvlink():
 
 def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, run_id: str | None = None):
     if not os.environ.get("WANDB_API_KEY"):
-        print("Skip wandb configuration since WANDB_API_KEY is not found")
+        logger.info("Skip wandb configuration since WANDB_API_KEY is not found")
         return ""
 
     test_file = Path(test_file)
@@ -296,7 +299,7 @@ def get_bool_env_var(name: str, default: str = "false") -> bool:
 
     if (value not in truthy_values) and (value not in falsy_values):
         if value not in _warned_bool_env_var_keys:
-            print(f"get_bool_env_var({name}) see non-understandable value={value} and treat as false")
+            logger.warning(f"get_bool_env_var({name}) see non-understandable value={value} and treat as false")
         _warned_bool_env_var_keys.add(value)
 
     return value in truthy_values
@@ -337,7 +340,7 @@ def start_mooncake_master(
 ) -> None:
     host = "127.0.0.1"
     if _is_tcp_server_ready(host, rpc_port):
-        print(f"Mooncake master is already ready at {host}:{rpc_port}", flush=True)
+        logger.info(f"Mooncake master is already ready at {host}:{rpc_port}")
         return
 
     log_path = Path(log_path)
@@ -414,7 +417,7 @@ def resolve_hardware(config: ExecuteTrainConfig) -> str:
     """`auto` asks the node the launcher runs on; anything explicit overrides it."""
     if config.hardware == "auto":
         hardware = detect_hardware()
-        print(f"detected --hardware {hardware}")
+        logger.info(f"detected --hardware {hardware}")
     else:
         hardware = config.hardware
     supported = get_args(config.__dataclass_fields__["hardware"].type)
