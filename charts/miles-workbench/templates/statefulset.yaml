@@ -29,17 +29,22 @@ spec:
           image: {{ include "miles-common.image" . }}
           imagePullPolicy: {{ .Values.infra.image.pullPolicy | quote }}
           command: ["sleep", "infinity"]
-          {{- with include "miles-common.env" . }}
+          {{- with include "miles-workbench.env" . }}
           {{- . | nindent 10 }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           {{- $mounts := compact (list (include "miles-common.sharedStorageVolumeMount" . | trim) (include "miles-common.codeVolumeMounts" . | trim)) | join "\n" }}
-          {{- with $mounts }}
           volumeMounts:
+            - name: infra-values
+              mountPath: {{ include "miles-workbench.infraValuesDir" . | quote }}
+            {{- with $mounts }}
             {{- . | nindent 12 }}
-          {{- end }}
-      {{- with include "miles-common.sharedStorageVolume" . }}
+            {{- end }}
       volumes:
+        - name: infra-values
+          configMap:
+            name: {{ include "miles-workbench.infraConfigMapName" . | quote }}
+        {{- with include "miles-common.sharedStorageVolume" . }}
         {{- . | nindent 8 }}
-      {{- end }}
+        {{- end }}
