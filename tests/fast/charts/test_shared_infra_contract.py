@@ -7,9 +7,12 @@ from tests.fast.charts.utils import (
     chart_directories,
     container,
     pod_spec,
+    pod_spec_of,
     render,
+    render_run,
     requires_helm,
     resolved_schema,
+    sole_container_of,
 )
 
 CLUSTER_VALUES = dict(
@@ -17,6 +20,7 @@ CLUSTER_VALUES = dict(
         image=dict(repository="registry.local/miles", tag="v1"),
         sharedStorage=dict(type="pvc", pvcClaimName="shared", mountPath="/cluster-storage"),
         paths=dict(runsSubPath="teamdata", repos=dict(miles="myuser/miles")),
+        nodeLocalStorage=dict(hostPath="/local", mountPath="/scratch"),
         scheduling=dict(nodeSelector={"pool": "cpu"}),
         env={"HF_ENDPOINT": "https://mirror"},
     )
@@ -46,7 +50,14 @@ class TestSharedInfraContract:
 
     def test_the_infra_subtree_is_exactly_the_cluster_shaped_sections(self):
         """A section with no helper behind it would be accepted by the schema and never reach a pod."""
-        assert set(shared_infra_schema()["properties"]) == {"image", "sharedStorage", "paths", "scheduling", "env"}
+        assert set(shared_infra_schema()["properties"]) == {
+            "image",
+            "sharedStorage",
+            "paths",
+            "nodeLocalStorage",
+            "scheduling",
+            "env",
+        }
 
     def test_every_chart_inlines_the_shared_infra_schema_verbatim(self):
         """Helm cannot $ref across files, so every chart carries its own copy of the same contract."""
@@ -86,3 +97,13 @@ class TestSharedInfraContract:
         assert container(objects)["image"] == "registry.local/miles:v1"
         assert pod_spec(objects)["nodeSelector"] == {"pool": "cpu"}
         assert MILES_CODE_MOUNT in container(objects)["volumeMounts"]
+
+    @requires_helm
+    def test_the_very_same_cluster_file_renders_the_run_chart(self, tmp_path):
+        """Two charts reading the same file differently is exactly what the shared schema exists to prevent."""
+        objects = render_run("-f", str(cluster_values_file(tmp_path)))
+        orchestrator = sole_container_of(objects, "StatefulSet", "myrun-miles-run-orchestrator")
+
+        assert orchestrator["image"] == "registry.local/miles:v1"
+        assert pod_spec_of(objects, "StatefulSet", "myrun-miles-run-orchestrator")["nodeSelector"] == {"pool": "cpu"}
+        assert MILES_CODE_MOUNT in orchestrator["volumeMounts"]
