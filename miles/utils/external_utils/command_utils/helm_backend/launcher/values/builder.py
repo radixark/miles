@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from miles.utils.external_utils.command_utils.helm_backend import naming
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import pairing_config
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
     MilesRunChartValues,
     ObjectNames,
@@ -19,7 +20,11 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.pool_entry import build_entry
 from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
 from miles.utils.workers.naming import compute_cell_id
+from miles.utils.workers.worker_provider.kubernetes.helm.naming import static_cell_addrs
 from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseWorkerSpec, NamedHostAndPorts, ServeWorkerSpec
+
+_COLOCATE_PAIRING_COMPONENT = "colocate-pairing"
+
 
 def build_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> MilesRunChartValues:
     return MilesRunChartValues(run=_build_run_values(specs, plan))
@@ -53,6 +58,8 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
         inference_engines=entries[INFERENCE_ENGINES_SECTION],
         trainer_engines=entries[TRAINER_ENGINES_SECTION],
         env=dict(plan.env) or None,
+        mooncake=MooncakeInfo.section(plan.mooncake_plan) if plan.mooncake_plan is not None else None,
+        colocate=pairing_config(specs, plan) if plan.colocate else None,
     )
 
 
@@ -60,6 +67,7 @@ def _object_names(release: str) -> ObjectNames:
     return ObjectNames(
         orchestrator=naming.component_name(release, naming.ORCHESTRATOR_COMPONENT),
         mooncake_master=MooncakeInfo.master_object_name(release),
+        colocate_pairing=naming.component_name(release, _COLOCATE_PAIRING_COMPONENT),
         uninstall=RunNames.uninstall_job(release=release),
         uninstall_manifest=RunNames.uninstall_manifest(release=release),
     )
@@ -72,7 +80,7 @@ def _deployed_specs(specs: list[BaseWorkerSpec]) -> list[BaseWorkerSpec]:
 def _compute_addresses(specs: list[BaseWorkerSpec], release: str) -> dict[str, dict[str, NamedHostAndPorts]]:
     return {
         spec.name: {
-            compute_cell_id(pool_id=spec.name, cell_index=cell_index): naming.static_cell_addrs(
+            compute_cell_id(pool_id=spec.name, cell_index=cell_index): static_cell_addrs(
                 spec=spec, release=release, cell_index=cell_index
             )
             for cell_index in range(spec.scheduling.num_cells)
