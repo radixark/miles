@@ -472,14 +472,19 @@ class SessionCore:
 
         client_stream = bool(openai_request.pop("stream", False))
         try:
-            openai_response = await self.chat_completions(
-                session_id,
-                method=method,
-                query=query,
-                headers=headers,
-                body=json.dumps(openai_request).encode(),
-                restore_anthropic_arguments=True,
-            )
+            session = self.registry.get_session(session_id)
+            # Claude Code may issue overlapping subagent turns against one
+            # session. Keep each complete turn ordered so its TITO state cannot
+            # change between request preparation and the response commit.
+            async with session.turn_lock:
+                openai_response = await self.chat_completions(
+                    session_id,
+                    method=method,
+                    query=query,
+                    headers=headers,
+                    body=json.dumps(openai_request).encode(),
+                    restore_anthropic_arguments=True,
+                )
         except SessionError as exc:
             return _anthropic_error_response(exc.status_code, {"error": str(exc)})
 

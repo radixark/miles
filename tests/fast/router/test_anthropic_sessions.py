@@ -1,4 +1,6 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from unittest.mock import patch
 
 import pytest
@@ -40,6 +42,42 @@ def _request(**overrides: object) -> dict:
 
 
 class TestAnthropicSessionRoute:
+    def test_concurrent_turns_are_serialized_per_session(self, router_env, monkeypatch) -> None:
+        session_id = _create_session(router_env.url)
+        barrier = Barrier(4)
+        monkeypatch.setattr(router_env.backend, "latency", 0.2)
+        router_env.backend.reset_stats()
+
+        def post_turn() -> requests.Response:
+            barrier.wait()
+            return _post_messages(router_env.url, session_id, _request())
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(post_turn) for _ in range(4)]
+            responses = [future.result() for future in futures]
+
+        assert all(response.status_code == 200 for response in responses)
+        assert len(router_env.backend.request_log) == 4
+        assert router_env.backend.max_concurrent == 1
+
+    def test_different_sessions_remain_parallel(self, router_env, monkeypatch) -> None:
+        session_ids = [_create_session(router_env.url) for _ in range(4)]
+        barrier = Barrier(len(session_ids))
+        monkeypatch.setattr(router_env.backend, "latency", 0.2)
+        router_env.backend.reset_stats()
+
+        def post_turn(session_id: str) -> requests.Response:
+            barrier.wait()
+            return _post_messages(router_env.url, session_id, _request())
+
+        with ThreadPoolExecutor(max_workers=len(session_ids)) as pool:
+            futures = [pool.submit(post_turn, session_id) for session_id in session_ids]
+            responses = [future.result() for future in futures]
+
+        assert all(response.status_code == 200 for response in responses)
+        assert len(router_env.backend.request_log) == len(session_ids)
+        assert router_env.backend.max_concurrent >= 2
+
     def test_session_sampling_overrides_win_over_claude_request(self, router_env) -> None:
         create = requests.post(
             f"{router_env.url}/sessions",

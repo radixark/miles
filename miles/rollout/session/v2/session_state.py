@@ -34,9 +34,13 @@ class SessionStateV2:
     active_leaf is what GET /sessions, judgment, and sample assembly see.
     ``None`` means no committed generation yet (empty view, first-turn
     semantics — a failed first turn leaves the session fully retryable).
+
+    ``turn_lock`` serializes protocols that require one complete generation to
+    commit before the next turn for this session is prepared.
     """
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
+    turn_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
     request_overrides: dict[str, Any] = field(default_factory=dict, repr=False)
     tree: SessionTree = field(default_factory=SessionTree)
