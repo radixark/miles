@@ -7,19 +7,24 @@ from miles.utils.external_utils.command_utils.common import run_process
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
 from miles.utils.external_utils.miles_workbench.naming import CHART_DIR, PACKAGE, object_name
 from miles.utils.external_utils.miles_workbench.options import ExecArgs, InstallArgs, ReleaseArgs
-from miles.utils.external_utils.miles_workbench.render import helm_value_overrides, render_chart
+from miles.utils.external_utils.miles_workbench.preflight.runner import run_preflight_checks
+from miles.utils.external_utils.miles_workbench.render import helm_value_overrides
 
 logger = logging.getLogger(__name__)
 
 
 def install(args: InstallArgs) -> None:
     if args.dry_run:
-        logger.info(render_chart(args).stdout)
+        run_preflight_checks(args)
         logger.info("Dry run: nothing was created, installed or waited for")
         return
 
     _ensure_namespace(args.namespace)
-    _run(["helm", "dependency", "build", str(CHART_DIR)])
+
+    if args.skip_preflight:
+        _run(["helm", "dependency", "build", str(CHART_DIR)])
+    else:
+        run_preflight_checks(args)
     _run(_helm_install_command(args))
     _wait_until_ready(namespace=args.namespace, release=args.release, timeout=args.timeout)
 
