@@ -1,9 +1,12 @@
 import subprocess
+from pathlib import Path
 
 import pytest
 
+from miles.utils.external_utils.command_utils.common import chart_dir
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
 from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.worker_provider.kubernetes.helm import naming
 
@@ -51,18 +54,39 @@ class TestUpgradeCommand:
         assert command[command.index("/infra.yaml") - 1] == "--values"
         assert command.index("/infra.yaml") < command.index("/run.yaml")
 
-    def test_installs_a_missing_release_and_updates_an_existing_one(self):
-        """Relaunching a run id must update it in place, which plain upgrade would refuse to do."""
-        command = Helm.upgrade_command("r", "myns", "/c", [])
 
-        assert command[:4] == ["helm", "upgrade", "--install", "r"]
+class TestBuildDependencies:
+    def test_chart_dependencies_are_rebuilt_only_when_a_locked_dependency_is_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Helm rebuilds a locked chart only after one of its cached dependencies disappears."""
+        chart = tmp_path / "chart"
+        charts = chart / "charts"
+        charts.mkdir(parents=True)
+        (chart / "Chart.lock").write_text("dependencies:\n  - name: worker\n  - name: runtime\n")
+        (charts / "worker").mkdir()
+        runtime = charts / "runtime"
+        runtime.mkdir()
+        commands: list[list[str]] = []
 
-    def test_keeps_the_user_values_ahead_of_the_computed_ones(self):
-        """A run value must win over a cluster default, and helm lets the later file win."""
-        command = Helm.upgrade_command("r", "myns", "/c", ["/infra.yaml", "/run.yaml"])
+        def fake_run_process(
+            argv: list[str],
+            *,
+            capture_output: bool,
+            check: bool,
+            input: str | None = None,
+            timeout: float | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            commands.append(argv)
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 
-        assert command[command.index("/infra.yaml") - 1] == "--values"
-        assert command.index("/infra.yaml") < command.index("/run.yaml")
+        monkeypatch.setattr(command_wrapper, "run_process", fake_run_process)
+
+        Helm.build_dependencies(chart)
+        runtime.rmdir()
+        Helm.build_dependencies(chart)
+
+        assert commands == [["helm", "dependency", "build", str(chart)]]
 
 
 class TestRawCommands:
@@ -121,6 +145,24 @@ class TestGetJson:
             Kubectl.get_json("pod", return_type=Pod, name="trainer-0", namespace="rl")
 
 
+class TestChartDir:
+    def test_finds_the_chart_inside_the_checkout(self):
+        """The launcher installs the chart of the code it runs, not one from a registry."""
+        assert chart_dir(repo_base_dir="/repo").as_posix() == "/repo/charts/miles-run"
+
+
+class TestReleaseName:
+    def test_a_release_is_the_chart_name_and_the_run_id(self):
+        """The launcher finds a run's release again from the run id alone, so the rule is fixed."""
+        assert RunNames.release(run_id="260101-000000-000") == "miles-run-260101-000000-000"
+
+    def test_the_same_run_id_always_names_the_same_release(self):
+        """Relaunching a run upgrades its release; a fresh name would deploy a second copy instead."""
+        run_id = "a" * 32
+
+        assert RunNames.release(run_id=run_id) == RunNames.release(run_id=run_id)
+
+
 class TestComponentName:
     def test_an_object_is_the_release_the_chart_name_and_the_component(self):
         """Every object of a run is traceable to the release that made it."""
@@ -151,6 +193,13 @@ class TestComponentName:
         """A doubled dash is legal but reads as an empty segment, and drifts from the recorded names."""
         for length in range(1, 60):
             assert "--" not in naming.component_name("b" * length, "orchestrator")
+
+    def test_a_component_longer_than_its_own_budget_is_hashed(self):
+        """Letting it eat the whole budget leaves no room for the release digest, so two runs collide."""
+        name = naming.component_name("a" * 200, "trainer-controller-" + "m" * 60)
+        appended = len(naming.LONGEST_CELL_INDEX_SUFFIX) + len(naming.LONGEST_REVISION_HASH_SUFFIX)
+
+        assert len(name) + appended <= naming.MAX_OBJECT_NAME_LENGTH
 
     def test_two_long_components_of_one_run_never_collapse_onto_the_same_name(self):
         """Truncation alone maps every long component onto one name; the digest is what keeps them apart."""
