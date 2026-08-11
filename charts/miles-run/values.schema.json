@@ -130,10 +130,17 @@
           "minLength": 1,
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "type": "string"
+        },
+        "mooncakeMaster": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
         }
       },
       "required": [
-        "orchestrator"
+        "orchestrator",
+        "mooncakeMaster"
       ],
       "type": "object"
     },
