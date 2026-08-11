@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 _shard_topology: tuple[bool, tuple[tuple[int, int, int], ...]] | None = None
 
 
+def _lora_a_init_method(args: Namespace) -> str:
+    # Tinker's LoRA contract follows PEFT's default Kaiming-uniform A
+    # initialization. Miles' autonomous trainer historically uses Xavier.
+    # The difference is invisible at model creation because B starts at zero,
+    # but changes every subsequent adapter delta, so keep it scoped to the
+    # request-driven compatibility service.
+    lora_a_init_method = getattr(args, "lora_A_init_method", "xavier")
+    if os.environ.get("MILES_TINKER_API", "0") == "1":
+        lora_a_init_method = "kaiming"
+    return lora_a_init_method
+
+
 def create_multi_lora_instance(args: Namespace):
     """Create a MultiLoRA instance from training args."""
     from megatron.bridge.peft.multi_lora import MultiLoRA
@@ -36,14 +48,13 @@ def create_multi_lora_instance(args: Namespace):
 
         lora_cls = LoRA
 
-    # exclude_modules was already folded into target_modules during arg validation.
     return MultiLoRA(
         target_modules=convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls),
         n_adapters=args.multi_lora_n_adapters,
         dim=args.lora_rank,
         alpha=args.lora_alpha,
         dropout=getattr(args, "lora_dropout", 0.0),
-        lora_A_init_method=getattr(args, "lora_A_init_method", "xavier"),
+        lora_A_init_method=_lora_a_init_method(args),
         lora_B_init_method=getattr(args, "lora_B_init_method", "zero"),
     )
 
