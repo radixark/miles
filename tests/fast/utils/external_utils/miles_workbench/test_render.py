@@ -7,6 +7,7 @@ import pytest
 
 from miles.utils.external_utils.miles_workbench import render as render_module
 from miles.utils.external_utils.miles_workbench.options import InstallArgs
+from miles.utils.external_utils.miles_workbench.render import rbac_plan_of
 
 
 class TestRenderChartFrom:
@@ -37,3 +38,22 @@ class TestRenderChartFrom:
         result = render_module._render_chart_from(args, chart_dir=Path("/chart"))
 
         assert result is failure
+
+
+class TestRbacPlanOf:
+    def test_a_named_resource_grant_is_rejected_before_creating_a_whole_resource_plan(self) -> None:
+        """A named-object grant is rejected before becoming a whole-resource permission check."""
+        rendered = """
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workbench
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["workbench-token"]
+    verbs: ["get"]
+"""
+
+        with pytest.raises(AssertionError, match="named objects only"):
+            rbac_plan_of(rendered)
