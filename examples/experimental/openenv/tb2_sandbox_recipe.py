@@ -36,6 +36,7 @@ tampers with container binaries could still fake a pass.
 """
 
 import base64
+import concurrent.futures
 import getpass
 import gzip
 import io
@@ -75,6 +76,12 @@ _ENV_SRC_ITEMS = (
     "server",
 )
 
+# Per-exec timeout inside the sandbox. Named after the variable the env server
+# itself reads (it is tbench2_env's contract, not ours), and owned here because
+# this is where the server's command line is built — every backend gets the same
+# value without three copies of this getenv.
+COMMAND_TIMEOUT_S = int(os.getenv("TB2_COMMAND_TIMEOUT_S", "900"))
+
 # The command to start the env server inside a task sandbox (a provider may
 # not run the image CMD — Daytona doesn't). /opt/envserver and /opt/tb2-tasks
 # are baked by server_layer_commands.
@@ -90,7 +97,7 @@ SERVER_CMD = (
 )
 
 
-def server_cmd(command_timeout_s: int = 900, default_task_id: str = "") -> str:
+def server_cmd(command_timeout_s: int = COMMAND_TIMEOUT_S, default_task_id: str = "") -> str:
     # A per-task sandbox stages exactly one task, so make it the default:
     # a reset() with no task_id resolves to the staged task rather than the
     # env's built-in headless-terminal default (which isn't present here).
@@ -107,9 +114,27 @@ def read_task_config(task_dir: Path) -> dict:
     return tomllib.loads(toml_path.read_text())
 
 
+def task_env_resources(task_dir: Path) -> tuple[int, int, int]:
+    """``(cpus, memory_mb, storage_mb)`` from ``task.toml [environment]``, floored.
+
+    The floors (1 CPU / 2048 MB memory / 10240 MB disk) are recipe policy —
+    the env server needs room to run alongside the task — applied once here so
+    the providers cannot drift apart on them. Each materialization maps these
+    onto its own units and drops what its provider does not take (Modal sizes
+    disk itself; E2B sizes everything at template-build time).
+    """
+    env_cfg = read_task_config(task_dir).get("environment", {})
+    return (
+        max(1, int(env_cfg.get("cpus", 1))),
+        max(2048, int(env_cfg.get("memory_mb", 2048))),
+        max(10240, int(env_cfg.get("storage_mb", 10240))),
+    )
+
+
 def sandbox_labels(task_dir: Path) -> dict[str, str]:
     """Ownership labels/metadata for a per-task sandbox: what it runs, and who
-    launched it. Provider-agnostic (Daytona labels, E2B metadata — same keys).
+    launched it. Provider-agnostic (Daytona labels, E2B metadata, Modal tags —
+    same keys).
 
     Sandbox APIs record no creator, so in a shared org/deployment these are
     the only attribution. ``openenv-tbench2-task`` keys sweep/cleanup tooling
@@ -177,6 +202,24 @@ def start_keepalive(beat, thread_name: str, *, interval_s: float, max_consecutiv
                 failures += 1
 
     threading.Thread(target=_run, name=thread_name, daemon=True).start()
+
+
+def run_with_deadline(fn, timeout_s: float):
+    """Run *fn* on a scoped worker thread; raise TimeoutError past *timeout_s*.
+
+    For provider calls that block across many requests with no deadline of
+    their own (an E2B template build, a Modal build+create). Deliberately not
+    a ``with ThreadPoolExecutor`` block: its ``__exit__`` joins the worker,
+    which would wait out the very call the deadline exists to abandon. On
+    timeout the provider-side work keeps cooking (and may finish) — reclaiming
+    whatever it produces is the caller's provider-specific business — but this
+    caller stops holding its locks and semaphore slots.
+    """
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(fn).result(timeout=timeout_s)
+    finally:
+        pool.shutdown(wait=False)
 
 
 def add_task_selection_args(ap) -> None:
@@ -277,6 +320,8 @@ def _env_src_dir() -> Path:
     directory IS the project directory; a wheel/sdist install ships no
     pyproject.toml, so fail fast here instead of deep inside the image build.
     """
+    # In-function, deliberately: only a build that embeds the env source needs
+    # the package, and the offline tests import this module without it installed.
     import tbench2_env
 
     src = Path(tbench2_env.__file__).resolve().parent
@@ -347,6 +392,9 @@ def server_layer_commands(task_dir: Path) -> list[str]:
 
 
 def wait_server_ready(base_url: str, timeout_s: float = 300.0) -> None:
+    # In-function, deliberately: requests is not a hard dependency of this
+    # module -- the offline tests import it with requests absent -- and only a
+    # caller that actually waits on a live server needs it.
     import requests
 
     deadline = time.time() + timeout_s

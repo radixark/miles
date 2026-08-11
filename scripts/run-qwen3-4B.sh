@@ -114,6 +114,11 @@ PROMETHEUS_ARGS=(
    # --prometheus-run-name "qwen3-4B-exp"
 )
 
+DASHBOARD_ARGS=(
+   --use-miles-dashboard
+   --dump-details /root/Qwen3-4B_miles/dump_details
+)
+
 MISC_ARGS=(
    # default dropout in megatron is 0.1
    --attention-dropout 0.0
@@ -154,4 +159,5 @@ ray job submit --address="http://127.0.0.1:8265" \
    ${EVAL_ARGS[@]} \
    ${SGLANG_ARGS[@]} \
    ${PROMETHEUS_ARGS[@]} \
+   ${DASHBOARD_ARGS[@]} \
    ${MISC_ARGS[@]}

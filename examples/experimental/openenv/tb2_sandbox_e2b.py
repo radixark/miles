@@ -13,8 +13,8 @@ server speaking the E2B API:
     server and this module needs no code changes; AgentENV currently accepts
     any non-empty API key.
 
-Unlike Daytona's declarative per-episode image build, E2B separates the two
-halves of a create:
+Where a provider that builds declaratively does it all in the create, E2B
+separates the two halves:
 
   ``ensure_task_template(...)``  build the per-task template once, under a
       deterministic alias derived from the task id AND a digest of the recipe
@@ -35,7 +35,6 @@ offline unit tests and non-sandbox launches must not require the SDK.
 """
 
 import argparse
-import concurrent.futures
 import hashlib
 import os
 import re
@@ -46,11 +45,12 @@ from pathlib import Path
 
 import tb2_sandbox_recipe as recipe
 from tb2_sandbox_recipe import (
-    read_task_config,
     resolve_docker_image,
+    run_with_deadline,
     sandbox_labels,
     server_cmd,
     server_layer_commands,
+    task_env_resources,
     wait_server_ready,
 )
 
@@ -93,11 +93,8 @@ def task_build_resources(task_dir: Path) -> dict[str, int]:
     E2B sizes sandboxes at template-build time (warm starts inherit the
     template's spec), so the task's requirements go here, not on create.
     """
-    env_cfg = read_task_config(task_dir).get("environment", {})
-    return {
-        "cpu_count": max(1, int(env_cfg.get("cpus", 1))),
-        "memory_mb": max(2048, int(env_cfg.get("memory_mb", 2048))),
-    }
+    cpus, memory_mb, _storage_mb = task_env_resources(task_dir)
+    return {"cpu_count": cpus, "memory_mb": memory_mb}
 
 
 def _connection_opts() -> dict:
@@ -138,7 +135,7 @@ def ensure_task_template(
     # In-function import, deliberately: the e2b SDK is an optional dependency
     # of this recipe (the launcher preflights it), so importing the module
     # must not require it — the offline tests import this file with a fake
-    # `e2b` in sys.modules, and the Daytona leg defers its SDK the same way.
+    # `e2b` in sys.modules, and the sibling backends defer their SDKs the same way.
     from e2b import Template
 
     task_dir = Path(task_dir)
@@ -165,13 +162,7 @@ def ensure_task_template(
                 **_connection_opts(),
             )
 
-        # Not a `with` block: its __exit__ joins the worker, which would wait
-        # out the very build the timeout is meant to abandon.
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        try:
-            pool.submit(_build).result(timeout=build_timeout_s)
-        finally:
-            pool.shutdown(wait=False)
+        run_with_deadline(_build, build_timeout_s)
     return alias
 
 
@@ -195,6 +186,7 @@ def base_url(sandbox) -> str:
 # switch for orphans. 6 beats per window; up to 3 consecutive failed beats
 # (API blips) tolerated before the thread concludes the sandbox is gone.
 _SANDBOX_TTL_S = int(os.getenv("OPENENV_E2B_SANDBOX_TTL_S", "1800"))
+_READY_TIMEOUT_S = float(os.getenv("OPENENV_E2B_READY_TIMEOUT_S", "300"))
 _KEEPALIVE_INTERVAL_S = _SANDBOX_TTL_S / 6.0
 _KEEPALIVE_MAX_CONSECUTIVE_FAILURES = 3
 
@@ -219,9 +211,8 @@ def _start_keepalive(sandbox, task_id: str) -> None:
 def create_task_sandbox(
     task_dir: Path,
     *,
-    command_timeout_s: int = 900,
-    ready_timeout_s: float = 300.0,
-    ttl_s: int | None = None,
+    command_timeout_s: int = recipe.COMMAND_TIMEOUT_S,
+    ready_timeout_s: float = _READY_TIMEOUT_S,
 ):
     """Create ONE per-episode sandbox for *task_dir* from its template.
 
@@ -238,9 +229,12 @@ def create_task_sandbox(
     task_dir = Path(task_dir)
     opts = _connection_opts()
     alias = ensure_task_template(task_dir)
+    # The TTL is deliberately not a parameter: the keepalive thread re-arms
+    # _SANDBOX_TTL_S, so a different value passed here would be silently
+    # overwritten at the first beat.
     sandbox = Sandbox.create(
         template=alias,
-        timeout=ttl_s if ttl_s is not None else _SANDBOX_TTL_S,
+        timeout=_SANDBOX_TTL_S,
         metadata=sandbox_labels(task_dir),
         **opts,
     )
@@ -260,7 +254,10 @@ def create_task_sandbox(
         _start_keepalive(sandbox, task_dir.name)
         return sandbox, url
     except Exception:
-        sandbox.kill(**opts)
+        try:
+            sandbox.kill(**opts)
+        except Exception:
+            pass  # cleanup must not mask the real failure; the TTL reclaims it
         raise
 
 

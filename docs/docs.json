@@ -3,12 +3,12 @@
  "name": "Miles",
  "theme": "mint",
  "logo": {
-  "light": "/assets/images/miles_logo_light.png",
-  "dark": "/assets/images/miles_logo_dark.png",
+  "light": "/assets/images/brand/miles_logo_light.png",
+  "dark": "/assets/images/brand/miles_logo_dark.png",
   "href": "/",
   "width": 130
  },
- "favicon": "/assets/images/miles_square.png",
+ "favicon": "/assets/images/brand/miles_square.png",
  "seo": {
   "metatags": {
    "canonical": "https://miles.radixark.com/docs",
@@ -68,7 +68,7 @@
           ],
           "expanded": false
          },
-         "models/deepseek/deepseek"
+         "models/deepseek/deepseek-v3-2"
         ],
         "expanded": false
        },
@@ -117,6 +117,7 @@
         "group": "GLM",
         "root": "models/glm/index",
         "pages": [
+         "models/glm/glm5-2",
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
          "models/glm/glm4-5",
@@ -165,13 +166,13 @@
       "pages": [
        "user-guide/concepts",
        "user-guide/argument-groups",
+       "user-guide/fully-async",
        "user-guide/usage",
        "user-guide/training-script-walkthrough",
        "user-guide/monitoring",
        "user-guide/dashboard",
        "user-guide/customization",
        "user-guide/rollout-endpoints",
-       "user-guide/fully-async",
        "user-guide/agentic-chat-template",
        "user-guide/cli-reference"
       ]
@@ -257,9 +258,9 @@
       "root": "developer/index",
       "pages": [
        "developer/contributor-guide",
-       "developer/debug",
-       "developer/migration",
        "developer/architecture",
+       "developer/versions",
+       "developer/debug",
        "developer/experimental-features"
       ]
      }
@@ -284,14 +285,32 @@
      {
       "group": "Resources",
       "pages": [
-       "faq",
-       "blog/index"
+       "blog/index",
+       "subscribe"
+      ]
+     }
+    ]
+   },
+   {
+    "tab": "FAQ",
+    "groups": [
+     {
+      "group": "FAQ",
+      "pages": [
+       "faq"
       ]
      }
     ]
    }
   ]
  },
+ "redirects": [
+  {
+   "source": "/models/deepseek/deepseek",
+   "destination": "/models/deepseek/deepseek-v3-2",
+   "permanent": true
+  }
+ ],
  "background": {
   "dark": "#0c0b0a",
   "light": "#faf7f4"
