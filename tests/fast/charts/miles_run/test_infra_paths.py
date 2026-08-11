@@ -1,0 +1,118 @@
+from typing import Any
+
+from tests.fast.charts.utils import render_run, render_run_error, requires_helm, sole_container_of
+
+ORCHESTRATOR = "myrun-miles-run-orchestrator"
+ORCHESTRATOR_IDENTITY = {"MILES_K8S_NAMESPACE": "myns", "MILES_K8S_RELEASE": "myrun"}
+
+ALL_REPOS = (
+    "--set",
+    "infra.paths.repos.miles=myuser/miles",
+    "--set",
+    "infra.paths.repos.megatron=myuser/Megatron-LM",
+    "--set",
+    "infra.paths.repos.sglang=myuser/sglang",
+)
+
+
+def orchestrator_container(*args: str) -> dict[str, Any]:
+    return sole_container_of(render_run(*args), "StatefulSet", ORCHESTRATOR)
+
+
+def environment(container: dict[str, Any]) -> dict[str, str]:
+    return {entry["name"]: entry["value"] for entry in container.get("env", [])}
+
+
+@requires_helm
+class TestCodeRepositoryOverrides:
+    def test_a_configured_repo_mounts_over_the_copy_baked_into_the_image(self):
+        """Editing code on shared storage is only picked up if the mount lands on the path the image imports from."""
+        mounts = orchestrator_container(*ALL_REPOS)["volumeMounts"]
+
+        assert mounts == [
+            {"name": "shared-storage", "mountPath": "/cluster-storage"},
+            {"name": "shared-storage", "mountPath": "/root/miles", "subPath": "myuser/miles"},
+            {"name": "shared-storage", "mountPath": "/root/Megatron-LM", "subPath": "myuser/Megatron-LM"},
+            {"name": "shared-storage", "mountPath": "/sgl-workspace/sglang", "subPath": "myuser/sglang"},
+        ]
+
+    def test_every_overridden_repo_joins_the_python_path_by_its_in_image_location(self):
+        """The mount alone does not reorder sys.path, so an installed copy would still win without this."""
+        assert environment(orchestrator_container(*ALL_REPOS))["PYTHONPATH"] == (
+            "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang"
+        )
+
+    def test_only_the_repos_that_were_named_are_overridden(self):
+        """Overriding one repo must not shadow the other two with an empty directory."""
+        container = orchestrator_container("--set", "infra.paths.repos.megatron=myuser/Megatron-LM")
+
+        assert [mount["mountPath"] for mount in container["volumeMounts"]] == [
+            "/cluster-storage",
+            "/root/Megatron-LM",
+        ]
+        assert environment(container)["PYTHONPATH"] == "/root/Megatron-LM"
+
+    def test_the_defaults_override_no_repo_at_all(self):
+        """The image is self-contained, so a run that names no repo must not gain a PYTHONPATH of its own."""
+        container = orchestrator_container()
+
+        assert [mount["mountPath"] for mount in container["volumeMounts"]] == [
+            "/cluster-storage",
+        ]
+        assert environment(container) == ORCHESTRATOR_IDENTITY
+
+
+@requires_helm
+class TestRunDirectory:
+    def test_the_orchestrator_watches_the_state_file_the_launcher_named(self):
+        """The launcher polls the path it injected, so a chart that derives its own is a run that can only hang."""
+        state_file = "/mnt/x/teamdata/miles-runs/myrun/state/orchestrator.state"
+
+        container = orchestrator_container("--set", f"run.stateFile={state_file}")
+
+        assert state_file in container["command"]
+
+
+@requires_helm
+class TestClusterEnvironment:
+    def test_the_cluster_environment_reaches_the_orchestrator_pod(self):
+        """The orchestrator downloads datasets and reaches the api server, so it needs the cluster's proxy too."""
+        container = orchestrator_container(
+            "--set", "infra.env.HTTP_PROXY=http://proxy:7890", "--set", "infra.env.HF_ENDPOINT=https://mirror"
+        )
+
+        assert environment(container) == ORCHESTRATOR_IDENTITY | {
+            "HTTP_PROXY": "http://proxy:7890",
+            "HF_ENDPOINT": "https://mirror",
+        }
+
+    def test_the_cluster_environment_and_the_derived_python_path_both_reach_the_pod(self):
+        """One of the two overwriting the other would silently drop either the proxy or the code override."""
+        container = orchestrator_container(*ALL_REPOS, "--set", "infra.env.HTTP_PROXY=http://proxy:7890")
+
+        assert environment(container) == ORCHESTRATOR_IDENTITY | {
+            "HTTP_PROXY": "http://proxy:7890",
+            "PYTHONPATH": "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang",
+        }
+
+
+@requires_helm
+class TestPythonPathIsNotAnEnvironmentVariable:
+    def test_the_schema_refuses_a_pythonpath_in_the_cluster_environment(self):
+        """A hand-set PYTHONPATH silently outranks the repo mounts, so the values file must not carry one."""
+        error = render_run_error("--set", "infra.env.PYTHONPATH=/somewhere")
+
+        assert "PYTHONPATH" in error
+
+    def test_the_schema_refuses_a_pythonpath_in_the_run_environment(self):
+        """The launcher derives PYTHONPATH from the mounted repos; a second source could only disagree."""
+        error = render_run_error("--set", "run.env.PYTHONPATH=/somewhere")
+
+        assert "PYTHONPATH" in error
+
+    def test_an_ordinary_cluster_variable_is_still_accepted(self):
+        """Only PYTHONPATH is reserved; refusing the rest would make infra.env useless."""
+        objects = render_run("--set", "infra.env.NCCL_SOCKET_IFNAME=bond0")
+
+        env = sole_container_of(objects, "StatefulSet", ORCHESTRATOR)["env"]
+        assert {"name": "NCCL_SOCKET_IFNAME", "value": "bond0"} in env
