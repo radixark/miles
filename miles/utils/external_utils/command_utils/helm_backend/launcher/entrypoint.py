@@ -83,7 +83,9 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     _write_helm_values(values_path, build_values(specs, plan).as_values())
     values_files: list[str | Path] = [*config.helm_values, values_path]
 
-    if installed_manifest is not None:
+    if installed_manifest is None:
+        _remove_pending_uninstall(release, namespace=namespace)
+    else:
         _assert_upgrade_only_resizes(
             installed_manifest=installed_manifest,
             release=release,
@@ -196,6 +198,12 @@ def _uninstall_leftover_ci_releases(namespace: str) -> list[str]:
         logger.info(f"Uninstalling the leftover ci release {release} before this run installs its own")
         Helm.uninstall(release=release, namespace=namespace)
     return releases
+
+
+def _remove_pending_uninstall(release: str, *, namespace: str) -> None:
+    job = RunNames.uninstall_job(release=release)
+    logger.info(f"Deleting {job} if it is pending, so it cannot uninstall the release this launch installs")
+    Kubectl.delete_job(job, namespace=namespace, check=True)
 
 
 def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> None:
