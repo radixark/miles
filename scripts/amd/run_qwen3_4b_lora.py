@@ -92,11 +92,12 @@ def _resolve_num_gpus(args: ScriptArgs) -> tuple[str, int]:
 
 
 def _download_inputs(args: ScriptArgs) -> None:
-    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command_cpu(f"hf download {_HF_REPO} --local-dir {args.model_dir}/{args.model_name}")
-    U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+    backend = args.create_backend()
+    backend.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    backend.exec_command_cpu(f"hf download {_HF_REPO} --local-dir {args.model_dir}/{args.model_name}")
+    backend.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     if args.enable_eval:
-        U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
+        backend.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
 
 def _get_wandb_args(args: ScriptArgs) -> str:
@@ -210,9 +211,8 @@ def _execute(args: ScriptArgs) -> None:
         f"{args.extra_args} "
     )
 
-    U.execute_train(
+    args.create_backend().execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=num_gpus,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,

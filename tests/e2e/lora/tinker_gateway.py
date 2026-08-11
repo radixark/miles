@@ -7,7 +7,7 @@ import time
 import urllib.request
 from contextlib import contextmanager, suppress
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 from miles.utils.http_utils import is_port_available
 
 MODEL_NAME = "Qwen3-4B-Instruct-2507"
@@ -17,6 +17,7 @@ SERVE_TIMEOUT_S = 1200
 
 
 def prepare_gateway():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models")
     U.exec_command_cpu(f"hf download {BASE_MODEL} --local-dir /root/models/{MODEL_NAME}")
 
