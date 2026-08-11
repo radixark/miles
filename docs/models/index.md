@@ -8,8 +8,7 @@ them.
 
 ## By family
 
-Each model name links to its recipe page. JoyAI-LLM-Flash is the one exception: it has a
-launch script but no page yet, so it links to the script.
+Each model name links to its recipe page.
 
 | Family | Models |
 |---|---|
