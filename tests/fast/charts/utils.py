@@ -14,6 +14,7 @@ CHART_DIR = CHARTS_DIR / "miles-workbench"
 SHARED_INFRA_SCHEMA_PATH = CHARTS_DIR / "shared-infra.schema.json"
 
 RELEASE_NAME = "miles-workbench-myuser"
+UNINSTALLER_SERVICE_ACCOUNT = "miles-uninstaller"
 OBJECT_NAME = RELEASE_NAME
 NAMESPACE = "myns"
 
@@ -110,3 +111,9 @@ def _resolve_refs(node: Any, definitions: dict[str, Any]) -> Any:
     if (reference := node.get("$ref")) is not None:
         return _resolve_refs(definitions[reference.rsplit("/", maxsplit=1)[1]], definitions)
     return {key: _resolve_refs(value, definitions) for key, value in node.items() if key != "definitions"}
+
+
+def named_object(objects: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
+    matched = [obj for obj in objects_of_kind(objects, kind) if obj["metadata"]["name"] == name]
+    assert len(matched) == 1, f"expected one {kind}/{name}, got {[obj['metadata']['name'] for obj in matched]}"
+    return matched[0]

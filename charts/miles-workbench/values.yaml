@@ -38,3 +38,6 @@ rbac:
 
 serviceAccount:
   name: ""
+
+uninstaller:
+  serviceAccount: miles-uninstaller
