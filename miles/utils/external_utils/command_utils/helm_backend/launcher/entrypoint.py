@@ -17,7 +17,8 @@ from miles.utils.external_utils.command_utils.base_backend import (
 )
 from miles.utils.external_utils.command_utils.common import ArgvManipulator, chart_dir, repo_base_dir, train_env_vars
 from miles.utils.external_utils.command_utils.helm_backend import naming
-from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.observability import farewell, with_observability
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.pod_facts import pod_phase
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import (
@@ -85,14 +86,16 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
 
 
 def _follow_until_finished(*, release: str, namespace: str, state_file: Path) -> None:
-    logger.info(f"Waiting for {release} to report its verdict; ctrl+c stops watching, not the run")
+    logger.info(f"Following every pod of {release}; ctrl+c stops watching, not the run")
     orchestrator_workload = naming.component_name(release, naming.ORCHESTRATOR_COMPONENT)
 
-    outcome = wait_for_run(
-        state_file=state_file,
-        read_pod_phase=lambda: pod_phase(namespace, orchestrator_workload),
-    )
+    with with_observability(namespace=namespace, selector=Kubectl.release_selector(release)):
+        outcome = wait_for_run(
+            state_file=state_file,
+            read_pod_phase=lambda: pod_phase(namespace, orchestrator_workload),
+        )
 
+    logger.info(farewell(namespace=namespace, release=release, workload=orchestrator_workload))
     if outcome.exit_code != 0:
         raise SystemExit(outcome.exit_code)
 
