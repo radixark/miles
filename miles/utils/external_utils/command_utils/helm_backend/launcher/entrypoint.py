@@ -62,7 +62,9 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     Helm.build_dependencies(chart)
 
     installed_manifest = Helm.get_manifest(release, namespace)
-    state_file = RunFiles.new_state_file(run_directory=run_directory)
+    state_file = _compute_state_file(
+        installed_manifest=installed_manifest, run_directory=run_directory, release=release
+    )
 
     plan = LaunchPlan(
         run_id=run_id,
@@ -143,6 +145,18 @@ def _generate_wandb_run_id() -> str:
     from wandb.sdk.lib.runid import generate_id
 
     return generate_id()
+
+
+def _compute_state_file(*, installed_manifest: Manifest | None, run_directory: Path, release: str) -> Path:
+    if installed_manifest is None:
+        return RunFiles.new_state_file(run_directory=run_directory)
+
+    attached_state_file = installed_manifest.state_file(container=naming.ORCHESTRATOR_COMPONENT)
+    assert attached_state_file is not None, (
+        f"Run {release} is installed but its orchestrator names no state file, so this launch cannot tell what it "
+        f"is watching; uninstall it, or launch under a new run id"
+    )
+    return attached_state_file
 
 
 def _assert_upgrade_only_resizes(
