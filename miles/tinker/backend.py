@@ -160,6 +160,12 @@ class MilesTinkerBackend:
             raise ValueError("sampling requires a model-backed sampling session")
         tokens = _tokens(request["prompt"])
         params = dict(request.get("sampling_params") or {})
+        # Tinker follows OpenAI naming while SGLang's native /generate
+        # endpoint uses its internal sampling names.
+        if "max_tokens" in params:
+            params["max_new_tokens"] = params.pop("max_tokens")
+        if "seed" in params:
+            params["sampling_seed"] = params.pop("seed")
         num_samples = int(request.get("num_samples", 1))
         payload = {
             "input_ids": tokens,
@@ -175,10 +181,13 @@ class MilesTinkerBackend:
         sequences = []
         for output in outputs:
             meta = output.get("meta_info", {})
+            token_logprobs = meta.get("output_token_logprobs", [])
+            output_tokens = output.get("output_ids") or [item[1] for item in token_logprobs]
+            output_logprobs = [item[0] if isinstance(item, (list, tuple)) else item for item in token_logprobs]
             sequences.append(
                 {
-                    "tokens": output.get("output_ids", []),
-                    "logprobs": meta.get("output_token_logprobs", []),
+                    "tokens": output_tokens,
+                    "logprobs": output_logprobs,
                     "stop_reason": meta.get("finish_reason", {}).get("type", "length"),
                 }
             )
