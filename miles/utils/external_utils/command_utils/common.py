@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
+from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,9 @@ def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | 
             entries.extend(pythonpath.split(os.pathsep))
     return os.pathsep.join(dict.fromkeys(entries))
 
+
+def chart_dir(*, repo_base_dir: str | Path) -> Path:
+    return Path(repo_base_dir) / "charts" / CHART_NAME
 
 def rsync_cmd(path_src: str, path_dst: str) -> str:
     return f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}"

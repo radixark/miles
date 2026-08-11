@@ -12,17 +12,16 @@ from typing import get_args
 
 from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
-    create_run_id,
-    run_shell_command,
     _parse_extra_env_vars,
     _pythonpath_with_sources,
+    create_run_id,
     detect_hardware,
     repo_base_dir,
+    run_shell_command,
 )
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
-from miles.utils.logging_utils import configure_logger_raw
-from miles.utils.typer_utils import dataclass_from_env
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.typer_utils import dataclass_from_env
 from miles.utils.workers.types import ClusterBackend
 
 logger = logging.getLogger(__name__)
@@ -45,7 +44,9 @@ class ExecuteTrainConfig:
     def create_backend(self) -> BaseCommandBackend:
         match self.cluster_backend:
             case ClusterBackend.KUBERNETES:
-                raise NotImplementedError("A later milestone teaches this backend to install a run into Kubernetes")
+                from miles.utils.external_utils.command_utils.helm_backend.backend import KubernetesCommandBackend
+
+                return KubernetesCommandBackend(self)
             case ClusterBackend.RAY:
                 from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 
@@ -68,12 +69,16 @@ class ExecuteTrainRequest(FrozenStrictBaseModel):
     prepare_cmd: dict[str, str]
 
 
+CLUSTER_BACKEND_FLAG = "--cluster-backend"
+
 TRAINER_ROLE = "trainer"
 _PREPARE_CMD_ROLES = frozenset({TRAINER_ROLE})
 
 
 class BaseCommandBackend(ABC):
     def __init__(self, config: ExecuteTrainConfig) -> None:
+        from miles.utils.logging_utils import configure_logger_raw
+
         configure_logger_raw("launcher")
         self.config = config
 
@@ -100,6 +105,7 @@ class BaseCommandBackend(ABC):
         train_argv = shlex.split(train_args)
         train_backend_fsdp = "fsdp" in ArgvManipulator.values_of(train_argv, "--train-backend")
         assert train_backend_fsdp == (megatron_model_type is None)
+        _assert_train_args_name_no_other_backend(train_argv, cluster_backend=self.config.cluster_backend.value)
 
         self._execute_train_inner(
             ExecuteTrainRequest(
@@ -203,6 +209,9 @@ class BaseCommandBackend(ABC):
             f"--output-bf16-hf-path {path_dst} "
         )
 
+    def api_server_host(self) -> str:
+        return "localhost"
+
     @abstractmethod
     def _execute_train_inner(self, request: ExecuteTrainRequest) -> None: ...
 
@@ -241,3 +250,16 @@ def resolve_hardware(config: ExecuteTrainConfig) -> str:
     supported = get_args(config.__dataclass_fields__["hardware"].type)
     assert hardware in supported, f"{type(config).__name__} has no verified profile for {hardware}"
     return hardware
+
+
+def _declared_cluster_backends(train_argv: list[str]) -> list[str]:
+    return ArgvManipulator.values_of(train_argv, CLUSTER_BACKEND_FLAG)
+
+
+def _assert_train_args_name_no_other_backend(train_argv: list[str], *, cluster_backend: str) -> None:
+    conflicting = sorted(set(_declared_cluster_backends(train_argv)) - {cluster_backend})
+    assert not conflicting, (
+        f"This run is launched onto {cluster_backend}, so its pods have to be told {CLUSTER_BACKEND_FLAG} "
+        f"{cluster_backend}, but the train args already say {conflicting}; drop that flag or launch with the "
+        f"backend it names"
+    )
