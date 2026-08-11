@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -74,6 +75,13 @@ def run_cli(*args: str) -> subprocess.CompletedProcess:
 
 def calls_of(fake_tools: dict) -> list[str]:
     return fake_tools["calls_path"].read_text().splitlines()
+
+
+def _record_launch(run_directory: Path, launch_token: str) -> None:
+    path = run_directory / "launches" / f"launch-{launch_token}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state_file = run_directory / "state" / f"orchestrator-{launch_token}.state"
+    path.write_text(json.dumps({"state_file": str(state_file)}))
 
 
 class TestInstall:
@@ -343,6 +351,8 @@ class TestCollectDiagnosis:
         state.mkdir(parents=True)
         (state / "orchestrator-260101-000000-000001.state").write_text("0\n")
         (state / "orchestrator-260101-010000-000002.state").write_text("1\n")
+        _record_launch(tmp_path / "run", "260101-000000-000001")
+        _record_launch(tmp_path / "run", "260101-010000-000002")
 
         result = run_cli(
             "collect-diagnosis", "-n", "rl", "--output-dir", str(tmp_path), "--run-dir", str(tmp_path / "run")
@@ -350,6 +360,22 @@ class TestCollectDiagnosis:
 
         collected = Path(result.stdout.strip()) / "orchestrator-260101-010000-000002.state"
         assert collected.read_text() == "1\n"
+
+    def test_a_generation_that_has_written_no_state_hides_the_previous_verdict(self, fake_tools, tmp_path):
+        """A relaunch whose pods never came up would otherwise be diagnosed against the old launch's exit code."""
+        fake_tools["pods_path"].write_text("wb-0\n")
+        state = tmp_path / "run" / "state"
+        state.mkdir(parents=True)
+        (state / "orchestrator-260101-000000-000001.state").write_text("0\n")
+        _record_launch(tmp_path / "run", "260101-000000-000001")
+        _record_launch(tmp_path / "run", "260101-010000-000002")
+
+        result = run_cli(
+            "collect-diagnosis", "-n", "rl", "--output-dir", str(tmp_path), "--run-dir", str(tmp_path / "run")
+        )
+
+        assert result.returncode == 1
+        assert "a verdict under" in result.stderr
 
     def test_a_run_directory_with_no_verdict_yet_is_reported_as_incomplete(self, fake_tools, tmp_path):
         """Asking for a run's verdict and silently getting none would read as the run having succeeded."""

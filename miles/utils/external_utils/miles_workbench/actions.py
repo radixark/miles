@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from pathlib import Path
 
 from miles.utils.external_utils.command_utils.common import run_process
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
@@ -43,6 +44,12 @@ def exec_shell(args: ExecArgs) -> None:
 
 def uninstall(args: ReleaseArgs) -> None:
     _run(["helm", "uninstall", args.release, "--namespace", args.namespace])
+
+
+def _missing_verdict(args: DiagnosisArgs, *, state_file: Path | None) -> tuple[str, ...]:
+    if args.run_dir is None or (state_file is not None and state_file.is_file()):
+        return ()
+    return (f"a verdict under {args.run_dir}",)
 
 
 def _helm_install_command(args: InstallArgs) -> list[str]:
