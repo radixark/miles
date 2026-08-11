@@ -243,13 +243,9 @@ export NVTE_BACKWARD_OVERRIDE=dequantized
 
 #### Advanced: four-over-six
 
-Four-over-six (4/6) optionally chooses, for each NVFP4 block, whether mapping
-the largest FP4 magnitude to 4 or 6 produces less quantization error.
-See the humans&
-[four-over-six analysis](https://humansand.ai/blog/nvfp4-rl#four-over-six-for-rl-weights-and-activations)
-and the original paper,
-[Four Over Six: More Accurate NVFP4 Quantization with Adaptive Block Scaling](https://arxiv.org/abs/2512.02010),
-for the algorithm and its accuracy motivation.
+[Four Over Six: More Accurate NVFP4 Quantization with Adaptive Block Scaling](https://arxiv.org/abs/2512.02010)
+optionally chooses, for each NVFP4 block, whether mapping the largest FP4
+magnitude to 4 or 6 produces less quantization error.
 
 An example setting is:
 
