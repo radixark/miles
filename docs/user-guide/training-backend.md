@@ -355,7 +355,6 @@ Memory, once the layout is set:
 | `--gradient-checkpointing` | Recompute activations. This backend's `--recompute-*`. |
 | `--fsdp-cpu-offload` | Offload parameters, gradients and optimizer state to CPU. The optimizer step runs there. |
 | `--fsdp-cpu-backend gloo` | CPU process-group backend used by the offload path. |
-| `--fsdp-state-dict-cpu-offload` | Collect full state dicts on CPU instead of on device. |
 
 Under `--colocate` this backend also implements `sleep` / `wake_up` by moving the model and
 the optimizer to host memory and back, gated on `--offload-train`. The deeper offload
@@ -366,7 +365,7 @@ targets are Megatron-only: `--offload-train-target disk` asserts the Megatron ba
 
 - bf16 by default; `--fp16` switches the compute dtype.
 - An fp32 master copy of the weights is kept by default, which is what makes the
-  trainer to rollout weight sync bit-exact. `--disable-fp32-master` trades it for memory when
+  trainer to rollout weight sync bit-exact. `--no-keep-fp32-master` trades it for memory when
   you do not need that guarantee.
 - `--attn-implementation` picks the `transformers` attention backend: `flash_attention_2` by
   default, with `flash_attention_3`, `sdpa` and `eager` passed straight through.
