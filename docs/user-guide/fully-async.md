@@ -49,7 +49,7 @@ Starting from a working run, the rest of this page covers what you can change:
 | How much generation stays in flight | [Arguments: Scheduling options](#arguments-scheduling-options) |
 | How deep the buffer is, how stale a group may be, which groups reach training, or the buffer implementation itself | [Arguments: Buffer options](#arguments-buffer-options) |
 | Where eval runs and where it gets its weights | [Evaluation](#evaluation) |
-| Which numbers tell you where the bottleneck is | [Metrics](#metrics) |
+| Which numbers tell you where the bottleneck is, or where the metrics are logged | [Metrics](#metrics) |
 
 ## The fully async schedule
 
@@ -358,3 +358,18 @@ metrics below are a basic reference for where to start:
    `--async-max-concurrent-samples`, and throughput-oriented SGLang settings. If
    training is slower, consider more GPUs for training, a lower concurrency, and
    latency-oriented SGLang settings.
+### Arguments: Logging options
+
+Two flags replace the default metric logging, both defined in
+[`miles/ray/rollout/metrics.py`](https://github.com/radixark/miles/blob/main/miles/ray/rollout/metrics.py):
+
+| Flag | Signature |
+|---|---|
+| `--custom-rollout-log-function-path` | `log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time) -> bool` |
+| `--custom-eval-rollout-log-function-path` | `log_eval_rollout_data(rollout_id, args, data, extra_metrics) -> bool` |
+
+Returning `True` skips the default logging for that call, so a function that only
+forwards metrics elsewhere should return `False` and leave the built-in logging in
+place. To change which numbers the buffer reports in the first place, override
+`get_metrics()` on a custom buffer instead, as described in
+[Arguments: Buffer options](#arguments-buffer-options).
