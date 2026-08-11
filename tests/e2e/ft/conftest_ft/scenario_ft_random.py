@@ -22,6 +22,7 @@ from tests.e2e.ft.conftest_ft.fault_injection import (
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
+from miles.utils.external_utils import command_utils
 from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections, assert_soak_reconfigure_events
 
 app: typer.Typer = typer.Typer()
@@ -64,12 +65,17 @@ def run_ci(
         + "--mini-ft-controller-enable "
     )
 
+    config = command_utils.default_config()
+    U = config.create_backend()
     injector = spawn_fault_injector(
-        seed=seed, mean_interval_seconds=mean_interval, cell_type=compute_injected_cell_type(ft_mode)
+        base_url=f"http://{U.api_server_host()}:{API_SERVER_PORT}",
+        seed=seed,
+        mean_interval_seconds=mean_interval,
+        cell_type=compute_injected_cell_type(ft_mode),
     )
 
     try:
-        run_training(train_args=train_args, mode=ft_mode, dump_dir=dump_dir)
+        run_training(train_args=train_args, mode=ft_mode, dump_dir=dump_dir, config=config)
     finally:
         injector.stop_and_join(timeout_seconds=5)
 
