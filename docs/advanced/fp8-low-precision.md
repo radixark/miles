@@ -199,24 +199,12 @@ The launcher selects per-token activation scaling, disables the incompatible
 tensor-level precision configuration. Unmatched tensors stay in BF16, and
 rollout uses a BF16 KV cache.
 
-The NVFP4 recipe supports two BF16 backward choices:
-
-* **High-precision backward** uses the original BF16 operands.
-* **Dequantized backward** uses BF16 dequantizations of the NVFP4 operands
-  produced during the forward pass.
+The base NVFP4 recipe uses **high-precision backward**: the forward pass uses
+NVFP4 while the BF16 backward GEMMs consume the original BF16 operands.
 
 ![NVFP4 with high-precision backward](/assets/images/low-precision/nvfp4-high-precision-backward.png)
 
-![NVFP4 with dequantized backward](/assets/images/low-precision/nvfp4-dequantized-backward.png)
-
 *Source: [Towards Blackwell-Native 8-bit and 4-bit RL](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
-
-High-precision backward is the Qwen3 launcher default. To select dequantized
-backward, set the override in the environment used to launch the job:
-
-```bash
-export NVTE_BACKWARD_OVERRIDE=dequantized
-```
 
 The base recipe settings used by the launcher are:
 
@@ -241,11 +229,34 @@ python tools/convert_hf_to_nvfp4.py \
   --save-dir /root/models/Qwen3-30B-A3B-NVFP4
 ```
 
+#### Advanced: dequantized backward
+
+Dequantized backward keeps the backward GEMMs in BF16 but uses BF16
+dequantizations of the NVFP4 operands produced during the forward pass. This
+more closely follows the quantized forward path than reusing the original BF16
+operands. See the humans& discussion of
+[gradient stability](https://humansand.ai/blog/nvfp4-rl#improving-gradient-stability)
+for the motivation and ablations.
+
+![NVFP4 with dequantized backward](/assets/images/low-precision/nvfp4-dequantized-backward.png)
+
+*Source: [Towards Blackwell-Native 8-bit and 4-bit RL](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
+
+Select this mode in the environment used to launch the job:
+
+```bash
+export NVTE_BACKWARD_OVERRIDE=dequantized
+```
+
 #### Advanced: four-over-six
 
 Four-over-six (4/6) optionally chooses, for each NVFP4 block, whether mapping
 the largest FP4 magnitude to 4 or 6 produces less quantization error. The base
-NVFP4 recipe should be validated before enabling it.
+NVFP4 recipe should be validated before enabling it. See the humans&
+[four-over-six analysis](https://humansand.ai/blog/nvfp4-rl#four-over-six-for-rl-weights-and-activations)
+and the original paper,
+[Four Over Six: More Accurate NVFP4 Quantization with Adaptive Block Scaling](https://arxiv.org/abs/2512.02010),
+for the algorithm and its accuracy motivation.
 
 The checkpoint converter, Transformer Engine training path, and FlashInfer
 rollout path must use matching settings:
@@ -262,9 +273,7 @@ export FLASHINFER_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
 ```
 
 Keep the base recipe's exact-quantization settings enabled as well. The
-[humans& NVFP4 RL post](https://humansand.ai/blog/nvfp4-rl) discusses the
-algorithmic motivation, the bit-exact trainer/rollout requirement, and recipe
-ablations.
+trainer and rollout must make the same block-level scaling choice bit for bit.
 
 ## Fine-grained BF16 exceptions
 
