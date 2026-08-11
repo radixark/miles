@@ -201,7 +201,7 @@ async def abort(args) -> None:
 
 Miles calls it during **oversampling abort**. When dynamic sampling has collected
 enough groups, the rollout aborts in-flight SGLang generation (see
-[Partial rollout](/user-guide/training-script-walkthrough#partial-rollout-reclaim-aborted-work)).
+[Async / partial rollout](/user-guide/cli-reference#async--partial-rollout)).
 An external agent loop doesn't observe that abort on its own — it keeps issuing
 fresh completion requests until it hits its own `max_seq_len` or timeout. If your
 agent drives an external backend (e.g. a sandbox/agent server), define `abort` to

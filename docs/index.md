@@ -74,9 +74,9 @@ See [Platforms](/platforms/index).
 1. **[Installation](/getting-started/installation)** — Docker, bare metal, AMD.
 2. **[Quick Start](/getting-started/quick-start)** — a working training run in under an hour.
 3. **[Core concepts](/user-guide/concepts)** — the four objects in every Miles job.
-4. **[Training backend](/user-guide/usage)** — Megatron-LM, parallelism, checkpoints, and hooks.
-5. **[Training script walkthrough](/user-guide/training-script-walkthrough)** — every
-   argument group in a launch script, annotated.
+4. **[Launch script](/user-guide/launch-script)** — what `python scripts/run_*.py` does
+   and how to override a recipe.
+5. **[Training backend](/user-guide/usage)** — Megatron-LM, parallelism, checkpoints, and hooks.
 
 ## Contribute
 
