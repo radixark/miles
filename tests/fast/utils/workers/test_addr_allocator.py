@@ -24,7 +24,7 @@ class TestPortAllocator:
         """A node with no cursor yet starts at the base port, away from ray's range."""
         cursors = PortAllocator()
         engine = fake_engine(host="10.0.0.1", port_seed=0)
-        assert cursors.alloc(engine, node_ip="10.0.0.1") == 15000
+        assert cursors.alloc(engine, node_ip="10.0.0.1") == 20000
 
     def test_alloc_consecutive_reserves_a_whole_block(self, patch_ray_get):
         """A consecutive=N allocation must move this node's cursor past the entire block."""
