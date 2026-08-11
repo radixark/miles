@@ -2,9 +2,6 @@
 title: Docker build
 description: The Dockerfiles, the build script, the remote build workflow, and how to build & push manually.
 ---
-
-# Docker build
-
 GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the script that builds them, the PR-side build check, how the remote build is triggered, and how to build & push manually.
 
 ## Dockerfiles

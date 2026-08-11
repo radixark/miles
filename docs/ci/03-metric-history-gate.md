@@ -1,10 +1,7 @@
 ---
 title: Metric history & regression gate
-description: How CI keeps per-test training metrics across runs and runs a historical gate against that history, plus how to add gate specs and inspect or repair hosted history through the authorized Neon workflow.
+description: How CI keeps per-test training metrics across runs, gates new numbers against that history, and how to add gate specs or repair hosted history.
 ---
-
-# Metric history & regression gate
-
 CI keeps each test's per-metric numbers from every run in our own store and runs a historical gate against that history — catching the slow drift a single run cannot see. wandb stays a write-only sink; the gate never reads from it. The baseline lives in our DB.
 
 ## Identity: what shares a baseline
