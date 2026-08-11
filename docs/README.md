@@ -31,4 +31,7 @@ Then open http://localhost:3000.
 3. When linking between pages, use absolute paths: `[Quick Start](/getting-started/quick-start)`.
    Drop the `.md` extension.
 4. Images and other assets go in `assets/` and are referenced the same way:
-   `/assets/images/arch.png`.
+   `/assets/images/arch.png`. Group them into a subdirectory once a topic has more than
+   one image, named after the page or area that uses them: `assets/images/dashboard/` for
+   the dashboard screenshots, `assets/images/brand/` for the logo and favicon. A one-off
+   image stays at the top level.

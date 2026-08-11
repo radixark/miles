@@ -1,7 +1,7 @@
-"""NeMo-Gym launcher (Qwen3-4B-Instruct-2507): Miles <-> mini_swe_agent_2 orchestration.
+"""NeMo Gym launcher (Qwen3-4B-Instruct-2507): Miles <-> mini_swe_agent_2 orchestration.
 
 Defaults are the exact configuration of the validated smoke run (4x H200,
-2026-07-28): 3 GRPO steps at tiny scale against a NeMo-Gym server running the
+2026-07-28): 3 GRPO steps at tiny scale against a NeMo Gym server running the
 docker sandbox provider. Scale up --num-rollout / batch sizes for real
 training.
 
@@ -50,9 +50,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     global_batch_size: int = 8
     save_interval: int = 1000
 
-    # NeMo-Gym settings
+    # NeMo Gym settings
     nemo_gym_url: str = os.environ.get("NEMO_GYM_URL", "http://localhost:12000")
-    # Trainer address reachable from the NeMo-Gym host; only needed when that
+    # Trainer address reachable from the NeMo Gym host; only needed when that
     # host cannot resolve the trainer's hostname (e.g. it dials back over a
     # tailnet).
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
@@ -146,7 +146,7 @@ def execute(args: ScriptArgs):
         "--custom-rm-path nemogym_generate.reward_func "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         "--use-session-server "
-        # 0.0.0.0 so the NeMo-Gym host can dial in on any interface (e.g. a
+        # 0.0.0.0 so the NeMo Gym host can dial in on any interface (e.g. a
         # tailnet address); internal calls resolve it to localhost.
         "--session-server-ip 0.0.0.0 "
         "--session-server-port 30000 "

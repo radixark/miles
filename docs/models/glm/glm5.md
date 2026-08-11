@@ -4,7 +4,7 @@ description: Launch recipe for GLM-5 and GLM-5.1 (744 B / 40 B active) — Pytho
 ---
 ## 1. Model Introduction
 
-[GLM-5](https://huggingface.co/zai-org/GLM-5) is the most powerful language model in Zhipu AI's GLM series, scaling to 744 B parameters (40 B active) and integrating DeepSeek Sparse Attention (DSA) for long-context efficiency. [GLM-5.1](https://huggingface.co/zai-org/GLM-5.1) is the next-generation model for agentic engineering on top of GLM-5, sharing the same model architectures,
+[GLM-5](https://huggingface.co/zai-org/GLM-5) is the most powerful language model in Zhipu AI's GLM series, scaling to 744 B parameters (40 B active) and integrating DeepSeek Sparse Attention (DSA) for long-context efficiency. [GLM-5.1](https://huggingface.co/zai-org/GLM-5.1) is the next-generation model for agentic engineering on top of GLM-5, sharing the same model architecture. For the newer GLM-5.2 recipe, see [GLM-5.2](/models/glm/glm5-2).
 
 **Key highlights:**
 
@@ -57,7 +57,7 @@ python scripts/run_glm5_744b_a40b.py prepare-cp --model-name GLM-5 --num-nodes <
 python scripts/run_glm5_744b_a40b.py train      --model-name GLM-5 --num-nodes <N>
 ```
 
-The launcher's docstring says it's tested on **H200 / B200 / GB300**; the dataclass restricts `--hardware` to `{H200, B200, GB300}`.
+The recipe is tested on **H200 / B200 / GB300**; the `--hardware` flag accepts exactly these three values.
 
 ## 5. Recipe Configuration
 

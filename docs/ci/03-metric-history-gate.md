@@ -1,6 +1,6 @@
 ---
 title: Metric history & regression gate
-description: How CI keeps per-test training metrics across runs, runs a historical gate against that history, and how to add a gate spec or clean a bad data point.
+description: How CI keeps per-test training metrics across runs and runs a historical gate against that history, plus how to add gate specs and inspect or repair hosted history through the authorized Neon workflow.
 ---
 
 # Metric history & regression gate
@@ -192,6 +192,14 @@ Chart key: rectangle = a step or check; rounded box = a data artifact; diamond =
 - The baseline read is served by the composite index `runs(test_path, backend, suite, trusted, created_at DESC)`.
 
 **Operations** — hosted Postgres setup is out-of-band: the two tables and application role are provisioned outside this repo, and runtime gate code stays DML-only (`NeonMetricHistoryStore` never issues DDL). Old-row cleanup policy is a later operational concern, not part of the M0/M1 substrate.
+
+### Inspect hosted history
+
+Repository writers can use `$neon-access` to query or repair hosted metric history. For example:
+
+```text
+Use $neon-access to show the 10 most recent metric-history runs for tests/e2e/megatron/test_qwen3_5_35B_A3B_mtp/test_mtp1_spec_v2_r3.py and include each run's metric rows.
+```
 
 ## Trust, cleanup, who writes
 

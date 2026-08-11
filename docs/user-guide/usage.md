@@ -191,8 +191,8 @@ at startup.
 - [Core concepts](/user-guide/concepts) — the four objects that make up any Miles job.
 - [Training script walkthrough](/user-guide/training-script-walkthrough) — the launch script,
   argument group by argument group.
-- [Fully Async Rollout](/user-guide/fully-async) — decouple generation from trainer steps with
-  a queue-backed rollout worker.
+- [Fully Async RL](/user-guide/fully-async) — keep generation running continuously so
+  rollout never waits on a training step.
 - [Configuration](/user-guide/cli-reference) — the flag taxonomy and defaults.
 - [Backends beyond Megatron](/advanced/architecture-support) — wrapping new
   architectures without patching Megatron core.

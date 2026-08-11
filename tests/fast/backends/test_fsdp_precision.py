@@ -41,7 +41,7 @@ def test_fp32_master_cli_defaults_enabled_and_can_be_disabled(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["miles"])
     assert parse_fsdp_cli().keep_fp32_master
 
-    monkeypatch.setattr(sys, "argv", ["miles", "--disable-fp32-master"])
+    monkeypatch.setattr(sys, "argv", ["miles", "--no-keep-fp32-master"])
     assert not parse_fsdp_cli().keep_fp32_master
 
 
