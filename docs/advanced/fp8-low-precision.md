@@ -116,8 +116,6 @@ configured tensors in BF16.
 
 ![End-to-end MXFP8 RL recipe](../assets/images/low-precision/mxfp8-e2e.png)
 
-*Source: [Towards Blackwell-Native 8-bit and 4-bit RL](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
-
 **Hardware:** B200, B300, GB200, or GB300.
 
 The Qwen3-30B-A3B launcher prepares the MXFP8 Hugging Face checkpoint and
@@ -204,8 +202,6 @@ NVFP4 while the BF16 backward GEMMs consume the original BF16 operands.
 
 ![NVFP4 with high-precision backward](../assets/images/low-precision/nvfp4-high-precision-backward.png)
 
-*Source: [Towards Blackwell-Native 8-bit and 4-bit RL](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
-
 The base recipe settings used by the launcher are:
 
 ```bash
@@ -239,8 +235,6 @@ operands. See the humans& discussion of
 for the motivation and ablations.
 
 ![NVFP4 with dequantized backward](../assets/images/low-precision/nvfp4-dequantized-backward.png)
-
-*Source: [Towards Blackwell-Native 8-bit and 4-bit RL](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
 
 Select this mode in the environment used to launch the job:
 
@@ -313,5 +307,5 @@ contraction axis does not match a one-dimensional scaling layout.
 ## Further reading
 
 * [Blackwell MXFP8 and NVFP4 RL roadmap](https://github.com/radixark/miles/issues/615)
-* [Towards Blackwell-Native 8-bit and 4-bit RL](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl)
-* [NVFP4 RL recipe and four-over-six analysis](https://humansand.ai/blog/nvfp4-rl)
+* [Towards Blackwell-Native 8-bit and 4-bit RL: End-to-End MXFP8 and NVFP4 RL in Miles](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl)
+* [The 4-bitter Lesson](https://humansand.ai/blog/nvfp4-rl)
