@@ -2,11 +2,9 @@
 title: Fully Async RL
 description: How fully async rollout decouples generation from training, which flags control it, and how to evaluate without stalling the trainer.
 ---
-<p class="rx-lead">
-Fully async rollout decouples generation from training so that rollout never waits on a
-training step. The engines keep generating continuously while the trainer consumes
-finished groups, instead of the two taking turns.
-</p>
+Fully async rollout decouples generation from training so that **rollout never waits on
+a training step**. The engines **keep generating continuously** while the trainer
+consumes finished groups, instead of the two taking turns.
 
 ### When to use it
 

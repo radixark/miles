@@ -37,17 +37,6 @@ a[href^="http"]:not([href*="radixark.com"])::after {
 }
 
 /* =============================================
-   Lead paragraph — brand-colored page opener
-   ============================================= */
-.rx-lead {
-  color: #d55816;
-}
-
-html.dark .rx-lead {
-  color: #e8722a;
-}
-
-/* =============================================
    Nav / UI — Inter (matches RadixArk buttons)
    ============================================= */
 #navbar, button {
