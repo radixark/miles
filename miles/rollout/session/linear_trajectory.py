@@ -68,6 +68,7 @@ class LinearTrajectory:
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
+    request_overrides: dict[str, Any] = field(default_factory=dict, repr=False)
     messages: list[dict[str, Any]] = field(default_factory=list)
     records: list[SessionRecord] = field(default_factory=list)
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
@@ -286,9 +287,9 @@ class SessionRegistry:
         self.tito_tokenizer = tito_tokenizer
         self.comparator = tito_tokenizer.create_comparator()
 
-    def create_session(self) -> str:
+    def create_session(self, request_overrides: dict[str, Any] | None = None) -> str:
         session_id = uuid.uuid4().hex
-        self.sessions[session_id] = LinearTrajectory()
+        self.sessions[session_id] = LinearTrajectory(request_overrides=dict(request_overrides or {}))
         return session_id
 
     def get_session(self, session_id: str) -> LinearTrajectory:

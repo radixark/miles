@@ -4,6 +4,7 @@ import pytest
 
 import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
 from miles.rollout.base_types import GenerateFnInput
+from miles.rollout.session.request_overrides import SESSION_REQUEST_OVERRIDE_KEYS
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.utils.types import Sample
 
@@ -26,7 +27,7 @@ class _Tracer:
         return self.reply
 
 
-def _generate_input(**args_kwargs) -> GenerateFnInput:
+def _generate_input(*, sampling_params: dict | None = None, **args_kwargs) -> GenerateFnInput:
     args = SimpleNamespace(
         session_server_ip="127.0.0.1",
         session_server_ports=[12345],
@@ -43,7 +44,12 @@ def _generate_input(**args_kwargs) -> GenerateFnInput:
         label="label",
         metadata={"source": "test"},
     )
-    return GenerateFnInput(state=state, sample=sample, sampling_params={}, evaluation=False)
+    return GenerateFnInput(
+        state=state,
+        sample=sample,
+        sampling_params=sampling_params or {},
+        evaluation=False,
+    )
 
 
 async def _fake_agent(**kwargs):
@@ -51,7 +57,8 @@ async def _fake_agent(**kwargs):
 
 
 def _patch_agent(monkeypatch, tracer):
-    async def fake_create(args):
+    async def fake_create(args, *, request_overrides=None):
+        tracer.request_overrides = request_overrides
         return tracer
 
     monkeypatch.setattr(agentic_tool_call.OpenAIEndpointTracer, "create", fake_create)
@@ -68,6 +75,59 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch):
 
     assert output.samples == [sample]
     assert tracer.agent_metadata == {"agent_result": "done"}
+
+
+@pytest.mark.asyncio
+async def test_sampling_params_are_pinned_and_forwarded_to_agent(monkeypatch):
+    sample = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
+    tracer = _Tracer(SamplesReply(samples=[sample], session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    seen: dict = {}
+
+    async def capture_agent(**kwargs):
+        seen.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(agentic_tool_call, "load_function", lambda path: capture_agent)
+    sampling_params = {
+        "max_new_tokens": 4096,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 20,
+        "sampling_seed": 42,
+    }
+
+    await agentic_tool_call.generate(_generate_input(sampling_params=sampling_params))
+
+    expected = {
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "top_k": 20,
+        "seed": 42,
+    }
+    assert tracer.request_overrides == expected
+    assert seen["request_kwargs"] == expected
+
+
+def test_sampling_params_exclude_chat_fields_rejected_by_sessions() -> None:
+    unsupported_chat_fields = (
+        set(agentic_tool_call.ChatCompletionRequest.model_fields)
+        - SESSION_REQUEST_OVERRIDE_KEYS
+        - {"model", "messages"}
+    )
+    assert unsupported_chat_fields
+    sampling_params = {key: True for key in unsupported_chat_fields}
+    sampling_params["temperature"] = 0.7
+
+    request_kwargs = agentic_tool_call.build_chat_request_kwargs(sampling_params)
+
+    assert request_kwargs == {"temperature": 0.7}
+    assert set(request_kwargs) <= SESSION_REQUEST_OVERRIDE_KEYS
+
+
+def test_session_override_allowlist_is_supported_by_sglang() -> None:
+    assert SESSION_REQUEST_OVERRIDE_KEYS <= set(agentic_tool_call.ChatCompletionRequest.model_fields)
 
 
 @pytest.mark.asyncio

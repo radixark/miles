@@ -158,6 +158,11 @@ back to Anthropic JSON or server-sent events. The internal request still passes
 through the normal session recorder, so TITO checks, logprobs, retries, and v2
 trajectory branching behave the same as they do for `/v1/chat/completions`.
 
+The rollout sampling parameters are pinned when Miles creates the session. They
+override conflicting values sent later by Claude Code or another agent harness,
+so training continues to use Miles's `max_tokens`, temperature, top-p, top-k,
+seed, stop conditions, and other configured sampling controls on every turn.
+
 Anthropic server-side tools and redacted-thinking history are rejected with an
 Anthropic-format `invalid_request_error` because they cannot be represented by
 the SGLang chat-completion interface.

@@ -44,7 +44,7 @@ class OpenAIEndpointTracer:
         return self.router_url.removeprefix("http://")
 
     @staticmethod
-    async def create(args: Namespace):
+    async def create(args: Namespace, *, request_overrides: dict | None = None) -> "OpenAIEndpointTracer":
         session_ip = getattr(args, "session_server_ip", None)
         session_ports = getattr(args, "session_server_ports", None)
         if not session_ip or not session_ports:
@@ -58,7 +58,8 @@ class OpenAIEndpointTracer:
         session_url = f"http://{session_ip}:{session_port}"
         instance_ids = getattr(args, "session_server_instance_ids", None) or {}
         session_server_instance_id = instance_ids.get(session_port)
-        response = await post(f"{session_url}/sessions", {}, action="post")
+        create_payload = {"request_overrides": request_overrides} if request_overrides else {}
+        response = await post(f"{session_url}/sessions", create_payload, action="post")
         session_id = response["session_id"]
         use_v2 = getattr(args, "use_session_server", None) == "v2"
         return OpenAIEndpointTracer(

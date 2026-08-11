@@ -40,6 +40,44 @@ def _request(**overrides: object) -> dict:
 
 
 class TestAnthropicSessionRoute:
+    def test_session_sampling_overrides_win_over_claude_request(self, router_env) -> None:
+        create = requests.post(
+            f"{router_env.url}/sessions",
+            json={"request_overrides": {"max_tokens": 128, "temperature": 0.4, "top_p": 0.8}},
+            timeout=5.0,
+        )
+        session_id = create.json()["session_id"]
+
+        response = _post_messages(
+            router_env.url,
+            session_id,
+            _request(max_tokens=4096, temperature=1.0, top_p=1.0),
+        )
+
+        assert response.status_code == 200
+        request = router_env.backend.request_log[-1]
+        assert request["max_tokens"] == 128
+        assert request["temperature"] == 0.4
+        assert request["top_p"] == 0.8
+
+    def test_session_rejects_non_sampling_overrides(self, router_env) -> None:
+        response = requests.post(
+            f"{router_env.url}/sessions",
+            json={"request_overrides": {"messages": []}},
+            timeout=5.0,
+        )
+
+        assert response.status_code == 400
+        assert "unsupported session request overrides" in response.json()["error"]
+
+        response = requests.post(
+            f"{router_env.url}/sessions",
+            json={"request_overrides": []},
+            timeout=5.0,
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "request_overrides must be an object"
+
     def test_non_streaming_request_is_recorded_in_openai_form(self, router_env) -> None:
         session_id = _create_session(router_env.url)
         response = _post_messages(

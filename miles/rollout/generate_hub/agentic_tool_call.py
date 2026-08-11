@@ -35,6 +35,7 @@ from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
+from miles.rollout.session.request_overrides import SESSION_REQUEST_OVERRIDE_KEYS
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
@@ -47,7 +48,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         "Pass --use-session-server to start the session server."
     )
     use_v2 = getattr(input.args, "use_session_server", None) == "v2"
-    tracer = await OpenAIEndpointTracer.create(input.args)
+    request_kwargs = build_chat_request_kwargs(input.sampling_params)
+    tracer = await OpenAIEndpointTracer.create(input.args, request_overrides=request_kwargs)
 
     custom_agent_function: Callable = load_function(input.args.custom_agent_function_path)
     assert (
@@ -75,7 +77,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         agent_metadata = await custom_agent_function(
             base_url=tracer.base_url,
             prompt=input.sample.prompt,
-            request_kwargs=build_chat_request_kwargs(input.sampling_params),
+            request_kwargs=request_kwargs,
             metadata=metadata,
         )
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
@@ -167,6 +169,5 @@ def build_chat_request_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]
                 request_kwargs[dst] = request_kwargs[src]
             request_kwargs.pop(src, None)
 
-    reserved_keys = {"model", "messages"}
-    allowed_keys = set(ChatCompletionRequest.model_fields) - reserved_keys
+    allowed_keys = set(ChatCompletionRequest.model_fields) & SESSION_REQUEST_OVERRIDE_KEYS
     return {key: value for key, value in request_kwargs.items() if key in allowed_keys and value is not None}

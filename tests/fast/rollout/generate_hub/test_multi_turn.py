@@ -153,6 +153,8 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "messages": messages,
         "model": "default",
         "tools": SAMPLE_TOOLS,
+        "max_tokens": DEFAULT_SAMPLING_PARAMS["max_new_tokens"],
+        "temperature": DEFAULT_SAMPLING_PARAMS["temperature"],
         # Injected by the session route for TITO token tracking
         "logprobs": True,
         "return_meta_info": True,

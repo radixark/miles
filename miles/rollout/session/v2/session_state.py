@@ -38,6 +38,7 @@ class SessionStateV2:
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
     closing: bool = field(default=False, repr=False, compare=False)
+    request_overrides: dict[str, Any] = field(default_factory=dict, repr=False)
     tree: SessionTree = field(default_factory=SessionTree)
     active_leaf: TrajectoryNode | None = None
 
@@ -177,9 +178,9 @@ class SessionRegistryV2(SessionRegistry):
 
     sessions: dict[str, SessionStateV2]
 
-    def create_session(self) -> str:
+    def create_session(self, request_overrides: dict[str, Any] | None = None) -> str:
         session_id = uuid.uuid4().hex
-        self.sessions[session_id] = SessionStateV2()
+        self.sessions[session_id] = SessionStateV2(request_overrides=dict(request_overrides or {}))
         return session_id
 
     def compute_mismatch(self, messages: list[dict[str, Any]], token_ids: list[int], tools: Any) -> list[dict] | None:
