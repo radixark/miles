@@ -16,6 +16,7 @@ from torch_memory_saver import torch_memory_saver
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.train_actor import TrainRayActor
+from miles.tinker.policy_flags import external_tinker_policy_flags
 from miles.utils import train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
@@ -53,6 +54,8 @@ from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
+
+
 from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
@@ -467,23 +470,28 @@ class MegatronTrainRayActor(TrainRayActor):
             )
             self.args.loss_type = loss_types[loss_fn]
             self.args.tinker_unclipped_importance_sampling = loss_fn == "importance_sampling"
+            # Tinker PPO/IS defines the denominator policy with the caller's
+            # supplied token logprobs. Miles' autonomous loop normally uses a
+            # freshly replayed learner policy and may layer TIS/OPSM on top;
+            # neither behavior belongs in the external API contract.
             try:
                 # compute_log_prob leaves replay hooks in their forward state.
                 # Match train_actor's required transition before invoking the
                 # Megatron backward schedule for an external Tinker batch.
                 self._set_replay_stage("replay_backward")
-                outcome, metrics = train(
-                    request_id,
-                    self.model,
-                    self.optimizer,
-                    self.opt_param_scheduler,
-                    data_iterator,
-                    num_microbatches,
-                    witness_info=None,
-                    attempt=0,
-                    apply_optimizer=False,
-                    return_metrics=True,
-                )
+                with external_tinker_policy_flags(self.args):
+                    outcome, metrics = train(
+                        request_id,
+                        self.model,
+                        self.optimizer,
+                        self.opt_param_scheduler,
+                        data_iterator,
+                        num_microbatches,
+                        witness_info=None,
+                        attempt=0,
+                        apply_optimizer=False,
+                        return_metrics=True,
+                    )
             finally:
                 self.args.loss_type = previous_loss_type
                 self.args.tinker_unclipped_importance_sampling = previous_unclipped_is
