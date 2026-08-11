@@ -154,6 +154,7 @@ class _RecordingWeightUpdater:
         self.conn_status: ConnStatusManager = ConnStatusManager()
         self.connect_calls: list[list[object]] = []
         self.update_weights_calls: int = 0
+        self.weight_version: int = 0
 
     def connect_rollout_engines(
         self,
@@ -165,6 +166,7 @@ class _RecordingWeightUpdater:
 
     def update_weights(self) -> None:
         self.update_weights_calls += 1
+        self.weight_version += 1
 
 
 def _make_updatable_engines(rollout_engines: list[object], *, has_new_engines: bool) -> SimpleNamespace:
@@ -190,9 +192,10 @@ def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch
     monkeypatch.setattr(actor_module, "get_gloo_group", lambda: object())
     monkeypatch.setattr(actor_module, "clear_memory", lambda: None)
 
-    actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
-    actor.update_weights(_make_updatable_engines(engines, has_new_engines=False))
+    first_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
+    second_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=False))
 
     assert updater.connect_calls == [engines]
     assert updater.update_weights_calls == 2
+    assert (first_version, second_version) == (1, 2)
     assert not updater.conn_status.needs_reconnect({})
