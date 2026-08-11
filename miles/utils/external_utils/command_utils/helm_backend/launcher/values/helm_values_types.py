@@ -9,6 +9,8 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 _DNS_SUBDOMAIN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
 _DNS_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+_PORT_NAME_MAX = 15
+_Port = Annotated[int, Field(ge=1, le=65535)]
 _OPTIONAL_DNS_LABEL = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"
 _OPTIONAL_DNS_SUBDOMAIN = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"
 
@@ -22,6 +24,7 @@ WORKBENCH_OBJECT_NAME_MAX = 52
 
 _Resources = dict[str, Any]
 
+_PoolName = Annotated[str, Field(min_length=1, max_length=_POOL_NAME_MAX, pattern=_DNS_LABEL)]
 _ObjectName = Annotated[str, Field(min_length=1, max_length=_OBJECT_NAME_MAX, pattern=_DNS_LABEL)]
 _AbsolutePath = Annotated[str, Field(pattern="^/", json_schema_extra=_NO_PARENT_TRAVERSAL)]
 _OptionalAbsolutePath = Annotated[str, Field(pattern="^(/.*)?$", json_schema_extra=_NO_PARENT_TRAVERSAL)]
@@ -34,6 +37,24 @@ class ValuesModel(FrozenStrictBaseModel):
 
     def as_values(self) -> dict[str, Any]:
         return self.model_dump(by_alias=True, exclude_none=True)
+
+
+class PortEntry(ValuesModel):
+    name: Annotated[str, Field(min_length=1, max_length=_PORT_NAME_MAX)]
+    port: _Port
+
+
+class PoolEntry(ValuesModel):
+    name: _PoolName
+    object_name: _ObjectName
+    pool_id: str | None = None
+    command: Annotated[list[str], Field(min_length=1)]
+    ports: list[PortEntry] | None = None
+    env: dict[str, str] | None = None
+    meta: dict[str, str] | None = None
+    replicas: Annotated[int, Field(ge=1)] | None = None
+    size: Annotated[int, Field(ge=1)] | None = None
+    resources: _Resources | None = None
 
 
 class ObjectNames(ValuesModel):
@@ -50,6 +71,9 @@ class RunValues(ValuesModel):
     state_file: Annotated[str, Field(min_length=1, pattern="^/")]
     object_names: ObjectNames
     orchestrator: OrchestratorSection | None = None
+    static_workers: list[PoolEntry] | None = None
+    inference_engines: list[PoolEntry] | None = None
+    trainer_engines: list[PoolEntry] | None = None
     env: _EnvVars | None = None
 
 

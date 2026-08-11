@@ -10,6 +10,7 @@ from miles.utils.workers.cell_operations.ray import RayCellOperations
 from .conftest import (
     MockInferenceController,
     MockRemoteCall,
+    MockStopCellController,
     MockTrainerCell,
     MockWorkerManager,
     make_cell_summaries,

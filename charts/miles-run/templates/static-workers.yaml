@@ -1,0 +1,70 @@
+{{- $context := . }}
+{{- range $worker := .Values.run.staticWorkers }}
+{{- $name := $worker.objectName }}
+{{- $labels := dict "context" $context "component" $worker.name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ $context.Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "miles-run.selectorLabels" $labels | nindent 4 }}
+  ports:
+    {{- range $worker.ports }}
+    - name: {{ .name | quote }}
+      port: {{ .port }}
+    {{- end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ $context.Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" $labels | nindent 4 }}
+spec:
+  replicas: {{ default 1 $worker.replicas }}
+  serviceName: {{ $name | quote }}
+  selector:
+    matchLabels:
+      {{- include "miles-run.selectorLabels" $labels | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "miles-run.labels" $labels | nindent 8 }}
+        miles.radixark.io/pool: {{ default $worker.name $worker.poolId | quote }}
+    spec:
+      {{- include "miles-run.podDefaults" $context | nindent 6 }}
+      restartPolicy: Always
+      containers:
+        - name: worker
+          {{- include "miles-run.containerDefaults" $context | nindent 10 }}
+          command:
+            {{- range $worker.command }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            {{- include "miles-run.labelEnv" (dict "name" "MILES_CELL_INDEX" "label" "apps.kubernetes.io/pod-index") | trim | nindent 12 }}
+            {{- with include "miles-run.envItems" (dict "context" $context "entry" $worker) | trim }}
+            {{- . | nindent 12 }}
+            {{- end }}
+          {{- with $worker.ports }}
+          ports:
+            {{- range . }}
+            - name: {{ .name | quote }}
+              containerPort: {{ .port }}
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml (default dict $worker.resources) | nindent 12 }}
+      {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" $context | trim) (include "miles-run.nodeLocalVolume" $context | trim)) | join "\n" }}
+      {{- with $volumes }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
+{{- end }}

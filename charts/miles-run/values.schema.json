@@ -169,6 +169,89 @@
       },
       "type": "object"
     },
+    "PoolEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 40,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "objectName": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "poolId": {
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "ports": {
+          "items": {
+            "$ref": "#/definitions/PortEntry"
+          },
+          "type": "array"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "meta": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "replicas": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "size": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "resources": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "objectName",
+        "command"
+      ],
+      "type": "object"
+    },
+    "PortEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 15,
+          "minLength": 1,
+          "type": "string"
+        },
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "port"
+      ],
+      "type": "object"
+    },
     "Repos": {
       "additionalProperties": false,
       "properties": {
@@ -214,6 +297,24 @@
         },
         "orchestrator": {
           "$ref": "#/definitions/OrchestratorSection"
+        },
+        "staticWorkers": {
+          "items": {
+            "$ref": "#/definitions/PoolEntry"
+          },
+          "type": "array"
+        },
+        "inferenceEngines": {
+          "items": {
+            "$ref": "#/definitions/PoolEntry"
+          },
+          "type": "array"
+        },
+        "trainerEngines": {
+          "items": {
+            "$ref": "#/definitions/PoolEntry"
+          },
+          "type": "array"
         },
         "env": {
           "additionalProperties": {
