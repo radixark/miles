@@ -60,11 +60,16 @@ class ContainerStateTerminated(FrozenPartialBaseModel):
     container_id: str | None = Field(default=None, validation_alias=AliasChoices("container_id", "containerID"))
 
 
+class ContainerStateWaiting(FrozenPartialBaseModel):
+    reason: str | None = None
+
+
 class ContainerStateRunning(FrozenPartialBaseModel):
     started_at: datetime | None = Field(default=None, validation_alias=AliasChoices("started_at", "startedAt"))
 
 
 class ContainerState(FrozenPartialBaseModel):
+    waiting: ContainerStateWaiting | None = None
     running: ContainerStateRunning | None = None
     terminated: ContainerStateTerminated | None = None
 
