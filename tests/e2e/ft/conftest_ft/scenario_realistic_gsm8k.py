@@ -11,7 +11,7 @@ import typer
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
 from tests.e2e.ft.conftest_ft.fault_injection import API_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigure_events
 
 app: typer.Typer = typer.Typer()
@@ -36,6 +36,7 @@ def run_ci(
     crash_probability: Annotated[float, typer.Option(help="Per-step crash probability per cell")] = 0.1,
     metric_threshold: Annotated[float, typer.Option(help="eval/gsm8k accuracy threshold")] = _DEFAULT_METRIC_THRESHOLD,
 ) -> None:
+    U = command_utils.default_config().create_backend()
     mean_interval: float = MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01)
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection interval: {mean_interval:.1f}s")
 
@@ -53,7 +54,13 @@ def run_ci(
     train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
     train_args += f"--save-debug-event-data {dump_dir}/events "
 
-    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval, cell_type="actor")
+    U = command_utils.default_config().create_backend()
+    injector = spawn_fault_injector(
+        base_url=f"http://{U.api_server_host()}:{API_SERVER_PORT}",
+        seed=seed,
+        mean_interval_seconds=mean_interval,
+        cell_type="actor",
+    )
 
     try:
         U.execute_train(
@@ -80,6 +87,7 @@ def run_ci(
 
 
 def _prepare_gsm8k() -> None:
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{_MODEL_NAME} --local-dir /root/models/{_MODEL_NAME}")
     U.convert_checkpoint(
@@ -179,7 +187,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(f'test_{TEST_NAME}.py', run_name_prefix=f'seed{seed}')} "
+        f"{command_utils.get_default_wandb_args(f'test_{TEST_NAME}.py', run_name_prefix=f'seed{seed}')} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "

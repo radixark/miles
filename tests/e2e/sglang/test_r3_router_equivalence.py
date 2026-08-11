@@ -56,7 +56,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 DUMP_ROOT = Path(os.environ.get("ROUTER_EQ_DUMP_ROOT", "/tmp/router-eq"))
 PROMPT_DATA_PATH = "/root/datasets/dapo-math-17k/dapo-math-17k.jsonl"
@@ -119,6 +119,7 @@ def _get_config(model_family: str) -> ModelConfig:
 
 
 def prepare(model_family: str) -> None:
+    U = command_utils.default_config().create_backend()
     cfg = _get_config(model_family)
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     if not Path(cfg.local_dir).exists():
@@ -190,6 +191,7 @@ def _build_train_args(cfg: ModelConfig, variant: str) -> str:
 
 
 def _run_variant(model_family: str, cfg: ModelConfig, variant: str) -> None:
+    U = command_utils.default_config().create_backend()
     dump_dir = _variant_dir(model_family, variant)
     if dump_dir.exists():
         shutil.rmtree(dump_dir)

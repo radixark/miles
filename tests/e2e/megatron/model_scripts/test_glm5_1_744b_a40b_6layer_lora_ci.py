@@ -3,7 +3,8 @@ import os
 from scripts.run_glm5_1_744b_a40b_lora import ScriptArgs, _prepare_download, _train
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
+
 
 # Smoke test for scripts/run_glm5_1_744b_a40b_lora.py on the 6-layer toy (full rollout ->
 # train -> save loop). Runs one diagonal of the MoE-expert LoRA matrix — {tilelang +
@@ -50,6 +51,7 @@ def _args(dsa: str, shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
 
@@ -65,6 +67,8 @@ if __name__ == "__main__":
     for name, dsa, shared_outer, virtual_experts in _CONFIGS:
         print(f"[glm5.1-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
-        U.exec_command_cpu("ray stop --force || true; pkill -9 sglang || true; sleep 10")
+        command_utils.default_config().create_backend().exec_command_cpu(
+            "ray stop --force || true; pkill -9 sglang || true; sleep 10"
+        )
         execute(_args(dsa, shared_outer, virtual_experts))
         print(f"[glm5.1-lora-ci] ===== combo PASSED: {name} =====", flush=True)
