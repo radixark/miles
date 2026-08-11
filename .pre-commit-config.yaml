@@ -15,6 +15,7 @@ repos:
     rev: v4.5.0
     hooks:
       - id: check-yaml
+        args: ['--allow-multiple-documents']
         exclude: '^charts/.*/templates/'
       - id: check-case-conflict
       - id: detect-private-key

@@ -1,0 +1,328 @@
+run:
+  colocate:
+    enabled: true
+    enginePool: inference-engine-0-1
+    trainerPool: trainer-engine-actor
+  env:
+    CUDA_DEVICE_MAX_CONNECTIONS: '1'
+    PYTHONUNBUFFERED: '1'
+  stateFile: /cluster-storage/myteam/miles_data/miles-runs/260101-000000-000/state/orchestrator-260101-000000-000001.state
+  id: 260101-000000-000
+  inferenceEngines:
+  - command:
+    - <PYTHON>
+    - -m
+    - sglang.launch_server
+    - --model-path
+    - <FIXTURE_DIR>/typical-model
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8000'
+    - --disaggregation-mode
+    - prefill
+    - --trust-remote-code
+    - --mem-fraction-static
+    - '0.7'
+    - --chunked-prefill-size
+    - '4096'
+    - --nccl-port
+    - '10000'
+    - --dist-init-addr
+    - $(LWS_LEADER_ADDRESS):9000
+    - --nnodes
+    - '2'
+    - --node-rank
+    - $(LWS_WORKER_INDEX)
+    - --tp-size
+    - '16'
+    - --load-balance-method
+    - round_robin
+    - --random-seed
+    - <RANDOM_SEED>
+    - --skip-server-warmup
+    - --enable-metrics
+    - --cuda-graph-backend-prefill
+    - disabled
+    - --lora-use-virtual-experts
+    - --disaggregation-bootstrap-port
+    - '11000'
+    - --engine-info-bootstrap-port
+    - '12000'
+    - --enable-draft-weights-cpu-backup
+    env:
+      NVSHMEM_DISABLE_NCCL: '1'
+      RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: '1'
+      RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES: '1'
+      RAY_EXPERIMENTAL_NOSET_HABANA_VISIBLE_MODULES: '1'
+      RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES: '1'
+      RAY_EXPERIMENTAL_NOSET_NEURON_RT_VISIBLE_CORES: '1'
+      RAY_EXPERIMENTAL_NOSET_ONEAPI_DEVICE_SELECTOR: '1'
+      RAY_EXPERIMENTAL_NOSET_TPU_VISIBLE_CHIPS: '1'
+      SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT: 'true'
+      SGLANG_DG_CACHE_DIR_PER_PROCESS: '1'
+      SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION: 'false'
+      SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE: 'false'
+      SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK: 'false'
+      SGLANG_JIT_DEEPGEMM_PRECOMPILE: 'false'
+      SGLANG_MEMORY_SAVER_CUDA_GRAPH: 'true'
+      SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: '1'
+    meta:
+      gpu_ids: 0,1,2,3,4,5,6,7
+    name: inference-engine-0-0
+    objectName: myrun-miles-run-inference-engine-0-0
+    poolId: inference-engine-0-0
+    ports:
+    - name: primary
+      port: 8000
+    - name: dist-init
+      port: 9000
+    - name: nccl
+      port: 10000
+    - name: disaggregation-
+      port: 11000
+    - name: engine-info-boo
+      port: 12000
+    - name: gate
+      port: 13000
+    replicas: 1
+    resources:
+      limits:
+        nvidia.com/gpu: 8
+    size: 2
+  - command:
+    - <PYTHON>
+    - -m
+    - sglang.launch_server
+    - --model-path
+    - <FIXTURE_DIR>/typical-model
+    - --host
+    - 0.0.0.0
+    - --port
+    - '8000'
+    - --disaggregation-mode
+    - decode
+    - --trust-remote-code
+    - --mem-fraction-static
+    - '0.7'
+    - --chunked-prefill-size
+    - '4096'
+    - --nccl-port
+    - '10000'
+    - --dist-init-addr
+    - $(LWS_LEADER_ADDRESS):9000
+    - --node-rank
+    - $(LWS_WORKER_INDEX)
+    - --tp-size
+    - '8'
+    - --random-seed
+    - <RANDOM_SEED>
+    - --skip-server-warmup
+    - --enable-metrics
+    - --cuda-graph-backend-prefill
+    - disabled
+    - --lora-use-virtual-experts
+    - --engine-info-bootstrap-port
+    - '12000'
+    - --enable-memory-saver
+    - --enable-draft-weights-cpu-backup
+    env:
+      NVSHMEM_DISABLE_NCCL: '1'
+      RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: '1'
+      RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES: '1'
+      RAY_EXPERIMENTAL_NOSET_HABANA_VISIBLE_MODULES: '1'
+      RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES: '1'
+      RAY_EXPERIMENTAL_NOSET_NEURON_RT_VISIBLE_CORES: '1'
+      RAY_EXPERIMENTAL_NOSET_ONEAPI_DEVICE_SELECTOR: '1'
+      RAY_EXPERIMENTAL_NOSET_TPU_VISIBLE_CHIPS: '1'
+      SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT: 'true'
+      SGLANG_DG_CACHE_DIR_PER_PROCESS: '1'
+      SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION: 'false'
+      SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE: 'false'
+      SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK: 'false'
+      SGLANG_JIT_DEEPGEMM_PRECOMPILE: 'false'
+      SGLANG_MEMORY_SAVER_CUDA_GRAPH: 'true'
+      SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: '1'
+    meta:
+      gpu_ids: 0,1,2,3,4,5,6,7
+    name: inference-engine-0-1
+    objectName: myrun-miles-run-inference-engine-0-1
+    poolId: inference-engine-0-1
+    ports:
+    - name: primary
+      port: 8000
+    - name: dist-init
+      port: 9000
+    - name: nccl
+      port: 10000
+    - name: engine-info-boo
+      port: 12000
+    - name: gate
+      port: 13000
+    replicas: 4
+    resources:
+      limits:
+        nvidia.com/gpu: 8
+  objectNames:
+    colocatePairing: myrun-miles-run-colocate-pairing
+    mooncakeMaster: myrun-miles-run-mooncake-master
+    orchestrator: myrun-miles-run-orchestrator
+  orchestrator:
+    command:
+    - python
+    - scripts/run_qwen3_4b.py
+    - train
+    - --cluster-backend
+    - kubernetes
+  staticWorkers:
+  - command:
+    - <PYTHON>
+    - -m
+    - miles.utils.workers.serving.serve
+    - --worker
+    - miles.ray.rollout.inference_controller.InferenceController
+    - --pool-id
+    - inference-controller
+    - --ctor-kwargs-fn
+    - miles.ray.specs.bootstrap.compute_ctor_kwargs
+    - --ranks-per-pod
+    - '1'
+    - --gpu-slots-per-rank
+    - '0'
+    - --
+    - --cluster-backend
+    - kubernetes
+    - --rollout-num-gpus
+    - '48'
+    name: inference-controller
+    objectName: myrun-miles-run-inference-controller
+    poolId: inference-controller
+    ports:
+    - name: rpc
+      port: 8000
+    replicas: 1
+  - command:
+    - <PYTHON>
+    - -m
+    - sglang_router.launch_router
+    - --port
+    - '8000'
+    - --pd-disaggregation
+    - --policy
+    - manual
+    - --assignment-mode
+    - min_load
+    - --log-level
+    - warn
+    - --prometheus-port
+    - '9000'
+    - --request-timeout-secs
+    - '14400'
+    name: inference-router-0
+    objectName: myrun-miles-run-inference-router-0
+    poolId: inference-router-0
+    ports:
+    - name: primary
+      port: 8000
+    - name: prometheus
+      port: 9000
+    replicas: 1
+  - command:
+    - <PYTHON>
+    - -m
+    - miles.rollout.session.server
+    - --config-json
+    - '{"host":"0.0.0.0","port":8000,"instance_id":"0123456789abcdef-0","backend_url":"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000","timeout":null,"hf_checkpoint":"<FIXTURE_DIR>/typical-model","chat_template_path":null,"tito_model":"default","apply_chat_template_kwargs":{},"use_rollout_routing_replay":false,"use_rollout_indexer_replay":false,"sglang_speculative_algorithm":null,"num_layers":36,"moe_router_topk":2,"save_debug_trajectory_data":null,"lora_rank":0,"lora_adapter_path":null}'
+    name: session-server
+    objectName: myrun-miles-run-session-server
+    poolId: session-server
+    ports:
+    - name: primary
+      port: 8000
+    replicas: 32
+  - command:
+    - <PYTHON>
+    - -m
+    - miles.utils.workers.serving.serve
+    - --worker
+    - miles.ray.rollout.rollout_executor.RolloutExecutor
+    - --pool-id
+    - rollout-executor
+    - --ctor-kwargs-fn
+    - miles.ray.specs.bootstrap.compute_ctor_kwargs
+    - --ranks-per-pod
+    - '1'
+    - --gpu-slots-per-rank
+    - '0'
+    - --
+    - --cluster-backend
+    - kubernetes
+    - --rollout-num-gpus
+    - '48'
+    name: rollout-executor
+    objectName: myrun-miles-run-rollout-executor
+    poolId: rollout-executor
+    ports:
+    - name: rpc
+      port: 8000
+    replicas: 1
+  - command:
+    - <PYTHON>
+    - -m
+    - miles.utils.workers.serving.serve
+    - --worker
+    - miles.ray.train.group.TrainerController
+    - --pool-id
+    - trainer-controller-actor
+    - --ctor-kwargs-fn
+    - miles.ray.specs.bootstrap.compute_ctor_kwargs
+    - --ranks-per-pod
+    - '1'
+    - --gpu-slots-per-rank
+    - '0'
+    - --
+    - --cluster-backend
+    - kubernetes
+    - --rollout-num-gpus
+    - '48'
+    name: trainer-controller-actor
+    objectName: myrun-miles-run-trainer-controller-actor
+    poolId: trainer-controller-actor
+    ports:
+    - name: rpc
+      port: 8000
+    replicas: 1
+  trainerEngines:
+  - command:
+    - bash
+    - -c
+    - mkdir -p /scratch/Qwen3-4B && rsync -a --info=progress2 /cluster-storage/models/Qwen3-4B/ /scratch/Qwen3-4B && exec <PYTHON> -m miles.utils.workers.process_supervisor --num-subprocesses 8 -- <PYTHON> -m miles.utils.workers.serving.serve --worker miles.backends.megatron_utils.actor.MegatronTrainRayActor --pool-id trainer-engine-actor --ctor-kwargs-fn miles.ray.specs.bootstrap.compute_ctor_kwargs --ranks-per-pod 8 --gpu-slots-per-rank 1 -- --cluster-backend kubernetes --rollout-num-gpus 48
+    env:
+      LD_PRELOAD: /usr/local/lib/python3.12/dist-packages/torch_memory_saver_hook_mode_preload_cu13.abi3.so
+      NCCL_CUMEM_ENABLE: '0'
+      NVSHMEM_DISABLE_NCCL: '1'
+      NVTE_FP8_BLOCK_SCALING_FP32_SCALES: '1'
+      RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES: '1'
+      RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES: '1'
+      RAY_EXPERIMENTAL_NOSET_HABANA_VISIBLE_MODULES: '1'
+      RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES: '1'
+      RAY_EXPERIMENTAL_NOSET_NEURON_RT_VISIBLE_CORES: '1'
+      RAY_EXPERIMENTAL_NOSET_ONEAPI_DEVICE_SELECTOR: '1'
+      RAY_EXPERIMENTAL_NOSET_TPU_VISIBLE_CHIPS: '1'
+      TMS_INIT_ENABLE: '1'
+      TMS_INIT_ENABLE_CPU_BACKUP: '1'
+    meta:
+      gpu_ids: 0,1,2,3,4,5,6,7
+    name: trainer-engine-actor
+    objectName: myrun-miles-run-trainer-engine-actor
+    poolId: trainer-engine-actor
+    ports:
+    - name: master
+      port: 9000
+    - name: rpc
+      port: 8000
+    replicas: 1
+    resources:
+      limits:
+        nvidia.com/gpu: 8
+    size: 4
