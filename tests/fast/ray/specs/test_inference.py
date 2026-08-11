@@ -14,6 +14,7 @@ from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
     INFERENCE_CONTROLLER_POOL_ID,
+    INFERENCE_CONTROLLER_WORKER_CLASS,
     _compute_router_primary_port_info,
     _compute_session_server_primary_port_info,
     _compute_spec_router,
@@ -29,9 +30,22 @@ from miles.ray.specs.inference import (
 )
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
 from miles.utils.function_registry import load_function
 from miles.utils.workers.argv_utils import parse_config_argv
 from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerCtorContext, WorkerMetaContext
+
+
+def _controller_layout() -> LaunchPlan:
+    return LaunchPlan(
+        run_id="260101-000000-000",
+        state_file="/cluster-storage/miles_data/miles-runs/run/state/orchestrator-260101-000000-000001.state",
+        release="miles-run-260101",
+        namespace="rl",
+        orchestrator_command=["python", "/repo/train.py"],
+        worker_argv=["--rollout-num-gpus", "8"],
+    )
 
 
 def _make_model_cfg(*worker_types: str) -> ModelConfig:
@@ -503,7 +517,7 @@ def _make_router_args(tmp_path, *, server_groups: list[dict] | None = None, **ov
     return make_args(sglang_config=str(config_path), rollout_num_gpus=8, **overrides)
 
 
-class TestComputeEngineSpecNames:
+class TestComputeEnginePools:
     def test_only_engine_specs_are_named(self, tmp_path):
         """These names are what the controller watches, so a router in the list would be reconciled as an engine."""
         config_path = tmp_path / "sglang.yaml"
@@ -1084,6 +1098,20 @@ class TestSpecInferenceController:
     def test_the_worker_name_is_stable(self):
         """The driver looks the controller up by name, so this name is part of the release's contract."""
         assert inference_controller_worker_name() == "inference-controller-0-0"
+
+    def test_it_renders_into_static_workers_with_its_rpc_port(self, tmp_path):
+        """The release has to contain the controller pod, or the address book would point at nothing."""
+        spec = spec_inference_controller(self._args(tmp_path))
+
+        values = build_values([spec], _controller_layout()).as_values()
+
+        (entry,) = values["run"]["staticWorkers"]
+        assert SECTION_OF_CATEGORY[spec.category] == "staticWorkers"
+        assert entry["name"] == INFERENCE_CONTROLLER_POOL_ID
+        assert entry["ports"] == [{"name": "rpc", "port": 8000}]
+        assert entry["command"][entry["command"].index("--pool-id") + 1] == INFERENCE_CONTROLLER_POOL_ID
+        assert spec.worker_class == INFERENCE_CONTROLLER_WORKER_CLASS
+        assert "resources" not in entry
 
     def test_it_asks_for_a_provider_over_the_engine_pools_it_will_observe(self, tmp_path):
         """The controller never learns which backend reports those cells, only which pools it wants reported."""
