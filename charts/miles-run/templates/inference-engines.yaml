@@ -1,0 +1,5 @@
+{{- $context := . }}
+{{- range $engine := .Values.run.inferenceEngines }}
+---
+{{ include "miles-run.pool" (dict "context" $context "pool" (merge (dict "containerName" "engine") $engine)) }}
+{{- end }}
