@@ -1,9 +1,9 @@
+import os
 import sys
-
 import pytest
 
 from miles.utils.function_registry import function_registry
-from miles.utils.workers.serving.utils import compute_serve_worker_spec, override_argv, split_worker_argv
+from miles.utils.workers.serving.utils import compute_serve_worker_spec, override_argv, override_env, split_worker_argv
 from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
 
 SPECS_FN = "test:serving-utils-specs"
@@ -25,6 +25,26 @@ def _serve_spec() -> ServeWorkerSpec:
         worker_class="test.worker",
         ctor_kwargs=lambda context: {},
     )
+
+
+class TestOverrideEnv:
+    def test_override_env_restores_existing_and_absent_keys_after_an_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Environment overrides restore old values and remove new keys when the context raises."""
+        existing_key = "MILES_TEST_OVERRIDE_ENV_EXISTING"
+        absent_key = "MILES_TEST_OVERRIDE_ENV_ABSENT"
+        monkeypatch.setenv(existing_key, "original")
+        monkeypatch.delenv(absent_key, raising=False)
+
+        with pytest.raises(RuntimeError, match="inside context"):
+            with override_env({existing_key: "overridden", absent_key: "introduced"}):
+                assert os.environ[existing_key] == "overridden"
+                assert os.environ[absent_key] == "introduced"
+                raise RuntimeError("inside context")
+
+        assert os.environ[existing_key] == "original"
+        assert absent_key not in os.environ
 
 
 class TestSplitWorkerArgv:
