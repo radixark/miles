@@ -1,11 +1,53 @@
 from __future__ import annotations
 
+import json
+import random
+from datetime import datetime
+from pathlib import Path
+
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
 
 ORCHESTRATOR_COMPONENT = "orchestrator"
+
+_RUNS_DIR_NAME = "miles-runs"
+_STATE_DIR_NAME = "state"
+_VALUES_DIR_NAME = "values"
+_RECORD_FILE_GLOB = "launch-*.json"
+_RECORDED_STATE_FILE_KEY = "state_file"
 
 
 class RunNames:
     @staticmethod
     def release(*, run_id: str) -> str:
         return f"{CHART_NAME}-{run_id}"
+
+
+class RunFiles:
+    @staticmethod
+    def run_dir(*, shared_root: str | Path, run_id: str) -> Path:
+        return Path(shared_root) / _RUNS_DIR_NAME / run_id
+
+    @staticmethod
+    def new_values_file(*, run_directory: str | Path) -> Path:
+        return Path(run_directory) / _VALUES_DIR_NAME / f"values-{_new_launch_token()}.yaml"
+
+    @staticmethod
+    def new_state_file(*, run_directory: str | Path) -> Path:
+        return _orchestrator_state_path(run_directory, _new_launch_token())
+
+    @staticmethod
+    def latest_state_file(*, run_directory: str | Path) -> Path | None:
+        """The newest launch's state file, written or not; launches sort by the token in their name."""
+        recorded = sorted((Path(run_directory) / _RECORDS_DIR_NAME).glob(_RECORD_FILE_GLOB))
+        if not recorded:
+            return None
+        named = json.loads(recorded[-1].read_text())[_RECORDED_STATE_FILE_KEY]
+        return Path(named) if named else None
+
+
+def _orchestrator_state_path(run_directory: str | Path, launch_token: str) -> Path:
+    return Path(run_directory) / _STATE_DIR_NAME / f"orchestrator-{launch_token}.state"
+
+
+def _new_launch_token() -> str:
+    return f"{datetime.now().strftime('%y%m%d-%H%M%S-%f')}-{random.Random().randint(0, 999999):06d}"
