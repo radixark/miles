@@ -1,10 +1,25 @@
 import yaml
-from tests.fast.charts.utils import RELEASE_NAME, container, pod_spec, render, requires_helm, single_object_of_kind
+from tests.fast.charts.utils import (
+    NAMESPACE,
+    RELEASE_NAME,
+    container,
+    pod_spec,
+    render,
+    requires_helm,
+    single_object_of_kind,
+)
+
+from miles.utils.workers.types import ClusterBackend
 
 
 def _volume(objects: list[dict], name: str) -> dict:
     volumes = single_object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["volumes"]
     return next(volume for volume in volumes if volume["name"] == name)
+
+
+def _infra_checksum(objects: list[dict]) -> str:
+    annotations = single_object_of_kind(objects, "StatefulSet")["spec"]["template"]["metadata"]["annotations"]
+    return annotations["checksum/infra-values"]
 
 
 @requires_helm
@@ -19,6 +34,14 @@ class TestWorkbenchStatefulSet:
         assert container(objects)["image"] == "radixark/miles:dev"
         assert container(objects)["imagePullPolicy"] == "Always"
         assert container(objects)["command"] == ["sleep", "infinity"]
+
+    def test_the_pod_template_carries_the_infra_config_checksum(self):
+        """A ConfigMap-only edit must roll the pod, otherwise a finished install still serves the old infra.yaml."""
+        default = _infra_checksum(render())
+        changed = _infra_checksum(render("--set", "infra.paths.runsRoot=/elsewhere/miles_data"))
+
+        assert len(default) == 64
+        assert default != changed
 
     def test_the_selector_is_the_stable_label_subset(self):
         """A selector is immutable after creation and must be a subset of the template labels."""
@@ -64,6 +87,13 @@ class TestWorkbenchStatefulSet:
         )
         assert _volume(objects, "shared-storage")["persistentVolumeClaim"] == {"claimName": "miles-shared"}
 
+    def test_storage_type_none_leaves_the_pod_without_that_volume(self):
+        """Storage is optional; disabling it must not leave a dangling mount referencing a missing volume."""
+        objects = render("--set", "infra.sharedStorage.type=none")
+
+        assert [volume["name"] for volume in pod_spec(objects)["volumes"]] == ["infra-values"]
+        assert [mount["name"] for mount in container(objects)["volumeMounts"]] == ["infra-values"]
+
     def test_a_repo_on_shared_storage_replaces_the_copy_in_the_image(self):
         """Launch scripts run from this pod, so it must see the same checkout as the training pods do."""
         objects = render("--set", "infra.paths.repos.miles=alice/miles")
@@ -77,15 +107,43 @@ class TestWorkbenchStatefulSet:
         """A subPath mount of a volume that was never rendered would leave the pod stuck creating."""
         objects = render("--set", "infra.sharedStorage.type=none", "--set", "infra.paths.repos.miles=alice/miles")
 
-        assert "volumeMounts" not in container(objects)
-        assert "env" not in container(objects)
+        assert [mount["name"] for mount in container(objects)["volumeMounts"]] == ["infra-values"]
+        assert not [entry for entry in container(objects)["env"] if entry["name"] == "PYTHONPATH"]
 
-    def test_storage_type_none_leaves_the_pod_without_volumes(self):
-        """Storage is optional; disabling it must not leave a dangling mount referencing a missing volume."""
-        objects = render("--set", "infra.sharedStorage.type=none")
+    def test_a_run_launched_from_the_pod_picks_this_backend_without_being_told(self):
+        """The pod exists to install runs into its own cluster, so naming the backend again is noise."""
+        assert (
+            dict(name="MILES_SCRIPT_CLUSTER_BACKEND", value=ClusterBackend.KUBERNETES.value)
+            in container(render())["env"]
+        )
 
-        assert "volumes" not in pod_spec(objects)
-        assert "volumeMounts" not in container(objects)
+    def test_a_cluster_value_still_wins_over_that_default(self):
+        """The default is a convenience, and a cluster that sets the variable itself means it."""
+        objects = render("--set", "infra.env.MILES_SCRIPT_CLUSTER_BACKEND=ray")
+
+        assert dict(name="MILES_SCRIPT_CLUSTER_BACKEND", value="ray") in container(objects)["env"]
+
+    def test_a_run_lands_in_the_namespace_the_pod_lives_in(self):
+        """The pod's Role is namespaced, so its own namespace is the only one it can install into."""
+        assert dict(name="MILES_SCRIPT_NAMESPACE", value=NAMESPACE) in container(render())["env"]
+
+    def test_the_installed_helm_values_are_mounted_for_the_runs_launched_here(self):
+        """A run rendered from a second copy of these values would schedule its pods against another cluster."""
+        objects = render("--set", "infra.sharedStorage.hostPath=/gpfs")
+        data = single_object_of_kind(objects, "ConfigMap")["data"]["infra.yaml"]
+
+        assert yaml.safe_load(data)["infra"]["sharedStorage"]["hostPath"] == "/gpfs"
+        assert {"name": "infra-values", "mountPath": "/etc/miles"} in container(objects)["volumeMounts"]
+        assert _volume(objects, "infra-values")["configMap"]["name"].endswith("-infra")
+        assert dict(name="MILES_SCRIPT_HELM_VALUES", value="/etc/miles/infra.yaml") in container(objects)["env"]
+
+    def test_a_user_volume_may_not_take_the_reserved_name_or_path(self):
+        """Both belong to the chart's own infra values mount, and a duplicate of either is rejected by kubernetes."""
+        name_clash = render_error(*volumes_args(host_path_volume(name="infra-values")))
+        path_clash = render_error(*volumes_args(host_path_volume(mounts=[{"mountPath": "/etc/miles"}])))
+
+        assert "infra-values" in name_clash
+        assert "/etc/miles" in path_clash
 
     def test_scheduling_and_environment_values_reach_the_pod(self, tmp_path):
         """Cluster-specific scheduling and environment values are passed through untouched."""
@@ -100,7 +158,7 @@ class TestWorkbenchStatefulSet:
                             affinity=dict(podAntiAffinity=dict(preferredDuringSchedulingIgnoredDuringExecution=[])),
                         ),
                         env={"HTTP_PROXY": "http://proxy:7890"},
-                    ),
+                    )
                 )
             )
         )
@@ -110,7 +168,7 @@ class TestWorkbenchStatefulSet:
         assert spec["nodeSelector"] == {"pool": "cpu"}
         assert spec["tolerations"] == [dict(key="gpu", operator="Exists", effect="NoSchedule")]
         assert spec["affinity"] == dict(podAntiAffinity=dict(preferredDuringSchedulingIgnoredDuringExecution=[]))
-        assert container(objects)["env"] == [dict(name="HTTP_PROXY", value="http://proxy:7890")]
+        assert dict(name="HTTP_PROXY", value="http://proxy:7890") in container(objects)["env"]
 
     def test_private_registries_get_their_pull_secret(self):
         """The training image often lives in a private registry, so its pull secret must be declared."""
