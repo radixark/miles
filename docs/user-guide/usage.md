@@ -2,36 +2,33 @@
 title: Training Backends
 description: What a training backend owns, how to choose between Megatron-LM and FSDP, and how each one is configured.
 ---
-Every Miles job has two halves. One **generates** text (SGLang), the other **learns** from
-it (the training backend). They can be **disaggregated**, the default, where each half owns
-its own GPUs, or **colocated** with `--colocate`, where both share the same GPUs and take
-turns. Either way they meet at exactly one interface: a weight sync after each training
-step.
+In Miles a training backend is one class: a `TrainRayActor` subclass that owns the model on
+the GPU. `--train-backend` decides which one `miles/ray/train/actor_factory.py` instantiates
+on every trainer rank, and there are two choices.
 
-```mermaid
-flowchart LR
-    subgraph T["Training backend: Megatron-LM or FSDP"]
-        direction TB
-        S[shard the model] --> O[optimizer step] --> C[write checkpoints]
-    end
-    subgraph R["Inference backend: SGLang"]
-        G[generate rollouts]
-    end
-    R -- "rollouts + rewards" --> T
-    T -- "weight sync" --> R
-```
+| Value | Class | What it is | Default |
+|---|---|---|---|
+| [`megatron`](#megatron-lm) | `MegatronTrainRayActor` | Megatron-LM: five parallel dimensions, `torch_dist` checkpoints | ✅ |
+| [`fsdp`](#fsdp) | `FSDPTrainRayActor` | The model's own HuggingFace implementation under PyTorch FSDP2 | |
 
-Because that interface is narrow, the training backend is swappable. `--train-backend`
-picks one:
+Whichever you pick, the rest of the job talks to it through the same handful of methods, and
+that short list is the whole contract between a backend and everything else in Miles:
 
-| Value | What it is | Default |
-|---|---|---|
-| [`megatron`](#megatron-lm) | Megatron-LM: five parallel dimensions, `torch_dist` checkpoints | ✅ |
-| [`fsdp`](#fsdp) | The model's own HuggingFace implementation under PyTorch FSDP2 | |
+| Method | What the backend has to do |
+|---|---|
+| `init` | Build the model, optimizer and parallel layout after the shared base has set up the process group and the device |
+| `train` | Consume one rollout's data and take the optimizer steps for it |
+| `update_weights` | Push the freshly trained weights into the SGLang engines |
+| `save_model` | Write a checkpoint, in whatever format this backend uses |
+| `sleep` / `wake_up` | Move the model and optimizer off the GPU and back, so a colocated SGLang engine can use the memory in between |
 
-Nothing above the backend changes when you switch: same GRPO / PPO / GSPO flags, same
-rollout and eval flags, same colocated or disaggregated layout, same SGLang engine, same
-launch-script shape.
+That is also why switching backends does not touch the rest of your launch script. Rollout,
+reward, eval, the RL algorithm and the SGLang engine all sit above this line, and so does
+the GPU layout: **disaggregated** by default, where trainer and engines own separate GPUs,
+or **colocated** with `--colocate`, where they share GPUs and `sleep` / `wake_up` hand the
+memory back and forth.
+
+What does change is everything below the line, which is what the rest of this page is about.
 
 ## Which one do you want?
 
