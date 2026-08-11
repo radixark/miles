@@ -229,8 +229,6 @@ class MilesTinkerBackend:
         raise ValueError("arbitrary Tinker checkpoint loading is not implemented in Miles phase 1")
 
     async def sample(self, model_id: str | None, request: dict[str, Any]) -> dict[str, Any]:
-        if model_id is None:
-            raise ValueError("sampling requires a model-backed sampling session")
         tokens = _tokens(request["prompt"])
         params = dict(request.get("sampling_params") or {})
         # Tinker follows OpenAI naming while SGLang's native /generate
@@ -243,10 +241,11 @@ class MilesTinkerBackend:
         payload = {
             "input_ids": tokens,
             "sampling_params": params,
-            "lora_path": slot_lora_name(self.models[model_id]["slot"]),
             "n": num_samples,
             "return_logprob": True,
         }
+        if model_id is not None:
+            payload["lora_path"] = slot_lora_name(self.models[model_id]["slot"])
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(f"{self.router_url}/generate", json=payload)
             response.raise_for_status()

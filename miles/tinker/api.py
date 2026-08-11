@@ -54,6 +54,13 @@ class CreateModelRequest(BaseModel):
     model_role: str = "policy"
 
 
+class CreateSamplingSessionRequest(BaseModel):
+    session_id: str
+    sampling_session_seq_id: int
+    base_model: str | None = None
+    model_path: str | None = None
+
+
 class ModelRequest(BaseModel):
     model_id: str
 
@@ -144,6 +151,35 @@ def create_app(backend: TinkerPrimitiveBackend, base_model: str, *, max_lora_ran
             "lora_config": request.lora_config.model_dump(),
             "status": "created",
             "request_id": future_id,
+        }
+
+    @app.post("/api/v1/create_sampling_session")
+    async def create_sampling_session(request: CreateSamplingSessionRequest) -> dict[str, str]:
+        if request.session_id not in sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if (request.base_model is None) == (request.model_path is None):
+            raise HTTPException(status_code=400, detail="Exactly one of base_model or model_path must be provided")
+        if request.base_model is not None and request.base_model != base_model:
+            raise HTTPException(status_code=400, detail=f"Server is pinned to {base_model}")
+
+        sampling_session_id = f"sampling_{uuid4().hex[:8]}"
+        sampling_sessions[sampling_session_id] = {
+            "model_id": None,
+            "base_model": request.base_model or base_model,
+            "model_path": request.model_path,
+            "sampling_session_seq_id": request.sampling_session_seq_id,
+        }
+        return {"type": "create_sampling_session", "sampling_session_id": sampling_session_id}
+
+    @app.get("/api/v1/samplers/{sampler_id}")
+    async def get_sampler(sampler_id: str) -> dict[str, Any]:
+        sampling_session = sampling_sessions.get(sampler_id)
+        if sampling_session is None:
+            raise HTTPException(status_code=404, detail="Sampler not found")
+        return {
+            "sampler_id": sampler_id,
+            "base_model": sampling_session["base_model"],
+            "model_path": sampling_session.get("model_path"),
         }
 
     @app.post("/api/v1/forward_backward")

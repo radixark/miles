@@ -72,6 +72,46 @@ def test_tinker_forward_backward_and_step_are_distinct_calls():
     assert [call[0] for call in backend.calls] == ["create", "forward_backward", "optim_step"]
 
 
+def test_base_model_sampling_session_is_in_memory():
+    base_model = "Qwen/Qwen3-0.6B"
+    backend = RecordingBackend()
+    client = TestClient(create_app(backend, base_model))
+    session_id = client.post(
+        "/api/v1/create_session", json={"tags": [], "sdk_version": "test"}
+    ).json()["session_id"]
+
+    response = client.post(
+        "/api/v1/create_sampling_session",
+        json={
+            "session_id": session_id,
+            "sampling_session_seq_id": 0,
+            "base_model": base_model,
+        },
+    )
+    assert response.status_code == 200
+    sampling_session_id = response.json()["sampling_session_id"]
+    sampler = client.get(f"/api/v1/samplers/{sampling_session_id}")
+    assert sampler.json() == {
+        "sampler_id": sampling_session_id,
+        "base_model": base_model,
+        "model_path": None,
+    }
+
+    sampled = client.post(
+        "/api/v1/asample",
+        json={
+            "sampling_session_id": sampling_session_id,
+            "seq_id": 0,
+            "num_samples": 1,
+            "prompt": {"chunks": [{"tokens": [1], "type": "encoded_text"}]},
+            "sampling_params": {"max_tokens": 1},
+        },
+    )
+    assert sampled.status_code == 200
+    assert backend.calls[-1][0] == "sample"
+    assert backend.calls[-1][1] is None
+
+
 def test_rejects_rank_above_preallocated_capacity():
     client = TestClient(create_app(RecordingBackend(), "Qwen/Qwen3-0.6B", max_lora_rank=16))
     session = client.post("/api/v1/create_session", json={}).json()["session_id"]
