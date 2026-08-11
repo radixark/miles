@@ -7,6 +7,7 @@ import platform
 import random
 import shlex
 import socket
+import subprocess
 from pathlib import Path
 
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
@@ -154,3 +155,10 @@ def detect_hardware() -> str:
                 detected = None
     assert detected is not None, f"cannot tell which hardware {name!r} is, pass --hardware explicitly"
     return detected
+
+
+def run_process(
+    argv: list[str], *, capture_output: bool, check: bool, input: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    logger.info(f"EXEC: {shlex.join(argv)}")
+    return subprocess.run(argv, check=check, capture_output=capture_output, text=True, input=input)
