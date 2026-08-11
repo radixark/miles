@@ -15,12 +15,13 @@ from miles.ray.placement_group import create_rollout_components
 from miles.ray.specs import inference as specs_inference
 from miles.ray.specs import rollout as specs_rollout
 from miles.ray.specs import train as specs_train
+from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
 from miles.ray.train.cell import TrainerCell
 from miles.utils import http_utils
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
-from miles.utils.workers.reconcile.k8s_api import PodListPage
 from miles.utils.workers.k8s_types import Pod
+from miles.utils.workers.reconcile.k8s_api import PodListPage
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.common.wire_types import WireNamespace
 from miles.utils.workers.rpc.server.app import create_rpc_app
@@ -32,10 +33,10 @@ from miles.utils.workers.worker_provider.kubernetes.helm.env import NAMESPACE_EN
 from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
 
 NAMESPACE = "rl"
-RELEASE = "miles-run-260805"
+_RELEASE = "miles-run-260805"
 
 STATIC_HOSTS = {
-    pool_id: naming.static_worker_host(RELEASE, pool_id, 0)
+    pool_id: naming.static_worker_host(_RELEASE, pool_id, 0)
     for pool_id in ("rollout-executor", "inference-controller", "trainer-controller-actor")
 }
 POOL = "trainer-engine-actor"
@@ -189,6 +190,7 @@ class _PerHostTransport(httpx.AsyncBaseTransport):
 def trainer_spec(*, num_workers_per_cell: int, num_gpus_per_node: int) -> ServeWorkerSpec:
     return ServeWorkerSpec(
         name=POOL,
+        category=POOL_CATEGORY_TRAINER_ENGINE,
         port_infos=[PortInfo(name="master", static_port=9000, mode="master")],
         env_var=lambda context: {},
         scheduling=SchedulingSpec(
@@ -242,10 +244,10 @@ def deleted(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
 def install(monkeypatch: pytest.MonkeyPatch, *, pods: list[Pod], workers_per_pod: int = 1):
     monkeypatch.setenv(NAMESPACE_ENV_VAR, NAMESPACE)
-    monkeypatch.setenv(RELEASE_ENV_VAR, RELEASE)
+    monkeypatch.setenv(RELEASE_ENV_VAR, _RELEASE)
     fake_pod_api.reset()
     fake_pod_api.install(FakePodApi(pods))
-    monkeypatch.setattr(core_provider, "_create_kubernetes_client", fake_pod_api.installed)
+    monkeypatch.setattr(core_provider, "_kubernetes_pod_api", fake_pod_api.installed)
     monkeypatch.setattr(specs_rollout, "ROLLOUT_EXECUTOR_WORKER_CLASS", f"{__name__}.FakeRolloutExecutor")
     monkeypatch.setattr(specs_inference, "INFERENCE_CONTROLLER_WORKER_CLASS", f"{__name__}.FakeInferenceController")
     monkeypatch.setattr(specs_train, "TRAINER_CONTROLLER_WORKER_CLASS", f"{__name__}.FakeTrainerController")
@@ -288,9 +290,9 @@ class TestKubernetesDriverAssembly:
 
         asyncio.run(scenario())
 
-        (namespace, selector) = api.selectors[0]
+        namespace, selector = api.selectors[0]
         assert namespace == NAMESPACE
-        assert selector == f"{env.INSTANCE_LABEL}={RELEASE},{env.DEFAULT_LABEL_KEYS.pool_id} in ({POOL})"
+        assert selector == f"{env.INSTANCE_LABEL}={_RELEASE},{env.DEFAULT_LABEL_KEYS.pool_id} in ({POOL})"
 
     def test_refuses_to_hand_out_a_provider_for_a_pool_it_does_not_watch(self, monkeypatch):
         """A provider that silently watches nothing would leave those cells unhealed forever."""

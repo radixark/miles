@@ -25,6 +25,8 @@ from miles.utils.workers.worker_spec import (
 
 logger = logging.getLogger(__name__)
 
+POOL_CATEGORY_INFERENCE_ENGINE = "inference_engine"
+
 INFERENCE_CONTROLLER_POOL_ID = "inference-controller"
 SESSION_SERVER_POOL_ID = "session-server"
 INFERENCE_CONTROLLER_WORKER_CLASS = "miles.ray.rollout.inference_controller.InferenceController"
@@ -277,6 +279,7 @@ def _compute_spec_inference_engine(
 
     return CommandWorkerSpec(
         name=compute_engine_pool_id(model_idx=model_idx, group_index=group_index),
+        category=POOL_CATEGORY_INFERENCE_ENGINE,
         port_infos=[
             PortInfo(name="primary", static_port=8000, allow_dynamic=True),
             PortInfo(
