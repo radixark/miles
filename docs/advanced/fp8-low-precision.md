@@ -114,7 +114,7 @@ share one UE8M0 scale. The end-to-end recipe uses MXFP8 for rollout, forward
 propagation, weight-gradient GEMMs, and data-gradient GEMMs while preserving
 configured tensors in BF16.
 
-![End-to-end MXFP8 RL recipe](/assets/images/low-precision/mxfp8-e2e.png)
+![End-to-end MXFP8 RL recipe](../assets/images/low-precision/mxfp8-e2e.png)
 
 *Source: [Towards Blackwell-Native 8-bit and 4-bit RL](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
 
@@ -202,7 +202,7 @@ rollout uses a BF16 KV cache.
 The base NVFP4 recipe uses **high-precision backward**: the forward pass uses
 NVFP4 while the BF16 backward GEMMs consume the original BF16 operands.
 
-![NVFP4 with high-precision backward](/assets/images/low-precision/nvfp4-high-precision-backward.png)
+![NVFP4 with high-precision backward](../assets/images/low-precision/nvfp4-high-precision-backward.png)
 
 *Source: [Towards Blackwell-Native 8-bit and 4-bit RL](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
 
@@ -238,7 +238,7 @@ operands. See the humans& discussion of
 [gradient stability](https://humansand.ai/blog/nvfp4-rl#improving-gradient-stability)
 for the motivation and ablations.
 
-![NVFP4 with dequantized backward](/assets/images/low-precision/nvfp4-dequantized-backward.png)
+![NVFP4 with dequantized backward](../assets/images/low-precision/nvfp4-dequantized-backward.png)
 
 *Source: [Towards Blackwell-Native 8-bit and 4-bit RL](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
 
