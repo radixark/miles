@@ -14,6 +14,10 @@ from tests.fast.charts.utils import (
     with_object_names,
 )
 
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
+from miles.utils.workers.worker_spec import SchedulingSpec, ServeWorkerSpec
+
 
 def _rollout_executor() -> ServeWorkerSpec:
     return ServeWorkerSpec(
@@ -149,3 +153,52 @@ class TestStaticWorkers:
         )
 
         assert "command" in error
+
+
+@requires_helm
+class TestGeneratedStaticWorkerShape:
+    def test_accepts_the_pool_the_launcher_writes_on_every_entry(self):
+        """The values builder stamps pool_id on all three sections, so a schema without it rejects every run."""
+        generated = build_values(
+            [_rollout_executor()],
+            LaunchPlan(
+                run_id=RUN_ID,
+                state_file="/cluster-storage/miles_data/miles-runs/run/state/orchestrator-260101-000000-000001.state",
+                release=RUN_RELEASE_NAME,
+                namespace="rl",
+                orchestrator_command=["python", "train.py"],
+                worker_argv=["--cluster-backend", "kubernetes"],
+            ),
+        ).as_values()
+        entries = generated["run"]["staticWorkers"]
+
+        assert entries[0]["poolId"] == "rollout-executor"
+        assert objects_of_kind(_render(entries), "StatefulSet")
+
+    def test_labels_the_pod_with_the_pool_it_serves(self):
+        """A provider that observes cells by pool_id label has to find that label on a static worker too."""
+        objects = _render([{"name": "router", "poolId": "inference-router-0", "command": ["python"]}])
+        labels = named_object(objects, "StatefulSet", "myrun-miles-run-router")["spec"]["template"]["metadata"][
+            "labels"
+        ]
+
+        assert labels["miles.radixark.io/pool"] == "inference-router-0"
+
+    def test_falls_back_to_the_entry_name_as_the_pool(self):
+        """An entry a platform wrote by hand names no pool_id, and an unlabelled pod is invisible to miles."""
+        objects = _render([{"name": "router", "command": ["python"]}])
+        labels = named_object(objects, "StatefulSet", "myrun-miles-run-router")["spec"]["template"]["metadata"][
+            "labels"
+        ]
+
+        assert labels["miles.radixark.io/pool"] == "router"
+
+    def test_a_worker_is_told_the_run_it_belongs_to(self):
+        """A served worker builds a backend capability of its own, which recomputes peer addresses from the run."""
+        env = {
+            entry["name"]: entry.get("value")
+            for entry in sole_container_of(_render_with(), "StatefulSet", "myrun-miles-run-router")["env"]
+        }
+
+        assert env["MILES_K8S_RELEASE"] == RUN_RELEASE_NAME
+        assert env["MILES_K8S_NAMESPACE"] == NAMESPACE
