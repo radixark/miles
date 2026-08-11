@@ -129,6 +129,7 @@
         "group": "Kimi",
         "root": "models/kimi/index",
         "pages": [
+         "models/kimi/kimi-k3",
          "models/kimi/kimi-k2.5",
          "models/kimi/kimi-k2",
          "models/kimi/moonlight"

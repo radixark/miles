@@ -35,5 +35,5 @@ python scripts/run_gemma_4_26b_a4b.py full-train --num-nodes 1
 
 ## Pairs well with
 
-- [Backends Beyond Megatron](/advanced/architecture-support) — the bridge path Gemma rides on.
+- [Backends Beyond Megatron](/advanced/architecture-support), the bridge path Gemma rides on.
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer)
