@@ -27,6 +27,9 @@
     },
     "run": {
       "$ref": "#/definitions/RunValues"
+    },
+    "commandJob": {
+      "$ref": "#/definitions/CommandJobValues"
     }
   },
   "definitions": {
@@ -47,6 +50,79 @@
         "enabled",
         "serviceAccount"
       ],
+      "type": "object"
+    },
+    "CommandJobValues": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "minLength": 1
+              },
+              "objectName": {
+                "minLength": 1
+              },
+              "command": {
+                "minItems": 1
+              }
+            },
+            "required": [
+              "name",
+              "objectName",
+              "command"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "maxLength": 40,
+          "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$",
+          "type": "string"
+        },
+        "objectName": {
+          "maxLength": 63,
+          "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$",
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "completions": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "gpusPerPod": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "activeDeadlineSeconds": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "ttlSecondsAfterFinished": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
       "type": "object"
     },
     "Image": {

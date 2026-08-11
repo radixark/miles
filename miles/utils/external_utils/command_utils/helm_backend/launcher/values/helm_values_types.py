@@ -94,6 +94,35 @@ class RunValues(ValuesModel):
     auto_uninstall: AutoUninstallSection | None = None
 
 
+class CommandJobValues(ValuesModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {"properties": {"enabled": {"const": True}}, "required": ["enabled"]},
+                    "then": {
+                        "required": ["name", "objectName", "command"],
+                        "properties": {
+                            "name": {"minLength": 1},
+                            "objectName": {"minLength": 1},
+                            "command": {"minItems": 1},
+                        },
+                    },
+                }
+            ]
+        }
+    )
+
+    enabled: bool | None = None
+    name: Annotated[str, Field(max_length=_POOL_NAME_MAX, pattern=_OPTIONAL_DNS_LABEL)] | None = None
+    object_name: Annotated[str, Field(max_length=_OBJECT_NAME_MAX, pattern=_OPTIONAL_DNS_LABEL)] | None = None
+    command: list[str] | None = None
+    completions: Annotated[int, Field(ge=1)] | None = None
+    gpus_per_pod: Annotated[int, Field(ge=0)] | None = None
+    active_deadline_seconds: Annotated[int, Field(ge=1)] | None = None
+    ttl_seconds_after_finished: Annotated[int, Field(ge=0)] | None = None
+
+
 class Image(ValuesModel):
     repository: Annotated[str, Field(min_length=1)]
     tag: Annotated[str, Field(min_length=1)]
@@ -179,6 +208,7 @@ class WorkbenchResources(ValuesModel):
 class MilesRunChartValues(ValuesModel):
     infra: InfraValues | None = None
     run: RunValues | None = None
+    command_job: CommandJobValues | None = None
 
 
 class MilesWorkbenchChartValues(ValuesModel):
