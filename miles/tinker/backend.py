@@ -66,15 +66,29 @@ class MilesTinkerBackend:
         advantages = []
         rollout_log_probs = []
         for index, row in enumerate(rows):
-            tokens = _tokens(row["model_input"])
+            input_tokens = _tokens(row["model_input"])
             inputs = row.get("loss_fn_inputs", {})
             targets = _tensor_data(inputs.get("target_tokens"))
-            if targets and targets[:-1] != tokens[1:]:
-                raise ValueError("Miles phase 1 requires standard next-token target_tokens")
-            weights = [float(x) for x in _tensor_data(inputs.get("weights"), [1.0] * len(tokens))]
-            first_train = next((i for i, weight in enumerate(weights) if weight != 0), len(tokens) - 1)
-            response_length = max(1, len(tokens) - first_train)
-            response_weights = weights[-response_length:]
+            if len(targets) != len(input_tokens) or not targets:
+                raise ValueError("target_tokens must align one-for-one with model_input tokens")
+            # Miles batches carry the full sequence and shift internally, while
+            # Tinker carries input tokens plus a same-length next-token target.
+            tokens = [*input_tokens, int(targets[-1])]
+            if loss_fn == "importance_sampling":
+                token_weights = [float(x) for x in _tensor_data(inputs.get("advantages"))]
+            else:
+                if targets[:-1] != input_tokens[1:]:
+                    raise ValueError("cross_entropy requires standard next-token target_tokens")
+                token_weights = [
+                    float(x) for x in _tensor_data(inputs.get("weights"), [1.0] * len(targets))
+                ]
+            if len(token_weights) != len(targets):
+                raise ValueError("per-token weights must align with target_tokens")
+            first_train = next(
+                (i for i, weight in enumerate(token_weights) if weight != 0), len(token_weights) - 1
+            )
+            response_length = max(1, len(token_weights) - first_train)
+            response_weights = token_weights[-response_length:]
             data["tokens"].append(tokens)
             data["response_lengths"].append(response_length)
             data["loss_masks"].append([int(weight != 0) for weight in response_weights])
@@ -85,9 +99,7 @@ class MilesTinkerBackend:
             if loss_fn == "importance_sampling":
                 advantages.append(response_weights)
                 rollout_log_probs.append(
-                    [float(x) for x in _tensor_data(inputs.get("sampling_logprobs"), [0.0] * response_length)][
-                        -response_length:
-                    ]
+                    [float(x) for x in _tensor_data(inputs.get("logprobs"))][-response_length:]
                 )
         if loss_fn == "importance_sampling":
             data["advantages"] = advantages
