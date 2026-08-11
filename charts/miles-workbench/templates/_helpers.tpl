@@ -14,6 +14,13 @@
 {{- default (include "miles-workbench.fullname" .) .Values.serviceAccount.name }}
 {{- end }}
 
+{{- define "miles-workbench.assertServiceAccountNameIsFree" -}}
+{{- $uninstaller := include "miles-common.uninstallerServiceAccountName" . -}}
+{{- if and .Values.rbac.create (eq (include "miles-workbench.serviceAccountName" .) $uninstaller) }}
+{{- fail (printf "serviceAccount.name is %s, which is the fixed name of the account a finished run uninstalls itself as: two ServiceAccounts of that one name cannot both be created, and the workbench account must outlive the runs it launches" $uninstaller) }}
+{{- end }}
+{{- end }}
+
 {{- define "miles-workbench.roleRules" -}}
 - apiGroups: [""]
   resources: ["configmaps", "secrets", "serviceaccounts", "services"]
@@ -40,6 +47,26 @@
 - apiGroups: ["leaderworkerset.x-k8s.io"]
   resources: ["leaderworkersets"]
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+{{- end }}
+{{- end }}
+
+{{- define "miles-workbench.uninstallerRoleRules" -}}
+- apiGroups: [""]
+  resources: ["configmaps", "secrets", "serviceaccounts", "services", "pods"]
+  verbs: ["get", "list", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list", "delete"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "delete"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings"]
+  verbs: ["get", "list", "delete"]
+{{- if .Values.rbac.leaderWorkerSets }}
+- apiGroups: ["leaderworkerset.x-k8s.io"]
+  resources: ["leaderworkersets"]
+  verbs: ["get", "list", "delete"]
 {{- end }}
 {{- end }}
 
