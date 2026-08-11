@@ -10,7 +10,6 @@ from scripts.run_glm5_744b_a40b import (
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
 
 # Basic smoke test that exercises the rollout indexer-topk replay path on
 # GLM-5 (every layer has an indexer). Enabling --use-rollout-indexer-replay
@@ -55,6 +54,7 @@ def _args() -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)
