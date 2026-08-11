@@ -52,7 +52,8 @@ The rest follows from that split:
 | Architecture definition | `MODEL_ARGS` plus a Megatron spec for anything non-standard | HF `config.json`, plus an optional adaptation spec |
 | Checkpoints written | Megatron `torch_dist` | PyTorch Distributed Checkpoint |
 | Activation recompute | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` |
-| CPU offload | Distributed optimizer | `--fsdp-cpu-offload` |
+| Optimizer on CPU | `--optimizer-cpu-offload` | `--fsdp-cpu-offload` |
+| Offload beyond host RAM | `--offload-train-target disk`, `--stream-optimizer-state-to-disk` | Not supported |
 | Attention backend | Chosen by Megatron Core | `--attn-implementation` |
 | LoRA | Supported | Not supported |
 
@@ -60,8 +61,9 @@ The rest follows from that split:
 
 ## Megatron-LM
 
-Configuring this backend is four decisions, in this order: what the architecture is, how to
-split it, where the weights come from, and what you want to hook into.
+Configuring this backend is five decisions, in this order: what the architecture is, how to
+split it, how to fit it in memory, where the weights come from, and what you want to hook
+into.
 
 ### 1. Describing the architecture
 
@@ -110,7 +112,62 @@ set of supported combinations depends on the Megatron Core kernels and model spe
 [Argument Groups](/user-guide/argument-groups#perf-args) lists the flags that belong in
 `PERF_ARGS`.
 
-### 3. Getting weights in and out
+### 3. Fitting it in memory
+
+Parallelism decides how the model is divided; this decides what is allowed to sit in HBM at
+all. Four things compete for it: parameters, gradients, optimizer state, and activations.
+On bf16 training the optimizer state is the heavy one, at 12 bytes per parameter for the
+fp32 master copy plus the two Adam moments, against 2 bytes for a bf16 parameter. Data
+parallelism divides that state, so a run with GPUs to spare may need none of what follows,
+and a run at DP=1 may need all of it.
+
+**Activations** are the first thing to trade, because recompute is cheap and predictable.
+Every recipe passes some form of:
+
+```bash
+--recompute-granularity full --recompute-method uniform --recompute-num-layers 1
+```
+
+**The optimizer step can run on the CPU.** `--optimizer-cpu-offload` keeps the master
+weights and moments in host memory and runs Adam there, and
+`--overlap-cpu-optimizer-d2h-h2d` hides the copies behind compute. Recipes that use it
+usually add `--use-precision-aware-optimizer`, which lets Megatron hold narrower optimizer
+state. Note the interaction with weight rematerialization below: precision-aware on the GPU
+stores masters as int16 remainders inside TE FusedAdam, so there is nothing standalone left
+to rebuild from.
+
+**Under `--colocate`, the whole actor gets out of the way while SGLang generates.** That is
+the `sleep` / `wake_up` pair from the contract at the top of this page, and `--colocate`
+turns both `--offload-train` and `--offload-rollout` on for you.
+
+| Flag | Effect |
+|---|---|
+| `--offload-train` / `--offload-rollout` | Which side is offloaded during the other's phase. Both implied by `--colocate`. |
+| `--offload-rollout-level kv_cache weight` | What the engine gives up while training runs. Both by default. |
+| `--offload-train-target cpu` | Default: the paused actor is backed up in pinned host memory. |
+| `--offload-train-target disk` | For when host RAM cannot hold that copy either: stream it to node-local NVMe instead, through a bounded pinned buffer (`--offload-train-disk-dir`, `--offload-train-disk-chunk-mb`). Megatron backend only. |
+| `--rematerialize-param-from-master-weight` | Drop the actor's parameter backup during rollout and rebuild it from the optimizer's master weights on the next step. Saves 2 bytes per parameter per rank of host memory on bf16 training. Requires the `cpu` target. |
+
+**If the optimizer state does not fit while the step itself runs**, offloading the actor
+cannot help, because pause and resume happen at phase boundaries and everything is resident
+again by the time Adam launches. That case is what streaming addresses:
+
+```bash
+--offload-train --offload-train-target disk \
+--stream-optimizer-state-to-disk \
+--offload-train-disk-dir /scratch/miles_offload
+```
+
+The fp32 masters and Adam moments live in per-bucket files on NVMe, and the step brings in
+one bucket at a time, so peak residency is one bucket instead of the whole state. At the
+default `fp32` moment dtype it is bit-identical to keeping the state on the GPU and costs
+disk traffic every step; `--stream-optimizer-state-moment-dtype bf16` cuts the volume by a
+third. It requires the `disk` target and excludes `--optimizer-cpu-offload`.
+
+[Disk Offload](/advanced/disk-offload) has the full picture for both, including the
+same-topology resume limit, what checkpointing costs, and measured sleep / wake numbers.
+
+### 4. Getting weights in and out
 
 Megatron trains from its own `torch_dist` format: `.distcp` files that are
 parallelism-agnostic, so you can change TP / PP / EP later without re-converting. Convert
@@ -157,7 +214,7 @@ only then is the sentinel deleted, which is why "file gone" means "checkpoint du
 disk". If the job crashes mid-save the sentinel survives, so the request stays pending for
 the next run. Requires `--save`.
 
-### 4. Hooking into the loop
+### 5. Hooking into the loop
 
 Three extension points override Megatron behavior without forking it:
 
@@ -172,101 +229,15 @@ surgically. See [Customization](/user-guide/customization#megatron-hooks).
 
 ### Going deeper: bringing in a new architecture
 
-Skip this unless the model needs a module Megatron Core does not have, such as Qwen3-Next's
-Gated-Delta-Net, Qwen3.5's attention-output gate, or GLM5's expert routing.
-
-The tempting move is to patch Megatron. Miles does something less invasive: it wraps the
-model's **official HuggingFace module** as a black box and embeds it inside Megatron's
-parallel scheduling. You give up TP *inside* that module and get a much shorter
-time-to-train on a new architecture.
-
-**Where the seam is.** Megatron builds a model in two steps: first a layer specification
-(`ModuleSpec` / decoder block spec), then concrete modules instantiated from it. Miles
-rewrites specific submodules in step 1, and three pieces do the work.
-
-1. **A custom decoder spec** decides *which* layers get replaced.
-   `miles_plugins/models/qwen3_next.py` starts from `get_gpt_decoder_block_spec`, then for
-   layers whose HF `layer_types[i] == "linear_attention"` swaps in its own attention:
-
-   ```python
-   transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
-   ...
-   for layer_id in range(num_layers_to_build):
-       if hf_config.layer_types[layer_id + offset] == "linear_attention":
-           layer_specs = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
-           layer_specs.submodules.self_attention = ModuleSpec(module=Attention, params={"args": args})
-           transformer_layer_spec.layer_specs[layer_id] = layer_specs
-   return transformer_layer_spec
-   ```
-
-   It is wired up from the model config with `--spec`:
-
-   ```bash
-   MODEL_ARGS+=(
-      --spec miles_plugins.models.qwen3_next get_qwen3_next_spec
-   )
-   ```
-
-2. **A Megatron-side wrapper** makes the HF module obey Megatron's contract.
-   `miles_plugins/models/hf_attention.py` defines the abstract
-   `HuggingfaceAttention(MegatronModule, ABC)`: it reads the HF config from
-   `args.hf_checkpoint` and supplies the layout adapters the parallelism contract requires,
-   such as sequence parallel and CP zigzag / packed-shard conversion. Concrete attention
-   classes subclass it and embed the real HF module.
-
-3. **A weight bridge** reconciles the two parameter layouts. `miles_plugins/mbridge/` ships
-   one per architecture: class-level `_ATTENTION_MAPPING` / `_MLP_MAPPING` extend the parent
-   bridge with this architecture's layer-name substitutions, and `_weight_to_mcore_format`
-   handles reshapes. See [mbridge](https://github.com/ISEEKYAN/mbridge) for the parents.
-
-**What you keep and what you lose:**
-
-| | Patching Megatron core | Miles wrapper approach |
-|---|---|---|
-| Pipeline parallel | Supported | Supported |
-| Sequence parallel | Supported | Supported |
-| MoE acceleration | Supported | Supported |
-| TP inside the wrapped module | Supported | Not supported |
-
-For attention-only swaps the missing TP is usually fine, because attention is a small share
-of parameters in an MoE model. Prefer native Megatron when the architecture is already
-mature there (Qwen3 standard, GLM4), or when TP inside the new module is critical.
-
-#### The fp32 trap
-
-Some architectures need specific parameters to stay fp32 while the rest of the model is
-bf16. Qwen3.5's `A_log` is the canonical case: round it to bf16 and Megatron-side
-activations drift away from the SGLang-side rollout.
-
-There are **two** places a parameter gets cast, and handling only one leaves a parameter
-whose dtype looks right but whose values were already rounded.
-
-Megatron's `Float16Module` casts every float parameter at wrap time, so tag the parameter:
-
-```python
-from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
-
-class MyModel(nn.Module):
-    def __init__(self, ...):
-        super().__init__(...)
-        self.A_log = nn.Parameter(torch.log(A).to(torch.float32))
-        mark_param_dtype(self.A_log, torch.float32)
-```
-
-`enforce_marked_param_dtypes(model)`, already wired into the training and
-checkpoint-conversion entry points, restores tagged parameters after the rest of the model
-is cast.
-
-The mbridge conversion path is the second cast point, so override it too:
-
-```python
-class Qwen3_5Bridge(Qwen2MoEBridge):
-    def _weight_to_mcore_format(self, mcore_weights_name, hf_weights):
-        if mcore_weights_name.endswith("self_attention.linear_attn.A_log"):
-            assert len(hf_weights) == 1
-            return hf_weights[0].to(dtype=torch.float32).contiguous()
-        return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
-```
+Post-training runs on released checkpoints, so this is rarely your problem. When a model
+does need a module Megatron Core lacks (Qwen3-Next's Gated-Delta-Net, Qwen3.5's
+attention-output gate), Miles embeds the model's official HuggingFace module inside
+Megatron's scheduling rather than patching Megatron: a spec function under
+`miles_plugins/models/` is selected with `--spec <module> <function>`, a bridge under
+`miles_plugins/mbridge/` reconciles the parameter layouts, and parameters that must stay
+fp32 through Megatron's bf16 cast are tagged with `mark_param_dtype` from
+`miles/backends/megatron_utils/fp32_param_utils.py`. The model configs in `scripts/models/`
+that pass `--spec` are the worked examples.
 
 ---
 
@@ -329,6 +300,11 @@ Memory, once the layout is set:
 | `--fsdp-cpu-offload` | Offload parameters, gradients and optimizer state to CPU. The optimizer step runs there. |
 | `--fsdp-cpu-backend gloo` | CPU process-group backend used by the offload path. |
 | `--fsdp-state-dict-cpu-offload` | Collect full state dicts on CPU instead of on device. |
+
+Under `--colocate` this backend also implements `sleep` / `wake_up` by moving the model and
+the optimizer to host memory and back, gated on `--offload-train`. The deeper offload
+targets are Megatron-only: `--offload-train-target disk` asserts the Megatron backend, and
+`--stream-optimizer-state-to-disk` builds on it.
 
 ### 3. Precision
 
