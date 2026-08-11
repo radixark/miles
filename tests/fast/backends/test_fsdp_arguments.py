@@ -1,11 +1,3 @@
-"""CLI parsing for the FSDP argument dataclass.
-
-The invariant under test: what the CLI hands you with no flags passed is
-exactly the ``FSDPArgs`` dataclass defaults. A bare ``action="store_true"``
-used to force every bool to ``False``, silently flipping the two fields whose
-dataclass default is ``True``.
-"""
-
 import dataclasses
 import sys
 

@@ -88,9 +88,6 @@ def parse_fsdp_cli(extra_args_provider=None):
                 help="Disable the FP32 master copy to reduce memory when bit-exact weight sync is not required.",
             )
         elif arg_type is bool:
-            # BooleanOptionalAction keeps the dataclass default (a bare store_true
-            # silently forces False) and adds a --no- form so True defaults stay
-            # switchable from the CLI.
             parser.add_argument(
                 f"--{f.name.replace('_', '-')}", action=argparse.BooleanOptionalAction, default=f.default
             )
