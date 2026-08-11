@@ -15,6 +15,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_approx_kl,
     compute_ess_ratio_contribution,
     compute_gspo_kl,
+    compute_importance_sampling_loss,
     compute_opsm_mask,
     compute_policy_loss,
 )
@@ -177,9 +178,16 @@ def policy_loss_function(
         advantages.new_zeros(()),
     )
 
-    pg_loss, pg_clipfrac = compute_policy_loss(
-        ppo_kl, advantages, args.eps_clip, args.eps_clip_high, getattr(args, "eps_clip_c", None)
-    )
+    if getattr(args, "tinker_unclipped_importance_sampling", False):
+        # Tinker's built-in importance-sampling loss is the unclipped
+        # objective ``-exp(new_logp - old_logp) * advantage``.  It is a
+        # distinct API contract from PPO even though both share the rest of
+        # Miles' policy-loss plumbing.
+        pg_loss, pg_clipfrac = compute_importance_sampling_loss(ppo_kl, advantages)
+    else:
+        pg_loss, pg_clipfrac = compute_policy_loss(
+            ppo_kl, advantages, args.eps_clip, args.eps_clip_high, getattr(args, "eps_clip_c", None)
+        )
 
     if getattr(args, "dump_details", None) is not None:
         from miles.backends.training_utils.debug_dump import maybe_dump_policy_loss_debug

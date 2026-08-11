@@ -462,7 +462,11 @@ class MegatronTrainRayActor(TrainRayActor):
             stack.enter_context(store_get_result)
             data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
             previous_loss_type = self.args.loss_type
+            previous_unclipped_is = getattr(
+                self.args, "tinker_unclipped_importance_sampling", False
+            )
             self.args.loss_type = loss_types[loss_fn]
+            self.args.tinker_unclipped_importance_sampling = loss_fn == "importance_sampling"
             try:
                 # compute_log_prob leaves replay hooks in their forward state.
                 # Match train_actor's required transition before invoking the
@@ -482,6 +486,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
             finally:
                 self.args.loss_type = previous_loss_type
+                self.args.tinker_unclipped_importance_sampling = previous_unclipped_is
         self._heartbeat.bump()
         return {"outcome": outcome.name, "metrics": metrics}
 
