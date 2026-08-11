@@ -60,6 +60,7 @@ class MilesTinkerBackend:
         rows = request["data"]
         loss_fn = request["loss_fn"]
         data: dict[str, Any] = {
+            "dynamic_global_batch_size": len(rows),
             "tokens": [],
             "response_lengths": [],
             "loss_masks": [],
@@ -157,6 +158,7 @@ class MilesTinkerBackend:
 
         slot = self.models[model_id]["slot"]
         data: dict[str, Any] = {
+            "dynamic_global_batch_size": len(batch["data"]),
             "tokens": [],
             "response_lengths": [],
             "loss_masks": [],
