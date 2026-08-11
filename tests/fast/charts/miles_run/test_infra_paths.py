@@ -35,6 +35,7 @@ class TestCodeRepositoryOverrides:
             {"name": "shared-storage", "mountPath": "/root/miles", "subPath": "myuser/miles"},
             {"name": "shared-storage", "mountPath": "/root/Megatron-LM", "subPath": "myuser/Megatron-LM"},
             {"name": "shared-storage", "mountPath": "/sgl-workspace/sglang", "subPath": "myuser/sglang"},
+            {"name": "uninstall-manifest", "mountPath": "/etc/miles-uninstall", "readOnly": True},
         ]
 
     def test_every_overridden_repo_joins_the_python_path_by_its_in_image_location(self):
@@ -50,6 +51,7 @@ class TestCodeRepositoryOverrides:
         assert [mount["mountPath"] for mount in container["volumeMounts"]] == [
             "/cluster-storage",
             "/root/Megatron-LM",
+            "/etc/miles-uninstall",
         ]
         assert environment(container)["PYTHONPATH"] == "/root/Megatron-LM"
 
@@ -59,6 +61,7 @@ class TestCodeRepositoryOverrides:
 
         assert [mount["mountPath"] for mount in container["volumeMounts"]] == [
             "/cluster-storage",
+            "/etc/miles-uninstall",
         ]
         assert environment(container) == ORCHESTRATOR_IDENTITY
 

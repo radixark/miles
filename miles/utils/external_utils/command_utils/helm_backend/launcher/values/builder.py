@@ -17,6 +17,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
     MooncakeInfo,
 )
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.pool_entry import build_entry
+from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
 from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseWorkerSpec, NamedHostAndPorts, ServeWorkerSpec
 
@@ -59,6 +60,8 @@ def _object_names(release: str) -> ObjectNames:
     return ObjectNames(
         orchestrator=naming.component_name(release, naming.ORCHESTRATOR_COMPONENT),
         mooncake_master=MooncakeInfo.master_object_name(release),
+        uninstall=RunNames.uninstall_job(release=release),
+        uninstall_manifest=RunNames.uninstall_manifest(release=release),
     )
 
 

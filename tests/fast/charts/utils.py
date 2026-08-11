@@ -16,6 +16,8 @@ SHARED_INFRA_SCHEMA_PATH = CHARTS_DIR / "shared-infra.schema.json"
 RUN_CHART_DIR = CHARTS_DIR / "miles-run"
 RUN_RELEASE_NAME = "myrun"
 RUN_ORCHESTRATOR_NAME = f"{RUN_RELEASE_NAME}-miles-run-orchestrator"
+RUN_UNINSTALL_JOB_NAME = f"{RUN_RELEASE_NAME}-miles-run-uninstall"
+RUN_UNINSTALL_MANIFEST_NAME = f"{RUN_RELEASE_NAME}-miles-run-uninstall-manifest"
 RUN_ID = "260101-000000-000"
 RUN_STATE_FILE = f"/cluster-storage/miles_data/miles-runs/{RUN_ID}/state/orchestrator.state"
 DEFAULT_ORCHESTRATOR_COMMAND = ["python", "train.py"]
@@ -169,6 +171,12 @@ def run_helm_template_run(*args: str) -> subprocess.CompletedProcess:
             f"run.stateFile={RUN_STATE_FILE}",
             "--set",
             f"run.objectNames.orchestrator={RUN_ORCHESTRATOR_NAME}",
+            "--set",
+            f"run.objectNames.mooncakeMaster={RUN_RELEASE_NAME}-miles-run-mooncake-master",
+            "--set",
+            f"run.objectNames.uninstall={RUN_UNINSTALL_JOB_NAME}",
+            "--set",
+            f"run.objectNames.uninstallManifest={RUN_UNINSTALL_MANIFEST_NAME}",
             "--set-json",
             f"run.orchestrator.command={json.dumps(DEFAULT_ORCHESTRATOR_COMMAND)}",
             *args,
