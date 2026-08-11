@@ -334,12 +334,12 @@ class TestStartApiServerRegistration:
         registry = self._start(
             monkeypatch,
             ft_components=["train"],
-            cell_ids=["trainer-actor-0"],
+            cell_ids=["trainer-engine-actor-0"],
             actor_cells=[MockTrainerCell(phase="Running")],
         )
 
         cells = await registry.list_cells()
-        assert [cell.metadata.name for cell in cells] == ["trainer-actor-0"]
+        assert [cell.metadata.name for cell in cells] == ["trainer-engine-actor-0"]
         assert cells[0].status.phase == "Running"
 
     @pytest.mark.asyncio

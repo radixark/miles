@@ -123,7 +123,7 @@ def specs_trainer(args) -> list[ServeWorkerSpec]:
 
 
 def compute_trainer_pool_id(role: str) -> str:
-    return f"trainer-{role}"
+    return f"trainer-engine-{role}"
 
 
 def compute_trainer_num_cells(args, *, role: str) -> int:

@@ -2264,7 +2264,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help="JSON array of fault injection actions. Each action: "
                 '{"at_rollout": N, "action": "stop_cell_at_end"|"start_cell_at_end"|"crash_before_allreduce", '
-                '"cell_id": "trainer-actor-2", "rank": 0, "attempt": 0}. '
+                '"cell_id": "trainer-engine-actor-2", "rank": 0, "attempt": 0}. '
                 "cell_id is the full cell id (spec name plus cell index) of the target cell.",
             )
             parser.add_argument(
