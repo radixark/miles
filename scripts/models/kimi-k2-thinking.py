@@ -1,7 +1,7 @@
 from model_args_utils import moe_layer_freq
 
 
-def model_args(nlayers: int = 61, first_k_dense_replace: int = 1) -> str:
+def model_args(nlayers: int = 61, first_k_dense_replace: int = 1, beta_fast: int = 1) -> str:
     return (
         "--disable-bias-linear "
         f"--num-layers {nlayers} "
@@ -11,6 +11,7 @@ def model_args(nlayers: int = 61, first_k_dense_replace: int = 1) -> str:
         "--kv-channels 64 "
         "--normalization RMSNorm "
         "--position-embedding-type rope "
+        "--rope-type yarn "
         "--norm-epsilon 1e-5 "
         "--swiglu "
         "--untie-embeddings-and-output-weights "
@@ -24,6 +25,9 @@ def model_args(nlayers: int = 61, first_k_dense_replace: int = 1) -> str:
         "--qk-layernorm "
         "--rotary-scaling-factor 64.0 "
         "--rotary-base 50000 "
+        "--original-max-position-embeddings 4096 "
+        f"--beta-fast {beta_fast} "
+        "--beta-slow 1 "
         "--mscale 1.0 "
         "--mscale-all-dim 1.0 "
         "--attention-softmax-in-fp32 "

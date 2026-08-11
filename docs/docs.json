@@ -68,7 +68,7 @@
           ],
           "expanded": false
          },
-         "models/deepseek/deepseek"
+         "models/deepseek/deepseek-v3-2"
         ],
         "expanded": false
        },
@@ -268,9 +268,9 @@
       "root": "developer/index",
       "pages": [
        "developer/contributor-guide",
-       "developer/debug",
-       "developer/migration",
        "developer/architecture",
+       "developer/versions",
+       "developer/debug",
        "developer/experimental-features"
       ]
      }
@@ -295,14 +295,32 @@
      {
       "group": "Resources",
       "pages": [
-       "faq",
-       "blog/index"
+       "blog/index",
+       "subscribe"
+      ]
+     }
+    ]
+   },
+   {
+    "tab": "FAQ",
+    "groups": [
+     {
+      "group": "FAQ",
+      "pages": [
+       "faq"
       ]
      }
     ]
    }
   ]
  },
+ "redirects": [
+  {
+   "source": "/models/deepseek/deepseek",
+   "destination": "/models/deepseek/deepseek-v3-2",
+   "permanent": true
+  }
+ ],
  "background": {
   "dark": "#0c0b0a",
   "light": "#faf7f4"

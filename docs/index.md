@@ -46,7 +46,7 @@ needed to run RL at trillion-parameter scale.
 ### Design, support & user experience
 
 - **Coding-agent sandboxes and examples.** [Harbor](/user-guide/harbor),
-  [OpenEnv](/user-guide/openenv), and [NeMo-Gym](/user-guide/nemo-gym) integrations,
+  [OpenEnv](/user-guide/openenv), and [NeMo Gym](/user-guide/nemo-gym) integrations,
   running local CPU sandboxes or per-episode sandboxes on
   [Daytona](https://www.daytona.io/), [E2B](https://e2b.dev/), and self-hosted
   [AgentENV](https://github.com/kvcache-ai/AgentENV) — see
@@ -75,7 +75,7 @@ of the box, including older generations of the families below.
 
 | Family | Models |
 |---|---|
-| **DeepSeek** | [DeepSeek-V4 Pro](/models/deepseek/deepseek-v4-pro)<br/>[DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash) |
+| **DeepSeek** | [DeepSeek-V4 Pro](/models/deepseek/deepseek-v4-pro)<br/>[DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash)<br/>[DeepSeek-V3.2](/models/deepseek/deepseek-v3-2) |
 | **Thinking Machines** | [Inkling](/models/thinkingmachines/inkling)<br/>[Inkling-Small](/models/thinkingmachines/inkling-small) |
 | **Qwen** | [Qwen3.6 MoE](/models/qwen/qwen3-6-moe)<br/>[Qwen3.6](/models/qwen/qwen3-6)<br/>[Qwen3.5-35B-A3B](/models/qwen/qwen3-5-moe)<br/>[Qwen3.5-4B / 9B / 27B](/models/qwen/qwen3-5) |
 | **GLM** | [GLM-5.2](/models/glm/glm5-2)<br/>[GLM-5.1](/models/glm/glm5)<br/>[GLM-5](/models/glm/glm5)<br/>[GLM-4.7-Flash](/models/glm/glm4-7-flash) |
