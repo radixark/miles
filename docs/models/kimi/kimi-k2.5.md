@@ -2,7 +2,7 @@
 title: Kimi K2.5 / K2.6
 description: Launch recipe for Kimi-K2.5, running full-parameter GRPO on 32 × 8 H200 with an INT4 actor and a BF16 reference.
 ---
-The reference launcher is [`scripts/run_kimi_k25.py`](https://github.com/radixark/miles/blob/main/scripts/run_kimi_k25.py), which loads the shared model definition from `scripts/models/kimi-k2-thinking.py`.
+The reference launcher is [`scripts/run_kimi_k25.py`](https://github.com/radixark/miles/blob/main/scripts/run_kimi_k25.py), which loads the K2.5 model definition from `scripts/models/kimi-k25.py`.
 
 ## 1. Model Introduction
 
@@ -34,14 +34,12 @@ The reference launcher is [`scripts/run_kimi_k25.py`](https://github.com/radixar
 
 ## 2. Supported Variants
 
-The K2.5 launcher expects two checkpoints under `--model-dir` (default `/root/models`): the published INT4 actor checkpoint and a BF16 reference dequantized from it.
+The K2.5 launcher expects two checkpoints under `$BASE_DIR`: an INT4 actor checkpoint and a BF16 reference checkpoint.
 
 | Role | Checkpoint | Loaded with |
 |---|---|---|
-| Actor (trained) | `<model-dir>/Kimi-K2.5` | `--hf-checkpoint` |
-| Reference | `<model-dir>/Kimi-K2.5-bf16` | `--ref-load` |
-
-The `prepare` subcommand downloads the first and produces the second with `tools/convert_kimi_int4_to_bf16.py`.
+| Actor (trained) | `$BASE_DIR/Kimi-K2.5-int4` | `--hf-checkpoint` |
+| Reference | `$BASE_DIR/Kimi-K2.5-bf16` | `--ref-load` |
 
 Both share the K2 family's 1 T-total / 32 B-active MoE + MLA shape inherited from Kimi-K2-Thinking.
 
@@ -49,13 +47,14 @@ Both share the K2 family's 1 T-total / 32 B-active MoE + MLA shape inherited fro
 
 ### 3.1 Prerequisites
 
-Export the ray head address before launch:
+The launcher references two environment variables but never sets them, so you should export them yourself before launch:
 
 ```bash
+export BASE_DIR=<shared FS path, reachable from every node>
 export MASTER_ADDR=<head node IP>
 ```
 
-Everything else is a Typer flag: `--model-dir` (default `/root/models`) for the two K2.5 checkpoints from §2, `--data-dir` (default `/root/datasets`) for the DAPO-Math-17k training set (`dapo-math-17k/dapo-math-17k.jsonl`) and the AIME-2024 eval set (`aime-2024/aime-2024.jsonl`), and `--output-dir` (default `/root/shared_data`) for what the run writes. On a multi-node run all three must be on a shared FS. `prepare` populates the first two for you.
+The `$BASE_DIR` directory must already hold the two K2.5 checkpoints from §2 alongside the DAPO-Math-17k training set (`dapo-math-17k/dapo-math-17k.jsonl`) and the AIME-2024 eval set (`aime-2024.jsonl`).
 
 ### 3.2 One-line launch
 
@@ -82,15 +81,17 @@ ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_
 
 ## 4. Script breakdown
 
-The launcher builds the flags it passes to `train.py` as one f-string group per concern. The model shape comes from `scripts/models/kimi-k2-thinking.py`, which sets the MLA latent ranks (`q_lora_rank=1536`, `kv_lora_rank=512`, `qk_head_dim=128`, `qk_pos_emb_head_dim=64`, `v_head_dim=128`), the MoE routing (384 experts, top-8, sigmoid pre-softmax scoring, FP32 router, `--moe-router-topk-scaling-factor 2.827`), and RoPE (`--rotary-base 50000`, `--rotary-scaling-factor 64.0`). The K2.5 recipe then layers the following on top:
+The launcher builds the flags it passes to `train.py` as one f-string group per concern. The model shape comes from `scripts/models/kimi-k25.py`.
 
-- **Checkpoints** — the dual checkpoint (INT4 actor via `--hf-checkpoint`, BF16 reference via `--ref-load`) together with `--megatron-to-hf-mode bridge` and `--model-name kimi_k25`.
-- **Rollout and eval** — GRPO sampling and periodic AIME evaluation (covered in §5.2).
-- **Parallelism** — the layout and recomputation (§5.1).
-- **Algorithm and optimizer** — GRPO plus CPU-offloaded Adam (§5.2, §5.4).
-- **SGLang** — the colocated rollout engine (§5.3).
+That definition sets the MLA latent ranks (`q_lora_rank=1536`, `kv_lora_rank=512`, `qk_head_dim=128`, `qk_pos_emb_head_dim=64`, `v_head_dim=128`), the MoE routing (384 experts, top-8, sigmoid pre-softmax scoring, FP32 router, `--moe-router-topk-scaling-factor 2.827`), and YaRN RoPE (`--rope-type yarn`, `--rotary-base 50000`, `--rotary-scaling-factor 64.0`, `--original-max-position-embeddings 4096`, `--beta-fast 32`, `--beta-slow 1`). The K2.5 recipe then layers the following on top:
 
-The job runs colocated (`--colocate`) across `--num-nodes` nodes, 32 by default (`--actor-num-nodes 32 --actor-num-gpus-per-node 8`), with `--update-weight-buffer-size 2147483648`.
+- **`CKPT_ARGS`** wires up the dual checkpoint (INT4 actor via `--hf-checkpoint`, BF16 reference via `--ref-load`) together with `--megatron-to-hf-mode bridge` and `--model-name kimi_k25`.
+- **`ROLLOUT_ARGS`** and **`EVAL_ARGS`** configure GRPO sampling and periodic AIME evaluation (covered in §5.2).
+- **`PERF_ARGS`** sets the parallelism layout and recomputation (§5.1).
+- **`GRPO_ARGS`** and **`OPTIMIZER_ARGS`** set the algorithm and CPU-offloaded Adam (§5.2, §5.4).
+- **`SGLANG_ARGS`** configures the colocated rollout engine (§5.3).
+
+The job runs colocated (`--colocate`) across 32 nodes (`--actor-num-nodes 32 --actor-num-gpus-per-node 8`) with `--update-weight-buffer-size $((4*512*1024*1024))`.
 
 ## 5. Example Recipe Configuration
 
@@ -124,27 +125,28 @@ The recipe uses GRPO with KL and entropy losses disabled:
 Rollouts draw from DAPO-Math-17k and score with the `deepscaler` reward:
 
 ```bash
---prompt-data <data-dir>/dapo-math-17k/dapo-math-17k.jsonl
+--prompt-data $BASE_DIR/dapo-math-17k/dapo-math-17k.jsonl
 --input-key prompt --label-key label
 --apply-chat-template
 --rollout-shuffle --balance-data
 --rm-type deepscaler
 
---num-rollout 3000
+--num-rollout 20
 --rollout-batch-size 32
 --n-samples-per-prompt 8
 --rollout-max-response-len 16384
 --rollout-temperature 1
 
 --global-batch-size 256
+--filter-zero-reward-samples
 --use-dynamic-global-batch-size
 ```
 
-Evaluation is off by default; `--enable-eval` runs it every 20 steps against AIME-2024, sampling 16 responses per prompt:
+Evaluation runs every 20 steps against AIME-2024, sampling 16 responses per prompt:
 
 ```bash
 --eval-interval 20
---eval-prompt-data aime <data-dir>/aime-2024/aime-2024.jsonl
+--eval-prompt-data aime $BASE_DIR/aime-2024.jsonl
 --n-samples-per-eval-prompt 16
 --eval-max-response-len 16384
 --eval-top-p 1
@@ -155,15 +157,15 @@ Evaluation is off by default; `--enable-eval` runs it every 20 steps against AIM
 The rollout engine is colocated with training, spanning 8 GPUs per engine with 8-way expert parallelism:
 
 ```bash
---rollout-num-gpus-per-engine 8
---sglang-mem-fraction-static 0.7
---sglang-ep-size 8
---sglang-server-concurrency 1024
---sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128
---use-rollout-routing-replay
+SGLANG_ARGS=(
+   --rollout-num-gpus-per-engine 8
+   --sglang-mem-fraction-static 0.7
+   --sglang-ep-size 8
+   --sglang-server-concurrency 1024
+   --sglang-cuda-graph-bs 1 2 4 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128
+   --use-rollout-routing-replay
+)
 ```
-
-The engine size and expert-parallel size both follow `--num-gpus-per-node`.
 
 The `--use-rollout-routing-replay` flag replays the rollout-time MoE routing decisions during training so the two stages stay consistent. On the Megatron side, attention uses the Flash backend (`--attention-backend flash`).
 

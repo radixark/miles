@@ -94,4 +94,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --colocate
   --actor-num-nodes 1
   --actor-num-gpus-per-node 8
-  --num-gpus-per-node 8   
+  --num-gpus-per-node 8
+  --use-miles-dashboard
+  --dump-details /root/shared_data/dump_details   
