@@ -26,7 +26,7 @@ def _no_keep_alive(monkeypatch):
 @pytest.fixture(autouse=True)
 def slept(monkeypatch):
     waits = []
-    monkeypatch.setattr(orchestrator_wrapper.time, "sleep", lambda seconds: waits.append(seconds))
+    monkeypatch.setattr(orchestrator_wrapper, "sleep", lambda seconds: waits.append(seconds))
     return waits
 
 
@@ -195,3 +195,150 @@ class TestMain:
         orchestrator_wrapper.main(["--state-file", str(state_file), "--", sys.executable, "-c", "pass"])
 
         assert state_file.is_file()
+
+
+class TestUninstallJob:
+    def test_creates_the_job_as_soon_as_the_run_has_a_verdict(self, tmp_path, kubectl_calls):
+        """The wrapper could die during the grace period, so the job carries the delay and is created at once."""
+        state_file = tmp_path / "orchestrator.state"
+
+        orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
+
+    def test_creates_the_job_for_a_failed_run_too(self, tmp_path, kubectl_calls):
+        """A failed run holds just as many gpus as a successful one, and its logs stay in the run directory."""
+        state_file = tmp_path / "orchestrator.state"
+
+        orchestrator_wrapper.main(
+            [
+                "--state-file",
+                str(state_file),
+                "--uninstall-manifest",
+                MANIFEST,
+                "--",
+                sys.executable,
+                "-c",
+                "raise SystemExit(7)",
+            ]
+        )
+
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
+
+    def test_creates_the_job_when_the_script_could_not_be_launched(self, tmp_path, kubectl_calls):
+        """That verdict ends the run as surely as a failing script, and the release must go the same way."""
+        state_file = tmp_path / "orchestrator.state"
+
+        orchestrator_wrapper.main(
+            [
+                "--state-file",
+                str(state_file),
+                "--uninstall-manifest",
+                MANIFEST,
+                "--",
+                str(tmp_path / "not-an-executable"),
+            ]
+        )
+
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
+
+    def test_never_creates_the_job_when_the_pod_is_asked_to_stop(self, tmp_path, kubectl_calls):
+        """A relaunch SIGTERMs the orchestrator it replaces, and uninstalling then would tear down the new run."""
+        state_file = tmp_path / "orchestrator.state"
+        script = "import os, signal, time; os.kill(os.getppid(), signal.SIGTERM); time.sleep(30)"
+
+        with pytest.raises(SystemExit):
+            orchestrator_wrapper.main(
+                ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", script]
+            )
+
+        assert kubectl_calls == []
+
+    def test_creates_the_job_a_restarted_pod_found_no_trace_of(self, tmp_path, kubectl_calls):
+        """The wrapper may have written its verdict and then died before creating the job."""
+        state_file = tmp_path / "orchestrator.state"
+        orchestrator_wrapper.main(["--state-file", str(state_file), "--", sys.executable, "-c", "raise SystemExit(4)"])
+
+        code = orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert code == 4
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
+
+    def test_creates_the_job_for_a_run_a_restart_cut_short(self, tmp_path, kubectl_calls):
+        """A pod that restarted mid-training reports a failure, and that failure ends the release too."""
+        state_file = tmp_path / "orchestrator.state"
+        orchestrator_state.OrchestratorState(status=orchestrator_state.OrchestratorStatus.STARTED).write(state_file)
+
+        code = orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert code == 1
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
+
+    def test_treats_a_job_someone_already_created_as_success(self, tmp_path, monkeypatch):
+        """A second attempt is normal after a restart, and it must not turn a finished run into a failure."""
+        state_file = tmp_path / "orchestrator.state"
+        refusal = _refusal('Error from server (AlreadyExists): jobs "u" already exists')
+        monkeypatch.setattr(Kubectl, "_run", staticmethod(lambda arguments, **kwargs: refusal))
+
+        code = orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert code == 0
+
+    def test_keeps_the_run_alive_when_every_attempt_is_refused(self, tmp_path, monkeypatch, slept):
+        """The run's own outcome is what the launcher waits for; a leaked release is the smaller problem."""
+        state_file = tmp_path / "orchestrator.state"
+        refusal = _refusal("Error from server: forbidden")
+        monkeypatch.setattr(Kubectl, "_run", staticmethod(lambda arguments, **kwargs: refusal))
+
+        code = orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert code == 0
+        assert _state(state_file)["exit_code"] == 0
+        assert slept == list(orchestrator_wrapper._UNINSTALL_JOB_RETRY_SLEEPS)
+
+    def test_retries_a_create_the_cluster_refused_once(self, tmp_path, monkeypatch, slept):
+        """An apiserver that was busy for a moment must not cost the release its only cleaner."""
+        state_file = tmp_path / "orchestrator.state"
+        answers = [_refusal("Error from server: try again"), subprocess.CompletedProcess(args=[], returncode=0)]
+        monkeypatch.setattr(Kubectl, "_run", staticmethod(lambda arguments, **kwargs: answers.pop(0)))
+
+        code = orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert (code, answers) == (0, [])
+        assert slept == [orchestrator_wrapper._UNINSTALL_JOB_RETRY_SLEEPS[0]]
+
+    def test_stops_retrying_as_soon_as_the_job_is_there(self, tmp_path, monkeypatch, slept):
+        """A retry that finds the job someone else created has nothing left to do."""
+        state_file = tmp_path / "orchestrator.state"
+        answers = [
+            _refusal("Error from server: try again"),
+            _refusal('Error from server (AlreadyExists): jobs "u" already exists'),
+        ]
+        monkeypatch.setattr(Kubectl, "_run", staticmethod(lambda arguments, **kwargs: answers.pop(0)))
+
+        code = orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert (code, answers) == (0, [])
+        assert slept == [orchestrator_wrapper._UNINSTALL_JOB_RETRY_SLEEPS[0]]
+
+    def test_touches_no_cluster_when_no_manifest_was_rendered(self, tmp_path, kubectl_calls):
+        """A cluster with no account for it renders no manifest, and the run must not try to uninstall itself."""
+        state_file = tmp_path / "orchestrator.state"
+
+        orchestrator_wrapper.main(["--state-file", str(state_file), "--", sys.executable, "-c", "pass"])
+
+        assert kubectl_calls == []
