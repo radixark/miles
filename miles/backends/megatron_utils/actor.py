@@ -449,7 +449,11 @@ class MegatronTrainRayActor(TrainRayActor):
         """Accumulate a Tinker batch that already contains token advantages."""
         if not is_multi_lora_enabled(self.args):
             raise RuntimeError("external forward/backward requires multi-LoRA")
-        loss_types = {"cross_entropy": "sft_loss", "importance_sampling": "policy_loss"}
+        loss_types = {
+            "cross_entropy": "sft_loss",
+            "importance_sampling": "policy_loss",
+            "ppo": "policy_loss",
+        }
         if loss_fn not in loss_types:
             raise ValueError(f"unsupported Tinker loss_fn: {loss_fn}")
 

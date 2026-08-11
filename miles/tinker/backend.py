@@ -24,6 +24,11 @@ def _tokens(model_input: dict[str, Any]) -> list[int]:
     return [token for chunk in chunks for token in chunk.get("tokens", [])]
 
 
+def _float_tensor(values: list[Any]) -> dict[str, Any]:
+    data = [float(value) for value in values]
+    return {"data": data, "dtype": "float32", "shape": [len(data)]}
+
+
 class MilesTinkerBackend:
     """Translate Tinker requests into collective Miles actor calls.
 
@@ -74,7 +79,7 @@ class MilesTinkerBackend:
             # Miles batches carry the full sequence and shift internally, while
             # Tinker carries input tokens plus a same-length next-token target.
             tokens = [*input_tokens, int(targets[-1])]
-            if loss_fn == "importance_sampling":
+            if loss_fn in {"importance_sampling", "ppo"}:
                 token_weights = [float(x) for x in _tensor_data(inputs.get("advantages"))]
             else:
                 if targets[:-1] != input_tokens[1:]:
@@ -96,12 +101,12 @@ class MilesTinkerBackend:
             data["truncated"].append(0)
             data["sample_indices"].append(index)
             data["adapter_slots"].append(slot)
-            if loss_fn == "importance_sampling":
+            if loss_fn in {"importance_sampling", "ppo"}:
                 advantages.append(response_weights)
                 rollout_log_probs.append(
                     [float(x) for x in _tensor_data(inputs.get("logprobs"))][-response_length:]
                 )
-        if loss_fn == "importance_sampling":
+        if loss_fn in {"importance_sampling", "ppo"}:
             data["advantages"] = advantages
             data["rollout_log_probs"] = rollout_log_probs
         return data
@@ -109,10 +114,15 @@ class MilesTinkerBackend:
     async def forward_backward(self, model_id: str, batch: dict[str, Any]) -> dict[str, Any]:
         if model_id not in self.models:
             raise ValueError(f"unknown model_id {model_id}")
-        if batch["loss_fn"] not in {"cross_entropy", "importance_sampling"}:
+        if batch["loss_fn"] not in {"cross_entropy", "importance_sampling", "ppo"}:
             raise ValueError(f"unsupported Tinker loss_fn: {batch['loss_fn']}")
         data = self._training_data(model_id, batch)
         refs = split_train_data_by_dp(self.args, data, self.args.multi_lora_dp_size)
+        self.request_seq += 1
+        # Tinker returns the new-policy token logprobs from the same logical
+        # forward/backward request. Miles' training primitive does not expose
+        # those tensors yet, so score immediately before accumulating grads.
+        forward_results = await self.actor_group.external_forward(self.request_seq, refs)
         self.request_seq += 1
         rank_results = await self.actor_group.external_forward_backward(self.request_seq, refs, batch["loss_fn"])
         metrics: dict[str, float] = {}
@@ -123,9 +133,19 @@ class MilesTinkerBackend:
                 if isinstance(value, (int, float)):
                     metrics[key] = float(value)
         self.accumulated_samples[model_id] += len(batch["data"])
+        ordered: list[Any | None] = [None] * len(batch["data"])
+        for result in forward_results:
+            for index, log_probs in zip(
+                result.get("sample_indices", []), result.get("log_probs", []), strict=True
+            ):
+                if hasattr(log_probs, "detach"):
+                    log_probs = log_probs.detach().cpu().tolist()
+                ordered[int(index)] = log_probs
+        if any(value is None for value in ordered):
+            raise RuntimeError("Miles forward_backward did not return logprobs for every datum")
         return {
             "loss_fn_output_type": batch["loss_fn"],
-            "loss_fn_outputs": [{} for _ in batch["data"]],
+            "loss_fn_outputs": [{"logprobs": _float_tensor(value)} for value in ordered],
             "metrics": metrics,
         }
 
@@ -173,7 +193,7 @@ class MilesTinkerBackend:
             raise RuntimeError("Miles forward did not return logprobs for every datum")
         return {
             "loss_fn_output_type": batch["loss_fn"],
-            "loss_fn_outputs": [{"logprobs": value} for value in ordered],
+            "loss_fn_outputs": [{"logprobs": _float_tensor(value)} for value in ordered],
             "metrics": {},
         }
 
