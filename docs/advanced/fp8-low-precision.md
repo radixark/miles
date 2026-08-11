@@ -228,9 +228,8 @@ python tools/convert_hf_to_nvfp4.py \
 #### Advanced: dequantized backward
 
 Dequantized backward keeps the backward GEMMs in BF16 but uses BF16
-dequantizations of the NVFP4 operands produced during the forward pass. This
-more closely follows the quantized forward path than reusing the original BF16
-operands. See the humans& discussion of
+dequantizations of the NVFP4 operands produced during the forward pass.
+See the humans& discussion of
 [gradient stability](https://humansand.ai/blog/nvfp4-rl#improving-gradient-stability)
 for the motivation and ablations.
 
@@ -245,15 +244,14 @@ export NVTE_BACKWARD_OVERRIDE=dequantized
 #### Advanced: four-over-six
 
 Four-over-six (4/6) optionally chooses, for each NVFP4 block, whether mapping
-the largest FP4 magnitude to 4 or 6 produces less quantization error. The base
-NVFP4 recipe should be validated before enabling it. See the humans&
+the largest FP4 magnitude to 4 or 6 produces less quantization error.
+See the humans&
 [four-over-six analysis](https://humansand.ai/blog/nvfp4-rl#four-over-six-for-rl-weights-and-activations)
 and the original paper,
 [Four Over Six: More Accurate NVFP4 Quantization with Adaptive Block Scaling](https://arxiv.org/abs/2512.02010),
 for the algorithm and its accuracy motivation.
 
-The checkpoint converter, Transformer Engine training path, and FlashInfer
-rollout path must use matching settings:
+An example setting is:
 
 ```bash
 export NVTE_NVFP4_4OVER6=all
@@ -266,12 +264,9 @@ export NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
 export FLASHINFER_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
 ```
 
-Keep the base recipe's exact-quantization settings enabled as well. The
-trainer and rollout must make the same block-level scaling choice bit for bit.
-
 ## Fine-grained BF16 exceptions
 
-The same tensor-level precision choice must be enforced during checkpoint
+Miles supports per-layer precision configuration across checkpoint
 conversion, Megatron training, SGLang rollout, and live weight export.
 
 | Control | Purpose |
