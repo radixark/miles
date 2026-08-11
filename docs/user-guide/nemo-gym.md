@@ -20,20 +20,15 @@ loss masks — see [Rollout Endpoints](/user-guide/rollout-endpoints)); NeMo-Gym
 grades the episode itself and the grade enters training through a custom
 reward hook reading `sample.metadata["reward"]`.
 
-The per-request `policy_base_url` override is proposed upstream in
-[NVIDIA-NeMo/Gym#2166](https://github.com/NVIDIA-NeMo/Gym/pull/2166); until it
-merges, run the NeMo-Gym server from that PR's branch (upstream main plus one
-small commit pair).
-
 ## Try it
 
 The maintained recipe is **SWE-bench GRPO with mini-swe-agent** in
 [`examples/experimental/nemo-gym`](https://github.com/radixark/miles/tree/main/examples/experimental/nemo-gym).
 In short:
 
-1. **Environment side** — on any docker-capable host, clone NeMo-Gym (the
-   PR branch above until #2166 merges) and start the `mini_swe_agent_2`
-   responses-API agent server with the docker sandbox provider config.
+1. **Environment side** — on any docker-capable host, clone NeMo-Gym `main`
+   (>= `fcca3a8`) and start the `mini_swe_agent_2` responses-API agent server
+   with the docker sandbox provider config.
 2. **Data** — convert SWE-bench Verified to Miles prompt data with
    `download_and_process_data.py`; the task instance rides in each sample's
    `metadata`.
