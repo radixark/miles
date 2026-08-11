@@ -129,6 +129,7 @@
         "group": "Kimi",
         "root": "models/kimi/index",
         "pages": [
+         "models/kimi/kimi-k3",
          "models/kimi/kimi-k2.5",
          "models/kimi/kimi-k2",
          "models/kimi/moonlight"
@@ -147,7 +148,16 @@
           ],
           "expanded": false
          },
-         "models/nemotron/nemotron-3-super"
+         "models/nemotron/nemotron-3-super",
+         "models/nemotron/nemotron-3-ultra"
+        ],
+        "expanded": false
+       },
+       {
+        "group": "Gemma",
+        "root": "models/gemma/index",
+        "pages": [
+         "models/gemma/gemma-4"
         ],
         "expanded": false
        },
@@ -267,19 +277,6 @@
     ]
    },
    {
-    "tab": "Platforms",
-    "groups": [
-     {
-      "group": "Platforms",
-      "root": "platforms/index",
-      "pages": [
-       "platforms/nvidia",
-       "platforms/amd"
-      ]
-     }
-    ]
-   },
-   {
     "tab": "Resources",
     "groups": [
      {
@@ -308,6 +305,21 @@
   {
    "source": "/models/deepseek/deepseek",
    "destination": "/models/deepseek/deepseek-v3-2",
+   "permanent": true
+  },
+  {
+   "source": "/platforms/index",
+   "destination": "/getting-started/installation",
+   "permanent": true
+  },
+  {
+   "source": "/platforms/nvidia",
+   "destination": "/getting-started/installation",
+   "permanent": true
+  },
+  {
+   "source": "/platforms/amd",
+   "destination": "/getting-started/installation",
    "permanent": true
   },
   {

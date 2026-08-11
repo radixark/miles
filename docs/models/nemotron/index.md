@@ -11,6 +11,7 @@ Miles supports NVIDIA's Nemotron-3 line: a Mamba + Attention hybrid that, in the
 | Nemotron-3-Nano | 4 B / 4 B (dense) | `nvidia/Nemotron-3-Nano-4B` | [nemotron-3-nano](/models/nemotron/nemotron-3-nano) |
 | Nemotron-3-Nano MoE | 3 B / 30 B | `nvidia/Nemotron-3-Nano-30B-A3B` | [nemotron-3-nano-moe](/models/nemotron/nemotron-3-nano-moe) |
 | Nemotron-3-Super | 12 B / 120 B (FP8) | `nvidia/Nemotron-3-Super-120B-A12B-FP8` | [nemotron-3-super](/models/nemotron/nemotron-3-super) |
+| Nemotron-3-Ultra | 55 B / 550 B | `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16` | [nemotron-3-ultra](/models/nemotron/nemotron-3-ultra) |
 
 ## Fastest path to train
 
@@ -28,6 +29,7 @@ See the [Nemotron-3-Nano](/models/nemotron/nemotron-3-nano) page for the dense w
 - **Smallest, single-node smoke test** → Nemotron-3-Nano ([nemotron-3-nano](/models/nemotron/nemotron-3-nano)).
 - **Mid-scale hybrid MoE** → Nemotron-3-Nano MoE ([nemotron-3-nano-moe](/models/nemotron/nemotron-3-nano-moe)).
 - **Frontier-scale FP8-native MoE** → Nemotron-3-Super ([nemotron-3-super](/models/nemotron/nemotron-3-super)).
+- **Largest, latent MoE across 16 nodes** → Nemotron-3-Ultra ([nemotron-3-ultra](/models/nemotron/nemotron-3-ultra)).
 
 ## Pairs well with
 
