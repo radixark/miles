@@ -9,7 +9,7 @@ docs/
 ├── docs.json        # Mintlify config: navigation, theme, redirects
 ├── index.md         # Homepage
 ├── getting-started/ models/ user-guide/ advanced/
-├── examples/ developer/ platforms/ blog/
+├── examples/ developer/ platforms/
 └── assets/          # Images and stylesheets
 ```
 
