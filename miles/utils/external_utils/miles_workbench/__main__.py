@@ -7,9 +7,14 @@ from typing import Annotated
 
 import typer
 
-from miles.utils.external_utils.miles_workbench.actions import exec_shell, install, uninstall
+from miles.utils.external_utils.miles_workbench.actions import (
+    collect_diagnosis_command,
+    exec_shell,
+    install,
+    uninstall,
+)
 from miles.utils.external_utils.miles_workbench.naming import DEFAULT_RELEASE, PROGRAM_NAME, run_release_name
-from miles.utils.external_utils.miles_workbench.options import ExecArgs, InstallArgs, ReleaseArgs
+from miles.utils.external_utils.miles_workbench.options import DiagnosisArgs, ExecArgs, InstallArgs, ReleaseArgs
 
 app = typer.Typer(
     name=PROGRAM_NAME,
@@ -18,8 +23,17 @@ app = typer.Typer(
     add_completion=False,
 )
 
-Namespace = Annotated[str, typer.Option("-n", "--namespace", help="Namespace the workbench lives in")]
-Release = Annotated[str, typer.Option("-r", "--release", help="helm release name")]
+
+def _non_empty(value: str) -> str:
+    if not value:
+        raise typer.BadParameter("names a kubernetes object, so an empty value can only be a dangling flag")
+    return value
+
+
+Namespace = Annotated[
+    str, typer.Option("-n", "--namespace", help="Namespace the workbench lives in", callback=_non_empty)
+]
+Release = Annotated[str, typer.Option("-r", "--release", help="helm release name", callback=_non_empty)]
 
 
 @app.command(name="install", help="Check, then helm upgrade --install, then wait for the pod")
@@ -73,6 +87,16 @@ def stop_command(
 @app.command(name="uninstall", help="helm uninstall the release, keeping the namespace")
 def uninstall_command(namespace: Namespace, release: Release = DEFAULT_RELEASE) -> None:
     uninstall(ReleaseArgs(namespace=namespace, release=release))
+
+
+@app.command(name="collect-diagnosis", help="Write pod logs, describes and events into one directory")
+def diagnosis_command(
+    namespace: Namespace,
+    output_dir: Annotated[Path | None, typer.Option(help="Directory the diagnosis directory is created in")] = None,
+    run_dir: Annotated[Path | None, typer.Option(help="Run directory whose latest verdict to copy")] = None,
+) -> None:
+    args = DiagnosisArgs(namespace=namespace, output_dir=output_dir or Path.cwd(), run_dir=run_dir)
+    collect_diagnosis_command(args)
 
 
 def main() -> None:
