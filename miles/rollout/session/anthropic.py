@@ -8,12 +8,24 @@ isolation.
 """
 
 import json
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
 
 class AnthropicProtocolError(ValueError):
     """Raised when an Anthropic request cannot be represented faithfully."""
+
+
+class AnthropicGenerationAbortedError(AnthropicProtocolError):
+    """Raised when Miles aborts an in-flight upstream generation."""
+
+
+_STOP_REASON_MAP = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
+}
 
 
 def _require_mapping(value: Any, name: str) -> Mapping[str, Any]:
@@ -267,3 +279,175 @@ def anthropic_to_openai_request(request: Mapping[str, Any]) -> dict[str, Any]:
     if (tool_choice := _convert_tool_choice(request.get("tool_choice"), tools)) is not None:
         converted["tool_choice"] = tool_choice
     return converted
+
+
+def _response_text_blocks(content: Any) -> list[dict[str, Any]]:
+    if content is None:
+        return []
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if not isinstance(content, list):
+        return [{"type": "text", "text": str(content)}]
+    blocks: list[dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, Mapping) and part.get("type") == "text" and isinstance(text := part.get("text"), str):
+            blocks.append({"type": "text", "text": text})
+    return blocks
+
+
+def _parse_tool_input(arguments: Any) -> dict[str, Any]:
+    try:
+        tool_input = json.loads(arguments) if isinstance(arguments, str) else arguments
+        if not isinstance(tool_input, Mapping):
+            return {}
+        json.dumps(tool_input, allow_nan=False)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return dict(tool_input)
+
+
+def openai_to_anthropic_response(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Convert one complete OpenAI chat-completion response to Anthropic form.
+
+    OpenAI finish reasons do not identify which stop sequence matched, so the
+    Anthropic ``stop_sequence`` field cannot be reconstructed.
+    """
+    response = _require_mapping(response, "response")
+    choice = choices[0] if isinstance(choices := response.get("choices"), list) and choices else {}
+    choice = choice if isinstance(choice, Mapping) else {}
+    finish_reason = choice.get("finish_reason") or "stop"
+    if finish_reason == "abort":
+        raise AnthropicGenerationAbortedError("upstream generation was aborted")
+    message = choice.get("message")
+    message = message if isinstance(message, Mapping) else {}
+
+    content: list[dict[str, Any]] = []
+    if isinstance(reasoning_content := message.get("reasoning_content"), str) and reasoning_content:
+        content.append({"type": "thinking", "thinking": reasoning_content})
+    content.extend(_response_text_blocks(message.get("content")))
+
+    if isinstance(tool_calls := message.get("tool_calls"), list):
+        for raw_tool_call in tool_calls:
+            if not isinstance(raw_tool_call, Mapping):
+                continue
+            if not isinstance(function := raw_tool_call.get("function"), Mapping):
+                continue
+            content.append(
+                {
+                    "type": "tool_use",
+                    "id": str(raw_tool_call.get("id") or f"toolu_{uuid.uuid4().hex}"),
+                    "name": str(function.get("name") or ""),
+                    "input": _parse_tool_input(function.get("arguments", "{}")),
+                }
+            )
+
+    if not content:
+        content.append({"type": "text", "text": ""})
+
+    usage = response.get("usage")
+    usage = usage if isinstance(usage, Mapping) else {}
+    stop_reason = _STOP_REASON_MAP.get(finish_reason, "end_turn")
+    if stop_reason == "end_turn" and any(block["type"] == "tool_use" for block in content):
+        stop_reason = "tool_use"
+    return {
+        "id": f"msg_{uuid.uuid4().hex}",
+        "type": "message",
+        "role": "assistant",
+        "content": content,
+        "model": str(response.get("model") or ""),
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": int(usage.get("prompt_tokens") or 0),
+            "output_tokens": int(usage.get("completion_tokens") or 0),
+        },
+    }
+
+
+def _sse_event(event_type: str, payload: Mapping[str, Any]) -> bytes:
+    data = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    return f"event: {event_type}\ndata: {data}\n\n".encode()
+
+
+def render_anthropic_sse(response: Mapping[str, Any]) -> bytes:
+    """Render a complete Anthropic response as one protocol-valid SSE stream."""
+    message = openai_to_anthropic_response(response)
+    start_message = {**message, "content": [], "stop_reason": None, "stop_sequence": None}
+    start_message["usage"] = {**message["usage"], "output_tokens": 0}
+    events = [_sse_event("message_start", {"type": "message_start", "message": start_message})]
+
+    for index, block in enumerate(message["content"]):
+        block_type = block["type"]
+        if block_type == "text":
+            start_block = {"type": "text", "text": ""}
+            delta = {"type": "text_delta", "text": block["text"]}
+        elif block_type == "thinking":
+            # Miles has reasoning text but no Anthropic signature to replay as a signature_delta.
+            start_block = {"type": "thinking", "thinking": ""}
+            delta = {"type": "thinking_delta", "thinking": block["thinking"]}
+        else:
+            start_block = {"type": "tool_use", "id": block["id"], "name": block["name"], "input": {}}
+            delta = {
+                "type": "input_json_delta",
+                "partial_json": json.dumps(block["input"], ensure_ascii=False, separators=(",", ":")),
+            }
+        events.append(
+            _sse_event(
+                "content_block_start",
+                {"type": "content_block_start", "index": index, "content_block": start_block},
+            )
+        )
+        delta_content = delta.get("text") or delta.get("thinking") or delta.get("partial_json")
+        if block_type == "tool_use" or delta_content:
+            events.append(
+                _sse_event(
+                    "content_block_delta",
+                    {"type": "content_block_delta", "index": index, "delta": delta},
+                )
+            )
+        events.append(_sse_event("content_block_stop", {"type": "content_block_stop", "index": index}))
+
+    events.append(
+        _sse_event(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": message["stop_reason"], "stop_sequence": message["stop_sequence"]},
+                "usage": {"output_tokens": message["usage"]["output_tokens"]},
+            },
+        )
+    )
+    events.append(_sse_event("message_stop", {"type": "message_stop"}))
+    return b"".join(events)
+
+
+def openai_error_to_anthropic(status_code: int, payload: Any) -> dict[str, Any]:
+    """Convert an OpenAI-style error body to Anthropic's error envelope."""
+    message: Any = None
+    if isinstance(payload, Mapping):
+        if isinstance(error := payload.get("error"), Mapping):
+            message = error.get("message")
+        elif isinstance(error, str):
+            message = error
+        if message is None:
+            message = payload.get("message")
+    if not isinstance(message, str) or not message:
+        message = f"Upstream request failed with status {status_code}"
+
+    if status_code == 401:
+        error_type = "authentication_error"
+    elif status_code == 403:
+        error_type = "permission_error"
+    elif status_code == 404:
+        error_type = "not_found_error"
+    elif status_code == 413:
+        error_type = "request_too_large"
+    elif status_code == 429:
+        error_type = "rate_limit_error"
+    elif status_code == 529:
+        error_type = "overloaded_error"
+    elif 400 <= status_code < 500:
+        error_type = "invalid_request_error"
+    else:
+        error_type = "api_error"
+    return {"type": "error", "error": {"type": error_type, "message": message}}
