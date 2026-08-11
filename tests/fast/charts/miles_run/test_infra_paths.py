@@ -1,6 +1,7 @@
+import json
 from typing import Any
 
-from tests.fast.charts.utils import render_run, render_run_error, requires_helm, sole_container_of
+from tests.fast.charts.utils import render_run, render_run_error, requires_helm, sole_container_of, with_object_names
 
 ORCHESTRATOR = "myrun-miles-run-orchestrator"
 ORCHESTRATOR_IDENTITY = {"MILES_K8S_NAMESPACE": "myns", "MILES_K8S_RELEASE": "myrun"}
@@ -116,3 +117,45 @@ class TestPythonPathIsNotAnEnvironmentVariable:
 
         env = sole_container_of(objects, "StatefulSet", ORCHESTRATOR)["env"]
         assert {"name": "NCCL_SOCKET_IFNAME", "value": "bond0"} in env
+
+
+STATIC_WORKERS = [{"name": "rollout-executor", "command": ["python", "-m", "miles.utils.workers.serving.serve"]}]
+TRAINER_ENGINES = [
+    {"name": "trainer-engine-actor", "command": ["python", "-m", "miles.utils.workers.process_supervisor"]}
+]
+INFERENCE_ENGINES = [{"name": "inference-engine-0-0", "command": ["python", "-m", "sglang.launch_server"]}]
+
+WHOLE_TOPOLOGY = (
+    "--set-json",
+    f"run.staticWorkers={json.dumps(with_object_names(STATIC_WORKERS))}",
+    "--set-json",
+    f"run.trainerEngines={json.dumps(with_object_names(TRAINER_ENGINES))}",
+    "--set-json",
+    f"run.inferenceEngines={json.dumps(with_object_names(INFERENCE_ENGINES))}",
+)
+
+
+def containers_of(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [container for obj in objects for container in _containers_in(obj)]
+
+
+def _containers_in(node: Any) -> list[dict[str, Any]]:
+    if isinstance(node, dict):
+        found = list(node.get("containers") or [])
+        for key, value in node.items():
+            if key != "containers":
+                found.extend(_containers_in(value))
+        return found
+    if isinstance(node, list):
+        return [container for item in node for container in _containers_in(item)]
+    return []
+
+
+@requires_helm
+class TestCheckoutWorkingDirectory:
+    def test_every_container_runs_from_the_checkout_the_image_imports_from(self):
+        """A container loading a custom function or a relative config path only resolves it from the checkout root."""
+        containers = containers_of(render_run(*WHOLE_TOPOLOGY))
+
+        assert {container["name"] for container in containers} == {"orchestrator", "worker", "engine", "trainer"}
+        assert {container.get("workingDir") for container in containers} == {"/root/miles"}
