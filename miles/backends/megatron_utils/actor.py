@@ -448,7 +448,13 @@ class MegatronTrainRayActor(TrainRayActor):
         return {"grad_norm": grad_norm, "learning_rate": adam_params["learning_rate"]}
 
     @with_logs
-    def external_forward_backward(self, request_id: int, rollout_data_ref: Box, loss_fn: str) -> dict:
+    def external_forward_backward(
+        self,
+        request_id: int,
+        rollout_data_ref: Box,
+        loss_fn: str,
+        loss_fn_config: dict | None = None,
+    ) -> dict:
         """Accumulate a Tinker batch that already contains token advantages."""
         if not is_multi_lora_enabled(self.args):
             raise RuntimeError("external forward/backward requires multi-LoRA")
@@ -479,7 +485,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 # Match train_actor's required transition before invoking the
                 # Megatron backward schedule for an external Tinker batch.
                 self._set_replay_stage("replay_backward")
-                with external_tinker_policy_flags(self.args):
+                with external_tinker_policy_flags(self.args, loss_fn_config):
                     outcome, metrics = train(
                         request_id,
                         self.model,

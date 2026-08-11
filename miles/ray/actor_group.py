@@ -84,13 +84,16 @@ class RayTrainGroup:
             attempt=0,
         )
 
-    async def external_forward_backward(self, request_id: int, rollout_data_ref, loss_fn: str):
+    async def external_forward_backward(
+        self, request_id: int, rollout_data_ref, loss_fn: str, loss_fn_config: dict | None = None
+    ):
         """Accumulate a caller-supplied Tinker batch without stepping."""
         return await self._broadcast(
             "external_forward_backward",
             request_id,
             rollout_data_ref,
             loss_fn,
+            loss_fn_config,
         )
 
     async def external_forward(self, request_id: int, rollout_data_ref):

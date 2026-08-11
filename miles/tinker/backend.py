@@ -145,7 +145,12 @@ class MilesTinkerBackend:
         # those tensors yet, so score immediately before accumulating grads.
         forward_results = await self.actor_group.external_forward(self.request_seq, refs)
         self.request_seq += 1
-        rank_results = await self.actor_group.external_forward_backward(self.request_seq, refs, batch["loss_fn"])
+        rank_results = await self.actor_group.external_forward_backward(
+            self.request_seq,
+            refs,
+            batch["loss_fn"],
+            batch.get("loss_fn_config"),
+        )
         metrics: dict[str, float] = {}
         for result in rank_results:
             for key, value in result.get("metrics", {}).items():
