@@ -38,8 +38,8 @@ STATIC_HOSTS = {
     pool_id: naming.static_worker_host(RELEASE, pool_id, 0)
     for pool_id in ("rollout-executor", "inference-controller", "trainer-controller-actor")
 }
-POOL = "trainer-actor"
-CELL_ID = "trainer-actor-0"
+POOL = "trainer-engine-actor"
+CELL_ID = "trainer-engine-actor-0"
 
 
 class FakeTrainWorker:
