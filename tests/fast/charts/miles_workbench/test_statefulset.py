@@ -2,6 +2,11 @@ import yaml
 from tests.fast.charts.utils import RELEASE_NAME, container, pod_spec, render, requires_helm, single_object_of_kind
 
 
+def _volume(objects: list[dict], name: str) -> dict:
+    volumes = single_object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["volumes"]
+    return next(volume for volume in volumes if volume["name"] == name)
+
+
 @requires_helm
 class TestWorkbenchStatefulSet:
     def test_a_single_pod_idles_on_the_training_image(self):
@@ -44,18 +49,36 @@ class TestWorkbenchStatefulSet:
 
     def test_host_path_storage_mounts_where_training_pods_see_it(self):
         """Shared storage is mounted at the configured path verbatim so launch scripts need no path mapping."""
-        objects = render("--set", "infra.sharedStorage.hostPath=/gpfs", "--set", "infra.sharedStorage.mountPath=/cluster-storage")
-        volume = single_object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["volumes"][0]
+        objects = render(
+            "--set", "infra.sharedStorage.hostPath=/gpfs", "--set", "infra.sharedStorage.mountPath=/cluster-storage"
+        )
+        volume = _volume(objects, "shared-storage")
 
         assert volume["hostPath"] == {"path": "/gpfs", "type": "Directory"}
-        assert container(objects)["volumeMounts"] == [{"name": volume["name"], "mountPath": "/cluster-storage"}]
+        assert {"name": "shared-storage", "mountPath": "/cluster-storage"} in container(objects)["volumeMounts"]
 
     def test_pvc_storage_binds_the_named_claim(self):
         """Clusters without host mounts point the same mount at a pre-existing RWX claim."""
-        objects = render("--set", "infra.sharedStorage.type=pvc", "--set", "infra.sharedStorage.pvcClaimName=miles-shared")
-        volume = single_object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]["volumes"][0]
+        objects = render(
+            "--set", "infra.sharedStorage.type=pvc", "--set", "infra.sharedStorage.pvcClaimName=miles-shared"
+        )
+        assert _volume(objects, "shared-storage")["persistentVolumeClaim"] == {"claimName": "miles-shared"}
 
-        assert volume["persistentVolumeClaim"] == {"claimName": "miles-shared"}
+    def test_a_repo_on_shared_storage_replaces_the_copy_in_the_image(self):
+        """Launch scripts run from this pod, so it must see the same checkout as the training pods do."""
+        objects = render("--set", "infra.paths.repos.miles=alice/miles")
+
+        assert {"name": "shared-storage", "mountPath": "/root/miles", "subPath": "alice/miles"} in container(objects)[
+            "volumeMounts"
+        ]
+        assert dict(name="PYTHONPATH", value="/root/miles") in container(objects)["env"]
+
+    def test_repos_are_ignored_when_there_is_no_shared_storage_to_mount_them_from(self):
+        """A subPath mount of a volume that was never rendered would leave the pod stuck creating."""
+        objects = render("--set", "infra.sharedStorage.type=none", "--set", "infra.paths.repos.miles=alice/miles")
+
+        assert "volumeMounts" not in container(objects)
+        assert "env" not in container(objects)
 
     def test_storage_type_none_leaves_the_pod_without_volumes(self):
         """Storage is optional; disabling it must not leave a dangling mount referencing a missing volume."""

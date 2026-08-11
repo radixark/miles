@@ -33,7 +33,9 @@ spec:
       {{- with include "miles-common.env" . }}
       {{- . | nindent 6 }}
       {{- end }}
-      {{- with include "miles-common.sharedStorageVolumeMount" . }}
+      {{- $mounts := compact (list (include "miles-common.sharedStorageVolumeMount" . | trim) \
+(include "miles-common.codeVolumeMounts" . | trim)) | join "\\n" }}
+      {{- with $mounts }}
       volumeMounts:
         {{- . | nindent 8 }}
       {{- end }}
@@ -48,6 +50,8 @@ DEFAULT_VALUES = {
     "infra": {
         "image": {"repository": "registry.local/miles", "tag": "v1"},
         "sharedStorage": {"type": "hostPath", "hostPath": "/cluster-storage", "mountPath": "/cluster-storage"},
+        "paths": {"runsSubPath": "miles_data", "repos": {"miles": "", "megatron": "", "sglang": ""}},
+        "nodeLocalStorage": {"hostPath": "", "mountPath": "/scratch"},
         "scheduling": {"nodeSelector": {}, "tolerations": [], "affinity": {}},
         "env": {},
     },
@@ -114,7 +118,7 @@ class TestInfra:
         """The whole point of the shared section is that every chart renders it the same way."""
         spec = render(
             consumer,
-            "rel",
+            RELEASE_NAME,
             "--set",
             "infra.scheduling.nodeSelector.pool=cpu",
             "--set-json",
@@ -146,7 +150,7 @@ class TestInfra:
         """Clusters without host mounts point the same mount at a pre-existing claim."""
         spec = render(
             consumer,
-            "rel",
+            RELEASE_NAME,
             "--set",
             "infra.sharedStorage.type=pvc",
             "--set",
@@ -162,23 +166,53 @@ class TestInfra:
         assert "volumes" not in spec
         assert "volumeMounts" not in spec["containers"][0]
 
+    def test_a_configured_repo_is_mounted_over_its_in_image_path_and_put_on_the_python_path(self, consumer):
+        """Code on shared storage only takes effect if both the mount and the import path point at it."""
+        spec = render(consumer, RELEASE_NAME, "--set", "infra.paths.repos.sglang=myuser/sglang")["spec"]
+
+        assert spec["containers"][0]["volumeMounts"][-1] == {
+            "name": "shared-storage",
+            "mountPath": "/sgl-workspace/sglang",
+            "subPath": "myuser/sglang",
+        }
+        assert {"name": "PYTHONPATH", "value": "/sgl-workspace/sglang"} in spec["containers"][0]["env"]
+
+    def test_repos_are_ignored_without_shared_storage_to_mount_them_from(self, consumer):
+        """A subPath mount of a volume that does not exist would keep the pod from ever starting."""
+        spec = render(
+            consumer,
+            RELEASE_NAME,
+            "--set",
+            "infra.sharedStorage.type=none",
+            "--set",
+            "infra.paths.repos.miles=myuser/miles",
+        )["spec"]
+
+        assert "volumeMounts" not in spec["containers"][0]
+        assert "env" not in spec["containers"][0]
+
     def test_a_section_the_user_blanked_out_does_not_crash_the_render(self, consumer):
         """A values file with a bare `scheduling:` header deletes the chart default; helm keeps the null."""
-        for section in ("scheduling", "image", "sharedStorage", "env"):
+        for section in ("scheduling", "image", "sharedStorage", "env", "paths"):
             pod = render(consumer, RELEASE_NAME, "--set", f"infra.{section}=null")
 
             assert pod["kind"] == "Pod"
 
 
 class TestContract:
-    def test_the_helpers_cover_exactly_the_shared_sections(self):
-        """A section in the schema with no helper behind it is never rendered into any pod."""
+    def test_every_shared_infra_section_is_rendered_by_some_chart_template(self):
+        """A section in the schema with no template behind it is never rendered into any pod."""
         shared = set(json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]["infra"]["properties"])
-        rendered = {
-            section
-            for section in shared
-            if f".Values.infra.{section}" in (LIBRARY_CHART / "templates" / "_infra.tpl").read_text()
-        }
+        templates = "".join(path.read_text() for path in CHARTS_DIR.glob("*/templates/*"))
+        rendered = {section for section in shared if f".Values.infra.{section}" in templates}
 
-        assert shared == {"image", "sharedStorage", "scheduling", "env"}
         assert rendered == shared
+
+    def test_the_library_chart_owns_every_section_but_the_node_local_scratch_disk(self):
+        """Only miles-run has pods worth a node-local disk, so that one helper stays with the run chart."""
+        library = (LIBRARY_CHART / "templates" / "_infra.tpl").read_text()
+        shared = set(json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]["infra"]["properties"])
+
+        assert {section for section in shared if f".Values.infra.{section}" in library} == shared - {
+            "nodeLocalStorage"
+        }

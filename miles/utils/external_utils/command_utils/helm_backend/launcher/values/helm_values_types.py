@@ -12,13 +12,14 @@ _OPTIONAL_DNS_LABEL = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"
 _OPTIONAL_DNS_SUBDOMAIN = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"
 
 _NO_PARENT_TRAVERSAL = {"not": {"pattern": r"(^|/)\.\.(/|$)"}}
-_ENV_KEYS = {"propertyNames": {"pattern": "^[ -<>-~]+$"}}
+_ENV_KEYS = {"propertyNames": {"pattern": "^[ -<>-~]+$", "not": {"const": "PYTHONPATH"}}}
 
 _KUBERNETES_NAME_MAX = 253
 WORKBENCH_OBJECT_NAME_MAX = 52
 
 _AbsolutePath = Annotated[str, Field(pattern="^/", json_schema_extra=_NO_PARENT_TRAVERSAL)]
 _OptionalAbsolutePath = Annotated[str, Field(pattern="^(/.*)?$", json_schema_extra=_NO_PARENT_TRAVERSAL)]
+_RelativePath = Annotated[str, Field(pattern="^([^/].*)?$", json_schema_extra=_NO_PARENT_TRAVERSAL)]
 _EnvVars = Annotated[dict[str, str], Field(json_schema_extra=_ENV_KEYS)]
 
 
@@ -62,6 +63,17 @@ class SharedStorage(ValuesModel):
     )
 
 
+class Repos(ValuesModel):
+    miles: _RelativePath | None = None
+    megatron: _RelativePath | None = None
+    sglang: _RelativePath | None = None
+
+
+class Paths(ValuesModel):
+    runs_sub_path: _RelativePath | None = None
+    repos: Repos | None = None
+
+
 class Scheduling(ValuesModel):
     node_selector: dict[str, str] | None = None
     tolerations: list[dict[str, Any]] | None = None
@@ -71,6 +83,7 @@ class Scheduling(ValuesModel):
 class InfraValues(ValuesModel):
     image: Image
     shared_storage: SharedStorage
+    paths: Paths | None = None
     scheduling: Scheduling | None = None
     env: _EnvVars | None = None
 
