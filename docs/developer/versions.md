@@ -68,6 +68,12 @@ an SGLang collision, `blake3` / `xxhash` / `zstandard` name the disk-delta weigh
 
 ## The images
 
+CUDA variants are published to [`radixark/miles`](https://hub.docker.com/r/radixark/miles)
+on Docker Hub, ROCm variants to `rocm/sgl-dev`. The
+[`dev` tag](https://hub.docker.com/r/radixark/miles?tag=dev) is what CI runs on unless a job
+says otherwise, so its last-pushed timestamp is the fastest way to see how current the
+fleet's image is.
+
 | Variant | Tag written by `--image-tag dev` | Platforms |
 |---|---|---|
 | `cu13` | `radixark/miles:dev` | `linux/amd64` + `linux/arm64`, one manifest. This is the daily image |
