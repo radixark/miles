@@ -18,7 +18,7 @@ from miles.utils.external_utils.command_utils.base_backend import (
 from miles.utils.external_utils.command_utils.common import ArgvManipulator, chart_dir, repo_base_dir, train_env_vars
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher import manifest_diff
-from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import CI_LABEL, Helm, Kubectl
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability import farewell, with_observability
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.diagnosis import collect_diagnosis
@@ -59,6 +59,8 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(config.helm_values)))
     run_directory = RunFiles.run_dir(shared_root=shared_root, run_id=run_id)
 
+    if config.ci_run:
+        _uninstall_leftover_ci_releases(namespace)
     Helm.build_dependencies(chart)
 
     installed_manifest = Helm.get_manifest(release, namespace)
@@ -96,6 +98,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         namespace=namespace,
         chart=chart,
         values_files=values_files,
+        ci_run=config.ci_run,
     )
 
     _follow_until_finished(release=release, namespace=namespace, state_file=state_file)
@@ -185,6 +188,14 @@ def _assert_upgrade_only_resizes(
     if not skip_upgrade_check:
         raise SystemExit(message)
     logger.warning(f"upgrade check skipped: {message}")
+
+
+def _uninstall_leftover_ci_releases(namespace: str) -> list[str]:
+    releases = Helm.list_releases(namespace=namespace, selector=f"{CI_LABEL}=true")
+    for release in releases:
+        logger.info(f"Uninstalling the leftover ci release {release} before this run installs its own")
+        Helm.uninstall(release=release, namespace=namespace)
+    return releases
 
 
 def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> None:
