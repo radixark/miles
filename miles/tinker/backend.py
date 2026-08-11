@@ -172,6 +172,7 @@ class MilesTinkerBackend:
             "sampling_params": params,
             "lora_path": slot_lora_name(self.models[model_id]["slot"]),
             "n": num_samples,
+            "return_logprob": True,
         }
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(f"{self.router_url}/generate", json=payload)
