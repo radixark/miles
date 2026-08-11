@@ -1,57 +1,104 @@
 ---
-title: Training Backend
-description: Megatron-LM as the training backend — parameters, parallelism, checkpoints, and hooks.
+title: Training Backends
+description: What a training backend owns, how to choose between Megatron-LM and FSDP, and how each one is configured.
 ---
-Miles decouples the **training backend** (how the model is sharded, checkpointed, and
-stepped) from the **inference backend** (SGLang). The production training backend is
-**Megatron-LM**.
+Every Miles job has two halves. One **generates** text (SGLang), the other **learns** from
+it (the training backend). They can be **disaggregated**, the default, where each half owns
+its own GPUs, or **colocated** with `--colocate`, where both share the same GPUs and take
+turns. Either way they meet at exactly one interface: a weight sync after each training
+step.
+
+```mermaid
+flowchart LR
+    subgraph T["Training backend: Megatron-LM or FSDP"]
+        direction TB
+        S[shard the model] --> O[optimizer step] --> C[write checkpoints]
+    end
+    subgraph R["Inference backend: SGLang"]
+        G[generate rollouts]
+    end
+    R -- "rollouts + rewards" --> T
+    T -- "weight sync" --> R
+```
+
+Because that interface is narrow, the training backend is swappable. `--train-backend`
+picks one:
+
+| Value | What it is | Default |
+|---|---|---|
+| [`megatron`](#megatron-lm) | Megatron-LM: five parallel dimensions, `torch_dist` checkpoints | ✅ |
+| [`fsdp`](#fsdp) | The model's own HuggingFace implementation under PyTorch FSDP2 | |
+
+Nothing above the backend changes when you switch: same GRPO / PPO / GSPO flags, same
+rollout and eval flags, same colocated or disaggregated layout, same SGLang engine, same
+launch-script shape.
+
+## Which one do you want?
+
+**Use Megatron-LM for large models and for anything that needs real parallelism.** It is the
+recommended backend, the one every recipe in [Models](/models/index) is tuned for, and the
+only one that can split a model *inside* itself. If the model is a 100 B+ MoE, if the job
+spans racks, or if fitting it at all depends on tensor / pipeline / expert parallelism, this
+is the answer.
+
+**Use FSDP when you want the HuggingFace implementation trained verbatim.** It loads a HF
+directory as-is, with no conversion step and no architecture flags to write, which makes it
+the fast path for bringing up a new architecture, for checking trainer numerics against the
+HF reference, and for models that fit with only data and context parallelism.
+
+The rest follows from that split:
+
+| | Megatron-LM | FSDP |
+|---|---|---|
+| Model splitting | TP × PP × CP × EP × ETP, plus DP | `dp_replicate` × `dp_shard` × `cp` |
+| Model input | `torch_dist` checkpoint (offline conversion step) | HF directory, loaded as-is |
+| Architecture definition | `MODEL_ARGS` plus a Megatron spec for anything non-standard | HF `config.json`, plus an optional adaptation spec |
+| Checkpoints written | Megatron `torch_dist` | PyTorch Distributed Checkpoint |
+| Activation recompute | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` |
+| CPU offload | Distributed optimizer | `--fsdp-cpu-offload` |
+| Attention backend | Chosen by Megatron Core | `--attn-implementation` |
+| LoRA | Supported | Not supported |
+
+---
 
 ## Megatron-LM
 
-### Parameter discovery
+Configuring this backend is four decisions, in this order: what the architecture is, how to
+split it, where the weights come from, and what you want to hook into.
 
-Miles imports Megatron's entire argument surface at launch through Megatron's parser:
+### 1. Describing the architecture
+
+You do not re-declare Megatron's flags to Miles. Miles imports Megatron's whole argument
+surface at launch:
 
 ```python
 from megatron.training.arguments import parse_args
 ```
 
-That means every Megatron flag in your installed checkpoint works without Miles having
-to re-declare it — `--kv-channels`, `--rotary-base`, `--moe-grouped-gemm`, and so on.
+so every Megatron flag your checkpoint needs (`--kv-channels`, `--rotary-base`,
+`--moe-grouped-gemm`, and the rest) already works. Miles then threads its own flags in
+through an `extra_args_provider` (`get_miles_extra_args_provider` in
+`miles/utils/arguments.py`), which is why Miles and Megatron flags share one CLI.
 
-Export the Megatron source directory before you launch:
+That import is also why you export the Megatron source before launching:
 
 ```bash
 export PYTHONPATH=/root/Megatron-LM
 ```
 
-Miles adds its own arguments by threading an `extra_args_provider` into Megatron's
-`parse_args` (see `get_miles_extra_args_provider` in `miles/utils/arguments.py`),
-so Miles flags and Megatron flags share a single CLI surface.
+In a launch script the architecture flags live in `MODEL_ARGS`, generated from
+`scripts/models/<family>.py`. Most models need nothing beyond the stock
+`--num-layers / --hidden-size / ...`. For the ones that do, see
+[bringing in a new architecture](#going-deeper-bringing-in-a-new-architecture) below.
 
-### Architecture specs
+### 2. Choosing the parallelism
 
-Most models work with stock `--num-layers / --hidden-size / ...` flags. For models that
-need a custom module (Qwen3-Next's Gated-Delta-Net, Qwen3.5's attention-output gate,
-GLM5's expert routing), Miles ships a plugin spec:
+<a id="parallelism-compatibility" />
 
-```bash
-MODEL_ARGS=(
-   --spec "miles_plugins.models.qwen3_5" "get_qwen3_5_spec"
-   ...
-)
-```
-
-The spec function replaces specific Megatron submodules with the HF implementation
-without patching Megatron itself. Details:
-[Backends Beyond Megatron](/advanced/architecture-support).
-
-### Parallelism compatibility
-
-Megatron exposes five useful parallel dimensions, but you can't combine them in
-arbitrary ways — only a subset of TP × PP × CP × EP × ETP combinations is actually
-supported, and some legal combinations are slower than the recipe baseline. Start from
-the model recipe's tested combination, then change one dimension at a time.
+Megatron exposes five useful parallel dimensions, but you can't combine them in arbitrary
+ways. Only a subset of TP × PP × CP × EP × ETP combinations is actually supported, and some
+legal combinations are slower than the recipe baseline. **Start from the model recipe's
+tested combination, then change one dimension at a time.**
 
 | Dimension | Use it for | Compatibility notes |
 |---|---|---|
@@ -61,49 +108,16 @@ the model recipe's tested combination, then change one dimension at a time.
 | EP | Distribute MoE experts across ranks | MoE-only. Keep trainer EP and SGLang EP as separate choices. |
 | ETP | Tensor-parallelize expert MLPs | MoE-only. Use it only when the recipe enables it or when EP alone cannot fit the experts. |
 
-Do not assume TP, CP, EP, and ETP can all be raised independently for a new model — the
-exact set of supported combinations depends on the Megatron Core kernels and model spec
-being used. The [Argument Groups](/user-guide/argument-groups#perf-args) page lists the flags
-that belong in `PERF_ARGS`.
+Do not assume TP, CP, EP and ETP can all be raised independently for a new model. The exact
+set of supported combinations depends on the Megatron Core kernels and model spec in use.
+[Argument Groups](/user-guide/argument-groups#perf-args) lists the flags that belong in
+`PERF_ARGS`.
 
-### Checkpoint format
+### 3. Getting weights in and out
 
-Miles uses Megatron's `torch_dist` format — `.distcp` files that are
-parallelism-agnostic, so you can change TP / PP / EP without re-converting.
-
-A checkpoint directory looks like:
-
-```text
-/ckpt/
-├── latest_checkpointed_iteration.txt
-├── iter_0000100/
-│   ├── _0_0.distcp
-│   └── ...
-├── iter_0000200/
-└── ...
-```
-
-Always pass the **parent** directory to `--load`, not a specific iteration. The
-loader reads `latest_checkpointed_iteration.txt` to pick the step.
-
-### On-demand save
-
-`--save-trigger-sentinel <path>` lets you force a checkpoint save from outside
-the training process, independent of `--save-interval`:
-
-```bash
-# trigger a save and wait until the checkpoint is on disk
-touch /path/to/save_now && until [ ! -e /path/to/save_now ]; do sleep 5; done
-```
-
-A request fired at any moment during an iteration is consumed at that
-iteration's save point — the checkpoint is written with `force_sync=True` (so
-async saves finalize before the sentinel is removed), and only then is the
-sentinel file deleted. "File gone" means "checkpoint durable on disk." If the
-job crashes mid-save, the sentinel survives and the request stays pending for
-the next run. Requires `--save` to be set.
-
-### HuggingFace → torch_dist
+Megatron trains from its own `torch_dist` format: `.distcp` files that are
+parallelism-agnostic, so you can change TP / PP / EP later without re-converting. Convert
+once, up front:
 
 ```bash
 MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py <family>)" || exit 1
@@ -115,12 +129,40 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 ```
 
 For models larger than a single node, drive the converter with
-`torchrun --nnodes=<N> --nproc-per-node=8 ...`. Each recipe page lists the exact
-command.
+`torchrun --nnodes=<N> --nproc-per-node=8 ...`. Each recipe page lists the exact command.
 
-### Hooks
+What the run then writes looks like this:
 
-Three extension points override Megatron behavior without forking:
+```text
+/ckpt/
+├── latest_checkpointed_iteration.txt
+├── iter_0000100/
+│   ├── _0_0.distcp
+│   └── ...
+├── iter_0000200/
+└── ...
+```
+
+Always pass the **parent** directory to `--load`, never a specific `iter_*`. The loader
+reads `latest_checkpointed_iteration.txt` to pick the step.
+
+**Saving on demand.** `--save-trigger-sentinel <path>` forces a save from outside the
+process, independent of `--save-interval`:
+
+```bash
+# trigger a save and wait until the checkpoint is on disk
+touch /path/to/save_now && until [ ! -e /path/to/save_now ]; do sleep 5; done
+```
+
+A request fired at any moment during an iteration is consumed at that iteration's save
+point. The checkpoint is written with `force_sync=True` (so async saves finalize first), and
+only then is the sentinel deleted, which is why "file gone" means "checkpoint durable on
+disk". If the job crashes mid-save the sentinel survives, so the request stays pending for
+the next run. Requires `--save`.
+
+### 4. Hooking into the loop
+
+Three extension points override Megatron behavior without forking it:
 
 | Flag | Runs |
 |---|---|
@@ -128,32 +170,267 @@ Three extension points override Megatron behavior without forking:
 | `--custom-megatron-before-log-prob-hook-path` | Before every log-probability computation |
 | `--custom-megatron-before-train-step-hook-path` | Before every training step |
 
-Typical use cases: mixing in an auxiliary loss, instrumenting per-step metrics, or
-clipping weights surgically. See [Customization](/user-guide/customization#megatron-hooks).
+Typical uses: mixing in an auxiliary loss, instrumenting per-step metrics, clipping weights
+surgically. See [Customization](/user-guide/customization#megatron-hooks).
+
+### Going deeper: bringing in a new architecture
+
+Skip this unless the model needs a module Megatron Core does not have, such as Qwen3-Next's
+Gated-Delta-Net, Qwen3.5's attention-output gate, or GLM5's expert routing.
+
+The tempting move is to patch Megatron. Miles does something less invasive: it wraps the
+model's **official HuggingFace module** as a black box and embeds it inside Megatron's
+parallel scheduling. You give up TP *inside* that module and get a much shorter
+time-to-train on a new architecture.
+
+**Where the seam is.** Megatron builds a model in two steps: first a layer specification
+(`ModuleSpec` / decoder block spec), then concrete modules instantiated from it. Miles
+rewrites specific submodules in step 1, and three pieces do the work.
+
+1. **A custom decoder spec** decides *which* layers get replaced.
+   `miles_plugins/models/qwen3_next.py` starts from `get_gpt_decoder_block_spec`, then for
+   layers whose HF `layer_types[i] == "linear_attention"` swaps in its own attention:
+
+   ```python
+   transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
+   ...
+   for layer_id in range(num_layers_to_build):
+       if hf_config.layer_types[layer_id + offset] == "linear_attention":
+           layer_specs = copy.deepcopy(transformer_layer_spec.layer_specs[layer_id])
+           layer_specs.submodules.self_attention = ModuleSpec(module=Attention, params={"args": args})
+           transformer_layer_spec.layer_specs[layer_id] = layer_specs
+   return transformer_layer_spec
+   ```
+
+   It is wired up from the model config with `--spec`:
+
+   ```bash
+   MODEL_ARGS+=(
+      --spec miles_plugins.models.qwen3_next get_qwen3_next_spec
+   )
+   ```
+
+2. **A Megatron-side wrapper** makes the HF module obey Megatron's contract.
+   `miles_plugins/models/hf_attention.py` defines the abstract
+   `HuggingfaceAttention(MegatronModule, ABC)`: it reads the HF config from
+   `args.hf_checkpoint` and supplies the layout adapters the parallelism contract requires,
+   such as sequence parallel and CP zigzag / packed-shard conversion. Concrete attention
+   classes subclass it and embed the real HF module.
+
+3. **A weight bridge** reconciles the two parameter layouts. `miles_plugins/mbridge/` ships
+   one per architecture: class-level `_ATTENTION_MAPPING` / `_MLP_MAPPING` extend the parent
+   bridge with this architecture's layer-name substitutions, and `_weight_to_mcore_format`
+   handles reshapes. See [mbridge](https://github.com/ISEEKYAN/mbridge) for the parents.
+
+**What you keep and what you lose:**
+
+| | Patching Megatron core | Miles wrapper approach |
+|---|---|---|
+| Pipeline parallel | Supported | Supported |
+| Sequence parallel | Supported | Supported |
+| MoE acceleration | Supported | Supported |
+| TP inside the wrapped module | Supported | Not supported |
+
+For attention-only swaps the missing TP is usually fine, because attention is a small share
+of parameters in an MoE model. Prefer native Megatron when the architecture is already
+mature there (Qwen3 standard, GLM4), or when TP inside the new module is critical.
+
+#### The fp32 trap
+
+Some architectures need specific parameters to stay fp32 while the rest of the model is
+bf16. Qwen3.5's `A_log` is the canonical case: round it to bf16 and Megatron-side
+activations drift away from the SGLang-side rollout.
+
+There are **two** places a parameter gets cast, and handling only one leaves a parameter
+whose dtype looks right but whose values were already rounded.
+
+Megatron's `Float16Module` casts every float parameter at wrap time, so tag the parameter:
+
+```python
+from miles.backends.megatron_utils.fp32_param_utils import mark_param_dtype
+
+class MyModel(nn.Module):
+    def __init__(self, ...):
+        super().__init__(...)
+        self.A_log = nn.Parameter(torch.log(A).to(torch.float32))
+        mark_param_dtype(self.A_log, torch.float32)
+```
+
+`enforce_marked_param_dtypes(model)`, already wired into the training and
+checkpoint-conversion entry points, restores tagged parameters after the rest of the model
+is cast.
+
+The mbridge conversion path is the second cast point, so override it too:
+
+```python
+class Qwen3_5Bridge(Qwen2MoEBridge):
+    def _weight_to_mcore_format(self, mcore_weights_name, hf_weights):
+        if mcore_weights_name.endswith("self_attention.linear_attn.A_log"):
+            assert len(hf_weights) == 1
+            return hf_weights[0].to(dtype=torch.float32).contiguous()
+        return super()._weight_to_mcore_format(mcore_weights_name, hf_weights)
+```
 
 ---
 
-## SGLang as the inference engine
+## FSDP
 
-SGLang is the fixed inference engine regardless of training backend. Three pieces of
-configuration matter:
+The FSDP backend lives at `miles/backends/fsdp_utils/`. One idea explains the whole thing:
+**nothing about the model is re-expressed for the trainer.** Architecture comes from the
+HuggingFace `config.json`, weights load through `AutoModelForCausalLM.from_pretrained()`,
+and sharding, the distributed optimizer and mixed precision all come from PyTorch FSDP2
+rather than from Miles.
 
-**HuggingFace pointer.** SGLang boots from `--hf-checkpoint`. Before the first training
-step, Miles syncs the actor's weights from the trainer — so the checkpoint at that path
-does **not** need to be current. The tokenizer and the `config.json`-derived context
-length are the only things SGLang cares about at init time.
+So there is no conversion step, no `MODEL_ARGS`, and no spec to write for a model that
+`transformers` already implements. The bill comes due on parallelism, which is why large
+models and complex layouts belong on [Megatron-LM](#megatron-lm).
 
-**Context length override.** SGLang reads max context from the model's `config.json`.
-To serve beyond that during training, set `--sglang-context-length`.
+### 1. Pointing it at a model
 
-**Colocation memory.** Under `--colocate`, Megatron reserves VRAM during init before
-handing off to SGLang. Drop `--sglang-mem-fraction-static` to **0.8** (or lower) so
-both can coexist.
+```bash
+--train-backend fsdp \
+--hf-checkpoint /root/models/<model>
+```
+
+`--hf-checkpoint` is the whole model input: tokenizer, config and weights. Layer count is
+read from the HF config, so Megatron's architecture flags (`--num-layers`, `--hidden-size`,
+`--spec`, `MODEL_ARGS`) simply do not apply here.
+
+### 2. Sharding it
+
+This backend has three parallel dimensions, and `miles/backends/fsdp_utils/parallel.py`
+builds all three as one device mesh:
+
+| Dimension | How you set it | What it does |
+|---|---|---|
+| `cp` | `--context-parallel-size` | Splits each sequence across ranks. Above 1, Miles substitutes `ring_flash_attn` on the CP group and the actor chunks `input_ids` / `position_ids` per CP rank. |
+| `dp_replicate` | `--dp-replicate-size` | Replica count for FSDP2 hybrid sharding. Parameters are replicated across replicas, sharded within one. |
+| `dp_shard` | derived | Whatever is left: `(world_size / cp) / dp_replicate`. This is the dimension FSDP2 actually shards parameters, gradients and optimizer state over. |
+
+The default, `cp=1` and `dp_replicate=1`, means one flat shard group over every training
+rank. Tensor, pipeline, expert and expert-tensor parallelism are all fixed at size 1 in the
+FSDP `ParallelState`, so the model has to fit within those three dimensions.
+
+<Note>
+
+`--context-parallel-size` above 1 is currently rejected in argument validation
+(`miles/utils/arguments.py`) even though the mesh supports it, so today the usable surface is
+`dp_replicate` × `dp_shard`.
+
+</Note>
+
+The mesh is checked before anything is built: `world_size` must divide by
+`--context-parallel-size`, and the resulting data-parallel size must divide by
+`--dp-replicate-size`, otherwise the run fails in argument validation instead of deep inside
+mesh construction.
+
+Memory, once the layout is set:
+
+| Flag | Effect |
+|---|---|
+| `--gradient-checkpointing` | Recompute activations. This backend's `--recompute-*`. |
+| `--fsdp-cpu-offload` | Offload parameters, gradients and optimizer state to CPU. The optimizer step runs there. |
+| `--fsdp-cpu-backend gloo` | CPU process-group backend used by the offload path. |
+| `--fsdp-state-dict-cpu-offload` | Collect full state dicts on CPU instead of on device. |
+
+### 3. Precision
+
+- bf16 by default; `--fp16` switches the compute dtype.
+- An fp32 master copy of the weights is kept by default, which is what makes the
+  trainer to rollout weight sync bit-exact. `--disable-fp32-master` trades it for memory when
+  you do not need that guarantee.
+- `--attn-implementation` picks the `transformers` attention backend: `flash_attention_2` by
+  default, with `flash_attention_3`, `sdpa` and `eager` passed straight through.
+- An architecture with fussier numerics can register its own policy, see
+  [when an HF model needs help](#going-deeper-when-an-hf-model-needs-help).
+
+### 4. Checkpoints
+
+`--save` writes PyTorch Distributed Checkpoint directories, one each for model, optimizer
+and LR scheduler, plus a `latest_checkpointed_iteration.txt` tracker. So `--load` takes the
+**parent** directory exactly like the Megatron backend does. These are FSDP-backend
+checkpoints, not `torch_dist` ones, and the two formats are not interchangeable.
+
+### Limits
+
+<Warning>
+
+**No TP / PP / EP.** The model must fit under `dp_replicate` × `dp_shard` × `cp`.
+
+**No LoRA.** [LoRA](/advanced/lora) is Megatron-only.
+
+</Warning>
+
+For large models, multi-rack jobs, or any recipe whose fit depends on tensor, pipeline or
+expert parallelism, use [Megatron-LM](#megatron-lm).
+
+### Going deeper: when an HF model needs help
+
+Any HuggingFace causal LM loads. Some need small corrections around the edges: a weight
+layout SGLang does not expect, a stateful layer that must be reset per document, a class
+that needs patching before construction. Those live in
+`miles/backends/fsdp_utils/adaptations/specs/`, one file per architecture, and an
+architecture that needs none of them registers nothing.
+
+| Hook | What it fixes |
+|---|---|
+| `register_param_transform` | Train to rollout parameter rename / reshape at weight sync, for example unfusing batched experts into the per-expert names SGLang expects |
+| `register_model_patch` | Config-time patch of a `transformers` class |
+| `register_model_instance_patch` | Post-construction patch of one model instance |
+| `register_packing_patch` | Per-document state reset under THD sequence packing, for stateful layers such as Gated-Delta-Net and Mamba2 hybrids |
+| `register_post_load_fixup` | Repair weights `from_pretrained()` clobbered |
+| `register_precision_policy` | Model-specific FSDP compute / autocast policy |
+
+Specs ship today for `qwen3`, `qwen3_moe`, `qwen3_5`, `glm4_moe_lite` (GLM-4.7-Flash) and
+`nemotron_h`; `adaptations/specs/__init__.py` is the source of truth for that list.
+
+MoE is part of this backend rather than an exception to it: expert layers use the fused
+Triton kernels in `fsdp_utils/kernels/`, the weight bridge unfuses batched experts at sync
+time, and `--use-rollout-routing-replay` (R3) works through per-architecture routing
+adapters.
+
+### Try it
+
+```bash
+export WANDB_API_KEY=<key>
+
+git clone https://github.com/radixark/miles.git && cd miles
+pip install -e . --no-deps
+
+# downloads model + datasets itself, no conversion step
+python3 scripts/run_qwen3_0_6b_fsdp.py
+```
+
+Launchers with the same recipe shape: `scripts/run_qwen3_0_6b_fsdp.py`,
+`scripts/run_qwen3_30b_a3b_fsdp.py`, `scripts/run_nemotron_3_nano_4b_fsdp.py`. To compare
+the two backends on one model, `scripts/run_mcore_fsdp.py` takes `--train-backend` as a flag.
+
+For profiling: `--use-pytorch-profiler` with `--profile-step-start` / `--profile-step-end`,
+`--record-memory-history` with `--memory-snapshot-path`, and `--tensorboard-dir`. See
+[Monitoring & Logging](/user-guide/monitoring).
+
+---
+
+## The other half: SGLang
+
+SGLang is the inference engine no matter which training backend you picked. Three pieces of
+configuration matter.
+
+**HuggingFace pointer.** SGLang boots from `--hf-checkpoint`. Miles syncs the actor's
+weights from the trainer before the first training step, so the checkpoint at that path does
+**not** need to be current. The tokenizer and the `config.json`-derived context length are
+all SGLang reads at init.
+
+**Context length override.** SGLang takes max context from `config.json`. To serve beyond it
+during training, set `--sglang-context-length`.
+
+**Colocation memory.** Under `--colocate` the trainer reserves VRAM during init before
+handing off to SGLang, so drop `--sglang-mem-fraction-static` to **0.8** or lower to let both
+fit.
 
 ### Passthrough convention
 
-Any flag accepted by `python -m sglang.launch_server` is accepted by Miles prefixed
-with `--sglang-`:
+Any flag `python -m sglang.launch_server` accepts, Miles accepts with a `--sglang-` prefix:
 
 ```bash
 --sglang-enable-ep-moe
@@ -163,38 +440,32 @@ with `--sglang-`:
 --sglang-log-level INFO
 ```
 
-Conversely, two flags are **set by Miles** rather than the user:
+Two flags are **set by Miles** rather than by you:
 
-- `--tp-size` ← `--rollout-num-gpus-per-engine`
-- `--model-path` ← `--hf-checkpoint`
+- `--tp-size` from `--rollout-num-gpus-per-engine`
+- `--model-path` from `--hf-checkpoint`
 
 The integration lives at
 [`miles/backends/sglang_utils/arguments.py`](https://github.com/radixark/miles/blob/main/miles/backends/sglang_utils/arguments.py).
 
 ### Router
 
-A router sits in front of the SGLang workers. Pass router-side flags with the
-`--router-` prefix:
+A router sits in front of the SGLang workers. Router-side flags take a `--router-` prefix:
 
 ```bash
 --router-balance-abs-threshold 0   # force uniform distribution (lowers prefix-cache hit rate)
 ```
 
-If `--sglang-router-ip` and `--sglang-router-port` are set, Miles treats them as an
-**external** router and skips starting its own — engines register via `/add_worker`
-at startup.
+Set `--sglang-router-ip` and `--sglang-router-port` and Miles treats the router as
+**external**, skipping its own. Engines then register via `/add_worker` at startup.
 
 ---
 
 ## Further reading
 
-- [Core concepts](/user-guide/concepts) — the four objects that make up any Miles job.
-- [Training script walkthrough](/user-guide/training-script-walkthrough) — the launch script,
+- [Core concepts](/user-guide/concepts): the four objects that make up any Miles job.
+- [Training script walkthrough](/user-guide/training-script-walkthrough): the launch script,
   argument group by argument group.
-- [Fully Async RL](/user-guide/fully-async) — keep generation running continuously so
-  rollout never waits on a training step.
-- [Configuration](/user-guide/cli-reference) — the flag taxonomy and defaults.
-- [Backends beyond Megatron](/advanced/architecture-support) — wrapping new
-  architectures without patching Megatron core.
-- [Experimental Features → FSDP backend](/developer/experimental-features#fsdp-backend)
-  — experimental PyTorch FSDP2 backend for fast iteration on small dense models.
+- [Fully Async RL](/user-guide/fully-async): keep generation running continuously so rollout
+  never waits on a training step.
+- [Configuration](/user-guide/cli-reference): the flag taxonomy and defaults.

@@ -222,13 +222,6 @@
          "advanced/miles-router"
         ],
         "expanded": false
-       },
-       {
-        "group": "Backends",
-        "pages": [
-         "advanced/architecture-support"
-        ],
-        "expanded": false
        }
       ]
      }
@@ -260,8 +253,7 @@
        "developer/contributor-guide",
        "developer/debug",
        "developer/migration",
-       "developer/architecture",
-       "developer/experimental-features"
+       "developer/architecture"
       ]
      }
     ]
@@ -293,6 +285,16 @@
    }
   ]
  },
+ "redirects": [
+  {
+   "source": "/advanced/architecture-support",
+   "destination": "/user-guide/usage#going-deeper-bringing-in-a-new-architecture"
+  },
+  {
+   "source": "/developer/experimental-features",
+   "destination": "/user-guide/usage#fsdp"
+  }
+ ],
  "background": {
   "dark": "#0c0b0a",
   "light": "#faf7f4"

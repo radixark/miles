@@ -45,10 +45,9 @@ flowchart TB
 miles/
 ├── backends/
 │   ├── megatron_utils/   # fp32 markers, optimizer offload helpers, weight sync
+│   ├── fsdp_utils/       # FSDP2 trainer: HF model as-is, per-arch adaptations/
 │   ├── sglang_utils/     # SGLang glue
-│   ├── training_utils/   # loss / GRPO / PPO / GSPO / REINFORCE++ plumbing
-│   └── experimental/
-│       └── fsdp_utils/   # FSDP-flavoured trainer (in progress)
+│   └── training_utils/   # loss / GRPO / PPO / GSPO / REINFORCE++ plumbing
 ├── ray/                  # Ray actors + rollout driver
 ├── rollout/
 │   ├── sglang_rollout.py # default rollout function
