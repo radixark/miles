@@ -91,8 +91,11 @@ Block layout is 128×128 with FP32 scales.
 | `--fp8-recipe blockwise` | 128×128 block-wise quantization; sglang must serve weights in the matching layout. |
 | `--use-tis` | Truncated Importance Sampling for residual precision drift. |
 
-Set `NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1` in the Ray runtime env to use FP32
-scales (`miles/ray/actor_group.py` already sets this in the actor env).
+`NVTE_FP8_BLOCK_SCALING_FP32_SCALES` is set for you in the actor env
+(`miles/ray/train/actor_factory.py`), defaulting by hardware: `1` on Hopper, and
+`0` on Blackwell, where TransformerEngine emulates the block-wise recipe with
+MXFP8 and needs power-of-two scales. Override it only if you know you want the
+non-default for your GPU.
 
 For models that already ship 128×128 block-wise FP8 weights (DeepSeek-V3,
 DeepSeek-R1, `Qwen/Qwen3-30B-A3B-FP8`), point `--hf-checkpoint` at the
@@ -114,7 +117,7 @@ share one UE8M0 scale. The end-to-end recipe uses MXFP8 for rollout, forward
 propagation, weight-gradient GEMMs, and data-gradient GEMMs while preserving
 configured tensors in BF16.
 
-![End-to-end MXFP8 RL recipe](../assets/images/low-precision/mxfp8-e2e.png)
+![End-to-end MXFP8 RL recipe](/assets/images/low-precision/mxfp8-e2e.png)
 
 **Hardware:** B200, B300, GB200, or GB300.
 
@@ -200,7 +203,7 @@ rollout uses a BF16 KV cache.
 The base NVFP4 recipe uses **high-precision backward**: the forward pass uses
 NVFP4 while the BF16 backward GEMMs consume the original BF16 operands.
 
-![NVFP4 with high-precision backward](../assets/images/low-precision/nvfp4-high-precision-backward.png)
+![NVFP4 with high-precision backward](/assets/images/low-precision/nvfp4-high-precision-backward.png)
 
 The base recipe settings used by the launcher are:
 
@@ -233,7 +236,7 @@ See the humans& discussion of
 [gradient stability](https://humansand.ai/blog/nvfp4-rl#improving-gradient-stability)
 for the motivation and ablations.
 
-![NVFP4 with dequantized backward](../assets/images/low-precision/nvfp4-dequantized-backward.png)
+![NVFP4 with dequantized backward](/assets/images/low-precision/nvfp4-dequantized-backward.png)
 
 Select this mode in the environment used to launch the job:
 

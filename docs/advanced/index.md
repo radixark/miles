@@ -9,7 +9,7 @@ tolerance, speculative decoding, and LoRA training and serving.
 
 <CardGroup cols={2}>
 
-  <Card title="Low Precision RL" icon="bolt" href="/advanced/fp8-low-precision">
+  <Card title="Low Precision RL" icon="bolt" href="/advanced/low-precision">
 
     Unified block-wise FP8, MXFP8, and NVFP4 recipes with matched training and
     rollout precision.
