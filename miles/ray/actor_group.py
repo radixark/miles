@@ -93,6 +93,10 @@ class RayTrainGroup:
             loss_fn,
         )
 
+    async def external_forward(self, request_id: int, rollout_data_ref):
+        """Run a caller-supplied Tinker forward pass without gradients."""
+        return await self._broadcast("external_forward", request_id, rollout_data_ref)
+
     async def external_optim_step(
         self, adapter_name: str, slot: int, batch_size: int, adam_params: dict
     ):

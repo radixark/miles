@@ -478,6 +478,30 @@ class MegatronTrainRayActor(TrainRayActor):
         return {"outcome": outcome.name, "metrics": metrics}
 
     @with_logs
+    def external_forward(self, request_id: int, rollout_data_ref: Box) -> dict:
+        """Return response-aligned token logprobs without accumulating gradients."""
+        if not is_multi_lora_enabled(self.args):
+            raise RuntimeError("external forward requires multi-LoRA")
+
+        with ExitStack() as stack:
+            rollout_data, store_get_result = get_rollout_data(
+                self.args, rollout_data_ref, witness_info=None
+            )
+            stack.enter_context(store_get_result)
+            data_iterator, num_microbatches = get_data_iterator(
+                self.args, self.model, rollout_data
+            )
+            outputs = self.compute_log_prob(
+                data_iterator, num_microbatches, request_id, store_prefix="external_"
+            )
+        self._heartbeat.bump()
+        log_probs = outputs.get("external_log_probs", [])
+        return {
+            "sample_indices": list(rollout_data["sample_indices"]) if log_probs else [],
+            "log_probs": log_probs,
+        }
+
+    @with_logs
     def train_actor(
         self,
         rollout_id: int,

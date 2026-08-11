@@ -130,7 +130,52 @@ class MilesTinkerBackend:
         }
 
     async def forward(self, model_id: str, batch: dict[str, Any]) -> dict[str, Any]:
-        raise ValueError("forward-only is not implemented in Miles Tinker phase 1")
+        if model_id not in self.models:
+            raise ValueError(f"unknown model_id {model_id}")
+        if batch["loss_fn"] != "cross_entropy":
+            raise ValueError("Miles Tinker forward currently supports cross_entropy only")
+
+        slot = self.models[model_id]["slot"]
+        data: dict[str, Any] = {
+            "tokens": [],
+            "response_lengths": [],
+            "loss_masks": [],
+            "rewards": [],
+            "truncated": [],
+            "sample_indices": [],
+            "adapter_slots": [],
+        }
+        for index, row in enumerate(batch["data"]):
+            input_tokens = _tokens(row["model_input"])
+            targets = _tensor_data(row.get("loss_fn_inputs", {}).get("target_tokens"))
+            if len(targets) != len(input_tokens) or not targets:
+                raise ValueError("target_tokens must align one-for-one with model_input tokens")
+            data["tokens"].append([*input_tokens, int(targets[-1])])
+            data["response_lengths"].append(len(targets))
+            data["loss_masks"].append([1] * len(targets))
+            data["rewards"].append(0.0)
+            data["truncated"].append(0)
+            data["sample_indices"].append(index)
+            data["adapter_slots"].append(slot)
+
+        refs = split_train_data_by_dp(self.args, data, self.args.multi_lora_dp_size)
+        self.request_seq += 1
+        rank_results = await self.actor_group.external_forward(self.request_seq, refs)
+        ordered: list[Any | None] = [None] * len(batch["data"])
+        for result in rank_results:
+            for index, log_probs in zip(
+                result.get("sample_indices", []), result.get("log_probs", []), strict=True
+            ):
+                if hasattr(log_probs, "detach"):
+                    log_probs = log_probs.detach().cpu().tolist()
+                ordered[int(index)] = log_probs
+        if any(value is None for value in ordered):
+            raise RuntimeError("Miles forward did not return logprobs for every datum")
+        return {
+            "loss_fn_output_type": batch["loss_fn"],
+            "loss_fn_outputs": [{"logprobs": value} for value in ordered],
+            "metrics": {},
+        }
 
     async def optim_step(self, model_id: str, adam_params: dict[str, float]) -> dict[str, Any]:
         state = self.models[model_id]
