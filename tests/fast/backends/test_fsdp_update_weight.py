@@ -230,7 +230,9 @@ class _RecordingWeightUpdater:
     def __init__(self) -> None:
         self.conn_status: ConnStatusManager = ConnStatusManager()
         self.connect_calls: list[list[object]] = []
+        self.connect_topologies: list[tuple[list[int] | None, list[int] | None]] = []
         self.update_weights_calls: int = 0
+        self.weight_version: int = 0
 
     def connect_rollout_engines(
         self,
@@ -239,39 +241,60 @@ class _RecordingWeightUpdater:
         engine_gpu_offsets: list[int] | None = None,
     ) -> None:
         self.connect_calls.append(list(rollout_engines))
+        self.connect_topologies.append((engine_gpu_counts, engine_gpu_offsets))
 
     def update_weights(self) -> None:
         self.update_weights_calls += 1
+        self.weight_version += 1
 
 
-def _make_updatable_engines(rollout_engines: list[object], *, has_new_engines: bool) -> SimpleNamespace:
+class _VersionReportingEngine:
+    def __init__(self, weight_version: int) -> None:
+        self.weight_version = weight_version
+
+    async def get_weight_version(self) -> int:
+        return self.weight_version
+
+
+def _make_updatable_engines(
+    rollout_engines: list[object],
+    *,
+    has_new_engines: bool,
+    snapshot_cell_id_to_hashes: dict[str, str] | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         rollout_engines=rollout_engines,
         has_new_engines=has_new_engines,
         engine_gpu_counts=[1] * len(rollout_engines),
         engine_gpu_offsets=list(range(len(rollout_engines))),
-        snapshot_cell_id_to_hashes={},
+        snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes if snapshot_cell_id_to_hashes is not None else {},
     )
 
 
-def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch):
-    """Two weight-update windows over a stable engine set connect the rollout engines exactly once."""
+def _make_weight_update_actor(monkeypatch, *, ci_test: bool):
     actor = object.__new__(actor_module.FSDPTrainRayActor)
-    actor.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, ci_test=False)
-    updater = _RecordingWeightUpdater()
-    actor.weight_updater = updater
-    engines: list[object] = [object(), object()]
+    actor.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, ci_test=ci_test)
+    actor.weight_updater = _RecordingWeightUpdater()
 
     monkeypatch.setattr(actor_module.dist, "barrier", lambda **_kwargs: None)
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
     monkeypatch.setattr(actor_module, "get_gloo_group", lambda: object())
     monkeypatch.setattr(actor_module, "clear_memory", lambda: None)
+    return actor
 
-    actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
-    actor.update_weights(_make_updatable_engines(engines, has_new_engines=False))
+
+def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch):
+    """Two weight-update windows over a stable engine set connect the rollout engines exactly once."""
+    actor = _make_weight_update_actor(monkeypatch, ci_test=False)
+    updater = actor.weight_updater
+    engines: list[object] = [object(), object()]
+
+    first_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
+    second_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=False))
 
     assert updater.connect_calls == [engines]
     assert updater.update_weights_calls == 2
+    assert (first_version, second_version) == (1, 2)
     assert not updater.conn_status.needs_reconnect({})
 
 
@@ -380,3 +403,42 @@ class TestUpdateWeightFromDistributed:
         assert len(handles) == 2
         assert all(handle.waited for handle in handles)
         assert [kwargs["names"] for kwargs in engines[1].requests] == [["a", "b"]]
+
+
+def test_fsdp_actor_reconnects_after_rollout_cell_hash_changes(monkeypatch):
+    """A changed rollout-cell snapshot reconnects to the replacement engines with their own GPU topology."""
+    actor = _make_weight_update_actor(monkeypatch, ci_test=False)
+    updater = actor.weight_updater
+    engines: list[object] = [object()]
+    replacement_engines: list[object] = [object(), object()]
+
+    actor.update_weights(
+        _make_updatable_engines(engines, has_new_engines=True, snapshot_cell_id_to_hashes={"cell-0": "hash-a"})
+    )
+    actor.update_weights(
+        _make_updatable_engines(
+            replacement_engines, has_new_engines=False, snapshot_cell_id_to_hashes={"cell-0": "hash-b"}
+        )
+    )
+    actor.update_weights(
+        _make_updatable_engines(
+            replacement_engines, has_new_engines=False, snapshot_cell_id_to_hashes={"cell-0": "hash-b"}
+        )
+    )
+
+    assert updater.connect_calls == [engines, replacement_engines]
+    assert updater.connect_topologies[1] == ([1, 1], [0, 1])
+    assert updater.update_weights_calls == 3
+    assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b"})
+
+
+def test_fsdp_actor_rejects_a_mismatched_engine_weight_version(monkeypatch):
+    """An engine reporting a weight version other than the updater's must fail the run under --ci-test."""
+    actor = _make_weight_update_actor(monkeypatch, ci_test=True)
+    updater = actor.weight_updater
+    engines: list[object] = [_VersionReportingEngine(7)]
+
+    with pytest.raises(RuntimeError, match="Weight version mismatch"):
+        actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
+
+    assert updater.update_weights_calls == 1

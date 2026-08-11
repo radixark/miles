@@ -331,21 +331,23 @@ class RayTrainGroup:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
 
-    async def update_weights(self, rollout_id: int | None = None):
-        """Broadcast weights to rollout engines."""
+    async def update_weights(self, rollout_id: int | None = None) -> int | None:
+        """Broadcast weights to rollout engines and answer the version they now serve."""
         log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set.
         info = await self._inference_controller.start_update_weights()
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        await retry(
+        weight_versions = await retry(
             lambda _: self._execute_first_alive("update_weights", info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
         await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
+
+        return weight_versions[0]
 
     async def _maybe_log_inference_engine_weight_checksums(self, *, rollout_id: int | None) -> None:
         if not is_event_logger_initialized():
