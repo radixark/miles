@@ -8,15 +8,18 @@ from pydantic.alias_generators import to_camel
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 _DNS_SUBDOMAIN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+_DNS_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 _OPTIONAL_DNS_LABEL = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"
 _OPTIONAL_DNS_SUBDOMAIN = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"
 
 _NO_PARENT_TRAVERSAL = {"not": {"pattern": r"(^|/)\.\.(/|$)"}}
 _ENV_KEYS = {"propertyNames": {"pattern": "^[ -<>-~]+$", "not": {"const": "PYTHONPATH"}}}
 
+_OBJECT_NAME_MAX = 63
 _KUBERNETES_NAME_MAX = 253
 WORKBENCH_OBJECT_NAME_MAX = 52
 
+_ObjectName = Annotated[str, Field(min_length=1, max_length=_OBJECT_NAME_MAX, pattern=_DNS_LABEL)]
 _AbsolutePath = Annotated[str, Field(pattern="^/", json_schema_extra=_NO_PARENT_TRAVERSAL)]
 _OptionalAbsolutePath = Annotated[str, Field(pattern="^(/.*)?$", json_schema_extra=_NO_PARENT_TRAVERSAL)]
 _RelativePath = Annotated[str, Field(pattern="^([^/].*)?$", json_schema_extra=_NO_PARENT_TRAVERSAL)]
@@ -97,6 +100,10 @@ class ServiceAccountSection(ValuesModel):
     name: Annotated[str, Field(max_length=_KUBERNETES_NAME_MAX, pattern=_OPTIONAL_DNS_SUBDOMAIN)] | None = None
 
 
+class Uninstaller(ValuesModel):
+    service_account: _ObjectName | None = None
+
+
 class WorkbenchResources(ValuesModel):
     requests: dict[str, str | float] | None = None
     limits: dict[str, str | float] | None = None
@@ -108,3 +115,4 @@ class MilesWorkbenchChartValues(ValuesModel):
     resources: WorkbenchResources | None = None
     rbac: RbacSection | None = None
     service_account: ServiceAccountSection | None = None
+    uninstaller: Uninstaller | None = None
