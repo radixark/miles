@@ -15,6 +15,10 @@ class RecordingBackend:
         self.calls.append(("forward_backward", model_id, batch))
         return {"loss_fn_output_type": "importance_sampling", "loss_fn_outputs": [], "metrics": {"loss": 1.0}}
 
+    async def forward(self, model_id, batch):
+        self.calls.append(("forward", model_id, batch))
+        return {"loss_fn_output_type": "cross_entropy", "loss_fn_outputs": [], "metrics": {}}
+
     async def optim_step(self, model_id, adam_params):
         self.calls.append(("optim_step", model_id, adam_params))
         return {"metrics": {"learning_rate": adam_params["learning_rate"]}}
@@ -22,6 +26,14 @@ class RecordingBackend:
     async def save_sampler(self, model_id, checkpoint_id):
         self.calls.append(("save_sampler", model_id, checkpoint_id))
         return {"path": f"tinker://{model_id}/sampler_weights/{checkpoint_id}"}
+
+    async def save_checkpoint(self, model_id, checkpoint_id):
+        self.calls.append(("save_checkpoint", model_id, checkpoint_id))
+        return {}
+
+    async def load_checkpoint(self, model_id, path):
+        self.calls.append(("load_checkpoint", model_id, path))
+        return {"path": path}
 
     async def sample(self, model_id, request):
         self.calls.append(("sample", model_id, request))

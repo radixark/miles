@@ -644,6 +644,8 @@ def train(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    apply_optimizer: bool = True,
+    return_metrics: bool = False,
 ) -> TrainStepOutcome:
     """Run training over a rollout consisting of multiple steps.
 
@@ -744,6 +746,7 @@ def train(
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
+            apply_optimizer=apply_optimizer,
         )
 
         if step_id == 0:
@@ -821,6 +824,8 @@ def train(
     if pre_hook_enabled:
         disable_forward_pre_hook(model)
 
+    if return_metrics:
+        return train_step_outcome, loss_dict
     return train_step_outcome
 
 

@@ -2,13 +2,14 @@
 
 import time
 from functools import cache
+from pathlib import Path
 from typing import Any
 
 import ray
 
 from miles.ray.multi_lora.backend import MultiLoRABackend
 from miles.ray.multi_lora.http_server import MultiLoRAHTTPServer
-from miles.utils.adapter_config import AdapterRun
+from miles.utils.adapter_config import AdapterRun, AdapterRunConfig
 from miles.utils.misc import SingletonMeta, get_current_node_ip, load_function
 from miles.utils.ray_utils import compute_ray_pin_head_options
 
@@ -76,6 +77,21 @@ class MultiLoRAController:
     async def register_adapter(self, name: str, config: Any) -> dict:
         return await self.backend.register(name, config)
 
+    def register_external_adapter(self, name: str, rank: int, alpha: int) -> dict:
+        """Allocate a Tinker-owned slot without autonomous dataset/RM fields."""
+        save_root = getattr(self.backend.args, "save", None)
+        save = None if save_root is None else Path(save_root) / "tinker" / name
+        config = AdapterRunConfig(
+            data="",
+            rank=rank,
+            alpha=alpha,
+            rollout_batch_size=1,
+            n_samples_per_prompt=1,
+            save=save,
+            num_step=None,
+        )
+        return self.backend.registry.register(name, config)
+
     async def deregister_adapter(self, name: str) -> None:
         await self.backend.deregister(name)
 
@@ -111,6 +127,11 @@ class MultiLoRAController:
 
     def set_adapter_step(self, name: str, step: int) -> None:
         self.backend.registry.set_step(name, step)
+
+    def advance_external_step(self, name: str) -> int:
+        step = self.backend.registry.step_count(name) + 1
+        self.backend.registry.set_step(name, step)
+        return step
 
     def adapter_step(self, name: str) -> int:
         return self.backend.registry.step_count(name)

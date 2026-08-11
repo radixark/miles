@@ -347,7 +347,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @event_logger_context(
-        lambda _self, rollout_id, rollout_data_ref, witness_info, attempt: dict(rollout_id=rollout_id, attempt=attempt)
+        lambda _self, rollout_id, rollout_data_ref, witness_info, attempt, apply_optimizer=True: dict(
+            rollout_id=rollout_id, attempt=attempt, apply_optimizer=apply_optimizer
+        )
     )
     def train(
         self,
@@ -355,6 +357,7 @@ class MegatronTrainRayActor(TrainRayActor):
         rollout_data_ref: Box,
         witness_info: WitnessInfo | None,
         attempt: int,
+        apply_optimizer: bool = True,
     ) -> TrainStepOutcome:
         self._heartbeat.bump()
         self._last_rollout_id = rollout_id
@@ -374,7 +377,13 @@ class MegatronTrainRayActor(TrainRayActor):
             if self.role == "critic":
                 return self.train_critic(rollout_id, rollout_data)
             else:
-                return self.train_actor(rollout_id, rollout_data, witness_info=witness_info, attempt=attempt)
+                return self.train_actor(
+                    rollout_id,
+                    rollout_data,
+                    witness_info=witness_info,
+                    attempt=attempt,
+                    apply_optimizer=apply_optimizer,
+                )
 
     @with_logs
     def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutcome:
@@ -415,8 +424,68 @@ class MegatronTrainRayActor(TrainRayActor):
         return getattr(self.args, f"use_rollout_{m.name}_replay", False)
 
     @with_logs
+    def external_optim_step(
+        self, adapter_name: str, slot: int, batch_size: int, adam_params: dict
+    ) -> dict[str, float]:
+        """Apply one request-scoped Tinker optimizer step collectively."""
+        if not is_multi_lora_enabled(self.args):
+            raise RuntimeError("external optimizer steps require multi-LoRA")
+        from miles.backends.megatron_utils.multi_lora_utils import step_external_adapter_slot
+
+        grad_norm = step_external_adapter_slot(
+            self.args,
+            self.model,
+            self.optimizer,
+            slot,
+            batch_size,
+            adam_params,
+        )
+        self._multi_lora_pending_push.add(adapter_name)
+        self._heartbeat.bump()
+        return {"grad_norm": grad_norm, "learning_rate": adam_params["learning_rate"]}
+
+    @with_logs
+    def external_forward_backward(self, request_id: int, rollout_data_ref: Box, loss_fn: str) -> dict:
+        """Accumulate a Tinker batch that already contains token advantages."""
+        if not is_multi_lora_enabled(self.args):
+            raise RuntimeError("external forward/backward requires multi-LoRA")
+        loss_types = {"cross_entropy": "sft_loss", "importance_sampling": "policy_loss"}
+        if loss_fn not in loss_types:
+            raise ValueError(f"unsupported Tinker loss_fn: {loss_fn}")
+
+        with ExitStack() as stack:
+            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
+            stack.enter_context(store_get_result)
+            data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+            previous_loss_type = self.args.loss_type
+            self.args.loss_type = loss_types[loss_fn]
+            try:
+                outcome, metrics = train(
+                    request_id,
+                    self.model,
+                    self.optimizer,
+                    self.opt_param_scheduler,
+                    data_iterator,
+                    num_microbatches,
+                    witness_info=None,
+                    attempt=0,
+                    apply_optimizer=False,
+                    return_metrics=True,
+                )
+            finally:
+                self.args.loss_type = previous_loss_type
+        self._heartbeat.bump()
+        return {"outcome": outcome.name, "metrics": metrics}
+
+    @with_logs
     def train_actor(
-        self, rollout_id: int, rollout_data: RolloutBatch, *, witness_info: WitnessInfo | None, attempt: int
+        self,
+        rollout_id: int,
+        rollout_data: RolloutBatch,
+        *,
+        witness_info: WitnessInfo | None,
+        attempt: int,
+        apply_optimizer: bool = True,
     ) -> TrainStepOutcome:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
@@ -513,6 +582,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     witness_info=witness_info,
                     attempt=attempt,
                     ft_test_action_executor=self._ft_test_action_executor,
+                    apply_optimizer=apply_optimizer,
                 )
 
             self.prof.step(rollout_id=rollout_id)
@@ -541,7 +611,7 @@ class MegatronTrainRayActor(TrainRayActor):
                         logger.info(f"Updating ref model at rollout_id {rollout_id}")
                     self.weights_backuper.backup("ref")
 
-        if train_step_outcome == TrainStepOutcome.NORMAL and is_multi_lora_enabled(self.args):
+        if train_step_outcome == TrainStepOutcome.NORMAL and apply_optimizer and is_multi_lora_enabled(self.args):
             from miles.backends.megatron_utils.multi_lora_utils import commit_trained_batch
 
             commit_trained_batch(rollout_data, rollout_id, self._multi_lora_pending_push)

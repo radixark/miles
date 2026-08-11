@@ -84,6 +84,23 @@ class RayTrainGroup:
             attempt=0,
         )
 
+    async def external_forward_backward(self, request_id: int, rollout_data_ref, loss_fn: str):
+        """Accumulate a caller-supplied Tinker batch without stepping."""
+        return await self._broadcast(
+            "external_forward_backward",
+            request_id,
+            rollout_data_ref,
+            loss_fn,
+        )
+
+    async def external_optim_step(
+        self, adapter_name: str, slot: int, batch_size: int, adam_params: dict
+    ):
+        """Step exactly one multi-LoRA slot after external accumulation."""
+        return await self._broadcast(
+            "external_optim_step", adapter_name, slot, batch_size, adam_params
+        )
+
     async def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)

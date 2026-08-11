@@ -21,9 +21,15 @@ class TinkerPrimitiveBackend(Protocol):
 
     async def forward_backward(self, model_id: str, batch: dict[str, Any]) -> dict[str, Any]: ...
 
+    async def forward(self, model_id: str, batch: dict[str, Any]) -> dict[str, Any]: ...
+
     async def optim_step(self, model_id: str, adam_params: dict[str, float]) -> dict[str, Any]: ...
 
     async def save_sampler(self, model_id: str, checkpoint_id: str) -> dict[str, Any]: ...
+
+    async def save_checkpoint(self, model_id: str, checkpoint_id: str) -> dict[str, Any]: ...
+
+    async def load_checkpoint(self, model_id: str, path: str) -> dict[str, Any]: ...
 
     async def sample(self, model_id: str | None, request: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -54,6 +60,10 @@ class ModelRequest(BaseModel):
 
 class ForwardBackwardRequest(ModelRequest):
     forward_backward_input: dict[str, Any]
+
+
+class ForwardRequest(ModelRequest):
+    forward_input: dict[str, Any]
 
 
 class OptimStepRequest(ModelRequest):
@@ -143,6 +153,13 @@ def create_app(backend: TinkerPrimitiveBackend, base_model: str, *, max_lora_ran
         future_id = await completed(result)
         return {"future_id": future_id, "status": "pending", "request_id": future_id}
 
+    @app.post("/api/v1/forward")
+    async def forward(request: ForwardRequest) -> dict[str, str]:
+        require_model(request.model_id)
+        result = await _call(backend.forward(request.model_id, request.forward_input))
+        future_id = await completed(result)
+        return {"future_id": future_id, "status": "pending", "request_id": future_id}
+
     @app.post("/api/v1/optim_step")
     async def optim_step(request: OptimStepRequest) -> dict[str, str]:
         require_model(request.model_id)
@@ -165,6 +182,37 @@ def create_app(backend: TinkerPrimitiveBackend, base_model: str, *, max_lora_ran
             result = {**result, "sampling_session_id": sampling_session_id}
         future_id = await completed(result)
         return {"future_id": future_id, "status": "pending", "request_id": future_id}
+
+    @app.post("/api/v1/save_weights")
+    async def save_weights(request: dict[str, Any]) -> dict[str, str]:
+        model_id = request["model_id"]
+        require_model(model_id)
+        checkpoint_id = request["path"]
+        result = await _call(backend.save_checkpoint(model_id, checkpoint_id))
+        result = {**result, "path": f"tinker://{model_id}/weights/{checkpoint_id}", "type": "save_weights"}
+        future_id = await completed(result)
+        return {"future_id": future_id, "status": "pending", "request_id": future_id}
+
+    @app.post("/api/v1/load_weights")
+    async def load_weights(request: dict[str, Any]) -> dict[str, str]:
+        model_id = request["model_id"]
+        require_model(model_id)
+        result = await _call(backend.load_checkpoint(model_id, request["path"]))
+        future_id = await completed({**result, "type": "load_weights"})
+        return {"future_id": future_id, "status": "pending", "request_id": future_id}
+
+    @app.post("/api/v1/get_info")
+    async def get_info(request: ModelRequest) -> dict[str, Any]:
+        metadata = require_model(request.model_id)
+        return {
+            "model_id": request.model_id,
+            "status": "created",
+            "model_data": {
+                "base_model": metadata["base_model"],
+                "model_name": metadata["base_model"],
+                "lora_config": metadata["lora_config"],
+            },
+        }
 
     @app.post("/api/v1/asample")
     async def asample(request: dict[str, Any]) -> dict[str, str]:
