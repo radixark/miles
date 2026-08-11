@@ -42,3 +42,24 @@
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 {{- end }}
 {{- end }}
+
+{{- define "miles-workbench.infraConfigMapName" -}}
+{{- printf "%s-infra" (include "miles-workbench.fullname" .) }}
+{{- end }}
+
+{{- define "miles-workbench.infraValuesFileName" -}}
+infra.yaml
+{{- end }}
+
+{{- define "miles-workbench.infraValuesDir" -}}
+/etc/miles
+{{- end }}
+
+{{- define "miles-workbench.env" -}}
+{{- $launch := dict
+      "MILES_SCRIPT_CLUSTER_BACKEND" "kubernetes"
+      "MILES_SCRIPT_NAMESPACE" .Release.Namespace
+      "MILES_SCRIPT_HELM_VALUES" (printf "%s/%s" (include "miles-workbench.infraValuesDir" .) (include "miles-workbench.infraValuesFileName" .))
+-}}
+{{- include "miles-common.envBlock" (merge (include "miles-common.envBase" . | fromYaml) $launch) }}
+{{- end }}
