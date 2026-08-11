@@ -606,10 +606,10 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self, info: "UpdatableEngines") -> None:  # type: ignore[override]
+    def update_weights(self, info: "UpdatableEngines") -> int | None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines (colocated or distributed; wakes params in offload mode)."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
-            return
+            return None
 
         rollout_engines = info.rollout_engines
         snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
@@ -628,8 +628,6 @@ class FSDPTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
 
         self.weight_updater.update_weights()
-        if dist.get_rank() == 0:
-            ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
 
         if self.args.ci_test and len(rollout_engines) > 0:
             engine = random.choice(rollout_engines)
@@ -640,6 +638,8 @@ class FSDPTrainRayActor(TrainRayActor):
                 )
 
         clear_memory()
+
+        return self.weight_updater.weight_version
 
     def _create_ref_model(self, ref_load_path: str | None):
         """Create a separate FSDP2 ref model. ALWAYS uses CPUOffloadPolicy (regardless of the actor's

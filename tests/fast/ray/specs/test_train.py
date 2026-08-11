@@ -201,10 +201,14 @@ class TestConcurrencyGroups:
         """Dropping a @ray.method annotation would silently queue that call behind a train step."""
         annotations: dict[str, str | None] = {
             name: getattr(getattr(TrainRayActor, name), "__ray_concurrency_group__", None)
-            for name in ("get_heartbeat_status", "inject_fault")
+            for name in ("get_heartbeat_status", "inject_fault", "kill_self")
         }
 
-        assert annotations == {"get_heartbeat_status": "heartbeat_status", "inject_fault": "fault_injector"}
+        assert annotations == {
+            "get_heartbeat_status": "heartbeat_status",
+            "inject_fault": "fault_injector",
+            "kill_self": "kill_self",
+        }
 
     def test_every_annotated_group_is_declared(self):
         """Ray rejects an actor whose method names a concurrency group the class never declares."""

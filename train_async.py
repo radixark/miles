@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 
-from miles.ray.placement_group import create_rollout_components, create_training_models
+from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
 from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
@@ -49,7 +49,7 @@ async def train(args):
     maybe_start_mini_ft_controller(args)
 
     # always update weight first so that sglang has the loaded weights from training.
-    await actor_model.update_weights()
+    await update_weights(actor_model, rollout_executor)
 
     if args.check_weight_update_equal:
         await inference_controller.check_weights(
@@ -115,7 +115,7 @@ async def train(args):
             # sync generate before update weights to prevent update weight in the middle of generation
             rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
             rollout_data_next_future = None
-            await actor_model.update_weights(rollout_id=rollout_id)
+            await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
             await inference_controller.prepare_eval()
