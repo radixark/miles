@@ -455,7 +455,6 @@ def train_one_step(
             (loss, num_elems, {"keys": list[str], "values": torch.Tensor}).
         """
 
-        logger.info("Tinker backward phase: forward_step begin")
         # Get the batch.
         batch = get_batch(
             data_iterator,
@@ -525,12 +524,10 @@ def train_one_step(
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
 
-        logger.info("Tinker backward phase: forward_step end")
         return output_tensor, partial(loss_function, args, batch, num_microbatches, apply_megatron_loss_scaling=True)
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
-    logger.info("Tinker backward phase: schedule begin num_microbatches=%s", num_microbatches)
     losses_reduced = forward_backward_func(
         forward_step_func=forward_step,
         data_iterator=data_iterator,
@@ -541,7 +538,6 @@ def train_one_step(
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False,
     )
-    logger.info("Tinker backward phase: schedule end")
 
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
@@ -635,9 +631,7 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
-    logger.info("Tinker backward phase: finalize_model_grads begin")
     result = finalize_model_grads(*args, **kwargs)
-    logger.info("Tinker backward phase: finalize_model_grads end")
     return result
 
 
