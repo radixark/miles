@@ -14,6 +14,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
     STATIC_WORKERS_SECTION,
     TRAINER_ENGINES_SECTION,
     LaunchPlan,
+    MooncakeInfo,
 )
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.pool_entry import build_entry
 from miles.utils.workers.naming import compute_cell_id
@@ -57,6 +58,7 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
 def _object_names(release: str) -> ObjectNames:
     return ObjectNames(
         orchestrator=naming.component_name(release, naming.ORCHESTRATOR_COMPONENT),
+        mooncake_master=MooncakeInfo.master_object_name(release),
     )
 
 
