@@ -30,6 +30,8 @@ run:
   objectNames:
     orchestrator: miles-run-orchestrator
     mooncakeMaster: miles-run-mooncake-master
+    uninstall: miles-run-uninstall
+    uninstallManifest: miles-run-uninstall-manifest
   orchestrator:
     command: []
     resources:
@@ -41,6 +43,8 @@ run:
   inferenceEngines: []
   trainerEngines: []
   env: {}
+  autoUninstall:
+    enabled: true
   mooncake:
     enabled: false
     rpcPort: 50051
