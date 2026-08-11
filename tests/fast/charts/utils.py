@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import sys
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -12,11 +13,13 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CHARTS_DIR = REPO_ROOT / "charts"
 CHART_DIR = CHARTS_DIR / "miles-workbench"
 SHARED_INFRA_SCHEMA_PATH = CHARTS_DIR / "shared-infra.schema.json"
+WORKBENCH_PACKAGE = "miles.utils.external_utils.miles_workbench"
 
 RELEASE_NAME = "miles-workbench-myuser"
 UNINSTALLER_SERVICE_ACCOUNT = "miles-uninstaller"
 OBJECT_NAME = RELEASE_NAME
 NAMESPACE = "myns"
+LWS_RESOURCE = "leaderworkersets.leaderworkerset.x-k8s.io"
 
 requires_helm = pytest.mark.skipif(
     shutil.which("helm") is None and not os.environ.get("CI"),
@@ -117,3 +120,25 @@ def named_object(objects: list[dict[str, Any]], kind: str, name: str) -> dict[st
     matched = [obj for obj in objects_of_kind(objects, kind) if obj["metadata"]["name"] == name]
     assert len(matched) == 1, f"expected one {kind}/{name}, got {[obj['metadata']['name'] for obj in matched]}"
     return matched[0]
+
+
+def run_workbench(*args: str, interpreter: str | None = None, **kwargs: Any) -> subprocess.CompletedProcess:
+    command = [interpreter or sys.executable, "-m", WORKBENCH_PACKAGE, *args]
+    return subprocess.run(command, cwd=REPO_ROOT, text=True, timeout=60, **kwargs)
+
+
+def merged_rules(*rules: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
+    merged: dict[str, set[str]] = {}
+    for rule in rules:
+        for resource, verbs in rule.items():
+            merged.setdefault(resource, set()).update(verbs)
+    return {resource: tuple(sorted(verbs)) for resource, verbs in merged.items()}
+
+
+def can_i_queries(rules: dict[str, tuple[str, ...]]) -> set[str]:
+    queries = set()
+    for resource, verbs in rules.items():
+        target, _, subresource = resource.partition("/")
+        for verb in verbs:
+            queries.add(f"{verb} {target} --subresource={subresource}" if subresource else f"{verb} {target}")
+    return queries
