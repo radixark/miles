@@ -15,6 +15,8 @@ from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LAB
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 CI_LABEL = "miles.radixark.io/ci-run"
+_ALREADY_EXISTS = "AlreadyExists"
+_JOB_COMPLETION_JSONPATH = "jsonpath={.status.succeeded},{.status.failed}"
 
 
 class Helm:
@@ -93,6 +95,37 @@ class Kubectl:
     @staticmethod
     def run_raw(*arguments: str) -> subprocess.CompletedProcess[str]:
         return Kubectl._run(list(arguments))
+
+    @staticmethod
+    def create_if_absent(manifest_path: str) -> bool:
+        result = Kubectl._run(["create", "-f", manifest_path])
+        if result.returncode == 0:
+            return True
+        if _ALREADY_EXISTS in result.stderr:
+            return False
+        raise RuntimeError(f"Could not create the objects of {manifest_path}: {result.stderr.strip()}")
+
+    @staticmethod
+    def jobs_finished(manifest_path: str) -> bool:
+        result = Kubectl._run(["get", "-f", manifest_path, "--output", _JOB_COMPLETION_JSONPATH])
+        if result.returncode != 0:
+            raise RuntimeError(f"Could not read the objects of {manifest_path}: {result.stderr.strip()}")
+        return any(count.isdigit() and int(count) > 0 for count in result.stdout.split(","))
+
+    @staticmethod
+    def replace(manifest_path: str) -> None:
+        result = Kubectl._run(["replace", "--force", "-f", manifest_path])
+        if result.returncode != 0:
+            raise RuntimeError(f"Could not replace the objects of {manifest_path}: {result.stderr.strip()}")
+
+    @staticmethod
+    def delete_job(name: str, *, namespace: str, check: bool = False) -> None:
+        Kubectl._run(["delete", "job", name, "--namespace", namespace, "--ignore-not-found"], check=check)
+
+    @staticmethod
+    def apply(manifest: str, *, namespace: str) -> None:
+        result = Kubectl._run(["apply", "--namespace", namespace, "-f", "-"], input=manifest)
+        assert result.returncode == 0, f"Could not submit the job: {result.stderr}"
 
     @staticmethod
     def get_json(
