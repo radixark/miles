@@ -174,6 +174,11 @@ fp32 master copy plus the two Adam moments, against 2 bytes for a bf16 parameter
 parallelism divides that state, so a run with GPUs to spare may need none of what follows,
 and a run at DP=1 may need all of it.
 
+Two of the knobs apply to any layout, and the rest exist only because a colocated engine
+wants the GPU back.
+
+#### Either layout
+
 **Activations** are the first thing to trade, because recompute is cheap and predictable.
 Every recipe passes some form of:
 
@@ -185,20 +190,23 @@ Every recipe passes some form of:
 weights and moments in host memory and runs Adam there, and
 `--overlap-cpu-optimizer-d2h-h2d` hides the copies behind compute. Recipes that use it
 usually add `--use-precision-aware-optimizer`, which lets Megatron hold narrower optimizer
-state. Note the interaction with weight rematerialization below: precision-aware on the GPU
-stores masters as int16 remainders inside TE FusedAdam, so there is nothing standalone left
-to rebuild from.
+state. Note the interaction with rematerialization below: precision-aware on the GPU stores
+masters as int16 remainders inside TE FusedAdam, so there is nothing standalone left to
+rebuild from.
 
-**Under `--colocate`, the whole actor gets out of the way while SGLang generates.** That is
-the `sleep` / `wake_up` pair from the contract at the top of this page, and `--colocate`
-turns both `--offload-train` and `--offload-rollout` on for you.
+#### Colocated only
+
+Everything from here down hangs off `--offload-train`, which is on precisely because the
+engine needs the same HBM during generation. It is what `sleep` / `wake_up` do, it is turned
+on for you by `--colocate`, and in a disaggregated run there is nothing to make room for, so
+none of it applies.
 
 | Flag | Effect |
 |---|---|
 | `--offload-train` / `--offload-rollout` | Which side is offloaded during the other's phase. Both implied by `--colocate`. |
 | `--offload-train-target cpu` | Default: the paused actor is backed up in pinned host memory. |
 | `--offload-train-target disk` | For when host RAM cannot hold that copy either: stream it to node-local NVMe instead, through a bounded pinned buffer (`--offload-train-disk-dir`, `--offload-train-disk-chunk-mb`). Megatron backend only. |
-| `--rematerialize-param-from-master-weight` | Drop the actor's parameter backup during rollout and rebuild it from the optimizer's master weights on the next step. Saves 2 bytes per parameter per rank of host memory on bf16 training. Requires the `cpu` target. |
+| `--rematerialize-param-from-master-weight` | Drop the actor's parameter backup during rollout and rebuild it from the optimizer's master weights on the next step. Saves 2 bytes per parameter per rank of host memory on bf16 training. Asserts `--colocate` plus the `cpu` target. |
 
 **If the optimizer state does not fit while the step itself runs**, offloading the actor
 cannot help, because pause and resume happen at phase boundaries and everything is resident
