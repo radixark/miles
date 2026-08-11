@@ -441,8 +441,13 @@ def step_external_adapter_slot(args, model, optimizer, slot: int, batch_size: in
         step_adapter_slots,
     )
 
-    configure_adapter_slot_adam(optimizer, slot, **adam_params)
-    grad_norms = step_adapter_slots(optimizer, model, {slot: batch_size}, clip_grad=args.clip_grad)
+    adam_config = dict(adam_params)
+    # Tinker's AdamParams includes clipping alongside the Adam
+    # hyperparameters. Miles applies clipping in the slot-step primitive,
+    # rather than storing it in the torch optimizer param group.
+    clip_grad = float(adam_config.pop("grad_clip_norm", args.clip_grad))
+    configure_adapter_slot_adam(optimizer, slot, **adam_config)
+    grad_norms = step_adapter_slots(optimizer, model, {slot: batch_size}, clip_grad=clip_grad)
     return grad_norms[slot]
 
 
