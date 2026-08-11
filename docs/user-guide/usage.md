@@ -143,7 +143,6 @@ turns both `--offload-train` and `--offload-rollout` on for you.
 | Flag | Effect |
 |---|---|
 | `--offload-train` / `--offload-rollout` | Which side is offloaded during the other's phase. Both implied by `--colocate`. |
-| `--offload-rollout-level kv_cache weight` | What the engine gives up while training runs. Both by default. |
 | `--offload-train-target cpu` | Default: the paused actor is backed up in pinned host memory. |
 | `--offload-train-target disk` | For when host RAM cannot hold that copy either: stream it to node-local NVMe instead, through a bounded pinned buffer (`--offload-train-disk-dir`, `--offload-train-disk-chunk-mb`). Megatron backend only. |
 | `--rematerialize-param-from-master-weight` | Drop the actor's parameter backup during rollout and rebuild it from the optimizer's master weights on the next step. Saves 2 bytes per parameter per rank of host memory on bf16 training. Requires the `cpu` target. |
@@ -229,13 +228,12 @@ surgically. See [Customization](/user-guide/customization#megatron-hooks).
 
 ### Going deeper: bringing in a new architecture
 
-Post-training runs on released checkpoints, so this is rarely your problem. When a model
-does need a module Megatron Core lacks (Qwen3-Next's Gated-Delta-Net, Qwen3.5's
-attention-output gate), Miles embeds the model's official HuggingFace module inside
-Megatron's scheduling rather than patching Megatron: a spec function under
-`miles_plugins/models/` is selected with `--spec <module> <function>`, a bridge under
-`miles_plugins/mbridge/` reconciles the parameter layouts, and parameters that must stay
-fp32 through Megatron's bf16 cast are tagged with `mark_param_dtype` from
+Post-training runs on released checkpoints, so this is rarely your problem. When a model does
+need a custom module, Miles embeds the model's official HuggingFace module inside Megatron's
+scheduling rather than patching Megatron: a spec function under `miles_plugins/models/` is
+selected with `--spec <module> <function>`, a bridge under `miles_plugins/mbridge/`
+reconciles the parameter layouts, and parameters that must stay fp32 through Megatron's bf16
+cast are tagged with `mark_param_dtype` from
 `miles/backends/megatron_utils/fp32_param_utils.py`. The model configs in `scripts/models/`
 that pass `--spec` are the worked examples.
 
