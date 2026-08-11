@@ -19,6 +19,7 @@ from miles.utils.external_utils.command_utils.common import ArgvManipulator, cha
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability import farewell, with_observability
+from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.diagnosis import collect_diagnosis
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.pod_facts import pod_phase
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import (
@@ -95,6 +96,9 @@ def _follow_until_finished(*, release: str, namespace: str, state_file: Path) ->
             read_pod_phase=lambda: pod_phase(namespace, orchestrator_workload),
         )
 
+    if outcome.exit_code != 0:
+        _collect_diagnosis(release=release, namespace=namespace, state_file=state_file)
+
     logger.info(farewell(namespace=namespace, release=release, workload=orchestrator_workload))
     if outcome.exit_code != 0:
         raise SystemExit(outcome.exit_code)
@@ -126,6 +130,23 @@ def _generate_wandb_run_id() -> str:
     from wandb.sdk.lib.runid import generate_id
 
     return generate_id()
+
+
+def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> None:
+    try:
+        diagnosis = collect_diagnosis(
+            namespace=namespace,
+            output_dir=state_file.parent,
+            selector=Kubectl.release_selector(release),
+            state_file=state_file,
+        )
+    except Exception:
+        logger.warning("Could not collect a diagnosis of the failed run", exc_info=True)
+        return
+
+    logger.info(f"The pods of this failed run are described under {diagnosis.directory}")
+    if not diagnosis.is_complete:
+        logger.warning(f"The diagnosis is incomplete, these could not be collected: {', '.join(diagnosis.missing)}")
 
 
 def _write_helm_values(path: Path, values: dict[str, Any]) -> None:
