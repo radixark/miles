@@ -167,7 +167,7 @@
        "user-guide/concepts",
        "user-guide/argument-groups",
        "user-guide/fully-async",
-       "user-guide/usage",
+       "user-guide/training-backend",
        "user-guide/training-script-walkthrough",
        "user-guide/monitoring",
        "user-guide/dashboard",
@@ -287,12 +287,16 @@
  },
  "redirects": [
   {
+   "source": "/user-guide/usage",
+   "destination": "/user-guide/training-backend"
+  },
+  {
    "source": "/advanced/architecture-support",
-   "destination": "/user-guide/usage#going-deeper-bringing-in-a-new-architecture"
+   "destination": "/user-guide/training-backend#going-deeper-bringing-in-a-new-architecture"
   },
   {
    "source": "/developer/experimental-features",
-   "destination": "/user-guide/usage#fsdp"
+   "destination": "/user-guide/training-backend#fsdp"
   }
  ],
  "background": {

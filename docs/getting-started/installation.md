@@ -103,4 +103,4 @@ or Slingshot — and 200+ GB/s per node. Single-node jobs run fine over NVLink o
 
 - [Quick Start](/getting-started/quick-start) — run your first training job.
 - [Core concepts](/user-guide/concepts) — the mental model behind Miles.
-- [Training backends](/user-guide/usage) — Megatron vs FSDP.
+- [Training backends](/user-guide/training-backend) — Megatron vs FSDP.

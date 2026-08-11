@@ -61,9 +61,9 @@ The rest follows from that split:
 
 ## Megatron-LM
 
-Configuring this backend is five decisions, in this order: what the architecture is, how to
-split it, how to fit it in memory, where the weights come from, and what you want to hook
-into.
+Configuring this backend is a handful of decisions, in this order: what the architecture is,
+how to split it, where it sits relative to the rollout engines, how to fit it in memory,
+where the weights come from, and what you want to hook into.
 
 ### 1. Describing the architecture
 
@@ -112,7 +112,53 @@ set of supported combinations depends on the Megatron Core kernels and model spe
 [Argument Groups](/user-guide/argument-groups#perf-args) lists the flags that belong in
 `PERF_ARGS`.
 
-### 3. Fitting it in memory
+### 3. Choosing the GPU layout
+
+Parallelism says how the trainer splits the model. This says where the trainer sits relative
+to the SGLang engines, and there are two answers.
+
+**Disaggregated is the default.** The trainer takes `--actor-num-nodes` x
+`--actor-num-gpus-per-node` GPUs, the engines take `--rollout-num-gpus` more, and the two
+sets do not overlap. Nobody has to move: both halves stay resident on their own GPUs for the
+whole run, so `--offload-train` / `--offload-rollout` default off and no phase pays an
+offload cost. It is also the layout that lets the two halves actually run at the same time,
+which is what [Fully Async Rollout](/user-guide/fully-async) and `train_async.py` are for.
+Under the synchronous loop in `train.py` the phases still alternate, so each set of GPUs is
+idle while the other works.
+
+```bash
+# 8 GPUs training, 8 more generating
+--actor-num-nodes 1 --actor-num-gpus-per-node 8 \
+--rollout-num-gpus 8 --rollout-num-gpus-per-engine 2
+```
+
+**Colocated shares one set of GPUs.** `--colocate` puts the engines on the training GPUs and
+the two take turns: generate, offload the engine, train, offload the trainer, repeat. It is
+the right default when GPUs are the scarce resource, since the same 8 GPUs do both jobs
+instead of standing idle during the other phase.
+
+```bash
+--colocate \
+--actor-num-nodes 1 --actor-num-gpus-per-node 8 \
+--rollout-num-gpus-per-engine 2 \
+--sglang-mem-fraction-static 0.8
+```
+
+Three things follow from `--colocate` that are worth knowing before you use it:
+
+- `--rollout-num-gpus` is ignored and reconciled to `actor_num_gpus_per_node x
+  actor_num_nodes`, since the engines are on the training GPUs by definition.
+- `--offload-train` and `--offload-rollout` both turn on, which is what makes the taking of
+  turns possible. That is the memory story in the next section.
+- The trainer reserves HBM at init before SGLang starts, so `--sglang-mem-fraction-static`
+  has to come down, typically to 0.8 or lower. Miles also defaults
+  `--sglang-cuda-graph-backend-prefill=disabled` here to avoid an NVLS OOM.
+
+On a node with fewer than 8 usable GPUs, set `--num-gpus-per-node` too, otherwise the
+rollout side still assumes 8. And `--fully-async` cannot be colocated: its whole point is
+that rollout keeps generating while the trainer steps, which requires separate GPUs.
+
+### 4. Fitting it in memory
 
 Parallelism decides how the model is divided; this decides what is allowed to sit in HBM at
 all. Four things compete for it: parameters, gradients, optimizer state, and activations.
@@ -166,7 +212,7 @@ third. It requires the `disk` target and excludes `--optimizer-cpu-offload`.
 [Disk Offload](/advanced/disk-offload) has the full picture for both, including the
 same-topology resume limit, what checkpointing costs, and measured sleep / wake numbers.
 
-### 4. Getting weights in and out
+### 5. Getting weights in and out
 
 Megatron trains from its own `torch_dist` format: `.distcp` files that are
 parallelism-agnostic, so you can change TP / PP / EP later without re-converting. Convert
@@ -213,7 +259,7 @@ only then is the sentinel deleted, which is why "file gone" means "checkpoint du
 disk". If the job crashes mid-save the sentinel survives, so the request stays pending for
 the next run. Requires `--save`.
 
-### 5. Hooking into the loop
+### 6. Hooking into the loop
 
 Three extension points override Megatron behavior without forking it:
 

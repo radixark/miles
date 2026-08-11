@@ -31,7 +31,7 @@ short tour for new contributors.
 
   </Card>
 
-  <Card title="Training Backends" icon="layer-group" href="/user-guide/usage">
+  <Card title="Training Backends" icon="layer-group" href="/user-guide/training-backend">
 
     Megatron-LM and FSDP: what each backend owns and where its code lives.
 
