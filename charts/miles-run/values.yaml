@@ -55,3 +55,13 @@ run:
         cpu: "2"
         memory: 16Gi
       limits: {}
+
+commandJob:
+  enabled: false
+  name: ""
+  objectName: ""
+  command: []
+  completions: 1
+  gpusPerPod: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 3600

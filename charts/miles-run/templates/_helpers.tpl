@@ -33,6 +33,25 @@ affinity:
 {{- end }}
 {{- end }}
 
+{{- define "miles-run.podDefaultsWithAntiAffinity" -}}
+{{- $context := .context -}}
+{{- $scheduling := $context.Values.infra.scheduling | default dict -}}
+enableServiceLinks: false
+{{- with include "miles-common.imagePullSecrets" $context }}
+{{ . }}
+{{- end }}
+{{- with $scheduling.nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $scheduling.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+affinity:
+  {{- toYaml (merge (dict "podAntiAffinity" .podAntiAffinity) (deepCopy ($scheduling.affinity | default dict))) | nindent 2 }}
+{{- end }}
+
 {{- /* Every container of the release: the run's own identity, from which a worker that has to
        reach another worker recomputes its address and builds a backend capability of its own. */ -}}
 {{- define "miles-run.releaseEnv" -}}
