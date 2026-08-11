@@ -89,6 +89,20 @@ async def main(args):
         config = parse_adapter_run_yaml(Path(path))
         await controller.register_adapter.remote(name, config)
 
+    # Tinker owns the training cadence in request-driven mode.  Entering the
+    # autonomous rollout loop here would try to construct Miles datasets for
+    # externally registered adapters (which intentionally have no prompt
+    # path) and would also race Tinker's split forward/backward + optimizer
+    # calls.  Keep the Ray actors alive until the API server is stopped; the
+    # backend methods perform their own adapter reconciliation and weight push.
+    if tinker_task is not None:
+        try:
+            await tinker_task
+        finally:
+            await rollout_manager.dispose.remote()
+            await controller.stop.remote()
+        return
+
     rollout_id = 0
     while True:
         snapshot = await get_multi_lora_controller().snapshot.remote()
