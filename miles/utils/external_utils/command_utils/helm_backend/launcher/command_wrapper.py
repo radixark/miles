@@ -8,6 +8,7 @@ import yaml
 from pydantic import BaseModel
 
 from miles.utils.external_utils.command_utils.common import run_process
+from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LABEL
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
@@ -64,7 +65,7 @@ class Kubectl:
             command += ["--selector", selector]
         if field_selector is not None:
             command += ["--field-selector", field_selector]
-        result = Kubectl._run(command)
+        result = Kubectl._run(command, timeout=_GET_REQUEST_TIMEOUT_SECONDS)
         if result.returncode != 0:
             raise RuntimeError(f"kubectl get {kind} failed with code {result.returncode}: {result.stderr.strip()}")
         if not result.stdout.strip():
@@ -95,10 +96,14 @@ class Kubectl:
         return command
 
     @staticmethod
+    def release_selector(release: str) -> str:
+        return f"{INSTANCE_LABEL}={release}"
+
+    @staticmethod
     def _run(
-        arguments: list[str], *, input: str | None = None, check: bool = False
+        arguments: list[str], *, input: str | None = None, check: bool = False, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
-        return run_process(["kubectl", *arguments], capture_output=True, check=check, input=input)
+        return run_process(["kubectl", *arguments], capture_output=True, check=check, input=input, timeout=timeout)
 
 
 def _run(command: list[str], capture_output: bool) -> subprocess.CompletedProcess[str]:
