@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Miles shared infra values",
-  "description": "Cluster-shaped values that every Miles chart accepts under the same paths, so one user-maintained values.yaml drives miles-workbench and miles-run alike. Helm does not resolve cross-file $ref, so each chart inlines these definitions verbatim into its own values.schema.json; tools/kubernetes/generate_chart_schema.py writes them from the same Python types.",
+  "description": "Cluster-shaped values that every Miles chart accepts under the same paths, so one user-maintained values.yaml drives miles-workbench and miles-run alike. Helm does not resolve cross-file $ref, so each chart inlines these definitions verbatim into its own values.schema.json; tools/kubernetes/generate_chart_schema.py writes all three from the same Python types.",
   "type": "object",
   "properties": {
     "infra": {
@@ -15,6 +15,9 @@
         },
         "paths": {
           "$ref": "#/definitions/Paths"
+        },
+        "nodeLocalStorage": {
+          "$ref": "#/definitions/NodeLocalStorage"
         },
         "scheduling": {
           "$ref": "#/definitions/Scheduling"
@@ -73,6 +76,26 @@
         "repository",
         "tag"
       ],
+      "type": "object"
+    },
+    "NodeLocalStorage": {
+      "additionalProperties": false,
+      "properties": {
+        "hostPath": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^(/.*)?$",
+          "type": "string"
+        },
+        "mountPath": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "Paths": {
