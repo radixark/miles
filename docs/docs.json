@@ -251,9 +251,9 @@
       "root": "developer/index",
       "pages": [
        "developer/contributor-guide",
-       "developer/debug",
-       "developer/migration",
-       "developer/architecture"
+       "developer/architecture",
+       "developer/versions",
+       "developer/debug"
       ]
      }
     ]

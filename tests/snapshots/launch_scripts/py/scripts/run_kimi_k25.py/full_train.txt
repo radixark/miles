@@ -42,6 +42,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --kv-channels 64
   --normalization RMSNorm
   --position-embedding-type rope
+  --rope-type yarn
   --norm-epsilon 1e-5
   --swiglu
   --untie-embeddings-and-output-weights
@@ -55,6 +56,9 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --qk-layernorm
   --rotary-scaling-factor 64.0
   --rotary-base 50000
+  --original-max-position-embeddings 4096
+  --beta-fast 32
+  --beta-slow 1
   --mscale 1.0
   --mscale-all-dim 1.0
   --attention-softmax-in-fp32

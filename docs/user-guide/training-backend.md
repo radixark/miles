@@ -41,13 +41,13 @@ is the answer.
 **Use FSDP when you want the HuggingFace implementation trained verbatim.** It loads a HF
 directory as-is, with no conversion step and no architecture flags to write, which makes it
 the fast path for bringing up a new architecture, for checking trainer numerics against the
-HF reference, and for models that fit with only data and context parallelism.
+HF reference, and for models that fit under data parallelism alone.
 
 The rest follows from that split:
 
 | | Megatron-LM | FSDP |
 |---|---|---|
-| Model splitting | TP × PP × CP × EP × ETP, plus DP | `dp_replicate` × `dp_shard` × `cp` |
+| Model splitting | TP × PP × CP × EP × ETP, plus DP | `dp_replicate` × `dp_shard` |
 | Model input | `torch_dist` checkpoint (offline conversion step) | HF directory, loaded as-is |
 | Architecture definition | `MODEL_ARGS` plus a Megatron spec for anything non-standard | HF `config.json`, plus an optional adaptation spec |
 | Checkpoints written | Megatron `torch_dist` | PyTorch Distributed Checkpoint |
@@ -325,29 +325,26 @@ read from the HF config, so Megatron's architecture flags (`--num-layers`, `--hi
 
 ### 2. Sharding it
 
-This backend has three parallel dimensions, and `miles/backends/fsdp_utils/parallel.py`
-builds all three as one device mesh:
+This backend is pure data parallel. `miles/backends/fsdp_utils/parallel.py` builds a single
+device mesh with two dimensions:
 
 | Dimension | How you set it | What it does |
 |---|---|---|
-| `cp` | `--context-parallel-size` | Splits each sequence across ranks. Above 1, Miles substitutes `ring_flash_attn` on the CP group and the actor chunks `input_ids` / `position_ids` per CP rank. |
 | `dp_replicate` | `--dp-replicate-size` | Replica count for FSDP2 hybrid sharding. Parameters are replicated across replicas, sharded within one. |
-| `dp_shard` | derived | Whatever is left: `(world_size / cp) / dp_replicate`. This is the dimension FSDP2 actually shards parameters, gradients and optimizer state over. |
+| `dp_shard` | derived | Whatever is left: `world_size / dp_replicate`. This is the dimension FSDP2 actually shards parameters, gradients and optimizer state over. |
 
-The default, `cp=1` and `dp_replicate=1`, means one flat shard group over every training
-rank. Tensor, pipeline, expert and expert-tensor parallelism are all fixed at size 1 in the
-FSDP `ParallelState`, so the model has to fit within those three dimensions.
+The default, `dp_replicate=1`, means one flat shard group over every training rank. Tensor,
+pipeline, context, expert and expert-tensor parallelism are all fixed at size 1 in the FSDP
+`ParallelState`, so the model has to fit within those two dimensions.
 
 <Note>
 
-`--context-parallel-size` above 1 is currently rejected in argument validation
-(`miles/utils/arguments.py`) even though the mesh supports it, so today the usable surface is
-`dp_replicate` × `dp_shard`.
+Context parallelism is not available here. `--context-parallel-size` above 1 is rejected in
+argument validation (`miles/utils/arguments.py`); the mesh has no CP dimension to build.
 
 </Note>
 
 The mesh is checked before anything is built: `world_size` must divide by
-`--context-parallel-size`, and the resulting data-parallel size must divide by
 `--dp-replicate-size`, otherwise the run fails in argument validation instead of deep inside
 mesh construction.
 
@@ -387,7 +384,7 @@ checkpoints, not `torch_dist` ones, and the two formats are not interchangeable.
 
 <Warning>
 
-**No TP / PP / EP.** The model must fit under `dp_replicate` × `dp_shard` × `cp`.
+**No TP / PP / CP / EP.** The model must fit under `dp_replicate` × `dp_shard`.
 
 **No LoRA.** [LoRA](/advanced/lora) is Megatron-only.
 

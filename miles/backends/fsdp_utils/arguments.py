@@ -50,8 +50,9 @@ class FSDPArgs:
 
     deterministic_mode: bool = False  # This name must be the same as Megatron's
 
-    # Context Parallelism
-    context_parallel_size: int = 1  # Context Parallelism size
+    # The FSDP backend is pure data parallel. This knob only exists so shared argument
+    # validation can reject a context-parallel run with a clear message.
+    context_parallel_size: int = 1
     # Profile
     record_memory_history: bool = False
     memory_snapshot_path: str = "snapshot.pickle"
@@ -117,15 +118,5 @@ def validate_hybrid_shard_args(args) -> None:
         raise ValueError(f"dp_replicate_size must be at least 1, got {replicate_size}")
 
     world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
-    if args.context_parallel_size < 1:
-        raise ValueError(f"context_parallel_size must be at least 1, got {args.context_parallel_size}")
-    if world_size % args.context_parallel_size:
-        raise ValueError(
-            f"world_size({world_size}) must be divisible by " f"context_parallel_size({args.context_parallel_size})"
-        )
-
-    data_parallel_size = world_size // args.context_parallel_size
-    if data_parallel_size % replicate_size:
-        raise ValueError(
-            f"data_parallel_size({data_parallel_size}) must be divisible by " f"dp_replicate_size({replicate_size})"
-        )
+    if world_size % replicate_size:
+        raise ValueError(f"world_size({world_size}) must be divisible by dp_replicate_size({replicate_size})")

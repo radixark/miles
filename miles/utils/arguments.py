@@ -3288,8 +3288,6 @@ def miles_validate_args(args):
 
     _validate_rematerialize_param_from_master_weight(args)
 
-    _validate_rematerialize_param_from_master_weight(args)
-
     if args.offload_train_target == "disk":
         assert args.offload_train, "--offload-train-target=disk requires --offload-train"
         assert (
