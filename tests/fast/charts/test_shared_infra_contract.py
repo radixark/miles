@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +9,7 @@ from tests.fast.charts.utils import (
     pod_spec,
     render,
     requires_helm,
+    resolved_schema,
 )
 
 CLUSTER_VALUES = dict(
@@ -23,7 +23,7 @@ CLUSTER_VALUES = dict(
 
 
 def shared_infra_schema() -> dict[str, Any]:
-    return json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]["infra"]
+    return resolved_schema(SHARED_INFRA_SCHEMA_PATH)["properties"]["infra"]
 
 
 def cluster_values_file(tmp_path: Path) -> Path:
@@ -39,7 +39,7 @@ def chart_infra_defaults(chart_dir: Path) -> dict[str, Any]:
 class TestSharedInfraContract:
     def test_the_contract_is_the_single_infra_subtree(self):
         """One top-level key is what lets a cluster values file be handed to any chart unchanged."""
-        assert set(json.loads(SHARED_INFRA_SCHEMA_PATH.read_text())["properties"]) == {"infra"}
+        assert set(resolved_schema(SHARED_INFRA_SCHEMA_PATH)["properties"]) == {"infra"}
 
     def test_the_infra_subtree_is_exactly_the_cluster_shaped_sections(self):
         """A section with no helper behind it would be accepted by the schema and never reach a pod."""
@@ -50,7 +50,7 @@ class TestSharedInfraContract:
         shared = shared_infra_schema()
 
         for chart_dir in chart_directories():
-            properties = json.loads((chart_dir / "values.schema.json").read_text())["properties"]
+            properties = resolved_schema(chart_dir / "values.schema.json")["properties"]
             assert properties["infra"] == shared, chart_dir
 
     def test_every_chart_defaults_every_shared_infra_key(self):
