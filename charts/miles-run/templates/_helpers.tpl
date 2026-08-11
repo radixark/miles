@@ -33,6 +33,8 @@ affinity:
 {{- end }}
 {{- end }}
 
+{{- /* Every container of the release: the run's own identity, from which a worker that has to
+       reach another worker recomputes its address and builds a backend capability of its own. */ -}}
 {{- define "miles-run.releaseEnv" -}}
 {{- $identity := dict "MILES_K8S_NAMESPACE" .Release.Namespace "MILES_K8S_RELEASE" .Release.Name -}}
 {{- $base := include "miles-common.envBase" . | fromYaml -}}
@@ -93,3 +95,34 @@ volumeMounts:
   {{- . | nindent 2 }}
 {{- end }}
 {{- end }}
+
+{{- define "miles-run.autoUninstallEnabled" -}}
+{{- if .Values.run.autoUninstall.enabled -}}
+true
+{{- end }}
+{{- end }}
+
+{{- define "miles-run.uninstallManifestDir" -}}
+/etc/miles-uninstall
+{{- end }}
+
+{{- define "miles-run.uninstallManifestFileName" -}}
+uninstall-job.yaml
+{{- end }}
+
+{{- define "miles-run.uninstallManifestVolume" -}}
+{{- if include "miles-run.autoUninstallEnabled" . -}}
+- name: uninstall-manifest
+  configMap:
+    name: {{ .Values.run.objectNames.uninstallManifest | quote }}
+{{- end }}
+{{- end }}
+
+{{- define "miles-run.uninstallManifestVolumeMount" -}}
+{{- if include "miles-run.autoUninstallEnabled" . -}}
+- name: uninstall-manifest
+  mountPath: {{ include "miles-run.uninstallManifestDir" . | quote }}
+  readOnly: true
+{{- end }}
+{{- end }}
+

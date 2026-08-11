@@ -1,0 +1,38 @@
+{{- if include "miles-run.autoUninstallEnabled" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.run.objectNames.uninstallManifest | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" (dict "context" . "component" "uninstall") | nindent 4 }}
+data:
+  {{ include "miles-run.uninstallManifestFileName" . }}: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: {{ .Values.run.objectNames.uninstall | quote }}
+      namespace: {{ .Release.Namespace | quote }}
+      labels:
+        miles.radixark.io/uninstall-of: {{ .Release.Name | quote }}
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 3600
+      activeDeadlineSeconds: 1020
+      template:
+        metadata:
+          labels:
+            miles.radixark.io/uninstall-of: {{ .Release.Name | quote }}
+        spec:
+          {{- include "miles-run.podDefaults" . | nindent 10 }}
+          serviceAccountName: {{ .Values.run.autoUninstall.serviceAccount | quote }}
+          restartPolicy: Never
+          containers:
+            - name: uninstall
+              image: {{ include "miles-common.image" . }}
+              imagePullPolicy: {{ .Values.infra.image.pullPolicy | quote }}
+              command:
+                - sh
+                - -c
+                - {{ printf "sleep 120 && helm uninstall %s --namespace %s --ignore-not-found" .Release.Name .Release.Namespace | quote }}
+{{- end }}
