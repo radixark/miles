@@ -14,6 +14,7 @@ from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 from tests.fast.utils.command_recorder import record_commands
 
 import miles.utils.external_utils.command_utils as command_utils
+from miles.utils.external_utils.command_utils import base_backend
 from miles.utils.external_utils.model_args_utils import import_module_from_path
 
 FROZEN_RUN_ID = "260101-000000-000"
@@ -125,7 +126,7 @@ def freeze_environment(monkeypatch, hardware: str = FROZEN_HARDWARE) -> None:
         monkeypatch.setenv(key, value)
     for key in CLEARED_ENV:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(command_utils, "detect_hardware", lambda: hardware)
+    monkeypatch.setattr(base_backend, "detect_hardware", lambda: hardware)
 
 
 def install_command_recorder(monkeypatch) -> Recording:
