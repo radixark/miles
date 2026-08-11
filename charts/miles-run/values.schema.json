@@ -160,6 +160,22 @@
       ],
       "type": "object"
     },
+    "InferencePool": {
+      "additionalProperties": false,
+      "properties": {
+        "pool_id": {
+          "type": "string"
+        },
+        "layout": {
+          "$ref": "#/definitions/PairingLayout"
+        }
+      },
+      "required": [
+        "pool_id",
+        "layout"
+      ],
+      "type": "object"
+    },
     "InfraValues": {
       "additionalProperties": false,
       "properties": {
@@ -290,6 +306,72 @@
           "type": "object"
         }
       },
+      "type": "object"
+    },
+    "PairingConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "string"
+        },
+        "release": {
+          "type": "string"
+        },
+        "trainer_pool_id": {
+          "type": "string"
+        },
+        "inference_pools": {
+          "items": {
+            "$ref": "#/definitions/InferencePool"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "namespace",
+        "release",
+        "trainer_pool_id",
+        "inference_pools"
+      ],
+      "type": "object"
+    },
+    "PairingLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "num_inference_cells": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num_trainer_cells": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num_pods_per_inference_cell": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num_pods_per_trainer_cell": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num_gpus_per_node": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "gpu_offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "num_inference_cells",
+        "num_trainer_cells",
+        "num_pods_per_inference_cell",
+        "num_pods_per_trainer_cell",
+        "num_gpus_per_node",
+        "gpu_offset"
+      ],
       "type": "object"
     },
     "Paths": {
@@ -469,6 +551,9 @@
         },
         "mooncake": {
           "$ref": "#/definitions/MooncakeSection"
+        },
+        "colocate": {
+          "$ref": "#/definitions/PairingConfig"
         },
         "autoUninstall": {
           "$ref": "#/definitions/AutoUninstallSection"
