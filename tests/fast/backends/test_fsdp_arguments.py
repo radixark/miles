@@ -14,6 +14,11 @@ def _parse(monkeypatch: pytest.MonkeyPatch, *argv: str):
 def test_cli_defaults_match_the_dataclass(monkeypatch: pytest.MonkeyPatch) -> None:
     args = _parse(monkeypatch)
     for field in dataclasses.fields(FSDPArgs):
+        assert field.default is not dataclasses.MISSING, (
+            f"{field.name} declares no plain default, so parse_fsdp_cli registers "
+            f"the dataclasses.MISSING sentinel as its CLI default; teach the parser "
+            f"about default_factory before adding a field like this"
+        )
         assert getattr(args, field.name) == field.default, (
             f"CLI default for --{field.name.replace('_', '-')} is {getattr(args, field.name)!r}, "
             f"but the dataclass declares {field.default!r}"
@@ -32,6 +37,12 @@ def test_false_default_bools_still_turn_on(monkeypatch: pytest.MonkeyPatch) -> N
     assert args.fp16 is True
 
 
-def test_disable_fp32_master_keeps_its_spelling(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fp32_master_toggles_both_ways(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _parse(monkeypatch).keep_fp32_master is True
     assert _parse(monkeypatch, "--disable-fp32-master").keep_fp32_master is False
+    assert _parse(monkeypatch, "--keep-fp32-master").keep_fp32_master is True
+
+
+def test_fp32_master_rejects_both_spellings_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(SystemExit):
+        _parse(monkeypatch, "--keep-fp32-master", "--disable-fp32-master")

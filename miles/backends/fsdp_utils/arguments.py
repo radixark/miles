@@ -80,11 +80,19 @@ def parse_fsdp_cli(extra_args_provider=None):
             arg_type = f.type
 
         if f.name == "keep_fp32_master":
-            parser.add_argument(
+            group = parser.add_mutually_exclusive_group()
+            group.add_argument(
+                "--keep-fp32-master",
+                dest=f.name,
+                action="store_true",
+                default=f.default,
+                help="Keep an FP32 master copy of the weights for bit-exact weight sync.",
+            )
+            group.add_argument(
                 "--disable-fp32-master",
                 dest=f.name,
                 action="store_false",
-                default=f.default,
+                default=argparse.SUPPRESS,
                 help="Disable the FP32 master copy to reduce memory when bit-exact weight sync is not required.",
             )
         elif arg_type is bool:
