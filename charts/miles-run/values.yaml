@@ -29,6 +29,7 @@ run:
   stateFile: /cluster-storage/miles_data/miles-runs/unset/state/orchestrator.state
   objectNames:
     orchestrator: miles-run-orchestrator
+    mooncakeMaster: miles-run-mooncake-master
   orchestrator:
     command: []
     resources:
@@ -40,3 +41,12 @@ run:
   inferenceEngines: []
   trainerEngines: []
   env: {}
+  mooncake:
+    enabled: false
+    rpcPort: 50051
+    metricsPort: 50052
+    resources:
+      requests:
+        cpu: "2"
+        memory: 16Gi
+      limits: {}
