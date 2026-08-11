@@ -19,8 +19,8 @@ export HARBOR_DAYTONA_DISK_GB="${HARBOR_DAYTONA_DISK_GB:-10}"
 # Snapshot each task image on first use so later trials skip the build.
 export HARBOR_DAYTONA_AUTO_SNAPSHOT=1
 
-# terminus-2 runs as a host process and calls the model itself, so the model
-# endpoint must be reachable from here rather than from inside the sandbox.
+# Defaults for host-process OpenAI agents such as terminus-2. Claude Code runs
+# inside Daytona and receives its Anthropic endpoint from each trial request.
 export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
 export OPENAI_API_BASE="${OPENAI_API_BASE:-http://127.0.0.1:30000/v1}"
 export OPENAI_BASE_URL="$OPENAI_API_BASE"

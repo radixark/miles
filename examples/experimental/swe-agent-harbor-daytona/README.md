@@ -12,9 +12,10 @@ It is the `examples/swe-agent-harbor-docker` pipeline with two changes:
   Docker daemon, no local image builds, and no local disk for task images. This
   is the practical option when the trainer runs on a GPU node where you cannot
   or do not want to run Docker-in-Docker.
-- **terminus-2 agent.** terminus-2 runs as a host process and calls the model
-  endpoint itself, rather than from inside the sandbox, so the model endpoint
-  must be reachable from the agent-server host.
+- **Agent-specific API routing.** terminus-2 runs as a host process and uses the
+  session's OpenAI endpoint. Claude Code runs inside Daytona and uses the same
+  session's Anthropic endpoint, so the model endpoint must be reachable from
+  the Daytona sandbox.
 
 Everything else — TITO, the session server, GRPO, the reward path — is identical
 to `examples/swe-agent-harbor-docker`, and so is the trainer side: this example has no
@@ -74,7 +75,7 @@ Verify `http://<agent-server>:11000/health` before launching Miles.
 ## 3. Prepare data
 
 `examples/swe-agent-harbor-docker/download_and_process_data.py` converts a local JSONL into
-Miles format. For terminus-2, set the agent name accordingly:
+Miles format. Set the Harbor agent name in every record. For terminus-2:
 
 ```bash
 python examples/swe-agent-harbor-docker/download_and_process_data.py \
@@ -83,6 +84,10 @@ python examples/swe-agent-harbor-docker/download_and_process_data.py \
     --agent-name terminus-2 \
     --prompt-key instruction
 ```
+
+For Claude Code, use `--agent-name claude-code` instead. Claude Code support
+also requires a Harbor agent server that forwards each request's `base_url`,
+`model`, and API key as the corresponding Anthropic environment variables.
 
 ## 4. Launch training
 
@@ -115,13 +120,12 @@ python examples/swe-agent-harbor-docker/run.py \
 
 For a smoke test, set `--num-rollout 1`.
 
-`--router-external-host` is the address the agent server uses to reach the Miles
-session server, substituted into the base URL handed to the agent. It only has
-to resolve from the agent-server host, so a hostname is fine — use one when the
-agent server reaches the trainer over a tailnet or other overlay. Do not confuse
-it with `--miles-host-ip`, which is bound locally on the trainer and must be an
-address that already exists on one of its interfaces. Ports 30000 and 31000 must
-be reachable from the agent-server host.
+`--router-external-host` is substituted into the session URL handed to the
+agent. It must be reachable from wherever that agent makes model requests: the
+agent-server host for terminus-2, or the Daytona sandbox for Claude Code. Do not
+confuse it with `--miles-host-ip`, which is bound locally on the trainer and
+must be an address that already exists on one of its interfaces. Ports 30000
+and 31000 must be reachable from the relevant agent runtime.
 
 ## Sizing the per-turn response cap
 
