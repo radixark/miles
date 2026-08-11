@@ -354,7 +354,7 @@ class _RefusingWorkerProvider(_FakeWorkerProvider):
     async def init(self) -> None:
         raise AssertionError("debug_train_only must not init any worker provider")
 
-    async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
+    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
         raise AssertionError("debug_train_only must not watch cells")
 
 

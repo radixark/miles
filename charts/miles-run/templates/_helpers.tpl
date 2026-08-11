@@ -53,6 +53,13 @@ affinity:
 {{- end }}
 {{- end }}
 
+{{- define "miles-run.labelEnv" -}}
+- name: {{ .name }}
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.labels['{{ .label }}']
+{{- end }}
+
 {{- define "miles-run.nodeLocalVolume" -}}
 {{- with (.Values.infra.nodeLocalStorage | default dict).hostPath -}}
 - name: node-local
@@ -79,6 +86,7 @@ affinity:
 {{- $context := .context -}}
 image: {{ include "miles-common.image" $context }}
 imagePullPolicy: {{ $context.Values.infra.image.pullPolicy | quote }}
+workingDir: "/root/miles"
 {{- $mounts := compact (list (include "miles-common.sharedStorageVolumeMount" $context | trim) (include "miles-common.codeVolumeMounts" $context | trim) (include "miles-run.nodeLocalVolumeMount" $context | trim) (.extraMounts | trim)) | join "\n" }}
 {{- with $mounts }}
 volumeMounts:
