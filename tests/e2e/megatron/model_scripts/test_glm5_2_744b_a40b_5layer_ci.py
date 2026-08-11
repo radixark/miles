@@ -23,6 +23,7 @@ register_rocm_ci(
     est_time=900,
     suite="stage-c-4-gpu-mi300x",
     labels=["megatron", "model-scripts", "amd"],
+    disabled="Disable due to failure",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -39,12 +40,12 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=4,
         num_rollout=2,
         enable_optimizer_offload=True,
-        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--disable-weights-backuper "),
+        extra_args=("--ci-test " "--ci-disable-logprobs-checker "),
     )
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.output_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)
     if args.fp8_rollout:

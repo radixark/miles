@@ -1,0 +1,16 @@
+### 0
+mkdir -p /root/models /root/datasets
+
+### 1
+hf download moonshotai/Kimi-K2.5
+  --local-dir /root/models/Kimi-K2.5
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 3
+python <REPO_ROOT>/tools/convert_kimi_int4_to_bf16.py
+  --model-dir /root/models/Kimi-K2.5
+  --output-dir /root/models/Kimi-K2.5-bf16 

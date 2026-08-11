@@ -32,6 +32,8 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 
 In `pr-test.yml`, `tier a` (CPU fast) gates the NVIDIA GPU fleet after both resolvers; its GPU stages (`b` / `c`) all depend on both resolvers and `stage-a-cpu`, and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline. The MI300X stage has no CPU-test gate.
 
+`pr-test.yml` treats `pull_request.closed` as cancellation-only: the close event shares the PR's concurrency group, cancels any queued or running `PR Test` run, and starts no resolver or test jobs.
+
 ## What each stage does
 
 **Image resolution (`resolve-ci-image`).** In `pr-test.yml`, a small `ubuntu-latest` job reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. The ROCm resolver uses only its dispatch input, defaults to its dated `rocm/sgl-dev` tag, and uses that same default for PR and nightly runs. Distinct from this, the **`run-ci-image` label** selects the image scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
@@ -50,11 +52,13 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 **Dependencies / gating.** In `pr-test.yml`, both CPU stages require both resolvers. Its GPU stages also require both resolvers and, by default, a successful `stage-a-cpu`, so a CPU-test failure short-circuits the expensive NVIDIA fleet. Resolved nightly cadence and the `bypass-fastfail` PR label relax only the `stage-a-cpu` failure gate and make each suite continue after a test failure; neither bypasses resolver failure.
 
-**Runner selection.** GPU stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages set `cpu_runner: true` and run on GitHub-hosted `ubuntu-latest` instead, so they don't occupy GPU-fleet slots.
+**Runner selection.** CUDA stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages call `_run-cpu-ci.yml`, whose only job runs on GitHub-hosted `ubuntu-latest`, so they don't occupy GPU-fleet slots.
 
 **Dependency boundary.** CUDA stages start from dependencies baked into `radixark/miles`, reconcile Miles runtime dependencies from `requirements.txt`, update the SGLang and Megatron-LM checkouts to the selected refs, and expose all three source trees through `PYTHONPATH`; they do not rebuild or install the Miles, SGLang, or Megatron-LM source trees after the container starts. The hosted CPU stages install dependencies from `requirements.txt` and the fully pinned `tests/ci/requirements-ci-cpu.txt`, then expose the Miles, SGLang, and Megatron-LM source trees through `PYTHONPATH` without editable installs or inline package lists. The ROCm stage instead uses the SGLang and Megatron-LM versions baked into `rocm/sgl-dev`.
 
-**Launch.** Every CPU/CUDA stage is a thin caller of the reusable workflow `_run-ci.yml` (`uses: ./.github/workflows/_run-ci.yml`). The stage passes only `execute_command`, `runs_on`, `container_image`, and `cpu_runner`; `_run-ci.yml` owns the rest — starting the container, waiting for the GPU to be ready, reconciling Miles requirements and synchronizing external source refs for GPU jobs or installing the hosted CPU requirements, verifying source resolution, then running `execute_command` twice (once `--list-only` to print the plan, then for real). The stage itself holds no test logic; it is purely "which runner, which image, which command".
+**Launch.** Each CPU/CUDA stage is a thin caller of one hardware-specific reusable workflow: CPU stages use `_run-cpu-ci.yml`, while CUDA stages use `_run-ci.yml`. Each reusable workflow declares only its matching job, so GitHub does not add a skipped CPU sibling to CUDA stages or a skipped CUDA sibling to CPU stages.
+
+Both workflows receive `execute_command`; CUDA callers additionally pass `runs_on` and `container_image`. The reusable workflows own runner setup, dependency and source resolution, and the two command invocations (first `--list-only`, then the real run); each stage owns only which runner class, image, and command to select.
 
 **Secrets.** CPU/CUDA stages call their reusable workflow with `secrets: inherit`. The ROCm caller passes `WANDB_API_KEY` explicitly for schedules, manual runs, and same-repository PRs, but passes an empty value for fork PRs.
 

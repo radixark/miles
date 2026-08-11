@@ -48,13 +48,13 @@ def _get_wandb_args() -> str:
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command("mkdir -p /root/dapo-math-17k /root/aime-2024")
-    U.exec_command("hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k")
-    U.exec_command("hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024")
+    U.exec_command_cpu("mkdir -p /root/dapo-math-17k /root/aime-2024")
+    U.exec_command_cpu("hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k")
+    U.exec_command_cpu("hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024")
 
     if args.use_sft_model:
-        U.exec_command("mkdir -p /root/font-info")
-        U.exec_command(f"hf download font-info/qwen3-4b-sft-SGLang-RL --local-dir {args.hf_checkpoint}")
+        U.exec_command_cpu("mkdir -p /root/font-info")
+        U.exec_command_cpu(f"hf download font-info/qwen3-4b-sft-SGLang-RL --local-dir {args.hf_checkpoint}")
         U.convert_checkpoint(
             model_name="qwen3-4b-sft",
             megatron_model_type="qwen3-4B",
@@ -63,8 +63,8 @@ def prepare(args: ScriptArgs):
             dir_dst="/root/font-info",
         )
     else:
-        U.exec_command("mkdir -p /root/models")
-        U.exec_command("hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B")
+        U.exec_command_cpu("mkdir -p /root/models")
+        U.exec_command_cpu("hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B")
         U.convert_checkpoint(
             model_name="Qwen3-4B",
             megatron_model_type="qwen3-4B",

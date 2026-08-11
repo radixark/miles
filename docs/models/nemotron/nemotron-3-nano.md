@@ -112,7 +112,7 @@ memory pressure rises.
 
 ### 5.5 Notable quirks
 
-From `scripts/models/nemotron-3-nano-4b.sh` and `scripts/run-nemotron-3-nano-4b.sh`:
+From `scripts/models/nemotron-3-nano-4b.py` and `scripts/run-nemotron-3-nano-4b.sh`:
 
 - **No `--spec`**: the AutoBridge synthesizes the Megatron spec from HF config.
 - `--position-embedding-type none` (no RoPE).

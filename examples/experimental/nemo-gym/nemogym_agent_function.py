@@ -1,9 +1,8 @@
 """NeMo-Gym <-> miles adapter (agent function).
 
 Targets upstream NVIDIA-NeMo/Gym's sandbox-backed ``mini_swe_agent_2`` agent,
-which requires the per-request policy endpoint override from
-https://github.com/NVIDIA-NeMo/Gym/pull/2166 (until it merges, run the
-NeMo-Gym server from the PR branch ``nblintao/Gym@mini-swe-agent-per-request-policy-url``).
+which requires the per-request policy endpoint override (upstream ``main``,
+>= ``fcca3a8``).
 
 miles calls ``run`` once per sample via
 ``--custom-agent-function-path nemogym_agent_function.run`` (with

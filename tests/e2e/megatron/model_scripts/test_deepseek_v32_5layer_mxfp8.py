@@ -76,8 +76,8 @@ matchers:
 
 
 def prepare():
-    U.exec_command(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
-    U.exec_command(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
+    U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
+    U.exec_command_cpu(f"hf download {MODEL_ORG}/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=DATA_DIR)
 
     U.fp8_cast_bf16(
@@ -85,7 +85,7 @@ def prepare():
         path_dst=f"{MODEL_DIR}/{MODEL_NAME}-bf16/",
     )
 
-    U.exec_command(
+    U.exec_command_gpu(
         f"python tools/convert_hf_to_mxfp8.py "
         f"--model-dir {MODEL_DIR}/{MODEL_NAME}-bf16 "
         f"--save-dir {MODEL_DIR}/{MODEL_NAME}-MXFP8 "
@@ -111,7 +111,7 @@ def prepare():
 
 def execute():
     os.environ.setdefault("RAY_TMPDIR", "/tmp/ray")
-    te_precision_config_path = U.save_to_temp_file(TE_PRECISION_CONFIG, "yaml")
+    te_precision_config_path = U.encode_pseudo_file(TE_PRECISION_CONFIG)
 
     ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}-MXFP8/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist "
 

@@ -39,7 +39,8 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-20
 
 ```bash
 cd /root/miles
-source scripts/models/qwen3-4B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3-4B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/Qwen3-4B \
@@ -57,9 +58,9 @@ cd /root/miles
 bash scripts/run-qwen3-4B.sh
 ```
 
-Other variants follow the same pattern — replace the script name (`run-qwen3-32B.sh`, etc.) and the `qwen3-XB.sh` model config.
+Other variants follow the same pattern — replace the script name (`run-qwen3-32B.sh`, etc.) and the `qwen3-XB.py` model config.
 
-The Qwen3-4B-Instruct-2507 config (`scripts/models/qwen3-4B-Instruct-2507.sh`) just sets `MODEL_ARGS_ROTARY_BASE=5000000` and re-sources `qwen3-4B.sh` — source it when converting / launching the Instruct-2507 checkpoint.
+The Qwen3-4B-Instruct-2507 config (`scripts/models/qwen3-4B-Instruct-2507.py`) just calls `qwen3-4B` with `rotary_base=5000000` (`MODEL_ARGS_ROTARY_BASE` still works as an environment override) — load it when converting / launching the Instruct-2507 checkpoint.
 
 ## 5. Recipe Configuration
 

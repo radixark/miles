@@ -120,7 +120,7 @@ def _ensure_model_downloaded(hf_checkpoint: str) -> str:
     short = hf_checkpoint.split("/")[-1]
     local_dir = os.path.join(LOCAL_MODELS_ROOT, short)
     os.makedirs(LOCAL_MODELS_ROOT, exist_ok=True)
-    U.exec_command(f"hf download {hf_checkpoint} --local-dir {local_dir}")
+    U.exec_command_cpu(f"hf download {hf_checkpoint} --local-dir {local_dir}")
     return local_dir
 
 

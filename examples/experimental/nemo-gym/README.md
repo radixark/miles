@@ -32,11 +32,7 @@ reward (official SWE-bench harness) ──► sample.metadata ──► reward h
   `sample.metadata["reward"]`).
 - `eval_nemogym_via_api.py`, `tests/` — no-GPU validation tooling (below).
 
-The per-request `policy_base_url` override this example relies on is proposed
-upstream in [NVIDIA-NeMo/Gym#2166](https://github.com/NVIDIA-NeMo/Gym/pull/2166).
-Until it merges, run the NeMo-Gym server from the PR branch
-(`nblintao/Gym@mini-swe-agent-per-request-policy-url`, upstream main + that
-one commit pair); afterwards, use upstream directly.
+Run the NeMo-Gym server from `main` (>= `fcca3a8`).
 
 ## Validation status
 
@@ -62,7 +58,7 @@ Two known limitations from the smoke run:
   GRPO then has zero advantage (`rollout/zero_std` fires). That's a model
   capability floor, not a pipeline defect; expect the same until you use a
   stronger policy or an easier task pool.
-- `rollout/tito_session_mismatch_rate` reads 1.0 with this model: Qwen3
+- `rollout/tito_session_mismatch_rate/v1` reads 1.0 with this model: Qwen3
   chat templates insert an empty `<think></think>` skeleton when re-rendering
   assistant history, which the engine's actual output never contains. It is a
   soft diagnostic — training tokens and loss masks come from the engine's
@@ -77,8 +73,7 @@ with the trainer — that variant is not validated here). Set `NEMO_GYM_URL` to
 wherever the server listens.
 
 ```bash
-# Until NVIDIA-NeMo/Gym#2166 merges; afterwards clone NVIDIA-NeMo/Gym instead.
-git clone -b mini-swe-agent-per-request-policy-url https://github.com/nblintao/Gym.git
+git clone https://github.com/NVIDIA-NeMo/Gym.git
 cd Gym
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -219,10 +214,10 @@ on CPU-only machines, in three independent layers (all three pass as of
    otherwise.
 
 3. **API-policy scan** — a real model drives full episodes through the same
-   `policy_base_url` override the trainer uses (so this also exercises the
-   NVIDIA-NeMo/Gym#2166 field end-to-end). Start the server *without* the
-   golden override and with `policy_model_name` set to the API model name
-   (e.g. `deepseek-chat`) in `env.yaml`, then:
+   `policy_base_url` override the trainer uses (so this also exercises that
+   field end-to-end). Start the server *without* the golden override and with
+   `policy_model_name` set to the API model name (e.g. `deepseek-chat`) in
+   `env.yaml`, then:
 
    ```bash
    export DEEPSEEK_API_KEY=...   # or OPENAI_API_KEY

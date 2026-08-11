@@ -1,0 +1,16 @@
+### 0
+mkdir -p <SANDBOX>/models
+
+### 1
+hf download nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16
+  --local-dir <SANDBOX>/models/NVIDIA-Nemotron-3-Nano-4B-BF16
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/dapo-math-17k
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/aime-2024
+  --local-dir /root/aime-2024

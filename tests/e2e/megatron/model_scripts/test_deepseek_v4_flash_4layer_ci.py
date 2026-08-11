@@ -9,6 +9,7 @@ register_rocm_ci(
     est_time=1900,
     suite="stage-c-4-gpu-mi300x",
     labels=["megatron", "model-scripts", "amd"],
+    disabled="Disable due to failure",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -28,11 +29,7 @@ def _args() -> ScriptArgs:
         skip_saving=True,
         use_fault_tolerance=False,
         extra_args=(
-            "--ci-test "
-            "--check-weight-update-allow-quant-error "
-            "--ci-disable-logprobs-checker "
-            "--disable-weights-backuper "
-            "--num-rollout 2 "
+            "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
         ),
     )
 

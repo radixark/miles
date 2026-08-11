@@ -2,7 +2,7 @@
 title: Kimi K2.5 / K2.6
 description: Launch recipe for Kimi-K2.5, running full-parameter GRPO on 32 × 8 H200 with an INT4 actor and a BF16 reference.
 ---
-The reference launcher is [`scripts/run-kimi-k25.sh`](https://github.com/radixark/miles/blob/main/scripts/run-kimi-k25.sh), which sources the shared model definition in `scripts/models/kimi-k2-thinking.sh`.
+The reference launcher is [`scripts/run-kimi-k25.sh`](https://github.com/radixark/miles/blob/main/scripts/run-kimi-k25.sh), which loads the shared model definition from `scripts/models/kimi-k2-thinking.py`.
 
 ## 1. Model Introduction
 
@@ -79,7 +79,7 @@ ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_
 
 ## 4. Script breakdown
 
-The launcher groups its flags into the arrays that are passed to `train.py`. The model shape comes from `MODEL_ARGS`, which is sourced from `scripts/models/kimi-k2-thinking.sh`. That definition sets the MLA latent ranks (`q_lora_rank=1536`, `kv_lora_rank=512`, `qk_head_dim=128`, `qk_pos_emb_head_dim=64`, `v_head_dim=128`), the MoE routing (384 experts, top-8, sigmoid pre-softmax scoring, FP32 router, `--moe-router-topk-scaling-factor 2.827`), and RoPE (`--rotary-base 50000`, `--rotary-scaling-factor 64.0`). The K2.5 recipe then layers the following on top:
+The launcher groups its flags into the arrays that are passed to `train.py`. The model shape comes from `MODEL_ARGS`, which is loaded from `scripts/models/kimi-k2-thinking.py`. That definition sets the MLA latent ranks (`q_lora_rank=1536`, `kv_lora_rank=512`, `qk_head_dim=128`, `qk_pos_emb_head_dim=64`, `v_head_dim=128`), the MoE routing (384 experts, top-8, sigmoid pre-softmax scoring, FP32 router, `--moe-router-topk-scaling-factor 2.827`), and RoPE (`--rotary-base 50000`, `--rotary-scaling-factor 64.0`). The K2.5 recipe then layers the following on top:
 
 - **`CKPT_ARGS`** wires up the dual checkpoint (INT4 actor via `--hf-checkpoint`, BF16 reference via `--ref-load`) together with `--megatron-to-hf-mode bridge` and `--model-name kimi_k25`.
 - **`ROLLOUT_ARGS`** and **`EVAL_ARGS`** configure GRPO sampling and periodic AIME evaluation (covered in §5.2).

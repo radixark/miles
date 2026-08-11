@@ -159,10 +159,10 @@ def _download_dataset(args: ScriptArgs):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.data_dir} {args.model_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
     repo = _HF_REPO.get(args.model_name)
     if repo is not None:
-        U.exec_command(f"hf download {repo} --local-dir {args.model_dir}/{args.model_name}")
+        U.exec_command_cpu(f"hf download {repo} --local-dir {args.model_dir}/{args.model_name}")
     _download_dataset(args)
 
 

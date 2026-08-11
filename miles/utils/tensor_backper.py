@@ -1,19 +1,30 @@
+import hashlib
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 import torch
 
 _SourceGetter = Callable[[], Iterable[tuple[str, torch.Tensor]]]
 
 
+@dataclass(frozen=True)
+class MainCastContext:
+    # Writes this rank's owned shard from the master weights, as the train-step end does.
+    cast_main_to_params: Callable[[], None]
+    model_chunks: list
+    extras_getter: _SourceGetter
+    rematerializable_ids: set
+    check: bool
+
+
 class TensorBackuper(ABC):
     @staticmethod
-    def create(source_getter, single_tag):
-        if single_tag is None:
-            return _TensorBackuperNormal(source_getter=source_getter)
-        else:
-            return _TensorBackuperNoop(source_getter=source_getter, single_tag=single_tag)
+    def create(source_getter, main_cast_ctx: "MainCastContext | None" = None):
+        if main_cast_ctx is not None:
+            return _TensorBackuperMainCast(source_getter=source_getter, ctx=main_cast_ctx)
+        return _TensorBackuperNormal(source_getter=source_getter)
 
     def __init__(self, source_getter: _SourceGetter):
         self._source_getter = source_getter
@@ -74,45 +85,96 @@ class _TensorBackuperNormal(TensorBackuper):
         torch.cuda.synchronize()
 
 
-class _TensorBackuperNoop(TensorBackuper):
-    def __init__(self, source_getter, single_tag):
+class _TensorBackuperMainCast(TensorBackuper):
+    """Rebuilds the actor weights instead of keeping a pinned CPU copy of them.
+
+    Restore replays the step end's cast + all-gather, so it is bit-identical. Only
+    `extras_getter` tensors keep a pinned backup. Non-actor tags (ref/teacher) have no
+    master weights to rebuild from, so they keep full pinned copies via a delegated
+    _TensorBackuperNormal.
+    """
+
+    _check_num_cycles = 2
+
+    def __init__(self, source_getter, ctx: MainCastContext):
         super().__init__(source_getter=source_getter)
-        self._single_tag = single_tag
-        # Sanity check for safety
-        self._backup_hash_dict = None
+        self._ctx = ctx
+        self._others = _TensorBackuperNormal(source_getter=source_getter)
+        self._extras_backup: dict[str, torch.Tensor] = {}
+        self._extras_backup_by_id: dict[int, torch.Tensor] = {}
+        self._backup_count = 0
+        self._expected_hashes: dict[str, str] | None = None
 
     @property
     def backup_tags(self):
-        return [self._single_tag]
+        return ["actor", *self._others.backup_tags]
+
+    @torch.no_grad()
+    def backup(self, tag: str) -> None:
+        if tag != "actor":
+            return self._others.backup(tag)
+        for name, tensor in self._ctx.extras_getter():
+            if name not in self._extras_backup:
+                self._extras_backup[name] = torch.empty_like(tensor, device=torch.device("cpu"), pin_memory=True)
+            self._extras_backup[name].copy_(tensor.detach(), non_blocking=True)
+            self._extras_backup_by_id[id(tensor)] = self._extras_backup[name]
+        torch.cuda.synchronize()
+        self._backup_count += 1
+        if self._ctx.check and self._backup_count <= self._check_num_cycles:
+            self._expected_hashes = self._compute_hashes()
+        else:
+            self._expected_hashes = None
+
+    @torch.no_grad()
+    def restore(self, tag: str) -> None:
+        if tag != "actor":
+            return self._others.restore(tag)
+        self._ctx.cast_main_to_params()
+        for model_chunk in self._ctx.model_chunks:
+            model_chunk.start_param_sync(force_sync=True)
+        for name, tensor in self._ctx.extras_getter():
+            tensor.copy_(self._extras_backup[name], non_blocking=True)
+        torch.cuda.synchronize()
+        if self._expected_hashes is not None:
+            self._verify_hashes()
 
     def get(self, tag: str):
-        ans = dict(self._source_getter())
-        ans = {k: v.detach() for k, v in ans.items()}
-        assert _compute_hash_dict(ans) == self._backup_hash_dict
-        return ans
+        if tag != "actor":
+            return self._others.get(tag)
+        # Extras are paused during update_weights. Read them from the pinned backup.
+        out = {}
+        for name, tensor in self._source_getter():
+            backup = self._extras_backup_by_id.get(id(tensor))
+            if backup is None:
+                assert (
+                    id(tensor) in self._ctx.rematerializable_ids
+                ), f"{name} is neither in the DDP param buffers nor in the extras backup"
+                backup = tensor.detach()
+            out[name] = backup
+        return out
 
-    def backup(self, tag: str) -> None:
-        assert tag == self._single_tag
-        self._backup_hash_dict = _compute_hash_dict(dict(self._source_getter()))
-        torch.cuda.synchronize()
+    def _compute_hashes(self) -> dict[str, str]:
+        return {name: _hash_tensor_sha256(tensor) for name, tensor in self._source_getter()}
 
-    def restore(self, tag: str) -> None:
-        assert tag == self._single_tag
-        assert _compute_hash_dict(dict(self._source_getter())) == self._backup_hash_dict
-        torch.cuda.synchronize()
+    def _verify_hashes(self) -> None:
+        actual = self._compute_hashes()
+        expected = self._expected_hashes
+        assert expected is not None
+        assert actual.keys() == expected.keys(), (
+            f"main-cast restore changed the tensor set: "
+            f"missing={sorted(expected.keys() - actual.keys())[:5]} "
+            f"extra={sorted(actual.keys() - expected.keys())[:5]}"
+        )
+        mismatches = [name for name in expected if actual[name] != expected[name]]
+        if mismatches:
+            raise RuntimeError(
+                f"main-cast weight restore is not bit-identical to the weights at "
+                f"backup time for {len(mismatches)}/{len(expected)} tensors "
+                f"(cycle {self._backup_count}): {mismatches[:20]}"
+            )
 
 
-def _compute_hash_dict(tensors: dict[str, torch.Tensor]):
-    return {k: _compute_hash_tensor(v) for k, v in tensors.items()}
-
-
-def _compute_hash_tensor(x: torch.Tensor):
-    # Not a real/good hash, but pretty fast
-    x = x.contiguous().view(-1).view(torch.uint8)
-
-    alignment = 4
-    if (remainder := (x.numel() % alignment)) != 0:
-        x = torch.nn.functional.pad(x, (0, alignment - remainder))
-
-    x = x.view(torch.uint32).sum()
-    return x.item()
+def _hash_tensor_sha256(x: torch.Tensor) -> str:
+    """Real (cryptographic) hash: a mismatch here has to mean a bug."""
+    data = x.detach().cpu().contiguous()
+    return hashlib.sha256(data.reshape(-1).view(torch.uint8).numpy().tobytes()).hexdigest()

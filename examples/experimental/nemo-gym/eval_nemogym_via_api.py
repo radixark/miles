@@ -11,7 +11,7 @@ session server and training itself:
     python eval_nemogym_via_api.py --input swe_verified.jsonl --golden --limit 5
 
   API-policy scan (a real model drives episodes via the policy_base_url
-  override — the exact NVIDIA-NeMo/Gym#2166 field the trainer relies on):
+  override — the exact field the trainer relies on):
     export DEEPSEEK_API_KEY=$(cat ~/.config/deepseek/api_key)
     python eval_nemogym_via_api.py --input swe_verified.jsonl --limit 2 \
         --policy-base-url https://api.deepseek.com/v1

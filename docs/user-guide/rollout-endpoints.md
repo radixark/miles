@@ -33,7 +33,7 @@ Key modules:
 |---|---|
 | `miles/rollout/base_types.py` | `GenerateFnInput` / `GenerateFnOutput` |
 | `miles/rollout/inference_rollout/inference_rollout_common.py` | Builds a `GenerateState` and calls the generate function |
-| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/swe-agent`) |
+| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/swe-agent-harbor-docker`) |
 
 ### Generate function basics
 
@@ -162,7 +162,7 @@ Generator entry point:
 
 Example:
 
-- [`examples/swe-agent`](https://github.com/radixark/miles/tree/main/examples/swe-agent):
+- [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker):
   multi-turn agentic SWE agent on the session-server TITO path, with ready-to-run launchers.
 
 Wire-up (as used by the swe-agent example):
@@ -214,7 +214,7 @@ The hook is **entirely optional and safe to omit**:
 - It only fires when `--custom-agent-function-path` is set, so non-agentic runs
   never invoke it.
 
-See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent/swe_agent_function.py)
+See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/swe_agent_function.py)
 for a reference implementation that flushes the Harbor agent server.
 
 ### Customizing the wrapper

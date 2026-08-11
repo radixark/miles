@@ -14,6 +14,7 @@ from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.environ import enable_experimental_ft_trainer, enable_experimental_rollout_refactor
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
+from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
@@ -53,6 +54,10 @@ def _resolve_rollout_functions(args) -> None:
         ), "--fully-async and --rollout-function-path both select a rollout function; pass only one"
         assert not args.colocate, "--fully-async cannot colocate: rollout must keep generating while training runs"
         assert not args.partial_rollout, "--fully-async does not support --partial-rollout"
+        assert args.pause_generation_mode != "abort", (
+            "--fully-async cannot use --pause-generation-mode abort: generation is always in flight, "
+            "so every weight update would kill it and force a full regeneration"
+        )
         assert (
             not args.recompute_logprobs_via_prefill
         ), "--fully-async does not support --recompute-logprobs-via-prefill"
@@ -329,15 +334,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--disable-weights-backuper",
-                action="store_false",
-                dest="enable_weights_backuper",
+                "--rematerialize-param-from-master-weight",
+                action="store_true",
                 help=(
-                    "Applies to `megatron` training backend only. "
-                    "Disables the system that backups model weights (Actor, Ref, Old Actor) to CPU RAM. "
-                    "Disabling saves significant host memory but prevents features that rely on weight-swapping, such as computing KL-divergence against a reference model. "
-                    "Note: do not set `--ref-load` and `--keep-old-actor` if disable weights backuper."
+                    "Colocate CPU memory optimization. Drop the actor's parameter weight backup "
+                    "during inference, and rebuild it from the optimizer's master weights on the "
+                    "next train step. Reduces peak CPU memory by 2*param per rank (bf16 training). "
+                    "Works with both the GPU optimizer and the CPU optimizer, but is not compatible "
+                    "with --use-precision-aware-optimizer on GPU. ref/teacher tags keep their "
+                    "backups. Recommended for Grace GPU colocate training."
                 ),
+            )
+            parser.add_argument(
+                "--check-rematerialize-param-from-master-weight",
+                action="store_true",
+                help="Debug: SHA256-verify the first two rematerialize cycles are bit-identical.",
             )
             parser.add_argument(
                 "--megatron-to-hf-mode",
@@ -661,6 +672,42 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "decoupling generation concurrency from the training batch size. None (default) "
                     "keeps the legacy bound of one training batch worth of trajectories "
                     "(rollout_batch_size groups, i.e. rollout_batch_size * n_samples_per_prompt)."
+                ),
+            )
+            parser.add_argument(
+                "--async-data-buffer-capacity-factor",
+                type=float,
+                default=2.0,
+                help=(
+                    "Capacity of the finished-group data buffer between rollout production and "
+                    "training consumption in fully async mode, as a multiple of rollout_batch_size "
+                    "(floor(factor * rollout_batch_size) groups). When the buffer is full the "
+                    "producer blocks until training consumes, so generation cannot run "
+                    "unboundedly ahead of training."
+                ),
+            )
+            parser.add_argument(
+                "--async-unused-samples-handler",
+                type=str,
+                choices=["retry", "drop"],
+                default="drop",
+                help=(
+                    "What to do with a finished group fully async mode does not train on "
+                    "(aborted, or beyond --max-weight-staleness): drop "
+                    "(default) discards the group; retry recycles its prompts into the data "
+                    "source for regeneration. Groups rejected by "
+                    "--dynamic-sampling-filter-path are always dropped."
+                ),
+            )
+            parser.add_argument(
+                "--custom-async-data-buffer-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to a custom DataBuffer subclass replacing the fully async finished-group "
+                    "data buffer (see miles/rollout/fully_async_data_buffer.py). Constructed with "
+                    "DataBufferConstructorInput; it takes over dataflow/staleness control, so the "
+                    "--async-data-buffer-* args apply only if the custom class reads them."
                 ),
             )
             parser.add_argument(
@@ -1141,7 +1188,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Path to an OmegaConf YAML/JSON file describing evaluation datasets. "
+                    "Path to an OmegaConf YAML/JSON file describing evaluation datasets, or an "
+                    "inline `base64:<payload>` carrying the same document. "
                     "When provided, this overrides --eval-prompt-data."
                 ),
             )
@@ -1298,7 +1346,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "while the actor stays frozen. Only takes effect when --advantage-estimator is ppo.",
             )
             parser.add_argument("--critic-load", type=str, default=None, help="The checkpoint for critic model.")
-            parser.add_argument("--critic-save", type=str, default=None, help="The checkpoint for critic model.")
+            parser.add_argument(
+                "--critic-save",
+                type=str,
+                default=None,
+                help="Where to save critic checkpoints. If not set, it defaults to the --save path with a "
+                "'_critic' suffix appended, e.g. --save /ckpts/run1 saves the critic to /ckpts/run1_critic.",
+            )
             parser.add_argument("--critic-lr", type=float, default=None, help="The lr for critic model")
             parser.add_argument(
                 "--critic-lr-warmup-iters",
@@ -2559,7 +2613,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             "--custom-config-path",
             type=str,
             default=None,
-            help="Path to the YAML config for custom function arguments.",
+            help="Path to the YAML config for custom function arguments, or an inline `base64:<payload>`.",
         )
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
@@ -2596,12 +2650,15 @@ def parse_args(add_custom_arguments=None):
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
         args = set_default_megatron_args(args)
     else:
-        from miles.backends.experimental.fsdp_utils.arguments import load_fsdp_args
+        from miles.backends.fsdp_utils.arguments import load_fsdp_args
 
         args = load_fsdp_args(extra_args_provider=add_miles_arguments)
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0  # Primary process rank for wandb initialization
         args.world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
+
+        if args.hf_checkpoint:
+            args.num_layers = resolve_fsdp_num_layers(load_hf_config(args.hf_checkpoint))
 
         assert args.context_parallel_size == 1, "Context parallelism is not supported for FSDP backend."
 
@@ -2629,7 +2686,7 @@ def parse_args(add_custom_arguments=None):
                 "pipeline_model_parallel_size is 1."
             )
     else:
-        from miles.backends.experimental.fsdp_utils.arguments import validate_hybrid_shard_args
+        from miles.backends.fsdp_utils.arguments import validate_hybrid_shard_args
 
         validate_hybrid_shard_args(args)
 
@@ -2658,7 +2715,7 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
     if args.eval_config:
         from omegaconf import OmegaConf
 
-        cfg = OmegaConf.load(args.eval_config)
+        cfg = OmegaConf.create(resolve_file_arg(args.eval_config))
         cfg_dict = OmegaConf.to_container(cfg, resolve=True)
         if not isinstance(cfg_dict, dict):
             raise ValueError("--eval-config must contain a mapping at the root.")
@@ -2702,6 +2759,51 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
     if args.ft_components is None:
         return list(_FT_DEFAULT_COMPONENTS)
     return list(args.ft_components)
+
+
+def _validate_rematerialize_param_from_master_weight(args):
+    if not args.rematerialize_param_from_master_weight:
+        return
+    if args.debug_train_only:
+        # update_weights never runs, so the param buffer would never be paused.
+        args.rematerialize_param_from_master_weight = False
+        return
+    assert (
+        args.train_backend == "megatron"
+    ), "--rematerialize-param-from-master-weight reads Megatron's distributed-optimizer main params"
+    from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+
+    assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
+    assert not args.debug_disable_optimizer, "--debug-disable-optimizer leaves no main params to rematerialize from"
+    assert not args.indep_dp, (
+        "--rematerialize-param-from-master-weight drops the backup inside update_weights, which "
+        "RayTrainGroup runs on the first alive cell only. Every other cell would keep it for the whole "
+        "run. Lift this once all cells update weights."
+    )
+    assert args.colocate and args.offload_train
+    assert args.offload_train_target == "cpu", (
+        "--offload-train-target=disk streams the weights to NVMe and reads them back from GPU after "
+        "resume, so there is no backup for the rebuild to replace"
+    )
+    assert args.use_distributed_optimizer
+    assert not args.keep_old_actor
+    assert not args.use_precision_aware_optimizer or args.optimizer_cpu_offload, (
+        "--use-precision-aware-optimizer on GPU keeps the master weights inside TE FusedAdam, stored as "
+        "int16 remainders of the params. There is nothing standalone to rebuild from. Add "
+        "--optimizer-cpu-offload, which holds standalone masters instead."
+    )
+    assert (
+        not args.overlap_param_gather
+    ), "the rebuild calls DDP.start_param_sync outside the training step; overlap-param-gather does not support that"
+    assert (
+        args.compute_advantages_and_returns
+    ), "the per-cycle rebuild runs in the compute_advantages_and_returns block; without it training would run on dropped weights"
+    assert (
+        args.num_critic_only_steps == 0
+    ), "critic-only steps run update_weights repeatedly without an intervening actor wake_up"
+    args.disable_param_buffers_cpu_backup = True
+    if args.ci_test:
+        args.check_rematerialize_param_from_master_weight = True
 
 
 def miles_validate_args(args):
@@ -3076,6 +3178,9 @@ def miles_validate_args(args):
         args.critic_load = args.load
     if args.critic_lr is None:
         args.critic_lr = args.lr
+    if args.critic_save is None and args.save is not None:
+        # a sibling dir, not args.save itself: sharing a dir would clobber the actor's iteration tracker
+        args.critic_save = args.save.rstrip("/") + "_critic"
 
     if args.offload:
         args.offload_train = True
@@ -3179,18 +3284,17 @@ def miles_validate_args(args):
 
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
-        args.disable_param_buffers_cpu_backup = args.enable_weights_backuper
+        args.disable_param_buffers_cpu_backup = True
+
+    _validate_rematerialize_param_from_master_weight(args)
+
+    _validate_rematerialize_param_from_master_weight(args)
 
     if args.offload_train_target == "disk":
         assert args.offload_train, "--offload-train-target=disk requires --offload-train"
         assert (
             args.train_backend == "megatron"
         ), "--offload-train-target=disk is only supported on the megatron backend"
-        assert args.enable_weights_backuper, (
-            "--offload-train-target=disk requires the weights backuper (do not pass "
-            "--disable-weights-backuper): disk-offloaded weights are read from GPU after resume, "
-            "not from a CPU backup."
-        )
         assert args.offload_train_disk_chunk_mb > 0, "--offload-train-disk-chunk-mb must be positive"
         if args.offload_train_disk_dir is None:
             uid = os.getuid() if hasattr(os, "getuid") else 0
@@ -3321,8 +3425,7 @@ def miles_validate_args(args):
         args.use_routing_replay = True
 
     if args.custom_config_path:
-        with open(args.custom_config_path) as f:
-            data = yaml.safe_load(f) or {}
+        data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
         for k, v in data.items():
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
@@ -3415,6 +3518,23 @@ def _maybe_apply_dumper_overrides(args) -> None:
     args.save = None
     args.save_interval = None
     args.save_retain_interval = None
+
+
+def resolve_fsdp_num_layers(hf_config) -> int | None:
+    """Decoder-layer count for the FSDP path.
+
+    ``num_layers`` comes from the Megatron parser, but backend-agnostic code reads it:
+    ``sglang_rollout`` reshapes the R3 routing buffer as ``[num_tokens, num_layers, topk]``. The
+    text config wins when present, since a top-level ``num_hidden_layers`` may describe a vision
+    tower instead.
+    """
+    getter = getattr(hf_config, "get_text_config", None)
+    text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
+
+    num_layers = getattr(text_config, "num_hidden_layers", None)
+    if num_layers is None:
+        num_layers = getattr(hf_config, "num_hidden_layers", None)
+    return num_layers
 
 
 def hf_validate_args(args, hf_config):

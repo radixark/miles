@@ -2,22 +2,24 @@
 This file is not for miles framework itself, but as an optional utility to easily launch miles jobs and tests.
 """
 
+import base64
 import datetime
 import json
 import os
 import random
 import shlex
 import socket
-import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
+from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
+from miles.utils.external_utils.model_args_utils import shell_safe_model_args
+from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
 from miles.utils.http_utils import wait_for_server_ready
-from miles.utils.misc import exec_command, exec_command_all_ray_node
 from miles.utils.typer_utils import dataclass_cli
 
-_ = exec_command, exec_command_all_ray_node, dataclass_cli
+_ = exec_command_cpu, exec_command_gpu, exec_command_multi_node, dataclass_cli
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
 
@@ -57,31 +59,32 @@ def convert_checkpoint(
         )
 
     if multinode:
-        fn = partial(exec_command_all_ray_node, num_nodes=num_nodes)
+        fn = partial(exec_command_multi_node, num_nodes=num_nodes)
     else:
-        fn = exec_command
+        fn = exec_command_gpu
     pythonpath = shlex.quote(_pythonpath_with_sources(megatron_path))
     fn(
-        f"source {repo_base_dir}/scripts/models/{megatron_model_type}.sh && "
         f"PYTHONPATH={pythonpath} "
         f"torchrun "
         f"--nproc-per-node {num_gpus_per_node} "
         f"{multinode_args}"
         f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
-        "${MODEL_ARGS[@]} "
+        f"{shell_safe_model_args(megatron_model_type)} "
         f"--hf-checkpoint {hf_checkpoint} "
         f"--save {path_dst} "
         f"{extra_args}"
     )
 
 
-def rsync_simple(path_src: str, path_dst: str):
-    exec_command_all_ray_node(f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}")
+def rsync_simple(path_src: str, path_dst: str, num_nodes: int | None = None):
+    exec_command_multi_node(
+        f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}", num_nodes=num_nodes
+    )
 
 
 def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
     _, partial_name = full_name.split("/")
-    exec_command(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
+    exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
 
 
 def fp8_cast_bf16(path_src, path_dst):
@@ -90,7 +93,7 @@ def fp8_cast_bf16(path_src, path_dst):
         print(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
         return
 
-    exec_command(
+    exec_command_gpu(
         f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
         f"--input-fp8-hf-path {path_src} "
         f"--output-bf16-hf-path {path_dst} "
@@ -101,7 +104,7 @@ def fp8_cast_bf16(path_src, path_dst):
 @dataclass
 class ExecuteTrainConfig:
     cuda_core_dump: bool = False
-    num_nodes: int = int(os.environ.get("SLURM_JOB_NUM_NODES", "1"))
+    num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
 
@@ -128,7 +131,7 @@ def execute_train(
     train_backend_fsdp = "--train-backend fsdp" in train_args
     assert train_backend_fsdp == (megatron_model_type is None)
 
-    exec_command(
+    exec_command_cpu(
         "pkill -9 sglang; "
         "sleep 3; "
         f"{'' if external_ray else 'ray stop --force; '}"
@@ -146,9 +149,9 @@ def execute_train(
     )
 
     if not external_ray:
-        exec_command(
+        exec_command_cpu(
             # will prevent ray from buffering stdout/stderr
-            f"export PYTHONBUFFERED=16 && "
+            f"export PYTHONUNBUFFERED=1 && "
             f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
         )
 
@@ -156,6 +159,8 @@ def execute_train(
         f()
 
     runtime_env_vars = {
+        # exported for the submitting client too, but only the runtime env reaches the ray workers
+        "PYTHONUNBUFFERED": "1",
         # If setting this in FSDP, the computation communication overlapping may have issues
         **(
             {}
@@ -190,18 +195,13 @@ def execute_train(
     runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
 
     if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
-        cmd_megatron_model_source = (
-            f'source "{repo_base_dir}/scripts/models/{megatron_model_type}.sh" && '
-            if megatron_model_type is not None
-            else ""
-        )
-        exec_command(
-            f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
-            f"{cmd_megatron_model_source}"
+        model_args = shell_safe_model_args(megatron_model_type)
+        exec_command_cpu(
+            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
             f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
             f"--runtime-env-json={shlex.quote(runtime_env_json)} "
             f"-- python3 {train_script} "
-            f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
+            f"{model_args} "
             f"{train_args}"
         )
 
@@ -214,7 +214,7 @@ def _parse_extra_env_vars(text: str):
 
 
 def check_has_nvlink():
-    output = exec_command("nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True)
+    output = exec_command_gpu("nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True)
     return int(output) > 0
 
 
@@ -308,7 +308,7 @@ def start_mooncake_master(
 
     log_path = Path(log_path)
     quoted_log_path = shlex.quote(str(log_path))
-    exec_command(
+    exec_command_cpu(
         "pkill -x mooncake_master >/dev/null 2>&1 || true; "
         f"(setsid mooncake_master --rpc_port {rpc_port} --metrics_port {metrics_port} "
         f"> {quoted_log_path} 2>&1 &)"
@@ -316,7 +316,7 @@ def start_mooncake_master(
     try:
         wait_for_server_ready(host, rpc_port, timeout=timeout)
     except RuntimeError as exc:
-        exec_command("pkill -x mooncake_master >/dev/null 2>&1 || true")
+        exec_command_cpu("pkill -x mooncake_master >/dev/null 2>&1 || true")
         try:
             log_lines = log_path.read_text(errors="replace").splitlines()
             log_tail = "\n".join(log_lines[-100:]) or "<empty>"
@@ -328,17 +328,16 @@ def start_mooncake_master(
         ) from exc
 
 
-def save_to_temp_file(text: str, ext: str):
-    path = Path(f"/tmp/miles_temp_file_{time.time()}_{random.randrange(0, 10000000)}.{ext}")
-    path.write_text(text)
-    print(f"Write the following content to {path=}: {text=}")
-    return str(path)
+def encode_pseudo_file(text: str) -> str:
+    return PSEUDO_FILE_PREFIX + base64.b64encode(text.encode()).decode()
 
 
 NUM_GPUS_OF_HARDWARE = {
     "H100": 8,
     "GB200": 4,
     "GB300": 4,
+    "MI350X": 8,
+    "MI355X": 8,
 }
 
 GENERATION_HARDWARE = {

@@ -240,6 +240,10 @@ class TestWorkflowScopeSeam:
     def _workflow() -> str:
         return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "pr-test.yml").read_text()
 
+    @staticmethod
+    def _reusable_workflow(name: str) -> str:
+        return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / name).read_text()
+
     def test_every_stage_consumes_resolved_policy(self):
         workflow = self._workflow()
         commands = workflow.split("execute_command:")[1:]
@@ -259,6 +263,22 @@ class TestWorkflowScopeSeam:
         expected = "needs: [resolve-ci-policy, resolve-ci-image]"
         assert expected in stage_a
         assert expected in stage_b
+
+    def test_cpu_and_gpu_stages_use_dedicated_reusable_workflows(self):
+        workflow = self._workflow()
+        assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
+        assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 5
+        assert "cpu_runner" not in workflow
+
+        gpu_workflow = self._reusable_workflow("_run-ci.yml")
+        cpu_workflow = self._reusable_workflow("_run-cpu-ci.yml")
+        job_id_pattern = r"^  ([A-Za-z_][A-Za-z0-9_-]*):$"
+        gpu_jobs = re.findall(job_id_pattern, gpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
+        cpu_jobs = re.findall(job_id_pattern, cpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
+        assert gpu_jobs == ["run"]
+        assert cpu_jobs == ["run-cpu"]
+        assert "cpu_runner" not in gpu_workflow
+        assert "cpu_runner" not in cpu_workflow
 
     def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
@@ -301,6 +321,18 @@ class TestWorkflowScopeSeam:
     def test_non_pr_concurrency_does_not_collapse_to_ref(self):
         workflow = self._workflow()
         assert "github.event.schedule || github.run_id" in workflow
+
+    def test_closed_pr_only_cancels_existing_run(self):
+        workflow = self._workflow()
+        assert "types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
+        assert (
+            "group: ${{ github.workflow }}-${{ github.event.number || github.event.schedule || github.run_id }}"
+            in workflow
+        )
+
+        for job_name in ("resolve-ci-policy", "docker-paths", "docker-build"):
+            job_header = workflow.split(f"  {job_name}:", 1)[1].split("    runs-on:", 1)[0]
+            assert "github.event.action != 'closed'" in job_header
 
 
 class TestRocmWorkflowScopeSeam:
