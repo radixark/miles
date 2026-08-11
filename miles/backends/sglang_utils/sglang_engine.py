@@ -642,9 +642,12 @@ class SGLangEngine(RayActor):
         return self._make_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
+        # This endpoint aborts every in-flight request by default, which would undo
+        # the retract the pause just did. --pause-generation-mode already says what
+        # should happen to in-flight work; publishing a label must not override it.
         return self._make_request(
             "update_weight_version",
-            {"new_version": weight_version},
+            {"new_version": weight_version, "abort_all_requests": False},
         )
 
     def start_profile(
