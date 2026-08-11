@@ -1,13 +1,26 @@
 from __future__ import annotations
 
+import json
+from argparse import Namespace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from miles.utils.external_utils.command_utils.common import (
+    MOONCAKE_BACKEND_NAME,
+    MOONCAKE_INIT_KWARGS_FLAG,
+    MOONCAKE_MASTER_ADDRESS_KEY,
+    ArgvManipulator,
+)
+from miles.utils.external_utils.command_utils.helm_backend import naming
+from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
 from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
 from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
-from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import InfraValues
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
+    InfraValues,
+    MooncakeSection,
+)
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 STATIC_WORKERS_SECTION = "staticWorkers"
@@ -20,8 +33,14 @@ SECTION_OF_CATEGORY = {
     POOL_CATEGORY_TRAINER_ENGINE: TRAINER_ENGINES_SECTION,
 }
 
+_MOONCAKE_COMPONENT = "mooncake-master"
 _INFRA_KEY = "infra"
 _VALUES_FILE_NAME = "values.yaml"
+
+
+class MooncakePlan(FrozenStrictBaseModel):
+    init_kwargs: dict[str, Any]
+    port: int
 
 
 class LaunchPlan(FrozenStrictBaseModel):
@@ -32,7 +51,45 @@ class LaunchPlan(FrozenStrictBaseModel):
     orchestrator_command: list[str]
     worker_argv: list[str]
     env: dict[str, str] = {}
+    mooncake_plan: MooncakePlan | None = None
     prepare_cmd: dict[str, str] = {}
+
+
+class MooncakeInfo:
+    @staticmethod
+    def plan_of_args(args: Namespace) -> MooncakePlan | None:
+        if args.object_store_backend != MOONCAKE_BACKEND_NAME:
+            return None
+
+        init_kwargs = args.mooncake_store_init_kwargs
+        assert (
+            init_kwargs
+        ), f"{MOONCAKE_INIT_KWARGS_FLAG} is missing, so the mooncake master address cannot be rewritten"
+        address = init_kwargs.get(MOONCAKE_MASTER_ADDRESS_KEY)
+        assert (
+            isinstance(address, str) and ":" in address
+        ), f"{MOONCAKE_MASTER_ADDRESS_KEY} is {address!r} and carries no port, so the in-cluster address cannot be built"
+        return MooncakePlan(init_kwargs=init_kwargs, port=int(address.rsplit(":", 1)[1]))
+
+    @staticmethod
+    def with_cluster_master(train_argv: list[str], *, plan: MooncakePlan | None, host: str) -> list[str]:
+        if plan is None:
+            return train_argv
+
+        kwargs = {**plan.init_kwargs, MOONCAKE_MASTER_ADDRESS_KEY: f"{host}:{plan.port}"}
+        return ArgvManipulator.replacing_value(train_argv, MOONCAKE_INIT_KWARGS_FLAG, json.dumps(kwargs))
+
+    @staticmethod
+    def master_service_host(release: str, namespace: str) -> str:
+        return RunNames.service_fqdn(name=MooncakeInfo.master_object_name(release), namespace=namespace)
+
+    @staticmethod
+    def master_object_name(release: str) -> str:
+        return naming.component_name(release, _MOONCAKE_COMPONENT)
+
+    @staticmethod
+    def section(plan: MooncakePlan) -> MooncakeSection:
+        return MooncakeSection(enabled=True, rpc_port=plan.port)
 
 
 class InfraInfo:
