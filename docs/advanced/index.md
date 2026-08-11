@@ -38,8 +38,8 @@ tolerance, speculative decoding, and LoRA training and serving.
 
   <Card title="On-Policy Distillation" icon="graduation-cap" href="/advanced/on-policy-distillation">
 
-    Train a student on its own rollouts while matching teacher token
-    probabilities through SGLang or Megatron teacher modes.
+    Add teacher guidance to RL with OPD, or train directly against a privileged
+    fixed teacher with OPSD.
 
   </Card>
 

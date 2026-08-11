@@ -235,6 +235,7 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
+| `--loss-type` | enum | `policy_loss` | `policy_loss`, `sft_loss`, `opsd_loss`, or `custom_loss`. |
 | `--advantage-estimator` | enum | `grpo` | `grpo`, `gspo`, `ppo`, `reinforce_plus_plus`, `reinforce_plus_plus_baseline`, `on_policy_distillation` |
 | `--use-kl-loss` | flag | off | Compute KL vs. reference. |
 | `--kl-loss-coef` | float | `0.0` | KL weight in loss (0 means monitor). |
@@ -249,6 +250,20 @@ Sections mirror the launch-script argument groups.
 | `--calculate-per-token-loss` | flag | off | Per-token loss reduction. |
 | `--no-check-for-nan-in-loss-and-grad` | flag | off | Skip NaN/Inf guard (Megatron flag, debug only). |
 | `--true-on-policy-mode` | flag | off | Strict on-policy: reject samples from a prior policy. |
+
+#### On-policy self-distillation
+
+See [On-Policy Distillation](/advanced/on-policy-distillation) for the OPSD
+objective and constraints.
+
+| Flag | Type | Default | Notes |
+|---|---|---|---|
+| `--opsd-type` | enum | – | Fixed teacher backend. Currently `sglang`. |
+| `--opsd-teacher-url` | str | – | SGLang `/generate` endpoint. Required for OPSD. |
+| `--opsd-teacher-top-k` | int | `64` | Teacher-selected vocabulary support size; minimum `2`. |
+| `--opsd-pointwise-kl-clip` | float | `0.05` | Per-entry forward-KL upper clip; `0` disables clipping. |
+| `--opsd-teacher-prompt-function-path` | str | – | Optional privileged-prompt builder. |
+| `--opsd-teacher-chat-template-kwargs` | JSON | `{}` | Chat-template arguments applied only to the privileged prompt. |
 
 ### Optimizer
 

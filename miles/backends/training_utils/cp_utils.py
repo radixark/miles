@@ -219,7 +219,7 @@ def all_gather_with_cp(
             [len] + list(tensor.shape[1:]),
             dtype=tensor.dtype,
             device=tensor.device,
-            requires_grad=True,
+            requires_grad=tensor.requires_grad,
         )
 
     # logprob should be within the range of [prompt_length - 1, total_length - 1]
@@ -243,7 +243,10 @@ def all_gather_with_cp(
         full_tensor = torch.cat([left, chunk_0, mid, chunk_1, right], dim=0)
 
     assert full_tensor.shape[0] == response_length, f"Expected {response_length}, got {full_tensor.shape}"
-    full_tensor = dist.nn.all_reduce(full_tensor, group=cp_group)
+    if full_tensor.requires_grad:
+        full_tensor = dist.nn.all_reduce(full_tensor, group=cp_group)
+    else:
+        dist.all_reduce(full_tensor, group=cp_group)
     return full_tensor
 
 

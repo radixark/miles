@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from miles.rollout.on_policy_self_distillation import build_teacher_prompt
 from miles.utils.data import Dataset
 from miles.utils.misc import load_function
 from miles.utils.processing_utils import load_processor, load_tokenizer
@@ -69,6 +70,14 @@ class RolloutDataSource(DataSource):
                 if hasattr(processor, "save_pretrained"):
                     processor.save_pretrained(Path(d) / "processor")
 
+            teacher_prompt_builder = None
+            if args.loss_type == "opsd_loss":
+                teacher_prompt_builder = (
+                    load_function(args.opsd_teacher_prompt_function_path)
+                    if args.opsd_teacher_prompt_function_path is not None
+                    else build_teacher_prompt
+                )
+
             self.dataset = Dataset(
                 args.prompt_data,
                 tokenizer=tokenizer,
@@ -81,6 +90,10 @@ class RolloutDataSource(DataSource):
                 tool_key=args.tool_key,
                 apply_chat_template=args.apply_chat_template,
                 apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+                teacher_prompt_builder=teacher_prompt_builder,
+                teacher_chat_template_kwargs=(
+                    args.opsd_teacher_chat_template_kwargs if teacher_prompt_builder is not None else None
+                ),
                 seed=args.rollout_seed,
             )
             if self.args.rollout_shuffle:

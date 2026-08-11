@@ -4,6 +4,7 @@ import random
 
 import aiohttp
 
+from miles.rollout.on_policy_self_distillation import reward_func as score_opsd_sample
 from miles.utils.misc import load_function
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.types import Sample
@@ -40,7 +41,10 @@ def _resolve_reward_config(args, sample: Sample) -> tuple[str | None, str]:
     return custom_rm_path, rm_type
 
 
-async def async_rm(args, sample: Sample, **kwargs):
+async def async_rm(args, sample: Sample, *, evaluation: bool = False, **kwargs):
+    if not evaluation and args.loss_type == "opsd_loss":
+        return await score_opsd_sample(args, sample, **kwargs)
+
     custom_rm_path, rm_type = _resolve_reward_config(args, sample)
 
     if custom_rm_path is not None:
@@ -90,10 +94,11 @@ async def batched_async_rm(
     args,
     samples: list[Sample],
     inplace_set_reward_field: bool = False,
+    evaluation: bool = False,
     **kwargs,
 ) -> list[int | float] | None:
     if inplace_set_reward_field:
-        rewards = await batched_async_rm(args, samples, **kwargs)
+        rewards = await batched_async_rm(args, samples, evaluation=evaluation, **kwargs)
         for sample, reward in zip(samples, rewards, strict=True):
             assert (
                 sample.reward is None
@@ -101,9 +106,10 @@ async def batched_async_rm(
             sample.reward = reward
         return None
 
-    if args.custom_rm_path is not None and not is_multi_lora_enabled(args):
+    opsd_training = not evaluation and args.loss_type == "opsd_loss"
+    if not opsd_training and args.custom_rm_path is not None and not is_multi_lora_enabled(args):
         rm_function = load_function(args.custom_rm_path)
         return await rm_function(args, samples, **kwargs)
-    tasks = [async_rm(args, sample, **kwargs) for sample in samples]
+    tasks = [async_rm(args, sample, evaluation=evaluation, **kwargs) for sample in samples]
     rewards = await asyncio.gather(*tasks)
     return rewards

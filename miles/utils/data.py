@@ -4,6 +4,8 @@ import logging
 import os
 import random
 import re
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 
@@ -82,14 +84,14 @@ def _parse_generalized_path(s: str):
 
 
 def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_length: int | None) -> list[Sample]:
-    if max_length is None:
+    if max_length is None or not origin_samples:
         return origin_samples
 
     if not isinstance(origin_samples[0].prompt, str):
         logger.warning(
             "Skipping max_length check for list prompt. Set apply_chat_template=True to enable length filtering."
         )
-        return origin_samples
+        return [sample for sample in origin_samples if _privileged_prompt_within_limit(sample, max_length)]
 
     if processor:
         # Use processor only for samples with actual multimodal content; use batched tokenizer for text-only.
@@ -105,7 +107,7 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
             prompts = [s.prompt for s in text_only]
             input_ids_list = tokenizer(prompts, add_special_tokens=False)["input_ids"]
             for sample, input_ids in zip(text_only, input_ids_list, strict=True):
-                if len(input_ids) <= max_length:
+                if len(input_ids) <= max_length and _privileged_prompt_within_limit(sample, max_length):
                     filtered_samples.append(sample)
         if multimodal:
             from miles.utils.processing_utils import process_vision_info
@@ -114,7 +116,7 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
                 multimodal_inputs = process_vision_info(sample.prompt, processor)
                 processor_output = processor(text=sample.prompt, **multimodal_inputs)
                 input_ids = processor_output["input_ids"][0]
-                if len(input_ids) <= max_length:
+                if len(input_ids) <= max_length and _privileged_prompt_within_limit(sample, max_length):
                     filtered_samples.append(sample)
     else:
         prompts = [sample.prompt for sample in origin_samples]
@@ -122,12 +124,16 @@ def filter_long_prompt(origin_samples: list[Sample], tokenizer, processor, max_l
         filtered_samples = [
             sample
             for sample, input_ids in zip(origin_samples, input_ids_list, strict=True)
-            if len(input_ids) <= max_length
+            if len(input_ids) <= max_length and _privileged_prompt_within_limit(sample, max_length)
         ]
 
     logger.info(f"Filtered {len(origin_samples) - len(filtered_samples)} samples longer than max_length={max_length}.")
 
     return filtered_samples
+
+
+def _privileged_prompt_within_limit(sample: Sample, max_length: int) -> bool:
+    return sample.privileged_prompt_tokens is None or len(sample.privileged_prompt_tokens) <= max_length
 
 
 def _build_messages(data: dict, prompt_key: str, as_conversation: bool, multimodal_keys: dict = None):
@@ -199,6 +205,8 @@ class Dataset:
         seed=42,
         apply_chat_template=False,
         apply_chat_template_kwargs=None,
+        teacher_prompt_builder: Callable[[Any, str | None, dict], Any] | None = None,
+        teacher_chat_template_kwargs=None,
     ):
         origin_samples = []
         for data in read_file(path):
@@ -207,6 +215,7 @@ class Dataset:
             prompt = _build_messages(data, prompt_key, as_conversation, multimodal_keys)
 
             metadata = data.get(metadata_key) or {}
+            label = data[label_key] if label_key is not None else None
             tools = None
             if tool_key is not None and tool_key in data:
                 tools = data[tool_key]
@@ -216,6 +225,8 @@ class Dataset:
                     tools = tools.tolist()
                 assert isinstance(tools, list), f"tools must be a list, got {type(tools)} instead"
                 metadata["tools"] = tools
+            if teacher_prompt_builder is not None and tools:
+                raise ValueError("OPSD does not currently support tool-enabled dataset samples.")
 
             if apply_chat_template:
                 output_prompt = chat_template_utils.apply_chat_template(
@@ -228,6 +239,30 @@ class Dataset:
                 )
             else:
                 output_prompt = prompt
+
+            if teacher_prompt_builder is not None:
+                teacher_prompt = teacher_prompt_builder(
+                    prompt=prompt,
+                    label=label,
+                    metadata=metadata,
+                )
+                if isinstance(teacher_prompt, list):
+                    teacher_prompt = chat_template_utils.apply_chat_template(
+                        teacher_prompt,
+                        tokenizer=tokenizer,
+                        tools=tools,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        **(teacher_chat_template_kwargs or {}),
+                    )
+                if not isinstance(teacher_prompt, str):
+                    raise TypeError(
+                        "OPSD teacher prompt function must return text or a text conversation, "
+                        f"got {type(teacher_prompt).__name__}."
+                    )
+                privileged_prompt_tokens = tokenizer.encode(teacher_prompt, add_special_tokens=False)
+            else:
+                privileged_prompt_tokens = None
 
             if processor:
                 from miles.utils.processing_utils import process_vision_info
@@ -242,9 +277,10 @@ class Dataset:
             origin_samples.append(
                 Sample(
                     prompt=output_prompt,
-                    label=data[label_key] if label_key is not None else None,
+                    label=label,
                     metadata=metadata,
                     multimodal_inputs=multimodal_inputs,
+                    privileged_prompt_tokens=privileged_prompt_tokens,
                 )
             )
 

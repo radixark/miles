@@ -12,6 +12,20 @@ from miles.ray.rollout.metrics import (
 
 
 class TestComputeZeroStdMetrics:
+    def test_returns_empty_for_opsd(self):
+        args = make_args(
+            loss_type="opsd_loss",
+            log_reward_category="category",
+            n_samples_per_prompt=2,
+        )
+        samples = make_samples_grouped(1, 2)
+        samples[0].reward = {"token_ids": [[1, 2]], "scores": [[-0.1, -0.2]]}
+        samples[1].reward = {"token_ids": [[2, 3]], "scores": [[-0.3, -0.4]]}
+
+        assert _compute_zero_std_metrics(args, samples) == {}
+        assert _compute_passrate_from_samples(args, samples) == {}
+        assert not any(key.startswith("error_cat/") for key in _compute_metrics_from_samples(args, samples))
+
     def test_returns_empty_for_ppo_regardless_of_reward_distribution(self):
         args = make_args(advantage_estimator="ppo")
         out = _compute_zero_std_metrics(args, make_samples_grouped(2, 4, rewards=[1.0] * 8))

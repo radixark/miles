@@ -1,8 +1,61 @@
 # On-Policy Distillation
 
+Miles provides two distinct on-policy distillation objectives:
+
+| Objective | Student data | Teacher context | Optimization |
+|-----------|--------------|-----------------|--------------|
+| OPD | Student rollouts | Original prompt | Adds a reverse-KL teacher penalty to an RL advantage |
+| OPSD | Student rollouts | Prompt, reference solution, and student prefix | Directly minimizes a forward-KL distillation loss |
+
+## On-Policy Self-Distillation
+
+OPSD is a pure fixed-teacher objective. The student samples a response; the
+teacher scores that exact response from a privileged prompt containing the
+reference solution. Gradients flow only through the student.
+
+Miles renormalizes both distributions over the teacher's top-k support \(S_t\)
+and clips each vocabulary contribution before summing:
+
+$$
+\mathcal{L}_t =
+\sum_{v \in S_t}
+\min\left(p_T(v)[\log p_T(v)-\log p_\theta(v)], c\right)
+$$
+
+This avoids full-vocabulary runtime gathers. Set
+`--opsd-pointwise-kl-clip 0` to disable clipping.
+
+### Configuration
+
+| Argument | Description |
+|----------|-------------|
+| `--loss-type opsd_loss` | Select OPSD. |
+| `--disable-compute-advantages-and-returns` | Required for the pure objective. |
+| `--opsd-type sglang` | Use an external SGLang fixed teacher. |
+| `--opsd-teacher-top-k` | Teacher support size; default `64`, minimum `2`. |
+| `--opsd-pointwise-kl-clip` | Per-entry upper clip; default `0.05`, `0` disables. |
+| `--opsd-teacher-url` | SGLang `/generate` endpoint. |
+| `--opsd-teacher-prompt-function-path` | Optional privileged-prompt builder. |
+| `--opsd-teacher-chat-template-kwargs` | Teacher-only chat-template JSON. |
+
+The stock text-only prompt builder requires `--label-key`. A custom builder
+receives `prompt`, `label`, and `metadata` keyword arguments and returns text or
+a chat conversation. The teacher and student must use the same tokenizer and
+token-ID mapping because Miles sends student response IDs to the teacher and
+stores the teacher's compact top-k support as token IDs. Teacher scoring is a
+zero-generation prefill request and does not use `--rollout-temperature`.
+
+SGLang teachers work with both Megatron and FSDP students. Evaluation continues
+to use the configured task reward.
+
+OPSD does not support additive RL objectives, dynamic teachers, multimodal or
+session rollouts, tools, or Multi-LoRA.
+
+## On-Policy Distillation
+
 On-policy distillation (OPD) trains a student model on its own rollouts while using a teacher model's token-level probabilities as the distillation signal. In Miles, the teacher signal is converted into a per-token reverse-KL penalty and applied after the selected RL advantage estimator has produced token advantages. This lets the same OPD recipe compose with GRPO, PPO, REINFORCE++, GSPO, and other estimators.
 
-## Key Arguments
+### OPD Arguments
 
 | Argument | Description |
 |----------|-------------|
@@ -17,7 +70,7 @@ On-policy distillation (OPD) trains a student model on its own rollouts while us
 | `--opd-teacher-load` | Path to teacher Megatron checkpoint. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
 | `--opd-teacher-ckpt-step` | Optional checkpoint step for teacher model. |
 
-## How It Works
+### How OPD Works
 
 OPD modifies the advantage computation by subtracting a KL penalty term that encourages the student to match the teacher's output distribution:
 
@@ -29,7 +82,7 @@ Where $A_t$ is the original advantage from the base estimator (e.g., GRPO), $\la
 
 The implementation follows the additive OPD training recipe described in the [Thinking Machines OPD blog](https://thinkingmachines.ai/blog/on-policy-distillation/), with an additional SGLang top-k reward mode from [Rethinking On-Policy Distillation](https://arxiv.org/abs/2604.13016).
 
-## Rethinking OPD Top-K Reward
+### Rethinking OPD Top-K Reward
 
 SGLang OPD supports the top-k token reward recipe from [Rethinking On-Policy Distillation](https://arxiv.org/abs/2604.13016). Set `--opd-log-prob-top-k` above zero to request student rollout top-logprobs, score the same sequence with the teacher, and aggregate a weighted reverse-KL estimate over a selected token set at each response position.
 
@@ -45,9 +98,9 @@ The token set is controlled by `--opd-top-k-strategy`:
 
 `--opd-reward-weight-mode` controls whether each selected token is weighted by student probability, teacher probability, or uniformly. For compatibility, `--opd-log-prob-top-k=0` keeps the original sampled-token OPD path.
 
-## Two Teacher Modes
+### OPD Teacher Modes
 
-### SGLang Mode (`--opd-type sglang`)
+#### SGLang Mode (`--opd-type sglang`)
 
 The teacher runs on an external SGLang server. Teacher log-probs are obtained during the rollout phase.
 
@@ -130,11 +183,11 @@ The teacher model is loaded directly into Megatron via `--opd-teacher-load`. Tea
 
 > **Note**: The teacher checkpoint must be in Megatron format (`torch_dist` or `torch`). You can convert from HuggingFace format using `tools/convert_hf_to_torch_dist.py`.
 
-## Running the Examples
+### Running the OPD Examples
 
 Complete example scripts are provided in `examples/on_policy_distillation/`:
 
-### SGLang Teacher
+#### SGLang Teacher
 
 ```bash
 # 1. Download models and data
@@ -155,7 +208,7 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 bash examples/on_policy_distillation/run-qwen3-8B-opd.sh
 ```
 
-### Megatron Teacher
+#### Megatron Teacher
 
 ```bash
 # 1. Convert both student and teacher models to Megatron format
@@ -163,7 +216,7 @@ bash examples/on_policy_distillation/run-qwen3-8B-opd.sh
 bash examples/on_policy_distillation/run-qwen3-8B-opd-megatron.sh
 ```
 
-## Preliminary Results
+### Preliminary OPD Results
 
 Using Qwen3-8B-Base model SFT-ed on part of the [OpenThoughts3-1.2M](https://huggingface.co/datasets/open-thoughts/OpenThoughts3-1.2M) dataset, on-policy distillation with a Qwen3-32B teacher on the remaining data yields:
 
@@ -176,3 +229,4 @@ Using Qwen3-8B-Base model SFT-ed on part of the [OpenThoughts3-1.2M](https://hug
 
 - [Thinking Machines: On-Policy Distillation](https://thinkingmachines.ai/blog/on-policy-distillation/)
 - [Rethinking On-Policy Distillation](https://arxiv.org/abs/2604.13016)
+- [On-Policy Self-Distillation](https://siyan-zhao.github.io/blog/2026/opsd/)
