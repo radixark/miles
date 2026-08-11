@@ -1,0 +1,66 @@
+{{- $name := .Values.run.objectNames.orchestrator }}
+{{- if not .Values.run.orchestrator.command }}
+{{- fail "a run needs run.orchestrator.command: nothing else starts the training script, so a run installed without it would bring up every pod and then sit there forever" }}
+{{- end }}
+{{- if eq ((.Values.infra.sharedStorage | default dict).type | default "none") "none" }}
+{{- fail "a run needs infra.sharedStorage: the launcher learns the run's outcome by reading its exit file, and without a shared volume the wrapper writes that file where nobody can read it" }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" (dict "context" . "component" "orchestrator") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "miles-run.selectorLabels" (dict "context" . "component" "orchestrator") | nindent 4 }}
+  ports:
+    - name: placeholder
+      port: 1
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" (dict "context" . "component" "orchestrator") | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ $name | quote }}
+  selector:
+    matchLabels:
+      {{- include "miles-run.selectorLabels" (dict "context" . "component" "orchestrator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "miles-run.labels" (dict "context" . "component" "orchestrator") | nindent 8 }}
+    spec:
+      {{- include "miles-run.podDefaults" . | nindent 6 }}
+      serviceAccountName: {{ $name | quote }}
+      restartPolicy: Always
+      containers:
+        - name: orchestrator
+          {{- include "miles-run.containerDefaults" . | nindent 10 }}
+          command:
+            - python
+            - -m
+            - miles.utils.external_utils.command_utils.helm_backend.orchestrator.wrapper
+            - --state-file
+            - {{ .Values.run.stateFile | quote }}
+            - --
+            {{- range .Values.run.orchestrator.command }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- with include "miles-run.env" (dict "context" . "entry" dict) }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.run.orchestrator.resources | nindent 12 }}
+      {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" . | trim) (include "miles-run.nodeLocalVolume" . | trim)) | join "\n" }}
+      {{- with $volumes }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
