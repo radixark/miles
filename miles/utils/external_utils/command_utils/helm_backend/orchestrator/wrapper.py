@@ -4,10 +4,11 @@ import argparse
 import logging
 import signal
 import sys
-import time
 from dataclasses import dataclass
+from time import sleep
 from types import FrameType
 
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Kubectl
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state import (
     OrchestratorState,
     OrchestratorStatus,
@@ -19,6 +20,7 @@ from miles.utils.workers.serving.utils import split_worker_argv
 logger = logging.getLogger(__name__)
 
 _KEEP_ALIVE_POLL_SECONDS = 60
+_UNINSTALL_JOB_RETRY_SLEEPS = (5, 15, 45, 90)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,10 +29,15 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Run the orchestration script and publish its exit code")
     parser.add_argument("--state-file", required=True, help="Path of the orchestrator exit file to write")
+    parser.add_argument(
+        "--uninstall-manifest",
+        default=None,
+        help="Path of a rendered job manifest that uninstalls this run's release once its verdict is in",
+    )
     args = parser.parse_args(own_argv)
     assert command, "Pass the orchestration script after a -- separator"
 
-    runner = _Runner(state_file=args.state_file)
+    runner = _Runner(state_file=args.state_file, uninstall_manifest=args.uninstall_manifest)
     exit_code = runner.run(command)
 
     logger.info(f"exit_code={exit_code}, staying alive so the logs remain readable")
@@ -40,12 +47,13 @@ def main(argv: list[str] | None = None) -> int:
 
 def _keep_alive() -> None:
     while True:
-        time.sleep(_KEEP_ALIVE_POLL_SECONDS)
+        sleep(_KEEP_ALIVE_POLL_SECONDS)
 
 
 @dataclass(frozen=True)
 class _Runner:
     state_file: str
+    uninstall_manifest: str | None
 
     def run(self, command: list[str]) -> int:
         self._install_signal_verdict()
@@ -89,6 +97,7 @@ class _Runner:
 
         if previous.is_terminal and previous.exit_code is not None:
             logger.info(f"This run already reported exit_code={previous.exit_code}; not running it again")
+            self._create_uninstall_job()
             return previous.exit_code
 
         if not previous.is_terminal:
@@ -106,7 +115,38 @@ class _Runner:
 
     def _conclude(self, *, exit_code: int) -> int:
         self._publish(OrchestratorStatus.EXITED, exit_code=exit_code)
+        self._create_uninstall_job()
         return exit_code
+
+    def _create_uninstall_job(self) -> None:
+        if self.uninstall_manifest is None:
+            return
+
+        for attempt, sleep_seconds in enumerate(_UNINSTALL_JOB_RETRY_SLEEPS, start=1):
+            if self._create_uninstall_job_once(attempt=attempt):
+                return
+            sleep(sleep_seconds)
+
+        logger.error(
+            f"Gave up creating the uninstall job of {self.uninstall_manifest} after "
+            f"{len(_UNINSTALL_JOB_RETRY_SLEEPS)} attempts, so this release stays installed until it is "
+            f"uninstalled by hand"
+        )
+
+    def _create_uninstall_job_once(self, *, attempt: int) -> bool:
+        try:
+            created = Kubectl.create_if_absent(self.uninstall_manifest)
+        except Exception:
+            logger.error(
+                f"Attempt {attempt} at creating the uninstall job of {self.uninstall_manifest} failed", exc_info=True
+            )
+            return False
+
+        if created:
+            logger.info(f"This run's release uninstalls itself through the job created from {self.uninstall_manifest}")
+        else:
+            logger.info("This run's uninstall job already exists, so an earlier attempt created it")
+        return True
 
     def _publish(self, status: OrchestratorStatus, *, exit_code: int | None) -> None:
         OrchestratorState(status=status, exit_code=exit_code).write(self.state_file)
