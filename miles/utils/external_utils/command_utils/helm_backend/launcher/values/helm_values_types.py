@@ -59,10 +59,18 @@ class PoolEntry(ValuesModel):
 
 class ObjectNames(ValuesModel):
     orchestrator: _ObjectName
+    mooncake_master: _ObjectName
 
 
 class OrchestratorSection(ValuesModel):
     command: list[str] | None = None
+    resources: _Resources | None = None
+
+
+class MooncakeSection(ValuesModel):
+    enabled: bool | None = None
+    rpc_port: _Port | None = None
+    metrics_port: _Port | None = None
     resources: _Resources | None = None
 
 
