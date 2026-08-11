@@ -29,6 +29,26 @@ def _float_tensor(values: list[Any]) -> dict[str, Any]:
     return {"data": data, "dtype": "float32", "shape": [len(data)]}
 
 
+def _scale_for_token_mean(sequences: list[list[float]]) -> list[list[float]]:
+    """Pre-scale token weights for Miles' sample-mean reducer.
+
+    Miles reduces each sequence over its active tokens and then divides the
+    accumulated adapter gradient by the number of datums. SkyRL's Tinker
+    backend uses a global token mean. Multiplying sequence ``i`` by
+    ``batch_size * active_tokens_i / total_active_tokens`` makes those two
+    reductions algebraically identical.
+    """
+    active_counts = [sum(value != 0 for value in sequence) for sequence in sequences]
+    total_active = sum(active_counts)
+    if total_active == 0:
+        return sequences
+    batch_size = len(sequences)
+    return [
+        [value * batch_size * active / total_active for value in sequence]
+        for sequence, active in zip(sequences, active_counts, strict=True)
+    ]
+
+
 class MilesTinkerBackend:
     """Translate Tinker requests into collective Miles actor calls.
 
@@ -108,7 +128,7 @@ class MilesTinkerBackend:
                     [float(x) for x in _tensor_data(inputs.get("logprobs"))][-response_length:]
                 )
         if loss_fn in {"importance_sampling", "ppo"}:
-            data["advantages"] = advantages
+            data["advantages"] = _scale_for_token_mean(advantages)
             data["rollout_log_probs"] = rollout_log_probs
         return data
 

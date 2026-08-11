@@ -4,6 +4,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_importance_sampling_loss,
     compute_policy_loss,
 )
+from miles.tinker.backend import _scale_for_token_mean
 
 
 def test_importance_sampling_is_not_ppo_clipped() -> None:
@@ -18,3 +19,12 @@ def test_importance_sampling_is_not_ppo_clipped() -> None:
     torch.testing.assert_close(ppo_loss, torch.tensor([-1.2]))
     torch.testing.assert_close(is_clipfrac, torch.zeros(1))
     torch.testing.assert_close(ppo_clipfrac, torch.ones(1))
+
+
+def test_token_mean_scaling_cancels_miles_sequence_mean() -> None:
+    weights = _scale_for_token_mean([[2.0, 2.0], [-1.0, -1.0, -1.0, -1.0]])
+
+    miles_sequence_mean = sum(sum(sequence) / len(sequence) for sequence in weights) / len(weights)
+    tinker_token_mean = (2.0 + 2.0 - 1.0 - 1.0 - 1.0 - 1.0) / 6
+
+    assert miles_sequence_mean == tinker_token_mean
