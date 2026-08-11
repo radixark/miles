@@ -178,6 +178,10 @@ def run_helm_template_run(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def with_object_names(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{**entry, "objectName": f"{RUN_RELEASE_NAME}-miles-run-{entry['name']}"} for entry in entries]
+
+
 def render_run(*args: str) -> list[dict[str, Any]]:
     result = run_helm_template_run(*args)
     assert result.returncode == 0, result.stderr
