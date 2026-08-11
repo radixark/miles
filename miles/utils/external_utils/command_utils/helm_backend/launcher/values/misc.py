@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
+from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
 from miles.utils.external_utils.command_utils.common import (
     MOONCAKE_BACKEND_NAME,
     MOONCAKE_INIT_KWARGS_FLAG,
@@ -14,13 +16,11 @@ from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
 )
 from miles.utils.external_utils.command_utils.helm_backend import naming
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
-from miles.ray.specs.inference import POOL_CATEGORY_INFERENCE_ENGINE
-from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
     InfraValues,
     MooncakeSection,
 )
+from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 STATIC_WORKERS_SECTION = "staticWorkers"
@@ -51,6 +51,7 @@ class LaunchPlan(FrozenStrictBaseModel):
     orchestrator_command: list[str]
     worker_argv: list[str]
     env: dict[str, str] = {}
+    colocate: bool = False
     mooncake_plan: MooncakePlan | None = None
     prepare_cmd: dict[str, str] = {}
 
