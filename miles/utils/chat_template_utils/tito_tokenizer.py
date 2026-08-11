@@ -165,20 +165,20 @@ class TITOTokenizer:
             **self.chat_template_kwargs,
         )
 
-    def parse_assistant_completion(
+    def postprocess_completion(
         self,
-        completion_token_ids: list[int],
         *,
-        finish_reason: str | None,
-    ) -> ParsedAssistantCompletion | None:
-        """Optionally convert one raw model completion into agent-facing fields.
+        choice: dict[str, Any],
+        assistant_message: dict[str, Any],
+        completion_token_ids: list[int],
+    ) -> dict[str, Any]:
+        """Postprocess an upstream completion and return the message to store.
 
-        The generic session server is parser-neutral. Model families that need
-        token-aware response parsing override this hook; all others retain the
-        upstream SGLang response unchanged.
+        The default path trusts SGLang's parsed message. Model families that
+        need token-aware response handling override this hook and may update
+        ``choice`` before returning their server-side message representation.
         """
-        del completion_token_ids, finish_reason
-        return None
+        return assistant_message
 
     def preserve_server_message_state(
         self,
@@ -789,20 +789,29 @@ class InklingTITOTokenizer(TITOTokenizer):
         )
         self._response_parser = None
 
-    def parse_assistant_completion(
+    def postprocess_completion(
         self,
-        completion_token_ids: list[int],
         *,
-        finish_reason: str | None,
-    ) -> ParsedAssistantCompletion:
+        choice: dict[str, Any],
+        assistant_message: dict[str, Any],
+        completion_token_ids: list[int],
+    ) -> dict[str, Any]:
         if self._response_parser is None:
             from miles.utils.chat_template_utils.inkling_response import InklingResponseParser
 
             self._response_parser = InklingResponseParser(self.tokenizer)
-        return self._response_parser.parse(
+        parsed = self._response_parser.parse(
             completion_token_ids,
-            finish_reason=finish_reason,
+            finish_reason=choice.get("finish_reason"),
         )
+        choice["message"] = parsed.client_message
+        meta_info = choice.setdefault("meta_info", {})
+        meta_info["miles_response_parser"] = parsed.parser_name
+        if parsed.parse_error is not None:
+            meta_info["miles_response_parse_error"] = parsed.parse_error
+        elif parsed.client_message.get("tool_calls") and choice.get("finish_reason") == "stop":
+            choice["finish_reason"] = "tool_calls"
+        return parsed.stored_message
 
     def preserve_server_message_state(
         self,

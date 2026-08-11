@@ -8,6 +8,9 @@ TestConfig
     them to the comparator.  These are NOT behavioral tests — they guard
     against accidental config regressions when modifying __init__.
 
+TestCompletionPostprocess
+    Verifies that the default completion hook is an identity operation.
+
 TestMergeTokensBoundary
     Unit tests for the core merge_tokens boundary logic, using *synthetic*
     prefix IDs ([100, 200, ...]) so the assertions are purely about prefix
@@ -274,6 +277,30 @@ class TestConfig:
         """create_comparator propagates trailing_token_ids to the comparator's trim set."""
         comp = qwen3_tito.create_comparator()
         assert comp._trim_trailing_ids == set(qwen3_tito.trailing_token_ids)
+
+
+class TestCompletionPostprocess:
+    def test_default_returns_upstream_message_unchanged(self):
+        tito = TITOTokenizer(MagicMock())
+        assistant_message = {"role": "assistant", "content": "upstream"}
+        choice = {
+            "message": assistant_message,
+            "finish_reason": "stop",
+            "meta_info": {"existing": True},
+        }
+
+        stored_message = tito.postprocess_completion(
+            choice=choice,
+            assistant_message=assistant_message,
+            completion_token_ids=[1, 2, 3],
+        )
+
+        assert stored_message is assistant_message
+        assert choice == {
+            "message": assistant_message,
+            "finish_reason": "stop",
+            "meta_info": {"existing": True},
+        }
 
 
 class TestInklingComparatorBoundaries:

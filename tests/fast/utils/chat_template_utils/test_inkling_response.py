@@ -1,6 +1,7 @@
 import json
 
 from miles.utils.chat_template_utils.inkling_response import InklingResponseParser
+from miles.utils.chat_template_utils.tito_tokenizer import InklingTITOTokenizer
 
 
 class FakeInklingTokenizer:
@@ -145,3 +146,72 @@ def test_parser_instances_have_no_shared_state():
 
     assert first.parse(completion, finish_reason="stop").client_message["content"] == "ok"
     assert second.parse(completion, finish_reason="stop").client_message["content"] == "ok"
+
+
+def test_postprocesses_tool_call_response_and_returns_stored_message():
+    tokenizer = FakeInklingTokenizer()
+    ids = tokenizer.SPECIAL
+    payload = json.dumps(
+        {"name": "bash_command", "args": {"command": "pwd"}},
+        separators=(",", ":"),
+    )
+    completion = [
+        *_text(tokenizer, "bash"),
+        ids["<|content_invoke_tool_json|>"],
+        *_text(tokenizer, payload),
+        ids["<|end_message|>"],
+        ids["<|content_model_end_sampling|>"],
+    ]
+    assistant_message = {"role": "assistant", "content": "upstream"}
+    choice = {
+        "message": assistant_message,
+        "finish_reason": "stop",
+        "meta_info": {"existing": True},
+    }
+
+    stored_message = InklingTITOTokenizer(tokenizer).postprocess_completion(
+        choice=choice,
+        assistant_message=assistant_message,
+        completion_token_ids=completion,
+    )
+
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["meta_info"] == {
+        "existing": True,
+        "miles_response_parser": "inkling",
+    }
+    assert choice["message"]["tool_calls"] == stored_message["tool_calls"]
+    assert stored_message["_miles_raw_completion_token_ids"] == completion
+    assert stored_message["content_blocks"][0]["type"] == "tool_call"
+
+
+def test_postprocesses_parse_error_without_changing_finish_reason():
+    tokenizer = FakeInklingTokenizer()
+    ids = tokenizer.SPECIAL
+    completion = [
+        ids["<|content_text|>"],
+        ids["<|endoftext|>"],
+        ids["<|end_message|>"],
+        ids["<|content_model_end_sampling|>"],
+    ]
+    assistant_message = {"role": "assistant", "content": "upstream"}
+    choice = {
+        "message": assistant_message,
+        "finish_reason": "stop",
+        "meta_info": {"existing": True},
+    }
+
+    stored_message = InklingTITOTokenizer(tokenizer).postprocess_completion(
+        choice=choice,
+        assistant_message=assistant_message,
+        completion_token_ids=completion,
+    )
+
+    assert choice["finish_reason"] == "stop"
+    assert choice["meta_info"] == {
+        "existing": True,
+        "miles_response_parser": "inkling",
+        "miles_response_parse_error": "control_token_inside_open_block",
+    }
+    assert "tool_calls" not in choice["message"]
+    assert stored_message["_miles_raw_completion_token_ids"] == completion

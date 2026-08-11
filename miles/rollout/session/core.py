@@ -360,19 +360,11 @@ class SessionCore:
             return proxy_result_to_response(result)
 
         response, choice, assistant_message, completion_token_ids = extract_completion(result)
-        parsed = tito_tokenizer.parse_assistant_completion(
-            completion_token_ids,
-            finish_reason=choice.get("finish_reason"),
+        assistant_message = tito_tokenizer.postprocess_completion(
+            choice=choice,
+            assistant_message=assistant_message,
+            completion_token_ids=completion_token_ids,
         )
-        if parsed is not None:
-            assistant_message = parsed.stored_message
-            choice["message"] = parsed.client_message
-            meta_info = choice.setdefault("meta_info", {})
-            meta_info["miles_response_parser"] = parsed.parser_name
-            if parsed.parse_error is not None:
-                meta_info["miles_response_parse_error"] = parsed.parse_error
-            elif parsed.client_message.get("tool_calls") and choice.get("finish_reason") == "stop":
-                choice["finish_reason"] = "tool_calls"
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:
