@@ -68,7 +68,7 @@
           ],
           "expanded": false
          },
-         "models/deepseek/deepseek"
+         "models/deepseek/deepseek-v3-2"
         ],
         "expanded": false
        },
@@ -308,6 +308,11 @@
   {
    "source": "/developer/experimental-features",
    "destination": "/user-guide/training-backend#fsdp"
+  },
+  {
+   "source": "/models/deepseek/deepseek",
+   "destination": "/models/deepseek/deepseek-v3-2",
+   "permanent": true
   }
  ],
  "background": {
