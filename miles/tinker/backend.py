@@ -132,7 +132,13 @@ class MilesTinkerBackend:
                 if hasattr(value, "item"):
                     value = value.item()
                 if isinstance(value, (int, float)):
-                    metrics[key] = float(value)
+                    # The official SDK combines chunked forward/backward
+                    # responses by parsing ``metric_name:reduction`` keys.
+                    # Miles has already reduced these scalars across the
+                    # request batch, so preserve their value with mean
+                    # semantics when SDK-side chunking is enabled.
+                    metric_name = key if ":" in key else f"{key}:mean"
+                    metrics[metric_name] = float(value)
         self.accumulated_samples[model_id] += len(batch["data"])
         ordered: list[Any | None] = [None] * len(batch["data"])
         for result in forward_results:
