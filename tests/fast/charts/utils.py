@@ -1,8 +1,8 @@
 import json
 import os
 import shutil
-import sys
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CHARTS_DIR = REPO_ROOT / "charts"
 CHART_DIR = CHARTS_DIR / "miles-workbench"
 SHARED_INFRA_SCHEMA_PATH = CHARTS_DIR / "shared-infra.schema.json"
+RUN_CHART_DIR = CHARTS_DIR / "miles-run"
+RUN_RELEASE_NAME = "myrun"
+RUN_ORCHESTRATOR_NAME = f"{RUN_RELEASE_NAME}-miles-run-orchestrator"
+RUN_ID = "260101-000000-000"
+RUN_STATE_FILE = f"/cluster-storage/miles_data/miles-runs/{RUN_ID}/state/orchestrator.state"
+DEFAULT_ORCHESTRATOR_COMMAND = ["python", "train.py"]
 WORKBENCH_PACKAGE = "miles.utils.external_utils.miles_workbench"
 
 RELEASE_NAME = "miles-workbench-myuser"
@@ -142,3 +148,53 @@ def can_i_queries(rules: dict[str, tuple[str, ...]]) -> set[str]:
         for verb in verbs:
             queries.add(f"{verb} {target} --subresource={subresource}" if subresource else f"{verb} {target}")
     return queries
+
+
+def schema_error_mentions(error: str, *, path: tuple[str, ...]) -> bool:
+    return "/" + "/".join(path) in error or ".".join(path) in error
+
+
+def run_helm_template_run(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            "helm",
+            "template",
+            RUN_RELEASE_NAME,
+            str(RUN_CHART_DIR),
+            "-n",
+            NAMESPACE,
+            "--set",
+            f"run.id={RUN_ID}",
+            "--set",
+            f"run.stateFile={RUN_STATE_FILE}",
+            "--set",
+            f"run.objectNames.orchestrator={RUN_ORCHESTRATOR_NAME}",
+            "--set-json",
+            f"run.orchestrator.command={json.dumps(DEFAULT_ORCHESTRATOR_COMMAND)}",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def render_run(*args: str) -> list[dict[str, Any]]:
+    result = run_helm_template_run(*args)
+    assert result.returncode == 0, result.stderr
+    return [document for document in yaml.safe_load_all(result.stdout) if document is not None]
+
+
+def render_run_error(*args: str) -> str:
+    result = run_helm_template_run(*args)
+    assert result.returncode != 0, result.stdout
+    return result.stderr
+
+
+def pod_spec_of(objects: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
+    return named_object(objects, kind, name)["spec"]["template"]["spec"]
+
+
+def sole_container_of(objects: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
+    containers = pod_spec_of(objects, kind, name)["containers"]
+    assert len(containers) == 1
+    return containers[0]
