@@ -18,13 +18,13 @@ from typing import Literal
 import typer
 from launch_common import agentic_pythonpath_dirs, agentic_train_args, harbor_env_vars
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_rollout_only"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
     megatron_path: str = "/root/Megatron-LM"
@@ -82,6 +82,7 @@ def cleanup():
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.convert_checkpoint(
         model_name=args.model_name,
         megatron_model_type=args.megatron_model_type,
@@ -93,6 +94,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--ref-load {args.ref_load} "
@@ -183,7 +185,7 @@ def execute(args: ScriptArgs):
     )
 
     extra_env_vars = {
-        "PYTHONPATH": ":".join([args.megatron_path, *agentic_pythonpath_dirs(), str(U.repo_base_dir)]),
+        "PYTHONPATH": ":".join([args.megatron_path, *agentic_pythonpath_dirs(), str(command_utils.repo_base_dir)]),
         **harbor_env_vars(args),
     }
     if args.miles_host_ip:
@@ -191,7 +193,6 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -199,7 +200,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     cleanup()
     if not args.skip_prepare:
