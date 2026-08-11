@@ -5,6 +5,7 @@ from typing import Annotated, Any, Literal
 from pydantic import ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
+from miles.utils.external_utils.colocate_pairing.config import PairingConfig
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 _DNS_SUBDOMAIN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
@@ -91,6 +92,7 @@ class RunValues(ValuesModel):
     trainer_engines: list[PoolEntry] | None = None
     env: _EnvVars | None = None
     mooncake: MooncakeSection | None = None
+    colocate: PairingConfig | None = None
     auto_uninstall: AutoUninstallSection | None = None
 
 
