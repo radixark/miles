@@ -277,4 +277,3 @@ map it to a host.
 * **CI internals:** `docs/ci/00-stage.md` (stages), `01-label.md` (label semantics),
   `02-docker-build.md` (images), `03-metric-history-gate.md` (metric gate), and
   `docs/ci/contributor-guide.md` for the long-form version of this section.
-* **Security:** email security@radixark.ai rather than opening a public issue.
