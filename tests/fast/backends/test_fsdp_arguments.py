@@ -26,9 +26,15 @@ def test_cli_defaults_match_the_dataclass(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_true_default_bools_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    args = _parse(monkeypatch, "--no-fsdp-state-dict-cpu-offload", "--no-use-checkpoint-lr-scheduler")
+    args = _parse(
+        monkeypatch,
+        "--no-fsdp-state-dict-cpu-offload",
+        "--no-use-checkpoint-lr-scheduler",
+        "--no-keep-fp32-master",
+    )
     assert args.fsdp_state_dict_cpu_offload is False
     assert args.use_checkpoint_lr_scheduler is False
+    assert args.keep_fp32_master is False
 
 
 def test_false_default_bools_still_turn_on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -37,12 +43,10 @@ def test_false_default_bools_still_turn_on(monkeypatch: pytest.MonkeyPatch) -> N
     assert args.fp16 is True
 
 
-def test_fp32_master_toggles_both_ways(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert _parse(monkeypatch).keep_fp32_master is True
-    assert _parse(monkeypatch, "--disable-fp32-master").keep_fp32_master is False
-    assert _parse(monkeypatch, "--keep-fp32-master").keep_fp32_master is True
-
-
-def test_fp32_master_rejects_both_spellings_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    with pytest.raises(SystemExit):
-        _parse(monkeypatch, "--keep-fp32-master", "--disable-fp32-master")
+def test_every_bool_gets_both_forms(monkeypatch: pytest.MonkeyPatch) -> None:
+    for field in dataclasses.fields(FSDPArgs):
+        if field.type is not bool:
+            continue
+        flag = field.name.replace("_", "-")
+        assert _parse(monkeypatch, f"--{flag}").__dict__[field.name] is True
+        assert _parse(monkeypatch, f"--no-{flag}").__dict__[field.name] is False
