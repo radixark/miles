@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the NeMo-Gym leg without a GPU trainer (golden / API-policy scan).
+"""Validate the NeMo Gym leg without a GPU trainer (golden / API-policy scan).
 
 Drives a running mini_swe_agent_2 server through the same ``/run`` contract
 the miles agent function uses, so a pass here validates everything except the

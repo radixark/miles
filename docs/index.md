@@ -46,7 +46,7 @@ needed to run RL at trillion-parameter scale.
 ### Design, support & user experience
 
 - **Coding-agent sandboxes and examples.** [Harbor](/user-guide/harbor),
-  [OpenEnv](/user-guide/openenv), and [NeMo-Gym](/user-guide/nemo-gym) integrations,
+  [OpenEnv](/user-guide/openenv), and [NeMo Gym](/user-guide/nemo-gym) integrations,
   running local CPU sandboxes or per-episode sandboxes on
   [Daytona](https://www.daytona.io/), [E2B](https://e2b.dev/), and self-hosted
   [AgentENV](https://github.com/kvcache-ai/AgentENV) — see

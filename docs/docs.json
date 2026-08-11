@@ -277,8 +277,19 @@
      {
       "group": "Resources",
       "pages": [
-       "faq",
-       "blog/index"
+       "blog/index",
+       "subscribe"
+      ]
+     }
+    ]
+   },
+   {
+    "tab": "FAQ",
+    "groups": [
+     {
+      "group": "FAQ",
+      "pages": [
+       "faq"
       ]
      }
     ]
