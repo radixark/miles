@@ -147,7 +147,16 @@
           ],
           "expanded": false
          },
-         "models/nemotron/nemotron-3-super"
+         "models/nemotron/nemotron-3-super",
+         "models/nemotron/nemotron-3-ultra"
+        ],
+        "expanded": false
+       },
+       {
+        "group": "Gemma",
+        "root": "models/gemma/index",
+        "pages": [
+         "models/gemma/gemma-4"
         ],
         "expanded": false
        },
