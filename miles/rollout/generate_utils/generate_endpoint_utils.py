@@ -121,11 +121,11 @@ def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) 
     return x.reshape(num_tokens, num_layers, topk)
 
 
-def get_routed_experts_from_response(args, output, num_rows: int):
+def get_routed_experts_from_response(args, output, num_tokens: int):
     info = output["meta_info"].get("routed_experts")
     if info is None:
         return None
-    return _decode_topk_buffer(info, num_rows, args.num_layers, -1)
+    return _decode_topk_buffer(info, num_tokens, args.num_layers, -1)
 
 
 def get_indexer_topk_from_response(args, output, sample):
