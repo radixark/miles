@@ -22,4 +22,3 @@ class InstallArgs(ReleaseArgs):
 
 class ExecArgs(ReleaseArgs):
     command: tuple[str, ...]
-
