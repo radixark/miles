@@ -18,7 +18,7 @@ up a new model architecture.
 | Format | Block layout | Hardware | Models tested | Maturity |
 |---|---|---|---|---|
 | **BF16** | — | All NVIDIA + AMD MI300X / MI325 / MI350 / MI355X | All | Baseline |
-| **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+) | Qwen3-4B, Qwen3-30B-A3B, DeepSeek-V3 / R1 | Generally available |
+| **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+) | Qwen3-4B, Qwen3-30B-A3B | Generally available |
 | **MXFP8** | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B, DeepSeek-V3.2 | Beta |
 | **NVFP4** (E2M1) | 1×16, two-level (FP8 + FP32) scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B | Beta |
 
@@ -68,10 +68,16 @@ CKPT_ARGS=(
 )
 ```
 
+Reference recipe:
+[`examples/infra_features/low_precision/run-qwen3-4b-fp8.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-4b-fp8.sh)
+— single-node Qwen3-4B. It serves an FP8 checkpoint to SGLang and trains from a
+BF16 `torch_dist` checkpoint; it sets no `--fp8-recipe`, so the trainer forward
+stays BF16.
+
 ### 2. Unified block-wise FP8 (DeepSeek-style)
 
 Rollout and training share the same block-wise FP8 quantization. This is the
-recipe to use on Hopper, and the recipe DeepSeek-V3 / DeepSeek-R1 ship in.
+recipe to use on Hopper, and the layout DeepSeek ships its FP8 checkpoints in.
 Block layout is 128×128 with FP32 scales.
 
 ```bash
@@ -97,18 +103,17 @@ Block layout is 128×128 with FP32 scales.
 MXFP8 and needs power-of-two scales. Override it only if you know you want the
 non-default for your GPU.
 
-For models that already ship 128×128 block-wise FP8 weights (DeepSeek-V3,
-DeepSeek-R1, `Qwen/Qwen3-30B-A3B-FP8`), point `--hf-checkpoint` at the
+For models that already ship 128×128 block-wise FP8 weights (DeepSeek-V3.2,
+`Qwen/Qwen3-30B-A3B-FP8`), point `--hf-checkpoint` at the
 block-wise FP8 directory and let SGLang autodetect. Otherwise convert with
 `tools/convert_hf_to_fp8.py`.
 
 For MoE workloads, also consider `--use-rollout-routing-replay` (R3). The
 canonical recipe leaves it commented out by default but the flag is available.
 
-Reference recipes:
-
-* [`examples/infra_features/low_precision/run-qwen3-4b-fp8.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-4b-fp8.sh) — single-node Qwen3-4B.
-* [`examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh) — two-node Qwen3-30B-A3B.
+Reference recipe:
+[`examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh)
+— two-node Qwen3-30B-A3B.
 
 ### 3. Unified MXFP8 (Blackwell)
 
@@ -199,6 +204,19 @@ The launcher selects per-token activation scaling, disables the incompatible
 2D quantization, RHT, and stochastic-rounding paths, and loads the matching
 tensor-level precision configuration. Unmatched tensors stay in BF16, and
 rollout uses a BF16 KV cache.
+
+The training path uses:
+
+```bash
+--transformer-impl transformer_engine
+--bf16
+--fp4-format e2m1
+--fp4-recipe nvfp4
+```
+
+Note the `--fp4-` prefix: NVFP4 has its own format and recipe flags rather than
+reusing the `--fp8-` pair. The launcher also adds `--optimizer-cpu-offload
+--overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer`.
 
 The base NVFP4 recipe uses **high-precision backward**: the forward pass uses
 NVFP4 while the BF16 backward GEMMs consume the original BF16 operands.
